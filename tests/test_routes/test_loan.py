@@ -19,7 +19,8 @@ from app.models.account import Account
 from app.models.escrow_line import EscrowComponentVersion, EscrowLine
 from app.models.loan_params import LoanParams
 from app.models.loan_features import RateHistory
-from app.models.ref import AccountType
+from app.extensions import db as _db
+from app.models.ref import AccountType, Status
 from app.routes.loan._helpers import accelerated_overlay, build_band_chart
 from app.services.balance_at import BalanceContext
 from app.services.loan_loaders import load_loan_params, load_rate_changes
@@ -2873,7 +2874,17 @@ def _create_transfer_to_loan(seed_user, loan_account, period, amount,
 
     Enforces shadow transaction invariants by using the production
     code path.  Does NOT directly insert shadow transactions.
+
+    A transfer created ALREADY settled carries an explicit settle instant at
+    its period's start (step E1a: a born-settled create without one stamps
+    ``now()``, and the real clock sits past these fixtures' frozen todays and
+    seeded 2026 periods -- the payment would be invisible to every bounded
+    read).  Period start is the exact visibility these fixtures had before
+    E1a, when a born-settled create left ``paid_at`` NULL and every reader
+    fell back to the period start, so no test's arithmetic moves.
     """
+    status_id = ref_cache.status_id(status_enum)
+    settled = _db.session.get(Status, status_id).is_settled
     return create_transfer(
         TransferSpec(
             user_id=seed_user["user"].id,
@@ -2882,8 +2893,9 @@ def _create_transfer_to_loan(seed_user, loan_account, period, amount,
             pay_period_id=period.id,
             scenario_id=seed_user["scenario"].id,
             amount=amount,
-            status_id=ref_cache.status_id(status_enum),
+            status_id=status_id,
             category_id=seed_user["categories"]["Rent"].id,
+            paid_at=settle_instant_on(period.start_date) if settled else None,
         ),
     )
 
@@ -4838,28 +4850,31 @@ class TestAmortizationSchedule:
             f"Expected total payment {formatted_payment} not found"
         )
 
-    def test_schedule_overpayment_not_shown_as_extra(
+    def test_schedule_overpayment_shows_the_actual_extra(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """C-5.13-12 (re-pinned): a confirmed overpayment is NOT auto-shown as Extra.
+        """C-5.13-12 (re-pinned again, step E1a): a POSTED overpayment shows its real extra.
 
-        Re-pinned under the contractual-schedule balance model (CLAUDE
-        rule 5 exception; the developer chose "deliberate extra principal
-        is recorded as an explicit event").  The prior test created a
-        DONE transfer above the contractual P&I and expected the schedule
-        to break out the difference as an "Extra" column.  Under the new
-        model the historical balance follows the contractual schedule and
-        the cash overage is ignored -- extra principal is now an explicit
-        balance true-up, not an amount inferred from a transfer's cash --
-        so every schedule row carries ``extra_payment=0``,
-        ``schedule_totals.has_extra`` is False, and the Extra column is
-        hidden.
+        The prior pin ("the cash overage is ignored") dated from the
+        contractual-schedule balance model, which the balance arc
+        SUPERSEDED: since the read switch (PR #52) a confirmed schedule
+        row is read from the ledger and carries the payment's ACTUAL
+        economics -- ``extra_payment`` is the real excess above the
+        governing period's contractual P&I ("off-schedule the rows show
+        what actually happened", plan step C3).  The old pin stayed
+        green only because a transfer created ALREADY settled never
+        posted (the unposted-ledger hole step E1a closed): its cash
+        never reached the ledger, so the row had no economics to show.
+        With the payment genuinely posted, the $2,080.17 cash against
+        the $1,580.17 contractual P&I is interest + principal with a
+        real $500.00 excess, and hiding it would misreport what the
+        borrower actually paid.
         """
         acct = _create_fresh_mortgage(
             seed_user, db.session, origination_date=date(2026, 1, 1),
         )
-        # A DONE transfer above the contractual P&I ($2080.17 vs
-        # $1580.17).  The $500 overage is no longer auto-applied.
+        # A DONE transfer above the contractual P&I ($2080.17 vs $1580.17):
+        # the $500.00 overage is the payment's ACTUAL extra.
         _create_transfer_to_loan(
             seed_user, acct, seed_periods[3], Decimal("2080.17"),
             status_enum=StatusEnum.DONE,
@@ -4869,9 +4884,14 @@ class TestAmortizationSchedule:
         resp = auth_client.get(f"/accounts/{acct.id}/loan/schedule")
         assert resp.status_code == 200
         html = resp.data.decode()
-        # No row carries extra, so the Extra column does not render.
-        assert ">Extra</th>" not in html, (
-            "A historical overpayment must not auto-populate an Extra column"
+        # The ledger-derived confirmed row carries the real excess, so the
+        # Extra column renders and shows it.  The ``$`` anchor keeps the
+        # amount from false-matching a thousands figure like $1,500.00.
+        assert ">Extra</th>" in html, (
+            "A posted overpayment's actual extra must render on the schedule"
+        )
+        assert "$500.00" in html, (
+            "The confirmed row must carry the payment's real $500.00 extra"
         )
 
     def test_schedule_uses_committed_schedule(

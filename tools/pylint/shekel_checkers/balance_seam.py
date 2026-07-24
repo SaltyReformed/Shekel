@@ -361,6 +361,14 @@ _FENCED_MODULE_RULINGS = {
             "owner_pay_periods",
             "anchor_visible_on",
             "payment_visible_on",
+            # The walk's events re-keyed by their visible dates (plan step
+            # E1a): what ONE event contributed and when it counts -- dated
+            # FACTS a consumer can already read off the public splits and
+            # corrections.  Shared by the seam's fold AND the posting writer's
+            # checked-projection assert precisely so neither carries its own
+            # copy of the one clock; the prefix-sum that turns the list into a
+            # balance-at-T stays seam-private (``balance_at._fold``).
+            "dated_deltas",
             # A date-bounded loader of settled payment ROWS.  It selects records,
             # and carries no balance of any kind.
             "confirmed_shadows_through",

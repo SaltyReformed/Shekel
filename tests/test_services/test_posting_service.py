@@ -84,9 +84,9 @@ from app.models.journal_entry import JournalEntry, Posting
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import ledger_account_service, posting_service, transfer_service
+from app.services._posting_write import _emit_balanced_entry
 from app.services.posting_service import (
     PostingError,
-    _emit_balanced_entry,
     _PostingLeg,
 )
 from tests._test_helpers import (

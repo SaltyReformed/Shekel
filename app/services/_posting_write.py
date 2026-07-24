@@ -25,6 +25,8 @@ Flask-isolated and commit-free like its consumers: flushes so the caller
 sees assigned ids; the caller owns the transaction boundary.
 """
 
+import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
@@ -33,6 +35,8 @@ from app.extensions import db
 from app.models.journal_entry import JournalEntry, Posting
 from app.services.posting_reads import PostingError
 from app.utils.dates import utc_civil_date
+
+logger = logging.getLogger(__name__)
 
 # A double-entry journal entry has at least two legs (one debit, one credit).
 # Mirrors the ``COUNT(*) >= 2`` half of the deferred balanced-journal trigger
@@ -145,3 +149,58 @@ def _emit_balanced_entry(
         )
     db.session.flush()
     return entry
+
+
+def emit_keyed_delta_entries(
+    legs_by_key: "dict[tuple[int, date], list[_PostingLeg]]",
+    build_entry: "Callable[[int, date], JournalEntry]",
+    log_label: str,
+) -> "list[JournalEntry]":
+    """Emit one balanced delta entry per ``(pay period, entry date)`` key.
+
+    The ONE emission loop behind every per-key reconcile-to-target writer --
+    the transfer sync, the transaction sync, and the loan-payment correction
+    reconcile (steps E1a / N-13 re-keyed all three from per-period to
+    per-``(pay_period_id, entry_date)``, and three copies of the loop was a
+    measured ``duplicate-code`` finding).  Keys are emitted in sorted order
+    so a run's entries are deterministic; each entry carries its key's period
+    and date (the R2 attribution rule, per-date since E1a: a reversal lands
+    at the exact date of the postings it reverses, the target entry at the
+    source's settle date -- both of which ARE the key).
+
+    Args:
+        legs_by_key: The non-empty delta legs per key (the caller returns
+            early on an empty map, keeping its own no-op contract explicit).
+        build_entry: Builds the UNSAVED entry header for one key -- the
+            caller's closure over its source row (user / scenario / source
+            kind / linkage / description).  Called once per key with
+            ``(pay_period_id, entry_date)``; this loop owns setting nothing
+            on it, so the header stays entirely the caller's.
+        log_label: Names the source in the per-entry INFO line (e.g.
+            ``"transfer 42"``), so the shared loop logs as informatively as
+            the three loops it replaced.
+
+    Returns:
+        The persisted delta entries, in key order.
+
+    Raises:
+        PostingError: From :func:`_emit_balanced_entry`, if a key's legs do
+            not balance (impossible for a reconcile's per-key deltas -- both
+            sides of a key sum to zero -- so a raise here means the caller's
+            targets are broken).
+    """
+    entries = []
+    for (period_id, entry_date), legs in sorted(legs_by_key.items()):
+        entry = build_entry(period_id, entry_date)
+        _emit_balanced_entry(entry, legs)
+        logger.info(
+            "Posted %s ledger deltas %s in period %d dated %s as journal "
+            "entry %d",
+            log_label,
+            {leg.ledger_account_id: leg.amount for leg in legs},
+            period_id,
+            entry_date.isoformat(),
+            entry.id,
+        )
+        entries.append(entry)
+    return entries

@@ -12,7 +12,11 @@ CONTRACT-time order -- FACTS, which both the posting writer and the seam need.
 Turning those facts into "what is owed on date D" is what this module does, and it
 does it the way the whole arc turns on (Section 3):
 
-* re-key each event by the date it became VISIBLE (:func:`_dated_deltas`), then
+* re-key each event by the date it became VISIBLE
+  (:func:`app.services.loan_ledger.dated_deltas` -- on the LEAF since plan step
+  E1a, because the posting writer's checked-projection assert consumes the same
+  re-key and two copies of the one clock is how the fold and the ledger would
+  drift), then
 * prefix-sum the paydowns and read each requested date off the running total
   (:func:`sample_cumulative`) -- ``0.00`` for a date before any event, the honest
   fold of an empty prefix.
@@ -44,8 +48,7 @@ from decimal import Decimal
 
 from app.services.loan_ledger import (
     LoanLedgerWalk,
-    anchor_visible_on,
-    payment_visible_on,
+    dated_deltas,
     walk_loan_ledger,
 )
 from app.utils.money import round_money
@@ -104,66 +107,6 @@ def sample_cumulative(
     return sampled
 
 
-def _dated_deltas(walk: LoanLedgerWalk) -> list[tuple[date, Decimal]]:
-    """Return the walk's ``(visible_on, delta)`` steps, ascending by visible date.
-
-    The bridge from the walk (which orders events by when they HAPPENED, in
-    CONTRACT time) to a balance read (which counts them from when they became
-    VISIBLE).  Each event contributes the amount it moved the running balance by:
-
-    * an anchor: ``anchor_balance - owed_before`` -- the jump its reset booked;
-    * a payment: ``-principal`` -- the debt its cash actually paid down.
-
-    Those are exactly the amounts the posting writer books onto the loan's linked
-    ledger (negated for the debit-positive convention), which is why prefix-summing
-    them reproduces the sum-of-postings readers.
-
-    **The deltas are computed in EVENT (contract) order and then re-keyed by
-    VISIBLE date, and that is deliberate.**  A payment's split depends on the
-    balance at its installment, so the walk must run in due-date order
-    (:func:`app.services.loan_ledger.merge_anchor_and_payment_events`); the ledger
-    then stores those amounts and a reader sums whichever are visible.  Under step
-    C2's one clock a payment's visible date is its SETTLED date and an anchor's is
-    its own date (:mod:`app.services.loan_ledger._visible`) -- the same day each
-    posting carries in ``entry_date`` -- so a late-settled payment's principal is
-    shown from the day its cash moved, while its split stays fixed to the
-    installment it paid.  Visibility no longer needs the owner's calendar, so this
-    is a pure re-key of the walk with no query.
-
-    Args:
-        walk: The loan's :class:`~app.services.loan_ledger.LoanLedgerWalk`
-            (:func:`app.services.loan_ledger.walk_loan_ledger`).
-
-    Returns:
-        ``[(visible_on, delta), ...]`` ascending by ``(visible_on, tag)``, where a
-        PAYMENT tags before an ANCHOR on a shared date -- mirroring the walk's own
-        tie-break (:func:`app.services.loan_ledger.merge_anchor_and_payment_events`),
-        so reading the list shows the same chronology the walk applied.  The order
-        within a date is immaterial to the prefix sum (addition commutes); mirroring
-        it keeps the two chronologies reading identically.
-    """
-    if not walk.anchor_corrections:
-        # No LoanParams -> no facts at all (walk_loan_ledger's N1 guard; a
-        # configured loan ALWAYS has its opening fact, per
-        # ``load_loan_anchor_facts``).  Nothing to date.
-        return []
-    # Tag 0 = payment, 1 = anchor: the same tie-break the walk applies, so a
-    # payment sharing an anchor's date reads before it here too.
-    tagged: list[tuple[date, int, Decimal]] = [
-        (
-            anchor_visible_on(correction.anchor.anchor_date),
-            1,
-            correction.anchor.anchor_balance - correction.owed_before,
-        )
-        for correction in walk.anchor_corrections
-    ] + [
-        (payment_visible_on(split.income_shadow), 0, -split.principal)
-        for split in walk.payment_splits
-    ]
-    tagged.sort(key=lambda step: (step[0], step[1]))
-    return [(visible_on, delta) for visible_on, _tag, delta in tagged]
-
-
 def fold_from_walk(
     walk: LoanLedgerWalk, dates: list[date],
 ) -> dict[date, Decimal]:
@@ -176,11 +119,13 @@ def fold_from_walk(
     memoized walk here each time -- the redundant-derivation the read pass's
     context exists to kill (:meth:`~app.services.balance_at.BalanceContext.loan_walk`).
 
-    Re-keys each event by its visible-on date (:func:`_dated_deltas`), prefix-sums
-    the deltas, and reads each requested date off the cumulative -- ``0.00`` for a
-    date before any event (the empty prefix's honest fold).  Identical output to
-    :func:`fold_loan_balances` for the same walk, so threading a memoized walk
-    through here moves no balance.
+    Re-keys each event by its visible-on date (the leaf's
+    :func:`app.services.loan_ledger.dated_deltas` -- the ONE statement of the
+    clock, shared with the posting writer's checked-projection assert),
+    prefix-sums the deltas, and reads each requested date off the cumulative --
+    ``0.00`` for a date before any event (the empty prefix's honest fold).
+    Identical output to :func:`fold_loan_balances` for the same walk, so
+    threading a memoized walk through here moves no balance.
 
     Args:
         walk: The loan's :class:`~app.services.loan_ledger.LoanLedgerWalk`
@@ -193,7 +138,7 @@ def fold_from_walk(
     """
     # The fold's balance seeds at ZERO and the empty prefix (before any event)
     # is 0.00 -- the honest fold of no facts.
-    return sample_cumulative(_ZERO_MONEY, _dated_deltas(walk), dates)
+    return sample_cumulative(_ZERO_MONEY, dated_deltas(walk), dates)
 
 
 def fold_loan_balances(

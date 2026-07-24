@@ -11,11 +11,12 @@ accrued on, the way three independent walks could.
 :class:`LoanLedgerWalk` -- one :class:`~._split.LoanPaymentSplit` per settled
 payment and one :class:`LoanAnchorCorrection` per anchor, in CONTRACT-time order.
 Turning those facts into "what is owed on date D" is the FOLD -- re-key each event
-by the date it becomes VISIBLE, prefix-sum the paydowns -- which lives in the
-balance seam (:mod:`app.services.balance_at._fold`) as of plan step **D-fold**, not
-here.  A consumer holding a walk therefore cannot reach a balance from a public leaf
-name, which is why the walk needs no fence (the fold that would turn it into money is
-seam-private).
+by the date it becomes VISIBLE (:func:`dated_deltas`, here since plan step E1a
+because BOTH sides consume it), then prefix-sum the paydowns -- and the prefix-sum
+lives in the balance seam (:mod:`app.services.balance_at._fold`) as of plan step
+**D-fold**, not here.  A consumer holding a walk therefore cannot reach a balance
+from a public leaf name, which is why the walk needs no fence (the sampling that
+would turn the dated facts into money is seam-private).
 
 **Two consumers, one walk.**  The posting writer
 (:mod:`app.services.loan_posting_service`) projects this walk into the balanced
@@ -36,6 +37,7 @@ Reads the loan's rows; no writes, no commit.
 """
 
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 
 from app.services import (
@@ -47,6 +49,7 @@ from app.services.loan_loaders import LoanAnchorFact
 
 from ._events import merge_anchor_and_payment_events
 from ._split import LoanPaymentSplit, split_one_payment
+from ._visible import anchor_visible_on, payment_visible_on
 
 _ZERO_MONEY = Decimal("0.00")
 
@@ -265,3 +268,79 @@ def compute_loan_payment_splits(
         N1 guard) or no settled payment.
     """
     return walk_loan_ledger(loan_account_id, scenario_id).payment_splits
+
+
+def dated_deltas(walk: LoanLedgerWalk) -> list[tuple[date, Decimal]]:
+    """Return the walk's ``(visible_on, delta)`` steps, ascending by visible date.
+
+    The bridge from the walk (events ordered by when they HAPPENED, in CONTRACT
+    time) to the day each event COUNTS from (step C2's one clock).  Each event
+    contributes the amount it moved the running owed balance by:
+
+    * an anchor: ``anchor_balance - owed_before`` -- the jump its reset booked;
+    * a payment: ``-principal`` -- the debt its cash actually paid down.
+
+    Negated, these are exactly the amounts the posting writer books onto the
+    loan's linked ledger (the debit-positive convention), each at this same
+    visible date (the ``entry_date`` its entry carries).  TWO consumers, ONE
+    derivation -- the reason this lives on the leaf (plan step E1a) rather than
+    in either consumer:
+
+    * the balance seam's fold prefix-sums the deltas and samples a date
+      (:func:`app.services.balance_at._fold.fold_from_walk`);
+    * the posting writer's checked-projection assert compares the posted
+      per-date linked nets against them after every reconcile
+      (:func:`app.services.loan_posting_service.sync_loan_postings`).
+
+    A third statement of "which day does this event count from, and for how
+    much" is exactly how the fold and the posted ledger would drift apart --
+    the divergence the assert exists to catch -- so the assert must not carry
+    its own copy of the rule.
+
+    **The deltas are computed in EVENT (contract) order and then re-keyed by
+    VISIBLE date, and that is deliberate.**  A payment's split depends on the
+    balance at its installment, so the walk runs in due-date order
+    (:func:`.merge_anchor_and_payment_events`); the ledger stores those
+    amounts, and a reader counts whichever are visible.  Under the one clock a
+    payment's visible date is its SETTLED date and an anchor's is its own date
+    (:mod:`._visible`) -- the same day each posting carries in ``entry_date``
+    -- so a late-settled payment's principal is shown from the day its cash
+    moved, while its split stays fixed to the installment it paid.
+
+    **Dated FACTS, not a balance-at-T** (the fence ruling): each pair says
+    what ONE event contributed and when it counts -- amounts already readable
+    off the public splits and corrections.  Turning them into "what is owed on
+    date D" is the prefix-sum, which stays seam-private
+    (:func:`app.services.balance_at._fold.sample_cumulative`).
+
+    Args:
+        walk: The loan's :class:`LoanLedgerWalk` (:func:`walk_loan_ledger`).
+
+    Returns:
+        ``[(visible_on, delta), ...]`` ascending by ``(visible_on, tag)``,
+        where a PAYMENT tags before an ANCHOR on a shared date -- mirroring the
+        walk's own tie-break (:func:`.merge_anchor_and_payment_events`), so
+        reading the list shows the same chronology the walk applied.  The
+        order within a date is immaterial to a prefix sum (addition commutes);
+        mirroring it keeps the two chronologies reading identically.
+    """
+    if not walk.anchor_corrections:
+        # No LoanParams -> no facts at all (walk_loan_ledger's N1 guard; a
+        # configured loan ALWAYS has its opening fact, per
+        # ``load_loan_anchor_facts``).  Nothing to date.
+        return []
+    # Tag 0 = payment, 1 = anchor: the same tie-break the walk applies, so a
+    # payment sharing an anchor's date reads before it here too.
+    tagged: list[tuple[date, int, Decimal]] = [
+        (
+            anchor_visible_on(correction.anchor.anchor_date),
+            1,
+            correction.anchor.anchor_balance - correction.owed_before,
+        )
+        for correction in walk.anchor_corrections
+    ] + [
+        (payment_visible_on(split.income_shadow), 0, -split.principal)
+        for split in walk.payment_splits
+    ]
+    tagged.sort(key=lambda step: (step[0], step[1]))
+    return [(visible_on, delta) for visible_on, _tag, delta in tagged]

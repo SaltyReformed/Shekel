@@ -26,7 +26,7 @@ Architecture:
 
 import logging
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 
 from app.extensions import db
@@ -98,10 +98,13 @@ logger = logging.getLogger(__name__)
 #
 # The remaining kwargs (``category_id`` / ``name`` / ``notes`` / ``is_override``)
 # move none of these, so they raise no reconcile.  ``paid_at`` is deliberately NOT
-# here: it moves the Step-5 walk's attribution INSTANT without changing any leg,
-# so a reconcile-to-target would write nothing and its self-heal would never fire;
-# a settled ``paid_at`` edit instead resyncs the two endpoint accounts' anchor
-# corrections directly (see ``update_transfer``, F1).  The reconcile is
+# here: it moves no leg AMOUNT, and an unsettled transfer has no postings to
+# re-date, so the set stays the cheap always-on pre-filter.  A SETTLED
+# ``paid_at`` edit IS posting-relevant since step E1a -- it moves the day every
+# posting counts from (the ``entry_date``, step C2's one clock) -- and
+# ``_run_posting_reconciles`` runs the full reconcile for that case explicitly
+# (the per-(period, date) reconcile re-dates the entries, finding N-13) plus the
+# two endpoint accounts' anchor-correction resync (F1).  The reconcile is
 # idempotent, so listing a field that did not move the effect is a harmless
 # no-op; this set is the cheap pre-filter that avoids a ledger round-trip on a
 # pure metadata edit.
@@ -196,6 +199,14 @@ class TransferSpec:  # pylint: disable=too-many-instance-attributes
             account names.
         due_date: Optional due date stored on the transfer and mirrored
             to both shadow transactions.
+        paid_at: Optional settle instant for a transfer created ALREADY
+            settled (plan step E1a): mirrored to both shadows exactly as
+            the update path's explicit ``paid_at`` is, with the same
+            default -- a born-settled transfer without one settled NOW
+            (the F-048 / C-22 rule).  Meaningless for an unsettled
+            status, so :func:`create_transfer` rejects that combination
+            loudly rather than recording a payment time for a payment
+            that has not happened.
     """
 
     user_id: int
@@ -210,6 +221,7 @@ class TransferSpec:  # pylint: disable=too-many-instance-attributes
     transfer_template_id: int | None = None
     name: str | None = None
     due_date: date | None = None
+    paid_at: datetime | None = None
 
 
 def create_transfer(spec: TransferSpec) -> Transfer:
@@ -263,6 +275,15 @@ def create_transfer(spec: TransferSpec) -> Transfer:
     _get_owned_scenario(spec.scenario_id, spec.user_id)
     _get_owned_category(spec.category_id, spec.user_id)
     _get_owned_transfer_template(spec.transfer_template_id, spec.user_id)
+    created_status = db.session.get(Status, spec.status_id)
+    if spec.paid_at is not None and not (
+        created_status is not None and created_status.is_settled
+    ):
+        raise ValidationError(
+            "paid_at is the settle instant of a transfer created already "
+            "settled; a transfer created with an unsettled status has not "
+            "been paid, so it cannot carry one."
+        )
 
     # ── Ref data lookups ───────────────────────────────────────────
     expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
@@ -305,6 +326,26 @@ def create_transfer(spec: TransferSpec) -> Transfer:
     )
     db.session.add(income_shadow)
     db.session.flush()
+
+    # ── Born-settled coherence (plan step E1a) ─────────────────────
+    # A transfer BORN settled used to book NO cash entry and carry no
+    # ``paid_at`` -- a settled effect the ledger never saw, which the
+    # checked-projection assert refuses the moment the loan syncs.  So the
+    # create chokepoint applies update_transfer's two settle rules: ``paid_at``
+    # is the caller's explicit instant or now() (the F-048 / C-22 defense --
+    # a transfer created settled settled at creation), and the posting
+    # reconcile runs (the cash entry + the loan genesis reconcile).
+    # ``created_status`` was loaded in the validation block, which also
+    # rejects a ``paid_at`` on an unsettled create before any row exists.
+    if created_status is not None and created_status.is_settled:
+        settled_ts = (
+            spec.paid_at if spec.paid_at is not None else db.func.now()
+        )
+        expense_shadow.paid_at = settled_ts
+        income_shadow.paid_at = settled_ts
+        db.session.flush()
+        posting_service.sync_transfer_postings(xfer, settled=True)
+        _sync_loan_postings_if_loan(xfer)
 
     log_event(
         logger, logging.INFO, EVT_TRANSFER_CREATED, BUSINESS,
@@ -436,23 +477,31 @@ def _reconcile_postings_after_update(xfer: Transfer, updates: dict[str, object])
       a settle / revert / amount / actual / period edit of a loan payment
       re-reconciles that loan's confirmed-payment splits (coupled on the running
       balance) and its opening / true-up anchor corrections.
-    * **Step-5 account-anchor resync on a settled ``paid_at`` edit (F1)**: a
-      ``paid_at`` change moves the walk's attribution INSTANT without changing
-      any leg, so the reconcile-to-target above writes nothing and its
-      effect-time self-heal never fires.  Resync the two endpoint accounts'
-      anchor corrections directly so a settled ``paid_at`` move cannot strand a
-      stale correction.  Only for a SETTLED transfer (a projected one posts
-      nothing); a no-op for a loan endpoint (the account walk skips amortizing
-      accounts).  ``pay_period_id`` needs no such branch -- it is in
-      ``_POSTING_RELEVANT_FIELDS``, so a period move reconciles R2-correctly and
-      self-heals via the cash reconcile above.  Fires on ANY settled ``paid_at``
-      edit, not only a pure one: on the common settle path (status + ``paid_at``
-      together) the reconcile's tail self-heal already covers both endpoints, so
-      these two idempotent walks are redundant there -- an accepted, safe cost.
-      It is deliberately NOT narrowed to ``not needs_reconcile``, because a
-      future COMBINED edit (e.g. ``amount`` + ``paid_at``) could move the
-      attribution in a way the delta-keyed self-heal does not cover; an
-      always-correct resync is the point of this seam.
+    * **Full reconcile on a settled ``paid_at`` edit too (E1a / N-13)**: a
+      ``paid_at`` change moves the day every posting counts from (its
+      ``entry_date``, step C2's one clock) without changing any leg amount, so
+      the per-period reconcile used to write nothing and the entries kept
+      their stale dates.  The reconcile is per-(period, DATE) now: the
+      old-dated entries reverse at their own date, the effect re-posts at the
+      new settle date, and the loan sync's checked-projection assert verifies
+      the result -- so the fold and the ledger cannot disagree about WHEN.
+    * **Step-5 account-anchor resync on a settled ``paid_at`` edit (F1)**:
+      resync the two endpoint accounts' anchor corrections so a settled
+      ``paid_at`` move cannot strand a stale anchor correction (their
+      reconcile is anchor-walk-derived, not delta-keyed off this transfer).
+      Only for a SETTLED transfer (a projected one posts nothing); a no-op for
+      a loan endpoint (the account walk skips amortizing accounts).
+      ``pay_period_id`` needs no such branch -- it is in
+      ``_POSTING_RELEVANT_FIELDS``, so a period move reconciles R2-correctly
+      and self-heals via the cash reconcile above.  Fires on ANY settled
+      ``paid_at`` edit, not only a pure one: on the common settle path (status
+      + ``paid_at`` together) the reconcile's tail self-heal already covers
+      both endpoints, so these two idempotent walks are redundant there -- an
+      accepted, safe cost.  It is deliberately NOT narrowed to
+      ``not needs_reconcile``, because a future COMBINED edit (e.g. ``amount``
+      + ``paid_at``) could move the attribution in a way the delta-keyed
+      self-heal does not cover; an always-correct resync is the point of this
+      seam.
 
     Args:
         xfer: The updated, flushed :class:`Transfer`.
@@ -463,7 +512,12 @@ def _reconcile_postings_after_update(xfer: Transfer, updates: dict[str, object])
     if not (needs_reconcile or paid_at_edited):
         return
     current_status = db.session.get(Status, xfer.status_id)
-    if needs_reconcile:
+    # A settled ``paid_at`` edit moves the day the event counts from (step
+    # C2's one clock), which since step E1a IS a posting-relevant change: the
+    # per-(period, date) reconcile reverses the stale-dated entry and re-posts
+    # at the new settle date (finding N-13), and the loan sync's
+    # checked-projection assert then verifies the ledger against the walk.
+    if needs_reconcile or (paid_at_edited and current_status.is_settled):
         posting_service.sync_transfer_postings(
             xfer, settled=current_status.is_settled,
         )

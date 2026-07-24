@@ -47,9 +47,12 @@ walk needs no fence (plan step D-fold).
 * :mod:`._events` -- the event stream: the loan's anchors and its settled
   payments, merged into one chronological order.  Reads no clock.
 * :mod:`._walk` -- the running-balance replay over that stream (the loan's FACTS:
-  per-payment splits and per-anchor corrections), and the payment-split view of
-  it.  Renamed from ``_fold`` at step D-fold, when the fold (the balance) left for
-  the seam and only the walk (the facts) remained.
+  per-payment splits and per-anchor corrections), the payment-split view of it,
+  and the visible-date re-key of its events (:func:`dated_deltas`, step E1a --
+  shared by the seam's fold and the posting writer's checked-projection assert
+  so neither carries its own copy of the one clock).  Renamed from ``_fold`` at
+  step D-fold, when the fold (the balance) left for the seam and only the walk
+  (the facts) remained.
 * :mod:`._visible` -- WHEN each fact becomes countable (the ONE clock), the
   owner's calendar, and the date-to-period locator those rules resolve against.
   Chronology only: every name here returns a ``date`` or a ``PayPeriod``, never a
@@ -77,6 +80,7 @@ from ._walk import (
     LoanAnchorCorrection,
     LoanLedgerWalk,
     compute_loan_payment_splits,
+    dated_deltas,
     walk_loan_ledger,
 )
 from ._split import (
@@ -101,6 +105,7 @@ __all__ = [
     "anchor_visible_on",
     "compute_loan_payment_splits",
     "confirmed_shadows_through",
+    "dated_deltas",
     "find_period_containing_date",
     "merge_anchor_and_payment_events",
     "owner_pay_periods",
