@@ -26,7 +26,6 @@ from app.routes.loan._helpers import (
 )
 from app.services import amortization_engine, balance_at, loan_resolver
 from app.services.amortization_engine import AmortizationSummary
-from app.services.loan_payment_service import confirmed_loan_view
 from app.services.recurring_transfer_query import loan_standing_extra
 from app.utils.auth_helpers import require_owner
 from app.utils.money import round_money
@@ -116,7 +115,11 @@ def _payoff_extra_payment_result(params, ctx, data, confirmed_view, extra_princi
     scenarios = loan_resolver.compute_payoff_scenarios(
         loan_inputs=_loan_inputs(params, ctx.loan),
         extra_monthly=extra,
-        as_of=date.today(),
+        # The read pass's pinned as-of, NOT a second ``date.today()``: the
+        # confirmed view threaded in below was built at ``ctx.balance_ctx.as_of``,
+        # and a midnight rollover between the two reads would splice a seed from
+        # one day onto a projection from the next (plan step E1d-b).
+        as_of=ctx.balance_ctx.as_of,
         confirmed_view=confirmed_view,
         extra_principal=extra_principal,
     )
@@ -260,13 +263,12 @@ def payoff_calculate(account_id):
         #
         # Read switch: read the genesis-ledger confirmed view ONCE and thread it
         # into the forward projection, so the payoff results project from the
-        # same real owed balance -- and chart the same ledger-derived confirmed
-        # history -- the loan card shows.  ``require_owner`` already gated
-        # ownership above; the scenario comes off the read pass's context (no
-        # second baseline lookup).
-        view = confirmed_loan_view(
-            params, ctx.balance_ctx.scenario_id, date.today(),
-        )
+        # same real owed balance -- and chart the same confirmed history -- the
+        # loan card shows.  Since plan step E1d-b that view is the seam's FOLD of
+        # the loan's recorded events, read off the pass's already-memoized walk,
+        # which is also what the loan card's own resolution was seeded with.
+        # ``require_owner`` already gated ownership above.
+        view = balance_at.confirmed_view(account, ctx.balance_ctx)
         # The loan's standing overpayment: the committed baseline this mode
         # previews additional extra on top of (step 5).
         standing_extra = loan_standing_extra(account_id, current_user.id)
@@ -511,16 +513,13 @@ def refinance_calculate(account_id):
     # side reads the pure-contractual ``original_forward`` slice -- NOT the
     # committed schedule (plan-aware since the resolver seam) -- against a
     # from-today minimum-payment refi.  ``original_forward`` is override- and
-    # extra-free regardless of inputs; the confirmed view seeds it from the real
-    # owed balance the loan card shows.
-    view = confirmed_loan_view(
-        params, ctx.balance_ctx.scenario_id, date.today(),
-    )
+    # extra-free regardless of inputs; the seam's confirmed view (the fold, plan
+    # step E1d-b) seeds it from the real owed balance the loan card shows.
     scenarios = loan_resolver.compute_payoff_scenarios(
         loan_inputs=_loan_inputs(params, ctx.loan),
         extra_monthly=Decimal("0.00"),
-        as_of=date.today(),
-        confirmed_view=view,
+        as_of=ctx.balance_ctx.as_of,
+        confirmed_view=balance_at.confirmed_view(account, ctx.balance_ctx),
     )
 
     comparison = _build_refinance_comparison(

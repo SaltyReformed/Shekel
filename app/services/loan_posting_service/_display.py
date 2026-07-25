@@ -123,10 +123,11 @@ def confirmed_loan_payment_history(
 ) -> list[LoanPaymentHistoryRow] | None:
     """Return a loan's confirmed payments split into their real economic parts.
 
-    One :class:`LoanPaymentHistoryRow` per confirmed payment whose pay period has
-    begun by *as_of* -- the same confirmed cut as
-    :func:`app.services.loan_posting_service.confirmed_loan_history_rows` and the
-    balance readers, so the table agrees with the balance and schedule --
+    One :class:`LoanPaymentHistoryRow` per confirmed payment whose SETTLED date
+    has arrived by *as_of* (plan step C2's one clock, applied through
+    :func:`~app.services.loan_ledger.confirmed_shadows_through`) -- the same
+    confirmed cut the balance readers and the seam's confirmed view apply, so the
+    table agrees with the balance and the schedule --
     chronological, each carrying the ACTUAL cash paid and its real principal /
     interest / escrow split read from the posted ledger legs, never the
     schedule's contractual replay.
@@ -141,7 +142,7 @@ def confirmed_loan_payment_history(
     Returns ``None`` when the loan has no :class:`LoanParams` or no OPENING
     posting in the scenario (unconfigured / un-backfilled), so the caller hides
     the section rather than showing a misleading empty table -- the same fallback
-    contract as ``confirmed_loan_history_rows``.
+    contract as the balance reader beside it.
 
     Reads only -- no writes, no commit.
 
@@ -183,8 +184,8 @@ def confirmed_loan_payment_history(
         loan_account_id, scenario_id, LedgerAccountKindEnum.LOAN_ESCROW,
     )
     # Sorted by the INSTALLMENT the payment satisfies, matching how the ledger
-    # history reader (:func:`confirmed_loan_history_rows`) orders its rows and
-    # how the amortization table reads.  The shadows arrive in PAY-PERIOD order,
+    # seam's confirmed view orders its rows and how the amortization table
+    # reads.  The shadows arrive in PAY-PERIOD order,
     # which is a different sequence once settlement timing is a first-class case:
     # a payment pre-paid for a later installment sits in an earlier period than
     # one paid late for an earlier installment, so iterating the shadows verbatim

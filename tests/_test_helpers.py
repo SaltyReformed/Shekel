@@ -1508,6 +1508,49 @@ def settle_instant_on(day):
     return _real_datetime.combine(day, time(12, 0), tzinfo=timezone.utc)
 
 
+def seam_confirmed_view(loan_account_id, scenario_id, as_of):
+    """Return a loan's seam CONFIRMED view at an explicit scenario and as-of.
+
+    The walk-built :class:`~app.services.loan_resolver.ConfirmedLedgerView`
+    (:func:`app.services.balance_at.confirmed_view`) -- the balance the loan's
+    recorded events fold to, plus its confirmed schedule rows -- which since plan
+    step E1d-b is what the resolver's confirmed slice seeds from, replacing the
+    deleted posted-ledger reader ``loan_payment_service.confirmed_loan_view``.
+
+    Several suites build an INDEPENDENT ``compute_payoff_scenarios`` reference to
+    grade a seam figure against, and every one of them needs this same seed: a
+    reference composed WITHOUT it would be the un-seeded anchor replay, which is a
+    different trajectory (it is blind to how much cash a payment actually moved).
+    Sharing one helper is what keeps those references honest and identical.
+
+    Pins the scenario and the as-of EXPLICITLY rather than through
+    ``BalanceContext.build``, because the callers are frozen-clock or
+    named-scenario tests whose baseline lookup must not be re-derived.
+
+    Args:
+        loan_account_id: The loan account whose confirmed view to build.
+        scenario_id: The scenario to scope the walk to.
+        as_of: The evaluation date (the resolver's NOW).
+
+    Returns:
+        The ``ConfirmedLedgerView``, or ``None`` when the seam withholds one (not
+        a configured loan, no scenario, a future date, or not yet originated).
+    """
+    # Pylint: import-outside-toplevel -- helper-local, matching this module's
+    # convention of importing app symbols inside the helper that needs them.
+    from app.extensions import db  # pylint: disable=import-outside-toplevel
+    from app.models.account import Account  # pylint: disable=import-outside-toplevel
+    from app.models.scenario import Scenario  # pylint: disable=import-outside-toplevel
+    from app.services import balance_at  # pylint: disable=import-outside-toplevel
+
+    loan = db.session.get(Account, loan_account_id)
+    return balance_at.confirmed_view(loan, balance_at.BalanceContext(
+        user_id=loan.user_id,
+        scenario=db.session.get(Scenario, scenario_id),
+        as_of=as_of,
+    ))
+
+
 def create_transfer(
     seed_user, db_session, from_account, to_account, period,
     amount=Decimal("100.00"), *, due_date=None, name=None, scenario=None,

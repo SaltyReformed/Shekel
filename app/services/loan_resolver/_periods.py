@@ -234,7 +234,7 @@ class ConfirmedLedgerView:
     the same one-value-threaded-once lesson the C8 seam recorded.
 
     Produced only by
-    :func:`app.services.loan_payment_service.confirmed_loan_view` (the single
+    :func:`app.services.balance_at.confirmed_view` (the single
     reader call site); the pure resolver consumes it blind.
 
     Attributes:
@@ -243,8 +243,9 @@ class ConfirmedLedgerView:
             Becomes the schedule composer's forward starting balance (the
             loan's displayed balance folds in the ``balance_at`` seam, plan
             step D2a).
-        history_rows: The ledger-derived confirmed schedule rows
-            (:func:`app.services.loan_posting_service.confirmed_loan_history_rows`),
+        history_rows: The record-derived confirmed schedule rows (the seam's
+            :func:`app.services.balance_at.confirmed_view`, folded from the loan's
+            walk since plan step E1d-b),
             chronological, each carrying its payment's ACTUAL principal /
             interest and the real running balance.  Becomes the confirmed
             slice of every schedule surface (``LoanState.schedule``,

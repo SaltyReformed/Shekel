@@ -185,22 +185,24 @@ class LoanAnchorSourceEnum(enum.Enum):
 
     Distinguishes the origination event that every loan carries from
     user-initiated balance true-ups appended through the dashboard
-    edit flow, and from the tracking-start opening a mid-life-imported
-    loan records so its confirmed ledger opens at a recent known
-    balance instead of the fictional origination.  Values match
-    ``ref.loan_anchor_sources.name``.
+    edit flow, and from the tracking-start assertion a mid-life-imported
+    loan records so its ledger has a recent verified balance to reset
+    at.  Values match ``ref.loan_anchor_sources.name``.
     """
 
     ORIGINATION = "origination"
     USER_TRUEUP = "user_trueup"
-    # A mid-life loan's opening: the operator started tracking an
-    # already-amortizing loan and recorded its real balance as of a
-    # date at/before the first recorded payment.  When present it
-    # SYNTHESIZES the loan's opening anchor (is_opening) in place of the
-    # origination, so the confirmed genesis ledger opens at that
-    # balance/date (the origination fields stay on LoanParams for the
-    # amortization schedule / projection only).  See
-    # ``app.services.loan_loaders.load_loan_anchor_facts``.
+    # A mid-life loan's first tracked balance: the operator started
+    # tracking an already-amortizing loan and recorded its real balance
+    # as of a date at/before the first recorded payment.  It is an
+    # ordinary balance ASSERTION (is_opening=False) that RESETS the
+    # running balance at its own date, exactly like a user true-up.
+    # It does NOT open the ledger: since plan step C1 the loan's ONE
+    # opening is ALWAYS the synthesized ORIGINATION, because opening at
+    # a mid-life tracking start read the loan out of existence for its
+    # whole pre-tracking window (finding B-11, a false $0.00 that made
+    # the year-end summary report negative principal paid on real data).
+    # See ``app.services.loan_loaders.load_loan_anchor_facts``.
     TRACKING_START = "tracking_start"
 
 

@@ -17,10 +17,11 @@ What remains, each named with its reason and its resolving step:
 * **W9906, ONE call surface** -- the two genesis posting readers
   (:data:`_LOAN_LEDGER_READER_PRODUCERS`).  They answer balance-at-T from the
   WRITE cluster's own table, so they cannot be private to the read seam; the
-  fence funnels them to their defining package and the one injection seam.
-  Resolves at plan step E1: once the resolver's confirmed slice seeds from the
-  WALK (source facts) instead of the posting view, ``confirmed_loan_view``
-  dies, the readers go package-private behind W9910, and this surface deletes.
+  fence funnels them to their defining package, which since plan step E1d-b is
+  their ONLY caller (the resolver's confirmed slice seeds from the WALK now, and
+  ``confirmed_loan_view`` -- the injection seam this surface existed for -- is
+  deleted).  It deletes whole at plan step E1e, when the readers go
+  package-private behind W9910.
 * **W9909, the completeness registry on the PUBLIC ingredient packages**
   (:data:`_FENCED_MODULE_RULINGS`).  "Is this new public function a balance
   producer?" is a human judgment no AST rule can decide, and these packages
@@ -55,15 +56,15 @@ from ._common import _called_name_in, _module_in_allowlist
 # (the D3 residue), named with its reason and resolving step: they answer
 # balance-at-T from the WRITE cluster's own postings table, so they cannot be
 # private to the read seam, and the fence funnels them to their defining
-# package plus the one injection seam.  They DELETE at plan step E1: seed the
-# resolver's confirmed slice from the WALK (source facts) instead of the
-# posting view, and ``confirmed_loan_view`` dies, the readers' only callers
-# become the write cluster's own reconcile/oracle internals, they go
-# package-private behind W9910, and this surface goes with them.
-# NOT listed, by the standing SRP line:
-# ``confirmed_loan_history_rows`` (rich schedule-row detail the view seam
-# composes, the ledger analog of ``resolve_loan``).  The paid-in-year tax / chip
-# figures are no longer here at all -- they fold from the loan ledger in the
+# package.  Plan step E1d-b seeded the resolver's confirmed slice from the WALK
+# (source facts) instead of the posting view and DELETED ``confirmed_loan_view``,
+# so they now have NO caller in ``app/`` at all -- only the reconciliation
+# oracle's independent window onto the postings still reads them.  At plan step
+# E1e they go package-private behind W9910 and this surface goes with them.
+# ``confirmed_loan_history_rows`` was NOT listed here, by the standing SRP line
+# (rich schedule-row detail, not a balance-at-T); plan step E1d-b DELETED it
+# outright when the confirmed rows cut over to the walk.  The paid-in-year tax /
+# chip figures are no longer here at all -- they fold from the loan ledger in the
 # balance seam (steps C3c / C6c).
 #
 # The loan FOLD is no longer here either (plan step D-fold): ``fold_loan_balances``
@@ -82,17 +83,18 @@ _LOAN_LEDGER_READER_PRODUCERS = frozenset({
     "confirmed_loan_balance_at",
     "confirmed_loan_balance_map",
 })
-# Who may call the two posting readers: only ``loan_posting_service`` (the
-# defining package, whose sync/oracle internals compose its own readers) and
-# ``loan_payment_service`` (whose ``confirmed_loan_view`` is the read switch's one
-# injection seam).  The seam and the ``loan_ledger`` leaf both came OFF this
-# allowlist at plan step D-fold: the seam reads a loan's balance through the FOLD
-# now, not the posting readers (measured -- ``confirmed_loan_balance_at``'s only
-# app caller outside its own package is ``loan_payment_service``), and the leaf
-# never read the postings.  A pure TIGHTENING.
+# Who may call the two posting readers: ONLY ``loan_posting_service``, the
+# defining package, whose sync / oracle internals compose its own readers.  The
+# seam and the ``loan_ledger`` leaf came off at plan step D-fold (the seam reads a
+# loan's balance through the FOLD, and the leaf never read the postings);
+# ``loan_payment_service`` came off at step E1d-b, when the resolver's confirmed
+# slice cut over to the walk and ``confirmed_loan_view`` -- the read switch's one
+# injection seam, and this allowlist's whole reason -- was DELETED.  Every removal
+# has been a pure TIGHTENING, and the surface now has ZERO callers outside its own
+# package: it deletes whole at plan step E1e, when the readers go package-private
+# behind W9910.
 _LOAN_LEDGER_READER_MODULES = frozenset({
     "app.services.loan_posting_service",
-    "app.services.loan_payment_service",
 })
 
 # The loan RESOLVER call-fence and the context-memo handle fence are GONE (plan
@@ -102,8 +104,9 @@ _LOAN_LEDGER_READER_MODULES = frozenset({
 # hand back schedule detail of the same sanctioned class ``debt_schedule_rows``
 # already exposes.  Plan step E1d-a then moved that whole read INSIDE the seam
 # as the private ``balance_at._resolution``, re-exported nowhere, so W9910 is the
-# only gate it needs and its completeness scope deleted with it; the context memo
-# went with it, leaving ``BalanceContext.loan_walk``, which hands back the leaf's
+# only gate it needs and its completeness scope deleted with it (its
+# ``resolve_loan_seeded`` half folded away at E1d-b); the context memo went with
+# it, leaving ``BalanceContext.loan_walk``, which hands back the leaf's
 # public FACTS (``walk_loan_ledger`` is a ruled NON-producer).  A consumer that
 # wants a loan's balance still has exactly one way to get it --
 # ``balance_at.balance_at`` -- but by construction now, not by list.
@@ -174,14 +177,17 @@ _LOAN_LEDGER_DEFINING_MODULES = frozenset({
     "app.services.loan_ledger",
     "app.services.loan_posting_service",
 })
-# The loan-payment view module (plan step D3, from its adversarial review):
-# the ONE module the reader allowlist above admits beyond the defining
-# package.  Privileged AND public AND -- until this entry -- completeness
-# UNSCOPED: a documented public wrapper ``loan_balance_for_tile()`` returning
-# ``confirmed_loan_balance_at(...)`` rated 10.00/10 under the full fail-on set
-# (the N-28 shape on the single most reader-privileged module).  Pre-existing,
-# not a D3 loosening -- but D3 is the fence-truth step, so the gap closes here
-# rather than being claimed closed.
+# The loan-payment LOADER module (plan step D3, from its adversarial review).
+# Its PRIVILEGE is gone -- plan step E1d-b took it off the reader allowlist above
+# with ``confirmed_loan_view`` -- but the scope STAYS, because privilege was never
+# the only reason: this is a public module holding every ingredient of a loan
+# balance (the payment feed, the escrow-netted amounts, the contractual P&I, the
+# whole loaded ``LoanContext``) OUTSIDE W9910's protection, exactly like
+# ``loan_ledger`` and the ``loan_resolver`` tier beside it.  The measured shape
+# that put it here: a documented public wrapper ``loan_balance_for_tile()``
+# returning ``confirmed_loan_balance_at(...)`` rated 10.00/10 under the full
+# fail-on set (the N-28 shape).  Dropping the scope now would be a LOOSENING
+# bundled with E1d-b's tightening, which is the D1b lesson.
 _LOAN_PAYMENT_SEAM_MODULES = frozenset({
     "app.services.loan_payment_service",
 })
@@ -372,11 +378,12 @@ _FENCED_MODULE_RULINGS = {
     # this check exists to kill.
     "app.services.loan_posting_service": (
         _LOAN_LEDGER_READER_PRODUCERS, frozenset({
-            # Rich row detail the view seam composes (the ledger analog of
-            # ``resolve_loan``).  Rows, not a balance-at-T.  (The yearly tax /
-            # paid-YTD figures folded off the postings onto the loan ledger at
-            # steps C3c / C6c, so this package no longer exposes them.)
-            "confirmed_loan_history_rows",
+            # Rich row detail: the payment-history table's per-payment cash /
+            # principal / interest / escrow split.  Rows, not a balance-at-T.
+            # (Its schedule-row sibling ``confirmed_loan_history_rows`` was
+            # deleted at plan step E1d-b; the yearly tax / paid-YTD figures folded
+            # off the postings onto the loan ledger at steps C3c / C6c, so this
+            # package no longer exposes either.)
             "confirmed_loan_payment_history",
             # The anchor EVENT rows (the source documents behind a balance), not
             # the balance itself.
@@ -422,10 +429,14 @@ _FENCED_MODULE_RULINGS = {
         # to be born to be reachable, and W9910 owns that.
         "loan_walk",
     })),
-    # The loan-payment view module (:data:`_LOAN_PAYMENT_SEAM_MODULES`): the
-    # one reader-allowlisted module outside the defining package, so a public
-    # balance wrapper born here would be the privileged N-28 shape -- every
-    # public name must say what it is.
+    # The loan-payment LOADER module (:data:`_LOAN_PAYMENT_SEAM_MODULES`).  It
+    # was "the one reader-allowlisted module outside the defining package" until
+    # plan step E1d-b took it off that allowlist with ``confirmed_loan_view``; the
+    # scope stays on the surviving ground (see the constant's comment): a PUBLIC
+    # module holding every ingredient of a loan balance -- the payment feed, the
+    # escrow-netted amounts, the contractual P&I, the whole loaded
+    # ``LoanContext`` -- outside W9910's protection, so a public balance wrapper
+    # born here would still be the N-28 shape.
     "app.services.loan_payment_service": (frozenset(), frozenset({
         # The unified loan-context loader: params, payments, rate changes,
         # escrow lines -- inputs a resolution is built FROM, no balance.
@@ -438,14 +449,6 @@ _FENCED_MODULE_RULINGS = {
         # PaymentRecord adaptation for the amortization engine -- shaping, no
         # figure of any kind.
         "prepare_payments_for_engine",
-        # The read switch's ONE sanctioned view composer: it bundles the
-        # ledger reader's balance with the ledger history rows for the
-        # schedule composer's seeding (its ``balance`` field is the composer's
-        # forward starting balance, plan step D2a).  It is the reason this
-        # module sits on the reader allowlist at all, and it DIES at plan step
-        # E1 (the resolver's confirmed slice seeds from the walk); routes that
-        # read it today are the loan detail cluster's own surfaces.
-        "confirmed_loan_view",
         # A projected payment's LIVE cash (P&I + current escrow + standing
         # extra) -- what a payment is worth, not what an account owes.
         "live_loan_payment_amount",
@@ -583,12 +586,11 @@ class ShekelBalanceSeamChecker(BaseChecker):
             "posting readers (confirmed_loan_balance_at / "
             "confirmed_loan_balance_map): they answer balance-at-T from the "
             "WRITE cluster's own table, so they cannot be private to the read "
-            "seam, and only their defining loan_posting_service package and "
-            "loan_payment_service (whose confirmed_loan_view is the read "
-            "switch's single injection seam) may call them. Any other caller "
-            "is re-inventing the read switch. This surface deletes at plan "
-            "step E1, when the resolver's confirmed slice seeds from the walk "
-            "and the readers go package-private. The fence also binds at the "
+            "seam, and only their defining loan_posting_service package "
+            "may call them. Any other caller is re-inventing the read switch, "
+            "which plan step E1d-b retired: the resolver's confirmed slice "
+            "seeds from the walk now. This surface deletes at plan step E1e, "
+            "when the readers go package-private. The fence also binds at the "
             "import: a non-allowlisted module importing a reader by name "
             "(from ... import confirmed_loan_balance_at as bal) is flagged at "
             "the ImportFrom, closing the aliased-import evasion of call-site "

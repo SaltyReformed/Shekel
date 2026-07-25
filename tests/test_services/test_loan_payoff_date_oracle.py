@@ -63,6 +63,7 @@ from tests._test_helpers import (
     create_loan_account,
     insert_trueup_event,
     loan_params_for,
+    seam_confirmed_view,
 )
 
 _PRINCIPAL = Decimal("300000.00")
@@ -237,8 +238,8 @@ def _committed_payoff(loan_params, scenario_id, as_of, extra):
         ),
         extra_monthly=Decimal("0.00"),
         as_of=as_of,
-        confirmed_view=loan_payment_service.confirmed_loan_view(
-            loan_params, scenario_id, as_of,
+        confirmed_view=seam_confirmed_view(
+            loan_params.account_id, scenario_id, as_of,
         ),
         extra_principal=extra,
     )

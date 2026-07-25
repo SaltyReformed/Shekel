@@ -171,6 +171,7 @@ from tests._test_helpers import (
     load_migration_module,
     loan_correction_entries,
     loan_income_shadow,
+    seam_confirmed_view,
     settle_instant_on,
     SPLIT_LOAN,
 )
@@ -236,6 +237,29 @@ def _make_loan(
         origination_date=_ORIGINATION_DATE, name=name,
         escrow_annual=escrow_annual, payment_day=payment_day,
     )
+
+
+def _confirmed_rows_at(loan_account_id, scenario_id, as_of):
+    """Return the seam's CONFIRMED schedule rows for a loan at *as_of*.
+
+    The walk-built confirmed view's rows (:func:`seam_confirmed_view`), which
+    since plan step E1d-b are the confirmed slice of the loan's resolved schedule
+    -- and, before it, were the deleted ``confirmed_loan_history_rows`` read of
+    the posted ledger.  Pinned at an explicit scenario and as-of for the same
+    reason :func:`_resolved_at` is.
+
+    Args:
+        loan_account_id: The loan account whose confirmed rows to read.
+        scenario_id: The scenario to scope to.
+        as_of: The display boundary.
+
+    Returns:
+        The chronological confirmed ``AmortizationRow`` list, or ``None`` when
+        the seam has no confirmed view for this loan (not configured, no
+        baseline, or not yet originated).
+    """
+    view = seam_confirmed_view(loan_account_id, scenario_id, as_of)
+    return None if view is None else view.history_rows
 
 
 def _resolved_at(loan_account_id, scenario_id, as_of):
@@ -1636,64 +1660,29 @@ _LEDGER_MODEL_NAMES = tuple(name.rsplit(".", 1)[-1] for name in _LEDGER_MODEL_MO
 # the fence by re-exporting the model name off the package.
 _LEDGER_MODEL_CLASS_NAMES = ("Posting", "JournalEntry", "LedgerAccount")
 
-# The ``loan_payment_service`` functions permitted to read the posted ledger: the
-# read-switch seam (the sole call sites of the confirmed-ledger readers).  Every
-# OTHER function in that module is on, or feeds, the resolver reference and must
-# stay ledger-free -- so the function-granularity fence holds these out and scans
-# the rest.  A newly added function defaults into the SCANNED set (the safe
-# polarity): a ledger read wired into a resolver-feeding loader fails the fence.
-_LEDGER_READ_SWITCH_FUNCTIONS = frozenset({
-    "confirmed_loan_view",
-})
-
-
 def _resolver_stack_modules() -> list:
     """Return every FILE-fenced module the un-seeded resolver reference is built from.
 
-    ``loan_loaders`` (the input loaders) and the whole ``loan_resolver`` package,
-    its submodules discovered dynamically so a newly added one is fenced
-    automatically.  These are the pure resolver-support modules
-    :func:`_resolver_balance` runs through; none has any legitimate reason to read
-    the posted ledger, so each is scanned whole.  The mixed ``loan_payment_service``
-    is fenced separately, at function granularity, by
-    :func:`_loan_payment_service_resolver_feeding_source`.
+    ``loan_loaders`` (the input loaders), ``loan_payment_service`` (the unified
+    context loader), and the whole ``loan_resolver`` package, its submodules
+    discovered dynamically so a newly added one is fenced automatically.  These are
+    the resolver-support modules :func:`_resolver_balance` runs through; NONE has
+    any legitimate reason to read the posted ledger, so each is scanned WHOLE.
+
+    ``loan_payment_service`` joined them at plan step E1d-b: it held the read
+    switch's ``confirmed_loan_view`` until then, which is why it was fenced at
+    function granularity behind a hand-written allowlist instead (review M-1).
+    The confirmed slice seeds from the walk now, that function is deleted, and the
+    allowlist went with it -- so the exemption is closed by STRUCTURE, and a
+    ledger import added anywhere in the module (top-level or in-function) is
+    caught.
     """
-    modules = [loan_loaders, loan_resolver]
+    modules = [loan_loaders, loan_payment_service, loan_resolver]
     for info in pkgutil.iter_modules(loan_resolver.__path__):
         modules.append(
             importlib.import_module(f"app.services.loan_resolver.{info.name}")
         )
     return modules
-
-
-def _loan_payment_service_resolver_feeding_source() -> str:
-    """Return ``loan_payment_service`` source MINUS its read-switch functions.
-
-    :func:`_resolver_balance` builds the resolver reference through
-    ``loan_payment_service.load_loan_context``, so that module is on the resolver's
-    path -- but it is MIXED: its read-switch functions
-    (:data:`_LEDGER_READ_SWITCH_FUNCTIONS`) read the posted ledger by design, so the
-    file-granularity fence cannot cover the whole module without flagging those.
-    Excise exactly those functions' source (so their legitimate lazy ledger imports
-    are not scanned) and return the remainder -- the module's top-level imports plus
-    ``load_loan_context`` and its sibling loaders (``get_payment_history`` /
-    ``compute_contractual_pi`` / ``prepare_payments_for_engine`` and their local
-    helpers) -- so the AST import fence can prove THEY stay ledger-free (review M-1).
-    Excising by source-segment (not by name-scan) keeps top-level imports in scope,
-    so a ledger import added at module top is caught too, not only an in-function one.
-    """
-    module_source = inspect.getsource(loan_payment_service)
-    tree = ast.parse(module_source)
-    scanned = module_source
-    for node in tree.body:
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        if node.name not in _LEDGER_READ_SWITCH_FUNCTIONS:
-            continue
-        segment = ast.get_source_segment(module_source, node)
-        if segment:
-            scanned = scanned.replace(segment, "")
-    return scanned
 
 
 def _imports_a_ledger_model(source: str) -> bool:
@@ -1807,11 +1796,10 @@ class TestResolverIsLedgerFree:
     def test_resolver_stack_imports_no_ledger_module(self):
         """No code the resolver reference runs through imports a posted-ledger module.
 
-        Runs :func:`_ledger_imports_in_source` over each FILE-fenced resolver-support
-        module (``loan_loaders`` + the ``loan_resolver`` package) AND over
-        ``loan_payment_service``'s resolver-feeding source (``load_loan_context`` and
-        its sibling loaders; the read-switch functions that legitimately read the
-        ledger are held out -- review M-1).  Any hit is a resolver-reference code
+        Runs :func:`_ledger_imports_in_source` over each FILE-fenced
+        resolver-support module -- ``loan_loaders``, ``loan_payment_service``, and
+        the ``loan_resolver`` package, every one of them scanned WHOLE since plan
+        step E1d-b closed the last exemption.  Any hit is a resolver-reference code
         unit reaching for the ledger, which would make the parallel run a tautology.
         """
         offenders = {}
@@ -1819,53 +1807,46 @@ class TestResolverIsLedgerFree:
             hits = _ledger_imports_in_source(inspect.getsource(module))
             if hits:
                 offenders[module.__name__] = hits
-        feeding_hits = _ledger_imports_in_source(
-            _loan_payment_service_resolver_feeding_source()
-        )
-        if feeding_hits:
-            offenders["app.services.loan_payment_service (resolver-feeding)"] = (
-                feeding_hits
-            )
         assert not offenders, (
             f"the resolver reference imported posted-ledger modules {offenders} -- "
             f"the parallel-run oracle would become a tautology (review M4 / M-1)"
         )
 
-    def test_loan_payment_service_function_fence_is_scoped_and_bites(self):
-        """The ``loan_payment_service`` function fence scans loaders, spares the reads.
+    def test_loan_payment_service_is_fenced_whole_and_the_fence_bites(self):
+        """``loan_payment_service`` is scanned WHOLE, with no exemption left.
 
-        Non-vacuity for the M-1 extension.  The mixed module is fenced at function
-        granularity, so this proves the scoping is correct AND that the fence has a
-        genuine target (it is not passing because the module is trivially
-        ledger-free or because the source extraction returned nothing):
+        Non-vacuity for the fence's simplification at plan step E1d-b.  The module
+        used to be MIXED -- its resolver-feeding loaders had to stay ledger-free
+        while ``confirmed_loan_view`` read the ledger by design -- so it was fenced
+        at function granularity behind a hand-written allowlist (review M-1).  The
+        confirmed slice seeds from the WALK now and that function is deleted, so
+        the module is ledger-free whole and the allowlist is gone.  This proves the
+        replacement is real and not merely quieter:
 
-        * the resolver-feeding loaders ARE in scope (``load_loan_context`` and its
-          siblings appear in the scanned source);
-        * the read-switch functions -- which read the ledger by design -- are held
-          OUT (their source is excised);
-        * scanning the WHOLE module (read-switch functions included) DOES surface a
-          ledger import, while the resolver-feeding remainder surfaces none -- so the
-          fence passes because the loaders are genuinely ledger-free, exactly around
-          a real ledger read.
+        * the module IS in the file-fenced set (so it is scanned at all);
+        * its resolver-feeding loaders are genuinely in that scanned source (the
+          fence has the target it always had, not an emptied one);
+        * no read-switch function survives to need an exemption;
+        * and the scanner BITES on that source -- a ledger import spliced into it
+          is caught -- so the green result above means "ledger-free", not "not
+          looking".
         """
-        feeding = _loan_payment_service_resolver_feeding_source()
-        # The resolver-feeding loaders are in scope.
-        assert "def load_loan_context" in feeding
-        assert "def get_payment_history" in feeding
-        assert "def prepare_payments_for_engine" in feeding
-        # The read-switch reader (permitted to read the ledger) is held out; the
-        # seeding wrappers moved into ``balance_at._resolution`` (see the
-        # module comment).
-        assert "def confirmed_loan_view" not in feeding
-        assert "def resolve_loan_seeded" not in inspect.getsource(
-            loan_payment_service
-        )
-        # The module really does read the ledger somewhere, so the fence has a
-        # genuine target: the whole module trips it; the feeding remainder does not.
+        assert loan_payment_service in _resolver_stack_modules()
+        source = inspect.getsource(loan_payment_service)
+        # The resolver-feeding loaders are in scope, whole-module.
+        assert "def load_loan_context" in source
+        assert "def get_payment_history" in source
+        assert "def prepare_payments_for_engine" in source
+        # No read-switch function survives -- there is nothing left to exempt.
+        assert "def confirmed_loan_view" not in source
+        assert "def resolve_loan_seeded" not in source
+        # Genuinely ledger-free...
+        assert not _ledger_imports_in_source(source)
+        # ...and the scanner would say so if it were not: splicing in the exact
+        # import the deleted read switch used to carry trips the fence.
         assert _ledger_imports_in_source(
-            inspect.getsource(loan_payment_service)
-        ), "expected loan_payment_service's read-switch functions to import the ledger"
-        assert not _ledger_imports_in_source(feeding)
+            source + "\nfrom app.services import loan_posting_service\n"
+        ), "the ledger-import scanner failed to bite on a real ledger import"
 
     def test_ledger_import_tokens_cover_every_ledger_reader(self):
         """The token denylist catches every real posted-ledger reader module.
@@ -2489,14 +2470,13 @@ class TestReaderParallelRunAgainstResolver:
             assert ledger == resolver == reader
             _assert_loan_reconciles(loan, scenario_id, _AS_OF)
 
-            # Attribution, DISPLAY rows: the reader keeps BOTH rows at the true
-            # February due date; the resolver replay redistributes the second to
-            # March (inlined -- the row-date lists ARE the assertion, not locals).
+            # Attribution, DISPLAY rows: the confirmed view keeps BOTH rows at the
+            # true February due date; the resolver replay redistributes the second
+            # to March (inlined -- the row-date lists ARE the assertion, not
+            # locals).
             assert [
                 row.payment_date
-                for row in loan_posting_service.confirmed_loan_history_rows(
-                    loan.id, scenario_id, _AS_OF,
-                )
+                for row in _confirmed_rows_at(loan.id, scenario_id, _AS_OF)
             ] == [date(2026, 2, 1), date(2026, 2, 1)]
             ctx = loan_payment_service.load_loan_context(
                 loan.id, scenario_id, params,
@@ -2619,8 +2599,9 @@ class TestReadSwitchProductionPath:
 
         The history read switch: ``resolve_loan_bundle``'s schedule -- the
         amortization table, the chart's history prefix, the date-precise
-        ``balance_at`` walk -- now carries the LEDGER-derived confirmed rows,
-        equal to ``confirmed_loan_history_rows`` verbatim.  Off-schedule (an
+        ``balance_at`` walk -- carries the RECORD-derived confirmed rows, equal to
+        the seam's own ``confirmed_view`` rows verbatim (the walk-built view since
+        plan step E1d-b; the posted-ledger reader it replaced before that).  Off-schedule (an
         EXTRA $2,000 payment on the $100,000 balance: interest 500.00, real
         principal 1,500.00, balance 98,500.00) the row shows the ACTUAL
         economics, while the un-seeded replay's row still shows the SCHEDULED
@@ -2641,10 +2622,8 @@ class TestReadSwitchProductionPath:
             assert resolved is not None, "configured loan must resolve"
             state = resolved.state
             confirmed_rows = [r for r in state.schedule if r.is_confirmed]
-            assert confirmed_rows == (
-                loan_posting_service.confirmed_loan_history_rows(
-                    loan.id, scenario_id, _AS_OF,
-                )
+            assert confirmed_rows == _confirmed_rows_at(
+                loan.id, scenario_id, _AS_OF,
             )
             (row,) = confirmed_rows
             assert row.interest == Decimal("500.00")
@@ -2767,9 +2746,7 @@ class TestLatePaidPaymentDating:
                 2026, 3, 1,
             )
 
-            rows = loan_posting_service.confirmed_loan_history_rows(
-                loan.id, scenario_id, _AS_OF,
-            )
+            rows = _confirmed_rows_at(loan.id, scenario_id, _AS_OF)
             assert [row.payment_date for row in rows] == [date(2026, 2, 1)]
 
             history = loan_posting_service.confirmed_loan_payment_history(

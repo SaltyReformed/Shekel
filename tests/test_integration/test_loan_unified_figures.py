@@ -43,6 +43,7 @@ from tests._test_helpers import (
     create_loan_account,
     freeze_today,
     loan_params_for,
+    seam_confirmed_view,
 )
 
 
@@ -603,7 +604,7 @@ def _add_recurring_payment_with_extra(seed_user, loan_account, extra):
     1:1 ``loan_payment_settings`` row carries ``derive_from_loan`` plus the
     standing overpayment.  :func:`recurring_transfer_query.loan_standing_extra`
     reads it, so the resolver seam picks it up once step 8 threads it through
-    ``resolve_loan_seeded``.
+    the seam's whole-loan read.
     """
     user = seed_user["user"]
     rule = RecurrenceRule(
@@ -682,8 +683,8 @@ def test_standing_extra_payoff_consistent_across_surfaces(
             ),
             extra_monthly=Decimal("0.00"),
             as_of=today,
-            confirmed_view=loan_payment_service.confirmed_loan_view(
-                loan_params, scenario_id, today,
+            confirmed_view=seam_confirmed_view(
+                loan_params.account_id, scenario_id, today,
             ),
             extra_principal=extra,
         )
@@ -795,8 +796,8 @@ def test_standing_extra_folds_past_the_shadow_horizon(
             ),
             extra_monthly=Decimal("0.00"),
             as_of=today,
-            confirmed_view=loan_payment_service.confirmed_loan_view(
-                loan_params, scenario_id, today,
+            confirmed_view=seam_confirmed_view(
+                loan_params.account_id, scenario_id, today,
             ),
             extra_principal=extra,
         )

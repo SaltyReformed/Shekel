@@ -371,7 +371,7 @@ def _is_paid_off(
     not an achievement -- from being badged "paid off" on the /savings tile.
 
     This replaced a ``resolve_loan(inputs, date.max)`` probe that could not have
-    consulted the ledger even in principle -- ``confirmed_loan_view`` returns
+    consulted the ledger even in principle -- the confirmed view returns
     ``None`` for any ``as_of`` after today -- and so answered from the
     pre-read-switch anchor replay, which is BLIND TO MONEY: it advances one
     SCHEDULED step per confirmed payment and discards the cash.  A loan retired

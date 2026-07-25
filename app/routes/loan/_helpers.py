@@ -40,14 +40,9 @@ from app.services.loan_loaders import (
     load_loan_anchor_facts,
 )
 from app.services.recurring_transfer_query import loan_standing_extra
-from app.services.loan_payment_service import (
-    LoanContext,
-    confirmed_loan_view,
-    load_loan_context,
-)
+from app.services.loan_payment_service import LoanContext, load_loan_context
 from app.services.rate_period_engine import payment_number
 from app.services.balance_at import BalanceContext
-from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.auth_helpers import get_or_404
 from app.utils.money import round_money
 
@@ -302,8 +297,8 @@ def _load_route_context(account, params) -> _RouteLoanContext:
     :class:`BalanceContext` for the pass -- so the balance and the rich figures
     come from the same memoized resolution -- and loads the service
     :class:`LoanContext` (payments / escrow / rate) the route's own schedule
-    composer and escrow card need.  It no longer runs the private
-    ``resolve_loan_seeded`` the pre-C4 route did: the balance is the seam's fold
+    composer and escrow card need.  It no longer runs the private resolver seeding
+    the pre-C4 route did: the balance is the seam's fold
     (:attr:`_RouteLoanContext.current_balance`), and the payment / rate / payoff
     are the seam's figures, so the loan tile is no longer the one surface whose
     balance was produced outside the seam.
@@ -549,7 +544,7 @@ def accelerated_overlay(scenarios):
 
 
 def build_baseline_scenarios(
-    loan_inputs, scenario_id, as_of, extra_principal=Decimal("0.00"),
+    loan_inputs, account, balance_ctx, extra_principal=Decimal("0.00"),
 ):
     """Run the baseline payoff-scenario composer call for the loan detail page.
 
@@ -566,12 +561,15 @@ def build_baseline_scenarios(
     planned trajectory -- reflects the overpayment, accelerating the band chart
     and the projected payoff exactly as the cash debit does.
 
-    Read switch: reads the genesis-ledger confirmed view ONCE via
-    :func:`loan_payment_service.confirmed_loan_view` and threads it into the
-    composer as ``confirmed_view``, so the chart / summary derive from the same
-    real owed balance AND ledger-derived confirmed history the loan card's seam
-    balance (:attr:`_RouteLoanContext.current_balance`) shows -- they cannot
-    desync off-schedule.
+    Read switch: reads the genesis-ledger confirmed view ONCE via the seam's
+    :func:`app.services.balance_at.confirmed_view` -- the FOLD of the loan's
+    recorded events since plan step E1d-b, the SAME producer the seam's whole-loan
+    read seeds every resolution with -- and threads it into the composer as
+    ``confirmed_view``, so the chart / summary derive from the same real owed
+    balance AND confirmed history the loan card's seam balance
+    (:attr:`_RouteLoanContext.current_balance`) shows.  They cannot desync
+    off-schedule, and a loan whose posting cache is cold no longer drops to the
+    money-blind anchor replay here (finding B-12).
 
     Shared by the dashboard GET (which also reads the full scenario for the
     summary / breakdown) and the ARM rate-change band producer
@@ -581,21 +579,23 @@ def build_baseline_scenarios(
     Args:
         loan_inputs: The loan's :class:`loan_resolver.LoanInputs` bundle with
             ALL payments.
-        scenario_id: The baseline scenario id (or ``None``) for the ledger
-            seed scope.
-        as_of: The replay/projection boundary (typically ``date.today()``).
+        account: The loan :class:`~app.models.account.Account` the confirmed view
+            is built for.
+        balance_ctx: The read pass's :class:`BalanceContext` -- its ``scenario``
+            scopes the confirmed seed and its ``as_of`` IS the replay / projection
+            boundary, so the seed and the composer can no longer be handed two
+            different clocks.
         extra_principal: The loan's standing monthly overpayment (``0.00`` when
             none), threaded into the committed trajectory.
 
     Returns:
         The baseline :class:`loan_resolver.PayoffScenarios`.
     """
-    view = confirmed_loan_view(loan_inputs.loan_params, scenario_id, as_of)
     return loan_resolver.compute_payoff_scenarios(
         loan_inputs=loan_inputs,
         extra_monthly=Decimal("0.00"),
-        as_of=as_of,
-        confirmed_view=view,
+        as_of=balance_ctx.as_of,
+        confirmed_view=balance_at.confirmed_view(account, balance_ctx),
         extra_principal=extra_principal,
     )
 
@@ -630,13 +630,19 @@ def load_baseline_scenarios(account, params):
 
     The shared load-and-compose the two SCHEDULE-projection surfaces run -- the
     band-chart producer (:func:`build_loan_band_chart`) and the standalone
-    schedule route (:mod:`app.routes.loan.schedule`).  Neither is a balance-at-T
-    surface, so this reads no seam: it loads the service :class:`LoanContext`,
-    resolves the baseline scenario id, and composes the baseline
+    schedule route (:mod:`app.routes.loan.schedule`).  It loads the service
+    :class:`LoanContext` and composes the baseline
     :class:`~app.services.loan_resolver.PayoffScenarios` (no what-if lever)
     threaded with the loan's standing extra -- the committed trajectory the loan
     card carries.  Returns both so the caller can read the ``LoanContext``
     (escrow / rate feeds) alongside the composed scenarios.
+
+    It builds a :class:`BalanceContext` for the pass (plan step E1d-b) where it
+    previously resolved a bare scenario id: the confirmed slice these schedules
+    open with is now the seam's FOLD of the loan's recorded events, so the read
+    pass that memoizes the loan's walk is the input, not a scenario id.  That is
+    a strictly cheaper read too -- the context's construction IS the baseline
+    lookup this used to make on its own.
 
     Ownership is verified by the caller (both call sites are ``require_owner`` /
     ``_require_configured_loan``-gated), satisfying the composer's
@@ -649,11 +655,10 @@ def load_baseline_scenarios(account, params):
     Returns:
         ``(LoanContext, PayoffScenarios)`` for this read.
     """
-    scenario = get_baseline_scenario(current_user.id)
-    scenario_id = scenario.id if scenario else None
-    loan = load_loan_context(account.id, scenario_id, params)
+    balance_ctx = BalanceContext.build(current_user.id)
+    loan = load_loan_context(account.id, balance_ctx.scenario_id, params)
     scenarios = build_baseline_scenarios(
-        _loan_inputs(params, loan), scenario_id, date.today(),
+        _loan_inputs(params, loan), account, balance_ctx,
         loan_standing_extra(account.id, current_user.id),
     )
     return loan, scenarios
@@ -672,11 +677,11 @@ def build_loan_band_chart(account, params):
     (``add_rate_change`` is ``require_owner``-gated), satisfying the resolver's
     trust-the-caller contract.
 
-    The band is a schedule PROJECTION, not a balance-at-T, so it loads only the
-    service :class:`LoanContext` and runs the composer via
-    :func:`load_baseline_scenarios` -- it does not build a :class:`BalanceContext`
-    or read the seam (the schedule the client splits at the confirmed / projected
-    boundary carries its own confirmed history).
+    The band is a schedule PROJECTION, not a balance-at-T, but its confirmed
+    slice is one: it runs the composer via :func:`load_baseline_scenarios`, whose
+    confirmed seed is the seam's fold since plan step E1d-b (the schedule the
+    client splits at the confirmed / projected boundary therefore carries the same
+    history the loan card does).
 
     Args:
         account: ORM :class:`Account` instance for the loan.

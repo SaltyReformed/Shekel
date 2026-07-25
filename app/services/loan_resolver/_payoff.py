@@ -426,7 +426,7 @@ def compute_payoff_scenarios(
             ledger-derived rows become ``history_rows`` -- or ``None`` to keep
             the anchor replay for both.  Threaded to
             :func:`_build_forward_inputs`; see its arg doc.  The caller reads
-            it once (via ``loan_payment_service.confirmed_loan_view``) so the
+            it once (via ``balance_at.confirmed_view``) so the
             chart / summary / table all derive from the same real owed
             balance and actual history the loan card shows.
         extra_principal: The loan's STANDING monthly overpayment (from

@@ -38,6 +38,7 @@ from tests._test_helpers import (
     create_loan_with_trueup,
     create_settled_transfer,
     freeze_today,
+    seam_confirmed_view,
 )
 
 (_ORIGINATION_PRINCIPAL, _ORIGINATION_DATE, _RATE, _ANCHOR_BALANCE,
@@ -188,11 +189,15 @@ class TestConfirmedLoanPaymentHistory:
     def test_split_matches_the_amortization_history_rows(
         self, app, db, seed_user, seed_periods,
     ):
-        """The table's split equals the schedule's confirmed rows (same ledger).
+        """The table's split equals the schedule's confirmed rows (same payments).
 
-        Both surfaces read the same posted legs on the same confirmed cut, so a
-        payment's (principal, interest) must be identical between them -- a strong
-        cross-check that the table cannot drift from the schedule.
+        The table reads the POSTED legs; the schedule rows fold the WALK (plan
+        step E1d-b).  A payment's (principal, interest) must be identical between
+        them -- which is the checked projection plan step E1a asserts at write
+        time, observed from the read side: two independent derivations of the same
+        payment's economics, and this is where they are compared.  Before E1d-b
+        both read the same posted legs, so agreement was near-tautological; now it
+        has teeth.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -207,9 +212,9 @@ class TestConfirmedLoanPaymentHistory:
             table = loan_posting_service.confirmed_loan_payment_history(
                 loan.id, scenario_id, _AS_OF,
             )
-            schedule = loan_posting_service.confirmed_loan_history_rows(
+            schedule = seam_confirmed_view(
                 loan.id, scenario_id, _AS_OF,
-            )
+            ).history_rows
             assert [(r.principal, r.interest) for r in table] == [
                 (row.principal, row.interest) for row in schedule
             ]

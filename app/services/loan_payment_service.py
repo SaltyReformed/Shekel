@@ -4,13 +4,20 @@ Shekel Budget App -- Loan Payment Service
 Queries shadow income transactions on debt accounts and converts them
 to PaymentRecord instances for the amortization engine.  Also provides
 payment preparation utilities (escrow subtraction, biweekly
-redistribution), a unified data-loading function (load_loan_context)
-shared by all consumers of amortization schedules, and the read-switch
-ledger-view builder (confirmed_loan_view).  The resolver-seeding wrappers that
-read that view -- resolve_loan_seeded / resolve_loan_bundle -- live inside the
-balance seam, in app.services.balance_at._resolution (they compose these loaders
-with the pure resolver); that module imports THIS one, and this one imports
-nothing from the seam, so there is no cycle.
+redistribution), and a unified data-loading function (load_loan_context)
+shared by all consumers of amortization schedules.
+
+This module reads the POSTED LEDGER NOWHERE, as of plan step E1d-b
+(docs/audits/balance_architecture/README.md).  It used to host
+confirmed_loan_view, the read switch's single injection point into the genesis
+posting readers, which made it the one module whose resolver-feeding loaders had
+to be fenced at FUNCTION granularity to keep the reconciliation oracle's
+parallel run honest.  The loan resolver's confirmed slice now seeds from the
+event WALK inside the balance seam (balance_at.confirmed_view), so that
+allowlist is gone and this module is ledger-free whole.  The whole-loan read
+that composes these loaders with the pure resolver lives in
+app.services.balance_at._resolution; that module imports THIS one, and this one
+imports nothing from the seam, so there is no cycle.
 
 Shadow income transactions represent payments received by a debt
 account via transfers.  When a user transfers money from checking to
@@ -463,126 +470,6 @@ def prepare_payments_for_engine(
     # Step 2: Redistribute payments that share a monthly DUE month to
     # consecutive months so the monthly engine sees one per due month.
     return _redistribute_to_distinct_months(sorted_payments, payment_day)
-
-
-def confirmed_loan_view(
-    params: LoanParams, scenario_id: int | None, as_of: date,
-) -> "loan_resolver.ConfirmedLedgerView | None":
-    """Read a loan's genesis-ledger confirmed view (balance + history), or None.
-
-    The read switch's SINGLE injection point: the one and only call site of
-    the genesis balance / history readers
-    (:func:`app.services.loan_posting_service.confirmed_loan_balance_at` /
-    :func:`app.services.loan_posting_service.confirmed_loan_history_rows`),
-    so the whole app reads a loan's confirmed state from the ledger through
-    exactly this function.  Every
-    :class:`~app.services.loan_resolver.ConfirmedLedgerView` the db-facing
-    loaders and the loan-detail chart / payoff calculators thread into the
-    resolver comes from here, which is why the readers have one seam for the
-    W9906 balance-producer fence to allowlist, and why the loaders cannot
-    drift on HOW the ledger is read.  Bundling the balance WITH its history
-    rows in one read is what keeps the loan card, the amortization table's
-    confirmed rows, and the forward projection on one producer -- they either
-    all read the ledger or all fall back together.
-
-    Returns ``None`` -- so the caller falls back to the resolver's anchor
-    replay, exactly the pre-switch behaviour -- whenever the confirmed ledger
-    cannot answer:
-
-    * ``scenario_id`` is ``None`` (no baseline scenario, so no scenario to
-      scope postings to);
-    * ``as_of`` is after today (a future date is a forward projection, out of
-      the confirmed readers' domain -- the resolver projects it, and asking
-      a reader would raise);
-    * *as_of* PRECEDES the loan's ``origination_date`` -- nothing has happened
-      to it yet, so the confirmed ledger has no domain for it at all and the
-      resolver's replay owns its whole timeline (the same rule, stated in full,
-      as :func:`app.services.balance_at.positions`'s not-yet-originated branch); or
-    * a reader returns ``None`` -- the loan has no OPENING posting in the
-      scenario (an unconfigured loan, a what-if the opening was never posted
-      into -- the C4 M2 case -- or any loan not yet backfilled), or no
-      :class:`LoanParams` (the history reader's extra guard).
-
-    **The origination bound is asked of the FACT, and it is load-bearing.**  The
-    genesis walk records every anchor whatever its date and lets the readers
-    decide what has happened (:func:`app.services.loan_ledger.walk_loan_ledger`), so a loan
-    configured before it closes HAS an opening posting -- and would hand this
-    function a view.  That view's balance seeds the forward projection
-    (:func:`app.services.loan_resolver._payoff._build_forward_inputs`), and the
-    ledger's honest ``0.00`` for a loan that does not exist yet would collapse
-    the whole schedule to nothing: measured, an upcoming $200,000 mortgage lost
-    all 360 of its rows, reported its origination date as its payoff date, and
-    held $200,000 flat forever.  The ledger's zero means "nothing has happened",
-    which is TRUE and is exactly why it must not be spent as a projection seed.
-    Withholding the view here -- rather than guarding each consumer -- is what
-    keeps the read switch's single injection point the single place that decides
-    whether the ledger answers at all.
-
-    For every ``None`` case the fallback makes the read switch safe by
-    construction: a loan the ledger has not opened resolves exactly as it did
-    before the switch.  The ONE case that does NOT fall back is a genuinely
-    broken chart-of-accounts -- a loan account with no linked ledger account at
-    all -- where the readers raise ``PostingError`` rather than returning
-    ``None``, failing loud on the invariant violation (the project's fail-loud
-    rule).  Every account is paired with a linked ledger by the account-create
-    hook and the Step-2 backfill, so a configured loan cannot reach that path
-    in practice.
-
-    Args:
-        params: The loan's :class:`~app.models.loan_params.LoanParams` -- its
-            ``account_id`` identifies the loan and its ``origination_date`` is
-            the bound above.  Taken as ONE object because every caller already
-            holds it, so neither costs a re-load and the two can never be
-            mismatched.  The caller MUST have already established that the
-            current user owns the account (the readers trust it, matching the
-            sibling ``account_posting_total`` convention); the scenario scope is
-            a second guard, since a cross-owner account has no postings in this
-            user's scenario and so reads ``None``.
-        scenario_id: The baseline scenario id, or ``None``.
-        as_of: The evaluation date; typically ``date.today()``.
-
-    Returns:
-        The :class:`~app.services.loan_resolver.ConfirmedLedgerView`, or
-        ``None`` to fall back to the resolver's anchor replay.
-
-    Raises:
-        PostingError: If the loan account has no linked ledger account (a
-            broken chart-of-accounts pairing) -- the one non-fallback path.
-    """
-    if scenario_id is None or as_of > date.today():
-        return None
-    if as_of < params.origination_date:
-        # The loan does not exist yet: the confirmed ledger has no domain for it,
-        # and its honest "nothing has happened" 0.00 must never seed the forward
-        # projection (see the docstring).  The replay owns its whole timeline.
-        return None
-    # Pylint: ``import-outside-toplevel`` -- the confirmed-ledger readers
-    # (``loan_posting_service``) are imported HERE, inside the read switch's
-    # sole injection point, ON PURPOSE rather than at module top: it keeps the
-    # posted-ledger reader out of module scope so this module's resolver-feeding
-    # loaders (``load_loan_context`` and siblings) stay ledger-free.  That
-    # property is enforced by ``TestResolverIsLedgerFree``, which scans this
-    # module MINUS its read-switch functions -- a top-level ledger import would
-    # fail it.  (``loan_resolver`` is a plain top-level import; only the ledger
-    # reader must stay function-local.)
-    from app.services import loan_posting_service  # pylint: disable=import-outside-toplevel
-    balance = loan_posting_service.confirmed_loan_balance_at(
-        params.account_id, scenario_id, as_of,
-    )
-    if balance is None:
-        return None
-    history_rows = loan_posting_service.confirmed_loan_history_rows(
-        params.account_id, scenario_id, as_of,
-    )
-    if history_rows is None:
-        # Belt-and-braces: the two readers share the opening-posting guard,
-        # but the history reader additionally requires LoanParams.  A view
-        # must be all-ledger or nothing -- never a ledger balance over replay
-        # rows -- so an asymmetric answer falls back whole.
-        return None
-    return loan_resolver.ConfirmedLedgerView(
-        balance=balance, history_rows=history_rows,
-    )
 
 
 def _resolve_loan_pi(

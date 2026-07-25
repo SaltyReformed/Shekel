@@ -685,14 +685,17 @@ def confirmed_amortization_row(row: ConfirmedRowInputs) -> AmortizationRow:
     """Build a CONFIRMED history row from a payment's ACTUAL principal and interest.
 
     The ONE construction of a confirmed schedule row, shared by the two producers
-    that read a loan's real payment history so they cannot drift on HOW a
+    that read a loan's real payment history so they could not drift on HOW a
     payment's actual economics become a row: the posted-ledger reader
-    (:func:`app.services.loan_posting_service.confirmed_loan_history_rows`) and the
-    walk-based confirmed view (:func:`app.services.balance_at.confirmed_view`, plan
-    step E1c, which E1d makes the sole caller when the reader deletes).  Both read
-    the SAME split from the SAME walk (the posted legs are a projection of it, plan
-    step E1a), so their rows are byte-identical -- and this shared builder makes
-    that equality STRUCTURAL rather than two copies that happen to match.
+    ``confirmed_loan_history_rows`` and the walk-based confirmed view
+    (:func:`app.services.balance_at.confirmed_view`, plan step E1c).  Both read the
+    SAME split from the SAME walk (the posted legs are a projection of it, plan
+    step E1a), so their rows were byte-identical -- and extracting the emitter is
+    what made that equality STRUCTURAL rather than two copies that happened to
+    match, which is what let plan step E1d-b DELETE the reader and leave the view
+    as this builder's SOLE caller.  It stays a named emitter because the row's
+    shaping (its P&I / extra split, its numbering, its rate) is a display contract
+    worth stating once, and the projected-row builder below is its twin.
 
     Unlike :func:`_replay_payment_row` (the CONTRACTUAL replay, where
     ``principal = period_pi - interest``), this takes the payment's REAL principal

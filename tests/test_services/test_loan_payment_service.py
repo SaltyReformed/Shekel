@@ -11,29 +11,23 @@ biweekly month overlaps before passing payments to the amortization
 engine.
 """
 
-from datetime import date, timedelta
+from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
 from app.extensions import db
-from app.models.account import Account
 from app.models.loan_params import LoanParams
 from app.models.ref import AccountType
 from app.models.transaction import Transaction
 from app.services.amortization_engine import PaymentRecord
-from app.services import loan_loaders
 from app.services.loan_payment_service import (
     compute_contractual_pi,
-    confirmed_loan_view,
     get_payment_history,
-    load_loan_context,
-    load_loan_params,
     prepare_payments_for_engine,
 )
-from app.services.balance_at._resolution import resolve_loan_seeded
 from app.services.transfer_service import TransferSpec, create_transfer
-from app.services import account_service, loan_resolver
+from app.services import account_service
 from app.services.rate_period_engine import monthly_due_date
 
 # The ``payment_day`` of the mortgage ``_create_loan_account`` builds; the
@@ -891,155 +885,3 @@ class TestPreparePaymentsForEngine:
         assert result[0].due_date == date(2027, 1, 1)
         assert result[1].payment_date == date(2026, 12, 19)
         assert result[1].due_date == date(2027, 2, 1)
-
-
-class TestReadSwitchSeedHelpers:
-    """``confirmed_loan_view`` / ``resolve_loan_seeded`` -- the read-switch seam.
-
-    These pin the SAFETY half of the loan read switch: the view reader falls
-    back to ``None`` -- routing the resolver to its anchor replay, exactly
-    the pre-switch behaviour -- whenever the genesis ledger cannot answer (no
-    scenario, a future date, a loan that has not originated yet, or a loan with
-    no OPENING posting).  ``_create_loan_account`` builds a loan with a linked
-    ledger but NO genesis postings, so it exercises that fallback directly; the
-    "reads the real ledger balance" half is pinned end-to-end by the
-    reconciliation oracle (``TestReadSwitchProductionPath``), which needs posted
-    genesis.
-    """
-
-    def test_seed_is_none_without_a_scenario(self, app, db, seed_user):
-        """No scenario -> ``None`` (there is no scenario to scope postings to)."""
-        with app.app_context():
-            loan = _create_loan_account(seed_user)
-            db.session.commit()
-            params = load_loan_params(loan.id)
-            assert confirmed_loan_view(params, None, date.today()) is None
-
-    def test_seed_is_none_for_a_future_as_of(self, app, db, seed_user):
-        """A future ``as_of`` -> ``None`` (a projection, out of the reader's domain).
-
-        The confirmed ledger answers only ``as_of <= today``; the seam returns
-        ``None`` for a future date so the resolver projects it, rather than
-        letting the reader raise.
-        """
-        with app.app_context():
-            loan = _create_loan_account(seed_user)
-            db.session.commit()
-            future = date.today() + timedelta(days=1)
-            assert confirmed_loan_view(
-                load_loan_params(loan.id), seed_user["scenario"].id, future,
-            ) is None
-
-    def test_seed_is_none_before_the_loan_originates(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """An ``as_of`` before origination -> ``None`` (nothing has happened yet).
-
-        The confirmed ledger has no domain for a loan that does not exist, so the
-        resolver's replay owns its whole timeline.  Without this the ledger's
-        honest ``0.00`` is threaded in as the forward projection's starting
-        balance and collapses the loan's whole schedule.
-
-        **Built by the SHARED factory, which is the whole point.**  This class's
-        local ``_create_loan_account`` never opens the genesis ledger, so its loans
-        read ``None`` from the reader and the ``balance is None`` fallback below
-        answers regardless -- a test built on it cannot see this guard at all.
-        ``create_loan_account`` syncs, so the walk has posted this loan's opening
-        (it records every anchor whatever its date) and the reader answers a VALUE.
-
-        Origination 2026-03-25 is INSIDE the current pay period (five days after
-        this package's frozen today).  Since C2's one clock the reader dates the
-        opening at its ``entry_date`` -- the 2026-03-25 origination -- so a read at
-        2026-03-20 sees no visible posting and returns the HONEST ``0.00`` (N-10's
-        leak, the full principal five days early, is closed at the source).
-
-        The ``confirmed_loan_view`` guard nonetheless STAYS, because its reason is
-        independent of the clock: that honest ``0.00`` must never seed the forward
-        projection, or it collapses the loan's whole schedule (outage B-1, fixed at
-        A3).  So the view still withholds a pre-origination read.
-
-        NEGATIVE CONTROL: delete the ``as_of < params.origination_date`` guard in
-        ``confirmed_loan_view`` and the second assert gets a
-        ``ConfirmedLedgerView(balance=0.00, history_rows=[])`` instead of ``None``
-        -- the schedule-collapsing seed B-1 names.
-        """
-        # pylint: disable=import-outside-toplevel
-        from app.enums import AcctTypeEnum
-        from app.services.loan_posting_service import confirmed_loan_balance_at
-        from tests._test_helpers import create_loan_account
-
-        with app.app_context():
-            loan = create_loan_account(
-                seed_user, db.session, name="Closing Friday",
-                principal=Decimal("200000.00"), rate=Decimal("0.05000"),
-                term=360, origination_date=date(2026, 3, 25), payment_day=1,
-                account_type=AcctTypeEnum.MORTGAGE,
-                anchor_period=seed_periods[0],
-            )
-            scenario_id = seed_user["scenario"].id
-            params = load_loan_params(loan.id)
-            assert params.origination_date == date(2026, 3, 25)
-            assert date.today() == date(2026, 3, 20)
-
-            # C2's one clock: the opening is dated at its 2026-03-25 origination,
-            # so a read five days earlier sees nothing and returns the honest 0.00
-            # (the N-10 leak -- the full principal early -- is gone).
-            assert confirmed_loan_balance_at(
-                loan.id, scenario_id, date.today(),
-            ) == Decimal("0.00")
-
-            # ...and the view still withholds it (its 0.00 would collapse the
-            # forward schedule -- B-1 -- a reason independent of the clock).
-            assert confirmed_loan_view(
-                params, scenario_id, date.today(),
-            ) is None
-
-    def test_seed_is_none_for_an_unopened_loan(self, app, db, seed_user):
-        """A configured loan with no OPENING posting -> ``None`` (needs-setup route).
-
-        ``_create_loan_account`` posts no genesis, so the reader finds no OPENING
-        leg and the seam returns ``None`` -- never a misleading ``$0`` -- so the
-        resolver stays on its anchor replay.
-        """
-        with app.app_context():
-            loan = _create_loan_account(seed_user)
-            db.session.commit()
-            assert confirmed_loan_view(
-                load_loan_params(loan.id), seed_user["scenario"].id,
-                date.today(),
-            ) is None
-
-    def test_resolve_loan_seeded_falls_back_to_anchor_replay_without_genesis(
-        self, app, db, seed_user,
-    ):
-        """Without genesis, the seeded helper == the un-seeded resolver, to the penny.
-
-        The load-bearing safety property: a loan the ledger has not opened
-        resolves exactly as it did before the read switch.  ``resolve_loan_seeded``
-        reads a ``None`` seed and threads it through, so ``resolve_loan`` runs its
-        anchor replay unchanged -- identical to calling it with no seed.
-        Non-vacuous: the balance is a real, positive figure (the resolver ran), and
-        equality would break if the fallback fed a wrong seed instead of ``None``.
-        """
-        with app.app_context():
-            loan = _create_loan_account(seed_user)
-            db.session.commit()
-            scenario_id = seed_user["scenario"].id
-            params = load_loan_params(loan.id)
-            ctx = load_loan_context(loan.id, scenario_id, params)
-            loan_inputs = loan_resolver.LoanInputs(
-                params, loan_loaders.load_loan_anchor_facts(params),
-                ctx.payments, ctx.rate_changes,
-            )
-
-            seeded = resolve_loan_seeded(
-                loan_inputs, scenario_id, date.today(), Decimal("0.00"),
-            )
-            unseeded = loan_resolver.resolve_loan(loan_inputs, date.today())
-
-            # The whole state is identical -- STRONGER than the old single
-            # current_balance equality (that field died at plan step D2a): a
-            # wrong fallback seed would move the schedule's forward rows.
-            assert seeded == unseeded
-            assert seeded.schedule, "resolver produced no schedule rows"
-            assert seeded.schedule[0].remaining_balance > Decimal("0.00")

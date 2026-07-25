@@ -579,9 +579,7 @@ def loan_payment_due_date(shadow: Transaction, payment_day: int) -> date:
     The project's SINGLE derivation of "which contractual installment is this
     payment?" -- read by the fold's event stream
     (:func:`app.services.loan_ledger.merge_anchor_and_payment_events`),
-    the ledger history reader
-    (:func:`app.services.loan_posting_service.confirmed_loan_history_rows`), the
-    payment-history table
+    the payment-history table
     (:func:`app.services.loan_posting_service.confirmed_loan_payment_history`),
     and the settled-payment guards below, so no two of them can disagree on a
     payment's due date.

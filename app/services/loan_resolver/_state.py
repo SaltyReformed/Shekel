@@ -247,8 +247,8 @@ def resolve_loan(
             The summary read path (``balance_at._resolution.resolved_loan``) loads
             it centrally via
             :func:`recurring_transfer_query.loan_standing_extra_for_account` and
-            threads it into ``resolve_loan_seeded``; a direct caller (e.g. the
-            ``date.max`` probe) may leave it ``0.00``.
+            threads it into the resolve; a direct caller (e.g. the ``date.max``
+            probe) may leave it ``0.00``.
 
     Returns:
         A :class:`LoanState` with the four resolver fields.

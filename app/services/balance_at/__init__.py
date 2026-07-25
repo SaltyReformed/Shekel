@@ -128,10 +128,9 @@ the fold to zero, plan step C8d) -- a DAG with ``_calculator`` / ``_cash_engine`
 / ``_investment`` at the producer floor, so no module imports a sibling that
 imports it back.  Every loan producer also imports ``_resolution`` for the read
 pass's ONE whole-loan read; ``_resolution`` imports only ``_context`` among its
-siblings (its confirmed seed is still the OUTER posting view,
-``loan_payment_service.confirmed_loan_view``, until plan step E1d-b cuts it over
-to the seam-private ``_confirmed_view``), and ``_confirmed_view`` imports
-``_context`` and ``_fold``, so that sub-chain is a DAG too.  ``_context`` sits
+siblings, plus ``_confirmed_view`` for the confirmed seed it threads into every
+resolution (plan step E1d-b); ``_confirmed_view`` imports ``_context`` and
+``_fold``, so that sub-chain is a DAG too.  ``_context`` sits
 BELOW every floor: it imports NONE of its
 siblings at runtime (``_plan``'s ``PlannedPayment`` and ``_resolution``'s
 ``ResolvedLoan`` are type-only edges typing the caches the seam FILLS), so the

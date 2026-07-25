@@ -46,12 +46,16 @@ keep working unchanged:
   and the historical backfill.
 * :mod:`._reader` -- the genesis READ side: a loan's balance as ``-(sum of its
   linked postings)`` (``confirmed_loan_balance_at`` / ``confirmed_loan_balance_map``,
-  no anchor read, no boundary filter), and the ledger-derived amortization HISTORY
-  rows (``confirmed_loan_history_rows``, each confirmed payment's actual principal /
-  interest and running balance read from the posted legs).  Wired by the read
-  switch.  The paid-in-year tax / chip figures folded off the postings onto the
-  loan ledger at steps C3c / C6c (:mod:`app.services.balance_at`), so this package
-  no longer reads them.
+  no anchor read, no boundary filter), plus the shared load the payment-history
+  table opens with.  It has NO production caller: the balance seam reads a loan's
+  past from the event FOLD (steps C3b1 / C3b3) and its confirmed schedule rows
+  from the walk (step E1d-b, which deleted the ledger-derived
+  ``confirmed_loan_history_rows`` with the read switch that fed it).  What
+  survives is the reconciliation oracle's independent window onto the postings --
+  the checked projection plan step E1a asserts at write time -- and it goes
+  package-private at step E1e.  The paid-in-year tax / chip figures folded off the
+  postings onto the loan ledger at steps C3c / C6c
+  (:mod:`app.services.balance_at`), so this package no longer reads them.
 
 ## Shared infrastructure and isolation
 
@@ -94,7 +98,6 @@ from ._payments import (
 from ._reader import (
     confirmed_loan_balance_at,
     confirmed_loan_balance_map,
-    confirmed_loan_history_rows,
 )
 from ._sync import (
     backfill_all_loan_postings,
@@ -110,7 +113,6 @@ __all__ = [
     "backfill_all_loan_postings",
     "confirmed_loan_balance_at",
     "confirmed_loan_balance_map",
-    "confirmed_loan_history_rows",
     "confirmed_loan_payment_history",
     "loan_balance_anchor_history",
     "resync_user_loan_postings",

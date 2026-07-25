@@ -580,7 +580,7 @@ def dashboard(account_id):
     )
     prompt_context = _resolve_transfer_prompt(account, payment_template)
     scenarios = build_baseline_scenarios(
-        _loan_inputs(params, ctx.loan), scenario_id, today,
+        _loan_inputs(params, ctx.loan), account, ctx.balance_ctx,
         prompt_context["recurring_payment_extra"],
     )
     # PLANNED-trajectory schedule: real confirmed history + projected /

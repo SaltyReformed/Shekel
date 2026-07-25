@@ -44,8 +44,8 @@ def confirmed_shadows_through(
     The DISPLAY subset of
     :func:`~app.services.loan_loaders.settled_income_shadows`: the payments the
     balance readers count as confirmed history at ``as_of`` (their shared
-    visible-on bound).  The ledger's history reader
-    (:func:`app.services.loan_posting_service.confirmed_loan_history_rows`)
+    visible-on bound).  The posted ledger's payment-history table
+    (:func:`app.services.loan_posting_service.confirmed_loan_payment_history`)
     consumes this so its rows match the balance readers' cut; the fold's own walk
     deliberately does NOT (it splits every settled payment -- see
     :func:`~app.services.loan_loaders.settled_income_shadows` for why).

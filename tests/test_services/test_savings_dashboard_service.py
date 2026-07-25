@@ -994,7 +994,7 @@ class TestPaidOffReadsTheLedgerNotTheReplay:
 
     The flag used to be answered by ``resolve_loan(inputs, date.max)`` with no
     ``confirmed_view`` -- a producer that structurally cannot consult the genesis
-    ledger (``confirmed_loan_view`` returns ``None`` for any ``as_of`` after
+    ledger (the confirmed view returns ``None`` for any ``as_of`` after
     today) and that is BLIND TO MONEY: the replay advances one SCHEDULED step per
     confirmed payment and discards the cash actually paid.
 
@@ -4380,9 +4380,9 @@ class TestOneResolutionPerLoanPerReadPass:
         calls = []
         real = resolution_module.resolve_loan_bundle
 
-        def _spy(account_id, scenario_id, as_of):
-            calls.append(account_id)
-            return real(account_id, scenario_id, as_of)
+        def _spy(account, ctx):
+            calls.append(account.id)
+            return real(account, ctx)
 
         monkeypatch.setattr(resolution_module, "resolve_loan_bundle", _spy)
         return calls

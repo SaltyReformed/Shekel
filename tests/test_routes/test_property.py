@@ -468,7 +468,6 @@ class TestPropertyEquityChartProducer:
         """
         with app.app_context():
             today = date.today()
-            scenario_id = seed_user["scenario"].id
             prop = _make_property(
                 db, seed_user, seed_periods_today, rate=Decimal("0"),
             )
@@ -519,7 +518,6 @@ class TestPropertyEquityChartProducer:
         """
         with app.app_context():
             today = date.today()
-            scenario_id = seed_user["scenario"].id
             prop = _make_property(
                 db, seed_user, seed_periods_today, rate=Decimal("0.03000"),
             )
@@ -555,7 +553,6 @@ class TestPropertyEquityChartProducer:
         """Equity is the exact per-month ``value - debt`` (the internal identity)."""
         with app.app_context():
             today = date.today()
-            scenario_id = seed_user["scenario"].id
             prop = _make_property(
                 db, seed_user, seed_periods_today, rate=Decimal("0.03000"),
             )
@@ -580,7 +577,6 @@ class TestPropertyEquityChartProducer:
         """The 0 appreciation sentinel holds value flat; the zero_rate state fires."""
         with app.app_context():
             today = date.today()
-            scenario_id = seed_user["scenario"].id
             prop = _make_property(
                 db, seed_user, seed_periods_today, rate=Decimal("0"),
             )
@@ -620,7 +616,6 @@ class TestPropertyEquityChartProducer:
         freeze_today(monkeypatch, date(2026, 4, 20))
         today = date(2026, 4, 20)
         with app.app_context():
-            scenario_id = seed_user["scenario"].id
             prop = _make_property(
                 db, seed_user, seed_periods, rate=Decimal("0.03000"),
             )
@@ -647,7 +642,9 @@ class TestPropertyEquityChartProducer:
             db.session.commit()
 
             # ONE resolution feeds both the equity hero and the chart (D1).
-            resolved = resolve_loan_bundle(loan.id, scenario_id, today)
+            resolved = resolve_loan_bundle(
+                loan, BalanceContext.build(seed_user["user"].id, as_of=today),
+            )
             assert resolved is not None, "configured loan must resolve"
             state = resolved.state
             confirmed = [row for row in state.schedule if row.is_confirmed]
@@ -891,7 +888,6 @@ class TestPropertyEquityChartProducer:
         """
         with app.app_context():
             today = date.today()
-            scenario_id = seed_user["scenario"].id
             prop = _make_property(
                 db, seed_user, seed_periods_today, rate=Decimal("0.03000"),
             )
@@ -921,7 +917,9 @@ class TestPropertyEquityChartProducer:
             # The tracking start -- where the recorded ledger opens -- is the
             # resolved schedule's first month, the same boundary the seam clips the
             # back-projection at.
-            resolved = resolve_loan_bundle(loan.id, scenario_id, today)
+            resolved = resolve_loan_bundle(
+                loan, BalanceContext.build(seed_user["user"].id, as_of=today),
+            )
             assert resolved is not None, "configured loan must resolve"
             tracking_start = resolved.state.schedule[0].payment_date
 
@@ -1198,9 +1196,9 @@ class TestPropertyDetailChartContext:
         calls = []
         real_resolve = resolution_module.resolve_loan_bundle
 
-        def _spy(account_id, scenario_id, as_of):
-            calls.append(account_id)
-            return real_resolve(account_id, scenario_id, as_of)
+        def _spy(account, ctx):
+            calls.append(account.id)
+            return real_resolve(account, ctx)
 
         monkeypatch.setattr(
             resolution_module, "resolve_loan_bundle", _spy,

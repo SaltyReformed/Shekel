@@ -581,7 +581,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
 
         The read switch's final commit fences the confirmed balance readers:
         a route or dashboard calling one directly bypasses the
-        ``confirmed_loan_view`` injection seam.  Bound to the reader set
+        read-switch injection seam it once admitted.  Bound to the reader set
         itself so a future reader added to the frozenset is automatically
         covered.
         """

@@ -19,7 +19,7 @@ card, and an "ever paid off" probe each resolving independently
 That was filed as waste.  It was not only waste.  Because there was no single
 resolution to compare against, nothing revealed that one of those eleven -- the
 ``date.max`` "ever paid off" probe -- resolved through a producer that
-*structurally cannot read the genesis ledger* (``confirmed_loan_view`` returns
+*structurally cannot read the genesis ledger* (the confirmed view returns
 ``None`` for any ``as_of`` after today), and so answered from the pre-read-switch
 anchor replay, which is blind to how much cash a payment actually moved.  The
 ten that agreed made the eleventh invisible.  **Redundant derivation is not a
