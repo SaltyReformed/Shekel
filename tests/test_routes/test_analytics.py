@@ -20,7 +20,7 @@ from html import unescape
 import pytest
 
 from app import ref_cache
-from app.enums import StatusEnum, TxnTypeEnum
+from app.enums import AcctTypeEnum, StatusEnum, TxnTypeEnum
 from app.models.transaction import Transaction
 from app.services import account_service
 
@@ -314,6 +314,51 @@ class TestCalendarTab:
                 headers={"HX-Request": "true"},
             )
             assert resp.status_code == 404
+
+    def test_calendar_tab_404_for_amortizing_account(
+        self, app, db, auth_client, seed_user, seed_periods,
+    ):
+        """X-a1 (route): ``?account_id=<loan>`` 404s instead of rendering.
+
+        Finding N-38: the calendar's balance line and month-end figure
+        are the seam's CASH-FLOW view, which sums the account's own
+        transaction rows.  Pointed at a loan it answered with a
+        cash-basis figure that ignores interest -- measured on a dev
+        clone, ``$531.94`` for a Van Loan owing ``$15,663.59``.  The
+        resolver now refuses an amortizing account (ruling D4's gate,
+        extended to the surface its enumeration missed), and the route
+        maps the unresolvable account to a 404 exactly as it does for a
+        cross-owner id.
+
+        No monkeypatch: this drives the REAL resolver with a real loan
+        account, so it fails if the kind gate is removed.
+        """
+        with app.app_context():
+            loan = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=ref_cache.acct_type_id(
+                        AcctTypeEnum.MORTGAGE,
+                    ),
+                    name="Mortgage",
+                    anchor_balance=Decimal("0"),
+                ),
+            )
+            db.session.add(loan)
+            db.session.commit()
+            loan_id = loan.id
+
+            resp = auth_client.get(
+                f"/analytics/calendar?account_id={loan_id}",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 404
+
+            year_resp = auth_client.get(
+                f"/analytics/calendar?view=year&account_id={loan_id}",
+                headers={"HX-Request": "true"},
+            )
+            assert year_resp.status_code == 404
 
     def test_calendar_tab_year_view_404_when_account_unresolvable(
         self, app, auth_client, seed_user, monkeypatch,
