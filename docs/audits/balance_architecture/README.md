@@ -216,8 +216,19 @@ door closed; the real Mortgage's pre-E1a cross-date residue self-heals); E1b SHI
 balance from the fold, rows re-accumulated over the visible subset; a broken loan FOLDS where the
 reader returns `None` per B-12; the row construction extracted to a shared
 `confirmed_amortization_row` emitter so byte-equality is structural; every-day oracle across nine
-shapes + teeth + the broken-loan and N-11 divergence demos).  NEXT: E1d**, then F3 (the prod ship)
-and the X phase per Section 5.
+shapes + teeth + the broken-loan and N-11 divergence demos).  **E1d is DECOMPOSED (2026-07-25) on
+the developer's option-D ruling and both halves SHIPPED: E1d-a `35aae5ef` (the whole-loan read moves
+INSIDE the seam as the private `balance_at._resolution`, and the resolution memo comes off
+`BalanceContext` -- two hand-written fence surfaces DELETE, provably behaviour-identical) and E1d-b
+`e0092d0e` (the cutover: every resolution and all three loan routes seed from the walk-built
+`confirmed_view`; `confirmed_loan_view` + `confirmed_loan_history_rows` + four helpers delete;
+W9906's allowlist tightens to one module, `loan_payment_service` goes ledger-free WHOLE and the
+reconciliation suite's function-granularity fence collapses to a file fence; the E1c oracle retires
+and all nine shapes plus the 13 moved row pins are re-anchored HAND-COMPUTED).  Dev clone
+BYTE-IDENTICAL across both.  E1d-b also found **N-34** -- the split's rate/escrow still key on the
+pay-period start, not the due date, contradicting D5 and C2's shipped claim -- recorded, gated with
+a control that flips on the fix, and NOT fixed here (it moves recorded balances).  NEXT: E1e**, then
+F3 (the prod ship) and the X phase per Section 5.
 
 ---
 
@@ -1664,16 +1675,48 @@ zero standing exceptions rather than training the exemption habit it exists to p
     underpayment) + a firing teeth control (a bumped row principal makes the harness raise) + the
     broken-loan and N-11 divergence demos.  Full suite 7504, pylint 10.00 all trees, 163 checker
     tests; adversarial review found no Critical/High/Medium.
-  - [ ] **E1d** `refactor(loan): the resolver's confirmed slice seeds from the walk` -- the
-    cutover: the context threads the walk-built view into `resolve_loan_bundle`; the three
-    loan-route call sites read the seam entry; `confirmed_loan_view` and
-    `confirmed_loan_history_rows` (+ its now-dead helpers) delete; the equivalence oracle retires
-    (the C3b1 pattern); dev-clone baseline proven unmoved.  **Carried from E1c (adversarial-review
-    Low):** the shared `confirmed_amortization_row` emitter's row-shaping is currently pinned
-    hand-computed by the reader's row test (`test_loan_posting_service.py:2366-2371`), which deletes
-    with the reader -- so E1d must re-anchor the emitter hand-computed on the WALK path when it
-    retires the equivalence oracle, or the row split (extra / payment) loses its independent value
-    proof (the N-7 discipline).
+  - **E1d is DECOMPOSED into E1d-a / E1d-b** (2026-07-25, on the developer's option-D ruling): the
+    cutover needed the whole-loan read to sit INSIDE the seam first, and that move is provable in
+    isolation while the cutover is not.
+    - [x] **E1d-a** `refactor(balance): the whole-loan read moves inside the seam` -- **SHIPPED
+      `35aae5ef` (2026-07-25).**  `app/services/loan_resolution.py` -> `balance_at/_resolution.py`
+      (private, W9910-protected, re-exported NOWHERE), and `BalanceContext.resolved_loan` ->
+      `balance_at._resolution.resolved_loan(account, ctx)` filling a public `loans` pass-through
+      cache through the one `_memoize_once` primitive.  Two hand-written surfaces DELETE rather
+      than shrink or travel: the `app.services.loan_resolution` W9909 scope (its only production
+      caller was the seam, and E1d makes its confirmed seed a balance-at-T, so Phase D's invariant
+      puts the composer on the producer's side of the boundary) and `_context`'s `resolved_loan`
+      ruling -- the last public METHOD on the publicly re-exported context, the H1 surface W9910
+      structurally cannot see.  Every function body unchanged character-for-character; dev clone
+      BYTE-IDENTICAL.  Its adversarial review caught the first cut re-exporting `resolved_loan` /
+      `ResolvedLoan` publicly, which would have moved the read from two classified surfaces to zero
+      behind an ungated door -- the exact fail-open shape W9909 exists to close; the door is gone
+      and the test call sites reach the private module like the six sibling files already did.
+    - [x] **E1d-b** `refactor(loan): the resolver's confirmed slice seeds from the walk` --
+      **SHIPPED `e0092d0e` (2026-07-25).**  The cutover: `resolve_loan_bundle(account, ctx)` seeds
+      every resolution with `balance_at.confirmed_view` (`resolve_loan_seeded` folds in) and the
+      three loan-route call sites read the same seam entry; `confirmed_loan_view`,
+      `confirmed_loan_history_rows`, and its four now-dead helpers DELETE.  `confirmed_view` also
+      stopped loading `LoanParams` -- it reads the origination off the walk's own `is_opening`
+      correction, so the date the rows are numbered from and the walk they fold cannot be
+      mismatched.  **Three hand-maintained exemptions die with the reader:** W9906's allowlist
+      tightens to `{loan_posting_service}` (the readers now have NO `app/` caller at all),
+      `loan_payment_service` becomes ledger-free WHOLE so the reconciliation suite's
+      function-granularity M-1 fence collapses to a file fence, and `_LEDGER_READ_SWITCH_FUNCTIONS`
+      goes with it.  `_LOAN_PAYMENT_SEAM_MODULES` deliberately STAYS (privilege gone, ingredient
+      surface remains -- the D1b no-bundled-loosening lesson).  Two RULED semantic changes, both
+      pinned: a loan with no OPENING posting FOLDS (B-12 / E1c's Q2; clearing the ledger proven to
+      move nothing) and a what-if scenario answers from its anchors.  The E1c oracle retires with
+      its counterparty; all nine shapes AND the 13 row-economics pins moved off the deleted reader
+      are re-anchored HAND-COMPUTED in `test_confirmed_view.py` (the E1c carried requirement,
+      discharged), plus two assertions restored that the deletion would have dropped (on-schedule
+      rows byte-checked against the contractual replay; a withheld view resolving identically to
+      the un-seeded resolver).  Full suite 7502, pylint 10.00 all three trees, 162 checker tests;
+      dev clone BYTE-IDENTICAL across both commits.  **Found and NOT fixed: N-34** (the split's
+      rate / escrow still key on the pay-period start, not the due date -- D5's ruling and C2's
+      claim; measured $500.00 on one payment, reaching five surfaces, invisible to E1a's assert).
+      Gated with a control that flips on the fix; fixing it moves recorded balances, so it is its
+      own step.
   - [ ] **E1e** `refactor(pylint): W9906 deletes; the posting readers are package-private` --
     the readers come off `loan_posting_service.__init__`; `confirmed_loan_balance_map` is KEPT
     package-private (the Step-4 reconciliation oracle's independent window -- its C3b3-recorded
