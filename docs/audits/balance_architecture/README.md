@@ -211,8 +211,13 @@ additive) -> E1d (the cutover; `confirmed_loan_view` dies) -> E1e (W9906 deletes
 package-private).  E1a SHIPPED `545799fb` (B-5's invariant + N-13 closed; the born-settled create
 door closed; the real Mortgage's pre-E1a cross-date residue self-heals); E1b SHIPPED `7cbc0271`
 (all seven escrow write routes reconcile through the sync chokepoint; N-3 closed; merge's
-"needs no reconcile" ruling reversed to "reconciles as an idempotent no-op").  NEXT: E1c**, then
-F3 (the prod ship) and the X phase per Section 5.
+"needs no reconcile" ruling reversed to "reconciles as an idempotent no-op"); E1c SHIPPED
+`ee570bcf` (the walk-based `confirmed_view` builder reproduces the posting view byte-for-byte --
+balance from the fold, rows re-accumulated over the visible subset; a broken loan FOLDS where the
+reader returns `None` per B-12; the row construction extracted to a shared
+`confirmed_amortization_row` emitter so byte-equality is structural; every-day oracle across nine
+shapes + teeth + the broken-loan and N-11 divergence demos).  NEXT: E1d**, then F3 (the prod ship)
+and the X phase per Section 5.
 
 ---
 
@@ -1635,15 +1640,38 @@ zero standing exceptions rather than training the exemption habit it exists to p
     control; shared `linked_net_by_date` test helper extracted (DRY, keeping the service test's
     independence-from-production).  Full suite 7492, pylint 10.00 all trees; adversarial review clean
     (no Critical/High/Medium; 3 informational Lows, one applied).
-  - [ ] **E1c** `feat(loan): the confirmed view folds from the walk` -- additive seam builder +
-    an every-shape equivalence oracle vs the posting-based view (rows byte-equal, balance equal:
-    B2's shapes + the biweekly collision, late/early settle, true-ups, tracking-start, payoff
-    excess, underpayment, reverted/deleted lineage, and a forced N-11 divergence demonstration).
+  - [x] **E1c** `feat(loan): the confirmed view folds from the walk` -- **SHIPPED `ee570bcf`
+    (2026-07-24).**  The seam builder `balance_at.confirmed_view(ctx, account)` reproduces
+    `confirmed_loan_view` byte-for-byte: the balance is `fold_from_walk` (B2-proven == the posting
+    reader) and the history rows re-accumulate the reader's `_replay_history_events` contract-order
+    running balance over ONLY the payments/anchors VISIBLE by `as_of` -- sourced from the walk's
+    splits/corrections, never the postings.  Additive and unwired (only the oracle reads it); E1d
+    threads it into `resolve_loan_bundle` and deletes the reader.  **The three developer rulings
+    realized:** the row `remaining_balance` is the visible-subset re-accumulation (NOT the full-walk
+    balance-after, which double-counts a future-settled-but-earlier-due payment -- Q1); a BROKEN loan
+    (originated, no opening posting) FOLDS where the partial reader returns `None` (B-12, the
+    C3b1/C3b3 repairable-cache decision -- Q2), DEMONSTRATED not folded into the equality; and
+    `LoanPaymentSplit` carries its `due_date` + resolved `RatePeriod` so a row's displayed rate is
+    provably the rate its interest accrued at (Q3), the split staying pure and the due date derived
+    ONCE (the merge now returns the governing date it already computes for ordering).  **One scope
+    addition, the duplicate-code root fix:** the byte-equal row construction was genuinely duplicated
+    with the reader, so it extracted to ONE shared emitter `rate_period_engine.confirmed_amortization_row`
+    (a `ConfirmedRowInputs` bundle) both the reader and the walk view now call -- byte-equality is
+    STRUCTURAL, not two copies that match.  Oracle (`test_confirmed_view_oracle.py`): every-day
+    whole-view equality across nine shapes (the B2 set + biweekly collision, late settle,
+    underpayment) + a firing teeth control (a bumped row principal makes the harness raise) + the
+    broken-loan and N-11 divergence demos.  Full suite 7504, pylint 10.00 all trees, 163 checker
+    tests; adversarial review found no Critical/High/Medium.
   - [ ] **E1d** `refactor(loan): the resolver's confirmed slice seeds from the walk` -- the
     cutover: the context threads the walk-built view into `resolve_loan_bundle`; the three
     loan-route call sites read the seam entry; `confirmed_loan_view` and
     `confirmed_loan_history_rows` (+ its now-dead helpers) delete; the equivalence oracle retires
-    (the C3b1 pattern); dev-clone baseline proven unmoved.
+    (the C3b1 pattern); dev-clone baseline proven unmoved.  **Carried from E1c (adversarial-review
+    Low):** the shared `confirmed_amortization_row` emitter's row-shaping is currently pinned
+    hand-computed by the reader's row test (`test_loan_posting_service.py:2366-2371`), which deletes
+    with the reader -- so E1d must re-anchor the emitter hand-computed on the WALK path when it
+    retires the equivalence oracle, or the row split (extra / payment) loses its independent value
+    proof (the N-7 discipline).
   - [ ] **E1e** `refactor(pylint): W9906 deletes; the posting readers are package-private` --
     the readers come off `loan_posting_service.__init__`; `confirmed_loan_balance_map` is KEPT
     package-private (the Step-4 reconciliation oracle's independent window -- its C3b3-recorded
