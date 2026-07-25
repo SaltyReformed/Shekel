@@ -48,18 +48,14 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy.orm import joinedload, selectinload
-
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
 from app.models.transaction import Transaction
-from app.utils.balance_predicates import (
-    balance_contributing_clause,
-    settled_status_ids,
-)
+from app.utils.balance_predicates import settled_status_ids
 from app.utils.dates import utc_civil_date, utc_day_start_instant, utc_instant
 
 from ._amounts import settled_cash_leg
+from ._facts import _unwindowed_contributing_rows
 
 
 def attribution_instant(
@@ -262,20 +258,25 @@ def settled_cash_facts(
     grid passing a WINDOW moved a balance by $150,000.00 (plan step B1).  A fold
     over a windowed event stream is a fold over a different account.
 
-    The eligibility filter is the shared
-    :func:`~app.utils.balance_predicates.balance_contributing_clause`
-    (``is_deleted = FALSE AND status_id NOT IN (Credit, Cancelled)``), the same
-    SQL gate :func:`app.services.cash_ledger.load_balance_transactions` applies,
-    so the fold and the projection cannot disagree about which rows exist at all.
+    The rows come from the shared ``_facts._unwindowed_contributing_rows`` -- the
+    ONE load this and its PLAN twin
+    (:func:`app.services.cash_ledger.planned_cash_rows`) narrow, so the account /
+    scenario scope, the shared
+    :func:`~app.utils.balance_predicates.balance_contributing_clause` eligibility
+    gate (``is_deleted = FALSE AND status_id NOT IN (Credit, Cancelled)``) and
+    both eager loads are stated once for the two halves of the event stream
+    rather than copied per half.  That gate is the same one
+    :func:`app.services.cash_ledger.load_balance_transactions` applies, so the
+    fold and the projection cannot disagree about which rows exist at all.
 
-    The SETTLED narrowing is in the SQL, not a Python post-filter, and the
-    difference is real work: ``balance_contributing_clause`` alone admits every
-    PROJECTED row too -- roughly two years of forward projection -- so filtering
-    afterwards would eager-load entries for the whole horizon to keep ~130 rows.
-    :func:`~app.utils.balance_predicates.settled_status_ids` is the same status
-    set ``txn.status.is_settled`` tests, in its SQL form.
+    This half supplies the SETTLED narrowing, in SQL rather than as a Python
+    post-filter, and the difference is real work: the contributing gate alone
+    admits every PROJECTED row too -- roughly two years of forward projection --
+    so filtering afterwards would eager-load entries for the whole horizon to
+    keep ~130 rows.  :func:`~app.utils.balance_predicates.settled_status_ids` is
+    the same status set ``txn.status.is_settled`` tests, in its SQL form.
 
-    ``entries`` ARE eager-loaded, and that is load-bearing rather than an
+    The shared loader's eager ``entries`` are load-bearing here rather than an
     optimization: :func:`app.services.cash_ledger.settled_cash_leg` subtracts the
     row's credit-card entries, so an unloaded relationship would issue one SELECT
     per settled row (130 on the real Checking account) -- and the same
@@ -291,19 +292,8 @@ def settled_cash_facts(
         ``(occurred_at, transaction_id)`` -- the order the walk consumes them in,
         with the id breaking a same-instant tie deterministically.
     """
-    rows = (
-        db.session.query(Transaction)
-        .options(
-            joinedload(Transaction.pay_period),
-            selectinload(Transaction.entries),
-        )
-        .filter(
-            Transaction.account_id == account_id,
-            Transaction.scenario_id == scenario_id,
-            Transaction.status_id.in_(settled_status_ids()),
-            balance_contributing_clause(),
-        )
-        .all()
+    rows = _unwindowed_contributing_rows(
+        account_id, scenario_id, Transaction.status_id.in_(settled_status_ids()),
     )
     facts = [
         CashSourceFact(

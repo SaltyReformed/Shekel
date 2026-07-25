@@ -255,6 +255,16 @@ _FENCED_MODULE_RULINGS = {
         "resolve_anchor",
         # A loader: it selects rows, and carries no balance of any kind.
         "load_balance_transactions",
+        # The PLAN loader (plan step X-b), a non-producer on the same ground as
+        # its windowed sibling above and its settled twin ``settled_cash_facts``
+        # below: it SELECTS rows and returns them unchanged.  It is the weaker
+        # of the two shapes, deliberately -- the settled loader returns facts
+        # already VALUED and DATED, while this one cannot date anything, because
+        # a projected row's effective date is ``max(attribution, as_of + 1d)``
+        # (ruling R-G) and this package reads no clock.  Rows in, rows out; the
+        # dating, the valuation and the prefix-sum that make them a balance are
+        # all seam-private in ``balance_at._cash_fold``.
+        "planned_cash_rows",
         # ``_amounts`` -- what ONE row is worth to checking.  An amount per
         # TRANSACTION is not a balance per ACCOUNT: the live override map is
         # what a row is worth right now when its stored amount is a stale

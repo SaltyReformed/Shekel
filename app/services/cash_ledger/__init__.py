@@ -77,6 +77,7 @@ from ._events import (
 from ._facts import (
     AnchorPoint,
     load_balance_transactions,
+    planned_cash_rows,
     resolve_anchor,
 )
 from ._flows import (
@@ -108,6 +109,7 @@ __all__ = [
     "merge_anchor_and_cash_events",
     "period_subtotal",
     "period_subtotals",
+    "planned_cash_rows",
     "resolve_anchor",
     "settled_cash_facts",
     "settled_cash_leg",

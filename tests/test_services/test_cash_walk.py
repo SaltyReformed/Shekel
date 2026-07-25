@@ -35,10 +35,12 @@ from app.services.cash_ledger import (
 )
 from app.utils.dates import to_display_date
 from tests._test_helpers import (
+    append_balance_assertion,
     create_settled_cash_transaction,
     create_settled_transfer,
     create_savings_account,
     freeze_today,
+    restamp_opening_assertion,
 )
 
 
@@ -50,54 +52,13 @@ def _instant(year, month, day, hour=0, minute=0, second=0):
 
 
 def _restamp_opening(account, at):
-    """Pin the factory-written opening assertion's instant.
-
-    ``account_service.create_account`` writes the opening
-    ``AccountAnchorHistory`` row with a wall-clock ``created_at``, which would
-    put it AFTER every controlled instant these tests use.  Re-stamping it makes
-    the whole event stream deterministic.
-
-    Args:
-        account: The account whose opening row to re-stamp.
-        at: The aware-UTC instant to stamp it with.
-
-    Returns:
-        The re-stamped :class:`~app.models.account.AccountAnchorHistory` row.
-    """
-    row = (
-        db.session.query(AccountAnchorHistory)
-        .filter_by(account_id=account.id)
-        .order_by(AccountAnchorHistory.created_at)
-        .first()
-    )
-    row.created_at = at
-    db.session.flush()
-    return row
+    """Pin the factory-written opening assertion's instant (shared builder)."""
+    return restamp_opening_assertion(db.session, account, at)
 
 
 def _assert_balance(account, period, balance, at):
-    """Append one balance ASSERTION (true-up) at a pinned instant.
-
-    Args:
-        account: The account asserting.
-        period: The pay period the assertion is filed against.
-        balance: The asserted balance (a ``Decimal``).
-        at: The aware-UTC assertion instant.
-
-    Returns:
-        The inserted :class:`~app.models.account.AccountAnchorHistory` row.
-    """
-    row = AccountAnchorHistory(
-        account_id=account.id,
-        pay_period_id=period.id,
-        anchor_balance=balance,
-        notes="test assertion",
-    )
-    db.session.add(row)
-    db.session.flush()
-    row.created_at = at
-    db.session.flush()
-    return row
+    """Append one balance ASSERTION (true-up) at a pinned instant (shared)."""
+    return append_balance_assertion(db.session, account, period, balance, at)
 
 
 def _corrections(account, scenario):
@@ -714,9 +675,17 @@ class TestPreOpeningSources:
     """A settle attributed BEFORE the account's first assertion (finding N-37).
 
     Live on production 2026-07-25: two accounts carry the shape (Fidelity
-    Savings 1 row, the Money Market 4).  The behaviour is pinned here so plan
-    step X-b's ruling has something to flip, exactly as finding N-34 was gated
+    Savings 1 row, the Money Market 4).  The behaviour was pinned here so plan
+    step X-b's ruling had something to flip, exactly as finding N-34 was gated
     before C2b fixed it.
+
+    **RULED 2026-07-25 (R-I), and the ruling did NOT change this leaf.**  The
+    fold back-projects the first assertion over the records it already contains;
+    ``dated_deltas`` keeps emitting a pre-opening row at its own day, because the
+    posted ledger holds the same partial sum there and re-keying it would break
+    the walk-vs-ledger equality plan step X-d rests on.  So both assertions below
+    stand as WALK contracts, and the READER's answer -- the one the ruling is
+    about -- is graded in ``test_cash_fold.py``'s ``TestTheOpeningMovesIntoTheSeed``.
     """
 
     def test_it_is_absorbed_into_the_opening_and_the_total_is_right(
@@ -749,14 +718,20 @@ class TestPreOpeningSources:
     def test_the_prefix_before_the_opening_is_the_un_absorbed_partial_sum(
         self, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """PINNED, NOT ENDORSED -- the open question X-b must rule on.
+        """PINNED as a LEAF contract, and deliberately not a balance.
 
         ``dated_deltas`` emits the pre-opening source at its OWN day, so a
         prefix taken before the opening reads -$500.00: a balance the account
         never had.  It is faithful to the POSTED ledger, which holds the same
-        partial sum there, so the leaf does not unilaterally re-key it -- what a
-        READER should answer before an account's first assertion is the fold's
-        decision (finding N-37).  This test flips when that ruling lands.
+        partial sum there, so the leaf does not unilaterally re-key it.
+
+        Ruling R-I (2026-07-25) settled what a READER answers there -- the first
+        assertion back-projected over these records, ``$1,500.00`` on this shape
+        -- and put it in the FOLD, which is why this stayed green through X-b
+        rather than flipping.  The pairing is the point: the leaf's partial sum
+        keeps X-d's walk-vs-ledger equality, and the fold's seed keeps the
+        balance honest.  ``test_cash_fold.py`` asserts the $1,500.00 against this
+        same fixture shape.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         period = seed_periods[0]

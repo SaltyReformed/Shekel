@@ -2129,11 +2129,11 @@ def add_entry(db_session, seed_user, txn, amount, entry_date):
     db_session.flush()
 
 
-def add_txn(
+def add_txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     db_session, seed_user, period, name, amount,
     status_enum=None, is_income=False,
     due_date=None, category_key=None, is_deleted=False,
-    actual_amount=None,
+    actual_amount=None, account=None, scenario=None,
 ):
     """Create a projected (default) transaction on the seed user's account.
 
@@ -2160,6 +2160,11 @@ def add_txn(
             category, or ``None`` for no category.
         is_deleted: The soft-delete flag.
         actual_amount: The actual (tier-3) amount, or ``None``.
+        account: The :class:`~app.models.account.Account` the row lands on;
+            defaults to ``seed_user["account"]`` (the Checking account).
+        scenario: The :class:`~app.models.scenario.Scenario` the row lives in;
+            defaults to the seed user's baseline.  Pass a non-baseline scenario
+            to exercise multi-scenario isolation.
 
     Returns:
         The created :class:`~app.models.transaction.Transaction` (flushed).
@@ -2172,6 +2177,8 @@ def add_txn(
 
     if status_enum is None:
         status_enum = StatusEnum.PROJECTED
+    account = seed_user["account"] if account is None else account
+    scenario = seed_user["scenario"] if scenario is None else scenario
     type_id = (
         ref_cache.txn_type_id(TxnTypeEnum.INCOME)
         if is_income
@@ -2182,9 +2189,9 @@ def add_txn(
         cat_id = seed_user["categories"][category_key].id
 
     txn = Transaction(
-        account_id=seed_user["account"].id,
+        account_id=account.id,
         pay_period_id=period.id,
-        scenario_id=seed_user["scenario"].id,
+        scenario_id=scenario.id,
         status_id=ref_cache.status_id(status_enum),
         name=name,
         category_id=cat_id,
@@ -2237,6 +2244,81 @@ def add_anchor_history(db_session, account, period, balance, days_ago=0):
     db_session.add(entry)
     db_session.flush()
     return entry
+
+
+def restamp_opening_assertion(db_session, account, at):
+    """Pin the factory-written OPENING assertion's instant to ``at``.
+
+    ``account_service.create_account`` writes the opening
+    :class:`~app.models.account.AccountAnchorHistory` row with a wall-clock
+    ``created_at``, which would sort AFTER every controlled instant a cash-ledger
+    test uses.  Re-stamping it makes the whole event stream deterministic.
+
+    The instant-precise counterpart of :func:`add_anchor_history` (which dates
+    relative to now, in whole days): the cash walk partitions settles against an
+    assertion by INSTANT, so its suites need second precision and an absolute
+    moment.  Shared rather than copied per suite -- the walk (plan step X-a) and
+    the fold (X-b) both build their streams this way.
+
+    Args:
+        db_session: The test ``db.session``.
+        account: The :class:`~app.models.account.Account` whose opening to pin.
+        at: The aware-UTC instant to stamp it with.
+
+    Returns:
+        The re-stamped :class:`AccountAnchorHistory` row (flushed).
+    """
+    # pylint: disable=import-outside-toplevel  -- same circular-dep
+    # avoidance as the loan helpers above.
+    from app.models.account import AccountAnchorHistory
+
+    row = (
+        db_session.query(AccountAnchorHistory)
+        .filter_by(account_id=account.id)
+        .order_by(AccountAnchorHistory.created_at)
+        .first()
+    )
+    row.created_at = at
+    db_session.flush()
+    return row
+
+
+def append_balance_assertion(db_session, account, period, balance, at):
+    """Append one balance ASSERTION (a true-up) at a pinned instant.
+
+    The instant-precise true-up builder the cash-ledger suites share.  See
+    :func:`restamp_opening_assertion` for why the instant (not the day) is the
+    thing being pinned.
+
+    The row is inserted and then re-stamped, because ``created_at`` carries a
+    server default that the INSERT would otherwise fill with the wall clock.
+
+    Args:
+        db_session: The test ``db.session``.
+        account: The :class:`~app.models.account.Account` asserting.
+        period: The :class:`~app.models.pay_period.PayPeriod` the assertion is
+            filed against.
+        balance: The asserted balance (str or Decimal-coercible).
+        at: The aware-UTC assertion instant.
+
+    Returns:
+        The inserted :class:`AccountAnchorHistory` row (flushed).
+    """
+    # pylint: disable=import-outside-toplevel  -- same circular-dep
+    # avoidance as the loan helpers above.
+    from app.models.account import AccountAnchorHistory
+
+    row = AccountAnchorHistory(
+        account_id=account.id,
+        pay_period_id=period.id,
+        anchor_balance=Decimal(str(balance)),
+        notes="test assertion",
+    )
+    db_session.add(row)
+    db_session.flush()
+    row.created_at = at
+    db_session.flush()
+    return row
 
 
 def _pp_assert_structure(periods, user_id):
