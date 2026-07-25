@@ -1246,12 +1246,19 @@ class TestEscrow:
     def test_forward_guard_rejects_on_or_before_latest_settled(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """Add-version on/before the latest settled payment's period start is rejected.
+        """Add-version on/before the latest settled payment's DUE date is rejected.
 
-        A settled payment in seed_periods[0] (start 2026-01-02) freezes the escrow
-        the split at that date reads.  A version effective 2026-01-02 (== the start)
-        would move that settled split, so it is rejected; 2026-01-03 (strictly
+        A settled payment in seed_periods[0] (start 2026-01-02) satisfies the
+        2026-02-01 installment (``payment_day`` 1), and its split resolves escrow
+        on that DUE date -- contract time, ruling D5 / finding N-34 -- so that is
+        the frozen boundary.  A version effective 2026-02-01 (== the due date)
+        would move that settled split, so it is rejected; 2026-02-02 (strictly
         after) is allowed.
+
+        **A period-start boundary is what this must not be:** the payment's period
+        starts 2026-01-02, a full month before the installment it pays, so the old
+        boundary admitted every date in between -- each of which still governs the
+        settled split.  2026-01-03 is asserted rejected for exactly that reason.
         """
         acct = _create_mortgage(seed_user, db.session)
         line_id = add_escrow_line(
@@ -1265,33 +1272,46 @@ class TestEscrow:
         db.session.commit()
         assert seed_periods[0].start_date == date(2026, 1, 2)
 
+        # Inside the period-start .. due-date window: the old guard allowed this.
+        inside_window = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/{line_id}/version",
+            data={"annual_amount": "8000.00", "effective_date": "2026-01-03"},
+        )
+        assert inside_window.status_code == 400
+        assert b"latest recorded payment" in inside_window.data
+
         on_boundary = auth_client.post(
             f"/accounts/{acct.id}/loan/escrow/{line_id}/version",
-            data={"annual_amount": "8000.00", "effective_date": "2026-01-02"},
+            data={"annual_amount": "8000.00", "effective_date": "2026-02-01"},
         )
         assert on_boundary.status_code == 400
         assert b"latest recorded payment" in on_boundary.data
 
         after = auth_client.post(
             f"/accounts/{acct.id}/loan/escrow/{line_id}/version",
-            data={"annual_amount": "8000.00", "effective_date": "2026-01-03"},
+            data={"annual_amount": "8000.00", "effective_date": "2026-02-02"},
         )
         assert after.status_code == 200
         assert (
             db.session.query(EscrowComponentVersion)
-            .filter_by(line_id=line_id, effective_date=date(2026, 1, 3)).count() == 1
+            .filter_by(line_id=line_id, effective_date=date(2026, 2, 2)).count() == 1
         )
 
     def test_forward_guard_boundary_is_latest_settled(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """The guard boundary is the LATEST settled payment's start, not the earliest.
+        """The guard boundary is the LATEST settled payment's due date, not the earliest.
 
-        Two settled payments: seed_periods[0] (start 2026-01-02) and seed_periods[2]
-        (start 2026-01-30).  The boundary is the LATER start (2026-01-30), so a
-        version effective 2026-01-16 -- after the first payment but on/before the
-        second -- is STILL rejected (a min-based guard would wrongly allow it, the
-        exact bug this correction avoids); only strictly after 2026-01-30 is allowed.
+        Two settled payments whose installments differ: seed_periods[0] (start
+        2026-01-02, due 2026-02-01) and seed_periods[3] (start 2026-02-13, due
+        2026-03-01).  The boundary is the LATER due date (2026-03-01), so a version
+        effective 2026-02-15 -- after the first payment's installment but before the
+        second's -- is STILL rejected (a min-based guard would wrongly allow it, the
+        exact bug this correction avoids); only strictly after 2026-03-01 is allowed.
+
+        The two periods are chosen so their DUE dates differ: periods 0, 1 and 2 all
+        satisfy the same 2026-02-01 installment, which would make max and min
+        coincide and leave this test no teeth.
         """
         acct = _create_mortgage(seed_user, db.session)
         line_id = add_escrow_line(
@@ -1304,20 +1324,23 @@ class TestEscrow:
         )
         create_settled_transfer(
             seed_user, db.session, seed_user["account"], acct,
-            seed_periods[2], amount=Decimal("1500.00"),
+            seed_periods[3], amount=Decimal("1500.00"),
         )
         db.session.commit()
-        assert seed_periods[2].start_date == date(2026, 1, 30)
+        assert seed_periods[3].start_date == date(2026, 2, 13)
 
         between = auth_client.post(
             f"/accounts/{acct.id}/loan/escrow/{line_id}/version",
-            data={"annual_amount": "8000.00", "effective_date": "2026-01-16"},
+            data={"annual_amount": "8000.00", "effective_date": "2026-02-15"},
         )
         assert between.status_code == 400
+        # Rejected by the SETTLED-payment boundary, not by the origination bound
+        # or a same-date collision (which would satisfy a bare 400).
+        assert b"latest recorded payment" in between.data
 
         after = auth_client.post(
             f"/accounts/{acct.id}/loan/escrow/{line_id}/version",
-            data={"annual_amount": "8000.00", "effective_date": "2026-01-31"},
+            data={"annual_amount": "8000.00", "effective_date": "2026-03-02"},
         )
         assert after.status_code == 200
 
@@ -1628,9 +1651,11 @@ class TestEscrow:
     ):
         """A version in (today, boundary] can't be deleted when a payment is paid ahead.
 
-        Frozen today is 2026-03-20; seed_periods[6] starts 2026-03-27.  Settling a
-        payment for period[6] BEFORE its period begins (an early-settle) puts the
-        boundary at 2026-03-27, in the FUTURE.  A version effective 2026-03-25
+        Frozen today is 2026-03-20; seed_periods[6] starts 2026-03-27 and its
+        installment falls 2026-04-01 (``payment_day`` 1).  Settling a payment for
+        period[6] BEFORE its period begins (an early-settle) puts the boundary at
+        that DUE date -- 2026-04-01, in the FUTURE (ruling D5 / finding N-34; it
+        was the 2026-03-27 period start before).  A version effective 2026-03-25
         (after today, but on/before the boundary) underpins that settled payment's
         escrow split, so deleting it must be rejected even though it is "after
         today" -- the exact bypass the ``> today``-only guard allowed.
@@ -1652,11 +1677,12 @@ class TestEscrow:
         db.session.commit()
         assert seed_periods[6].start_date == date(2026, 3, 27)
         lines = loan_loaders.load_escrow_lines(acct.id)
-        escrow_at_settled_start = escrow_calculator.escrow_monthly_as_of(
-            lines, date(2026, 3, 27),
+        escrow_at_installment = escrow_calculator.escrow_monthly_as_of(
+            lines, date(2026, 4, 1),
         )
-        # 4800 / 12 = 400.00 (the 2026-03-25 version wins as of 2026-03-27).
-        assert escrow_at_settled_start == Decimal("400.00")
+        # 4800 / 12 = 400.00 (the 2026-03-25 version wins as of the 04-01
+        # installment -- the date the settled payment's split reads).
+        assert escrow_at_installment == Decimal("400.00")
 
         resp = auth_client.post(
             f"/accounts/{acct.id}/loan/escrow/version/{gap_version.id}/delete",
@@ -1667,7 +1693,7 @@ class TestEscrow:
         assert db.session.get(EscrowComponentVersion, gap_version.id) is not None
         lines = loan_loaders.load_escrow_lines(acct.id)
         assert escrow_calculator.escrow_monthly_as_of(
-            lines, date(2026, 3, 27),
+            lines, date(2026, 4, 1),
         ) == Decimal("400.00")
 
     def test_delete_line_blocked_by_early_settle_boundary(
@@ -1676,9 +1702,10 @@ class TestEscrow:
         """Line remove (tombstone as of today) is blocked while a payment is paid ahead.
 
         The removal tombstone lands at today (2026-03-20); with an early-settled
-        payment for period[6] (starts 2026-03-27) the boundary is 2026-03-27, so a
-        tombstone at today is on/before the boundary and would zero the line for
-        that settled payment.  The route must reject the removal.
+        payment for period[6] (starts 2026-03-27, installment due 2026-04-01) the
+        boundary is that DUE date, so a tombstone at today is on/before the
+        boundary and would zero the line for that settled payment.  The route must
+        reject the removal.
         """
         acct = _create_mortgage(seed_user, db.session)
         line = add_escrow_line(db.session, acct.id, "Tax", Decimal("3600.00"))
@@ -1699,9 +1726,10 @@ class TestEscrow:
         reloaded = db.session.get(EscrowLine, line.line_id)
         assert all(not v.is_removed for v in reloaded.versions)
         lines = loan_loaders.load_escrow_lines(acct.id)
-        # 3600 / 12 = 300.00, unchanged for the early-settled payment.
+        # 3600 / 12 = 300.00, unchanged at the early-settled payment's 04-01
+        # installment -- the date its split resolves escrow on.
         assert escrow_calculator.escrow_monthly_as_of(
-            lines, date(2026, 3, 27),
+            lines, date(2026, 4, 1),
         ) == Decimal("300.00")
 
 
@@ -1725,9 +1753,11 @@ def _make_sync_loan(seed_user, db_session):
 
 # Each escrow WRITE route, as a (precondition + POST) callable returning the
 # response.  Every escrow effective date is strictly AFTER the settled payment's
-# 2026-01-16 pay-period start (the forward-only boundary), so no case moves the
-# settled split -- the only ledger change the sync makes is to HEAL the forged
-# cash entry, proving the route ran the sync regardless of its escrow op.
+# 2026-02-01 DUE date -- the forward-only boundary, which is the date its split
+# resolves escrow on (ruling D5, finding N-34), NOT the 2026-01-16 pay-period
+# start these dates were first chosen against.  So no case moves the settled
+# split, and the only ledger change the sync makes is to HEAL the forged cash
+# entry, proving the route ran the sync regardless of its escrow op.
 
 
 def _write_add_escrow(client, db_session, loan):
@@ -1743,7 +1773,7 @@ def _write_delete_escrow(client, db_session, loan):
     """delete_escrow: tombstone a post-boundary line as of today."""
     line = add_escrow_line(
         db_session, loan.id, "Old Tax", Decimal("6000.00"),
-        effective_date=date(2026, 2, 1),
+        effective_date=date(2026, 3, 1),
     ).line
     db_session.commit()
     return client.post(f"/accounts/{loan.id}/loan/escrow/{line.id}/delete")
@@ -1753,7 +1783,7 @@ def _write_add_version(client, db_session, loan):
     """add_escrow_version: schedule a future change on an existing line."""
     line = add_escrow_line(
         db_session, loan.id, "Tax", Decimal("6000.00"),
-        effective_date=date(2026, 2, 1),
+        effective_date=date(2026, 3, 1),
     ).line
     db_session.commit()
     return client.post(
@@ -1791,7 +1821,7 @@ def _write_rename(client, db_session, loan):
     """rename_escrow_line: rename a line in place (display-only)."""
     line = add_escrow_line(
         db_session, loan.id, "Tax", Decimal("6000.00"),
-        effective_date=date(2026, 2, 1),
+        effective_date=date(2026, 3, 1),
     ).line
     db_session.commit()
     return client.post(
@@ -1802,10 +1832,10 @@ def _write_rename(client, db_session, loan):
 
 def _write_merge(client, db_session, loan):
     """merge_escrow_line: fold a removed predecessor into the active line."""
-    boundary = date(2026, 3, 1)
+    boundary = date(2026, 4, 1)
     old = add_escrow_line(
         db_session, loan.id, "Old Tax", Decimal("6000.00"),
-        effective_date=date(2026, 2, 1),
+        effective_date=date(2026, 3, 1),
     ).line
     db_session.add(EscrowComponentVersion(
         line_id=old.id, effective_date=boundary,

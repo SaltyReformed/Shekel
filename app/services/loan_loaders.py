@@ -437,9 +437,9 @@ def settled_income_shadows(
     which payments are settled: the fold's event stream
     (:func:`app.services.loan_ledger.walk_loan_ledger`), the fold's display bound
     (:func:`app.services.loan_ledger.confirmed_shadows_through`), the ledger's
-    per-payment principal reader, :func:`_settled_payment_due_dates` (the
-    anchor-ordering guards), and :func:`latest_settled_payment_period_start` (the
-    escrow forward-only guard).
+    per-payment principal reader, and :func:`_settled_payment_due_dates` (the
+    anchor-ordering guards AND, since finding N-34, the escrow forward-only
+    guard's boundary :func:`latest_settled_payment_due_date`).
 
     It was TWO functions of this name until the fold moved to its own leaf -- this
     one (unordered) and the genesis walk's private copy (sorted) -- each claiming in
@@ -711,33 +711,38 @@ def earliest_settled_payment_due_date(
     return min(due_dates) if due_dates else None
 
 
-def latest_settled_payment_period_start(
+def latest_settled_payment_due_date(
     account_id: int, scenario_id: int,
 ) -> date | None:
-    """Return the latest settled payment's pay-period START date, or ``None``.
+    """Return the latest settled payment's monthly DUE date, or ``None``.
 
     The forward-only boundary the escrow effective-date guard validates against: a
     new or edited escrow version must take effect STRICTLY AFTER this date, or it
     would retroactively change an already-settled payment's escrow split and desync
     it from the cash frozen at settlement.  A version at ``effective_date > this``
-    cannot be the greatest ``effective_date <= start`` for any settled payment, so
-    no settled split moves.
+    cannot be the greatest ``effective_date <= due date`` for any settled payment,
+    so no settled split moves.
 
-    Keys on ``pay_period.start_date`` -- the EXACT date the fold's walk
-    (:func:`app.services.loan_ledger.walk_loan_ledger`) and the
-    settle-time cash freeze
+    Keys on the payment's DUE date -- contract time, the EXACT date the fold's
+    walk (:func:`app.services.loan_ledger.walk_loan_ledger`) and the settle-time
+    cash freeze
     (:func:`app.services.loan_payment_service._shadow_live_amount`) resolve each
-    payment's escrow at -- NOT the monthly due date
-    :func:`_settled_payment_due_dates` derives for the anchor-ordering guards
-    (those compare against the walk's anchor-vs-payment due-date sort; escrow
-    resolves on the period start, so the boundary differs).  Shares
-    :func:`settled_income_shadows` with those, so the escrow guard and the split
-    walk provably agree on which payments are settled.
+    payment's escrow at (ruling D5, finding N-34).  It is the SAME
+    :func:`_settled_payment_due_dates` derivation the anchor-ordering guards
+    read, so the escrow guard, the walk, and the tax figure provably agree on
+    each payment's date -- the mirror of
+    :func:`earliest_settled_payment_due_date`, differing only in the bound taken.
+
+    **A pay-period-start boundary is what this must not be:** a period begins up
+    to ~2 weeks before the installment it pays, so a version effective inside
+    that window clears a period-start guard yet still governs the settled
+    payment's split.
 
     NOTE: point-in-time -- scans only payments settled at call time, mirroring
     :func:`earliest_settled_payment_due_date`.  A payment settled LATER against an
-    earlier period is the same structural property the tracking-start guard
-    carries; a settled payment's escrow is additionally frozen by capture-on-settle
+    earlier installment is the same structural property the tracking-start guard
+    carries; a settled payment's escrow is additionally frozen by
+    capture-on-settle
     (:func:`app.services.loan_payment_service.live_loan_payment_amount`).
 
     Args:
@@ -746,14 +751,12 @@ def latest_settled_payment_period_start(
             recorded payments live).
 
     Returns:
-        The greatest ``pay_period.start_date`` over the loan's settled income
-        shadows, or ``None`` when the loan has no settled payment.
+        The greatest due date over the loan's settled income shadows, or ``None``
+        when the loan is unconfigured (no :class:`LoanParams`) or has no settled
+        payment.
     """
-    starts = [
-        shadow.pay_period.start_date
-        for shadow in settled_income_shadows(account_id, scenario_id)
-    ]
-    return max(starts) if starts else None
+    due_dates = _settled_payment_due_dates(account_id, scenario_id)
+    return max(due_dates) if due_dates else None
 
 
 def query_shadow_income(account_id: int, scenario_id: int):

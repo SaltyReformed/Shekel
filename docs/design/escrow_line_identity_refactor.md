@@ -164,23 +164,31 @@ An effective date that precedes an already-settled payment would retroactively c
 `escrow_monthly_as_of`, desyncing it from the cash that already froze at settlement (Sec. 5.2). So:
 
 > **Guard:** a new, edited, OR deleted escrow version's `effective_date` must be strictly after the
-> pay-period start of the loan's latest **settled** payment.
+> **due date** of the loan's latest **settled** payment.
 
-**As built (correction to the original wording).** The boundary is the greatest
-`pay_period.start_date` over settled payments -- `loan_loaders.latest_settled_payment_period_start`,
-which shares the settled-shadow set (`_settled_income_shadows`) with the tracking-start guard so
-both agree on "which payments are settled." It keys on the pay-period **start**, NOT the monthly
-**due** date `_settled_payment_due_dates` derives: the split (`_walk._replay_events`) and the
-settle-time cash freeze (`loan_payment_service._shadow_live_amount`) both resolve escrow at
-`pay_period.start_date`, so that is the precise boundary; guarding on the due date would be
-over-conservative. The guard applies uniformly to add-line, add-version, edit (both the version's
-current and new date), delete-version, AND the line-level remove (its tombstone lands at today, so
-today must clear the boundary). **The boundary can be in the FUTURE** -- an EARLY-settled payment
-(settled before its pay period begins) puts it after today; an adversarial review caught that the
-two delete paths originally guarded only on "today" and could corrupt a paid-ahead payment's split.
-The route rejects a violating date with an actionable message naming the boundary; the escrow card
-surfaces it (a 4xx does not HTMX-swap, so `escrow_card.js` projects the message into
-`#escrow-error`).
+**As built, corrected TWICE -- the second correction REVERSES the first.** The boundary is the
+greatest **due date** over settled payments -- `loan_loaders.latest_settled_payment_due_date`, built
+on the same `_settled_payment_due_dates` derivation the tracking-start guard reads, so the two agree
+both on "which payments are settled" and on each one's date.
+
+*The first as-built wording said the opposite*: the greatest `pay_period.start_date`
+(`latest_settled_payment_period_start`), on the grounds that the split (`_walk._replay_events`) and
+the settle-time cash freeze (`loan_payment_service._shadow_live_amount`) both resolved escrow at
+`pay_period.start_date`, so guarding on the due date "would be over-conservative." That premise was
+itself the defect. Balance-arc finding **N-34** measured that keying a split input on the pay-period
+start contradicts ruling D5 ("the split inputs -- ordering, rate, AND escrow -- key on the DUE
+date"), and step C2b re-keyed the split, the forward plan, and the live-cash derivation onto the
+installment's due date. A period-start boundary is now strictly too permissive: a pay period begins
+up to ~2 weeks before the installment it pays, so a version effective inside that window cleared the
+old guard and still governed the settled payment's split. The due-date boundary is not
+over-conservative -- it is exactly the date the split reads. The guard applies uniformly to
+add-line, add-version, edit (both the version's current and new date), delete-version, AND the
+line-level remove (its tombstone lands at today, so today must clear the boundary).
+**The boundary can be in the FUTURE** -- an EARLY-settled payment (settled before its pay period
+begins) puts it after today; an adversarial review caught that the two delete paths originally
+guarded only on "today" and could corrupt a paid-ahead payment's split. The route rejects a
+violating date with an actionable message naming the boundary; the escrow card surfaces it (a 4xx
+does not HTMX-swap, so `escrow_card.js` projects the message into `#escrow-error`).
 
 ### 4.3 Past corrections go through the existing loan true-up, NOT retroactive escrow
 
@@ -317,8 +325,7 @@ varies per payment as the balance amortizes; escrow is what we are proving consi
 
 **Timeline.** Nov payment settles ~Nov 1 (old escrow). On **Nov 15** the operator opens the escrow
 line and enters "amount $666.99, **effective 2026-01-01**." Guard check (Sec. 4.2): latest settled
-payment is November -> its pay-period start is in early November -> Jan 1 is strictly after it ->
-**allowed.**
+payment is November -> its installment is due Nov 1 -> Jan 1 is strictly after it -> **allowed.**
 
 Escrow line "Property Tax & Insurance" versions after the edit (supersession, no end dates):
 
@@ -330,21 +337,22 @@ Escrow line "Property Tax & Insurance" versions after the edit (supersession, no
 `escrow_monthly_as_of(line, D)` = greatest effective <= D: as-of any December date ->
 **v1 $616.99**; as-of any January date -> **v2 $666.99**.
 
-**December payment** (pay-period start early Dec), projected on Nov 15, settles ~Dec 1:
+**December payment** (installment due Dec 1), projected on Nov 15, settles ~Dec 1:
 
 - Cash built (date-aware, Sec. 5): base = P&I $1,293.96 + `escrow_as_of(Dec) $616.99` = $1,910.95;
   - extra $100 -> **cash $2,010.95**. Frozen at settlement.
-- Split (keyed to Dec start, Sec. 3): interest $1,018.82; `escrow_as_of(Dec) $616.99`; principal =
-  2,010.95 - 1,018.82 - 616.99 = **$375.14** = scheduled $275.14 + extra $100. Extra lands in
-  principal. ✓
+- Split (keyed to the Dec 1 installment, Sec. 3): interest $1,018.82; `escrow_as_of(Dec) $616.99`;
+  principal = 2,010.95 - 1,018.82 - 616.99 = **$375.14** = scheduled $275.14 + extra $100. Extra
+  lands in principal. ✓
 - Cash escrow $616.99 **==** split escrow $616.99. ✓ **MATCH.**
 
-**January payment** (pay-period start early Jan), projected on Nov 15, settles ~Jan 1:
+**January payment** (installment due Jan 1), projected on Nov 15, settles ~Jan 1:
 
 - Cash built (date-aware): base = $1,293.96 + `escrow_as_of(Jan) $666.99` = $1,960.95; + extra $100
   -> **cash $2,060.95**. Frozen at settlement.
-- Split (keyed to Jan start): interest = on the post-December balance; `escrow_as_of(Jan) $666.99`;
-  principal = 2,060.95 - interest - 666.99 = (1,293.96 - interest) + 100. Extra in principal. ✓
+- Split (keyed to the Jan 1 installment): interest = on the post-December balance;
+  `escrow_as_of(Jan) $666.99`; principal = 2,060.95 - interest - 666.99 = (1,293.96 - interest) +
+  100. Extra in principal. ✓
 - Cash escrow $666.99 **==** split escrow $666.99. ✓ **MATCH.**
 
 **Contrast (why the field and date-aware cash are required):** Without them, entering the change on
@@ -488,8 +496,10 @@ ranges), with the documented caveat that a post-upgrade merge is not losslessly 
    `feat(escrow): effective-date field + version drawer with forward-only guard`). Built the
    operator-facing effective-date field, the forward-only guard (Sec. 4.2 as-built:
    `latest_settled_payment_period_start`, keyed on the pay-period start, boundary-can-be-future,
-   applied to every write path incl. both deletes and the line remove), and -- per the operator's
-   scope choice -- the loan-detail escrow card rebuilt into a per-line **version-history drawer**:
+   applied to every write path incl. both deletes and the line remove -- **re-keyed onto the
+   installment's DUE date as `latest_settled_payment_due_date` by balance-arc step C2b / finding
+   N-34; see Sec. 4.2's second correction**), and -- per the operator's scope choice -- the
+   loan-detail escrow card rebuilt into a per-line **version-history drawer**:
    `escrow_calculator.build_escrow_card` (reuses `resolve_active_lines` + `build_escrow_display`, so
    the cent-allocation invariant holds; shows not-yet-active lines so a scheduled line never
    silently vanishes; drops an orphaned empty line), routes `add_escrow_version` /

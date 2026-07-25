@@ -141,8 +141,10 @@ def _replay_events(
             split here rather than re-derived (plan step E1c).
         periods: The loan's rate periods (governs each payment's interest rate).
         escrow_lines: The loan's escrow lines with their full version history;
-            each payment resolves the escrow in effect on its pay-period start
-            via :func:`~app.services.escrow_calculator.escrow_monthly_as_of`.
+            each payment resolves the escrow in effect on its DUE date
+            (``governing_date`` -- contract time, ruling D5) via
+            :func:`~app.services.escrow_calculator.escrow_monthly_as_of`, the
+            same date :func:`._split.split_one_payment` resolves its rate on.
 
     Returns:
         ``(payment_splits, anchor_corrections)``, both chronological.
@@ -158,7 +160,7 @@ def _replay_events(
             balance = item.anchor_balance
             continue
         payment_escrow = escrow_calculator.escrow_monthly_as_of(
-            escrow_lines, item.pay_period.start_date,
+            escrow_lines, governing_date,
         )
         split, balance = split_one_payment(
             item, balance, periods, payment_escrow, governing_date,
@@ -198,9 +200,9 @@ def walk_loan_ledger(
     from-origination replay.
 
     **Takes no as-of, and reads no clock** (see the module docstring).  Each
-    payment's escrow is the amount IN EFFECT ON that payment's date
-    (effective-dated, NO inflation), so a later escrow change never re-splits a
-    past payment.  Reads only (no writes, no commit).
+    payment's escrow is the amount IN EFFECT ON its DUE date (effective-dated,
+    NO inflation, ruling D5's contract time), so a later escrow change never
+    re-splits a past payment.  Reads only (no writes, no commit).
 
     Args:
         loan_account_id: The loan account whose ledger to walk.
@@ -228,8 +230,8 @@ def walk_loan_ledger(
     )
     # Every escrow LINE with its full version history, loaded once; each
     # payment's escrow is resolved (greatest effective_date <= that payment's
-    # date, per line) and summed via the shared ``escrow_monthly_as_of``, so a
-    # since-removed version still applies to a historical payment and a later
+    # DUE date, per line) and summed via the shared ``escrow_monthly_as_of``, so
+    # a since-removed version still applies to a historical payment and a later
     # escrow change never re-splits a past payment (plan Section 2 / D3).
     escrow_lines = loan_loaders.load_escrow_lines(loan_account_id)
     shadows = loan_loaders.settled_income_shadows(loan_account_id, scenario_id)

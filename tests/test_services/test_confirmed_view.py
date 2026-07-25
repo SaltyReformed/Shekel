@@ -52,6 +52,7 @@ import pytest
 from app import ref_cache
 from app.enums import StatusEnum
 from app.extensions import db as _db
+from app.models.escrow_line import EscrowComponentVersion
 from app.models.loan_features import RateHistory
 from app.models.loan_params import LoanParams
 from app.models.scenario import Scenario
@@ -698,24 +699,26 @@ class TestConfirmedViewShapeMatrix:
     def test_an_arm_rate_step_lifts_the_interest_and_the_rows_rate(
         self, app, db, seed_user, seed_periods,
     ):
-        """A rate change to 9% governs the payments whose PAY PERIOD starts after it.
+        """A rate change to 9% governs every payment DUE on or after it.
 
         The rate steps to 9% (monthly 0.0075) effective 2026-02-01.  The split
-        resolves each payment's rate period on its PAY-PERIOD START (see
-        :class:`TestSplitRateKeysOnThePayPeriodStart` for why that is not the
-        ruled behaviour), so period 1 (starting 2026-01-16) still accrues at 6%
-        and the later two at 9%:
+        resolves each payment's rate period on its DUE date -- contract time,
+        ruling D5 (see :class:`TestSplitInputsKeyOnTheDueDate`) -- so all three
+        installments, due 02-01 / 03-01 / 04-01, accrue at 9%:
 
-          due 02-01 at 6%:  interest round(100000 x 0.005) = 500.00, principal
-            1000 - 500 = 500.00 -> 99,500.00
-          due 03-01 at 9%:  interest round(99500 x 0.0075) = 746.25, principal
-            253.75 -> 99,246.25
-          due 04-01 at 9%:  interest round(99246.25 x 0.0075) = round(744.3469)
-            = 744.35, principal 255.65 -> 98,990.60
+          due 02-01 at 9%:  interest round(100000 x 0.0075) = 750.00, principal
+            1000 - 750 = 250.00 -> 99,750.00
+          due 03-01 at 9%:  interest round(99750 x 0.0075) = round(748.125)
+            = 748.13, principal 251.87 -> 99,498.13
+          due 04-01 at 9%:  interest round(99498.13 x 0.0075) = round(746.2360)
+            = 746.24, principal 253.76 -> 99,244.37
 
-        Each row also CARRIES its governing rate, so a row's displayed rate is
-        provably the rate its interest accrued at (plan step E1c's ruling Q3) --
-        which is exactly what makes the keying visible here rather than silent.
+        The FIRST row is the one that moves with the keying: period 1 starts
+        2026-01-16, before the change, while its installment falls on the very
+        day the new rate takes effect.  Each row also CARRIES its governing
+        rate, so a row's displayed rate is provably the rate its interest
+        accrued at (plan step E1c's ruling Q3) -- which is exactly what makes
+        the keying visible here rather than silent.
         """
         with app.app_context():
             loan = _make_loan(seed_user)
@@ -732,15 +735,15 @@ class TestConfirmedViewShapeMatrix:
 
             view = _view(loan, seed_user)
             assert _economics(view) == [
-                (date(2026, 2, 1), Decimal("500.00"),
-                 Decimal("500.00"), Decimal("99500.00")),
-                (date(2026, 3, 1), Decimal("746.25"),
-                 Decimal("253.75"), Decimal("99246.25")),
-                (date(2026, 4, 1), Decimal("744.35"),
-                 Decimal("255.65"), Decimal("98990.60")),
+                (date(2026, 2, 1), Decimal("750.00"),
+                 Decimal("250.00"), Decimal("99750.00")),
+                (date(2026, 3, 1), Decimal("748.13"),
+                 Decimal("251.87"), Decimal("99498.13")),
+                (date(2026, 4, 1), Decimal("746.24"),
+                 Decimal("253.76"), Decimal("99244.37")),
             ]
             assert [row.interest_rate for row in view.history_rows] == [
-                Decimal("0.06"), Decimal("0.09"), Decimal("0.09"),
+                Decimal("0.09"), Decimal("0.09"), Decimal("0.09"),
             ]
 
     def test_a_severe_underpayment_grows_the_balance_every_month(
@@ -977,43 +980,47 @@ class TestConfirmedViewShapeMatrix:
             ] == [13, 14]
 
 
-class TestSplitRateKeysOnThePayPeriodStart:
-    """A DOCUMENTED DEFECT, pinned so the fix has a control to flip (finding N-34).
+class TestSplitInputsKeyOnTheDueDate:
+    """Contract time governs the split's RATE and ESCROW (ruling D5, finding N-34).
 
     Ruling D5 (and R-A, which restates it) says the split INPUTS -- ordering,
     rate, AND escrow -- key on the payment's DUE date, "so out-of-order or late
-    settlement can never re-split an installment", and plan step C2 recorded
-    "due-date split keying" as shipped.  ORDERING did move to the due date
-    (``loan_ledger.merge_anchor_and_payment_events``) and VISIBILITY to the
-    settled date, but the RATE and the ESCROW did not: they still resolve on the
-    payment's ``pay_period.start_date``
-    (``loan_ledger._split.split_one_payment``; ``loan_ledger._walk._replay_events``).
+    settlement can never re-split an installment".  ORDERING moved to the due
+    date at step C2 (``loan_ledger.merge_anchor_and_payment_events``) and
+    VISIBILITY to the settled date, but the RATE and the ESCROW were left on the
+    payment's ``pay_period.start_date`` until finding **N-34** measured the gap;
+    these two tests are the fix's pins, replacing the control that pinned the
+    defect.
 
-    A pay period starts up to ~2 weeks BEFORE the installment it pays, so a rate
-    or escrow version effective inside that window governs the wrong side of the
-    boundary.  Ruling D5 measured it as moving nothing on the real loans (their
-    period-start-to-due-date windows contain no version change) and said "gate it
-    anyway"; this is that gate.  It is pinned as-is rather than fixed here because
-    correcting it MOVES recorded balances, which is its own step.
+    A pay period starts up to ~2 weeks BEFORE the installment it pays, so a
+    version effective inside that window would govern the wrong side of the
+    boundary: the rate case misattributes interest as principal, the escrow case
+    misattributes escrow as principal.  Both propagate to the owed balance, the
+    posted ledger's interest leg, the payment-history table, the Schedule-A tax
+    figure, and the paid-YTD chips -- and E1a's checked-projection assert cannot
+    catch either, because both sides derive from the same walk.
 
-    **When the split is re-keyed onto the due date, this test flips** -- the
-    developer-confirmed behaviour change rule 5 allows for.
+    Each test puts the version change STRICTLY inside the window and asserts the
+    installment's own date governs; reverting either call site to
+    ``pay_period.start_date`` flips it back to the value named in its docstring.
     """
 
-    def test_a_rate_change_inside_the_period_to_due_window_is_not_applied(
+    def test_a_rate_change_inside_the_period_to_due_window_governs(
         self, app, db, seed_user, seed_periods,
     ):
-        """A 12% rate effective mid-window leaves the payment splitting at 6%.
+        """A 12% rate effective mid-window splits the payment at 12%, not 6%.
 
         Period 1 runs 2026-01-16..01-29 and its installment is due 2026-02-01, so
         2026-01-25 is STRICTLY inside the window: after the pay-period start,
-        before the due date.  Under D5's ruled due-date keying the payment would
-        accrue at 12% -- interest round(100000 x 0.01) = 1000.00, principal 0.00,
-        balance held at 100,000.00.  It accrues at 6% instead: interest
-        round(100000 x 0.005) = 500.00, principal 500.00, balance 99,500.00.
+        before the due date.  Keyed on the DUE date the payment accrues at 12% --
+        interest round(100000 x 0.01) = 1000.00, principal 1000 - 1000 = 0.00,
+        balance held at 100,000.00.  Keyed on the pay-period start (the N-34
+        defect) it accrued at 6%: interest 500.00, principal 500.00, balance
+        99,500.00.
 
-        **$500.00 of interest on ONE payment**, misattributed to principal --
-        which also moves the Schedule-A interest figure the Taxes tab reports.
+        **$500.00 of interest on ONE payment**, which under the defect was
+        misattributed to principal -- and which also moves the Schedule-A
+        interest figure the Taxes tab reports.
         """
         with app.app_context():
             loan = _make_loan(seed_user)
@@ -1031,12 +1038,53 @@ class TestSplitRateKeysOnThePayPeriodStart:
 
             (row,) = _view(loan, seed_user).history_rows
             assert row.payment_date == date(2026, 2, 1)
-            # As RULED (D5): rate 0.12, interest 1000.00, balance 100,000.00.
-            # As BUILT: the pay-period start still governs.
-            assert row.interest_rate == Decimal("0.06000")
+            assert row.interest_rate == Decimal("0.12000")
+            assert row.interest == Decimal("1000.00")
+            assert row.principal == Decimal("0.00")
+            assert row.remaining_balance == Decimal("100000.00")
+
+    def test_an_escrow_change_inside_the_period_to_due_window_governs(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """An escrow version effective mid-window is the escrow the split backs out.
+
+        The loan opens with $1,200/yr escrow ($100/mo) from origination; a second
+        version on the SAME line takes effect 2026-01-25 at $6,000/yr ($500/mo) --
+        again strictly inside period 1's 2026-01-16 start .. 2026-02-01 due
+        window.  Keyed on the DUE date the payment backs out $500.00: interest
+        round(100000 x 0.005) = 500.00, principal 1000 - 500 - 500 = 0.00,
+        balance held at 100,000.00.  Keyed on the pay-period start it backed out
+        the superseded $100.00 and booked principal 400.00 -> 99,600.00.
+
+        **$400.00 of escrow on ONE payment**, misattributed to principal.  The
+        escrow half matters as much as the rate half because the CASH is built
+        from the same figure (``_shadow_live_amount``): if the two ends key on
+        different dates, the difference silently lands in principal.
+        """
+        with app.app_context():
+            loan = _make_loan(seed_user, escrow_annual=Decimal("1200.00"))
+            opening = (
+                db.session.query(EscrowComponentVersion)
+                .filter_by(line_id=loan.escrow_lines[0].id)
+                .one()
+            )
+            db.session.add(EscrowComponentVersion(
+                line_id=opening.line_id,
+                effective_date=date(2026, 1, 25),
+                annual_amount=Decimal("6000.00"),
+            ))
+            db.session.commit()
+            _settle(seed_user, loan, seed_periods[_P1])
+            db.session.commit()
+
+            period = seed_periods[_P1]
+            assert period.start_date < date(2026, 1, 25) < date(2026, 2, 1)
+
+            (row,) = _view(loan, seed_user).history_rows
+            assert row.payment_date == date(2026, 2, 1)
             assert row.interest == Decimal("500.00")
-            assert row.principal == Decimal("500.00")
-            assert row.remaining_balance == Decimal("99500.00")
+            assert row.principal == Decimal("0.00")
+            assert row.remaining_balance == Decimal("100000.00")
 
 
 class TestRawLoanTransactionIsInvisibleToTheWalk:

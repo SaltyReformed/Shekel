@@ -865,7 +865,8 @@ def replay_schedule(
     #     due date.  ``_build_monthly_override`` uses the same pay-period
     #     start so the two partitions stay exact complements.
     # Walked in DUE-date order, matching the genesis write walk's own event
-    # merge, so the two consume the payments in one order.
+    # merge, so the two consume the payments in ONE ORDER -- and only order:
+    # they deliberately differ on the RATE key (see the loop below).
     eligible = sorted(
         (
             payment for payment in confirmed_payments
@@ -890,6 +891,21 @@ def replay_schedule(
         # payment's due date, so the schedule shows the real statement
         # date and ``next_pay_date`` advances to the correct following
         # month rather than landing one month early.
+        #
+        # THIS IS A DIFFERENT RATE KEY FROM THE GENESIS WALK, deliberately
+        # (finding N-36).  The walk keys the rate on the installment's DUE date
+        # -- contract time, ruling D5 -- but it reads RAW payments, while this
+        # replay consumes records that have been through
+        # ``loan_payment_service._redistribute_to_distinct_months``, which
+        # INVENTS a due date for a payment colliding on an already-allocated
+        # month.  Keying the rate on an invented date would let a schedule-
+        # alignment artifact move a replayed balance, so this stays on the
+        # pay-period start, which is always a fact.  Containment: this replay's
+        # rows and balance are DISCARDED whenever a ``confirmed_view`` is
+        # supplied (``_build_forward_inputs`` keeps only ``next_pay_date`` /
+        # ``remaining_months_as_of``), which is every production read since plan
+        # step E1d-b -- so the two keys can only differ on the unseeded
+        # what-if path, and never inside one rendered figure.
         period = period_for_date(periods, payment.period_start)
         due_date = payment.due_date
         row = _replay_payment_row(balance, period, due_date, origination_date)

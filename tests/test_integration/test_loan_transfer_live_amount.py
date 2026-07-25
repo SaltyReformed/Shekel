@@ -244,16 +244,23 @@ def test_derived_transfer_due_date_matches_loan_due_date(
 def test_derived_override_is_per_shadow_date_aware(
     app, db, seed_user, seed_periods,
 ):
-    """A future-dated escrow version changes only the shadows on/after its date.
+    """A future-dated escrow version changes only the shadows due on/after its date.
 
     Loan $200k / 6% / 360mo, P&I 1,199.10.  Escrow $3,600/yr (300/mo) from
     origination (2026-01-01), then a NEW version $4,800/yr (400/mo) effective
     2026-03-15 on the SAME line.  The live override resolves escrow per shadow
-    DATE: a shadow whose pay-period start is before 2026-03-15 keeps PITI
-    1,499.10; one on or after picks up 1,599.10.  A single figure per loan
-    (today's escrow for every shadow) would wrongly give them all 1,599.10 --
-    the bug this per-shadow resolution fixes, and the cash side of the
-    cash==split invariant for future-dated escrow.
+    INSTALLMENT: a shadow due before 2026-03-15 keeps PITI 1,499.10; one due on
+    or after picks up 1,599.10.  A single figure per loan (today's escrow for
+    every shadow) would wrongly give them all 1,599.10 -- the bug this
+    per-shadow resolution fixes, and the cash side of the cash==split invariant
+    for future-dated escrow.
+
+    The partition is by DUE date (ruling D5's contract time, finding N-34); this
+    fixture's shadows are due 02-01 / 03-01 / 04-01 / 05-01 against pay periods
+    starting 01-30 / 02-27 / 03-27 / 04-24, so the two keyings happen to group
+    them identically here.  The test that DISCRIMINATES them is
+    :func:`test_live_cash_and_split_agree_on_a_mid_window_escrow_change`, which
+    puts the version inside a single payment's period-start-to-due-date window.
     """
     with app.app_context():
         loan, escrow, scenario_id, template, _rule, _periods = (
@@ -275,15 +282,96 @@ def test_derived_override_is_per_shadow_date_aware(
             scenario_id, shadows,
         )
         cutoff = date(2026, 3, 15)
-        before = [s for s in shadows if s.pay_period.start_date < cutoff]
-        after = [s for s in shadows if s.pay_period.start_date >= cutoff]
+        before = [s for s in shadows if s.due_date < cutoff]
+        after = [s for s in shadows if s.due_date >= cutoff]
         assert before and after, (
-            "seed_periods must place shadows on both sides of 2026-03-15"
+            "seed_periods must place installments on both sides of 2026-03-15"
         )
         # Old escrow ($300) for pre-effective shadows: 1199.10 + 300 = 1499.10.
         assert all(overrides[s.id] == Decimal("1499.10") for s in before)
         # New escrow ($400) for on/after shadows: 1199.10 + 400 = 1599.10.
         assert all(overrides[s.id] == Decimal("1599.10") for s in after)
+
+
+def test_live_cash_and_split_agree_on_a_mid_window_escrow_change(
+    app, db, auth_client, seed_user, seed_periods,
+):
+    """An escrow version inside the period-to-due window moves BOTH cash and split.
+
+    The discriminating control for finding N-34's cash==split half.  The
+    installment due 2026-03-01 is paid from the pay period starting 2026-02-27,
+    so a version effective **2026-02-28** falls STRICTLY inside that window --
+    after the period start, before the due date.  The two keyings disagree there,
+    and they must not be allowed to disagree with EACH OTHER:
+
+      * DUE-date keying (ruling D5, as built): escrow 500.00, so the live cash is
+        P&I 1,199.10 + 500.00 = **1,699.10**, and the split subtracts the same
+        500.00 -- interest 200,000 x 0.06 / 12 = 1,000.00, principal
+        1,699.10 - 1,000.00 - 500.00 = 199.10 (exactly P&I - interest).
+      * PERIOD-START keying (the N-34 defect): escrow 300.00 -> cash 1,499.10.
+
+    Reverting EITHER end alone re-opens the gap this test exists to close: the
+    cash would carry one escrow figure while the split backed out the other, and
+    the $200.00 difference would land silently in PRINCIPAL, moving the recorded
+    balance.  Asserting ``principal == P&I - interest`` is what pins that -- it
+    holds only when both ends read the same date.
+    """
+    with app.app_context():
+        loan, escrow, scenario_id, template, _rule, _periods = (
+            _build_derived_loan_transfer(seed_user, Decimal("3600.00"))
+        )
+        transfer_recurrence.generate_for_template(
+            template, seed_periods, scenario_id,
+        )
+        db.session.add(EscrowComponentVersion(
+            line_id=escrow.line_id,
+            effective_date=date(2026, 2, 28),
+            annual_amount=Decimal("6000.00"),
+        ))
+        db.session.commit()
+
+        income_shadow = (
+            db.session.query(Transaction)
+            .filter(
+                Transaction.transfer_id.isnot(None),
+                Transaction.account_id == loan.id,
+                Transaction.scenario_id == scenario_id,
+                Transaction.due_date == date(2026, 3, 1),
+            )
+            .one()
+        )
+        # The version really is inside the window: after the period start,
+        # before the installment it governs.
+        assert (
+            income_shadow.pay_period.start_date
+            < date(2026, 2, 28)
+            < income_shadow.due_date
+        )
+
+        overrides = loan_payment_service.live_loan_transfer_amounts(
+            scenario_id, [income_shadow],
+        )
+        assert overrides[income_shadow.id] == Decimal("1699.10")
+
+        resp = auth_client.post(f"/transactions/{income_shadow.id}/mark-done")
+        assert resp.status_code == 200, resp.data
+
+        db.session.expire_all()
+        settled = db.session.get(Transaction, income_shadow.id)
+        assert settled.effective_amount == Decimal("1699.10")
+
+        (split,) = loan_ledger.compute_loan_payment_splits(loan.id, scenario_id)
+        assert split.due_date == date(2026, 3, 1)
+        assert split.escrow == Decimal("500.00")
+        assert split.interest == Decimal("1000.00")
+        # The cash==split invariant: every cent of escrow built into the cash is
+        # backed out again, so principal is exactly P&I - interest.
+        assert split.principal == Decimal("199.10")
+        assert split.excess == Decimal("0.00")
+        assert (
+            split.interest + split.escrow + split.principal + split.excess
+            == settled.effective_amount
+        )
 
 
 def test_settling_derived_loan_payment_captures_live_amount(

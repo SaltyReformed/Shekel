@@ -229,10 +229,11 @@ def _reject_effective_date(effective_date, params, boundary):
 
     * It cannot predate the loan's origination -- a version before the loan existed
       is meaningless (skipped when ``params`` is ``None``, an unconfigured loan).
-    * It must fall STRICTLY AFTER ``boundary`` (the latest settled payment's
-      pay-period start, :func:`_forward_boundary`), or it would retroactively move
-      an already-settled payment's escrow split and desync it from the cash frozen
-      at settlement (spec Sec. 4.2).
+    * It must fall STRICTLY AFTER ``boundary`` (the latest settled payment's DUE
+      date, :func:`_forward_boundary` -- the date its split resolves escrow on,
+      ruling D5), or it would retroactively move an already-settled payment's
+      escrow split and desync it from the cash frozen at settlement (spec
+      Sec. 4.2).
 
     Args:
         effective_date: The candidate version effective date.
@@ -251,7 +252,7 @@ def _reject_effective_date(effective_date, params, boundary):
     if boundary is not None and effective_date <= boundary:
         return (
             "An escrow change must take effect after your latest recorded payment "
-            f"(pay period starting {boundary.strftime('%b %-d, %Y')})."
+            f"(installment due {boundary.strftime('%b %-d, %Y')})."
         )
     return None
 
@@ -410,7 +411,7 @@ def add_escrow(account_id):
     # Effective date defaults to today (the common case unchanged); a supplied
     # date schedules the opening version forward.  A back-dated opening would let
     # the new line contribute escrow to an already-settled payment (its split
-    # resolves escrow on each payment's period start), so the forward-only guard
+    # resolves escrow on each payment's DUE date), so the forward-only guard
     # applies to a NEW line too, not only to an amend.
     effective_date = data.get("effective_date") or date.today()
     boundary = _forward_boundary(account.id, _baseline_scenario_id())
@@ -640,11 +641,13 @@ def delete_escrow_version(account_id, version_id):
     (the hidden delete button is only an affordance):
 
     * The version must be STRICTLY AFTER the forward-only boundary (the latest
-      settled payment's pay-period start).  This is NOT implied by "after today":
-      an EARLY-settled payment (settled before its pay period begins) puts the
-      boundary in the FUTURE, so a version in the ``today < date <= boundary`` gap
-      is at/before a settled payment's start and deleting it would move that
-      settled payment's escrow split off the cash frozen at settlement.
+      settled payment's DUE date).  This is NOT implied by "after today": a
+      payment settled before its installment falls due -- the ordinary case for
+      the days between settling and the due date, and the whole pay period ahead
+      for a paid-ahead one -- puts the boundary in the FUTURE, so a version in
+      the ``today < date <= boundary`` gap is at/before a settled payment's
+      installment and deleting it would move that settled payment's escrow split
+      off the cash frozen at settlement.
     * It must be a scheduled (future) change -- a current / past amount is
       corrected by editing it, and a whole line is removed via the line's Remove.
 

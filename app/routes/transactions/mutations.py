@@ -603,7 +603,7 @@ def _mark_done_shadow(txn, txn_id, actual_amount, target):
     # stale template ``estimated_amount`` (the creation-time escrow).  This is
     # what makes ``cash == split`` hold for a plain settle after an escrow
     # change: the frozen cash and the genesis split read the same
-    # ``escrow_monthly_as_of`` on the shadow's date.  Returns None for any
+    # ``escrow_monthly_as_of`` on the shadow's DUE date.  Returns None for any
     # shadow that is not an auto-derived loan payment (or when the operator
     # typed an actual, handled above), leaving the estimate / typed value
     # untouched.

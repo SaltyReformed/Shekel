@@ -16,6 +16,8 @@ import pytest
 
 from app import ref_cache
 from app.enums import StatusEnum
+from app.models.escrow_line import EscrowComponentVersion
+from app.models.loan_features import RateHistory
 from app.services import loan_loaders, transfer_service
 from app.services.balance_at._plan import (
     _PAYOFF_EXTENSION_MONTHS,
@@ -29,6 +31,7 @@ from app.services.balance_at._resolution import (
 from app.services.balance_at import BalanceContext
 from app.services.balance_at._context import _memoize_once
 from tests._test_helpers import (
+    add_escrow_line,
     create_loan_account,
     create_settled_transfer,
     loan_income_shadow,
@@ -187,6 +190,69 @@ def test_a_projected_record_makes_its_slot_planned_not_estimated(
     # The other future installments have no record, so they are ESTIMATED.
     assert by_due[date(2026, 5, 1)].is_estimated is True
     assert by_due[date(2026, 7, 1)].is_estimated is True
+
+
+def test_a_planned_record_keys_its_rate_and_escrow_on_the_due_date(
+    seed_user, db, seed_periods,
+):
+    """A PLANNED record's rate and escrow key on its INSTALLMENT, not its pay period.
+
+    The forward half of finding **N-34** (ruling D5's contract time), and the
+    firing control for :func:`app.services.balance_at._plan._planned_from_shadows`.
+    The projected payment satisfies the 2026-06-01 installment but is booked in the
+    pay period starting 2026-05-08, so a version effective **2026-05-25** lands
+    STRICTLY inside that window.  Both a rate change (6% -> 12%) and an escrow
+    change ($100/mo -> $500/mo) are placed there:
+
+      * DUE-date keying (as built): ``annual_rate`` 0.12, ``escrow`` 500.00.
+      * PERIOD-START keying (the N-34 defect): 0.06 and 100.00.
+
+    This is not cosmetic on the forward side.  The escrow figure is what
+    :func:`app.services.balance_at._plan.fold_forward` subtracts from the record's
+    cash, and the cash itself is now built on the DUE date's escrow
+    (``loan_payment_service._shadow_live_amount``); if the two ends key on
+    different dates, the difference lands silently in PROJECTED principal and
+    propagates to the forward balance, ``plan_payoff_date``,
+    ``plan_required_extra``, the projected Schedule A interest, and the property
+    equity chart's debt line.
+    """
+    account = create_loan_account(
+        seed_user, db.session,
+        principal=_PRINCIPAL, rate=_RATE, term=_TERM,
+        origination_date=_ORIGINATION, payment_day=1,
+    )
+    escrow = add_escrow_line(
+        db.session, account.id, "Tax", Decimal("1200.00"),
+        effective_date=_ORIGINATION,
+    )
+    db.session.add(EscrowComponentVersion(
+        line_id=escrow.line_id,
+        effective_date=date(2026, 5, 25),
+        annual_amount=Decimal("6000.00"),
+    ))
+    db.session.add(RateHistory(
+        account_id=account.id, effective_date=date(2026, 5, 25),
+        interest_rate=Decimal("0.12"),
+    ))
+    shadow = _project_loan_payment(
+        seed_user, db, account, seed_periods[9],
+        amount=Decimal("2100.00"), due_date=date(2026, 6, 1),
+    )
+    # The versions really are inside the window: after the pay-period start,
+    # before the installment they govern.
+    assert (
+        shadow.pay_period.start_date
+        < date(2026, 5, 25)
+        < shadow.due_date
+    )
+
+    ctx = BalanceContext.build(seed_user["user"].id, _AS_OF)
+    plan = loan_plan(account, ctx)
+
+    june = {payment.due_date: payment for payment in plan}[date(2026, 6, 1)]
+    assert june.is_estimated is False
+    assert june.annual_rate == Decimal("0.12")
+    assert june.escrow == Decimal("500.00")
 
 
 def test_an_early_settled_payment_is_not_re_synthesized_as_estimated(

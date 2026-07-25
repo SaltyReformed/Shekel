@@ -726,14 +726,25 @@ class TestPreparePaymentsForEngine:
         for p in result:
             assert p.amount == Decimal("1517.00")
 
-    def test_escrow_subtraction_is_date_aware(self):
-        """Each payment subtracts the escrow IN EFFECT ON ITS OWN DATE.
+    def test_escrow_subtraction_keys_on_the_due_date_not_the_pay_period(self):
+        """Each payment subtracts the escrow IN EFFECT FOR ITS INSTALLMENT.
 
         One escrow line, two versions: $283/mo (annual $3,396) from 2020-01-01,
-        then $333/mo (annual $3,996) effective 2026-06-01.  A Jan payment
-        resolves the old $283; a Jul payment resolves the new $333.  Both net
-        to $1,517 P&I after subtracting THEIR date's escrow -- proving the Jul
-        payment used $333, since an old-$283 subtraction would leave $1,567.
+        then $333/mo (annual $3,996) effective **2026-05-25**.  The second
+        payment is booked in the pay period starting 2026-05-21 and satisfies
+        the 2026-06-01 installment, so the new version lands STRICTLY inside
+        that window -- the shape finding N-34 is about, and the reason this
+        test discriminates:
+
+          * DUE-date keying (ruling D5, as built): $333 backed out, so
+            1850 - min(333, 1850 - 1517) = **1,517.00** (the P&I).
+          * PAY-PERIOD-START keying (the N-34 defect): $283 backed out, leaving
+            **1,567.00** -- $50 of escrow mis-recovered as P&I, which the
+            resolver's forward override then amortizes as extra principal.
+
+        The first payment (period start and installment both 2026-01-01, before
+        either version boundary) resolves the old $283 either way, so it holds
+        the non-window case still.
         """
         from app.models.escrow_line import EscrowComponentVersion, EscrowLine
         line = EscrowLine(name="Tax & Insurance")
@@ -743,14 +754,20 @@ class TestPreparePaymentsForEngine:
                 annual_amount=Decimal("3396.00"), is_removed=False,
             ),
             EscrowComponentVersion(
-                effective_date=date(2026, 6, 1),
+                effective_date=date(2026, 5, 25),
                 annual_amount=Decimal("3996.00"), is_removed=False,
             ),
         ]
+        # The second record is a REAL biweekly shape: its pay period starts
+        # 2026-05-21, its installment falls 2026-06-01, and the version sits
+        # between them.  (Every other record in this class has
+        # payment_date == due_date, where the two keyings cannot disagree.)
         payments = [
             PaymentRecord(date(2026, 1, 1), monthly_due_date(date(2026, 1, 1), 1), Decimal("1800.00"), True),
-            PaymentRecord(date(2026, 7, 1), monthly_due_date(date(2026, 7, 1), 1), Decimal("1850.00"), True),
+            PaymentRecord(date(2026, 5, 21), date(2026, 6, 1), Decimal("1850.00"), True),
         ]
+        assert payments[1].payment_date < date(2026, 5, 25) < payments[1].due_date
+
         result = prepare_payments_for_engine(
             payments,
             payment_day=1,
@@ -761,7 +778,7 @@ class TestPreparePaymentsForEngine:
         assert len(result) == 2
         # Jan payment: 1800 - min(283, 1800-1517) = 1800 - 283 = 1517 (old).
         assert result[0].amount == Decimal("1517.00")
-        # Jul payment: 1850 - min(333, 1850-1517) = 1850 - 333 = 1517 (NEW).
+        # Jun installment: 1850 - min(333, 1850-1517) = 1850 - 333 = 1517 (NEW).
         assert result[1].amount == Decimal("1517.00")
 
     def test_below_pi_not_adjusted(self):

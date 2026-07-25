@@ -182,10 +182,10 @@ def _planned_from_shadows(
     its LIVE D3 cash (``live_cash`` override, falling back to the stored
     ``effective_amount`` for a shadow that needs no override -- a manual payment
     with no standing extra, or an operator-overridden one, exactly as the checking
-    side reads it).  The rate and escrow are resolved on the shadow's OWN
-    pay-period start -- the same date the ACTUAL fold and the live-cash derivation
-    key on -- so the cash a payment carries and the escrow its split backs out are
-    the same figure by construction.
+    side reads it).  The rate and escrow are resolved on the installment's DUE
+    date -- the same date the ACTUAL fold and the live-cash derivation key on
+    (ruling D5's contract time, finding N-34) -- so the cash a payment carries
+    and the escrow its split backs out are the same figure by construction.
 
     Args:
         projected_shadows: The loan's projected income shadows
@@ -201,12 +201,11 @@ def _planned_from_shadows(
     clamp_floor = fwd.as_of + _ONE_DAY
     for shadow in projected_shadows:
         due = loan_payment_due_date(shadow, fwd.payment_day)
-        period_start = shadow.pay_period.start_date
         cash = live_cash.get(shadow.id, shadow.effective_amount)
         escrow = escrow_calculator.escrow_monthly_as_of(
-            fwd.escrow_lines, period_start,
+            fwd.escrow_lines, due,
         )
-        annual_rate = period_for_date(fwd.periods, period_start).annual_rate
+        annual_rate = period_for_date(fwd.periods, due).annual_rate
         planned.append(PlannedPayment(
             due_date=due,
             effective_date=max(due, clamp_floor),

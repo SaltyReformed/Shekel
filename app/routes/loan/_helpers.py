@@ -36,7 +36,7 @@ from app.schemas.validation import (
 from app.services import balance_at, escrow_calculator, loan_resolver
 from app.services.balance_at import LoanFigures, LoanTerms
 from app.services.loan_loaders import (
-    latest_settled_payment_period_start,
+    latest_settled_payment_due_date,
     load_loan_anchor_facts,
 )
 from app.services.recurring_transfer_query import loan_standing_extra
@@ -380,10 +380,11 @@ def _compute_total_payment(account, params, escrow_components):
 def _forward_boundary(account_id, scenario_id):
     """Return the escrow forward-only guard boundary for a loan, or ``None``.
 
-    The latest settled payment's pay-period start
-    (:func:`~app.services.loan_loaders.latest_settled_payment_period_start`) -- the
-    exact date the genesis split resolves each payment's escrow at, so a new or
-    edited escrow version strictly after it cannot move any settled payment's split.
+    The latest settled payment's DUE date
+    (:func:`~app.services.loan_loaders.latest_settled_payment_due_date`) -- the
+    exact date the genesis split resolves each payment's escrow at (ruling D5's
+    contract time, finding N-34), so a new or edited escrow version strictly
+    after it cannot move any settled payment's split.
     ``None`` (nothing is frozen) when the user has no baseline scenario or the loan
     has no settled payment.  Shared by the escrow HTMX routes (which apply the guard
     and mark each drawer row editable / deletable) and the loan dashboard GET (which
@@ -398,7 +399,7 @@ def _forward_boundary(account_id, scenario_id):
     """
     if scenario_id is None:
         return None
-    return latest_settled_payment_period_start(account_id, scenario_id)
+    return latest_settled_payment_due_date(account_id, scenario_id)
 
 
 def _balances_for_chart(rows, target_len):

@@ -161,7 +161,7 @@ class LoanPaymentSplit:
             where the split's own settled date governs only WHEN the row is visible.
         period: The governing rate period this payment's cash was split against
             (:func:`app.services.rate_period_engine.period_for_date` on the
-            payment's pay-period start).  The interest above was accrued at its
+            payment's DUE date -- contract time, ruling D5).  The interest above was accrued at its
             ``annual_rate``; carrying the resolved period (plan step E1c) lets the
             confirmed-view builder read that SAME rate for the row's ``interest_rate``
             and the period's ``period_pi`` for its ``extra_payment`` -- one
@@ -200,37 +200,47 @@ def split_one_payment(
       (a Refund).  This keeps every post-payoff Step-2 cash entry matched by a
       correction instead of a phantom paydown.
     * **Open loan**: ``interest = round_money(balance * rate / 12)`` at the rate
-      in effect for the payment's pay-period start (the BYTE-IDENTICAL formula
+      in effect for the payment's DUE date (the BYTE-IDENTICAL formula
       :func:`app.services.rate_period_engine._replay_payment_row` uses);
       ``principal = cash - interest - escrow``; a principal that would overrun
       the balance caps to it, the remainder going to ``excess``.
 
     The two regimes and the arithmetic are :func:`split_payment_cash`; this reads
-    the ACTUAL cash off the shadow, resolves the rate from the shadow's pay-period
-    start, and wraps the result with the shadow the posting writer books under,
-    the ``due_date`` the caller already derived, and the resolved rate period.
+    the ACTUAL cash off the shadow, resolves the rate from the installment's DUE
+    date, and wraps the result with the shadow the posting writer books under,
+    that ``due_date``, and the resolved rate period.
+
+    **The split inputs key on CONTRACT time, the ledger on CASH time** (ruling
+    D5 / R-A, corrected here at finding N-34).  Ordering, the rate resolved
+    here, and the escrow the caller resolves all key on the DUE date -- the
+    installment the payment satisfies -- so out-of-order or late settlement can
+    never re-split an installment: a payment made a day late is still the
+    payment for ITS month, at ITS month's rate.  A pay period starts up to ~2
+    weeks BEFORE the installment it pays, so keying on the period start would
+    let a rate version effective inside that window govern the wrong side of the
+    boundary.  Only VISIBILITY -- which day the split's principal counts from --
+    keys on the settled date (:func:`app.services.loan_ledger.payment_visible_on`).
 
     Args:
-        shadow: The settled loan-side income shadow (supplies ``effective_amount``
-            and ``pay_period.start_date``).
+        shadow: The settled loan-side income shadow (supplies ``effective_amount``).
         balance: The outstanding balance before this payment.
         periods: The loan's rate periods (from
             :func:`app.services.loan_resolver.resolve_periods`); the governing
             period's ``annual_rate`` drives the interest accrual.
-        monthly_escrow: The configured monthly escrow in effect on THIS payment's
-            date (summed over the effective-dated components active on its
-            pay-period start; no inflation).
+        monthly_escrow: The configured monthly escrow in effect for THIS
+            payment's installment (summed over the effective-dated components
+            active on its due date; no inflation).
         due_date: The contractual installment this payment satisfies
             (:func:`app.services.loan_loaders.loan_payment_due_date`), computed by
             the caller (:func:`.._events.merge_anchor_and_payment_events` already
             derives it to ORDER the walk, and threads it here so it is not
-            re-derived).  Stored on the split for the confirmed-view builder;
-            this function does not use it in the cash math.
+            re-derived).  Resolves the rate period, and is stored on the split for
+            the confirmed-view builder.
 
     Returns:
         ``(LoanPaymentSplit, balance_after)``.
     """
-    period = period_for_date(periods, shadow.pay_period.start_date)
+    period = period_for_date(periods, due_date)
     parts = split_payment_cash(
         shadow.effective_amount, balance, period.annual_rate, monthly_escrow,
     )
