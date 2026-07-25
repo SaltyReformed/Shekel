@@ -647,6 +647,88 @@ def period_for_date(periods: list[RatePeriod], target: date) -> RatePeriod:
     return chosen
 
 
+@dataclass(frozen=True)
+class ConfirmedRowInputs:
+    """The inputs that position and value ONE confirmed amortization row.
+
+    The cohesive argument bundle of :func:`confirmed_amortization_row`: the real
+    economics of one settled payment (its ACTUAL ``principal`` and ``interest``),
+    the installment it satisfies (its ``due_date`` and governing ``period``), the
+    loan's ``origination_date`` that numbers the row, and the running
+    ``remaining_balance`` owed after it that the caller's own walk produced.
+    Bundled so the shared builder the posted reader and the walk view both call
+    takes ONE argument rather than six positional values.
+
+    Attributes:
+        origination_date: The loan's origination date, numbering the row
+            (:func:`payment_number`).
+        due_date: The contractual installment this payment satisfies (the row's
+            date and number), NOT its settled date.
+        principal: The payment's REAL principal paid down (may be NEGATIVE for an
+            underpayment, plan D5).
+        interest: The payment's REAL accrued interest.
+        period: The :class:`RatePeriod` governing the installment -- its
+            ``period_pi`` sizes the extra split, its ``annual_rate`` tags the row.
+        remaining_balance: The balance owed AFTER this payment, from the caller's
+            running walk (already cent-quantized).
+    """
+
+    origination_date: date
+    due_date: date
+    principal: Decimal
+    interest: Decimal
+    period: RatePeriod
+    remaining_balance: Decimal
+
+
+def confirmed_amortization_row(row: ConfirmedRowInputs) -> AmortizationRow:
+    """Build a CONFIRMED history row from a payment's ACTUAL principal and interest.
+
+    The ONE construction of a confirmed schedule row, shared by the two producers
+    that read a loan's real payment history so they cannot drift on HOW a
+    payment's actual economics become a row: the posted-ledger reader
+    (:func:`app.services.loan_posting_service.confirmed_loan_history_rows`) and the
+    walk-based confirmed view (:func:`app.services.balance_at.confirmed_view`, plan
+    step E1c, which E1d makes the sole caller when the reader deletes).  Both read
+    the SAME split from the SAME walk (the posted legs are a projection of it, plan
+    step E1a), so their rows are byte-identical -- and this shared builder makes
+    that equality STRUCTURAL rather than two copies that happen to match.
+
+    Unlike :func:`_replay_payment_row` (the CONTRACTUAL replay, where
+    ``principal = period_pi - interest``), this takes the payment's REAL principal
+    and interest and splits its P&I against the governing period's contractual
+    ``period_pi`` under the schedule-row invariant
+    ``principal + interest == payment + extra_payment``: the excess above
+    contractual is ``extra_payment`` (an off-schedule or extra payment), the rest
+    the contractual-shaped ``payment``.  So the schedule table's totals need no
+    per-row special-casing, and an underpayment (``principal < 0``, plan D5) or a
+    payoff overpayment surfaces in the row rather than being clamped.
+
+    Pure: plain data in, one row out.  The caller supplies the post-payment
+    ``remaining_balance`` from its own running walk, because the running balance is
+    the caller's -- the posted reader prefix-sums the linked-ledger nets, the walk
+    view folds the source splits -- while THIS row-shaping is identical for both.
+
+    Args:
+        row: The :class:`ConfirmedRowInputs` positioning and valuing this row.
+
+    Returns:
+        The confirmed :class:`~app.services.amortization_engine.AmortizationRow`.
+    """
+    extra = max(row.principal + row.interest - row.period.period_pi, ZERO_MONEY)
+    return AmortizationRow(
+        month=payment_number(row.origination_date, row.due_date),
+        payment_date=row.due_date,
+        payment=round_money(row.principal + row.interest - extra),
+        principal=row.principal,
+        interest=row.interest,
+        extra_payment=round_money(extra),
+        remaining_balance=row.remaining_balance,
+        is_confirmed=True,
+        interest_rate=row.period.annual_rate,
+    )
+
+
 def _replay_payment_row(
     balance: Decimal,
     period: RatePeriod,

@@ -146,6 +146,7 @@ from ._cash_flow import (
     cash_balance_map,
     cash_daily_balance_series,
 )
+from ._confirmed_view import confirmed_view
 from ._context import BalanceContext, require_scenario
 from ._grid import GridBalanceView, _accruing_grid_view, grid_balance_view
 from ._inputs import (
@@ -221,6 +222,7 @@ __all__ = [
     "cash_balance_at",
     "cash_balance_map",
     "cash_daily_balance_series",
+    "confirmed_view",
     "debt_schedule_rows",
     "grid_balance_view",
     "interest_by_period_for_account",

@@ -21,10 +21,11 @@ Pure: plain data in, plain values out.  No I/O, no clock, no Flask.
 """
 
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 
 from app.models.transaction import Transaction
-from app.services.rate_period_engine import period_for_date
+from app.services.rate_period_engine import RatePeriod, period_for_date
 from app.utils.money import accrue_monthly_interest
 
 _ZERO_MONEY = Decimal("0.00")
@@ -152,6 +153,20 @@ class LoanPaymentSplit:
         excess: A payoff overpayment routed to a Refund Receivable (Asset) leg
             (``>= 0``): cash beyond what closes the loan, never mislabeled as
             escrow or principal (plan D4).
+        due_date: The contractual installment this payment satisfies
+            (:func:`app.services.loan_loaders.loan_payment_due_date`, computed
+            ONCE by the merge that orders the walk and carried through here -- plan
+            step E1c).  It dates and numbers the CONFIRMED schedule row the seam's
+            walk-based view builds (:func:`app.services.balance_at.confirmed_view`),
+            where the split's own settled date governs only WHEN the row is visible.
+        period: The governing rate period this payment's cash was split against
+            (:func:`app.services.rate_period_engine.period_for_date` on the
+            payment's pay-period start).  The interest above was accrued at its
+            ``annual_rate``; carrying the resolved period (plan step E1c) lets the
+            confirmed-view builder read that SAME rate for the row's ``interest_rate``
+            and the period's ``period_pi`` for its ``extra_payment`` -- one
+            resolution, so a row's displayed rate is provably the rate its interest
+            accrued at.
     """
 
     income_shadow: Transaction
@@ -159,6 +174,8 @@ class LoanPaymentSplit:
     escrow: Decimal
     principal: Decimal
     excess: Decimal
+    due_date: date
+    period: RatePeriod
 
 
 def split_one_payment(
@@ -166,6 +183,7 @@ def split_one_payment(
     balance: Decimal,
     periods: list,
     monthly_escrow: Decimal,
+    due_date: date,
 ) -> tuple[LoanPaymentSplit, Decimal]:
     """Split one payment's cash and return ``(split, balance_after)``.
 
@@ -189,7 +207,8 @@ def split_one_payment(
 
     The two regimes and the arithmetic are :func:`split_payment_cash`; this reads
     the ACTUAL cash off the shadow, resolves the rate from the shadow's pay-period
-    start, and wraps the result with the shadow the posting writer books under.
+    start, and wraps the result with the shadow the posting writer books under,
+    the ``due_date`` the caller already derived, and the resolved rate period.
 
     Args:
         shadow: The settled loan-side income shadow (supplies ``effective_amount``
@@ -201,6 +220,12 @@ def split_one_payment(
         monthly_escrow: The configured monthly escrow in effect on THIS payment's
             date (summed over the effective-dated components active on its
             pay-period start; no inflation).
+        due_date: The contractual installment this payment satisfies
+            (:func:`app.services.loan_loaders.loan_payment_due_date`), computed by
+            the caller (:func:`.._events.merge_anchor_and_payment_events` already
+            derives it to ORDER the walk, and threads it here so it is not
+            re-derived).  Stored on the split for the confirmed-view builder;
+            this function does not use it in the cash math.
 
     Returns:
         ``(LoanPaymentSplit, balance_after)``.
@@ -215,5 +240,7 @@ def split_one_payment(
         escrow=parts.escrow,
         principal=parts.principal,
         excess=parts.excess,
+        due_date=due_date,
+        period=period,
     )
     return split, parts.balance_after

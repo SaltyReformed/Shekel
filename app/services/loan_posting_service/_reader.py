@@ -77,8 +77,9 @@ from app.services.amortization_engine import AmortizationRow
 from app.services.loan_ledger import confirmed_shadows_through
 from app.services.posting_service import _ledger_account_for
 from app.services.rate_period_engine import (
+    ConfirmedRowInputs,
     RatePeriod,
-    payment_number,
+    confirmed_amortization_row,
     period_for_date,
 )
 from app.utils.money import round_money
@@ -670,21 +671,16 @@ def _replay_history_events(
             interest_by_shadow.get(shadow.id, _ZERO_MONEY)
         )
         linked_sum += principal
-        period = period_for_date(periods, shadow.pay_period.start_date)
-        extra = max(principal + interest - period.period_pi, _ZERO_MONEY)
-        rows.append(AmortizationRow(
-            month=payment_number(params.origination_date, event_date),
-            payment_date=event_date,
-            payment=round_money(principal + interest - extra),
+        rows.append(confirmed_amortization_row(ConfirmedRowInputs(
+            origination_date=params.origination_date,
+            due_date=event_date,
             principal=principal,
             interest=interest,
-            extra_payment=round_money(extra),
+            period=period_for_date(periods, shadow.pay_period.start_date),
             # Debit-positive ledger: owed is the negated cumulative linked
             # net, ``0 - sum`` so a zero cumulative reads 0.00, never -0.00.
             remaining_balance=round_money(_ZERO_MONEY - linked_sum),
-            is_confirmed=True,
-            interest_rate=period.annual_rate,
-        ))
+        )))
     return rows
 
 

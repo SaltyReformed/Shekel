@@ -674,14 +674,15 @@ class TestFoldNegativeControls:
 
             real_split = loan_ledger._walk.split_one_payment
 
-            def fake(shadow, balance, periods, monthly_escrow):
+            def fake(shadow, balance, periods, monthly_escrow, due_date):
                 split, _after = real_split(
-                    shadow, balance, periods, monthly_escrow,
+                    shadow, balance, periods, monthly_escrow, due_date,
                 )
                 forced = type(split)(
                     income_shadow=split.income_shadow,
                     interest=split.interest, escrow=split.escrow,
                     principal=bad_principal, excess=split.excess,
+                    due_date=split.due_date, period=split.period,
                 )
                 return forced, balance - bad_principal
 

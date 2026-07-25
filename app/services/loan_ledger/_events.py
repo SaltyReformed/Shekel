@@ -80,16 +80,19 @@ def merge_anchor_and_payment_events(
     anchor_facts: list[LoanAnchorFact],
     shadows: list[Transaction],
     payment_day: int,
-) -> list[tuple[bool, object]]:
+) -> list[tuple[date, bool, object]]:
     """Merge a loan's anchors and payments into one chronological event stream.
 
-    Returns ``(is_anchor, item)`` tuples in the order the running-balance walk
-    must process them so each anchor's RESET lands at the right point relative to
-    the payments.  The ordering key is each item's governing date -- an anchor's
-    ``anchor_date``, a payment's
+    Returns ``(governing_date, is_anchor, item)`` tuples in the order the
+    running-balance walk must process them so each anchor's RESET lands at the
+    right point relative to the payments.  The ordering key is each item's
+    governing date -- an anchor's ``anchor_date``, a payment's
     :func:`app.services.loan_loaders.loan_payment_due_date` -- with a PAYMENT
     sorted BEFORE an anchor on a tie, so a payment due exactly on an anchor's date
-    is subsumed by (walked before, then overwritten by) that anchor's reset.  That
+    is subsumed by (walked before, then overwritten by) that anchor's reset.  The
+    governing date is RETURNED beside each item (not just used to sort and then
+    discarded) so the walk threads a payment's due date onto its split without
+    re-deriving it (plan step E1c); it costs the caller nothing to ignore.  That
     is the SAME strict ``anchor_date < due_date`` post-anchor boundary the
     resolver's replay uses (:func:`is_confirmed_payment_eligible`, fed the same
     derivation via :attr:`PaymentRecord.due_date`), applied at EVERY anchor rather
@@ -115,9 +118,11 @@ def merge_anchor_and_payment_events(
         payment_day: The loan's contractual due day (drives each payment's due date).
 
     Returns:
-        ``(is_anchor, item)`` tuples in walk order (``item`` is a
+        ``(governing_date, is_anchor, item)`` tuples in walk order -- the
+        ``governing_date`` is the anchor's ``anchor_date`` or the payment's due
+        date the tuple sorted on, and ``item`` is a
         :class:`~app.services.loan_loaders.LoanAnchorFact` when ``is_anchor``,
-        else a settled income :class:`~app.models.transaction.Transaction`).
+        else a settled income :class:`~app.models.transaction.Transaction`.
     """
     anchors = sorted(
         anchor_facts,
@@ -134,4 +139,4 @@ def merge_anchor_and_payment_events(
         (anchor.anchor_date, 1, anchor) for anchor in anchors
     ]
     events.sort(key=lambda event: (event[0], event[1]))
-    return [(tag == 1, item) for _date, tag, item in events]
+    return [(event_date, tag == 1, item) for event_date, tag, item in events]

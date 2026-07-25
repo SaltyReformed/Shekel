@@ -121,7 +121,7 @@ class LoanLedgerWalk:
 
 
 def _replay_events(
-    events: list[tuple[bool, object]],
+    events: list[tuple[date, bool, object]],
     periods: list,
     escrow_lines: list,
 ) -> tuple[list[LoanPaymentSplit], list[LoanAnchorCorrection]]:
@@ -135,7 +135,10 @@ def _replay_events(
     (:func:`._split.split_one_payment`) and advances it.
 
     Args:
-        events: The merged ``(is_anchor, item)`` stream in walk order.
+        events: The merged ``(governing_date, is_anchor, item)`` stream in walk
+            order.  For a payment the ``governing_date`` IS its due date -- the
+            merge already derived it to order the walk, so it is threaded onto the
+            split here rather than re-derived (plan step E1c).
         periods: The loan's rate periods (governs each payment's interest rate).
         escrow_lines: The loan's escrow lines with their full version history;
             each payment resolves the escrow in effect on its pay-period start
@@ -147,7 +150,7 @@ def _replay_events(
     balance = _ZERO_MONEY
     payment_splits: list[LoanPaymentSplit] = []
     anchor_corrections: list[LoanAnchorCorrection] = []
-    for is_anchor, item in events:
+    for governing_date, is_anchor, item in events:
         if is_anchor:
             anchor_corrections.append(
                 LoanAnchorCorrection(anchor=item, owed_before=balance)
@@ -158,7 +161,7 @@ def _replay_events(
             escrow_lines, item.pay_period.start_date,
         )
         split, balance = split_one_payment(
-            item, balance, periods, payment_escrow,
+            item, balance, periods, payment_escrow, governing_date,
         )
         payment_splits.append(split)
     return payment_splits, anchor_corrections
