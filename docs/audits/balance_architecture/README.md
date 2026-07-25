@@ -16,8 +16,13 @@ it names, and the C2 history-window live-render reproduces the receipt with toda
 loans; the whole deploy sequence was REHEARSED on a fresh prod clone (migrations + both backfills
 behind E1a's assert) and passes, idempotently, moving no user-visible figure. **C2b** (the N-34
 re-key: the split's rate and escrow key on the DUE date) SHIPPED `c2d43332` ahead of the ship on
-the developer's ruling 2026-07-25, so prod's genesis ledger is rewritten ONCE. **NEXT: F3, the prod
-ship**; then the X phase. Phases A and B complete (**A1** `f11382a0`, **A2** `c96c62be`,
+the developer's ruling 2026-07-25, so prod's genesis ledger is rewritten ONCE. **F3 SHIPPED
+2026-07-25** (PR #64, merge `88c79857`): the whole loan arc is in production, CI green, image
+published, and `dev` is resynced to `main`. **Phase X, the cash side, is IN FLIGHT** -- the last
+unbuilt half of the restructure, and the one carrying the LIVE defects (see the measured prod
+evidence in Phase X).  **X-a SHIPPED `929b3a72`** (the cash walk leaf, additive); **NEXT: X-b**,
+the fold -- blocked on two rulings its own step recorded, **N-37** (what the fold answers before an
+account's first assertion) and **N-38** (a loan account walked as cash). Phases A and B complete (**A1** `f11382a0`, **A2** `c96c62be`,
 **A3** `4e46a0a8`, N-9 `44cbd028`, **B0** `d1586254`, **B1** `e227de08`, **BG**
 `dba91dc0`, **B2** `8f070386`). **Phase C: C1** (`18fd3a04`, a loan's origination is its
 ledger opening), **C2** (`eb5de4ac`, the ONE CLOCK: an event counts from the day it
@@ -239,7 +244,7 @@ it -- with no public single-account balance-at-T producer outside the seam, a ca
 nothing to guard, so W9906 deletes whole. Its replacement is STRONGER, measured: the two spellings a
 consumer would write now rate E0611 / E1101, hard-gated by `--fail-on=E`. Dev clone BYTE-IDENTICAL.
 **Found and NOT fixed: N-35** (`ledger_report_service` is not W9909-scoped; a public balance-at-T
-born there measures 10.00/10). **NEXT: F3** (the prod ship) and the X phase per Section 5. Per-step
+born there measures 10.00/10). **NEXT: the X phase per Section 5** (F3 shipped `88c79857`). Per-step
 detail below: E1d-a `35aae5ef` (the whole-loan read moves
 INSIDE the seam as the private `balance_at._resolution`, and the resolution memo comes off
 `BalanceContext` -- two hand-written fence surfaces DELETE, provably behaviour-identical) and E1d-b
@@ -398,10 +403,18 @@ review, all gates green throughout). The fold deletes the generator; the minimal
 | # | ruling | consumed by |
 |---|---|---|
 | **R-A** | An ACTUAL payment's balance event is VISIBLE on its **settled date** (`paid_at` civil date; due date is the fallback when `paid_at` is NULL). The split math stays keyed to the DUE date -- ordering, rate, AND escrow -- so out-of-order or late settlement can never reorder installments or re-split one (concretely: the July payment settled 2026-07-07, one day after the 07-06 escrow change; due-date keying keeps its escrow $616.99, where settled-date keying would move the split by $0.34 and the baseline with it). Rejected: due-date visibility, which double-counts ~$1,911 in net worth for the days between due and settle every month (real case: due 07-01, settled 07-07). The cash ledger already dates cash by `paid_at`, so loan and checking now move together. | C2 |
-| **R-B** | The cash projection counts a settled transaction iff `COALESCE(paid_at, period start)` is after the latest anchor's `created_at` -- SHARED with the posting walk's existing rule, never copied. The archived X0 "post-anchor period" rule is dead: it double-counts on 15 measured real-data pairs. | X1 |
+| **R-B** | The cash projection counts a settled transaction iff `COALESCE(paid_at, period start)` is after the latest anchor's `created_at` -- SHARED with the posting walk's existing rule, never copied. The archived X0 "post-anchor period" rule is dead: it double-counts on 15 measured real-data pairs. **Sharpened at R-F/R-H (2026-07-25): the comparison is INSTANT vs INSTANT, not civil date vs civil date** -- on prod the Checking anchor asserted 12:57:08 UTC and two expenses settled 13:07 the SAME UTC day, so a date-keyed partition would leave them invisible; and the sharing is STRUCTURAL (one walk, R-H), not one rule written twice. | X-a / X-c |
 | **R-C** | The transfer write boundary REJECTS a loan payment dated before the loan's origination (root-cause fix; the measured case was $1,200 leaving checking with nothing recording it against the loan). Not modeled as a prepayment; not left documented. **Two corrections at C9 (2026-07-19), both measured:** (a) the boundary is `<=` origination, not "before" -- a payment due exactly ON the origination date sorts ahead of that anchor and is subsumed by its reset, erased identically ($0.00 principal, the whole cash to Refund); (b) the write boundary alone was NOT the root cause. The app's own loan-payment setup GENERATED the shape (3 of 4 payments pre-origination on a mortgage closing next month, $3,220.92 of phantom cash debits), so the guard shipped second, behind a recurrence start bound -- shipping it first was measured to 500 the loan's own create-transfer route. | C9a (generator), C9b (guard) |
 | **R-D** | The year-end summary service and its tests are DELETED (dead code carrying B-7/B-10; `/analytics/year-end` already 302s). Rebuild on `positions()` later if ever wanted. ~~`_income_tax` survives -- the live Taxes tab uses it.~~ **Corrected 2026-07-16 (A2):** only TWO functions are live -- `_compute_mortgage_interest` -> `_loan_year_interest` -- reached because `tax_report_service.py:84` imports a PRIVATE name across packages, and their only real coverage sits in the file F2 deletes (`TestMortgageInterestGenesisHybrid`). Both die at **C3**, which deletes their input type; by F2 nothing is stranded, so F2 stays a clean whole-package deletion. If C3 has not landed when F2 runs, F2 must move the two functions to `tax_report_service` (their only caller) rather than leave the private import. | F2 (C3 first) |
 | **R-E** (N-11; answered 2026-07-17) | A raw transaction typed onto a loan account (which moves the posted balance but not the fold) is **FORBIDDEN AT THE SOURCE**, not modeled as a third event kind. Every write path that could type one onto an amortizing loan refuses it on the D4/R6 predicate (`classify_account is AMORTIZING` / `has_amortization`): the two transaction-create routes, the recurrence-template form, AND -- found in the guard's own adversarial review, so BROADER than the plan's cited `create.py:78` -- the salary-profile account picker (which copies `template.account_id` into `recurrence_engine`). Rejected: a third event kind, which keeps a cash-basis paydown path the grid refuses to render and contradicts D4. This makes the fold complete BY CONSTRUCTION, so B2's every-day equality needs no N-11 exception. Any pre-guard row is an F1-class data item; the two real loans carry none (B1's 212-day match). | BG (guard), B2 |
+
+### Answered (developer ruling, 2026-07-25: Phase X's three forks, all as recommended)
+
+| # | ruling | consumed by |
+|---|---|---|
+| **R-F** | **Phase X ships FOLD-FIRST, not partition-patch-first.** The plan's X1 ("patch the instant partition into today's period-granular engine") is DECLINED as scoped. Traced 2026-07-25: the rule would have to land in FOUR sites at once -- `balance_at._calculator.calculate_balances`, `_cash_engine.balance_as_of_date`, `_daily_series._net_by_attribution_day`, and `cash_ledger._flows.sum_projected`, the last of which the grid's SUBTOTAL row shares (`balances[p] - balances[p-1] == subtotals[p].net` binds them to one row set) -- moving live money on grid / dashboard / pulse / calendar / accounts-detail / net-worth kernel with **no independent oracle**, since the only reference for the new answer would be the producer computing it (Section 7.2's forbidden shape). It would also put an INSTANT rule inside a PERIOD walk, Section 8's signature defect. So Phase X follows the sequence the loan side proved five times (C3a->C3b, C6a->C6b, C8a->C8d, C9a->C9b, E1c->E1d): the walk and the fold ADDITIVE and unwired, graded on a hand-computed oracle plus an every-day parallel run, then ONE cutover in which the settled drop, the scalar/daily fork and the pre-anchor fabrication all close together because the fold subsumes all three. | X-a .. X-c |
+| **R-G** | **A still-Projected item whose date has passed is CLAMPED FORWARD, never absorbed by an anchor.** Its effective instant is `max(its attribution date, as_of + 1 day)` -- "a plan cannot have already happened", the SAME rule as loan ruling D1, so cash and loans state one rule rather than two. Rejected: landing it on its nominal date and letting the anchor's reset erase it, which on real data (52 Checking re-anchors in 119 days, one every 2.3 days) would silently delete nearly every unpaid past-due bill from the projection within days of it being entered. Worked, on the real Checking shape: anchor 2026-07-24 12:57 UTC `$2,932.41`, a settle at 13:07 `-$108.15` (the X-c recovery), and a still-projected `$50.00` bill due 07-20 -> `$2,774.26` under the ruling, vs `$2,824.26` if the reset erased the bill. **Consequence for the WALK:** a PLANNED event's date depends on `as_of`, so -- exactly as C6a ruled for the loan plan -- the projected tier lives in the READER (the seam's fold), never in the clock-free `cash_ledger` walk. | X-b (the fold's PLANNED tier) |
+| **R-H** | **ONE walk, designed for both consumers from the start.** `cash_ledger` gains the walk (`_events` + `_walk`), built from SOURCE facts (`AccountAnchorHistory` + the account's transaction rows) -- the shape `loan_ledger` has had since B0. The read fold folds it, and at X-d the posting writer consumes the SAME walk, so the projection and the posted ledger cannot drift by construction rather than by a test keeping two implementations in step (rule 1). Today they are genuinely two statements: the read projection is period-granular over transaction rows while `account_posting_service._walk` is instant-granular over the POSTINGS it is correcting -- and their disagreement IS the defect this phase exists to close. Rejected: leaving the write side alone (keeps the asymmetry Section 8 names, "the loose side is where the next hole is") and reconciling two walks by assert only (two implementations of one rule). | X-a (leaf), X-d (writer) |
 
 ## 5. The steps
 
@@ -1821,21 +1834,108 @@ zero standing exceptions rather than training the exemption habit it exists to p
   registry's residue is small, fail-closed, and self-attest-pinned, so the reorg must earn its
   churn on its own merits when E1's shape is known.
 
-### Phase X -- cash (after the loan cutover proves the machinery)
+### Phase X -- cash (the fold; the loan cutover has now proved the machinery)
 
-- [ ] **X1** `fix(balance): a settled transaction counts from the instant it settled` -- R-B's
-  instant partition (ruled 2026-07-16), shared with `account_posting_service/_walk.py`.
-  Recovers the dropped settled activity (measured: $9,431.72 uncounted across 17 days until a
-  manual re-anchor).
-- [ ] **X2** `refactor(balance): a cash account is an event stream` -- the fold; deletes
-  `calculate_balances`' Projected-only premise, `_detect_stale_anchor` (nothing left to
-  detect), and the scalar/daily-series fork (they disagreed by $999.48 on 2026-07-16).
-- [ ] **X3** `fix(balance): the past is the anchor history, not today's anchor carried
-  backward` -- 44 real assertions currently discarded; kills the pre-anchor fabrication (B-18).
-- [ ] **X4** `refactor(accounts): current_anchor_balance is a reconciled cache or it is
-  nothing` -- today divergence from its history table is detected and only logged.
+**REDESIGNED and DECOMPOSED 2026-07-25** on rulings R-F / R-G / R-H (all as recommended). The old
+X1 -> X2 order is superseded; the old IDs are kept in the mapping below so archived references
+resolve. Phase X is now the whole remaining arc.
+
+**Measured on a fresh PROD-shape clone, 2026-07-25** (`shekel_f3_final`, verified identical to prod
+on `alembic_version`, `max(transactions.created_at)` and `max(account_anchor_history.created_at)`).
+Every figure below is a live defect at the time of writing, not an archived one:
+
+| what | measured |
+|---|---|
+| the re-anchor treadmill | **52** anchor assertions on Checking in **119 days** -- one every 2.3 days |
+| settled money counted by NO producer | **$2,108.15 invisible right now** (Checking $108.15, Money Market $2,000.00); historically **$53,880.81 gross across 130 rows in 45 assertion gaps** |
+| scalar vs daily-series fork | **$15.96** apart on Checking TODAY; **$246.36** at the worst day of the current period |
+| pre-anchor | the scalar FABRICATES `$2,932.41` for 2026-06-03; the map has **no entry at all** for the same 8 periods |
+| period standing in for instant | **22** settled rows whose `paid_at` civil date falls OUTSIDE their own pay period; **8** settled rows with NULL `paid_at` (the fallback rule is load-bearing) |
+
+The sharpest single case, and the reason the partition keys on INSTANTS rather than dates: the
+Checking anchor was asserted 2026-07-24 at **12:57:08 UTC**, and two expenses settled at
+**13:07:11** and **13:07:18** -- ten minutes later, the SAME UTC civil day. They are in neither the
+anchor nor the projection. A date-keyed partition leaves them invisible; an instant-keyed one
+recovers them.
+
+Target shape, which is the loan side's, name for name (R-H):
+
+```text
+CashEvent = (instant, kind, payload)                     -- cash_ledger._events
+kind = ASSERTION  balance := anchor_balance              (AccountAnchorHistory, every row)
+     | ACTUAL     balance += effective_amount (signed)   (settled transaction rows)
+
+walk_account_ledger(account, scenario) = replay(events, seeded 0.00)   -- cash_ledger._walk
+dated_deltas(walk) -> [(visible_civil_date, delta)]                    -- the ONE clock
+cash_balance_at(account, T) = sample_cumulative(dated_deltas) + PLANNED tier   -- the seam's fold
+```
+
+- [x] **X-a** `refactor(cash): the account walk is a leaf, not the posting package's private`
+  -- **SHIPPED `929b3a72` (2026-07-25).**
+  -- the B0 move, for cash. `cash_ledger` gains `_events` (anchors + settled rows merged into ONE
+  instant-ordered stream) and `_walk` (the reset-aware replay -> `CashLedgerWalk`, plus
+  `dated_deltas` re-keying each event onto its VISIBLE civil date as its ONE attribution
+  instant's UTC day -- provably the same date `app.utils.dates.to_utc_civil_date` gives the
+  posting writer, in both the `paid_at` and the NULL-`paid_at` branch, but derived once
+  rather than resolved twice). Built from
+  SOURCE facts, clock-free, takes no `as_of` -- so PLANNED events are NOT in it (R-G). ADDITIVE:
+  nothing consumes it yet, so the baseline cannot move. The existing
+  `account_posting_service._walk.walk_account_ledger` STAYS untouched here and is retired at X-d;
+  do not delete it early (the C3b3 / E1e deletion-list lesson -- prove the successor first).
+  **Its adversarial review changed the step four times, and two of the four are the reason
+  X-a is not just "write a walk".** (1) The walk valued a settled row at `effective_amount`;
+  the posting writer's own rule is `effective_amount - Sigma(credit entries)`, because an
+  envelope's CREDIT-card purchases leave via their CC Payback sibling and never touch
+  checking. Measured on prod: the two disagreed on **10 of the real Checking account's 130
+  settled rows, by up to $181.58**, and on three rows by the row's whole amount. The fix was
+  not to copy the formula but to MOVE it -- `posting_service._signed_cash_leg` was private to
+  the module that WRITES the ledger, the same inversion B0 corrected on the loan side -- so it
+  is now the leaf's shared `cash_ledger.settled_cash_leg` and the writer imports it.
+  (2) `dated_deltas`' docstring claimed its deltas were the NEGATIVES of what the writer
+  books; they are the amounts themselves (the loan twin says "negated" and is right to, because
+  a loan tracks OWED against a credit-normal ledger -- cash is ledger-native). A sign flip
+  there still balances every entry, so nothing downstream would have caught it; X-d wires the
+  writer onto this feed. A test now compares the walk's delta against the posted linked-ledger
+  leg. Also: `settled_cash_leg` made TOTAL (an excluded row carrying credit entries valued at a
+  fabricated `+$80.00` INFLOW), the settled narrowing moved into SQL, and the "one rule by
+  construction" claim scoped honestly (a TRANSFER shadow is posted by `_settle_effective`, a
+  different rule that agrees only via Transfer Invariant 3 -- X-d must unify or except it).
+  **Verification:** every one of the 52 assertion corrections on all 7 real accounts is now
+  BYTE-IDENTICAL to the postings-sourced walk's, and re-running the account anchor sync on a
+  prod clone writes nothing (221 entries in, 221 out) -- the X-d invariant already holding
+  before X-d ships. 5 mutations of the walk's rules each shown to fire their intended tests.
+- [ ] **X-b** `feat(balance): a cash account is an event stream` -- the FOLD, seam-private
+  (`balance_at/_cash_fold.py`), sampling X-a's walk through the SAME `_fold.sample_cumulative` the
+  loan past and forward folds share, plus the PLANNED tier (projected rows at
+  `max(attribution_date, as_of + 1d)`, R-G) as the cash twin of `_plan.fold_forward`. TOTAL: any
+  date, any account, a `Decimal`; `0.00` for the empty prefix; no `None`, no raise. ADDITIVE and
+  unwired -- only its oracle calls it. Graded on a HAND-COMPUTED oracle (never the shipping
+  producer as its own reference, N-7) PLUS an every-day parallel run against all three shipping
+  producers over generated shapes and real data, with **every divergence explained and signed off**
+  -- they are the defects, so equality is NOT the pass condition here (this is where X-b differs
+  from B2, and saying so is part of the step). Sampling is forbidden (B2's 14-day sample scored
+  perfect while wrong by $178,103.41 on 22% of days).
+- [ ] **X-c** `refactor(balance): the cash seam reads the fold` -- the CUTOVER, and the only step
+  where money moves. All three cash entries (`cash_balance_map` / `cash_balance_at` /
+  `cash_daily_balance_series`) plus the kernel's PLAIN/INTEREST branch and the investment
+  contributions base read the fold. Closes **old X1** (settled counted from its instant), **old
+  X2** (the Projected-only premise, `_detect_stale_anchor` -- nothing left to detect -- and the
+  scalar/daily fork) and **old X3** (pre-anchor: the fold replays EVERY anchor, so a past date
+  reads the anchor in force THEN, killing both the scalar's fabrication and the map's omission --
+  B-18) in ONE proven move, because the fold subsumes all three. Every moved figure on the six
+  affected surfaces individually explained and signed off (Section 7.1); the grid's
+  `balances[p] - balances[p-1] == subtotals[p].net` invariant re-proven, not assumed.
+- [ ] **X-d** `fix(cash): the posted account ledger is a checked projection` -- E1a's shape for
+  cash. The posting writer consumes X-a's walk instead of its own, and the per-visible-date assert
+  (`sum(postings) == fold(ACTUAL events)`) makes a stale posting a detectable, repairable cache
+  inconsistency. Ship-gated on a prod-data sweep for walk-invisible legacy rows, exactly as E1a
+  was; any found row is an F1-class human decision, never a silent exclusion.
+- [ ] **X-e** (old **X4**) `refactor(accounts): current_anchor_balance is a reconciled cache or it
+  is nothing` -- today `cash_ledger.resolve_anchor` detects the divergence from the history table
+  and only LOGS it (`EVT_ANCHOR_CACHE_RECONCILED`), never repairs it. Decide the column's fate once
+  the fold reads history directly (cash D4).
 - [ ] **X5 (optional feature)** anchor `effective_date` migration -- only needed for backdated
-  statement assertions; NOT a prerequisite for X1-X4.
+  statement assertions; NOT a prerequisite for X-a .. X-e.
 
 ### Phase F -- closeout
 
@@ -1866,7 +1966,10 @@ zero standing exceptions rather than training the exemption habit it exists to p
   the deleted year-end surface dropped from the equality checks. The obsolete pre-fence
   `calculate_balances` git-grep guard went with it (the W9906 fence supersedes it). ~12 stale
   docstring PROVENANCE mentions remain (deferred doc-sweep; not broken code). Net -6.7k lines.
-- [ ] **F3** prod ship: dev -> main PR for the whole arc per the standard pipeline.
+- [x] **F3** prod ship: dev -> main PR for the whole arc per the standard pipeline. -- **SHIPPED
+  2026-07-25** (PR #64 `balance architecture: Phases A-E complete`, merge `88c79857`).  CI green
+  (`lint-and-test`, 26m), the signed image published by `docker-publish.yml`, and `dev` resynced to
+  `main` (0/0 divergence).  The two gates below were closed BEFORE the merge, on a fresh prod clone.
   **Both ship gates are CLOSED on real production data (2026-07-25), and the deploy was
   REHEARSED rather than reasoned about.**  Method: a read-only `pg_dump` of prod restored into a
   scratch database on the dev Postgres instance, then the exact deploy sequence
@@ -1925,7 +2028,7 @@ archive names so old references resolve here.
 | B-15 | Kind-blind true-up writes a cash anchor onto a LOAN (had fired: both real loans carry rows) | -- | **closed (`f11382a0`)**; residue N-4/N-5 | A1 |
 | B-16 | Horizon uses `is_paid_off` where the contract says `is_retired` | -- | latent | collapses at C3b/C4 |
 | B-17 | Debt-track `is_originated` wiring unguarded (guard tests a hand-built dict) | -- | guard gap | A2-adjacent; flag deleted at C3b |
-| B-18 | Cash scalar fabricates pre-anchor balances from today's anchor | -- | live | X3 |
+| B-18 | Cash scalar fabricates pre-anchor balances from today's anchor | **$2,932.41 returned for 2026-06-03 on prod data, 2026-07-25** | live | X-c |
 | B-19 | False `DebtSchedule` type hints in `_income_tax` | -- | **closed (`3aecceb0`)** -- hints fixed to the real `dict[int, list]` / `list` row type on the relocation to `tax_report_service` | F2 |
 | B-20 | True-up-paid-off loan shows origination as payoff date, no badge | -- | **closed (`2f0130f5`)** -- the origination fallback is gone at the source (`LoanState.payoff_date` deleted), and a retired loan's `payoff_date is None` + `is_retired` badges "Paid off" on the detail chip; route test asserts the origination month is ABSENT from the page (control fires) | C8d |
 | B-21 | `TestBrokenLoanFailsLoud` cash fallback asserts `is not None`, not the value | -- | **closed (`c96c62be`)** -- pinned at the $150,000.00 anchor | A2 |
@@ -1935,11 +2038,11 @@ archive names so old references resolve here.
 | FU-3 | Standing overpayment resolves at today for any as-of | -- | latent | C-phase note |
 | FU-5 | Settled payment into an unoriginated loan vanishes | $1,200 test case; **$3,220.92 phantom cash** on the generator found at C9 | **closed (`2976614b` + `7c021281` generator; `d5a02ad2` guard)** -- the fold erases such a payment ($0.00 principal, the whole cash to a Refund Receivable) while the cash side still debits, so it is now REFUSED at both transfer write doors on the SHARED installment derivation, and the recurrence can no longer generate one (`start_date` bound). The shape's real source was not the hand-made transfer the finding names but the app's own loan-payment setup, which generated 3 of 4 payments pre-origination on a mortgage closing next month; existing rows are purged, settled ones reported | C9a (generator + data); C9b (guard) |
 | FU-8 | Empty schedule admits the whole contractual walk as back-projection | $197,049.32 class | **closed (`821dd0eb`)** -- an empty schedule now draws NO back-projection (`_back_projection_by_month` returns `{}`); the loan's real balance comes from the fold, which answers $0.00 after payoff | C5 |
-| cash D1 | Settled post-anchor transactions counted by NO producer | $9,431.72/17 days | **LIVE** (the re-anchor treadmill) | X1 |
-| cash D2 | Scalar is period-flat; contradicts the daily series | $999.48 on 07-16 | **LIVE** | X2 |
-| cash D3 | Pre-anchor: scalar fabricates, map omits; every re-anchor rewrites the whole past | -- | live | X3 |
-| cash D4 | Anchor column vs history table: divergence detected, only logged | latent | latent | X4 |
-| N-1 (07-16) | Archived X0 rule would double-count early-settled transactions | 15 real pairs | plan defect, corrected | R-B / X1 |
+| cash D1 | Settled post-anchor transactions counted by NO producer | $9,431.72/17 days archived; **re-measured on prod 2026-07-25: $2,108.15 invisible at that instant, and $53,880.81 gross across 130 rows in 45 assertion gaps historically** | **LIVE** (the re-anchor treadmill: 52 Checking assertions in 119 days) | X-c (via X-a/X-b) |
+| cash D2 | Scalar is period-flat; contradicts the daily series | $999.48 on 07-16 archived; **re-measured 2026-07-25: $15.96 on Checking that day, $246.36 at the worst day of the current period** | **LIVE** | X-c |
+| cash D3 | Pre-anchor: scalar fabricates, map omits; every re-anchor rewrites the whole past | **re-measured 2026-07-25: the scalar returns $2,932.41 for 2026-06-03 while the map omits all 8 pre-anchor periods** | **LIVE** | X-c |
+| cash D4 | Anchor column vs history table: divergence detected, only logged | latent | latent | X-e |
+| N-1 (07-16) | Archived X0 rule would double-count early-settled transactions | 15 real pairs | plan defect, corrected | R-B / X-c |
 | N-2 (07-16) | Settle-time freeze reads the clock (`loan_payment_service.py:762`) | -- | **closed (developer ruling 2026-07-24, E1 decomposition)** -- C7's drift warning surfaces a stale frozen amount (`a3f15aed`); the write-side clock read itself is ACCEPTED-BY-DESIGN: the freeze writes SOURCE cash (the shadow's `actual_amount`) the walk then splits, so it cannot desync the checked projection; the split keys on the DUE date (R-A), and the capture rule IS the ratified D3 cash semantics ("the cash you would pay if you settled now").  No code change | C7 (surfacing); E1 ruling (write-side) |
 | N-3 (07-16) | Escrow writes never trigger a posting sync (guard-only protection) | -- | **closed (`7cbc0271`)** -- all seven escrow write routes reconcile through `sync_loan_postings_all_scenarios` before committing, so the E1a checked-projection assert now covers escrow writes; the forward-only guard stays as the settle-frozen-cash protection (not the sole one); a stale posting self-heals through any escrow write (forge-heal firing control, verified to fire) | E1b |
 | N-4 (A1) | Pay-period reset re-anchors EVERY kind, refreshing loan cash-anchor rows (balance-preserving `stage_anchor_true_up` inside the reset's deferred-FK transaction; same-value, not user-supplied) | -- | B-15 residue | C-phase, when loan reads of the column die |
@@ -1973,6 +2076,8 @@ archive names so old references resolve here.
 | N-34 (E1d-b) | **The split's RATE and ESCROW still key on the payment's PAY-PERIOD START, not its DUE date -- ruling D5/R-A says the due date, and C2's line claimed it shipped.** ORDERING did move to the due date (`loan_ledger.merge_anchor_and_payment_events`) and VISIBILITY to the settled date, but `_split.split_one_payment:233` resolves the rate period on `shadow.pay_period.start_date` and `_walk._replay_events:160` resolves escrow the same way.  A pay period starts up to ~2 weeks BEFORE the installment it pays, so a rate or escrow version effective inside that window governs the wrong side of the boundary.  **Measured** (E1d-b probe, SPLIT_LOAN): a 12% rate effective 2026-01-25 -- strictly between period 1's 2026-01-16 start and its 2026-02-01 due date -- does NOT govern that payment; it splits at 6% (interest $500.00, principal $500.00, balance $99,500.00) where due-date keying gives 12% (interest $1,000.00, principal $0.00, balance held at $100,000.00).  The split is the single source for FIVE surfaces, so the error propagates to all of them: the owed balance, the posted ledger's `loan_interest` leg and derived principal (`_payments.py:213-226`) and hence the payment-history table, the Schedule-A tax interest (`balance_at._loan_interest:270`), and the paid-YTD chips.  **E1a's checked-projection assert CANNOT catch it** -- both sides derive from the same walk, so it stays self-consistent while wrong. D5 measured it as moving nothing on the real loans (their period-start-to-due-date windows contain no version change) and said "gate it anyway"; that gate existed as a pinned-defect control, and C2b flipped it into the fix's pin (`test_confirmed_view.py::TestSplitInputsKeyOnTheDueDate`).  **Its scope was WIDER than this row: six sites, not two** -- the PLANNED forward tier and the live-cash derivation key the same way, and the cash==split invariant (the cash CARRIES the escrow the split BACKS OUT) forces them to move together; the escrow forward-only guard's boundary moved with them, because a period-start boundary becomes too permissive the moment the split reads the due date | $500.00 interest on ONE payment (measured); unbounded in the rate delta | **closed (`c2d43332`)** -- and on PROD data the re-key moves NOTHING (no rate/escrow version falls inside any payment's window; the deploy rehearsal is byte-identical with and without it), which is why it was ruled ahead of the F3 ship rather than after | C2b |
 | N-35 (E1e) | **The statement tier `app.services.ledger_report_service` is not W9909-scoped, so a public balance-at-T born there is unguarded.** E1e's rationale for deleting W9906 whole rests on "no public single-account balance-at-T producer exists outside the seam" -- true, and the claim was NARROWED to that wording in review, because `compute_balance_sheet(user_id, as_of)` does fold every posted source attributed on or before a date into per-account cumulative positions. It is the ruled exception (a whole-chart statement whose sections articulate only because the trial balance ties; pulling ONE line out to answer "what is this account worth on date T" is the named misuse), and it never sat on W9906's producer list, so the deletion cedes nothing. The GAP is the completeness half: the package holds every ingredient of a posted balance-at-T -- `dated_account_nets`, the chart load, the class-id sectioning -- OUTSIDE W9910's protection, exactly the shape that put `cash_ledger`, `loan_ledger`, `loan_resolver` and `account_projection` on the registry. **Measured on this tree:** a public `account_balance_on(user_id, ledger_account_id, as_of)` folding `dated_account_nets` inside the package rates **10.00/10** under the full `--fail-on` set. Scoping it is its own step because every public name in the package must then be classified (2 report entries + 7 attribution names) | a balance-at-T on a screen outside the seam, every gate green (same class as N-28 / N-31) | **recorded, NOT fixed** -- the false absolute claim was corrected in-commit (checker header, the `loan_posting_service` ruling, the package's own docstring); the scope entry is deferred | own step |
 | N-36 (C2b) | **The resolver's money-blind replay keys its rate on the PAY-PERIOD START, where the genesis walk now keys on the DUE date -- one question, two rules, deliberately.**  C2b re-keyed every split input onto contract time (ruling D5), but `rate_period_engine._replay_from_anchor` (`:893`) was left on `payment.period_start`.  The reason is measured, not a preference: it consumes payments that have been through `loan_payment_service._redistribute_to_distinct_months`, which INVENTS a due date for a payment colliding on an already-allocated schedule month, so keying its rate on that date would let a schedule-alignment artifact move a replayed balance -- trading N-34's defect for a subtler one.  Containment, verified: the replay's rows and balance are DISCARDED whenever a ``confirmed_view`` is supplied (`_build_forward_inputs` keeps only `next_pay_date` / `remaining_months_as_of`), which is every production read since E1d-b, so the two keys can differ only on the unseeded what-if path and never inside one rendered figure.  The honest fix is to carry a payment's REAL installment alongside the redistributed one so the replay can key on the fact rather than the artifact -- which is a schedule-alignment change, not a split change | none measured (the divergent surface is discarded on every production read) | **recorded, deliberate, NOT fixed** -- stated at the site in `rate_period_engine`, so it cannot be rediscovered as an accident | own step (with the schedule-alignment rework) |
+| N-37 (X-a) | **The fold's answer BEFORE an account's first assertion is undesigned, and the shape is live on production.** `walk_cash_ledger` absorbs a settled row attributed before the OPENING assertion into that assertion's correction, so the running total is exactly right at the opening and every date after. But `dated_deltas` emits such a row at its OWN visible day, so a prefix taken BEFORE the opening is those rows summed from a zero seed -- a balance the account never had. It is faithful to the POSTED ledger, which holds the same partial sum there (so re-keying them onto the opening would break the walk-vs-ledger equality X-a establishes), which is why the leaf records the fact and does not decide it. **Measured on prod 2026-07-25:** Fidelity Savings carries 1 such row and the Money Market 4; the prefix reads `$500.00` on both. The honest options are the loan side's two: answer `0.00` (the empty prefix, as `fold_loan_balances` does before any event) or hold the opening balance flat backward (the C1 plateau, ruling D2's shape). Pinned by `TestPreOpeningSources` so the ruling has a control to flip, exactly as N-34 was gated before C2b | $500.00 on two real accounts | **recorded, NOT fixed** -- pinned; X-b rules it | X-b |
+| N-38 (X-a) | **A loan account walked as cash yields a cash-basis balance that ignores interest.** `walk_cash_ledger` deliberately refuses no account kind (the refusal in `account_posting_service.walk_account_ledger` is a WRITE concern -- which correction family a loan's anchors book into), and `resolve_grid_account` can point at an amortizing loan, so `settled_cash_facts(loan_account_id, ...)` returns the loan payments' INCOME shadows and the walk sums them at face value. That is the cash-basis paydown path ruling R-E forbids as a third event kind. **Not a regression:** today's `cash_balance_map` is equally kind-blind by design (the grid's balance row must reconcile with the transaction rows it renders, whatever the account), so X-a introduces nothing new -- but the X-b fold inherits the shape and X-c is where it becomes a rendered number. Needs an explicit ruling (refuse in the fold, dispatch on kind, or ratify the cash-flow view as deliberately kind-blind) rather than a rediscovery at the cutover | -- | **recorded, NOT fixed** | X-b (developer ruling) |
 | N-14 (C6b) | **`contractual_schedule_from_origination` is computed twice per pass on the property page** -- once inside the (now-memoized) `ctx.loan_plan` and once in the equity chart's `_back_projection_by_month` (both call it for the same loan). Deferred (developer ruling): pure-CPU (no query), only 2x, property-page only, and a full dedup via a fourth context memo must FIRST prove the two call sites' rate-change inputs are identical (`load_rate_changes(id)` vs `resolved.context.rate_changes`) -- a correctness check better done in its own focused change | -- | recorded, deferred | own commit (or Phase D) |
 
 ## 7. Verification standard (what "done" means for every step)
