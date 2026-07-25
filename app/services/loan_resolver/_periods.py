@@ -238,8 +238,9 @@ class ConfirmedLedgerView:
     reader call site); the pure resolver consumes it blind.
 
     Attributes:
-        balance: The ledger-confirmed balance owed as of the evaluation date
-            (:func:`app.services.loan_posting_service.confirmed_loan_balance_at`).
+        balance: The record-confirmed balance owed as of the evaluation date
+            (folded from the loan's walk by the seam's ``confirmed_view`` since
+            plan step E1d-b; it was the posting reader's sum until then).
             Becomes the schedule composer's forward starting balance (the
             loan's displayed balance folds in the ``balance_at`` seam, plan
             step D2a).

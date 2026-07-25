@@ -1290,6 +1290,170 @@ def linked_net_by_date(db_session, ledger_account_id, scenario_id):
     return dict(rows)
 
 
+def _posted_loan_linked_ledger(loan_account_id, scenario_id):
+    """Return a loan's linked ledger row, or None when it has no OPENING posting.
+
+    The entry guard the posting window rests on, held in one place so the
+    scalar and the per-period form cannot disagree about which loans the ledger
+    can answer for.  A loan gets exactly one OPENING-kind leg on its linked
+    ledger per scenario (the origination anchor correction, whose linked leg is
+    ``-original_principal``), so its absence means the loan is not configured in
+    this scenario -- an unconfigured loan, or a what-if the opening was never
+    posted into.
+
+    Args:
+        loan_account_id: The loan account whose linked ledger to resolve.
+        scenario_id: The budget scenario to scope to.
+
+    Returns:
+        The linked :class:`~app.models.ledger_account.LedgerAccount`, or ``None``
+        when no OPENING leg is posted on it in *scenario_id*.
+
+    Raises:
+        PostingError: If the loan account has no linked ledger account at all (a
+            broken chart-of-accounts pairing).
+    """
+    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app import ref_cache
+    from app.enums import PostingKindEnum
+    from app.extensions import db
+    from app.models.journal_entry import JournalEntry, Posting
+    from app.services.posting_reads import _ledger_account_for
+
+    linked = _ledger_account_for(loan_account_id)
+    has_opening = db.session.query(
+        db.session.query(Posting.id)
+        .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
+        .filter(
+            Posting.ledger_account_id == linked.id,
+            Posting.posting_kind_id == ref_cache.posting_kind_id(
+                PostingKindEnum.OPENING,
+            ),
+            JournalEntry.scenario_id == scenario_id,
+        )
+        .exists()
+    ).scalar()
+    return linked if has_opening else None
+
+
+def posted_loan_balance_at(loan_account_id, scenario_id, as_of):
+    """Return what the POSTED ledger says a loan owed on a date, or None.
+
+    ``owed(as_of) = round_money(-(sum of the loan's linked-ledger postings,
+    scenario-scoped, whose ``entry_date`` is on or before *as_of*))`` -- the
+    opening (``-original_principal``), every settled payment's net principal (the
+    Step-2 cash leg plus the Step-4 split correction), and every true-up.
+
+    **This is the test suite's own window onto the general ledger, and that is
+    deliberate.**  Plan step E1e deleted the production readers this replaces
+    (``loan_posting_service.confirmed_loan_balance_at`` / ``_map``): the balance
+    seam answers a loan from the event FOLD (steps C3b1 / C3b3 / E1d-b) and the
+    balance sheet reads the postings through
+    :mod:`app.services.ledger_report_service`, so the sum-of-postings
+    balance-at-T had no production caller left -- its only remaining job was to be
+    the counterparty the fold and the resolver are graded against.  An oracle's
+    window belongs on the oracle's side: the reconciliation suite already states
+    the rule (``_independent_loan_linked_net`` reads through a DIFFERENT join
+    shape than the production readers "so the two cannot share a lookup bug"), and
+    a window living here cannot be re-exported into a screen.
+
+    Two deliberate differences from the deleted reader, both stated so a caller is
+    not surprised:
+
+    * it answers ANY date, where the reader raised for ``as_of > today``.  That
+      raise was a DOMAIN guard forcing production callers to route a future date
+      to the projection; there are no such callers now.  A future date sums the
+      same postings (every posted entry is dated today or earlier), so it carries
+      the confirmed balance FLAT -- which is exactly what the deleted per-period
+      reader did, and what the early-settle parallel run reads at period ends
+      beyond today.
+    * the per-period form (:func:`posted_loan_balance_map`) is a plain
+      per-period call, not a prefix-sum over one grouped load.  The batching
+      existed for production read cost; an oracle wants the simplest derivation
+      that can be checked by eye.
+
+    Args:
+        loan_account_id: The loan account whose posted balance to read.
+        scenario_id: The budget scenario to scope to (postings are
+            scenario-scoped via ``journal_entries.scenario_id``).
+        as_of: The evaluation date.  Only postings whose ``entry_date`` is on or
+            before it are summed.
+
+    Returns:
+        The posted balance owed as a cent-quantized ``Decimal``, or ``None`` when
+        the loan has no OPENING posting in the scenario.
+    """
+    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app.extensions import db
+    from app.models.journal_entry import JournalEntry, Posting
+    from app.utils.money import round_money
+
+    linked = _posted_loan_linked_ledger(loan_account_id, scenario_id)
+    if linked is None:
+        return None
+    net = (
+        db.session.query(
+            db.func.coalesce(db.func.sum(Posting.amount), Decimal("0.00"))
+        )
+        .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
+        .filter(
+            Posting.ledger_account_id == linked.id,
+            JournalEntry.scenario_id == scenario_id,
+            JournalEntry.entry_date <= as_of,
+        )
+        .scalar()
+    )
+    # Debit-positive ledger: the linked net is -(owed).  Written ``0 - net``
+    # rather than ``-net`` so a zero net (a loan read before its opening's date)
+    # yields ``0.00``, never ``-0.00``.
+    return round_money(Decimal("0.00") - net)
+
+
+def posted_loan_balance_map(loan_account_id, scenario_id, periods):
+    """Return each period's posted loan balance, keyed by period id, or None.
+
+    The per-period form of :func:`posted_loan_balance_at`, evaluated at each
+    period's END date.  A posting can fall mid-period under the one clock (step
+    C2), so a payment settled during period P must count in P's balance, which
+    ``entry_date <= period.end_date`` selects.
+
+    **It is the scalar per period, not an independent derivation.**  Comparing
+    this against :func:`posted_loan_balance_at` at the same date is therefore
+    ``f(x) == f(x)`` -- pin a VALUE, never that identity.  Nor is it directly
+    comparable to the production map
+    (:func:`app.services.balance_at.positions_period_map`) except over ELAPSED
+    periods: that map clamps a BEGUN period to ``min(period.end, ctx.as_of)``
+    and answers a FUTURE period from the forward plan, where this window carries
+    the confirmed sum flat.  The keys line up; the values only do in the past.
+
+    Returns ``None`` -- not a map of zeros -- when the loan has no OPENING
+    posting in the scenario, so a caller can tell "the ledger cannot answer for
+    this loan" from "the ledger says zero".
+
+    Args:
+        loan_account_id: The loan account whose per-period balances to read.
+        scenario_id: The budget scenario to scope to.
+        periods: The pay periods to key by (any order; the result keys by
+            ``period.id`` in the given order).  Postings in periods outside this
+            list are still counted -- each period's value is a cumulative, not a
+            slice.
+
+    Returns:
+        A ``{period.id: Decimal}`` mapping, or ``None`` when the loan has no
+        OPENING posting in the scenario.
+    """
+    if _posted_loan_linked_ledger(loan_account_id, scenario_id) is None:
+        return None
+    return {
+        period.id: posted_loan_balance_at(
+            loan_account_id, scenario_id, period.end_date,
+        )
+        for period in periods
+    }
+
+
 def find_loan_ledger_account(db_session, loan_account_id, kind):
     """Return the per-loan ledger account of *kind*, or None if not created.
 

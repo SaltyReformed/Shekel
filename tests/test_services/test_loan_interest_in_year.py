@@ -29,17 +29,18 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from app.extensions import db
-from app.services import balance_at, loan_posting_service
+from app.services import balance_at
 from app.services.balance_at import _kernel as net_worth_kernel
 from app.services.balance_at._plan import loan_plan
 from app.services.loan_ledger import split_payment_cash
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
-    SPLIT_LOAN,
     clear_loan_ledger,
     create_loan_with_trueup,
     create_settled_transfer,
     freeze_today,
+    posted_loan_balance_at,
+    SPLIT_LOAN,
 )
 
 ZERO = Decimal("0.00")
@@ -370,7 +371,7 @@ class TestLoanInterestAnswersFromTheFold:
             # real -- the postings genuinely no longer answer for this loan.
             clear_loan_ledger(loan.id)
             db.session.commit()
-            assert loan_posting_service.confirmed_loan_balance_at(
+            assert posted_loan_balance_at(
                 loan.id, scenario_id, date(2025, 12, 31),
             ) is None
 

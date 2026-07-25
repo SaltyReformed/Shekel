@@ -10,7 +10,6 @@
 #   * Hard block (exit 2, fed back to Claude) on real errors (E/F) and the custom
 #     checkers: the financial-correctness rules (shekel-decimal-from-float,
 #     shekel-refname-compare, shekel-bare-money-quantize,
-#     shekel-balance-producer-bypass,
 #     shekel-transaction-status-bypass, shekel-ledger-model-bypass,
 #     shekel-unclassified-fenced-export,
 #     shekel-private-module-import) and
@@ -68,7 +67,7 @@ esac
 
 # Hard-block tier: errors and the custom financial-correctness rules.
 guard="$(pylint "$FILE" --score=no --disable=all \
-    --enable=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale,shekel-balance-producer-bypass,shekel-transaction-status-bypass,shekel-ledger-model-bypass,shekel-unclassified-fenced-export,shekel-private-module-import 2>&1)"
+    --enable=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale,shekel-transaction-status-bypass,shekel-ledger-model-bypass,shekel-unclassified-fenced-export,shekel-private-module-import 2>&1)"
 if [ -n "$guard" ]; then
     {
         echo "Blocking issue in $FILE (error or financial-correctness rule)."

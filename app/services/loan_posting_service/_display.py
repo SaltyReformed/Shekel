@@ -2,9 +2,9 @@
 
 The display read side of the genesis loan sub-ledger, split from the core
 readers (:mod:`._reader`) as the loan-detail rebuild's producers landed and the
-reader approached the module-size limit.  Where :mod:`._reader` answers the
-balance scalar / map and the amortization history rows, this module answers the
-loan DETAIL page's two remaining measured surfaces:
+reader approached the module-size limit.  Where :mod:`._reader` answers what one
+payment's posted legs attribute to interest / escrow / principal, this module
+shapes those attributions into the loan DETAIL page's two measured surfaces:
 
 * the confirmed payment-history table (:func:`confirmed_loan_payment_history`,
   each payment's real cash / principal / interest / escrow split); and
@@ -16,7 +16,8 @@ The paid-in-year chips moved OFF the postings onto the fold at step C6c
 :func:`~app.services.balance_at.loan_principal_paid_in_year`), so this module no
 longer answers them.  Every producer here reuses the reader's shared per-shadow /
 linked helpers and the walk the postings derive from, so no display surface can
-drift from the balance the readers report.  Reads only -- no writes, no commit.
+drift from the legs the ledger actually carries.  Reads only -- no writes, no
+commit.
 """
 
 from dataclasses import dataclass

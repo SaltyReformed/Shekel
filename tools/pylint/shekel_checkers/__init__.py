@@ -31,16 +31,6 @@ Rules implemented:
   rounding go through ``round_money`` (``ROUND_HALF_UP``); this locks the rule
   that the financial_calculations audit's E-26 / HIGH-04 remediation
   established.
-* ``shekel-balance-producer-bypass`` (W9906, :mod:`.balance_seam`): the
-  balance fence's honest residue since plan step D3 (structure owns the rest:
-  every balance producer is a private ``app.services.balance_at`` submodule
-  W9910 protects in every import spelling).  ONE surface remains: the genesis
-  posting readers (``confirmed_loan_balance_at`` / ``confirmed_loan_balance_map``)
-  may be called -- or IMPORTED by name, the aliased-import evasion
-  (``from ... import confirmed_loan_balance_at as bal``) -- only by their
-  defining ``loan_posting_service`` package and the ``loan_payment_service``
-  view seam.  The surface deletes at plan step E1
-  (``docs/audits/balance_architecture/``).
 * ``shekel-unclassified-fenced-export`` (W9909, :mod:`.balance_seam`): the
   fail-closed classification of new public exports in the PUBLIC
   balance-ingredient packages W9910 cannot protect (``loan_ledger``,
@@ -77,7 +67,9 @@ Rules implemented:
   ``Transfer(...)`` constructor ``status_id=`` kwarg whose value is not
   recognizably born-Projected (the 2026-07-02 adversarial review's H3:
   born-Projected was a convention three layers deep, not a machine rule). The
-  status analog of the W9906 balance fence.
+  status analog of the balance seam's own call fence, which was deleted at plan
+  step E1e once structure made it unnecessary -- the status seam has no such
+  structural boundary, so this name fence stays.
 * ``shekel-ledger-model-bypass`` (W9908, :mod:`.ledger_model_fence`): flags any
   module OUTSIDE the posting-ledger allowlist that IMPORTS a posted-ledger row
   model (``Posting`` / ``JournalEntry`` / ``LedgerAccount``). The append-only
@@ -92,7 +84,8 @@ Rules implemented:
   (binding a defining submodule via ``from app.models.journal_entry import
   <anything>``, ``from app.models import journal_entry``, or ``import
   app.models.ledger_account``, reached as ``<module>.Posting``). The import
-  analog of the W9906/W9907 read/write fences.
+  analog of the W9907 write fence (and of the balance-seam read fence deleted
+  at plan step E1e).
 * ``shekel-private-module-import`` (W9910, :mod:`.package_privacy`): the
   balance arc's Phase D gate (step D-gate) -- a package's private modules are
   private. A module outside package ``P`` may not import ``P._x``, nor any
@@ -101,8 +94,10 @@ Rules implemented:
   ``from P import _x``, or ``import P._x``, aliased or not, relative or
   absolute, TYPE_CHECKING included. Name-INDEPENDENT and fail-closed (no
   allowlist, no producer list), it is the structural boundary that let the
-  name fences DELETE at plan step D3 down to the residue W9906/W9909 above
-  describe, instead of being maintained forever.
+  balance name fences DELETE instead of being maintained forever -- at plan
+  step D3 down to one call surface, and at plan step E1e down to the W9909
+  classification alone, once the last public producer outside the seam was
+  itself deleted.
 
 Deliberately NOT implemented as a checker: a blanket ``float()`` ban. The
 codebase's real ``float()`` call sites are all legitimate (config timeouts that
@@ -117,8 +112,6 @@ from .balance_seam import (
     _FENCED_MODULE_RULINGS,
     _KIND_CLASSIFIER_MODULES,
     _LOAN_LEDGER_DEFINING_MODULES,
-    _LOAN_LEDGER_READER_MODULES,
-    _LOAN_LEDGER_READER_PRODUCERS,
     _LOAN_PAYMENT_SEAM_MODULES,
     _LOAN_RESOLVER_ENGINE_MODULES,
     _SEAM_PRIVATE_CONTEXT_MODULES,
@@ -141,7 +134,7 @@ from .status_bypass import _STATUS_SEAM_MODULES, ShekelTransactionStatusBypassCh
 # Re-exported so the plugin's import surface is identical to the pre-split
 # single module: ``.pylintrc`` names the package in ``load-plugins`` and calls
 # ``register``; the checker unit tests import the seven checker classes and
-# the module/producer sets straight ``from shekel_checkers``.  The underscore-
+# the module scope sets straight ``from shekel_checkers``.  The underscore-
 # prefixed sets are internal-but-tested, listed here so re-export is explicit
 # rather than an unused-import.
 __all__ = [
@@ -153,8 +146,6 @@ __all__ = [
     "_LEDGER_MODEL_MODULES",
     "_LEDGER_MODEL_NAMES",
     "_LOAN_LEDGER_DEFINING_MODULES",
-    "_LOAN_LEDGER_READER_MODULES",
-    "_LOAN_LEDGER_READER_PRODUCERS",
     "_LOAN_PAYMENT_SEAM_MODULES",
     "_LOAN_RESOLVER_ENGINE_MODULES",
     "_SEAM_PRIVATE_CONTEXT_MODULES",

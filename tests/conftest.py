@@ -600,6 +600,7 @@ from tests._test_helpers import (
     insert_trueup_event,
     make_appreciating_account,
     make_investment_account,
+    posted_loan_balance_at,
 )
 
 
@@ -1680,7 +1681,6 @@ def cross_page_loan_off_schedule_ctx(db, seed_user):
     # Pylint: ``import-outside-toplevel`` -- the app services / test helpers are
     # loaded lazily, the convention every fixture in this conftest follows.
     # pylint: disable=import-outside-toplevel
-    from app.services import loan_posting_service
     from tests._test_helpers import (
         create_loan_with_trueup,
         create_settled_transfer,
@@ -1724,7 +1724,7 @@ def cross_page_loan_off_schedule_ctx(db, seed_user):
 
     # The genesis reader (what the surfaces now read) vs the un-seeded schedule
     # replay (what they read before the switch): off-schedule they DIVERGE.
-    ledger = loan_posting_service.confirmed_loan_balance_at(
+    ledger = posted_loan_balance_at(
         loan.id, scenario.id, today,
     )
     replay = _unseeded_replay_balance(loan.id, scenario.id, today)

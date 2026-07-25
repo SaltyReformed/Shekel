@@ -468,8 +468,8 @@ def _resolve_balance_maps(
       (:func:`~app.services.balance_at.investment_seed_map`), which the
       forward growth projection seeds from.  Seeding from the modeled balance
       would re-grow the current period (the modeled value already compounded
-      the anchor forward to today); reading the seed through the seam (not the
-      raw producer) keeps this consumer behind the W9906 fence.
+      the anchor forward to today); the seam entry is the only way in, since
+      the seed producer lives inside it as a private submodule.
 
     Both are empty when there is no scenario or no periods (each account
     then falls back to its anchor balance in :func:`_project_one_account`).

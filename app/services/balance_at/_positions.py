@@ -14,14 +14,15 @@ loan balance surface -- point, band, and map -- now answers from this one
 producer.
 
 **The past reads the FOLD, not the postings -- that is the cutover's heart.**
-Before this the seam's past balance was a sum of POSTINGS
-(:func:`app.services.loan_posting_service.confirmed_loan_balance_at`).  Here it is
-the fold over the loan's SOURCE events, which step B2 proves equal to the postings
+Before this the seam's past balance was a sum of POSTINGS (the genesis reader
+``confirmed_loan_balance_at``, since DELETED at plan step E1e).  Here it is the
+fold over the loan's SOURCE events, which step B2 proves equal to the postings
 on every day (``tests/test_services/test_loan_fold_oracle.py``): the postings
-become a checked projection of the fold (plan step E1), not the answer to "what do
-I owe".  A loan whose POSTING ledger is missing (a cache miss) still folds
-correctly from its source facts, so the read is no longer an outage when the cache
-is cold -- it is a repairable inconsistency (B-8).
+become a checked projection of the fold (asserted at write time since plan step
+E1a), not the answer to "what do I owe".  A loan whose POSTING ledger is missing
+(a cache miss) still folds correctly from its source facts, so the read is no
+longer an outage when the cache is cold -- it is a repairable inconsistency
+(B-8).
 
 **The future is a FOLD over the forward PLAN (step C6b).**  It folds the
 confirmed-present seed forward over the loan's

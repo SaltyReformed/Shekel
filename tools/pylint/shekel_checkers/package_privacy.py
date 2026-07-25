@@ -32,11 +32,13 @@ subpackage inside it, so a deeper crossing still flags. The file test
 resolves each owner through astroid and only ever affirms on a real on-disk
 directory match, so an unresolvable owner still fails closed.
 
-Unlike the W9906/W9909 name fences, the rule is name-INDEPENDENT and
-fail-closed by construction: it consults no producer list and no allowlist --
-only the imported dotted path and the importing module's own name -- so there
-is nothing to keep complete and nothing to rot. It is what lets the name
-fences delete (plan step D3) instead of being maintained forever.
+Unlike the W9909 classification check (and the W9906 call fence it outlived),
+the rule is name-INDEPENDENT and fail-closed by construction: it consults no
+producer list and no allowlist -- only the imported dotted path and the
+importing module's own name -- so there is nothing to keep complete and nothing
+to rot. It is what let the balance name fences delete instead of being
+maintained forever: down to one call surface at plan step D3, and to the W9909
+classification alone at plan step E1e.
 
 What the rule deliberately does NOT cover, stated so the boundary is known
 rather than discovered:

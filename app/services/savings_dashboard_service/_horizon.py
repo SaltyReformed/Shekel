@@ -440,7 +440,7 @@ def _liability_band(
     The two forward models (an amortizing loan follows its resolver schedule; a
     liability with no forward model holds flat at its current owed magnitude)
     are the SEAM's rules, not this module's -- a balance-at-T boundary rule
-    living in a presentation module is the exact pattern the W9906 fence exists
+    living in a presentation module is the exact pattern the balance seam exists
     to prevent, and this band held half of one until the seam grew the liability
     view (``followup_fence_loan_owed_at_dates.md``).  The seam also owns the
     ``abs`` owed-magnitude convention and the today point, so index 0 is each

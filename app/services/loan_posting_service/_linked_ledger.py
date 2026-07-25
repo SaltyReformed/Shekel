@@ -1,14 +1,13 @@
 """Shared read primitives over a loan's linked-ledger postings.
 
-The low-level queries the genesis balance readers in :mod:`._reader` and the
-sync's E1a checks in :mod:`._sync` are built on:
+The low-level queries the attribution reads in :mod:`._reader` and the sync's
+E1a checks in :mod:`._sync` are built on:
 
 * :func:`_has_opening_posting` -- the "is this loan configured in this scenario"
-  sentinel every reader guards on before it trusts a ``$0.00`` (an unconfigured
-  loan reads ``None``, not a misleading zero).
-* :func:`_visible_nets` -- the one grouped ``(entry_date, net)`` load the
-  per-period map prefix-sums into a running balance, and the posted side of the
-  checked-projection assert (plan step E1a).
+  sentinel a posting read guards on before it trusts a ``$0.00`` (an
+  unconfigured loan answers ``None``, not a misleading zero).
+* :func:`_visible_nets` -- the one grouped ``(entry_date, net)`` load that is the
+  posted side of the checked-projection assert (plan step E1a).
 * :func:`_transfer_nets_by_date` -- the per-``(transfer, entry_date)`` nets the
   sync's lineage staleness probe compares against each settled payment's
   expected settle date and cash (step E1a).
@@ -115,10 +114,9 @@ def _visible_nets(
 
     Each posting's ``entry_date`` (the day the event it records happened -- step
     C2's one clock) with that date's net movement on the loan's linked ledger.
-    :func:`._reader.confirmed_loan_balance_map` prefix-sums it into a running
-    confirmed balance at each pay-period boundary from a single query, and the
-    checked-projection assert (plan step E1a) compares it against the walk's
-    dated deltas after every sync.
+    The checked-projection assert (plan step E1a) compares it against the walk's
+    dated deltas after every sync -- the ONE consumer since plan step E1e deleted
+    the per-period balance reader that also prefix-summed it.
 
     Args:
         linked_ledger_id: The loan's linked ledger account id.

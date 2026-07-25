@@ -50,6 +50,7 @@ from tests._test_helpers import (
     linked_ledger_account,
     linked_net_by_date,
     loan_params_for,
+    posted_loan_balance_at,
     select_option_values,
     settle_instant_on,
 )
@@ -471,10 +472,9 @@ class TestLoanSetup:
             .count()
         ) == 0
 
-        # The genesis OPENING posted instead: the reader answers the full
+        # The genesis OPENING posted instead: the postings sum to the full
         # original principal owed in the baseline scenario.
-        from app.services import loan_posting_service  # pylint: disable=import-outside-toplevel
-        assert loan_posting_service.confirmed_loan_balance_at(
+        assert posted_loan_balance_at(
             account.id, seed_user["scenario"].id, date.today(),
         ) == Decimal("30000.00")
 
@@ -545,8 +545,7 @@ class TestLoanSetup:
         assert events[0].anchor_balance == Decimal("25000.00")
 
         # The ledger reconciled to the asserted value...
-        from app.services import loan_posting_service  # pylint: disable=import-outside-toplevel
-        assert loan_posting_service.confirmed_loan_balance_at(
+        assert posted_loan_balance_at(
             account.id, seed_user["scenario"].id, date.today(),
         ) == Decimal("25000.00")
         # ...and the card shows it.

@@ -32,13 +32,25 @@ no ``-abs`` normalization (C-4); retained earnings derived, never posted (C-5).
 See :mod:`._attribution` and ``docs/audits/balance_architecture/`` for the full
 rule.
 
-## W9906 posture
+## Balance-seam posture
 
-The report functions are statement AGGREGATES, not balance-at-T producers, so
-they are deliberately NOT on the ``balance_at`` reader allowlist -- a caller
-that needs a projected balance at a moment routes to the seam, not to a
-statement.  Reads only, Flask-isolated: plain ids in, frozen reports out; no
-writes, no commit.
+The report functions are statement AGGREGATES over the WHOLE chart, not the
+single-account balance-at-T the seam owns -- a caller that needs one account's
+balance at a moment routes to ``balance_at``, never to a statement.  That is
+why these read the postings freely: a statement is the general ledger's own
+presentation of what it recorded, and the sections articulate only because they
+are read together (the trial balance ties).  Pulling ONE line out of a balance
+sheet to answer "what is this account worth on date T" is the misuse this
+posture exists to name -- that answer comes from the seam's fold, not from the
+posting cache (plan Section 3).
+
+**Not W9909-scoped, and that is a recorded gap, not a ruling** (finding N-35):
+a new public function here answering balance-at-T would rate 10.00/10 with
+every gate silent, exactly the N-28 shape the completeness registry closes for
+the other ingredient packages.  Scoping it is its own step.
+
+Reads only, Flask-isolated: plain ids in, frozen reports out; no writes, no
+commit.
 """
 
 from ._balance_sheet import compute_balance_sheet

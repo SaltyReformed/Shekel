@@ -11,7 +11,7 @@ instead -- the balance from the fold (:func:`._fold.fold_from_walk`) and the
 history rows re-derived from the walk's per-payment splits and per-anchor
 corrections -- so the confirmed view no longer depends on the posting cache
 being warm.  Step E1d-b made it the production seed and DELETED the posting
-view; the posting readers behind it delete at E1e.
+view; step E1e deleted the two posting balance readers behind it.
 
 **Why this completes the read switch (plan Section 3).**  The seam's balance
 SCALAR, per-period MAP, and LIABILITY band already fold the walk (steps C3b1/C3b3);
@@ -19,8 +19,9 @@ the confirmed VIEW that seeds the RESOLVER was the last surface still reading th
 partial posting readers.  Building it from the walk is what lets those readers
 come off the production path: ``confirmed_loan_history_rows`` was DELETED with
 the view that composed it, and ``confirmed_loan_balance_at`` /
-``confirmed_loan_balance_map`` now have no caller in ``app/`` at all (they go
-package-private at plan step E1e).  It also lets a loan with a cold posting cache
+``confirmed_loan_balance_map`` -- left with no caller in ``app/`` at all -- were
+DELETED at plan step E1e, their oracle window moving to the test suite.  It also
+lets a loan with a cold posting cache
 seed its schedule from source facts rather than fall back to the money-blind
 anchor replay (finding B-12).
 

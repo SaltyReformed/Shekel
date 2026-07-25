@@ -20,8 +20,9 @@ the loan-posting glue into ``_transfer_loan_posting``.  These three helpers
 are a cohesive, transfer-service-private cluster (single responsibility:
 validate inputs and load-and-verify the rows a mutation operates on) with no
 dependency on the rest of the service, and they write no ``status_id`` and
-construct no ``Transaction`` -- so they stay clear of the W9906/W9907 fences
-that keep the status-mirroring appliers in the parent module.
+construct no ``Transaction`` -- so they stay clear of the W9907 status fence
+that keeps the status-mirroring appliers in the parent module, and they compute
+no balance.
 Flask-isolated like the parent service: plain data in, ORM objects out, no
 ``request`` / ``session`` imports.
 """

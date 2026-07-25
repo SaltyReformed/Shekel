@@ -36,15 +36,16 @@ from app import ref_cache
 from app.enums import StatusEnum
 from app.extensions import db
 from app.models.scenario import Scenario
-from app.services import balance_at, loan_posting_service, transfer_service
+from app.services import balance_at, transfer_service
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
-    SPLIT_LOAN,
     clear_loan_ledger,
     create_loan_account,
     create_loan_with_trueup,
     create_settled_transfer,
     freeze_today,
+    posted_loan_balance_at,
+    SPLIT_LOAN,
 )
 
 (_ORIGINATION_PRINCIPAL, _ORIGINATION_DATE, _RATE, _ANCHOR_BALANCE,
@@ -371,7 +372,7 @@ class TestPaidInYearChips:
             db.session.commit()
             # The sum-of-postings balance reader now declines -- the postings
             # genuinely no longer answer for this loan (the test's teeth).
-            assert loan_posting_service.confirmed_loan_balance_at(
+            assert posted_loan_balance_at(
                 loan.id, scenario_id, date(2026, 12, 31),
             ) is None
 

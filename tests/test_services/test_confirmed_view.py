@@ -59,14 +59,12 @@ from app.services import (
     balance_at,
     loan_loaders,
     loan_payment_service,
-    loan_posting_service,
     loan_resolver,
     transfer_service,
 )
 from app.services.balance_at import BalanceContext
 from app.services.balance_at._resolution import resolved_loan
 from tests._test_helpers import (
-    SPLIT_LOAN,
     clear_loan_ledger,
     create_loan_account,
     create_loan_with_trueup,
@@ -75,8 +73,10 @@ from tests._test_helpers import (
     freeze_today,
     insert_tracking_start_event,
     insert_trueup_event,
+    posted_loan_balance_at,
     seam_confirmed_view,
     settle_instant_on,
+    SPLIT_LOAN,
 )
 
 (_ORIGINATION_PRINCIPAL, _ORIGINATION_DATE, _RATE, _ANCHOR_BALANCE,
@@ -252,14 +252,14 @@ class TestConfirmedViewGuards:
             assert before.balance == Decimal("99500.00")
             # The posting reader agrees while the cache is warm (the checked
             # projection, plan step E1a).
-            assert loan_posting_service.confirmed_loan_balance_at(
+            assert posted_loan_balance_at(
                 loan.id, seed_user["scenario"].id, _AS_OF,
             ) == Decimal("99500.00")
 
             clear_loan_ledger(loan.id)
 
             # The reader can no longer answer; the fold is UNCHANGED.
-            assert loan_posting_service.confirmed_loan_balance_at(
+            assert posted_loan_balance_at(
                 loan.id, seed_user["scenario"].id, _AS_OF,
             ) is None
             assert _view(loan, seed_user) == before
@@ -1064,7 +1064,7 @@ class TestRawLoanTransactionIsInvisibleToTheWalk:
             scenario_id = seed_user["scenario"].id
 
             before = _view(loan, seed_user)
-            assert before.balance == loan_posting_service.confirmed_loan_balance_at(
+            assert before.balance == posted_loan_balance_at(
                 loan.id, scenario_id, _AS_OF,
             )
 
@@ -1076,7 +1076,7 @@ class TestRawLoanTransactionIsInvisibleToTheWalk:
             db.session.commit()
 
             after = _view(loan, seed_user)
-            posted = loan_posting_service.confirmed_loan_balance_at(
+            posted = posted_loan_balance_at(
                 loan.id, scenario_id, _AS_OF,
             )
             assert after == before

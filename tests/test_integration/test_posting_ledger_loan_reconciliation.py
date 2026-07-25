@@ -49,18 +49,21 @@ against a displayed balance.  The invariants below are plan Section 8.
   6. **Backfill == go-forward (plan 8.8).**  The historical backfill and the
      go-forward wiring post identical corrections, so a ledger rebuilt by the
      backfill reconciles identically to the go-forward one.
-  7. **The genesis READER parallel run (the read switch's gate, plan 4-commit-6 /
-     8.2).**  Invariants 1-6 pin the posted LEDGER against the resolver via the
-     test's OWN independent ``-(sum of linked postings)`` query (``_ledger_balance``);
-     this pins the PRODUCTION reader the read switch actually wires --
-     ``confirmed_loan_balance_at`` (a point in time) and ``confirmed_loan_balance_map``
-     (every period boundary) -- as a THIRD independent producer, proven == the
-     resolver on-schedule and divergent by exactly the extra / short principal
+  7. **The DATED posting window parallel run (plan 4-commit-6 / 8.2).**
+     Invariants 1-6 pin the posted LEDGER against the resolver via the test's OWN
+     unbounded ``-(sum of linked postings)`` query (``_ledger_balance``); this
+     pins the ``entry_date``-BOUNDED read of the same postings -- at a point in
+     time (``_posted_balance``) and at every period boundary
+     (``_posted_period_map``) -- as a THIRD derivation, proven == the resolver
+     on-schedule and divergent by exactly the extra / short principal
      off-schedule, including a pre-true-up payment, a mid-life true-up, a
      calendar-year boundary, two scenarios, and the unconfigured -> ``None`` route.
-     The ``TestConfirmedLoanBalanceReader`` UNIT tests pin the reader against
-     hand-computed literals; this pins it against the independent resolver, so a
-     reader bug a literal happened to share is still caught (the ``+$10`` injection
+     Both windows are the test suite's own (``tests/_test_helpers.py``): plan step
+     E1e deleted the production readers, whose only remaining job was to be graded
+     here.
+     ``TestPostedLoanBalanceSums`` pins the same posted sums against
+     hand-computed literals; this pins them against the independent resolver, so a
+     ledger bug a literal happened to share is still caught (the ``+$10`` injection
      below fails these too).
 
 Three adversarial cases prove the oracle is not vacuous: tampering a settled
@@ -171,6 +174,8 @@ from tests._test_helpers import (
     load_migration_module,
     loan_correction_entries,
     loan_income_shadow,
+    posted_loan_balance_at,
+    posted_loan_balance_map,
     seam_confirmed_view,
     settle_instant_on,
     SPLIT_LOAN,
@@ -605,46 +610,50 @@ def _ledger_balance(loan_account_id: int, scenario_id: int) -> Decimal:
     return -_independent_loan_linked_net(loan_account_id, scenario_id)
 
 
-def _reader_balance(
+def _posted_balance(
     loan_account_id: int, scenario_id: int, as_of: date = _AS_OF,
 ) -> Decimal:
-    """Return the genesis reader's confirmed balance -- the read switch's producer.
+    """Return what the postings say the loan owed on a DATE (the dated window).
 
-    Runs the PRODUCTION scalar reader
-    (:func:`app.services.loan_posting_service.confirmed_loan_balance_at`) the read
-    switch (plan Section 8) turns every displayed loan balance onto, so the
-    parallel run pits the exact function that will feed the balance -- not a
-    stand-in -- against the resolver.  Asserts non-``None`` because every caller
-    here builds a CONFIGURED loan (an opening is posted), so a ``None`` would be a
-    reader defect, not an unconfigured loan (the ``None`` route is proven directly
-    by its own test).
+    :func:`tests._test_helpers.posted_loan_balance_at`: the same linked-ledger
+    legs :func:`_ledger_balance` sums, but bounded by ``entry_date <= as_of``
+    and guarded by the OPENING sentinel.  A distinct derivation, so the two
+    windows agreeing is a real check rather than one query written twice, and
+    the only one that can answer a historical date at all.  Asserts non-``None``
+    because every caller here builds a CONFIGURED loan (an opening is posted), so
+    a ``None`` would be a defect, not an unconfigured loan (the ``None`` route is
+    proven directly by its own test).
     """
-    result = loan_posting_service.confirmed_loan_balance_at(
+    result = posted_loan_balance_at(
         loan_account_id, scenario_id, as_of,
     )
     assert result is not None, (
-        f"reader returned None for configured loan {loan_account_id} in scenario "
-        f"{scenario_id} -- no OPENING posting where one was expected"
+        f"posting window returned None for configured loan {loan_account_id} in "
+        f"scenario {scenario_id} -- no OPENING posting where one was expected"
     )
     return result
 
 
-def _reader_period_map(
+def _posted_period_map(
     loan_account_id: int, scenario_id: int, periods: list[PayPeriod],
 ) -> "dict[int, Decimal]":
-    """Return the genesis reader's per-period balance map (the C9 producer).
+    """Return the dated posting window at every period END (the per-period form).
 
-    Runs the PRODUCTION per-period reader
-    (:func:`app.services.loan_posting_service.confirmed_loan_balance_map`) the
-    per-period read switch (plan Section 9) turns the AMORTIZING confirmed region
-    onto.  Asserts non-``None`` for the same reason as :func:`_reader_balance`.
+    :func:`tests._test_helpers.posted_loan_balance_map` -- the scalar window
+    applied at each period's END, which is what lets the early-settle parallel
+    run below check period boundaries past the frozen today (no posted entry in
+    these fixtures is dated later, so such a period carries the confirmed sum
+    flat).  Because it IS the scalar per period, never assert the two agree --
+    that identity cannot fail; the assertions here are against the independent
+    resolver.  Asserts non-``None`` for the same reason as
+    :func:`_posted_balance`.
     """
-    result = loan_posting_service.confirmed_loan_balance_map(
+    result = posted_loan_balance_map(
         loan_account_id, scenario_id, periods,
     )
     assert result is not None, (
-        f"reader map returned None for configured loan {loan_account_id} in "
-        f"scenario {scenario_id} -- no OPENING posting where one was expected"
+        f"posting window map returned None for configured loan {loan_account_id} "
+        f"in scenario {scenario_id} -- no OPENING posting where one was expected"
     )
     return result
 
@@ -701,7 +710,8 @@ def _assert_loan_reconciles(
       nets to cash minus the non-principal moved off it);
     * (c) the same invariant through the PRODUCTION readers
       (``account_posting_total == settled_transfer_effect - per_loan_net``), so
-      the readers a later step will switch balances onto satisfy it too;
+      the posted-ledger readers the balance sheet and statements consume satisfy
+      it too;
     * (d) completeness -- every eligible payment owing a correction has one;
     * (e) per-entry balance and a zero whole-ledger trial balance.
 
@@ -975,7 +985,7 @@ class TestParallelRunAgainstResolver:
             db.session.commit()
 
             ledger = _ledger_balance(loan.id, scenario_id)
-            reader = _reader_balance(loan.id, scenario_id)
+            reader = _posted_balance(loan.id, scenario_id)
             resolver = _resolver_balance(loan.id, scenario_id, _AS_OF)
             # The hand-computed post-step balance -- the shared-kernel teeth.
             assert ledger == Decimal("99495.00")
@@ -1271,13 +1281,12 @@ class TestBackfillEqualsGoForward:
 
     Two faces of the C7 backfill guarantee (plan 8.8 / Section 4 commit 7): a
     ledger rebuilt by the backfill reconciles identically to the go-forward one
-    (leg for leg), and the genesis READER the read switch consumes -- ``None``
-    while no opening is posted -- reads back == the resolver to the penny once the
-    backfill posts it.  The second is the plan's "the oracle detects the unposted-
-    opening gap before and zero mismatches after," proven on the exact
-    ``confirmed_loan_balance_at`` / ``confirmed_loan_balance_map`` producers the
-    read switch (plan Sections 8-9) flips onto -- so the historical-data path is
-    pinned directly, not only by transitivity through Sections 5 and 7.
+    (leg for leg), and the dated posting window -- ``None`` while no opening is
+    posted -- reads back == the resolver to the penny once the backfill posts it.
+    The second is the plan's "the oracle detects the unposted-opening gap before
+    and zero mismatches after," proven at a point in time AND at every period
+    boundary, so the historical-data path is pinned directly, not only by
+    transitivity through Sections 5 and 7.
     """
 
     def test_backfilled_ledger_reconciles_identically(
@@ -1336,13 +1345,13 @@ class TestBackfillEqualsGoForward:
         mismatches after," pinned on the exact producers the switch flips onto:
 
         * BEFORE the backfill (openings cleared) the reader returns ``None`` --
-          needs-setup, the unposted-opening GAP -- for BOTH the scalar (the C8
-          producer) and the per-period map (the C9 producer), while the resolver,
-          which never reads the ledger, still reports the true balance unchanged.
-          A read switch flipped HERE would wrongly show this loan needs-setup.
+          needs-setup, the unposted-opening GAP -- in BOTH forms of the window,
+          while the resolver, which never reads the ledger, still reports the true
+          balance unchanged.  Any surface reading the postings HERE would wrongly
+          show this loan needs-setup.
         * AFTER the backfill both read back == the resolver to the penny.
 
-        On-schedule (cash == scheduled P&I, no escrow), so the reader's real
+        On-schedule (cash == scheduled P&I, no escrow), so the ledger's real
         principal equals the resolver's scheduled principal and the two agree
         exactly.  The resolver is invariant across the clear / backfill (the
         teardowns remove only postings, not the anchors / transactions it replays),
@@ -1365,7 +1374,7 @@ class TestBackfillEqualsGoForward:
             # go-forward reader already matches it (the C6 gate); the contrast is the
             # point: authoritative now, None in a moment, == again after.
             resolver = _resolver_balance(loan.id, scenario_id, _AS_OF)
-            assert _reader_balance(loan.id, scenario_id) == resolver
+            assert _posted_balance(loan.id, scenario_id) == resolver
 
             # Reproduce the pre-wiring historical state (no loan postings).
             _clear_all_loan_postings()
@@ -1373,10 +1382,10 @@ class TestBackfillEqualsGoForward:
             # BEFORE: the unposted-opening gap.  No OPENING leg -> the reader cannot
             # produce a balance (both producers return None), yet the resolver -- which
             # never read the ledger -- is unchanged, so the gap is purely the ledger's.
-            assert loan_posting_service.confirmed_loan_balance_at(
+            assert posted_loan_balance_at(
                 loan.id, scenario_id, _AS_OF,
             ) is None
-            assert loan_posting_service.confirmed_loan_balance_map(
+            assert posted_loan_balance_map(
                 loan.id, scenario_id, seed_periods,
             ) is None
             assert _resolver_balance(loan.id, scenario_id, _AS_OF) == resolver
@@ -1386,9 +1395,9 @@ class TestBackfillEqualsGoForward:
 
             # AFTER: zero mismatch.  The scalar (C8 producer) and every period of the
             # map (C9 producer) read back == the resolver to the penny.
-            reader = _reader_balance(loan.id, scenario_id)
+            reader = _posted_balance(loan.id, scenario_id)
             assert reader == resolver, f"reader {reader} != resolver {resolver}"
-            balance_map = _reader_period_map(loan.id, scenario_id, seed_periods)
+            balance_map = _posted_period_map(loan.id, scenario_id, seed_periods)
             for period in seed_periods:
                 assert balance_map[period.id] == _resolver_balance(
                     loan.id, scenario_id, period.start_date,
@@ -1568,7 +1577,7 @@ class TestOracleIsNotVacuous:
 
             resolver = _resolver_balance(loan.id, scenario_id, _AS_OF)
             ledger = _ledger_balance(loan.id, scenario_id)
-            reader = _reader_balance(loan.id, scenario_id)
+            reader = _posted_balance(loan.id, scenario_id)
             # Both ledger producers over-state the debt by exactly the phantom $10.
             assert ledger == resolver + Decimal("10.00")
             assert reader == resolver + Decimal("10.00")
@@ -1939,6 +1948,13 @@ class TestResolverIsLedgerFree:
         (:meth:`test_resolver_stack_imports_no_ledger_module`, now path-complete over
         the resolver reference including ``loan_payment_service``), which is why this
         runtime check is a backstop rather than the load-bearing guard.
+
+        The list shrank by two at plan step E1e: the loan balance readers
+        ``confirmed_loan_balance_at`` / ``confirmed_loan_balance_map`` were DELETED
+        from ``loan_posting_service``, so there is no attribute left to patch.  That
+        is a strictly stronger state than fencing them -- the resolver cannot call a
+        function that does not exist -- and the remaining three are the whole set of
+        posted-ledger reads a resolver could still reach.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -1960,8 +1976,6 @@ class TestResolverIsLedgerFree:
                 "app.services.posting_service.account_posting_total",
                 "app.services.posting_service.settled_transfer_effect",
                 "app.services.posting_service.settled_transaction_effect",
-                "app.services.loan_posting_service.confirmed_loan_balance_at",
-                "app.services.loan_posting_service.confirmed_loan_balance_map",
             ):
                 monkeypatch.setattr(target, _forbid_ledger_read)
 
@@ -1971,28 +1985,27 @@ class TestResolverIsLedgerFree:
 
 
 # ---------------------------------------------------------------------------
-# 7. The genesis reader parallel run -- the read switch's gate (plan 4-commit-6)
+# 7. The dated posting-window parallel run (plan 4-commit-6)
 # ---------------------------------------------------------------------------
 
 
 class TestReaderParallelRunAgainstResolver:
-    """The genesis READER reads back == the resolver -- the gate before the flip.
+    """The dated posting window reads back == the resolver.
 
     Sections 1-6 pin the posted LEDGER against the resolver through the test's OWN
-    independent ``-(sum of linked postings)`` query.  This section pins the
-    PRODUCTION reader the read switch (plan Sections 8-10) turns every displayed
-    loan balance onto -- ``confirmed_loan_balance_at`` at a point in time and
-    ``confirmed_loan_balance_map`` at every period boundary -- as a THIRD
-    independent producer run in the SAME test as the resolver.  On an on-schedule
+    unbounded ``-(sum of linked postings)`` query.  This section pins the
+    ``entry_date``-BOUNDED read of those same postings -- at a point in time and
+    at every period boundary -- as a THIRD derivation run in the SAME test as the
+    resolver.  On an on-schedule
     payment the two must agree to the penny; off-schedule they must diverge by
     exactly the extra / short principal (the reader books the REAL principal from
     the cash, the resolver only the SCHEDULED principal).
 
-    Non-duplicative with the ``TestConfirmedLoanBalanceReader`` UNIT tests: those
-    pin the reader against hand-computed literals; this pins it against the
-    resolver, an independent producer that shares none of the reader's code path
-    and never reads the ledger -- so a reader bug the literal happened to share is
-    still caught.  The ``+$10`` interest injection (module docstring) fails every
+    Non-duplicative with the ``TestPostedLoanBalanceSums`` UNIT tests: those pin
+    the posted sums against hand-computed literals; this pins them against the
+    resolver, an independent producer that shares none of the ledger's code path
+    and never reads it -- so a ledger bug the literal happened to share is still
+    caught.  The ``+$10`` interest injection (module docstring) fails every
     test here that asserts a value, exactly as it fails Sections 1-3.
     """
 
@@ -2020,7 +2033,7 @@ class TestReaderParallelRunAgainstResolver:
             _settle(seed_user, loan, seed_periods[_P1], amount=scheduled_pi)
             db.session.commit()
 
-            reader = _reader_balance(loan.id, scenario_id)
+            reader = _posted_balance(loan.id, scenario_id)
             resolver = _resolver_balance(loan.id, scenario_id, _AS_OF)
             # Three independent producers agree: the production reader, the resolver
             # replay, and the test's own independent linked-net query.
@@ -2064,7 +2077,7 @@ class TestReaderParallelRunAgainstResolver:
             _settle(seed_user, loan, seed_periods[_P2], amount=scheduled_pi)
             db.session.commit()
 
-            balance_map = _reader_period_map(loan.id, scenario_id, seed_periods)
+            balance_map = _posted_period_map(loan.id, scenario_id, seed_periods)
             # Per-period parallel run: the map's value for each period equals the
             # resolver resolved as of that period's START (both select confirmed
             # postings / payments by pay-period start <= the date).
@@ -2135,7 +2148,7 @@ class TestReaderParallelRunAgainstResolver:
             # The parallel run holds at EVERY period start -- including P3's
             # period and the tail after it, where the pre-R1 ledger carried the
             # raw cash (no interest backout) and this assertion fails.
-            balance_map = _reader_period_map(loan.id, scenario_id, seed_periods)
+            balance_map = _posted_period_map(loan.id, scenario_id, seed_periods)
             for period in seed_periods:
                 resolver_at_start = _resolver_balance(
                     loan.id, scenario_id, period.start_date,
@@ -2154,7 +2167,7 @@ class TestReaderParallelRunAgainstResolver:
 
             # Today's scalar is untouched by the early settle: reader ==
             # resolver at the frozen today (both exclude the unbegun period).
-            assert _reader_balance(
+            assert _posted_balance(
                 loan.id, scenario_id, frozen,
             ) == _resolver_balance(loan.id, scenario_id, frozen)
 
@@ -2194,9 +2207,9 @@ class TestReaderParallelRunAgainstResolver:
             )
             db.session.commit()
 
-            extra_reader = _reader_balance(extra_loan.id, scenario_id)
+            extra_reader = _posted_balance(extra_loan.id, scenario_id)
             extra_resolver = _resolver_balance(extra_loan.id, scenario_id, _AS_OF)
-            short_reader = _reader_balance(short_loan.id, scenario_id)
+            short_reader = _posted_balance(short_loan.id, scenario_id)
             short_resolver = _resolver_balance(short_loan.id, scenario_id, _AS_OF)
 
             # Extra: real principal 2000 - 500 = 1500 -> 98,500.00, owing LESS than
@@ -2245,7 +2258,7 @@ class TestReaderParallelRunAgainstResolver:
             )
             assert splits[0].interest == Decimal("1250.00")
 
-            reader = _reader_balance(loan.id, scenario_id)
+            reader = _posted_balance(loan.id, scenario_id)
             resolver = _resolver_balance(loan.id, scenario_id, _AS_OF)
             # The pre-true-up payment is summed AND absorbed by the true-up, so the
             # reader reproduces the resolver's anchor balance to the penny.
@@ -2274,7 +2287,7 @@ class TestReaderParallelRunAgainstResolver:
             db.session.commit()
             # Pre-true-up: after the $1,000 payment the reader owes 99,500.00
             # (100000 - (1000 cash - 500 interest)).
-            assert _reader_balance(loan.id, scenario_id) == Decimal("99500.00")
+            assert _posted_balance(loan.id, scenario_id) == Decimal("99500.00")
 
             outcome = anchor_service.apply_loan_anchor_true_up(
                 account=loan, anchor_balance=Decimal("95000.00"),
@@ -2282,7 +2295,7 @@ class TestReaderParallelRunAgainstResolver:
             )
             assert outcome is AnchorTrueUpOutcome.COMMITTED
 
-            reader = _reader_balance(loan.id, scenario_id)
+            reader = _posted_balance(loan.id, scenario_id)
             resolver = _resolver_balance(loan.id, scenario_id, _AS_OF)
             # The reader jumps to the verified value; the resolver reseeds to it.
             assert reader == Decimal("95000.00")
@@ -2328,7 +2341,7 @@ class TestReaderParallelRunAgainstResolver:
             db.session.commit()
 
             year_end = date(2025, 12, 31)
-            reader_dec = _reader_balance(loan.id, scenario_id, year_end)
+            reader_dec = _posted_balance(loan.id, scenario_id, year_end)
             # As of Dec 31: only the December (straddling) payment has netted in --
             # 100,000 less its real principal (scheduled P&I - 500.00 interest).
             assert reader_dec == _resolver_balance(loan.id, scenario_id, year_end)
@@ -2337,7 +2350,7 @@ class TestReaderParallelRunAgainstResolver:
             )
             # As of after both periods: both payments have netted in, still ==
             # resolver, and strictly below the Dec-31 balance (January lowered it).
-            reader_both = _reader_balance(loan.id, scenario_id, _AS_OF)
+            reader_both = _posted_balance(loan.id, scenario_id, _AS_OF)
             assert reader_both == _resolver_balance(loan.id, scenario_id, _AS_OF)
             assert reader_both < reader_dec
             _assert_loan_reconciles(loan, scenario_id, _AS_OF)
@@ -2386,8 +2399,8 @@ class TestReaderParallelRunAgainstResolver:
             )
             db.session.commit()
 
-            baseline_reader = _reader_balance(loan.id, baseline.id)
-            whatif_reader = _reader_balance(loan.id, whatif.id)
+            baseline_reader = _posted_balance(loan.id, baseline.id)
+            whatif_reader = _posted_balance(loan.id, whatif.id)
             # Each scenario reads its OWN balance == its own resolver.
             assert baseline_reader == _resolver_balance(
                 loan.id, baseline.id, _AS_OF,
@@ -2401,10 +2414,10 @@ class TestReaderParallelRunAgainstResolver:
             )
             # A scenario the loan was never opened into -> None (needs-setup),
             # never the baseline's balance or a bare $0.  Both readers agree.
-            assert loan_posting_service.confirmed_loan_balance_at(
+            assert posted_loan_balance_at(
                 loan.id, unopened.id, _AS_OF,
             ) is None
-            assert loan_posting_service.confirmed_loan_balance_map(
+            assert posted_loan_balance_map(
                 loan.id, unopened.id, seed_periods,
             ) is None
             _assert_loan_reconciles(loan, baseline.id, _AS_OF)
@@ -2466,7 +2479,7 @@ class TestReaderParallelRunAgainstResolver:
             # The balance reconciles three ways despite the collision.
             ledger = _ledger_balance(loan.id, scenario_id)
             resolver = _resolver_balance(loan.id, scenario_id, _AS_OF)
-            reader = _reader_balance(loan.id, scenario_id)
+            reader = _posted_balance(loan.id, scenario_id)
             assert ledger == resolver == reader
             _assert_loan_reconciles(loan, scenario_id, _AS_OF)
 
@@ -2505,7 +2518,7 @@ class TestReaderParallelRunAgainstResolver:
             # -- so the replay DROPPED a payment that had genuinely been made,
             # and the resolver read HIGHER than the ledger.  That was the
             # per-period divergence (review M7 / Step-4 M2); it is now CLOSED.
-            balance_map = _reader_period_map(loan.id, scenario_id, seed_periods)
+            balance_map = _posted_period_map(loan.id, scenario_id, seed_periods)
             assert balance_map[seed_periods[2].id] == reader
             assert balance_map[seed_periods[2].id] < balance_map[seed_periods[1].id]
             assert balance_map[seed_periods[2].id] == _resolver_balance(
@@ -2578,10 +2591,10 @@ class TestReadSwitchProductionPath:
             # The flip: production == ledger == reader (the hand-computed balances).
             assert extra_production == Decimal("98500.00")
             assert extra_production == _ledger_balance(extra_loan.id, scenario_id)
-            assert extra_production == _reader_balance(extra_loan.id, scenario_id)
+            assert extra_production == _posted_balance(extra_loan.id, scenario_id)
             assert short_production == Decimal("99500.00")
             assert short_production == _ledger_balance(short_loan.id, scenario_id)
-            assert short_production == _reader_balance(short_loan.id, scenario_id)
+            assert short_production == _posted_balance(short_loan.id, scenario_id)
 
             # Non-vacuous: production is NOT the un-seeded schedule replay -- it
             # diverges by exactly the extra / short principal the replay drops.
@@ -2772,11 +2785,11 @@ class TestLatePaidPaymentDating:
             scenario = seed_user["scenario"]
 
             ledger = _ledger_balance(loan.id, scenario_id)
-            # The read switch's reader window (confirmed_loan_balance_at) --
+            # The dated posting window (entry_date <= as_of) --
             # the fourth independent access path beside the raw posting sum,
             # the seam scalar, and the seam map (the seeded resolver window
             # died with LoanState.current_balance at plan step D2a).
-            reader = _reader_balance(loan.id, scenario_id)
+            reader = _posted_balance(loan.id, scenario_id)
             bctx = BalanceContext(
                 user_id=loan.user_id, scenario=scenario, as_of=_AS_OF,
             )
@@ -2926,7 +2939,7 @@ class TestTrueUpAfterLastPaymentIsRead:
                 user_id=loan.user_id, scenario=scenario, as_of=_AS_OF,
             )
             scalar = balance_at.balance_at(loan, bctx, _AS_OF)
-            reader = _reader_balance(loan.id, scenario_id)
+            reader = _posted_balance(loan.id, scenario_id)
             schedule = net_worth_kernel.generate_debt_schedules(
                 [loan], bctx,
             )[loan.id]
@@ -2995,4 +3008,4 @@ class TestDueDateEditReconcilesTheLedger:
                 as_of=_AS_OF,
             )
             assert balance_at.balance_at(loan, bctx, _AS_OF) == posted_after
-            assert _reader_balance(loan.id, scenario_id) == posted_after
+            assert _posted_balance(loan.id, scenario_id) == posted_after

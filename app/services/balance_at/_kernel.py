@@ -250,9 +250,10 @@ def debt_schedule_rows(
     plan steps F2 / C3c folded them onto the balance seam.)
 
     Handing them rows rather than the :class:`DebtSchedule` bundle is what keeps
-    a balance out of an out-of-cluster consumer's hands.  W9906 binds on function
-    NAMES: it flags a consumer that CALLS a balance producer.  It cannot see an
-    ATTRIBUTE read, and ``DebtSchedule.projection_seed`` is a loan balance.  So
+    a balance out of an out-of-cluster consumer's hands.  The name-keyed fence of
+    the day bound on function NAMES: it flagged a consumer that CALLED a balance
+    producer.  It could not see an ATTRIBUTE read, and
+    ``DebtSchedule.projection_seed`` is a loan balance.  So
     while any consumer could call :func:`generate_debt_schedules`, one line --
     ``schedules[account.id].projection_seed`` in a template context -- would put a
     balance on a screen without passing the seam, with every gate silent

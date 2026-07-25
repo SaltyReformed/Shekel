@@ -103,9 +103,10 @@ def _compute_loan_account(acct, ctx):
       seam entry every other account kind on this page reads, so the loan tile
       is no longer the one kind whose displayed balance was produced outside the
       seam.  It used to be ``LoanState.current_balance``, read straight off the
-      resolver; that value IS a balance-at-T, and because the W9906 fence binds
-      on function names and cannot see an attribute read, the loan's balance --
-      the hero's biggest number -- reached the screen with every gate silent.
+      resolver; that value IS a balance-at-T, and because the name-keyed fence
+      of the day bound on function names and could not see an attribute read,
+      the loan's balance -- the hero's biggest number -- reached the screen with
+      every gate silent.  Plan step D2a deleted the attribute at the root.
     * the rich FIGURES from :func:`~app.services.balance_at.loan_figures`, a
       value object that deliberately carries no balance, so this module cannot
       render one by accident.

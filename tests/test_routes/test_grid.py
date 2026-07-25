@@ -33,6 +33,7 @@ from tests._test_helpers import (
     create_hysa_account,
     field_is_disabled,
     freeze_today,
+    posted_loan_balance_at,
 )
 
 
@@ -1760,18 +1761,18 @@ class TestCreateBaseline:
         from SOURCE facts, so a missing opening no longer breaks reads -- but the
         POSTING ledger (the general ledger the balance sheet and statements read)
         is out of sync until this reposts the opening.  So the recovery is pinned
-        by the POSTING reader, not ``balance_at``: the reader answers ONLY when the
-        opening was reposted, where ``balance_at`` folds $200,000 from source
-        either way and cannot tell reposted from not.
+        by reading the POSTINGS, not ``balance_at``: the posting window answers
+        ONLY when the opening was reposted, where ``balance_at`` folds $200,000
+        from source either way and cannot tell reposted from not.
 
         NEGATIVE CONTROL: drop the ``resync_user_loan_postings`` call from
         ``baseline_service.create_baseline_scenario`` and
-        ``confirmed_loan_balance_at`` returns ``None`` (the opening is never
+        ``posted_loan_balance_at`` returns ``None`` (the opening is never
         reposted), while ``balance_at`` still folds $200,000.00 from source.
         """
         # pylint: disable=import-outside-toplevel
         from app.enums import AcctTypeEnum
-        from app.services import balance_at, loan_posting_service
+        from app.services import balance_at
         from app.services.balance_at import BalanceContext
         from tests._test_helpers import create_loan_account
 
@@ -1800,7 +1801,7 @@ class TestCreateBaseline:
             # $200,000 from the reconciled general ledger (None if still missing).
             # This is what pins the recovery -- balance_at cannot, since it folds
             # the same $200,000 from source whether or not the opening was reposted.
-            assert loan_posting_service.confirmed_loan_balance_at(
+            assert posted_loan_balance_at(
                 loan_id, new_baseline.id, bctx.as_of,
             ) == Decimal("200000.00")
             # And the user-facing balance is correct: no payment made, so the loan

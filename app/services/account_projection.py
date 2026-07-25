@@ -20,11 +20,12 @@ worries with :mod:`app.ref_cache` while preserving the IDs-for-logic
 standard (``docs/coding-standards.md:174-178``).
 
 **Kind metadata only: this module answers "what KIND is this account?",
-never "what is it worth on date T?".**  It came off the W9906 call
-allowlist at plan step D1b -- it calls no balance producer, so the
-exemption only permitted a bypass -- but it REMAINS on the W9909
-completeness registry, so a new public function here must be classified
-as a producer or a non-producer before it will lint.  Why that half
+never "what is it worth on date T?".**  It came off the balance-producer
+call allowlist at plan step D1b -- it calls no balance producer, so the
+exemption only permitted a bypass -- and that allowlist has since been
+deleted whole (plan step E1e).  It REMAINS on the W9909 completeness
+registry, so a new public function here must be classified as a producer
+or a non-producer before it will lint.  Why that half
 stayed (it defined the loan forward-projection producers until one day
 before D1b, and :func:`classify_account` takes a live
 :class:`~app.models.account.Account`) is recorded once, at

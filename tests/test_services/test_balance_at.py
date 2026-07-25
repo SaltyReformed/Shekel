@@ -79,6 +79,7 @@ from tests._test_helpers import (
     make_appreciating_account,
     make_investment_account,
     make_salary_profile,
+    posted_loan_balance_at,
 )
 
 
@@ -3157,10 +3158,7 @@ class TestBrokenLoanFailsLoud:
 
             # It really is in the hazardous state: the ledger cannot answer for it.
             # pylint: disable=import-outside-toplevel
-            from app.services.loan_posting_service._reader import (
-                confirmed_loan_balance_at,
-            )
-            assert confirmed_loan_balance_at(
+            assert posted_loan_balance_at(
                 acct.id, bctx.scenario.id, bctx.as_of) is None
 
             # And it degrades to the cash producer instead of raising -- pinned

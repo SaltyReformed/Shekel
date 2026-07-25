@@ -19,9 +19,8 @@ def _is_string_const(node: nodes.NodeNG) -> bool:
 def _called_name_in(node: nodes.Call, names: frozenset[str]) -> str | None:
     """Return the called name if it is in ``names``, else ``None``.
 
-    Matches the bare-name import form (``confirmed_loan_balance_at(...)``) and
-    the attribute form
-    (``loan_posting_service.confirmed_loan_balance_at(...)``) alike; name
+    Matches the bare-name import form (``apply_status_change(...)``) and the
+    attribute form (``status_seam.apply_status_change(...)``) alike; name
     matching keeps the checker fast, and the guarded names are distinctive
     enough to carry no realistic collision risk.  ``node`` is the call
     expression under inspection.

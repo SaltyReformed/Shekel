@@ -237,8 +237,8 @@ def _resolve_seed_balance(
     (:func:`~app.services.balance_at.investment_seed_map`) so the projection
     compounds from the cash basis, not the modeled headline (which already
     grew the anchor to today -- seeding from it would double-count the current
-    period's growth, deep-quality-hunt #9; reading through the seam keeps this
-    behind the W9906 fence).  Falls back to
+    period's growth, deep-quality-hunt #9; the seed producer is reachable only
+    through the seam, being a private submodule of it).  Falls back to
     :attr:`Account.current_anchor_balance` with no scenario / anchor / period.
     """
     anchor_balance = account.current_anchor_balance or Decimal("0.00")

@@ -6,8 +6,9 @@ Those are rich projection detail, not a balance-at-T, and the seam has always
 been happy for a consumer to hold them.
 
 What it must NOT hand out is the BALANCE.  ``LoanState.current_balance`` was a
-balance-at-today, and the W9906 fence binds on function NAMES -- it cannot see
-an attribute read.  So for as long as consumers held a ``LoanState``, the loan's
+balance-at-today, and the name-keyed fence of the day bound on function NAMES --
+it could not see an attribute read.  So for as long as consumers held a
+``LoanState``, the loan's
 displayed balance reached the screen without passing the seam: the /savings loan
 tile, the net-worth hero that reduces over it, the debt card, the Horizon's
 index-0 liability point, and the property-equity card's mortgage leg were ALL

@@ -25,13 +25,13 @@ import pytest
 from app.models.pay_period import PayPeriod
 from app.services import loan_ledger, loan_loaders
 from app.services.balance_at._fold import fold_loan_balances
-from app.services.loan_posting_service import confirmed_loan_balance_at
 from tests._test_helpers import (
     create_loan_account,
     create_loan_with_trueup,
     create_savings_account,
     create_settled_transfer,
     insert_tracking_start_event,
+    posted_loan_balance_at,
     settle_instant_on,
 )
 
@@ -82,13 +82,14 @@ def _settle(seed_user, db, loan, period, amount):
 class TestFoldIsTotal:
     """The fold cannot answer ``None`` and cannot raise -- the arc's whole premise.
 
-    The posting readers are PARTIAL: ``confirmed_loan_balance_at`` answers
-    ``None`` with no opening posting and RAISES for a future date.  A partial
-    function cannot be the single source, so every caller composes it with
-    something else -- a projection, a seed, a flag, a fallback -- and every
-    composition is a new producer that can disagree with the others.  Every piece
-    of machinery this arc deletes exists to manage that partiality (plan Section
-    1).  These tests pin the property that makes the deletion possible.
+    The posting readers this arc inherited were PARTIAL: they answered ``None``
+    with no opening posting and RAISED for a future date.  A partial function
+    cannot be the single source, so every caller composes it with something else
+    -- a projection, a seed, a flag, a fallback -- and every composition is a new
+    producer that can disagree with the others.  Every piece of machinery this arc
+    deletes exists to manage that partiality (plan Section 1); the readers
+    themselves were deleted at plan step E1e, once the fold had taken every one
+    of their callers.  These tests pin the property that made that possible.
     """
 
     def test_a_date_before_every_event_folds_to_zero(
@@ -133,11 +134,11 @@ class TestFoldIsTotal:
     ):
         """A future date holds the last RECORDED balance flat instead of raising.
 
-        ``confirmed_loan_balance_at`` raises for ``as_of > today`` -- the
-        partiality that forces its callers to fork on the clock.  The fold does
-        not: it reports what it knows.  That is NOT the projection the seam shows
-        (PLANNED payments arrive at C3), so this pins the no-raise contract only,
-        not a forward balance.
+        The posting reader raised for ``as_of > today`` -- the partiality that
+        forced its callers to fork on the clock.  The fold does not: it reports
+        what it knows.  That is NOT the projection the seam shows (PLANNED
+        payments arrive at C3), so this pins the no-raise contract only, not a
+        forward balance.
         """
         with app.app_context():
             loan = _make_loan(seed_user, db)
@@ -592,7 +593,7 @@ class TestFoldCountsAnEventOnTheDayItHappened:
             assert folded[date(2025, 6, 1)] == _ORIGINATION_PRINCIPAL
 
 
-class TestFoldAgreesWithTheShippingReader:
+class TestFoldAgreesWithThePostedSum:
     """A first parallel run: the fold reads SOURCE, the reader reads POSTINGS.
 
     Narrow on purpose.  It proves the two answer alike on one shape's every day;
@@ -618,7 +619,7 @@ class TestFoldAgreesWithTheShippingReader:
                 _settle(seed_user, db, loan, period, Decimal("1000.00"))
             db.session.commit()
             last = seed_periods[6].start_date
-            # The reader refuses a future as_of, so pin today past the window.
+            # Pin today past the window so every settled payment is posted.
             freeze_today(monkeypatch, last + timedelta(days=1))
 
             days = []
@@ -631,7 +632,7 @@ class TestFoldAgreesWithTheShippingReader:
             mismatches = [
                 (day, folded[day], read)
                 for day in days
-                if (read := confirmed_loan_balance_at(
+                if (read := posted_loan_balance_at(
                     loan.id, seed_user["scenario"].id, day,
                 )) != folded[day]
             ]

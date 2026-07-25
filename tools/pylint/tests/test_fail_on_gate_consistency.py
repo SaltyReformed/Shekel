@@ -50,7 +50,6 @@ _CANONICAL_FAIL_ON = (
     "shekel-refname-compare,"
     "shekel-bare-money-quantize,"
     "shekel-disable-rationale,"
-    "shekel-balance-producer-bypass,"
     "shekel-transaction-status-bypass,"
     "shekel-ledger-model-bypass,"
     "shekel-unclassified-fenced-export,"

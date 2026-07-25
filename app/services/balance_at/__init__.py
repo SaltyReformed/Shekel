@@ -79,7 +79,10 @@ Every family routes through this one package, so no screen reaches a producer
 directly -- structurally, since plan step D3: every producer is a PRIVATE
 submodule here, and the package-privacy gate W9910
 (``shekel-private-module-import``) hard-fails any outside import of one in any
-spelling, so the name-keyed W9906 producer fence deleted.
+spelling.  That is what let the name-keyed producer fence delete: down to one
+call surface at D3, and out of existence at plan step E1e, when the last public
+balance producer outside this package (the genesis posting readers) was itself
+deleted.
 
 Package layout.  The seam outgrew a single module (the 1000-line cap), so each
 view lives in its own private submodule and this ``__init__`` re-exports the

@@ -12,8 +12,7 @@ init-hook='import sys, os; sys.path.insert(0, os.path.abspath("tools/pylint")); 
 # project's own checkers in tools/pylint/shekel_checkers.py:
 # shekel-decimal-from-float, shekel-refname-compare, shekel-bare-money-quantize,
 # shekel-disable-rationale,
-# shekel-balance-producer-bypass (every balance read must go through the
-# app.services.balance_at seam), shekel-transaction-status-bypass (every
+# shekel-transaction-status-bypass (every
 # Transaction.status_id change must go through the
 # transaction_service.apply_status_change seam), shekel-ledger-model-bypass
 # (every posted-ledger model import must stay inside the posting-ledger

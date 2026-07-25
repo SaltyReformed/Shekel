@@ -1,14 +1,21 @@
 """B2: the reference fold is the oracle, and it is exhaustive.
 
 Plan step B2 (``docs/audits/balance_architecture/README.md``).  Parallel-runs
-the loan fold (:func:`app.services.balance_at._fold.fold_loan_balances`) against the
-shipping sum-of-postings reader
-(:func:`app.services.loan_posting_service.confirmed_loan_balance_at`) on
+the loan fold (:func:`app.services.balance_at._fold.fold_loan_balances`) against
+the sum of the POSTED legs
+(:func:`tests._test_helpers.posted_loan_balance_at`) on
 **EVERY DAY** of each generated loan shape's domain -- the shape matrix step C3
 must not move money across (plan Section 7.4).
 
+**The counterparty is the test suite's own window, since plan step E1e.**  The
+production sum-of-postings readers were deleted there: the seam had folded away
+every one of their ``app/`` callers, and grading the postings is the job this
+file exists for, so the window belongs on this side of the line.  It reads the
+same legs by the same rule (``-(sum where entry_date <= as_of)``, ``None`` with
+no opening) -- what changed is that nothing can now render it on a screen.
+
 **What this proves, and what it does not.**  The fold reads the loan's SOURCE
-events; the reader sums the POSTED legs the sync wrote.  The two SHARE the walk
+events; the window sums the POSTED legs the sync wrote.  The two SHARE the walk
 by design (the postings are a projection of the fold -- plan Section 3), so an
 equality on every day is the EQUIVALENCE proof C3's cutover rests on -- the
 posted cache faithfully projects the fold -- and NOT an independent proof of the
@@ -46,7 +53,6 @@ from app.models.ref import TransactionType
 from app.models.transaction import Transaction
 from app.services import loan_ledger, loan_loaders, loan_resolver
 from app.services.balance_at._fold import fold_loan_balances
-from app.services.loan_posting_service import confirmed_loan_balance_at
 from app.services.rate_period_engine import period_for_date
 from tests._test_helpers import (
     create_loan_account,
@@ -55,6 +61,7 @@ from tests._test_helpers import (
     create_settled_transfer,
     freeze_today,
     insert_tracking_start_event,
+    posted_loan_balance_at,
     settle_instant_on,
 )
 
@@ -98,27 +105,37 @@ def _settle(seed_user, db, loan, period, amount=Decimal("1000.00")):
     )
 
 
-def _assert_fold_matches_reader_every_day(
+def _assert_fold_matches_postings_every_day(
     loan_id, scenario_id, start, end, *, min_days,
 ):
-    """Assert fold == posted reader on EVERY day of ``[start, end]`` inclusive.
+    """Assert fold == posted sum on EVERY day of ``[start, end]`` inclusive.
 
     Folds ONCE over the whole domain (the fold takes a date list for exactly
-    this) and reads the shipping sum-of-postings reader per day, then asserts
-    zero mismatches.  Guards the loop so an empty or too-short domain -- which
-    would pass vacuously -- fails instead: ``min_days`` is the floor the caller
-    knows its domain must clear.
+    this) and sums the posted legs per day through the test suite's dated
+    window, then asserts zero mismatches.  Guards the loop so an empty or
+    too-short domain -- which would pass vacuously -- fails instead:
+    ``min_days`` is the floor the caller knows its domain must clear.
 
     Args:
         loan_id: The loan account to fold and read.
         scenario_id: The budget scenario.
         start: First day of the domain (inclusive).
-        end: Last day of the domain (inclusive); must be ``<= today`` (the
-            reader raises for a future date), so the caller freezes today past
-            it.
+        end: Last day of the domain (inclusive), and ASSERTED ``<= today``.
+            Not because the equality would break past today -- it holds at any
+            date, since both sides key on the same recorded events (the step-E1a
+            assert pins that per visible date) -- but because days past today
+            add no recorded event, so they are trivially equal and would inflate
+            ``min_days`` with padding.  The deleted production reader RAISED for
+            a future ``as_of``, which enforced this incidentally; the assertion
+            keeps that guard on the oracle's own side, where the anti-sampling
+            floor lives.
         min_days: The floor on the domain length -- proves the walk is not a
             handful of days agreeing.
     """
+    assert end <= date.today(), (
+        f"domain end {end} is past today -- days beyond today carry no recorded "
+        f"event, so they pad min_days with trivially equal days"
+    )
     days: list[date] = []
     day = start
     while day <= end:
@@ -128,11 +145,11 @@ def _assert_fold_matches_reader_every_day(
     mismatches = [
         (day.isoformat(), str(folded[day]), str(read))
         for day in days
-        if (read := confirmed_loan_balance_at(loan_id, scenario_id, day))
+        if (read := posted_loan_balance_at(loan_id, scenario_id, day))
         != folded[day]
     ]
     assert not mismatches, (
-        f"fold vs posted reader disagree on {len(mismatches)}/{len(days)} "
+        f"fold vs posted sum disagree on {len(mismatches)}/{len(days)} "
         f"days (first 5): {mismatches[:5]}"
     )
     # Guard the loop: a vacuous or tiny domain proves nothing (anti-sampling).
@@ -140,7 +157,7 @@ def _assert_fold_matches_reader_every_day(
     assert len(days) >= min_days
 
 
-class TestFoldMatchesReaderAcrossTheShapeMatrix:
+class TestFoldMatchesPostingsAcrossTheShapeMatrix:
     """Every required shape (plan Section 7.4), every day: fold == posted reader.
 
     The fold walks the loan's anchors and settled-payment rows; the reader sums
@@ -165,7 +182,7 @@ class TestFoldMatchesReaderAcrossTheShapeMatrix:
             db.session.commit()
             end = seed_periods[6].start_date
             freeze_today(monkeypatch, end + timedelta(days=1))
-            _assert_fold_matches_reader_every_day(
+            _assert_fold_matches_postings_every_day(
                 loan.id, seed_user["scenario"].id, _BEFORE_ALL, end,
                 min_days=400,
             )
@@ -200,7 +217,7 @@ class TestFoldMatchesReaderAcrossTheShapeMatrix:
             db.session.commit()
             end = seed_periods[5].start_date
             freeze_today(monkeypatch, end + timedelta(days=1))
-            _assert_fold_matches_reader_every_day(
+            _assert_fold_matches_postings_every_day(
                 loan.id, scenario_id, _BEFORE_ALL, end, min_days=400,
             )
             # C1 realization (Section 7.4): pin the VALUES the equality alone
@@ -208,10 +225,10 @@ class TestFoldMatchesReaderAcrossTheShapeMatrix:
             # (no debt); a date between origination (2025-01-01) and the
             # tracking-start (2026-01-05) is the $250,000 origination principal
             # held FLAT -- the plateau, never the pre-C1 false 0.00.
-            assert confirmed_loan_balance_at(
+            assert posted_loan_balance_at(
                 loan.id, scenario_id, _BEFORE_ALL,
             ) == Decimal("0.00")
-            assert confirmed_loan_balance_at(
+            assert posted_loan_balance_at(
                 loan.id, scenario_id, date(2025, 6, 1),
             ) == _ORIGINATION_PRINCIPAL
 
@@ -252,7 +269,7 @@ class TestFoldMatchesReaderAcrossTheShapeMatrix:
             ).annual_rate == _RATE
             end = seed_periods[6].start_date
             freeze_today(monkeypatch, end + timedelta(days=1))
-            _assert_fold_matches_reader_every_day(
+            _assert_fold_matches_postings_every_day(
                 loan.id, seed_user["scenario"].id, _BEFORE_ALL, end,
                 min_days=400,
             )
@@ -282,7 +299,7 @@ class TestFoldMatchesReaderAcrossTheShapeMatrix:
             assert all(s.escrow == Decimal("300.00") for s in splits)
             end = seed_periods[6].start_date
             freeze_today(monkeypatch, end + timedelta(days=1))
-            _assert_fold_matches_reader_every_day(
+            _assert_fold_matches_postings_every_day(
                 loan.id, seed_user["scenario"].id, _BEFORE_ALL, end,
                 min_days=400,
             )
@@ -325,7 +342,7 @@ class TestFoldMatchesReaderAcrossTheShapeMatrix:
             )[paid_off] == Decimal("0.00")
             end = seed_periods[6].start_date
             freeze_today(monkeypatch, end + timedelta(days=1))
-            _assert_fold_matches_reader_every_day(
+            _assert_fold_matches_postings_every_day(
                 loan.id, seed_user["scenario"].id, _BEFORE_ALL, end,
                 min_days=400,
             )
@@ -365,7 +382,7 @@ class TestFoldMatchesReaderAcrossTheShapeMatrix:
             ) < date(2026, 3, 15)
             end = seed_periods[6].start_date
             freeze_today(monkeypatch, end + timedelta(days=1))
-            _assert_fold_matches_reader_every_day(
+            _assert_fold_matches_postings_every_day(
                 loan.id, seed_user["scenario"].id, _BEFORE_ALL, end,
                 min_days=400,
             )
@@ -400,7 +417,7 @@ class TestFoldMatchesReaderAcrossTheShapeMatrix:
             assert not period.start_date <= due <= period.end_date
             end = seed_periods[4].start_date
             freeze_today(monkeypatch, end + timedelta(days=1))
-            _assert_fold_matches_reader_every_day(
+            _assert_fold_matches_postings_every_day(
                 loan.id, seed_user["scenario"].id, _BEFORE_ALL, end,
                 min_days=400,
             )
@@ -419,7 +436,7 @@ class TestTheOracleHasTeeth:
     def test_a_forced_divergence_makes_the_harness_fail(
         self, app, db, seed_user, seed_periods, monkeypatch,
     ):
-        """Replace the reader with one off by $1.00 and the harness raises."""
+        """Replace the posted window with one off by $1.00; the harness raises."""
         with app.app_context():
             loan = _make_loan(seed_user, db)
             _settle(seed_user, db, loan, seed_periods[1])
@@ -427,19 +444,19 @@ class TestTheOracleHasTeeth:
             end = seed_periods[3].start_date
             freeze_today(monkeypatch, end + timedelta(days=1))
 
-            real_reader = confirmed_loan_balance_at
+            real_window = posted_loan_balance_at
 
             def off_by_a_dollar(loan_id, scenario_id, as_of):
-                value = real_reader(loan_id, scenario_id, as_of)
+                value = real_window(loan_id, scenario_id, as_of)
                 return None if value is None else value + Decimal("1.00")
 
             monkeypatch.setattr(
                 "tests.test_services.test_loan_fold_oracle."
-                "confirmed_loan_balance_at",
+                "posted_loan_balance_at",
                 off_by_a_dollar,
             )
             with pytest.raises(AssertionError, match="disagree"):
-                _assert_fold_matches_reader_every_day(
+                _assert_fold_matches_postings_every_day(
                     loan.id, seed_user["scenario"].id, _BEFORE_ALL, end,
                     min_days=1,
                 )
@@ -477,7 +494,7 @@ class TestRawLoanTransactionIsTheOnlyDivergence:
             before_fold = fold_loan_balances(
                 loan.id, scenario_id, [on],
             )[on]
-            before_read = confirmed_loan_balance_at(loan.id, scenario_id, on)
+            before_read = posted_loan_balance_at(loan.id, scenario_id, on)
             assert before_fold == before_read  # agree before the raw txn
 
             create_settled_cash_transaction(
@@ -490,7 +507,7 @@ class TestRawLoanTransactionIsTheOnlyDivergence:
             after_fold = fold_loan_balances(
                 loan.id, scenario_id, [on],
             )[on]
-            after_read = confirmed_loan_balance_at(loan.id, scenario_id, on)
+            after_read = posted_loan_balance_at(loan.id, scenario_id, on)
             # The fold is blind to the raw transaction; the reader is not.
             assert after_fold == before_fold
             assert abs(after_read - before_read) == Decimal("300.00")
