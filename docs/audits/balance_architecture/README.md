@@ -6,9 +6,13 @@ document are at the bottom (Section 9); the short version: amendments are edits 
 step gets its checkbox ticked with its commit hash HERE, and no new planning documents get
 written for this arc.
 
-**State as of 2026-07-24:** design verified and locked; ALL rulings answered (D1-D5,
+**State as of 2026-07-25:** design verified and locked; ALL rulings answered (D1-D5,
 R-A..R-E, Section 4); **Phase D is COMPLETE** (D2 ruled, D2a + D3 shipped -- the name fences are
-structurally unnecessary and deleted to the E1-mortal residue); Phases A and B complete (**A1** `f11382a0`, **A2** `c96c62be`,
+structurally unnecessary and deleted to the E1-mortal residue) and **the E1 arc is CLOSED**
+(E1a-E1e shipped; W9906 no longer exists, and the only balance gates left are W9909's fail-closed
+classification and W9910's name-independent package privacy). **NEXT: F3, the prod ship** --
+its two outstanding gates are the PROD-data lineage sweep (E1a) and the C2 real-clone
+history-window live-render; then the X phase. Phases A and B complete (**A1** `f11382a0`, **A2** `c96c62be`,
 **A3** `4e46a0a8`, N-9 `44cbd028`, **B0** `d1586254`, **B1** `e227de08`, **BG**
 `dba91dc0`, **B2** `8f070386`). **Phase C: C1** (`18fd3a04`, a loan's origination is its
 ledger opening), **C2** (`eb5de4ac`, the ONE CLOCK: an event counts from the day it
@@ -35,9 +39,10 @@ live-render UNMOVED to the cent, Mortgage $177,277.97 / Van Loan $15,663.59, map
 `confirmed_loan_ledger_domain` / `LoanLedgerDomain` gone; `_domain.py` RENAMED to `_linked_ledger.py`
 since it also held the two KEPT-reader query helpers `_has_opening_posting` / `_visible_nets`) shipped,
 closing the C3b arc.
-**`confirmed_loan_balance_map` is KEPT** (C3b3 deletion-list correction, developer ruling 2026-07-18:
-it reads the KEPT posting ledger and is the Step-4 reconciliation oracle's independent window; its
-fate is decided at E1). The C2 real-clone history-window live-render (~26 days Mortgage / ~13 days
+**`confirmed_loan_balance_map` was KEPT** (C3b3 deletion-list correction, developer ruling
+2026-07-18: it reads the KEPT posting ledger and is the Step-4 reconciliation oracle's independent
+window; its fate is decided at E1) -- **and DELETED at E1e with its scalar twin**, the oracle's
+window moving to the test suite. The C2 real-clone history-window live-render (~26 days Mortgage / ~13 days
 Van Loan, today UNMOVED) is still outstanding before the F3 prod ship. **C4** (`c98ea07b`, the loan
 route reads the seam through ONE `BalanceContext` and drops its private `resolve_loan_seeded`;
 `LoanState.current_balance` KEPT for its two in-cluster readers, deletion deferred to C6-adjacent;
@@ -208,7 +213,8 @@ scoped (B-12 closed fail-closed).  Controls fired RED on all four shapes.  **E1 
 RULED (2026-07-24, four developer rulings, all as recommended -- see Phase E): E1a (the checked
 projection + N-13's root fix) -> E1b (escrow into the reconcile) -> E1c (the walk-built view,
 additive) -> E1d (the cutover; `confirmed_loan_view` dies) -> E1e (W9906 deletes; the readers go
-package-private).  E1a SHIPPED `545799fb` (B-5's invariant + N-13 closed; the born-settled create
+package-private -- **amended at execution to "the readers are DELETED", see below**).  E1a SHIPPED
+`545799fb` (B-5's invariant + N-13 closed; the born-settled create
 door closed; the real Mortgage's pre-E1a cross-date residue self-heals); E1b SHIPPED `7cbc0271`
 (all seven escrow write routes reconcile through the sync chokepoint; N-3 closed; merge's
 "needs no reconcile" ruling reversed to "reconciles as an idempotent no-op"); E1c SHIPPED
@@ -217,7 +223,19 @@ balance from the fold, rows re-accumulated over the visible subset; a broken loa
 reader returns `None` per B-12; the row construction extracted to a shared
 `confirmed_amortization_row` emitter so byte-equality is structural; every-day oracle across nine
 shapes + teeth + the broken-loan and N-11 divergence demos).  **E1d is DECOMPOSED (2026-07-25) on
-the developer's option-D ruling and both halves SHIPPED: E1d-a `35aae5ef` (the whole-loan read moves
+the developer's option-D ruling and both halves SHIPPED (see below); **E1e SHIPPED `62cedd7d`
+(2026-07-25), and NOT as its one-liner read.** The step said "the readers go package-private";
+tracing it found they had ZERO callers in `app/` or `scripts/` -- E1d-b took the last one -- so
+package-private would have kept ~197 lines of production code alive for its own test suite, the
+dead-code shape C3b4 / D2a / F2 each deleted. The developer's ruling ("is there a way to make this
+structurally unnecessary?"): DELETE them, moving the oracle window to `tests/_test_helpers.py`
+(`posted_loan_balance_at` / `posted_loan_balance_map`). That removes the door rather than guarding
+it -- with no public single-account balance-at-T producer outside the seam, a call allowlist has
+nothing to guard, so W9906 deletes whole. Its replacement is STRONGER, measured: the two spellings a
+consumer would write now rate E0611 / E1101, hard-gated by `--fail-on=E`. Dev clone BYTE-IDENTICAL.
+**Found and NOT fixed: N-35** (`ledger_report_service` is not W9909-scoped; a public balance-at-T
+born there measures 10.00/10). **NEXT: F3** (the prod ship) and the X phase per Section 5. Per-step
+detail below: E1d-a `35aae5ef` (the whole-loan read moves
 INSIDE the seam as the private `balance_at._resolution`, and the resolution memo comes off
 `BalanceContext` -- two hand-written fence surfaces DELETE, provably behaviour-identical) and E1d-b
 `e0092d0e` (the cutover: every resolution and all three loan routes seed from the walk-built
@@ -227,8 +245,8 @@ reconciliation suite's function-granularity fence collapses to a file fence; the
 and all nine shapes plus the 13 moved row pins are re-anchored HAND-COMPUTED).  Dev clone
 BYTE-IDENTICAL across both.  E1d-b also found **N-34** -- the split's rate/escrow still key on the
 pay-period start, not the due date, contradicting D5 and C2's shipped claim -- recorded, gated with
-a control that flips on the fix, and NOT fixed here (it moves recorded balances).  NEXT: E1e**, then
-F3 (the prod ship) and the X phase per Section 5.
+a control that flips on the fix, and NOT fixed here (it moves recorded balances).**  With E1e
+shipped, **Phase E's E1 arc is CLOSED**; E2 stays a recorded option.
 
 ---
 
@@ -343,8 +361,10 @@ balance_at(loan, T) = fold(events where effective_date <= T, ordered by (effecti
   on purpose and cannot use a fold-derived figure; no fence entry existed because of it);
   cash-flow and net-worth balances get NO distinct types (D2 ruling: nothing left for a type to
   defend, and no static checker exists to enforce one -- revisitable only as its own
-  static-typing arc); W9905 deleted (C6b); W9906 deleted down to the two posting readers (D3),
-  which E1 retires.
+  static-typing arc); W9905 deleted (C6b); W9906 deleted down to the two posting readers (D3) and
+  then DELETED WHOLE with them (E1e) -- the structural end state is that no public single-account
+  balance-at-T producer exists outside the seam, so a call allowlist has nothing to name.  What
+  survives is W9909 (classification, fail-closed) and W9910 (package privacy, name-independent).
 * **Cash is the same fold** (assertion events + transaction events), built AFTER the loan proves
   the machinery, because cash is the incomplete-data case: the anchor legitimately survives as a
   periodic reset (a bank-statement assertion). The instant-partition rule it needs (settle
@@ -1717,13 +1737,39 @@ zero standing exceptions rather than training the exemption habit it exists to p
       claim; measured $500.00 on one payment, reaching five surfaces, invisible to E1a's assert).
       Gated with a control that flips on the fix; fixing it moves recorded balances, so it is its
       own step.
-  - [ ] **E1e** `refactor(pylint): W9906 deletes; the posting readers are package-private` --
-    the readers come off `loan_posting_service.__init__`; `confirmed_loan_balance_map` is KEPT
-    package-private (the Step-4 reconciliation oracle's independent window -- its C3b3-recorded
-    fate is decided here); `confirmed_loan_payment_history` STAYS a posting read (the general
-    ledger's attribution purpose, Section 3); W9906 deletes whole -- checker surface, allowlist,
-    all eight `--fail-on` locations, the gate-consistency canonical list -- and W9909 keeps the
-    classification entries.
+  - [x] **E1e** `refactor(pylint): W9906 deletes with its last subject` -- **SHIPPED `62cedd7d`
+    (2026-07-25).  The step's one-liner said "the readers go package-private"; the trace found that
+    would keep ~197 lines of production code alive for its own test suite, and the developer ruled
+    for the structural answer instead: DELETE them.**  `confirmed_loan_balance_at` /
+    `confirmed_loan_balance_map` had ZERO callers in `app/` and `scripts/` -- E1d-b took the last
+    one, the seam had folded a loan's past from source events (C3b1 / C3b3), and the balance sheet
+    reads the postings through `ledger_report_service`.  Their only remaining job was to be the
+    counterparty an oracle grades the fold and the resolver against, and the reconciliation suite's
+    own rule already says where that belongs (`_independent_loan_linked_net` reads through a
+    DIFFERENT join shape "so the two cannot share a lookup bug").  So the window moved to
+    `tests/_test_helpers.py` (`posted_loan_balance_at` / `posted_loan_balance_map` -- same postings,
+    same `entry_date <= as_of` bound, same OPENING sentinel, same sign and rounding) and the
+    production pair was deleted.  **The `__init__` re-export door that motivated a guard is then
+    unaskable**: it was MEASURED at 10.00/10 (restore one re-export line and a route renders a
+    posting-cache balance-at-T with every gate green), and deleting the producer removes the thing
+    to re-export.  W9906 deletes whole -- message, allowlist constants, both visitors, its unit
+    tests, all eight `--fail-on` locations, the gate-consistency canonical list -- and every W9909
+    producer set is now the empty frozenset, the invariant stated as data.  **The replacement is
+    stronger, not weaker:** the two spellings a consumer would write rate E0611 / E1101 (hard-gated
+    by `--fail-on=E`), where the private-module and attribute reaches were already W9910 / W0212.
+    `confirmed_loan_payment_history` STAYS a posting read (the attribution purpose, Section 3).
+    Two RULED semantic changes, each stated where it binds: the window answers a FUTURE date
+    (carrying the confirmed sum flat) where the reader raised -- that raise was a domain guard for
+    callers that no longer exist -- and the per-period form IS the scalar per period, so the old
+    map-vs-scalar agreement test became `f(x) == f(x)` and now pins hand-computed values.  The fold
+    oracle's lost `end <= today` bound is restored as an explicit assertion, on the oracle's side
+    where the anti-sampling floor lives.  Dev clone BYTE-IDENTICAL; full suite 7501; 146 checker
+    tests; all three trees zero pylint messages; controls fire (a $1.00 drift reddens 38 tests, the
+    disabled OPENING sentinel 8, the new domain assertion raises).  **Adversarial review changed the
+    commit three times:** a per-period test that had silently become a tautology, a new
+    `line-too-long` the rounded 10.00 score hid, and an overreaching "no public balance producer
+    outside the seam at all" claim -- corrected to "single-account", with the statement tier's real
+    gap recorded as **N-35**.
 - [ ] **E2 (recorded option, developer ruling 2026-07-24; sequenced AFTER E1 at the earliest)**
   the super-package boundary: move the read seam, the write cluster, and the shared leaves
   (`loan_ledger` / `cash_ledger`) under ONE package whose shared internals are private to it, so
@@ -1836,6 +1882,7 @@ archive names so old references resolve here.
 | N-32 (D1d) | **A lazy in-function import survived for months on a FALSE cycle rationale.** `net_worth_kernel.build_account_balance_map` imported `net_worth_investment`'s two growth builders lazily inside its INVESTMENT / APPRECIATING branches, each `# pylint: disable=import-outside-toplevel` claiming it "breaks the `net_worth_kernel -> net_worth_investment` cycle." There was no cycle: `net_worth_investment` imports nothing back (its OWN module docstring said "imports NOTHING back... carries no cycle"), so the two docstrings contradicted each other and the disable guarded nothing. Pre-D1d it was inert (both modules outside the seam); the move made it a `disable-rationale` honesty problem -- a lazy import with no honest reason to be lazy. The stock `import-private-name` checker that might have flagged the cross-package reach does not exist in this pylint version (N-26 territory), so nothing caught it. Fixed at D1d commit 2: once siblings in the package, promoted to a top-level `from . import _investment` and the dead disables deleted; behavior-preserving (same functions, byte-identical args), cycle verified absent (pylint `cyclic-import` clean, all import orders clean, dev-clone investment / property balances unmoved) | a dead disable + two contradictory docstrings, gate-green | **closed (`34bf0446`)** | D1d |
 | N-33 (D-gate) | **13 cross-package private-NAME imports -- the measured residual OUTSIDE D-gate's ruled scope.** The zero-exception scan for D-gate (AST over `app/` + `scripts/` + `shekel_checkers/`, confirmed by the shipped checker) found ZERO private-module crossings but 13 private NAMES imported across a package boundary from PUBLIC modules -- all one shape: `app/routes/accounts/{anchor,crud,detail,types}.py` and `app/routes/loan/params.py` import `_anchor_schema` / `_create_schema` / `_validate_update_account` / `_account_type_is_visible` / `_visible_account_types` / `_appreciation_params_schema` / `_interest_params_schema` / `_crosses_posting_boundary` / `_owned_account_type` / `_type_create_schema` / `_type_update_schema` / `_validate_account_type_boundary_edit` / `_validate_collateral_link` from `app.utils.account_validation`. The names lie about their visibility: routes ARE their consumers, so they are cross-package API. The honest fix is a RENAME to public (not a checker extension carrying an allowlist); once renamed, extending W9910 to private NAMES (owner = the defining module's package) would be a zero-exception tightening -- every other private-name import in the tree is intra-package (the `_helpers` convention). Not a live defect: a guard-scope observation | -- | recorded, deferred | D3-adjacent (rename, then optionally tighten W9910) |
 | N-34 (E1d-b) | **The split's RATE and ESCROW still key on the payment's PAY-PERIOD START, not its DUE date -- ruling D5/R-A says the due date, and C2's line claimed it shipped.** ORDERING did move to the due date (`loan_ledger.merge_anchor_and_payment_events`) and VISIBILITY to the settled date, but `_split.split_one_payment:233` resolves the rate period on `shadow.pay_period.start_date` and `_walk._replay_events:160` resolves escrow the same way.  A pay period starts up to ~2 weeks BEFORE the installment it pays, so a rate or escrow version effective inside that window governs the wrong side of the boundary.  **Measured** (E1d-b probe, SPLIT_LOAN): a 12% rate effective 2026-01-25 -- strictly between period 1's 2026-01-16 start and its 2026-02-01 due date -- does NOT govern that payment; it splits at 6% (interest $500.00, principal $500.00, balance $99,500.00) where due-date keying gives 12% (interest $1,000.00, principal $0.00, balance held at $100,000.00).  The split is the single source for FIVE surfaces, so the error propagates to all of them: the owed balance, the posted ledger's `loan_interest` leg and derived principal (`_payments.py:213-226`) and hence the payment-history table, the Schedule-A tax interest (`balance_at._loan_interest:270`), and the paid-YTD chips.  **E1a's checked-projection assert CANNOT catch it** -- both sides derive from the same walk, so it stays self-consistent while wrong. D5 measured it as moving nothing on the real loans (their period-start-to-due-date windows contain no version change) and said "gate it anyway"; **that gate now exists** (`test_confirmed_view.py::TestSplitRateKeysOnThePayPeriodStart`), pinned as-is rather than fixed because correcting it MOVES recorded balances, the posted ledger, and the tax figure -- its own migration-bearing step | $500.00 interest on ONE payment (measured); unbounded in the rate delta | **recorded, gated, NOT fixed** -- the control flips when the split is re-keyed | own step (D5's "gate it anyway", now overdue) |
+| N-35 (E1e) | **The statement tier `app.services.ledger_report_service` is not W9909-scoped, so a public balance-at-T born there is unguarded.** E1e's rationale for deleting W9906 whole rests on "no public single-account balance-at-T producer exists outside the seam" -- true, and the claim was NARROWED to that wording in review, because `compute_balance_sheet(user_id, as_of)` does fold every posted source attributed on or before a date into per-account cumulative positions. It is the ruled exception (a whole-chart statement whose sections articulate only because the trial balance ties; pulling ONE line out to answer "what is this account worth on date T" is the named misuse), and it never sat on W9906's producer list, so the deletion cedes nothing. The GAP is the completeness half: the package holds every ingredient of a posted balance-at-T -- `dated_account_nets`, the chart load, the class-id sectioning -- OUTSIDE W9910's protection, exactly the shape that put `cash_ledger`, `loan_ledger`, `loan_resolver` and `account_projection` on the registry. **Measured on this tree:** a public `account_balance_on(user_id, ledger_account_id, as_of)` folding `dated_account_nets` inside the package rates **10.00/10** under the full `--fail-on` set. Scoping it is its own step because every public name in the package must then be classified (2 report entries + 7 attribution names) | a balance-at-T on a screen outside the seam, every gate green (same class as N-28 / N-31) | **recorded, NOT fixed** -- the false absolute claim was corrected in-commit (checker header, the `loan_posting_service` ruling, the package's own docstring); the scope entry is deferred | own step |
 | N-14 (C6b) | **`contractual_schedule_from_origination` is computed twice per pass on the property page** -- once inside the (now-memoized) `ctx.loan_plan` and once in the equity chart's `_back_projection_by_month` (both call it for the same loan). Deferred (developer ruling): pure-CPU (no query), only 2x, property-page only, and a full dedup via a fourth context memo must FIRST prove the two call sites' rate-change inputs are identical (`load_rate_changes(id)` vs `resolved.context.rate_changes`) -- a correctness check better done in its own focused change | -- | recorded, deferred | own commit (or Phase D) |
 
 ## 7. Verification standard (what "done" means for every step)
