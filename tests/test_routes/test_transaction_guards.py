@@ -6,6 +6,7 @@ Verifies shadow transactions route through the transfer service, blocked
 operations return 400, and regular transactions are unaffected.
 """
 
+from datetime import date
 from decimal import Decimal
 
 import pytest
@@ -18,6 +19,7 @@ from app.models.transfer import Transfer
 from app.models.ref import AccountType, Status, TransactionType
 from app.services import transfer_service
 from app.services import account_service
+from tests._test_helpers import create_loan_account
 
 
 def _create_savings(seed_user):
@@ -518,7 +520,6 @@ class TestDueDatePatch:
     def test_full_edit_shows_due_date(self, app, auth_client, seed_user, seed_periods_today):
         """GET full-edit popover contains due_date input for txn with due_date."""
         with app.app_context():
-            from datetime import date
             projected = db.session.query(Status).filter_by(name="Projected").one()
             expense = db.session.query(TransactionType).filter_by(name="Expense").one()
 
@@ -539,3 +540,108 @@ class TestDueDatePatch:
             assert resp.status_code == 200
             assert b"due_date" in resp.data
             assert b"2026-01-10" in resp.data
+
+
+# ── Loan-Account Create Guard (N-11 / ruling D4) ──────────────────
+
+
+class TestLoanAccountTransactionGuard:
+    """A raw transaction cannot be typed onto an amortizing loan account.
+
+    A loan's balance is ledger-derived, not a transaction sum (ruling D4).
+    A raw transaction posted onto a loan account books a bare cash leg onto
+    the loan's linked ledger that the sum-of-postings reader counts as a
+    real paydown while the loan fold cannot see it -- finding N-11, the one
+    balance shape where the two producers diverge with nothing to reconcile
+    them.  Both create endpoints refuse it with 422 and write nothing,
+    mirroring the transfer-out-of-loan guard (review R6) and closing the
+    ad-hoc / inline doors the grid picker (step A1) does not gate.
+    """
+
+    def _loan_account(self, seed_user):
+        """Build an amortizing loan owned by the seeded user."""
+        return create_loan_account(
+            seed_user, db.session,
+            principal=Decimal("200000.00"), rate=Decimal("0.06"),
+            origination_date=date(2026, 1, 1), name="Guard Loan",
+        )
+
+    def _expense_form(self, seed_user, seed_periods_today, account_id):
+        """The minimal valid ad-hoc create form, targeting *account_id*."""
+        expense = db.session.query(TransactionType).filter_by(
+            name="Expense",
+        ).one()
+        category = list(seed_user["categories"].values())[0]
+        return {
+            "name": "Typed On Loan",
+            "estimated_amount": "300.00",
+            "account_id": account_id,
+            "category_id": category.id,
+            "pay_period_id": seed_periods_today[0].id,
+            "transaction_type_id": expense.id,
+            "scenario_id": seed_user["scenario"].id,
+        }
+
+    def test_ad_hoc_create_on_loan_is_refused(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """POST /transactions onto a loan returns 422 and writes nothing.
+
+        The loan account carries no transactions of its own (its balance
+        lives in the posting ledger), so a zero count after the refused
+        POST proves the write never happened.
+        """
+        with app.app_context():
+            loan = self._loan_account(seed_user)
+            db.session.commit()
+            form = self._expense_form(seed_user, seed_periods_today, loan.id)
+            resp = auth_client.post("/transactions", data=form)
+            assert resp.status_code == 422
+            assert b"not a transaction sum" in resp.data
+            assert (
+                db.session.query(Transaction)
+                .filter_by(account_id=loan.id).count() == 0
+            )
+
+    def test_inline_create_on_loan_is_refused(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """POST /transactions/inline onto a loan returns 422 and writes nothing."""
+        with app.app_context():
+            loan = self._loan_account(seed_user)
+            db.session.commit()
+            form = self._expense_form(seed_user, seed_periods_today, loan.id)
+            del form["name"]  # the inline form's name field is optional
+            resp = auth_client.post("/transactions/inline", data=form)
+            assert resp.status_code == 422
+            assert (
+                db.session.query(Transaction)
+                .filter_by(account_id=loan.id).count() == 0
+            )
+
+    def test_inline_create_on_plain_account_still_succeeds(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """Negative control: the SAME request on a non-loan account is accepted.
+
+        Proves the 422 is attributable to the loan KIND, not the form.  The
+        seeded checking account is non-amortizing, so the identical inline
+        create succeeds (201) and adds exactly one transaction -- if the
+        guard rejected on anything but the loan kind, this control would
+        fail.
+        """
+        with app.app_context():
+            plain = seed_user["account"]  # seeded checking (non-amortizing)
+            before = (
+                db.session.query(Transaction)
+                .filter_by(account_id=plain.id).count()
+            )
+            form = self._expense_form(seed_user, seed_periods_today, plain.id)
+            del form["name"]
+            resp = auth_client.post("/transactions/inline", data=form)
+            assert resp.status_code == 201
+            after = (
+                db.session.query(Transaction)
+                .filter_by(account_id=plain.id).count()
+            )
+            assert after == before + 1

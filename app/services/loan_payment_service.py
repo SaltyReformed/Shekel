@@ -4,12 +4,20 @@ Shekel Budget App -- Loan Payment Service
 Queries shadow income transactions on debt accounts and converts them
 to PaymentRecord instances for the amortization engine.  Also provides
 payment preparation utilities (escrow subtraction, biweekly
-redistribution), a unified data-loading function (load_loan_context)
-shared by all consumers of amortization schedules, and the read-switch
-ledger-view builder (confirmed_loan_view).  The resolver-seeding wrappers that
-read that view -- resolve_loan_seeded / resolve_account_loan -- live in
-app.services.loan_resolution (they compose these loaders with the pure
-resolver); this module does not import that one, so there is no cycle.
+redistribution), and a unified data-loading function (load_loan_context)
+shared by all consumers of amortization schedules.
+
+This module reads the POSTED LEDGER NOWHERE, as of plan step E1d-b
+(docs/audits/balance_architecture/README.md).  It used to host
+confirmed_loan_view, the read switch's single injection point into the genesis
+posting readers, which made it the one module whose resolver-feeding loaders had
+to be fenced at FUNCTION granularity to keep the reconciliation oracle's
+parallel run honest.  The loan resolver's confirmed slice now seeds from the
+event WALK inside the balance seam (balance_at.confirmed_view), so that
+allowlist is gone and this module is ledger-free whole.  The whole-loan read
+that composes these loaders with the pure resolver lives in
+app.services.balance_at._resolution; that module imports THIS one, and this one
+imports nothing from the seam, so there is no cycle.
 
 Shadow income transactions represent payments received by a debt
 account via transfers.  When a user transfers money from checking to
@@ -401,14 +409,14 @@ def prepare_payments_for_engine(
        paydown speed and showing escrow as spurious "Extra" entries.
        Only subtracts escrow from the portion that exceeds the standard
        P&I payment, so payments that do not include escrow are unaffected.
-       Each payment subtracts the escrow IN EFFECT ON ITS OWN DATE
+       Each payment subtracts the escrow IN EFFECT FOR ITS INSTALLMENT
        (:func:`~app.services.escrow_calculator.escrow_monthly_as_of` on the
-       payment's pay-period start), NOT one current figure: once escrow can
-       be future-dated, a payment made under the old escrow must have the old
+       payment's DUE date), NOT one current figure: once escrow can be
+       future-dated, a payment made under the old escrow must have the old
        escrow backed out to recover its P&I, or the resolver's replay / payoff
        projection mis-attributes the escrow delta as extra principal.  This is
-       the same date-keyed escrow the genesis split subtracts, so the two agree
-       on every payment's P&I.
+       the same date-keyed escrow the genesis split subtracts (ruling D5's
+       contract time, finding N-34), so the two agree on every payment's P&I.
 
     2. Biweekly redistribution: Pay period start dates are biweekly and
        sometimes place two mortgage payments in the same calendar month
@@ -434,16 +442,19 @@ def prepare_payments_for_engine(
 
     sorted_payments = sorted(payments, key=lambda p: p.payment_date)
 
-    # Step 1: Subtract each payment's as-of escrow from the portion that
-    # exceeds contractual P&I, so payments equal to or below P&I (no escrow
-    # included) are untouched.  Skipped entirely for a loan with no escrow
+    # Step 1: Subtract each payment's installment-dated escrow from the portion
+    # that exceeds contractual P&I, so payments equal to or below P&I (no escrow
+    # included) are untouched.  The DUE date is the key -- the same one the
+    # genesis split and the live-cash derivation use (D5 / N-34) -- and it is
+    # read BEFORE step 2, so it is the payment's real installment, never a
+    # redistribution's invented one.  Skipped entirely for a loan with no escrow
     # lines; a line that resolves to 0 on a given date (not yet in effect, or
     # a removal tombstone) subtracts nothing for that payment.
     if escrow_lines:
         adjusted = []
         for p in sorted_payments:
             escrow = escrow_calculator.escrow_monthly_as_of(
-                escrow_lines, p.payment_date,
+                escrow_lines, p.due_date,
             )
             if escrow > Decimal("0.00") and p.amount > contractual_pi:
                 new_amount = p.amount - min(
@@ -464,113 +475,41 @@ def prepare_payments_for_engine(
     return _redistribute_to_distinct_months(sorted_payments, payment_day)
 
 
-def confirmed_loan_view(
-    account_id: int, scenario_id: int | None, as_of: date,
-) -> "loan_resolver.ConfirmedLedgerView | None":
-    """Read a loan's genesis-ledger confirmed view (balance + history), or None.
+@dataclass(frozen=True)
+class _LoanCashBasis:
+    """The two loan-level facts a shadow's live cash is built from.
 
-    The read switch's SINGLE injection point: the one and only call site of
-    the genesis balance / history readers
-    (:func:`app.services.loan_posting_service.confirmed_loan_balance_at` /
-    :func:`app.services.loan_posting_service.confirmed_loan_history_rows`),
-    so the whole app reads a loan's confirmed state from the ledger through
-    exactly this function.  Every
-    :class:`~app.services.loan_resolver.ConfirmedLedgerView` the db-facing
-    loaders and the loan-detail chart / payoff calculators thread into the
-    resolver comes from here, which is why the readers have one seam for the
-    W9906 balance-producer fence to allowlist, and why the loaders cannot
-    drift on HOW the ledger is read.  Bundling the balance WITH its history
-    rows in one read is what keeps the loan card, the amortization table's
-    confirmed rows, and the forward projection on one producer -- they either
-    all read the ledger or all fall back together.
+    Both fall out of ONE ``LoanParams`` load (:func:`_resolve_loan_basis`), so
+    they are returned together rather than re-queried per shadow: the P&I is a
+    resolved figure, the payment day the contractual constant that turns a
+    shadow into the installment it satisfies.
 
-    Returns ``None`` -- so the caller falls back to the resolver's anchor
-    replay, exactly the pre-switch behaviour -- whenever the confirmed ledger
-    cannot answer:
-
-    * ``scenario_id`` is ``None`` (no baseline scenario, so no scenario to
-      scope postings to);
-    * ``as_of`` is after today (a future date is a forward projection, out of
-      the confirmed readers' domain -- the resolver projects it, and asking
-      a reader would raise); or
-    * a reader returns ``None`` -- the loan has no OPENING posting in the
-      scenario (an unconfigured loan, a what-if the opening was never posted
-      into -- the C4 M2 case -- or any loan not yet backfilled), or no
-      :class:`LoanParams` (the history reader's extra guard).
-
-    For those cases the ``None`` fallback makes the read switch safe by
-    construction: a loan the ledger has not opened resolves exactly as it did
-    before the switch.  The ONE case that does NOT fall back is a genuinely
-    broken chart-of-accounts -- a loan account with no linked ledger account at
-    all -- where the readers raise ``PostingError`` rather than returning
-    ``None``, failing loud on the invariant violation (the project's fail-loud
-    rule).  Every account is paired with a linked ledger by the account-create
-    hook and the Step-2 backfill, so a configured loan cannot reach that path
-    in practice.
-
-    Args:
-        account_id: The loan account whose confirmed view to read.  The
-            caller MUST have already established that the current user owns it
-            (the readers trust this arg, matching the sibling
-            ``account_posting_total`` convention); the scenario scope is a
-            second guard, since a cross-owner account has no postings in this
-            user's scenario and so reads ``None``.
-        scenario_id: The baseline scenario id, or ``None``.
-        as_of: The evaluation date; typically ``date.today()``.
-
-    Returns:
-        The :class:`~app.services.loan_resolver.ConfirmedLedgerView`, or
-        ``None`` to fall back to the resolver's anchor replay.
-
-    Raises:
-        PostingError: If the loan account has no linked ledger account (a
-            broken chart-of-accounts pairing) -- the one non-fallback path.
+    Attributes:
+        monthly_pi: The loan's rate-period monthly P&I, no escrow.
+        payment_day: The loan's contractual day-of-month due day, 1-31, from
+            :attr:`app.models.loan_params.LoanParams.payment_day` -- the
+            fallback basis :func:`app.services.loan_loaders.loan_payment_due_date`
+            needs for a shadow carrying no stored ``due_date``.
     """
-    if scenario_id is None or as_of > date.today():
-        return None
-    # Pylint: ``import-outside-toplevel`` -- the confirmed-ledger readers
-    # (``loan_posting_service``) are imported HERE, inside the read switch's
-    # sole injection point, ON PURPOSE rather than at module top: it keeps the
-    # posted-ledger reader out of module scope so this module's resolver-feeding
-    # loaders (``load_loan_context`` and siblings) stay ledger-free.  That
-    # property is enforced by ``TestResolverIsLedgerFree``, which scans this
-    # module MINUS its read-switch functions -- a top-level ledger import would
-    # fail it.  (``loan_resolver`` is a plain top-level import; only the ledger
-    # reader must stay function-local.)
-    from app.services import loan_posting_service  # pylint: disable=import-outside-toplevel
-    balance = loan_posting_service.confirmed_loan_balance_at(
-        account_id, scenario_id, as_of,
-    )
-    if balance is None:
-        return None
-    history_rows = loan_posting_service.confirmed_loan_history_rows(
-        account_id, scenario_id, as_of,
-    )
-    if history_rows is None:
-        # Belt-and-braces: the two readers share the opening-posting guard,
-        # but the history reader additionally requires LoanParams.  A view
-        # must be all-ledger or nothing -- never a ledger balance over replay
-        # rows -- so an asymmetric answer falls back whole.
-        return None
-    return loan_resolver.ConfirmedLedgerView(
-        balance=balance, history_rows=history_rows,
-    )
+
+    monthly_pi: Decimal
+    payment_day: int
 
 
-def _resolve_loan_pi(
+def _resolve_loan_basis(
     loan_account_id: int, scenario_id: int, as_of: date
-) -> Decimal | None:
-    """Resolve a loan's live monthly P&I (no escrow) as of ``as_of``, or None.
+) -> _LoanCashBasis | None:
+    """Resolve a loan's live monthly P&I and payment day as of ``as_of``, or None.
 
     Returns ``None`` when the loan has no ``LoanParams`` row (it cannot be
     resolved, so its shadows keep their stored amount); a configured loan is
     always resolvable, since its origination anchor fact is synthesized from
     the immutable params.  ``resolve_loan(...).monthly_payment`` is the
     rate-period P&I; the escrow term is deliberately NOT added here because it
-    is per-payment-DATE (:func:`_shadow_live_amount`), not one figure per loan
+    is per-INSTALLMENT (:func:`_shadow_live_amount`), not one figure per loan
     -- a future-dated escrow version means a December and a January payment
     carry different escrow, so the escrow must be resolved against each
-    shadow's own date rather than folded into a single loan-level PITI.
+    shadow's own due date rather than folded into a single loan-level PITI.
 
     Args:
         loan_account_id: The destination loan account to resolve.
@@ -578,7 +517,7 @@ def _resolve_loan_pi(
         as_of: The evaluation date for the rate-period P&I.
 
     Returns:
-        The loan's monthly P&I ``Decimal``, or ``None`` when the account is
+        The loan's :class:`_LoanCashBasis`, or ``None`` when the account is
         not a configured loan.
     """
     params = load_loan_params(loan_account_id)
@@ -592,48 +531,62 @@ def _resolve_loan_pi(
         ),
         as_of,
     )
-    return state.monthly_payment
+    return _LoanCashBasis(
+        monthly_pi=state.monthly_payment, payment_day=params.payment_day,
+    )
 
 
 def _shadow_live_amount(
-    monthly_pi: Decimal,
+    basis: _LoanCashBasis,
     escrow_lines: list,
     shadow: Transaction,
     extra_principal: Decimal,
 ) -> Decimal:
-    """Derive-mode live cash for a loan-payment shadow: P&I + its DATE's escrow + extra.
+    """Derive-mode live cash for a loan-payment shadow: P&I + its INSTALLMENT's escrow + extra.
 
     The single expression both the projected-display override
     (:func:`live_loan_transfer_amounts`) and the settle-time capture
     (:func:`live_loan_payment_amount`) build an AUTO-DERIVED loan payment's cash
     from, so they can never disagree.  The escrow term is
-    :func:`~app.services.escrow_calculator.escrow_monthly_as_of` on the
-    shadow's OWN pay-period start -- the exact date and function the genesis
-    split reads (``_walk._replay_events``) -- so the cash built into a payment
-    and the escrow its split subtracts are the same figure by construction
-    (the cash==split invariant), never by coincidence.  ``extra_principal`` (the
-    standing overpayment, spec Sec. 6) is added on top in BOTH the display and
-    the settle freeze, and the split's residual ``cash - interest - escrow``
-    lands it in principal automatically.  ``round_money`` holds the E-26
-    sum-then-round boundary even though the terms are already 2dp.
+    :func:`~app.services.escrow_calculator.escrow_monthly_as_of` on the shadow's
+    DUE date (:func:`app.services.loan_loaders.loan_payment_due_date`) -- the
+    exact date and function the genesis split reads
+    (``loan_ledger.walk_loan_ledger``) -- so the cash built into a payment and
+    the escrow its split subtracts are the same figure by construction (the
+    cash==split invariant), never by coincidence.
+
+    **Why the DUE date and not the pay-period start** (ruling D5, finding
+    N-34): a pay period begins up to ~2 weeks before the installment it pays,
+    so an escrow version effective inside that window would build one figure
+    into the cash and back a different one out of the split, silently moving
+    the difference into principal.  Contract time governs both ends.
+
+    ``extra_principal`` (the standing overpayment, spec Sec. 6) is added on top
+    in BOTH the display and the settle freeze, and the split's residual
+    ``cash - interest - escrow`` lands it in principal automatically.
+    ``round_money`` holds the E-26 sum-then-round boundary even though the terms
+    are already 2dp.
 
     Args:
-        monthly_pi: The loan's resolved monthly P&I (:func:`_resolve_loan_pi`),
-            already resolved once per loan.
+        basis: The loan's :class:`_LoanCashBasis` (:func:`_resolve_loan_basis`),
+            resolved once per loan.  Taken WHOLE rather than unpacked by every
+            caller: its P&I and its payment day are two halves of one figure --
+            the payment day dates the escrow the P&I is added to -- so passing
+            them separately would let a call site pair one loan's P&I with
+            another's due day.
         escrow_lines: The loan's escrow lines with their full version history.
-        shadow: The payment shadow whose ``pay_period.start_date`` dates the
-            escrow resolution.
+        shadow: The payment shadow whose installment dates the escrow resolution.
         extra_principal: The recurring payment's standing extra principal
             (``0.00`` when none), from :func:`_loan_payment_config`.
 
     Returns:
-        ``round_money(monthly_pi + escrow_monthly_as_of(lines, shadow date)
+        ``round_money(monthly_pi + escrow_monthly_as_of(lines, due date)
         + extra_principal)``.
     """
     escrow = escrow_calculator.escrow_monthly_as_of(
-        escrow_lines, shadow.pay_period.start_date,
+        escrow_lines, loan_payment_due_date(shadow, basis.payment_day),
     )
-    return round_money(monthly_pi + escrow + extra_principal)
+    return round_money(basis.monthly_pi + escrow + extra_principal)
 
 
 def _manual_shadow_amount(
@@ -707,8 +660,8 @@ def live_loan_payment_amount(
     override: DERIVE (P&I + escrow-as-of + extra, :func:`_shadow_live_amount`)
     or MANUAL with a standing extra (stored base + extra,
     :func:`_manual_shadow_amount`).  Because the frozen cash and the genesis
-    split read the same figure on the shadow's own date, ``cash == split`` holds
-    by construction -- closing the gap where a plain settle reverted to
+    split read the same figure on the shadow's own DUE date, ``cash == split``
+    holds by construction -- closing the gap where a plain settle reverted to
     ``estimated_amount`` (the creation-time escrow, and no extra) and desynced
     the split.
 
@@ -758,14 +711,14 @@ def live_loan_payment_amount(
         return None
     derive_from_loan, extra_principal = _loan_payment_config(transfer.template)
     if derive_from_loan:
-        monthly_pi = _resolve_loan_pi(
+        basis = _resolve_loan_basis(
             transfer.to_account_id, scenario_id, date.today(),
         )
-        if monthly_pi is None:
+        if basis is None:
             return None
         escrow_lines = load_escrow_lines(transfer.to_account_id)
         return _shadow_live_amount(
-            monthly_pi, escrow_lines, shadow, extra_principal,
+            basis, escrow_lines, shadow, extra_principal,
         )
     # Manual mode: freeze the typed base + the standing extra so the split
     # routes the extra into principal.  A manual payment with no extra needs no
@@ -850,7 +803,7 @@ def live_loan_transfer_amounts(
 
     * **Derive** (``derive_from_loan``): ``resolve_loan(...).monthly_payment``
       (the rate-period P&I, resolved once per loan) + the escrow in effect on
-      THAT shadow's pay-period start + the standing ``extra_principal``
+      THAT shadow's DUE date + the standing ``extra_principal``
       (:func:`_shadow_live_amount`).
     * **Manual with a standing extra**: the shadow's stored base +
       ``extra_principal`` (:func:`_manual_shadow_amount`); the base is
@@ -863,7 +816,8 @@ def live_loan_transfer_amounts(
     future-dated: a December projected payment and a January projected payment
     must carry different escrow when a new version takes effect between them,
     and each must match the escrow its eventual split subtracts -- the same
-    ``escrow_monthly_as_of`` on the same date.
+    ``escrow_monthly_as_of`` on the same date, which is each shadow's DUE date
+    (ruling D5's contract time, finding N-34).
 
     Both shadow legs of a transfer (the checking-side expense and the
     loan-side income) share the transfer id, so both receive the same
@@ -901,22 +855,23 @@ def live_loan_transfer_amounts(
     if not config_by_transfer:
         return {}
 
-    # Resolve each DERIVE-mode loan's monthly P&I once and load its escrow lines
-    # once; the escrow itself is resolved per-shadow (each shadow's own date)
-    # below, so two shadows of one loan with different pay-period starts pick up
-    # different future-dated escrow.  Manual-mode transfers need neither -- their
-    # base is the shadow's stored amount -- so only derive loans are resolved.
+    # Resolve each DERIVE-mode loan's P&I + payment day once and load its escrow
+    # lines once; the escrow itself is resolved per-shadow (each shadow's own DUE
+    # date) below, so two shadows of one loan due either side of a future-dated
+    # escrow version pick up different escrow.  Manual-mode transfers need
+    # neither -- their base is the shadow's stored amount -- so only derive loans
+    # are resolved.
     today = date.today()
     derive_loan_ids = {
         cfg.loan_account_id for cfg in config_by_transfer.values()
         if cfg.derive_from_loan
     }
-    pi_by_loan: dict[int, Decimal] = {}
+    basis_by_loan: dict[int, _LoanCashBasis] = {}
     lines_by_loan: dict[int, list] = {}
     for loan_account_id in derive_loan_ids:
-        monthly_pi = _resolve_loan_pi(loan_account_id, scenario_id, today)
-        if monthly_pi is not None:
-            pi_by_loan[loan_account_id] = monthly_pi
+        basis = _resolve_loan_basis(loan_account_id, scenario_id, today)
+        if basis is not None:
+            basis_by_loan[loan_account_id] = basis
             lines_by_loan[loan_account_id] = load_escrow_lines(loan_account_id)
 
     overrides: dict[int, Decimal] = {}
@@ -925,10 +880,10 @@ def live_loan_transfer_amounts(
         if cfg is None:
             continue
         if cfg.derive_from_loan:
-            monthly_pi = pi_by_loan.get(cfg.loan_account_id)
-            if monthly_pi is not None:
+            basis = basis_by_loan.get(cfg.loan_account_id)
+            if basis is not None:
                 overrides[txn.id] = _shadow_live_amount(
-                    monthly_pi, lines_by_loan[cfg.loan_account_id],
+                    basis, lines_by_loan[cfg.loan_account_id],
                     txn, cfg.extra_principal,
                 )
         else:

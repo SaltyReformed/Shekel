@@ -8,11 +8,16 @@ series.  No Flask imports; every function takes
 plain data (the projected account dicts, ORM rows, the loaded parameter
 maps) and returns plain ``Decimal`` / ``dict`` data the route serializes.
 
-The per-account balance projection -- including the investment / 401k
-growth sub-chain that the forward trend projects forward -- comes from
-the shared :mod:`app.services.net_worth_kernel`, the same math the
-year-end net-worth section consumes, so the cockpit trend and the
-year-end trend cannot drift onto two copies of it.
+Every per-account balance the NET-WORTH reduction reads arrives through the
+:mod:`app.services.balance_at` seam, so that path computes no balance of its
+own: the seam dispatches non-loan kinds to
+:mod:`app.services.balance_at._kernel` (including the investment / 401k growth
+sub-chain the forward trend projects forward) and answers an AMORTIZING loan
+from its own ``positions()`` fold (plan step C3b3).  What this module owns is
+the REDUCTION over those balances -- asset-plus / liability-minus -- not the
+balances themselves.  (:func:`compute_property_equity` is the exception that
+proves the boundary: it is an EQUITY figure, not a net-worth balance, and it
+delegates to :mod:`app.services.home_equity_service`.)
 
 The dense per-account balance maps are built ONCE (over ALL periods, so
 ``balance_resolver`` always has its anchor seed) and shared by both the
@@ -20,21 +25,21 @@ series and the change delta, via :func:`build_account_net_worth_maps`;
 the orchestrator builds them and threads the result into both producers.
 """
 
-from datetime import date
 from decimal import Decimal
 
 from app.models.pay_period import PayPeriod
-from app.models.scenario import Scenario
-from app.services import balance_at, home_equity_service, net_worth_kernel
+from app.services import balance_at, home_equity_service
+from app.services.amortization_engine import AmortizationRow
+from app.services.balance_at import BalanceContext
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
 # The asset/liability rule and the net-worth account-data builder live in
-# the shared adapter so this cockpit and the year-end summary assemble
-# net-worth data one way; ``_is_liability_account`` keeps its local name
-# (this module's other net-worth helpers call it) as an alias over the one
-# definition.
+# the shared adapter so every net-worth surface -- these today figures, the
+# trend below, and the Horizon band in ``_horizon`` -- classifies an account
+# one way; ``_is_liability_account`` keeps its local name (this module's
+# other net-worth helpers call it) as an alias over the one definition.
 from app.services.net_worth_account_data import (
     is_liability_account as _is_liability_account,
     to_net_worth_account_data,
@@ -93,7 +98,7 @@ def compute_net_worth_today(account_data: list[dict]) -> dict:
 
 def build_account_net_worth_maps(
     accounts: list,
-    scenario: Scenario | None,
+    ctx: BalanceContext,
     all_periods: list[PayPeriod],
 ) -> list[dict]:
     """Build each account's dense balance map plus its liability flag.
@@ -120,16 +125,15 @@ def build_account_net_worth_maps(
     :func:`compute_net_worth_series` (via
     :func:`_sum_composition_at_period`) and
     :func:`compute_sparklines` consume.  Accounts with no anchor period (no
-    dense map) are omitted by the seam, matching the year-end section's
-    ``balances is None`` skip.
+    dense map) are omitted by the seam and skipped here.
 
     Args:
         accounts: The user's active accounts.
-        scenario: The baseline scenario, or ``None``.  With no scenario the
-            seam's resolver path cannot run, so an empty list is returned
-            (the degraded no-scenario state) WITHOUT calling the seam --
-            the seam raises on a ``None`` scenario by contract, and this
-            caller owns the legitimate empty state.
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
+            With no baseline scenario on it the seam's resolver path cannot run,
+            so an empty list is returned (the degraded no-scenario state)
+            WITHOUT calling the seam -- the seam raises on a ``None`` scenario by
+            contract, and this caller owns the legitimate empty state.
         all_periods: All of the user's pay periods (the dense domain).
 
     Returns:
@@ -137,13 +141,14 @@ def build_account_net_worth_maps(
         is_liability: bool}`` dicts, one per account that has a dense map,
         in ``accounts`` order.  The ``account_id`` lets the per-account
         sparkline producer (:func:`compute_sparklines`) reuse these maps, so
-        the sparklines and the net-worth math read one projection; the
-        net-worth reducers ignore it.
+        the sparklines and the net-worth math read one projection, and
+        :func:`_sum_composition_at_period` keys each account's composition
+        band off it.
     """
-    if scenario is None:
+    if ctx.scenario is None:
         return []
 
-    balance_maps = balance_at.build_maps(accounts, scenario, all_periods)
+    balance_maps = balance_at.build_maps(accounts, ctx, all_periods)
     return to_net_worth_account_data(accounts, balance_maps)
 
 
@@ -163,11 +168,12 @@ def _sum_composition_at_period(
     liability band with a positive magnitude even if its category map entry
     were missing.
 
-    Summing the asset-side bands and subtracting the liability band
-    reproduces :func:`app.services.net_worth_kernel.sum_net_worth_at_period`
-    for the same period and maps (asset ``+bal`` / liability ``-abs(bal)``),
-    so the composition split reconciles to the series' ``assets`` /
-    ``liabilities`` / ``net`` by construction.
+    This is the ONE per-period net-worth reduction.  Summing the asset-side
+    bands and subtracting the liability band is exactly asset ``+bal`` /
+    liability ``-abs(bal)``, and :func:`compute_net_worth_series` derives its
+    ``assets`` / ``liabilities`` / ``net`` from these bands rather than
+    re-reducing the maps -- so the composition split reconciles to the series
+    by construction, not by two producers agreeing.
 
     Args:
         period_id: The pay period id to read balances at.
@@ -224,15 +230,16 @@ _CASH_GATING_KINDS = frozenset({
 
 def _loan_schedule_start_index(
     all_periods: list[PayPeriod],
-    schedule_info: "net_worth_kernel.DebtSchedule | None",
+    schedule_rows: list[AmortizationRow] | None,
 ) -> int | None:
     """Earliest period_index at which a loan's schedule gives a real balance.
 
-    A loan's schedule has no rows before its first recorded payment:
-    :func:`app.services.account_projection.compute_loan_period_balance_map`
-    therefore returns the loan's CURRENT balance, held flat, for every period
-    before the schedule's first payment -- today's balance, not the real
-    amortized balance the loan actually had then.  So a loan is "honest" only
+    A loan's schedule has no rows before its first recorded payment, so a
+    schedule-derived map returns the loan's CURRENT balance, held flat, for every
+    period before that first payment -- today's balance, not the real amortized
+    balance the loan actually had then.  (The ledger now owns every BEGUN period,
+    so that hazard is gone from the balance map itself; this gate still bounds
+    what the TREND is willing to draw.)  So a loan is "honest" only
     from the first period whose ``end_date`` reaches its first schedule row
     onward; before that the trend would carry today's balance flat backward
     through the loan's real past.  For a GENESIS loan the confirmed rows are
@@ -250,18 +257,17 @@ def _loan_schedule_start_index(
     Args:
         all_periods: All of the user's pay periods, ordered by
             ``period_index``.
-        schedule_info: The loan's
-            :class:`~app.services.net_worth_kernel.DebtSchedule` (the
-            :func:`app.services.net_worth_kernel.generate_debt_schedules`
-            entry for it), or ``None``.
+        schedule_rows: The loan's amortization rows
+            (:func:`app.services.balance_at.debt_schedule_rows`), or ``None``
+            when the context could not resolve the loan.
 
     Returns:
         The first honest ``period_index``, or ``None`` when the loan does
         not gate the window.
     """
-    if schedule_info is None or not schedule_info.schedule:
+    if not schedule_rows:
         return None
-    first_payment = min(row.payment_date for row in schedule_info.schedule)
+    first_payment = min(row.payment_date for row in schedule_rows)
     for period in all_periods:
         if period.end_date >= first_payment:
             return period.period_index
@@ -272,7 +278,7 @@ def _honest_history_start_index(
     accounts: list,
     all_periods: list[PayPeriod],
     current_period: PayPeriod,
-    debt_schedules: dict[int, net_worth_kernel.DebtSchedule],
+    debt_schedules: dict[int, list[AmortizationRow]],
 ) -> int:
     """Earliest period_index whose net worth is real for every account.
 
@@ -288,8 +294,8 @@ def _honest_history_start_index(
       (:func:`_loan_schedule_start_index`).
 
     INVESTMENT (reverse-projected) and APPRECIATING (flat-carried) accounts
-    are defined at every period by the same modeling the year-end summary
-    uses, so they do not constrain the window.
+    are defined at every period by the seam's own modeling, so they do not
+    constrain the window.
 
     Returns the maximum gating index -- the earliest period at or after
     which every cash account has a real balance AND every loan is within
@@ -305,10 +311,12 @@ def _honest_history_start_index(
         all_periods: All of the user's pay periods (maps an anchor period
             id to its index).
         current_period: The period containing today (the upper clamp).
-        debt_schedules: account_id -> :class:`~app.services.net_worth_kernel.DebtSchedule`
-            (from
-            :func:`app.services.net_worth_kernel.generate_debt_schedules`),
-            for the loan gate.
+        debt_schedules: account_id -> the loan's amortization ROW list
+            (from :func:`app.services.balance_at.debt_schedule_rows`), for the
+            loan gate.  Not a ``DebtSchedule`` bundle: the rows carry no
+            ``projection_seed``, which is the balance the fence keeps out of an
+            out-of-cluster consumer's hands.  (A row does carry a
+            ``remaining_balance``; this module reads only ``payment_date``.)
 
     Returns:
         The earliest honest history ``period_index`` (``0`` ..
@@ -338,7 +346,7 @@ def build_trend_periods(
     accounts: list,
     all_periods: list[PayPeriod],
     current_period: PayPeriod | None,
-    debt_schedules: dict[int, net_worth_kernel.DebtSchedule],
+    debt_schedules: dict[int, list[AmortizationRow]],
 ) -> tuple[list[PayPeriod], int, int]:
     """Build the net-worth trend's window, current index, and honest start.
 
@@ -373,9 +381,9 @@ def build_trend_periods(
         all_periods: All of the user's pay periods, ordered by
             ``period_index``.
         current_period: The period containing today, or ``None``.
-        debt_schedules: account_id ->
-            :class:`~app.services.net_worth_kernel.DebtSchedule`, for the
-            loan gate.
+        debt_schedules: account_id -> the loan's amortization ROW list
+            (:func:`app.services.balance_at.debt_schedule_rows`), for the loan
+            gate.
 
     Returns:
         ``(periods, current_index, honest_start)`` -- ``periods`` is the
@@ -481,8 +489,7 @@ def compute_net_worth_series(
 
 def compute_property_equity(
     accounts: list,
-    scenario_id: int | None,
-    as_of: date,
+    ctx: BalanceContext,
 ) -> list[dict]:
     """Resolve each Property account's equity for the cockpit equity card.
 
@@ -504,11 +511,10 @@ def compute_property_equity(
 
     Args:
         accounts: The user's active accounts.
-        scenario_id: The baseline scenario id for the loan resolver, or
-            ``None`` when the user has no scenario yet (each secured loan
-            then resolves from its anchor with no payment history, exactly
-            as the detail page does).
-        as_of: The as-of date for the loan resolver.
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
+            Each secured loan is read from its memo, so the mortgage leg of this
+            card is the SAME resolution the debt card and the net-worth liability
+            column read -- one resolution, not a fourth one that has to agree.
 
     Returns:
         A list of ``{account, equity}`` dicts, one per Property account in
@@ -522,7 +528,7 @@ def compute_property_equity(
             result.append({
                 "account": account,
                 "equity": home_equity_service.resolve_home_equity(
-                    account, scenario_id, as_of,
+                    account, ctx,
                 ),
             })
     return result

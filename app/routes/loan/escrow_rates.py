@@ -27,8 +27,8 @@ from app.routes.loan._helpers import (
     _escrow_version_schema,
     _forward_boundary,
     _load_loan_account,
+    _loan_terms_now,
     _rate_schema,
-    _resolve_loan_state,
     build_loan_band_chart,
 )
 from app.services import (
@@ -72,17 +72,16 @@ def _render_rate_history(account, params, band_chart=None):
         .order_by(RateHistory.effective_date.desc())
         .all()
     )
-    # DH-#56: the OOB swap shows the resolver-derived current rate (the
-    # rate in effect today after the just-committed rate history), not the
-    # retired ``LoanParams.interest_rate`` column.  Resolve once here so
-    # the swapped Overview "Interest Rate" reflects the new change.
-    state = _resolve_loan_state(account, params)
+    # DH-#56: the OOB swap shows the seam's current rate (the rate in effect
+    # today after the just-committed rate history), not the retired
+    # ``LoanParams.interest_rate`` column.  Read the seam figure here so the
+    # swapped Overview "Interest Rate" reflects the new change.
     return render_template(
         "loan/_rate_history.html",
         account=account,
         params=params,
         rate_history=rate_history,
-        current_rate=state.current_rate,
+        current_rate=_loan_terms_now(account).current_rate,
         band_chart=band_chart,
         oob_swaps=True,
     )
@@ -167,8 +166,8 @@ def add_rate_change(account_id):
         return _render_rate_history(account, params)
 
     # R-4: a rate change re-amortizes the loan, moving the projected payoff, so
-    # re-bound the recurring payment's end_date before committing.
-    loan_recurrence_sync.sync_recurring_payment_end_date(account.id)
+    # re-bound the recurring payment's window before committing.
+    loan_recurrence_sync.sync_recurring_payment_bounds(account.id)
     db.session.commit()
     logger.info("Recorded rate change for loan %d: %s", account.id, data["interest_rate"])
     # The re-amortization moves the whole balance trajectory, but this HTMX swap
@@ -230,10 +229,11 @@ def _reject_effective_date(effective_date, params, boundary):
 
     * It cannot predate the loan's origination -- a version before the loan existed
       is meaningless (skipped when ``params`` is ``None``, an unconfigured loan).
-    * It must fall STRICTLY AFTER ``boundary`` (the latest settled payment's
-      pay-period start, :func:`_forward_boundary`), or it would retroactively move
-      an already-settled payment's escrow split and desync it from the cash frozen
-      at settlement (spec Sec. 4.2).
+    * It must fall STRICTLY AFTER ``boundary`` (the latest settled payment's DUE
+      date, :func:`_forward_boundary` -- the date its split resolves escrow on,
+      ruling D5), or it would retroactively move an already-settled payment's
+      escrow split and desync it from the cash frozen at settlement (spec
+      Sec. 4.2).
 
     Args:
         effective_date: The candidate version effective date.
@@ -252,7 +252,7 @@ def _reject_effective_date(effective_date, params, boundary):
     if boundary is not None and effective_date <= boundary:
         return (
             "An escrow change must take effect after your latest recorded payment "
-            f"(pay period starting {boundary.strftime('%b %-d, %Y')})."
+            f"(installment due {boundary.strftime('%b %-d, %Y')})."
         )
     return None
 
@@ -356,6 +356,34 @@ def _render_escrow_list(account, params):
     )
 
 
+def _commit_escrow_change(account):
+    """Re-derive the loan's postings, then commit the escrow mutation (E1b).
+
+    The shared write-commit tail EVERY escrow route ends on: funnel the loan
+    through the posting sync chokepoint
+    (:func:`app.services.loan_posting_service.sync_loan_postings_all_scenarios`)
+    so the linked ledger re-derives as a CHECKED projection of the loan's facts --
+    and the E1a per-visible-date assert runs -- and THEN commit, so the escrow
+    mutation and any posting corrections land in one transaction.
+
+    Under the forward-only guard (:func:`_reject_effective_date`, spec Sec. 4.2)
+    an escrow change can never move an already-settled payment's split, so this
+    sync is an idempotent no-op that at most heals a stale posting rather than
+    writing a correction.  It runs on EVERY escrow write regardless -- the
+    display-only rename and the escrow-per-date-preserving merge included -- so
+    escrow is not the one loan-write door that leaves the postings unre-derived
+    (finding N-3): "every loan write leaves ``sum(postings) == fold(events)``" has
+    no exception to remember.
+
+    Args:
+        account: The loan :class:`~app.models.account.Account` whose postings to
+            re-derive before committing (the escrow mutation is already staged in
+            the session; the sync's queries autoflush it into the walk).
+    """
+    loan_posting_service.sync_loan_postings_all_scenarios(account.id)
+    db.session.commit()
+
+
 @loan_bp.route("/accounts/<int:account_id>/loan/escrow", methods=["POST"])
 @login_required
 @require_owner
@@ -383,7 +411,7 @@ def add_escrow(account_id):
     # Effective date defaults to today (the common case unchanged); a supplied
     # date schedules the opening version forward.  A back-dated opening would let
     # the new line contribute escrow to an already-settled payment (its split
-    # resolves escrow on each payment's period start), so the forward-only guard
+    # resolves escrow on each payment's DUE date), so the forward-only guard
     # applies to a NEW line too, not only to an amend.
     effective_date = data.get("effective_date") or date.today()
     boundary = _forward_boundary(account.id, _baseline_scenario_id())
@@ -400,7 +428,7 @@ def add_escrow(account_id):
         annual_amount=data["annual_amount"],
         inflation_rate=data.get("inflation_rate"),
     ))
-    db.session.commit()
+    _commit_escrow_change(account)
 
     logger.info("Added escrow line '%s' to loan %d", data["name"], account.id)
     return _render_escrow_list(account, params)
@@ -436,7 +464,7 @@ def delete_escrow(account_id, line_id):
         return guard_error, 400
 
     _tombstone_line_today(line)
-    db.session.commit()
+    _commit_escrow_change(account)
     logger.info("Removed escrow line %d from loan %d", line_id, account.id)
     return _render_escrow_list(account, params)
 
@@ -505,7 +533,7 @@ def add_escrow_version(account_id, line_id):
     )
     if collision is not None:
         return collision, 400
-    db.session.commit()
+    _commit_escrow_change(account)
     logger.info(
         "Scheduled escrow change on line %d (loan %d) effective %s",
         line_id, account.id, effective_date.isoformat(),
@@ -591,7 +619,7 @@ def edit_escrow_version(account_id, version_id):
     version.effective_date = new_date
     version.annual_amount = data["annual_amount"]
     version.inflation_rate = data.get("inflation_rate")
-    db.session.commit()
+    _commit_escrow_change(account)
     logger.info(
         "Edited escrow version %d (loan %d) -> %s effective %s",
         version_id, account.id, data["annual_amount"], new_date.isoformat(),
@@ -613,11 +641,13 @@ def delete_escrow_version(account_id, version_id):
     (the hidden delete button is only an affordance):
 
     * The version must be STRICTLY AFTER the forward-only boundary (the latest
-      settled payment's pay-period start).  This is NOT implied by "after today":
-      an EARLY-settled payment (settled before its pay period begins) puts the
-      boundary in the FUTURE, so a version in the ``today < date <= boundary`` gap
-      is at/before a settled payment's start and deleting it would move that
-      settled payment's escrow split off the cash frozen at settlement.
+      settled payment's DUE date).  This is NOT implied by "after today": a
+      payment settled before its installment falls due -- the ordinary case for
+      the days between settling and the due date, and the whole pay period ahead
+      for a paid-ahead one -- puts the boundary in the FUTURE, so a version in
+      the ``today < date <= boundary`` gap is at/before a settled payment's
+      installment and deleting it would move that settled payment's escrow split
+      off the cash frozen at settlement.
     * It must be a scheduled (future) change -- a current / past amount is
       corrected by editing it, and a whole line is removed via the line's Remove.
 
@@ -652,7 +682,7 @@ def delete_escrow_version(account_id, version_id):
     )
     if remaining == 0:
         db.session.delete(line)
-    db.session.commit()
+    _commit_escrow_change(account)
     logger.info("Deleted scheduled escrow version %d from loan %d", version_id, account.id)
     return _render_escrow_list(account, params)
 
@@ -689,7 +719,7 @@ def rename_escrow_line(account_id, line_id):
         return "An escrow component with that name already exists.", 400
 
     line.name = data["name"]
-    db.session.commit()
+    _commit_escrow_change(account)
     logger.info(
         "Renamed escrow line %d (loan %d) to '%s'", line_id, account.id, data["name"],
     )
@@ -740,9 +770,11 @@ def merge_escrow_line(account_id, line_id):
     user's line).  The merge is allowed only when it preserves the escrow resolved
     on every date (:func:`~app.services.escrow_calculator.plan_escrow_line_merge`),
     so it can neither move a settled split nor drop a concurrent charge; it is
-    rejected otherwise with an actionable message.  No posting reconcile is needed
-    because escrow-per-date is unchanged and the split stores the escrow amount,
-    not a line id (see the planner).
+    rejected otherwise with an actionable message.  A merge moves no split (escrow
+    per date is byte-identical, and the split stores the escrow amount, never a line
+    id), so the shared posting sync (:func:`_commit_escrow_change`, E1b) re-derives
+    to the same ledger -- an idempotent no-op -- and runs only for the one uniform
+    invariant every escrow write shares, not because a merge could move a posting.
     """
     account, params, _account_type = _load_loan_account(account_id)
     if account is None:
@@ -766,7 +798,7 @@ def merge_escrow_line(account_id, line_id):
         version.line = target
     db.session.flush()
     db.session.delete(source)
-    db.session.commit()
+    _commit_escrow_change(account)
     logger.info(
         "Merged escrow line %d into %d (loan %d)", source.id, target.id, account.id,
     )

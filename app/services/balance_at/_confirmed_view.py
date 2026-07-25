@@ -1,0 +1,265 @@
+"""Balance-at-T seam -- a loan's CONFIRMED view, folded from the walk.
+
+Plan steps **E1c** (built) and **E1d-b** (cut over)
+(``docs/audits/balance_architecture/README.md``).  A loan's confirmed state --
+the balance it owes today and the CONFIRMED schedule rows the amortization table
+and the forward projection seed from -- used to have one producer,
+``loan_payment_service.confirmed_loan_view``, which read it out of the POSTED
+ledger (a cache of journal entries).  This module builds the SAME
+:class:`~app.services.loan_resolver.ConfirmedLedgerView` from the event WALK
+instead -- the balance from the fold (:func:`._fold.fold_from_walk`) and the
+history rows re-derived from the walk's per-payment splits and per-anchor
+corrections -- so the confirmed view no longer depends on the posting cache
+being warm.  Step E1d-b made it the production seed and DELETED the posting
+view; step E1e deleted the two posting balance readers behind it.
+
+**Why this completes the read switch (plan Section 3).**  The seam's balance
+SCALAR, per-period MAP, and LIABILITY band already fold the walk (steps C3b1/C3b3);
+the confirmed VIEW that seeds the RESOLVER was the last surface still reading the
+partial posting readers.  Building it from the walk is what lets those readers
+come off the production path: ``confirmed_loan_history_rows`` was DELETED with
+the view that composed it, and ``confirmed_loan_balance_at`` /
+``confirmed_loan_balance_map`` -- left with no caller in ``app/`` at all -- were
+DELETED at plan step E1e, their oracle window moving to the test suite.  It also
+lets a loan with a cold posting cache
+seed its schedule from source facts rather than fall back to the money-blind
+anchor replay (finding B-12).
+
+**Byte-equal to the reader it replaced, proven before the cutover.**  The row
+builder reproduced the posting reader's ``confirmed_loan_history_rows``
+exactly: each row's ``principal`` / ``interest`` equal the posted linked /
+interest nets (the checked-projection invariant plan step E1a asserts at write
+time), and its ``remaining_balance`` is the SAME contract-order running sum over
+the SAME visible event set the reader walked.  Step E1c's oracle parallel-ran
+the two on EVERY DAY of nine shapes and they agreed byte for byte; step E1d-b
+retired that oracle with its counterparty and re-anchored every shape on
+HAND-COMPUTED values instead (``tests/test_services/test_confirmed_view.py``),
+so the rows are pinned by arithmetic rather than by a second implementation.
+
+**Two DELIBERATE divergences from the reader, both documented not hidden.**  The
+fold is TOTAL, so it answers where the partial reader returned ``None`` -- a
+BROKEN loan (originated, no opening posting: a cold cache or a what-if never
+posted into) folds from SOURCE facts (finding B-12, the same repairable-cache
+decision the scalar and map took at steps C3b1 / C3b3) -- and it is blind to a
+raw transaction typed onto a loan account (finding N-11, forbidden at source by
+step BG) where the posting reader was not.  Both are pinned in the test file.
+
+Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes; all money is
+:class:`~decimal.Decimal`.
+"""
+
+from datetime import date
+from decimal import Decimal
+
+from app.models.account import Account
+from app.services.loan_ledger import (
+    LoanLedgerWalk,
+    anchor_visible_on,
+    payment_visible_on,
+)
+from app.services.loan_resolver import ConfirmedLedgerView
+from app.services.amortization_engine import AmortizationRow
+from app.services.rate_period_engine import (
+    ConfirmedRowInputs,
+    confirmed_amortization_row,
+)
+from app.utils.money import round_money
+
+from ._context import BalanceContext
+from ._fold import fold_from_walk
+
+_ZERO_MONEY = Decimal("0.00")
+
+# Contract-order tie tags: a PAYMENT sorts before an ANCHOR on a shared date, so a
+# payment due exactly on an anchor's date is subsumed by that anchor's reset -- the
+# SAME tie-break the walk applies (``loan_ledger.merge_anchor_and_payment_events``).
+_TAG_PAYMENT = 0
+_TAG_ANCHOR = 1
+
+
+def _origination_date(walk: LoanLedgerWalk) -> date | None:
+    """Return the loan's origination date off *walk*, or None if it has no facts.
+
+    The walk carries the loan's own opening as a fact: a configured loan ALWAYS
+    has exactly one ``is_opening`` anchor, synthesized from the immutable
+    :class:`~app.models.loan_params.LoanParams`
+    (:func:`~app.services.loan_loaders.synthesize_origination_anchor`), whose
+    ``anchor_date`` IS ``origination_date``; an account with no ``LoanParams``
+    walks to an EMPTY :class:`~app.services.loan_ledger.LoanLedgerWalk` (the
+    leaf's own no-params contract).
+
+    Reading it HERE rather than re-loading the params is what makes the two
+    unmismatchable: the date this view numbers its rows from, and the date its
+    not-yet-originated guard tests, are the same fact the walk itself replayed --
+    one load, one source (plan step E1d-b).
+
+    Args:
+        walk: The loan's :class:`~app.services.loan_ledger.LoanLedgerWalk`.
+
+    Returns:
+        The origination date, or ``None`` when *walk* carries no opening (the
+        account is not a configured loan).
+    """
+    for correction in walk.anchor_corrections:
+        if correction.anchor.is_opening:
+            return correction.anchor.anchor_date
+    return None
+
+
+def _history_rows_from_walk(
+    walk: LoanLedgerWalk, origination_date: date, as_of: date,
+) -> list[AmortizationRow]:
+    """Return a loan's CONFIRMED schedule rows, folded from the walk through *as_of*.
+
+    One :class:`~app.services.amortization_engine.AmortizationRow` per settled
+    payment VISIBLE by *as_of*, chronological, each carrying that payment's
+    ACTUAL economics off the walk's split:
+
+    * ``principal`` / ``interest`` -- the split's real principal and accrued
+      interest, which the posting writer books verbatim onto the ledger, so they
+      equal the posted nets (plan step E1a's checked-projection invariant).
+    * ``remaining_balance`` -- the genesis running balance owed AFTER this payment,
+      accumulated in CONTRACT order over ONLY the events visible by *as_of*: an
+      anchor moves the balance by ``owed_before - anchor_balance`` (the exact linked
+      net its posted correction carries), a payment by ``+principal``, and the row
+      reads ``-(cumulative)``.  It is NOT the walk's full-timeline balance-after and
+      NOT the fold sampled at the payment's visible date: a payment settled in the
+      future (not yet visible) but due EARLIER must not reduce a visible row's
+      balance.
+    * ``payment`` / ``extra_payment`` -- the actual P&I split against the governing
+      period's contractual ``period_pi`` under the schedule-row invariant
+      ``principal + interest == payment + extra_payment``.
+    * ``month`` / ``payment_date`` -- numbered and dated at the installment the
+      payment satisfies (the split's ``due_date``, the walk's own ordering key), so
+      a late-settled payment is dated at the installment it paid, never the next.
+    * ``interest_rate`` -- the split's governing period ``annual_rate`` (the SAME
+      period its ``interest`` accrued at, carried on the split -- plan step E1c).
+
+    Event ORDER mirrors the write walk exactly: payments by DUE date, anchors by
+    their own date, a payment BEFORE a same-date anchor, ties within a type keeping
+    the walk's ``(pay_period.start_date, id)`` order via a stable sort.
+
+    Args:
+        walk: The loan's :class:`~app.services.loan_ledger.LoanLedgerWalk` (the read
+            pass's memoized walk, :meth:`~app.services.balance_at.BalanceContext.loan_walk`).
+        origination_date: The loan's origination (:func:`_origination_date`), which
+            numbers the rows.
+        as_of: The display boundary; a payment whose SETTLED date has not arrived by
+            it, and an anchor dated after it, are excluded (they belong to the
+            projection, not the confirmed history).
+
+    Returns:
+        The chronological confirmed :class:`~app.services.amortization_engine.AmortizationRow`
+        list (possibly empty for a configured loan with no confirmed payment yet).
+    """
+    # Every event VISIBLE by as_of, tagged for the contract-order sort.  A payment
+    # is visible from its settled date, an anchor from its own date (the ONE clock,
+    # :mod:`app.services.loan_ledger._visible`).
+    events: list[tuple[date, int, object]] = [
+        (split.due_date, _TAG_PAYMENT, split)
+        for split in walk.payment_splits
+        if payment_visible_on(split.income_shadow) <= as_of
+    ] + [
+        (correction.anchor.anchor_date, _TAG_ANCHOR, correction)
+        for correction in walk.anchor_corrections
+        if anchor_visible_on(correction.anchor.anchor_date) <= as_of
+    ]
+    events.sort(key=lambda event: (event[0], event[1]))
+
+    # ``linked_sum`` is the cumulative net on the loan's linked ledger; owed is its
+    # negation.  It accumulates in the SAME sign and order the posted corrections
+    # do, so the row balances and the posted ledger cannot drift.
+    linked_sum = _ZERO_MONEY
+    rows: list[AmortizationRow] = []
+    for _event_date, tag, item in events:
+        if tag == _TAG_ANCHOR:
+            # The anchor's posted linked net -- the jump its reset booked, in
+            # linked-ledger sign (``owed_before - anchor_balance``).  Drives owed
+            # from ``owed_before`` to ``anchor_balance`` additively.
+            linked_sum += (
+                item.owed_before - item.anchor.anchor_balance
+            )
+            continue
+        principal = round_money(item.principal)
+        interest = round_money(item.interest)
+        linked_sum += principal
+        rows.append(confirmed_amortization_row(ConfirmedRowInputs(
+            origination_date=origination_date,
+            due_date=item.due_date,
+            principal=principal,
+            interest=interest,
+            period=item.period,
+            # Debit-positive ledger: owed is the negated cumulative linked net,
+            # ``0 - sum`` so a zero cumulative reads 0.00, never -0.00.
+            remaining_balance=round_money(_ZERO_MONEY - linked_sum),
+        )))
+    return rows
+
+
+def confirmed_view(
+    account: Account, ctx: BalanceContext,
+) -> "ConfirmedLedgerView | None":
+    """Return *account*'s genesis-ledger confirmed view, folded from the walk, or None.
+
+    The loan resolver's confirmed SEED (plan step E1d-b): the confirmed balance
+    owed as of ``ctx.as_of`` -- the FOLD of the loan's recorded events -- bundled
+    with the ledger-derived confirmed schedule rows, or ``None`` to fall back to
+    the resolver's anchor replay.  The seam's whole-loan read
+    (:func:`~app.services.balance_at._resolution.resolve_loan_bundle`) threads it
+    into every resolution, and the loan-detail route's what-if composers read it
+    for the same seed, so the loan card, the amortization table's confirmed rows,
+    the band chart, and the payoff / refinance calculators cannot disagree about
+    what has actually been paid.
+
+    Derived on demand, NOT memoized, and that is deliberate: the expensive part
+    -- the walk -- IS memoized on the pass
+    (:meth:`~app.services.balance_at.BalanceContext.loan_walk`), so a second call
+    in one pass costs no query at all, only a prefix-sum and a row re-accumulation
+    over facts already in memory.  Caching the result would put a balance-bearing
+    value on the publicly re-exported context, which is the one thing its plan /
+    payoff caches are careful not to do.
+
+    Returns ``None`` on four guards, so a caller's fallback to the anchor replay
+    is exactly the pre-switch behaviour:
+
+    * ``ctx.scenario_id`` is ``None`` (no baseline scenario to scope the walk to);
+    * ``ctx.as_of`` is after today (a future date is a forward projection, out of
+      the confirmed view's domain -- the resolver projects it);
+    * *account* is not a configured loan (its walk carries no opening fact, so it
+      has no :class:`~app.models.loan_params.LoanParams`);
+    * ``ctx.as_of`` PRECEDES the loan's ``origination_date`` -- nothing has happened
+      to it yet, and the fold's honest ``0.00`` for an empty prefix must not seed the
+      forward projection (outage B-1: it collapsed a 360-row schedule to zero rows
+      and held $200,000 flat forever).  The same rule is stated in full on
+      :func:`app.services.balance_at.positions`'s not-yet-originated branch.
+
+    **One case the retired posting view returned ``None`` for, this does NOT: a
+    BROKEN loan** (originated, no OPENING posting -- a cold cache or a what-if
+    never posted into).  The fold answers from the loan's SOURCE facts, so the
+    real confirmed view survives a cache the posting reader could not read
+    (finding B-12) -- the same repairable-cache decision the scalar and map took
+    at steps C3b1 / C3b3.
+
+    Args:
+        account: The loan account whose confirmed view to build.  The caller owns
+            the ownership check (the loaders trust it).
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext` --
+            its ``scenario`` scopes the walk, and its ``as_of`` is the evaluation
+            date (the resolver's NOW).
+
+    Returns:
+        The :class:`~app.services.loan_resolver.ConfirmedLedgerView`, or ``None``
+        to fall back to the resolver's anchor replay.
+    """
+    if ctx.scenario_id is None or ctx.as_of > date.today():
+        return None
+    walk = ctx.loan_walk(account)
+    origination_date = _origination_date(walk)
+    if origination_date is None or ctx.as_of < origination_date:
+        return None
+    return ConfirmedLedgerView(
+        balance=fold_from_walk(walk, [ctx.as_of])[ctx.as_of],
+        history_rows=_history_rows_from_walk(
+            walk, origination_date, ctx.as_of,
+        ),
+    )

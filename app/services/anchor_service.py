@@ -137,6 +137,22 @@ ANCHOR_HISTORY_UNIQUE_INDEX = "uq_anchor_history_account_period_balance_day"
 LOAN_ANCHOR_EVENT_UNIQUE_INDEX = "uq_loan_anchor_events_acct_date_bal_day"
 
 
+class AmortizingAccountAnchorError(ValueError):
+    """Raised when a CASH anchor true-up targets an amortizing loan.
+
+    A loan's balance is never ``accounts.current_anchor_balance`` -- it is
+    ledger-derived, and its true-up path is
+    :func:`apply_loan_anchor_true_up` (an append-only
+    :class:`LoanAnchorEvent` plus a posting re-sync).  Writing the cash
+    column instead creates a second, stored, never-reconciled loan balance
+    (plan-of-record finding B-15: the real Mortgage's column was set to
+    $1.00 with an HTTP 200 while the ledger said $177,277.97, and the grid
+    then rendered the $1.00).  The cash entry point refuses the kind so
+    that cannot recur; routes translate this into a client error naming
+    the loan path (ruling D4, step A1).
+    """
+
+
 class AnchorTrueUpOutcome(enum.Enum):
     """Discriminant returned by :func:`apply_anchor_true_up`.
 
@@ -195,6 +211,13 @@ def stage_anchor_true_up(
         commit), so a per-account commit would fire that check while other
         accounts still dangle.  It calls this flush-only core directly and
         lets its route commit once.
+
+    The amortizing-kind gate (:class:`AmortizingAccountAnchorError`) lives
+    on :func:`apply_anchor_true_up`, deliberately NOT here: the reset path
+    above stages anchors for EVERY account kind because it preserves each
+    account's existing balance across a schedule rebuild rather than
+    asserting a new one.  That loan-column preservation is a recorded
+    residue of B-15 (plan-of-record ledger), not an endorsement.
 
     Args:
         account: An attached :class:`Account` row.  Caller owns the
@@ -269,12 +292,26 @@ def apply_anchor_true_up(
         AnchorTrueUpOutcome -- which response the route should render.
 
     Raises:
+        AmortizingAccountAnchorError: When ``account`` is an amortizing
+            loan (``account_type.has_amortization``).  A loan's balance
+            is ledger-derived and asserted through
+            :func:`apply_loan_anchor_true_up`; the cash column must not
+            become a second stored loan balance (B-15 / ruling D4).
+            Raised BEFORE anything is staged, so the session is clean.
         IntegrityError: When the IntegrityError raised at commit time
             is NOT the F-103 unique-index violation -- a different
             constraint failed and we must not swallow it.  Caller
             propagates (Flask will surface as 500, which is the
             correct disposition for an unexpected DB-level failure).
     """
+    acct_type = account.account_type
+    if acct_type is not None and acct_type.has_amortization:
+        raise AmortizingAccountAnchorError(
+            f"account {account.id} is an amortizing loan; assert its "
+            "balance through apply_loan_anchor_true_up, never as a "
+            "cash anchor"
+        )
+
     stage_anchor_true_up(
         account=account,
         new_balance=new_balance,

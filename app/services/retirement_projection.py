@@ -31,7 +31,6 @@ from app.models.investment_params import InvestmentParams
 from app.models.pay_period import PayPeriod
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.salary_profile import SalaryProfile
-from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.services import (
     account_service,
@@ -49,7 +48,7 @@ from app.services.projection_inputs import (
     load_active_deductions_for_accounts,
     load_shadow_income_contributions_for_accounts,
 )
-from app.services.scenario_resolver import get_baseline_scenario
+from app.services.balance_at import BalanceContext
 from app.utils.money import round_money
 
 
@@ -437,8 +436,8 @@ def load_projection_batch(
     # it agrees with /savings and the /investment dashboard); the forward
     # projection seeds from the cash basis instead.  Both read the one
     # baseline scenario, resolved once here.
-    scenario = get_baseline_scenario(ctx.user_id)
-    balance_map, seed_map = _resolve_balance_maps(ctx, scenario)
+    balance_ctx = BalanceContext.build(ctx.user_id)
+    balance_map, seed_map = _resolve_balance_maps(ctx, balance_ctx)
     return _ProjectionBatch(
         deductions_by_account=deductions_by_account,
         contributions=contributions,
@@ -450,7 +449,7 @@ def load_projection_batch(
 
 
 def _resolve_balance_maps(
-    ctx: _RetirementProjectionContext, scenario: Scenario | None,
+    ctx: _RetirementProjectionContext, balance_ctx: BalanceContext,
 ) -> tuple[dict[int, Decimal], dict[int, Decimal]]:
     """Resolve each account's ``(displayed, seed)`` current balances.
 
@@ -469,25 +468,29 @@ def _resolve_balance_maps(
       (:func:`~app.services.balance_at.investment_seed_map`), which the
       forward growth projection seeds from.  Seeding from the modeled balance
       would re-grow the current period (the modeled value already compounded
-      the anchor forward to today); reading the seed through the seam (not the
-      raw producer) keeps this consumer behind the W9906 fence.
+      the anchor forward to today); the seam entry is the only way in, since
+      the seed producer lives inside it as a private submodule.
 
     Both are empty when there is no scenario or no periods (each account
     then falls back to its anchor balance in :func:`_project_one_account`).
 
     Args:
         ctx: The read-only projection context.
-        scenario: The baseline scenario, or ``None``.
+        balance_ctx: The read pass's
+            :class:`~app.services.balance_at.BalanceContext` (its
+            scenario may be ``None``).
 
     Returns:
         ``(displayed_by_account, seed_by_account)``.
     """
-    if scenario is None or not ctx.all_periods:
+    if balance_ctx.scenario is None or not ctx.all_periods:
         return {}, {}
-    modeled_maps = balance_at.build_maps(ctx.accounts, scenario, ctx.all_periods)
+    modeled_maps = balance_at.build_maps(
+        ctx.accounts, balance_ctx, ctx.all_periods,
+    )
     cash_maps = {
         acct.id: balance_at.investment_seed_map(
-            acct, scenario, ctx.all_periods,
+            acct, balance_ctx, ctx.all_periods,
         )
         for acct in ctx.accounts
         if acct.current_anchor_period_id is not None

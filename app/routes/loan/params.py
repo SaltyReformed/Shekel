@@ -175,9 +175,12 @@ def update_params(account_id):
     # re-sync every scenario's full genesis ledger UNCONDITIONALLY, not only on
     # the rate path.
     loan_posting_service.sync_loan_postings_all_scenarios(account.id)
-    # R-4: a term / rate / payment-day edit moves the projected payoff, so
-    # re-bound the recurring payment's end_date to it before committing.
-    loan_recurrence_sync.sync_recurring_payment_end_date(account.id)
+    # Re-bound the recurring payment before committing.  This edit can move
+    # BOTH ends: a term / rate change moves the projected payoff (end_date,
+    # R-4), and a PAYMENT-DAY change moves the loan's first contractual
+    # installment (start_date, C9a) -- the one derived bound on this rule a
+    # params edit can shift.
+    loan_recurrence_sync.sync_recurring_payment_bounds(account.id)
     db.session.commit()
     logger.info("Updated loan params for account %d", account.id)
     flash("Loan parameters updated.", "success")
@@ -317,7 +320,7 @@ def true_up_balance(account_id):
     # re-sync, so this sets the recurring payment's end_date and commits it in a
     # follow-on transaction (self-healing: a failure here re-syncs at the next
     # loan mutation).
-    loan_recurrence_sync.sync_recurring_payment_end_date(account.id)
+    loan_recurrence_sync.sync_recurring_payment_bounds(account.id)
     db.session.commit()
 
     logger.info(
@@ -422,10 +425,10 @@ def record_tracking_start(account_id):
         return redirect(url_for("loan.dashboard", account_id=account_id))
 
     # A tracking-start re-bases the opening balance, moving the projected payoff;
-    # re-bound the recurring payment's end_date (mirrors the true-up route).
+    # re-bound the recurring payment's window (mirrors the true-up route).
     # ``record_loan_tracking_start`` already committed the event + posting
-    # re-sync, so this commits the end_date in a follow-on transaction.
-    loan_recurrence_sync.sync_recurring_payment_end_date(account.id)
+    # re-sync, so this commits the bound in a follow-on transaction.
+    loan_recurrence_sync.sync_recurring_payment_bounds(account.id)
     db.session.commit()
 
     logger.info(

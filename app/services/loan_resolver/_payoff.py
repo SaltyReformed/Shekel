@@ -18,7 +18,6 @@ from app.services.amortization_engine import (
     PaymentRecord,
     ProjectionInputs,
     project_forward,
-    required_extra_for_projection,
 )
 from app.services.rate_period_engine import period_for_date
 from app.utils.money import round_money
@@ -427,7 +426,7 @@ def compute_payoff_scenarios(
             ledger-derived rows become ``history_rows`` -- or ``None`` to keep
             the anchor replay for both.  Threaded to
             :func:`_build_forward_inputs`; see its arg doc.  The caller reads
-            it once (via ``loan_payment_service.confirmed_loan_view``) so the
+            it once (via ``balance_at.confirmed_view``) so the
             chart / summary / table all derive from the same real owed
             balance and actual history the loan card shows.
         extra_principal: The loan's STANDING monthly overpayment (from
@@ -500,109 +499,4 @@ def compute_payoff_scenarios(
         total_interest_accelerated=round_money(
             total_interest_accelerated_full
         ),
-    )
-
-
-@dataclass(frozen=True)
-class TargetDateOutlook:
-    """The target-date calculator's committed-plan answer (F-27).
-
-    One :func:`_build_forward_inputs` setup drives BOTH figures, so the
-    plan's payoff date and the additional-extra search rest on the same
-    replay-derived starting state and override map -- they cannot
-    diverge the way two independently-built projections could.
-
-    Attributes:
-        committed_payoff_date: When the user's current plan (projected
-            recurring payments within their horizon, contractual
-            beyond) retires the loan.  ``None`` when the loan is
-            already paid off (empty committed slice).
-        required_extra: The extra monthly payment needed ON TOP of the
-            committed plan to retire the loan by the target date,
-            applied to non-override months (the same convention the
-            payoff calculator's accelerated scenario uses).  ``None``
-            when the target date is in the past; ``Decimal("0.00")``
-            when the plan already hits the target.
-    """
-
-    committed_payoff_date: date | None
-    required_extra: Decimal | None
-
-
-def target_date_outlook(
-    *,
-    loan_inputs: LoanInputs,
-    target_date: date,
-    as_of: date,
-    confirmed_view: ConfirmedLedgerView | None = None,
-    extra_principal: Decimal = ZERO_MONEY,
-) -> TargetDateOutlook:
-    """Answer "when does my plan pay off, and what extra hits my target?".
-
-    The committed-plan half of the F-27 fix: the target-date payoff
-    calculator used to binary-search the required extra against the
-    CONTRACTUAL schedule only, telling a user already paying $500/mo
-    over contractual that they need the full extra again.  This
-    composer-level producer honors the user's projected recurring
-    payments exactly the way :func:`compute_payoff_scenarios`'s
-    committed/accelerated scenarios do -- same replay, same
-    planned-outlay override map, same in-window convention -- and
-    delegates the search to
-    :func:`amortization_engine.required_extra_for_projection`.
-
-    Step 5: the loan's STANDING ``extra_principal`` is part of the committed
-    plan, so it drives ``committed_payoff_date`` and is netted out of
-    ``required_extra`` -- the returned figure is the extra needed ON TOP of the
-    standing overpayment, not counting it twice.
-
-    Args:
-        loan_inputs: The loan's loaded :class:`LoanInputs` bundle
-            (``anchor_events`` must be non-empty, the Commit-12
-            invariant).
-        target_date: The user's desired payoff date.
-        as_of: Evaluation date (the replay/projection boundary);
-            typically ``date.today()`` from the route.
-        confirmed_view: The loan's genesis-ledger confirmed view (the read
-            switch), or ``None`` to keep the anchor replay.  Threaded to
-            :func:`_build_forward_inputs` so the required-extra search runs
-            against the real owed balance -- the same balance the loan card
-            and the payoff calculator's other results show.
-        extra_principal: The loan's standing monthly overpayment (``0.00`` when
-            none); part of the committed plan, netted out of ``required_extra``.
-
-    Returns:
-        A :class:`TargetDateOutlook`; see its attribute docs for the
-        ``None`` / ``0.00`` semantics.
-
-    Raises:
-        ValueError: When ``loan_inputs.anchor_events`` is empty (via
-            ``._periods.select_latest_anchor``).
-    """
-    prep = _build_forward_inputs(loan_inputs, as_of, confirmed_view)
-
-    committed_forward = project_forward(
-        prep.projection_inputs,
-        monthly_override=prep.monthly_override,
-        extra_monthly=extra_principal,
-    )
-    committed_payoff_date = (
-        committed_forward[-1].payment_date if committed_forward else None
-    )
-
-    # The search finds the TOTAL extra to hit the target (applied to every
-    # forward month); the standing extra_principal is part of that total, so the
-    # extra the user must ADD on top of their plan is the difference (never
-    # negative -- a plan that already hits the target needs no more).
-    total_required = required_extra_for_projection(
-        prep.projection_inputs,
-        target_date,
-        monthly_override=prep.monthly_override,
-    )
-    required_extra = (
-        None if total_required is None
-        else max(ZERO_MONEY, total_required - extra_principal)
-    )
-    return TargetDateOutlook(
-        committed_payoff_date=committed_payoff_date,
-        required_extra=required_extra,
     )

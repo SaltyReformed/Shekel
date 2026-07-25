@@ -2,21 +2,22 @@
 
 The display read side of the genesis loan sub-ledger, split from the core
 readers (:mod:`._reader`) as the loan-detail rebuild's producers landed and the
-reader approached the module-size limit.  Where :mod:`._reader` answers the
-balance scalar / map, the Schedule-A interest, and the amortization history
-rows, this module answers the loan DETAIL page's three measured surfaces:
+reader approached the module-size limit.  Where :mod:`._reader` answers what one
+payment's posted legs attribute to interest / escrow / principal, this module
+shapes those attributions into the loan DETAIL page's two measured surfaces:
 
-* the principal-paid-YTD chip (:func:`confirmed_loan_principal_in_year`, the
-  paid-date sibling of the reader's interest chip so the two describe ONE set of
-  payments);
 * the confirmed payment-history table (:func:`confirmed_loan_payment_history`,
   each payment's real cash / principal / interest / escrow split); and
 * the balance-anchors drift scorecard (:func:`loan_balance_anchor_history`, each
   opening / true-up paired with what the ledger had computed just before it).
 
-Every producer reuses the reader's shared per-shadow / linked helpers and the
-walk the postings derive from, so no display surface can drift from the balance
-the readers report.  Reads only -- no writes, no commit.
+The paid-in-year chips moved OFF the postings onto the fold at step C6c
+(:func:`app.services.balance_at.loan_interest_paid_in_year` /
+:func:`~app.services.balance_at.loan_principal_paid_in_year`), so this module no
+longer answers them.  Every producer here reuses the reader's shared per-shadow /
+linked helpers and the walk the postings derive from, so no display surface can
+drift from the legs the ledger actually carries.  Reads only -- no writes, no
+commit.
 """
 
 from dataclasses import dataclass
@@ -24,19 +25,16 @@ from datetime import date
 from decimal import Decimal
 
 from app.enums import LedgerAccountKindEnum
+from app.services.loan_ledger import walk_loan_ledger
 from app.services.loan_loaders import load_loan_params, loan_payment_due_date
-from app.services.posting_service import _ledger_account_for
 from app.utils.money import round_money
 
 from ._reader import (
-    _attribute_net_by_shadow_to_year,
     _confirmed_history_inputs,
-    _has_opening_posting,
     _interest_net_by_shadow,
     _net_by_shadow_for_kind,
     _principal_net_by_shadow,
 )
-from ._walk import walk_loan_ledger
 
 _ZERO_MONEY = Decimal("0.00")
 
@@ -57,7 +55,7 @@ class LoanPaymentHistoryRow:
     ordinary payment.  The one case they diverge is a payoff OVERPAYMENT, whose
     surplus is a lender refund (a receivable) rather than principal -- there
     ``cash`` exceeds the split sum by that refund; see
-    :func:`app.services.loan_posting_service._walk._split_one_payment`.
+    :func:`app.services.loan_ledger.split_one_payment`.
 
     Attributes:
         due_date: The monthly installment the payment satisfies
@@ -105,11 +103,12 @@ class LoanAnchorDrift:
         computed: The ledger's running balance JUST BEFORE this anchor's reset
             (the walk's ``owed_before``); ``0.00`` for the opening.
         drift: ``recorded - computed`` -- the correction the anchor booked.
-        is_opening: ``True`` for the loan's opening (origination or a mid-life
-            tracking-start), ``False`` for a user true-up.
-        is_tracking_start: ``True`` when the opening was synthesized from a
-            ``tracking_start`` event (a mid-life import), so the display labels
-            it "Tracking start" rather than "Origination".  ``False`` otherwise.
+        is_opening: ``True`` for the loan's opening (its origination), ``False``
+            for a tracking-start or a user true-up (both balance assertions).
+        is_tracking_start: ``True`` for a ``tracking_start`` assertion (a mid-life
+            import's balance-as-of-date), so the display badges that row "Tracking
+            start"; ``False`` for the origination opening (badged "Origination")
+            and every user true-up.
     """
 
     anchor_date: date
@@ -120,58 +119,16 @@ class LoanAnchorDrift:
     is_tracking_start: bool
 
 
-def confirmed_loan_principal_in_year(
-    loan_account_id: int, scenario_id: int, year: int,
-) -> Decimal | None:
-    """Return a loan's actual PRINCIPAL paid in a calendar year (genesis ledger).
-
-    The principal-paid sibling of
-    :func:`app.services.loan_posting_service.confirmed_loan_interest_in_year`,
-    attributed on the SAME basis -- each confirmed payment's real principal (its
-    net on the loan's linked ledger) placed in the civil year of its
-    display-timezone paid date -- so the loan-detail page's "interest paid" and
-    "principal paid" chips describe one set of payments and never disagree.
-    Principal is the real debt paid down (extra principal included, a
-    payoff-overpayment's refund excluded), read from the posted legs, so an extra
-    or short payment counts honestly rather than at the contractual split.
-
-    Returns ``None`` when the loan has no OPENING posting in the scenario (an
-    unconfigured / un-backfilled loan), matching the interest reader's fallback
-    contract; a configured loan with no principal paid in *year* returns
-    ``Decimal("0.00")``.
-
-    Reads only -- no writes, no commit.
-
-    Args:
-        loan_account_id: The loan account whose paid principal to sum.
-        scenario_id: The budget scenario to scope to.
-        year: The calendar year to sum principal paid within.
-
-    Returns:
-        The actual principal paid during *year* as a cent-quantized ``Decimal``,
-        or ``None`` when the loan has no opening posting in the scenario.
-
-    Raises:
-        PostingError: If the loan account has no linked ledger account (from
-            :func:`._ledger_account_for`).
-    """
-    linked = _ledger_account_for(loan_account_id)
-    if not _has_opening_posting(linked.id, scenario_id):
-        return None
-    return _attribute_net_by_shadow_to_year(
-        _principal_net_by_shadow(loan_account_id, scenario_id), year,
-    )
-
-
 def confirmed_loan_payment_history(
     loan_account_id: int, scenario_id: int, as_of: date,
 ) -> list[LoanPaymentHistoryRow] | None:
     """Return a loan's confirmed payments split into their real economic parts.
 
-    One :class:`LoanPaymentHistoryRow` per confirmed payment whose pay period has
-    begun by *as_of* -- the same confirmed cut as
-    :func:`app.services.loan_posting_service.confirmed_loan_history_rows` and the
-    balance readers, so the table agrees with the balance and schedule --
+    One :class:`LoanPaymentHistoryRow` per confirmed payment whose SETTLED date
+    has arrived by *as_of* (plan step C2's one clock, applied through
+    :func:`~app.services.loan_ledger.confirmed_shadows_through`) -- the same
+    confirmed cut the balance readers and the seam's confirmed view apply, so the
+    table agrees with the balance and the schedule --
     chronological, each carrying the ACTUAL cash paid and its real principal /
     interest / escrow split read from the posted ledger legs, never the
     schedule's contractual replay.
@@ -186,7 +143,7 @@ def confirmed_loan_payment_history(
     Returns ``None`` when the loan has no :class:`LoanParams` or no OPENING
     posting in the scenario (unconfigured / un-backfilled), so the caller hides
     the section rather than showing a misleading empty table -- the same fallback
-    contract as ``confirmed_loan_history_rows``.
+    contract as the balance reader beside it.
 
     Reads only -- no writes, no commit.
 
@@ -228,8 +185,8 @@ def confirmed_loan_payment_history(
         loan_account_id, scenario_id, LedgerAccountKindEnum.LOAN_ESCROW,
     )
     # Sorted by the INSTALLMENT the payment satisfies, matching how the ledger
-    # history reader (:func:`confirmed_loan_history_rows`) orders its rows and
-    # how the amortization table reads.  The shadows arrive in PAY-PERIOD order,
+    # seam's confirmed view orders its rows and how the amortization table
+    # reads.  The shadows arrive in PAY-PERIOD order,
     # which is a different sequence once settlement timing is a first-class case:
     # a payment pre-paid for a later installment sits in an earlier period than
     # one paid late for an earlier installment, so iterating the shadows verbatim
@@ -274,13 +231,22 @@ def loan_balance_anchor_history(
     that replaces the old use of the amortization schedule as a trust check.
 
     Derived from the SAME deterministic walk
-    (:func:`app.services.loan_posting_service.walk_loan_ledger`) the loan's
+    (:func:`app.services.loan_ledger.walk_loan_ledger`) the loan's
     opening / true-up postings are reconciled from, so a drift row and the posted
     correction it describes can never disagree.
 
+    **The *as_of* bound is applied HERE, on the walk's output, not inside it.**
+    The walk records every anchor the loan carries whatever its date (it reads no
+    clock); deciding which have HAPPENED by a display date is this reader's job,
+    and an anchor dated after *as_of* has not yet reset the balance, so it is not
+    yet a drift row.  Filtering after the walk cannot change what the surviving
+    rows say: an anchor's ``owed_before`` is the running balance of the events
+    BEFORE it, which admitting a LATER anchor cannot move.
+
     Returns ``None`` when the loan has no :class:`LoanParams` (unconfigured -- not
     a loan yet), so the caller hides the card.  A configured loan always has at
-    least the synthesized origination opening.
+    least the synthesized origination opening -- though a loan that has not
+    originated by *as_of* correctly shows NO rows: nothing has happened to it yet.
 
     Reads only -- no writes, no commit.
 
@@ -288,7 +254,7 @@ def loan_balance_anchor_history(
         loan_account_id: The loan account whose anchor history to read.
         scenario_id: The budget scenario the payments live in (drives the running
             balance the drift is measured against).
-        as_of: The evaluation date; an anchor dated after it has not yet reset
+        as_of: The display boundary; an anchor dated after it has not yet reset
             the balance and is excluded.
 
     Returns:
@@ -297,9 +263,13 @@ def loan_balance_anchor_history(
     """
     if load_loan_params(loan_account_id) is None:
         return None
-    corrections = walk_loan_ledger(
-        loan_account_id, scenario_id, as_of,
-    ).anchor_corrections
+    corrections = [
+        correction
+        for correction in walk_loan_ledger(
+            loan_account_id, scenario_id,
+        ).anchor_corrections
+        if correction.anchor.anchor_date <= as_of
+    ]
     return [
         LoanAnchorDrift(
             anchor_date=correction.anchor.anchor_date,

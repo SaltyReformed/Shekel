@@ -257,54 +257,6 @@ def freeze_today(monkeypatch, target_date, modules=None):
             pass
 
 
-def insert_origination_event(loan_params):
-    """Append the origination :class:`LoanAnchorEvent` for a loan.
-
-    Mirrors the production-code pattern in
-    :func:`app.routes.loan.create_params` (E-18 / Commit 15) so test
-    fixtures that build :class:`LoanParams` directly remain
-    compatible with the resolver-routed display surfaces.  The
-    resolver raises ``ValueError`` on an empty anchor-event list, so
-    every fixture that hits the loan dashboard / debt strategy /
-    /savings debt card / year-end net-worth liability MUST call
-    this helper after inserting :class:`LoanParams`.
-
-    Uses ``original_principal`` as the anchor balance and
-    ``origination_date`` as the anchor date, matching both the
-    Commit-12 migration backfill and the production setup-flow
-    insert pattern.
-
-    Args:
-        loan_params: The :class:`LoanParams` ORM instance, already
-            flushed (``loan_params.account_id`` populated).
-
-    Returns:
-        The newly added :class:`LoanAnchorEvent` instance,
-        ``db.session.add()``'d but not committed.  The caller's
-        existing ``db.session.commit()`` carries the event into the
-        same transaction.
-    """
-    # pylint: disable=import-outside-toplevel  -- avoid module-load
-    # circular deps via models package; tests/_test_helpers loads
-    # early enough that an unconditional top-level import would
-    # snowball into ref_cache / Flask app bootstrapping.
-    from app import ref_cache
-    from app.enums import LoanAnchorSourceEnum
-    from app.extensions import db
-    from app.models.loan_anchor_event import LoanAnchorEvent
-
-    event = LoanAnchorEvent(
-        account_id=loan_params.account_id,
-        anchor_date=loan_params.origination_date,
-        anchor_balance=loan_params.original_principal,
-        source_id=ref_cache.loan_anchor_source_id(
-            LoanAnchorSourceEnum.ORIGINATION,
-        ),
-    )
-    db.session.add(event)
-    return event
-
-
 def insert_origination_rate(loan_params, interest_rate):
     """Append the origination :class:`RateHistory` row for a loan.
 
@@ -346,6 +298,161 @@ def insert_origination_rate(loan_params, interest_rate):
     return row
 
 
+def _sync_loan_ledger(loan_account_id):
+    """Reconcile a loan's genesis ledger, exactly as every production writer does.
+
+    The shared write-through step of the three loan fixtures below
+    (:func:`create_loan_account`, :func:`insert_trueup_event`,
+    :func:`insert_tracking_start_event`).  Every production path that creates or
+    re-bases a loan's anchors reconciles the genesis postings in the SAME
+    transaction as the source row:
+
+    * ``loan.create_params`` / ``loan.update_params`` call
+      :func:`~app.services.loan_posting_service.sync_loan_postings_all_scenarios`
+      (``app/routes/loan/params.py:125`` and ``:177``).
+    * The balance true-up and the tracking-start opening both route through
+      :func:`app.services.anchor_service._append_loan_anchor_and_sync`, which
+      appends the event, re-syncs, and commits (``anchor_service.py:390``).
+
+    The property that matters, and the one this helper reproduces, is that the
+    event and its postings land in the SAME transaction -- never an event alone.
+    This helper flushes rather than commits, keeping the existing fixture contract
+    (the caller owns the transaction and commits with the rest of its setup).
+
+    Without this, a fixture-built loan carries anchor rows but NO opening
+    posting -- a state production cannot produce, and the one every loan built
+    through these helpers used to be in (so it exercised the no-ledger fallback
+    while production always took the ledger path).
+
+    **Scope, stated plainly so nobody over-trusts it.**  This reaches only loans
+    built through :func:`create_loan_account` / :func:`create_loan_with_trueup` /
+    :func:`insert_trueup_event` / :func:`insert_tracking_start_event`.  Roughly
+    twenty test modules still hand-roll a loan (a bare ``LoanParams(...)`` insert;
+    e.g. ``tests/test_services/test_balance_at.py::_make_mortgage``, a near-copy of
+    :func:`create_loan_account`).  Such a loan gets a ledger only if one of the
+    anchor helpers above happens to be called on it afterwards, and otherwise has
+    none at all -- ``test_year_end_summary_service.py``'s hand-built loan is in
+    exactly that state.  That coupling is invisible at the call site and is a real
+    trap; routing the hand-rolled builders through this factory is a follow-up
+    (and a prerequisite for the fail-loud read seam, which turns a ledger-less loan
+    into a raise).
+
+    Deliberately calls the PLAIN sync rather than production's
+    :func:`~app.services.loan_posting_service.sync_all_scenarios_or_duplicate`:
+    the duplicate-translating wrapper exists to turn a user's double-click into
+    idempotent success, and it does so by ROLLING BACK.  In a fixture that would
+    silently discard the test's setup; a duplicate anchor written by a fixture is
+    a bug in the fixture and must fail loud.
+
+    Flushes but does NOT commit -- the caller owns the transaction boundary, the
+    same contract the production chokepoints keep.
+
+    **No future-anchor guard, because there is nothing left to guard.**  This
+    helper used to assert that no user-asserted anchor was dated after the sync's
+    as-of, because the walk DROPPED such an anchor and left the loan half-opened
+    (opening present, true-up missing) -- a state that looked ledger-backed and
+    was not.  The walk no longer reads a clock: it records every anchor the loan
+    carries, whatever its date, and the readers decide what has happened
+    (``loan_ledger.walk_loan_ledger``).  So a fixture's anchor
+    posts whatever its date, and a fixture can no longer build the half-opened
+    loan by accident.
+
+    Args:
+        loan_account_id: The loan whose genesis ledger to reconcile.
+    """
+    # Pylint: ``import-outside-toplevel`` -- same circular-dep avoidance as every
+    # other helper in this module: the services package must not load at
+    # tests/_test_helpers import time.
+    # pylint: disable=import-outside-toplevel
+    from app.extensions import db
+    from app.services import loan_posting_service
+
+    loan_posting_service.sync_loan_postings_all_scenarios(loan_account_id)
+    db.session.flush()
+
+
+def clear_loan_ledger(loan_account_id):
+    """Delete a loan's genesis postings -- the BROKEN state production cannot make.
+
+    The exact inverse of :func:`_sync_loan_ledger`: removes the journal entries
+    the loan sync produces (``loan_opening``, ``loan_trueup``, and the
+    ``loan_payment`` split corrections) on any of the loan's own ledger accounts,
+    leaving the Step-2/3 CASH entries untouched.  The posting ledger is
+    append-only (the ORM blocks deletes on ``budget.journal_entries`` /
+    ``budget.account_postings``), so it clears them via raw SQL -- the same
+    mechanism, and the same rationale, as :func:`clear_postings_for_transfer`.
+
+    A configured loan with no opening posting is NOT a legitimate state: the
+    opening is written in the same transaction as the ``LoanParams``
+    (``app/routes/loan/params.py:125``), the Step-4 migration backfilled every
+    pre-existing loan, and ``pay_period_admin.reset_pay_periods`` re-syncs.  This
+    helper exists so the handful of tests that pin behaviour ON that broken state
+    -- the readers' ``None`` contract, and the seam's fail-loud raise -- can
+    construct it EXPLICITLY and say so at the call site.
+
+    It is deliberately the only way to build a ledger-less loan THROUGH THESE
+    HELPERS (a hand-rolled ``LoanParams`` insert still yields one by omission --
+    see :func:`_sync_loan_ledger`).  A boolean ``open_ledger=False`` knob on
+    :func:`create_loan_account` would leave a casual escape hatch back onto the
+    fallback path this arc exists to delete; a call to something named
+    ``clear_loan_ledger`` cannot be made by accident.
+
+    Commits (mirroring :func:`clear_postings_for_transfer`).
+
+    Args:
+        loan_account_id: The loan whose genesis ledger to remove.
+    """
+    # Pylint: ``import-outside-toplevel`` -- same lazy-app-import convention every
+    # helper in this module follows.
+    # pylint: disable=import-outside-toplevel
+    from app import ref_cache
+    from app.enums import PostingSourceEnum
+    from app.extensions import db
+
+    # ID-based, never a name-string compare (the project's ref-table rule): the
+    # three source kinds the loan sync emits.
+    genesis_source_ids = [
+        ref_cache.posting_source_id(source)
+        for source in (
+            PostingSourceEnum.LOAN_OPENING,
+            PostingSourceEnum.LOAN_TRUEUP,
+            PostingSourceEnum.LOAN_PAYMENT,
+        )
+    ]
+    # A loan owns two shapes of ledger account: the LINKED one (``account_id``)
+    # and its derived opening-equity / interest / escrow / refund ones
+    # (``loan_account_id``).  Scope to entries of a genesis kind touching either.
+    #
+    # The entry ids are resolved to a Python list FIRST, deliberately: the
+    # predicate reaches the entry THROUGH its postings, so deleting the postings
+    # would empty the predicate and strand every journal-entry header behind it.
+    entry_ids = [
+        row[0] for row in db.session.execute(db.text("""
+            SELECT DISTINCT je.id
+            FROM budget.journal_entries je
+            JOIN budget.account_postings p ON p.journal_entry_id = je.id
+            JOIN budget.ledger_accounts la ON la.id = p.ledger_account_id
+            WHERE je.source_kind_id = ANY(:src)
+              AND (la.account_id = :a OR la.loan_account_id = :a)
+        """), {"a": loan_account_id, "src": genesis_source_ids}).all()
+    ]
+    if not entry_ids:
+        return
+    # Legs before the header, for explicitness -- the FK CASCADE would do it
+    # either way, and the ordering carries no safety property: the balanced-entry
+    # constraint trigger fires AFTER INSERT OR UPDATE only
+    # (``app/posting_infrastructure.py:151``), never on DELETE, so an entry cannot
+    # be caught mid-delete with too few legs.
+    db.session.execute(db.text(
+        "DELETE FROM budget.account_postings "
+        "WHERE journal_entry_id = ANY(:ids)"
+    ), {"ids": entry_ids})
+    db.session.execute(db.text(
+        "DELETE FROM budget.journal_entries WHERE id = ANY(:ids)"
+    ), {"ids": entry_ids})
+    db.session.commit()
+
+
 def insert_trueup_event(loan_params, anchor_balance, anchor_date=None):
     """Append a user-trueup :class:`LoanAnchorEvent` asserting a balance.
 
@@ -360,6 +467,15 @@ def insert_trueup_event(loan_params, anchor_balance, anchor_date=None):
     it now is: a balance true-up, exactly as the user does after making
     an extra or lump-sum payment.
 
+    Like production, the event is RECONCILED INTO POSTINGS in the same
+    transaction (:func:`_sync_loan_ledger`): ``apply_loan_anchor_true_up`` appends
+    the row and re-syncs every scenario
+    (``anchor_service._append_loan_anchor_and_sync``, which then commits; this
+    helper leaves the commit to its caller).  An un-reconciled true-up
+    does not exist as far as the ledger is concerned -- and the ledger is what
+    every loan surface now reads -- so a fixture that only wrote the event left
+    the loan reporting its pre-true-up balance on every page.
+
     Args:
         loan_params: The :class:`LoanParams` ORM instance, already
             flushed (``account_id`` populated).
@@ -370,10 +486,11 @@ def insert_trueup_event(loan_params, anchor_balance, anchor_date=None):
             origination event and becomes the resolver's latest anchor.
 
     Returns:
-        The newly added :class:`LoanAnchorEvent` (added, not committed).
+        The newly added :class:`LoanAnchorEvent` (added and reconciled into
+        postings, not committed).
     """
     # pylint: disable=import-outside-toplevel  -- same circular-dep
-    # avoidance as insert_origination_event above.
+    # avoidance as insert_origination_rate above.
     from datetime import timedelta
     from app import ref_cache
     from app.enums import LoanAnchorSourceEnum
@@ -391,19 +508,28 @@ def insert_trueup_event(loan_params, anchor_balance, anchor_date=None):
         ),
     )
     db.session.add(event)
+    _sync_loan_ledger(loan_params.account_id)
     return event
 
 
 def insert_tracking_start_event(loan_params, anchor_balance, anchor_date):
-    """Append a ``tracking_start`` :class:`LoanAnchorEvent` (mid-life opening).
+    """Append a ``tracking_start`` :class:`LoanAnchorEvent` (mid-life import).
 
     Mirrors the production tracking-start path
     (:func:`app.services.anchor_service.record_loan_tracking_start`): the operator
     began tracking an already-amortizing loan and asserts its real balance as of a
-    date at/before the first recorded payment.  When present it becomes the loan's
-    confirmed-ledger OPENING (:func:`app.services.loan_loaders._opening_anchor_fact`
-    synthesizes the ``is_opening`` anchor from it in place of the origination), so
-    the genesis walk seeds from this balance/date instead of the origination.
+    date at/before the first recorded payment.  It is loaded as an ordinary
+    ``is_opening=False`` balance ASSERTION
+    (:func:`app.services.loan_loaders.load_loan_anchor_facts`) that RESETS the
+    genesis walk's running balance at its own date -- the loan still opens at its
+    origination (step C1), so a date at/after the tracking-start reads this
+    asserted balance and a date before it reads the origination opening held flat.
+
+    Like production, the event is RECONCILED INTO POSTINGS in the same
+    transaction (:func:`_sync_loan_ledger`): ``record_loan_tracking_start``
+    appends the row and re-syncs every scenario (it shares
+    ``anchor_service._append_loan_anchor_and_sync`` with the true-up, which then
+    commits; this helper leaves the commit to its caller).
 
     Args:
         loan_params: The :class:`LoanParams` ORM instance, already flushed.
@@ -412,7 +538,8 @@ def insert_tracking_start_event(loan_params, anchor_balance, anchor_date):
             recorded payment).
 
     Returns:
-        The newly added :class:`LoanAnchorEvent` (added, not committed).
+        The newly added :class:`LoanAnchorEvent` (added and reconciled into
+        postings, not committed).
     """
     # pylint: disable=import-outside-toplevel  -- same circular-dep
     # avoidance as insert_trueup_event above.
@@ -430,6 +557,7 @@ def insert_tracking_start_event(loan_params, anchor_balance, anchor_date):
         ),
     )
     db.session.add(event)
+    _sync_loan_ledger(loan_params.account_id)
     return event
 
 
@@ -437,18 +565,36 @@ def create_loan_account(
     seed_user, db_session, name="Test Loan",
     principal=None, rate=None, term=24,
     origination_date=None, payment_day=1,
+    *, account_type=None, anchor_period=None, anchor_balance=None,
 ):
     """Create a loan account with LoanParams, origination event, and rate.
 
-    The single shared loan-account builder for service tests (the
-    savings-dashboard, debt-summary, debt-principal-progress, and
-    dashboard-pulse suites all need a resolvable loan).  Routes the
-    account through the canonical ``account_service.create_account``
-    factory (so it gets its origination ``AccountAnchorHistory`` row),
-    inserts a ``LoanParams`` row, then seeds the origination
-    ``LoanAnchorEvent`` and ``RateHistory`` the loan resolver requires --
-    so a caller never has to repeat that four-step dance (DRY; the
-    per-suite ``_create_small_loan`` copies were a duplicate-code finding).
+    The ONE shared loan-account builder for every DB-backed loan in the suite.
+    Routes the account through the canonical ``account_service.create_account``
+    factory (so it gets its origination ``AccountAnchorHistory`` row), inserts a
+    ``LoanParams`` row, seeds the origination ``RateHistory`` the loan resolver
+    requires, and OPENS the genesis posting ledger -- so a caller never has to
+    repeat that dance, and cannot accidentally omit a step.
+
+    Seventeen suites used to hand-roll this block (a ``LoanParams(...)`` insert
+    beside a copy of the account-factory call).  Every one of them omitted the
+    ledger open, so their loans silently exercised the no-ledger FALLBACK that
+    production never takes -- which is exactly how a $3,455.79 divergence between
+    the two balance producers stayed invisible to the whole suite.  They differed
+    from this factory in only two respects, which are the two knobs below:
+    the account TYPE and the anchor PERIOD.  Everything else was duplication.
+
+    **Always OPENS the loan's genesis ledger** (:func:`_sync_loan_ledger`), which
+    is what ``loan.create_params`` does in the same transaction as the
+    ``LoanParams`` insert (``app/routes/loan/params.py:125``).  There is no
+    opt-out: a configured loan without an opening posting is a state production
+    cannot produce, and a suite built on it exercises the no-ledger fallback that
+    production never takes.  A test that needs that broken loan on purpose builds
+    it explicitly with :func:`clear_loan_ledger`.
+
+    The sync runs after the ``RateHistory`` insert because the genesis walk
+    resolves the loan's rate periods, and the resolver raises on an empty
+    rate-change feed.
 
     Commits before returning so the loan is fully resolvable.
 
@@ -465,15 +611,36 @@ def create_loan_account(
         origination_date: The loan origination date (default
             ``date(2026, 1, 1)``).
         payment_day: The day-of-month payment day (default 1).
+        account_type: The :class:`~app.enums.AcctTypeEnum` member to create the
+            account as; defaults to ``AUTO_LOAN``.  Keyword-only.  Resolved to its
+            id through :mod:`app.ref_cache` -- the project's ref-table rule is IDs
+            for logic, name strings for display only, so this takes the enum and
+            never a name string.  Any amortizing type works (``MORTGAGE`` is the
+            other one the suite uses).
+        anchor_period: The :class:`~app.models.pay_period.PayPeriod` to anchor the
+            ACCOUNT to; defaults to the factory's own choice.  Keyword-only.  Pass
+            it when the test's assertions depend on which period the account's
+            origination anchor lands in.
+        anchor_balance: The ACCOUNT's anchor balance, when it must differ from the
+            loan's ``principal``; defaults to *principal*.  Keyword-only.  These
+            are genuinely two different facts, and production can set them apart:
+            the account is created first (with a user-entered anchor) and the loan
+            params are configured afterwards, through a separate route.  A test
+            that needs to prove the loan path is driving a balance -- rather than
+            the generic account-anchor path -- makes them differ, so the anchor is
+            a distinguishable decoy rather than the same number twice.
 
     Returns:
-        The created loan :class:`~app.models.account.Account`.
+        The created loan :class:`~app.models.account.Account`.  Its
+        :class:`LoanParams` row is reachable via :func:`loan_params_for` when a
+        caller needs to append an anchor event to it.
     """
     # pylint: disable=import-outside-toplevel  -- same circular-dep
     # avoidance as the loan helpers above; these pull the models/services
     # package, which must not load at tests/_test_helpers import time.
+    from app import ref_cache
+    from app.enums import AcctTypeEnum
     from app.models.loan_params import LoanParams
-    from app.models.ref import AccountType
     from app.services import account_service
 
     if principal is None:
@@ -482,16 +649,20 @@ def create_loan_account(
         rate = Decimal("0.05000")
     if origination_date is None:
         origination_date = _real_date(2026, 1, 1)
+    if account_type is None:
+        account_type = AcctTypeEnum.AUTO_LOAN
+    if anchor_balance is None:
+        anchor_balance = principal
 
-    loan_type = (
-        db_session.query(AccountType).filter_by(name="Auto Loan").one()
-    )
     account = account_service.create_account(
         account_service.AccountSpec(
             user_id=seed_user["user"].id,
-            account_type_id=loan_type.id,
+            account_type_id=ref_cache.acct_type_id(account_type),
             name=name,
-            anchor_balance=principal,
+            anchor_balance=anchor_balance,
+            anchor_period_id=(
+                anchor_period.id if anchor_period is not None else None
+            ),
         ),
     )
     db_session.add(account)
@@ -508,9 +679,35 @@ def create_loan_account(
     db_session.add(params)
     db_session.flush()
     insert_origination_rate(params, rate)
-    insert_origination_event(params)
+    _sync_loan_ledger(account.id)
     db_session.commit()
     return account
+
+
+def loan_params_for(db_session, account_id):
+    """Return a loan account's :class:`LoanParams` row.
+
+    :func:`create_loan_account` returns the ACCOUNT, but the anchor helpers
+    (:func:`insert_trueup_event`, :func:`insert_tracking_start_event`) take its
+    params, so callers were each re-writing the same one-line query.  Holds it in
+    one place.
+
+    Args:
+        db_session: The test ``db.session``.
+        account_id: The loan account whose params to load.
+
+    Returns:
+        The loan's :class:`~app.models.loan_params.LoanParams` row.
+
+    Raises:
+        NoResultFound: If the account has no ``LoanParams`` (not a configured
+            loan) -- a fixture bug, surfaced rather than papered over with None.
+    """
+    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app.models.loan_params import LoanParams
+
+    return db_session.query(LoanParams).filter_by(account_id=account_id).one()
 
 
 def add_escrow_line(
@@ -568,7 +765,7 @@ def add_escrow_line(
 def create_loan_with_trueup(
     seed_user, db_session, *, origination_principal, anchor_balance,
     anchor_date, rate, origination_date, name="Split Loan", term=360,
-    payment_day=1, escrow_annual=None,
+    payment_day=1, escrow_annual=None, account_type=None,
 ):
     """Create an amortizing loan carrying an origination AND a user-trueup anchor.
 
@@ -597,18 +794,26 @@ def create_loan_with_trueup(
         payment_day: The day-of-month payment day (default 1).
         escrow_annual: Optional annual escrow amount (Decimal); when given, one
             escrow component effective from ``origination_date`` is added.
+        account_type: The :class:`~app.enums.AcctTypeEnum` member to create the
+            account as; defaults to :func:`create_loan_account`'s own default
+            (``AUTO_LOAN``).  Pass ``MORTGAGE`` when the test's assertions depend
+            on the loan's KIND rather than just its amortization -- Schedule A's
+            mortgage-interest deduction is the case that does, and a fixture that
+            takes the default silently pins an auto loan's interest into a
+            home-mortgage figure.
 
     Returns:
         The created loan :class:`~app.models.account.Account`.
     """
-    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
-    # convention every helper in this module follows.
-    from app.models.loan_params import LoanParams
+    # Pylint: ``import-outside-toplevel`` -- same circular-dep avoidance as the
+    # loan helpers above; these pull the models/services package, which must not
+    # load at tests/_test_helpers import time.
+    from app.models.loan_params import LoanParams  # pylint: disable=import-outside-toplevel
 
     loan = create_loan_account(
         seed_user, db_session, name=name, principal=origination_principal,
         rate=rate, term=term, origination_date=origination_date,
-        payment_day=payment_day,
+        payment_day=payment_day, account_type=account_type,
     )
     params = (
         db_session.query(LoanParams).filter_by(account_id=loan.id).one()
@@ -1043,6 +1248,212 @@ def ledger_net(db_session, ledger_account_id, scenario_id):
     )
 
 
+def linked_net_by_date(db_session, ledger_account_id, scenario_id):
+    """Return a ledger account's posted net keyed by journal-entry ``entry_date``.
+
+    Sums ``budget.account_postings.amount`` over *ledger_account_id* for journal
+    entries in *scenario_id*, grouped by each entry's ``entry_date``.  A date whose
+    legs net to zero (a reversed forgery) is still present, at ``Decimal("0.00")``.
+    This is an INDEPENDENT re-implementation of the grouped read the
+    checked-projection assert performs (production groups via ``_visible_nets``), so
+    a suite comparing against it keeps teeth if that production query drifts.  Shared
+    by the posting-service checked-projection suite and the loan-route escrow-sync
+    suite so both read a ledger's per-date net the same way (``ledger_net`` is the
+    scalar-total counterpart).
+
+    Args:
+        db_session: The test ``db.session``.
+        ledger_account_id: The ledger account whose legs to sum.
+        scenario_id: The scenario to scope to.
+
+    Returns:
+        A ``{entry_date: Decimal}`` mapping (empty when none posted).
+    """
+    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app.extensions import db
+    from app.models.journal_entry import JournalEntry, Posting
+
+    rows = (
+        db_session.query(
+            JournalEntry.entry_date,
+            db.func.sum(Posting.amount),
+        )
+        .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
+        .filter(
+            Posting.ledger_account_id == ledger_account_id,
+            JournalEntry.scenario_id == scenario_id,
+        )
+        .group_by(JournalEntry.entry_date)
+        .all()
+    )
+    return dict(rows)
+
+
+def _posted_loan_linked_ledger(loan_account_id, scenario_id):
+    """Return a loan's linked ledger row, or None when it has no OPENING posting.
+
+    The entry guard the posting window rests on, held in one place so the
+    scalar and the per-period form cannot disagree about which loans the ledger
+    can answer for.  A loan gets exactly one OPENING-kind leg on its linked
+    ledger per scenario (the origination anchor correction, whose linked leg is
+    ``-original_principal``), so its absence means the loan is not configured in
+    this scenario -- an unconfigured loan, or a what-if the opening was never
+    posted into.
+
+    Args:
+        loan_account_id: The loan account whose linked ledger to resolve.
+        scenario_id: The budget scenario to scope to.
+
+    Returns:
+        The linked :class:`~app.models.ledger_account.LedgerAccount`, or ``None``
+        when no OPENING leg is posted on it in *scenario_id*.
+
+    Raises:
+        PostingError: If the loan account has no linked ledger account at all (a
+            broken chart-of-accounts pairing).
+    """
+    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app import ref_cache
+    from app.enums import PostingKindEnum
+    from app.extensions import db
+    from app.models.journal_entry import JournalEntry, Posting
+    from app.services.posting_reads import _ledger_account_for
+
+    linked = _ledger_account_for(loan_account_id)
+    has_opening = db.session.query(
+        db.session.query(Posting.id)
+        .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
+        .filter(
+            Posting.ledger_account_id == linked.id,
+            Posting.posting_kind_id == ref_cache.posting_kind_id(
+                PostingKindEnum.OPENING,
+            ),
+            JournalEntry.scenario_id == scenario_id,
+        )
+        .exists()
+    ).scalar()
+    return linked if has_opening else None
+
+
+def posted_loan_balance_at(loan_account_id, scenario_id, as_of):
+    """Return what the POSTED ledger says a loan owed on a date, or None.
+
+    ``owed(as_of) = round_money(-(sum of the loan's linked-ledger postings,
+    scenario-scoped, whose ``entry_date`` is on or before *as_of*))`` -- the
+    opening (``-original_principal``), every settled payment's net principal (the
+    Step-2 cash leg plus the Step-4 split correction), and every true-up.
+
+    **This is the test suite's own window onto the general ledger, and that is
+    deliberate.**  Plan step E1e deleted the production readers this replaces
+    (``loan_posting_service.confirmed_loan_balance_at`` / ``_map``): the balance
+    seam answers a loan from the event FOLD (steps C3b1 / C3b3 / E1d-b) and the
+    balance sheet reads the postings through
+    :mod:`app.services.ledger_report_service`, so the sum-of-postings
+    balance-at-T had no production caller left -- its only remaining job was to be
+    the counterparty the fold and the resolver are graded against.  An oracle's
+    window belongs on the oracle's side: the reconciliation suite already states
+    the rule (``_independent_loan_linked_net`` reads through a DIFFERENT join
+    shape than the production readers "so the two cannot share a lookup bug"), and
+    a window living here cannot be re-exported into a screen.
+
+    Two deliberate differences from the deleted reader, both stated so a caller is
+    not surprised:
+
+    * it answers ANY date, where the reader raised for ``as_of > today``.  That
+      raise was a DOMAIN guard forcing production callers to route a future date
+      to the projection; there are no such callers now.  A future date sums the
+      same postings (every posted entry is dated today or earlier), so it carries
+      the confirmed balance FLAT -- which is exactly what the deleted per-period
+      reader did, and what the early-settle parallel run reads at period ends
+      beyond today.
+    * the per-period form (:func:`posted_loan_balance_map`) is a plain
+      per-period call, not a prefix-sum over one grouped load.  The batching
+      existed for production read cost; an oracle wants the simplest derivation
+      that can be checked by eye.
+
+    Args:
+        loan_account_id: The loan account whose posted balance to read.
+        scenario_id: The budget scenario to scope to (postings are
+            scenario-scoped via ``journal_entries.scenario_id``).
+        as_of: The evaluation date.  Only postings whose ``entry_date`` is on or
+            before it are summed.
+
+    Returns:
+        The posted balance owed as a cent-quantized ``Decimal``, or ``None`` when
+        the loan has no OPENING posting in the scenario.
+    """
+    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app.extensions import db
+    from app.models.journal_entry import JournalEntry, Posting
+    from app.utils.money import round_money
+
+    linked = _posted_loan_linked_ledger(loan_account_id, scenario_id)
+    if linked is None:
+        return None
+    net = (
+        db.session.query(
+            db.func.coalesce(db.func.sum(Posting.amount), Decimal("0.00"))
+        )
+        .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
+        .filter(
+            Posting.ledger_account_id == linked.id,
+            JournalEntry.scenario_id == scenario_id,
+            JournalEntry.entry_date <= as_of,
+        )
+        .scalar()
+    )
+    # Debit-positive ledger: the linked net is -(owed).  Written ``0 - net``
+    # rather than ``-net`` so a zero net (a loan read before its opening's date)
+    # yields ``0.00``, never ``-0.00``.
+    return round_money(Decimal("0.00") - net)
+
+
+def posted_loan_balance_map(loan_account_id, scenario_id, periods):
+    """Return each period's posted loan balance, keyed by period id, or None.
+
+    The per-period form of :func:`posted_loan_balance_at`, evaluated at each
+    period's END date.  A posting can fall mid-period under the one clock (step
+    C2), so a payment settled during period P must count in P's balance, which
+    ``entry_date <= period.end_date`` selects.
+
+    **It is the scalar per period, not an independent derivation.**  Comparing
+    this against :func:`posted_loan_balance_at` at the same date is therefore
+    ``f(x) == f(x)`` -- pin a VALUE, never that identity.  Nor is it directly
+    comparable to the production map
+    (:func:`app.services.balance_at.positions_period_map`) except over ELAPSED
+    periods: that map clamps a BEGUN period to ``min(period.end, ctx.as_of)``
+    and answers a FUTURE period from the forward plan, where this window carries
+    the confirmed sum flat.  The keys line up; the values only do in the past.
+
+    Returns ``None`` -- not a map of zeros -- when the loan has no OPENING
+    posting in the scenario, so a caller can tell "the ledger cannot answer for
+    this loan" from "the ledger says zero".
+
+    Args:
+        loan_account_id: The loan account whose per-period balances to read.
+        scenario_id: The budget scenario to scope to.
+        periods: The pay periods to key by (any order; the result keys by
+            ``period.id`` in the given order).  Postings in periods outside this
+            list are still counted -- each period's value is a cumulative, not a
+            slice.
+
+    Returns:
+        A ``{period.id: Decimal}`` mapping, or ``None`` when the loan has no
+        OPENING posting in the scenario.
+    """
+    if _posted_loan_linked_ledger(loan_account_id, scenario_id) is None:
+        return None
+    return {
+        period.id: posted_loan_balance_at(
+            loan_account_id, scenario_id, period.end_date,
+        )
+        for period in periods
+    }
+
+
 def find_loan_ledger_account(db_session, loan_account_id, kind):
     """Return the per-loan ledger account of *kind*, or None if not created.
 
@@ -1239,6 +1650,137 @@ def clear_postings_for_transaction(transaction_id):
 _UNSET_PAID_AT = object()
 
 
+def settle_instant_on(day):
+    """Return a deterministic settle instant on a given civil date (noon UTC).
+
+    A test-side helper for pinning a fixture's ``paid_at`` to a specific day
+    without a wall-clock read -- pass it to :func:`create_settled_transfer` /
+    :func:`create_settled_cash_transaction` when a test must place a settled
+    payment on a known date (balance step C2 keys a payment's visibility on its
+    SETTLED date, so a loan test reading a PAST balance settles at the day it
+    wants the payment visible from -- typically its pay-period ``start_date``).
+    Noon UTC is the same civil day in the display zone (Eastern), so the tax-year
+    (display-tz) attribution lands on that day too.
+
+    Args:
+        day: The civil :class:`datetime.date` to settle on.
+
+    Returns:
+        A timezone-aware :class:`datetime.datetime` at noon UTC on *day*.
+    """
+    from datetime import time, timezone  # pylint: disable=import-outside-toplevel
+    return _real_datetime.combine(day, time(12, 0), tzinfo=timezone.utc)
+
+
+def seam_confirmed_view(loan_account_id, scenario_id, as_of):
+    """Return a loan's seam CONFIRMED view at an explicit scenario and as-of.
+
+    The walk-built :class:`~app.services.loan_resolver.ConfirmedLedgerView`
+    (:func:`app.services.balance_at.confirmed_view`) -- the balance the loan's
+    recorded events fold to, plus its confirmed schedule rows -- which since plan
+    step E1d-b is what the resolver's confirmed slice seeds from, replacing the
+    deleted posted-ledger reader ``loan_payment_service.confirmed_loan_view``.
+
+    Several suites build an INDEPENDENT ``compute_payoff_scenarios`` reference to
+    grade a seam figure against, and every one of them needs this same seed: a
+    reference composed WITHOUT it would be the un-seeded anchor replay, which is a
+    different trajectory (it is blind to how much cash a payment actually moved).
+    Sharing one helper is what keeps those references honest and identical.
+
+    Pins the scenario and the as-of EXPLICITLY rather than through
+    ``BalanceContext.build``, because the callers are frozen-clock or
+    named-scenario tests whose baseline lookup must not be re-derived.
+
+    Args:
+        loan_account_id: The loan account whose confirmed view to build.
+        scenario_id: The scenario to scope the walk to.
+        as_of: The evaluation date (the resolver's NOW).
+
+    Returns:
+        The ``ConfirmedLedgerView``, or ``None`` when the seam withholds one (not
+        a configured loan, no scenario, a future date, or not yet originated).
+    """
+    # Pylint: import-outside-toplevel -- helper-local, matching this module's
+    # convention of importing app symbols inside the helper that needs them.
+    from app.extensions import db  # pylint: disable=import-outside-toplevel
+    from app.models.account import Account  # pylint: disable=import-outside-toplevel
+    from app.models.scenario import Scenario  # pylint: disable=import-outside-toplevel
+    from app.services import balance_at  # pylint: disable=import-outside-toplevel
+
+    loan = db.session.get(Account, loan_account_id)
+    return balance_at.confirmed_view(loan, balance_at.BalanceContext(
+        user_id=loan.user_id,
+        scenario=db.session.get(Scenario, scenario_id),
+        as_of=as_of,
+    ))
+
+
+def create_transfer(
+    seed_user, db_session, from_account, to_account, period,
+    amount=Decimal("100.00"), *, due_date=None, name=None, scenario=None,
+):
+    """Create a PROJECTED transfer with its two shadows, via the real service.
+
+    The create half of :func:`create_settled_transfer`, which now builds on this
+    one -- so both helpers route through ``transfer_service.create_transfer``,
+    the sole transfer-creation chokepoint, and a test cannot accidentally
+    construct a transfer that bypasses a write guard production enforces.
+
+    Exposed separately because a test may need a transfer that is NOT settled
+    (a projection), or one carrying an explicit ``due_date``: on a LOAN payment
+    the due date is the installment the payment satisfies, which decides whether
+    the write is even allowed (ruling R-C, plan step C9b) and which installment
+    the fold splits it against.
+
+    Flushes via the service; the caller commits.
+
+    Args:
+        seed_user: The ``seed_user`` fixture dict (supplies ``user_id`` and the
+            baseline scenario).
+        db_session: The test ``db.session`` (unused directly -- the service owns
+            the session -- but accepted so call sites read uniformly).
+        from_account: The account money leaves (the expense shadow lands here).
+        to_account: The account money enters (the income shadow lands here).
+        period: The :class:`~app.models.pay_period.PayPeriod` to place the
+            transfer (and both shadows) in.
+        amount: The transfer amount (Decimal).  Defaults to
+            ``Decimal("100.00")``.
+        due_date: Optional due date stored on the transfer and mirrored to both
+            shadows.  ``None`` (the default) leaves it unset, which is what the
+            ad-hoc transfer form produces; a loan payment's installment then
+            falls back to its pay-period start.
+        name: Optional transfer display name.
+        scenario: The :class:`~app.models.scenario.Scenario` to place the
+            transfer in.  Defaults to the seed user's baseline.
+
+    Returns:
+        The created (Projected) :class:`~app.models.transfer.Transfer`.
+    """
+    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app import ref_cache
+    from app.enums import StatusEnum
+    from app.services import transfer_service
+
+    scenario_id = (
+        seed_user["scenario"].id if scenario is None else scenario.id
+    )
+    return transfer_service.create_transfer(
+        transfer_service.TransferSpec(
+            user_id=seed_user["user"].id,
+            from_account_id=from_account.id,
+            to_account_id=to_account.id,
+            pay_period_id=period.id,
+            scenario_id=scenario_id,
+            amount=amount,
+            status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            category_id=None,
+            name=name,
+            due_date=due_date,
+        ),
+    )
+
+
 def create_settled_transfer(
     seed_user, db_session, from_account, to_account, period,
     amount=Decimal("100.00"), actual_amount=None,
@@ -1274,9 +1816,12 @@ def create_settled_transfer(
             ``amount``).  Defaults to ``None`` (effective == estimated ==
             amount).
         paid_at: The settle timestamp written to both shadows.  Defaults to
-            ``db.func.now()`` (the realistic ``mark_done`` value); pass
-            ``None`` explicitly to settle with a NULL ``paid_at`` (the
-            historical state the backfill's period-start fallback covers).
+            ``db.func.now()`` (the realistic ``mark_done`` value).  A loan test
+            reading a PAST balance must pin this to the day it wants the payment
+            visible from -- balance step C2 keys visibility on the SETTLED date --
+            via :func:`settle_instant_on` (typically the period ``start_date``);
+            pass ``None`` to settle with a NULL ``paid_at`` (the historical state
+            the period-start fallback covers).
         name: Optional transfer display name.
         scenario: The :class:`~app.models.scenario.Scenario` to place the
             transfer (and both shadows) in.  Defaults to ``None``, which uses
@@ -1294,21 +1839,9 @@ def create_settled_transfer(
     from app.extensions import db
     from app.services import transfer_service
 
-    scenario_id = (
-        seed_user["scenario"].id if scenario is None else scenario.id
-    )
-    transfer = transfer_service.create_transfer(
-        transfer_service.TransferSpec(
-            user_id=seed_user["user"].id,
-            from_account_id=from_account.id,
-            to_account_id=to_account.id,
-            pay_period_id=period.id,
-            scenario_id=scenario_id,
-            amount=amount,
-            status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-            category_id=None,
-            name=name,
-        ),
+    transfer = create_transfer(
+        seed_user, db_session, from_account, to_account, period,
+        amount=amount, name=name, scenario=scenario,
     )
     update_kwargs = {"status_id": ref_cache.status_id(StatusEnum.DONE)}
     update_kwargs["paid_at"] = (
@@ -1374,9 +1907,10 @@ def create_settled_cash_transaction(
             description).
         paid_at: The settle instant.  Defaults to the seam-derived
             ``db.func.now()`` (the realistic ``mark_done`` value); pass an
-            explicit instant to pin the attribution moment, or ``None`` to
-            settle with a NULL ``paid_at`` (the historical period-start
-            fallback state).  Pinned BEFORE the ledger emission -- mirroring
+            explicit instant (see :func:`settle_instant_on`) to pin the
+            attribution moment for a past-balance read, or ``None`` to settle with
+            a NULL ``paid_at`` (the historical period-start fallback state).
+            Pinned BEFORE the ledger emission -- mirroring
             :func:`create_settled_transfer`'s ``paid_at`` -- so the posted
             ``entry_date`` and the Step-5 walk's attribution instant agree,
             exactly as production produces them.

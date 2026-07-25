@@ -31,43 +31,26 @@ Rules implemented:
   rounding go through ``round_money`` (``ROUND_HALF_UP``); this locks the rule
   that the financial_calculations audit's E-26 / HIGH-04 remediation
   established.
-* ``shekel-original-principal-as-balance`` (W9905, :mod:`.loan_balance`): flags
-  passing a stored loan column (``original_principal`` / ``current_principal``)
-  as the pre-first-payment / empty-schedule fallback to
-  ``compute_loan_period_balance_map`` or ``balance_from_schedule_at_date``. That
-  fallback must be the resolver-derived ``current_balance``; a stored column
-  makes a loan's projected balance leap to its real value when the first payment
-  lands -- the recurring net-worth defect fixed in F-21 / Commit 19 and PR #44.
-* ``shekel-balance-producer-bypass`` (W9906, :mod:`.balance_seam`): flags any
-  module OUTSIDE the ``app.services.balance_at`` seam and the engine cluster it
-  composes from calling a balance producer directly -- or IMPORTING one by name
-  (``from ... import balances_for as bf``), the aliased-import evasion that
-  call-site name matching alone cannot see. The seam owns all four per-kind
-  balance-at-T boundary rules (cash / loan / investment / property) in ONE
-  tested place; a consumer re-inventing that boundary is how the
-  loan/investment balance-bug family kept recurring across files for months
-  (``docs/audits/balance_architecture/``). The rich projection-detail
-  primitives ``project_balance`` and ``resolve_loan`` / ``resolve_account_loan``
-  are NOT producers (they return ProjectedBalance / LoanState detail the seam
-  composes) and stay callable by the chart and loan-route consumers.
 * ``shekel-unclassified-fenced-export`` (W9909, :mod:`.balance_seam`): the
-  fail-closed half of the W9906 fence. Flags a PUBLIC top-level function defined
-  in a fenced module (the engine cluster that defines the balance producers, and
-  the whole genesis loan-ledger package that defines the confirmed-balance
-  readers) that is classified as NEITHER a producer nor a deliberate
-  non-producer. The rulings are keyed BY MODULE, so a name ruled harmless in one
-  cannot exempt a same-named function added to another. W9906's lists are keyed
-  on function NAME alone, which made
-  the fence fail OPEN -- a new function inside an allowlisted module was
+  fail-closed classification of new public exports in the PUBLIC
+  balance-ingredient packages W9910 cannot protect (``loan_ledger``,
+  ``loan_posting_service``, ``cash_ledger``, ``loan_resolver``,
+  ``loan_payment_service``, ``account_projection``, plus
+  the seam-private ``balance_at._context`` whose publicly re-exported
+  ``BalanceContext`` W9910 cannot see methods on). Flags a PUBLIC top-level
+  function or public method there classified as NEITHER a producer nor a
+  deliberate non-producer. The rulings are keyed BY MODULE, so a name ruled
+  harmless in one cannot exempt a same-named function added to another. A
+  name-keyed fence fails OPEN -- a new function inside a covered module was
   unguarded until someone remembered to list it, and that shipped twice
   (``investment_base_balance_map``, then ``loan_owed_at_dates``, which a consumer
   read past the seam for a month with the fence silent). This inverts the
   default: an unclassified public function fails AT ITS DEFINITION, in the same
   per-edit hook run that created it, so a producer can no longer become a hole by
-  omission. Resolve it by deciding what the function IS -- balance-at-T goes in
-  the producer set (and consumers reach it through a ``balance_at`` seam entry);
-  anything else goes in the non-producer set with a comment saying why. If in
-  doubt, it is a producer.
+  omission. Resolve it by deciding what the function IS -- a balance-at-T
+  belongs INSIDE ``balance_at`` as a private submodule; anything else goes in
+  the module's non-producer set with a comment saying why. If in doubt, it is
+  a producer.
 * ``shekel-transaction-status-bypass`` (W9907, :mod:`.status_bypass`): flags
   writing ``status_id`` outside the transaction status seam. Every non-transfer
   ``Transaction.status_id`` change must funnel through
@@ -84,7 +67,9 @@ Rules implemented:
   ``Transfer(...)`` constructor ``status_id=`` kwarg whose value is not
   recognizably born-Projected (the 2026-07-02 adversarial review's H3:
   born-Projected was a convention three layers deep, not a machine rule). The
-  status analog of the W9906 balance fence.
+  status analog of the balance seam's own call fence, which was deleted at plan
+  step E1e once structure made it unnecessary -- the status seam has no such
+  structural boundary, so this name fence stays.
 * ``shekel-ledger-model-bypass`` (W9908, :mod:`.ledger_model_fence`): flags any
   module OUTSIDE the posting-ledger allowlist that IMPORTS a posted-ledger row
   model (``Posting`` / ``JournalEntry`` / ``LedgerAccount``). The append-only
@@ -99,7 +84,20 @@ Rules implemented:
   (binding a defining submodule via ``from app.models.journal_entry import
   <anything>``, ``from app.models import journal_entry``, or ``import
   app.models.ledger_account``, reached as ``<module>.Posting``). The import
-  analog of the W9906/W9907 read/write fences.
+  analog of the W9907 write fence (and of the balance-seam read fence deleted
+  at plan step E1e).
+* ``shekel-private-module-import`` (W9910, :mod:`.package_privacy`): the
+  balance arc's Phase D gate (step D-gate) -- a package's private modules are
+  private. A module outside package ``P`` may not import ``P._x``, nor any
+  name from it, in any spelling: ``from P._x import name`` (the form the stock
+  ``import-private-name`` extension is fail-open for, finding N-26),
+  ``from P import _x``, or ``import P._x``, aliased or not, relative or
+  absolute, TYPE_CHECKING included. Name-INDEPENDENT and fail-closed (no
+  allowlist, no producer list), it is the structural boundary that let the
+  balance name fences DELETE instead of being maintained forever -- at plan
+  step D3 down to one call surface, and at plan step E1e down to the W9909
+  classification alone, once the last public producer outside the seam was
+  itself deleted.
 
 Deliberately NOT implemented as a checker: a blanket ``float()`` ban. The
 codebase's real ``float()`` call sites are all legitimate (config timeouts that
@@ -110,14 +108,15 @@ positives, so that judgment lives in the code-reviewer subagent instead.
 """
 
 from .balance_seam import (
-    _BALANCE_PRODUCERS,
-    _BALANCE_SEAM_MODULES,
-    _ENGINE_CLUSTER_MODULES,
+    _CASH_LEDGER_MODULES,
     _FENCED_MODULE_RULINGS,
+    _KIND_CLASSIFIER_MODULES,
     _LOAN_LEDGER_DEFINING_MODULES,
-    _LOAN_LEDGER_READER_MODULES,
-    _LOAN_LEDGER_READER_PRODUCERS,
+    _LOAN_PAYMENT_SEAM_MODULES,
+    _LOAN_RESOLVER_ENGINE_MODULES,
+    _SEAM_PRIVATE_CONTEXT_MODULES,
     ShekelBalanceSeamChecker,
+    _is_public_export_surface,
 )
 from .disable_rationale import ShekelDisableRationaleChecker
 from .ledger_model_fence import (
@@ -127,35 +126,36 @@ from .ledger_model_fence import (
     _LEDGER_MODEL_NAMES,
     ShekelLedgerModelFenceChecker,
 )
-from .loan_balance import ShekelLoanBalanceSourceChecker
 from .money import ShekelMoneyChecker
+from .package_privacy import ShekelPackagePrivacyChecker
 from .refname import ShekelRefNameChecker
 from .status_bypass import _STATUS_SEAM_MODULES, ShekelTransactionStatusBypassChecker
 
 # Re-exported so the plugin's import surface is identical to the pre-split
 # single module: ``.pylintrc`` names the package in ``load-plugins`` and calls
-# ``register``; the checker unit tests import the six classes and the five
-# module/producer sets straight ``from shekel_checkers``.  The underscore-
+# ``register``; the checker unit tests import the seven checker classes and
+# the module scope sets straight ``from shekel_checkers``.  The underscore-
 # prefixed sets are internal-but-tested, listed here so re-export is explicit
 # rather than an unused-import.
 __all__ = [
-    "_BALANCE_PRODUCERS",
-    "_BALANCE_SEAM_MODULES",
-    "_ENGINE_CLUSTER_MODULES",
+    "_CASH_LEDGER_MODULES",
     "_FENCED_MODULE_RULINGS",
+    "_KIND_CLASSIFIER_MODULES",
     "_LEDGER_LEAF_MODULE_NAMES",
     "_LEDGER_MODEL_ALLOWLIST",
     "_LEDGER_MODEL_MODULES",
     "_LEDGER_MODEL_NAMES",
     "_LOAN_LEDGER_DEFINING_MODULES",
-    "_LOAN_LEDGER_READER_MODULES",
-    "_LOAN_LEDGER_READER_PRODUCERS",
+    "_LOAN_PAYMENT_SEAM_MODULES",
+    "_LOAN_RESOLVER_ENGINE_MODULES",
+    "_SEAM_PRIVATE_CONTEXT_MODULES",
+    "_is_public_export_surface",
     "_STATUS_SEAM_MODULES",
     "ShekelBalanceSeamChecker",
     "ShekelDisableRationaleChecker",
     "ShekelLedgerModelFenceChecker",
-    "ShekelLoanBalanceSourceChecker",
     "ShekelMoneyChecker",
+    "ShekelPackagePrivacyChecker",
     "ShekelRefNameChecker",
     "ShekelTransactionStatusBypassChecker",
     "register",
@@ -171,7 +171,7 @@ def register(linter) -> None:
     linter.register_checker(ShekelMoneyChecker(linter))
     linter.register_checker(ShekelRefNameChecker(linter))
     linter.register_checker(ShekelDisableRationaleChecker(linter))
-    linter.register_checker(ShekelLoanBalanceSourceChecker(linter))
     linter.register_checker(ShekelBalanceSeamChecker(linter))
     linter.register_checker(ShekelTransactionStatusBypassChecker(linter))
     linter.register_checker(ShekelLedgerModelFenceChecker(linter))
+    linter.register_checker(ShekelPackagePrivacyChecker(linter))

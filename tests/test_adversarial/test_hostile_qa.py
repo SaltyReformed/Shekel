@@ -40,7 +40,11 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
-from app.services import balance_calculator, carry_forward_service, credit_workflow
+from app.services import (
+    carry_forward_service,
+    credit_workflow,
+)
+from app.services.balance_at import _calculator as balance_calculator
 from app.services import account_service
 
 

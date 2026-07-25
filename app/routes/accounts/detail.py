@@ -43,7 +43,6 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -60,18 +59,12 @@ from app.models.ref import CompoundingFrequency
 from app.routes.accounts._bp import accounts_bp
 from app.services import (
     balance_at,
-    balance_resolver,
+    cash_ledger,
     home_equity_service,
-    net_worth_kernel,
     pay_period_service,
     property_equity_chart,
 )
-from app.services.loan_loaders import load_rate_changes
-from app.services.loan_resolution import (
-    contractual_schedule_from_origination,
-    resolve_account_loan,
-)
-from app.services.scenario_resolver import get_baseline_scenario
+from app.services.balance_at import BalanceContext
 from app.utils.account_validation import (
     _appreciation_params_schema,
     _interest_params_schema,
@@ -82,10 +75,8 @@ from app.utils.period_projections import project_balance_horizons
 if TYPE_CHECKING:
     # Typing-only imports for the per-page helper signatures (lazy strings
     # via ``from __future__ import annotations``; no runtime cost).
-    from app.models.loan_params import LoanParams
     from app.models.pay_period import PayPeriod
-    from app.services.balance_resolver import AnchorPoint
-    from app.services.loan_resolver import LoanState
+    from app.services.cash_ledger import AnchorPoint
 
 logger = logging.getLogger(__name__)
 
@@ -245,7 +236,7 @@ def _build_chart(
 def _cash_projection(
     account: Account,
     is_interest: bool,
-    scenario,
+    balance_ctx: BalanceContext,
     all_periods: list[PayPeriod],
     params: InterestParams | None,
 ) -> "tuple[dict[int, Decimal], dict[int, Decimal], AnchorPoint | None]":
@@ -274,17 +265,20 @@ def _cash_projection(
     balances: dict[int, Decimal] = {}
     interest_by_period: dict[int, Decimal] = {}
     anchor: AnchorPoint | None = None
+    scenario = balance_ctx.scenario
     if is_interest:
         if scenario is not None:
-            anchor = balance_resolver.resolve_anchor(account, scenario.id)
-            balances = balance_at.balance_map(account, scenario, all_periods) or {}
-            interest_by_period = net_worth_kernel.interest_by_period_for_account(
+            anchor = cash_ledger.resolve_anchor(account, scenario.id)
+            balances = balance_at.balance_map(
+                account, balance_ctx, all_periods,
+            ) or {}
+            interest_by_period = balance_at.interest_by_period_for_account(
                 account, scenario, all_periods, params,
             )
     elif scenario is not None and all_periods:
-        result = balance_at.cash_balance_map(account, scenario, all_periods)
+        result = balance_at.cash_balance_map(account, balance_ctx, all_periods)
         balances = result.balances
-        anchor = balance_resolver.resolve_anchor(account, scenario.id)
+        anchor = cash_ledger.resolve_anchor(account, scenario.id)
     return balances, interest_by_period, anchor
 
 
@@ -365,7 +359,7 @@ def _cash_detail_context(account: Account) -> dict:
 
     all_periods = pay_period_service.get_all_periods(current_user.id)
     current_period = pay_period_service.get_current_period(current_user.id)
-    scenario = get_baseline_scenario(current_user.id)
+    balance_ctx = BalanceContext.build(current_user.id)
 
     # Preserve the pre-merge ``interest_detail`` behaviour: the params row is
     # auto-created before any projection so the parameters card always
@@ -378,7 +372,7 @@ def _cash_detail_context(account: Account) -> dict:
     )
 
     balances, interest_by_period, anchor = _cash_projection(
-        account, is_interest, scenario, all_periods, params,
+        account, is_interest, balance_ctx, all_periods, params,
     )
 
     current_balance = _current_period_balance(balances, current_period, anchor)
@@ -634,56 +628,11 @@ def update_interest_params(account_id):
 # ── Property (physical-asset) Detail & Params ─────────────────────
 
 
-def _secured_loan_series(
-    resolved_loans: list[tuple[LoanParams, LoanState]],
-) -> list[property_equity_chart.SecuredLoanSeries]:
-    """Pack each OUTSTANDING resolved loan's rows for the equity chart.
-
-    For every secured loan with a positive balance today, builds its pre-tracking
-    contractual back-projection
-    (:func:`app.services.loan_resolution.contractual_schedule_from_origination`,
-    clipped to the months before the resolved schedule begins) and packs it with
-    the resolved schedule and current balance.  A paid-off loan (zero balance)
-    contributes nothing, so the chart's no-outstanding-debt fallback fires when
-    every secured loan is paid off (the H1 fix).  Reads each loan's rate-change
-    feed for the back-projection; the heavy resolution was already done once by
-    the caller.
-
-    Args:
-        resolved_loans: The ``(LoanParams, LoanState)`` pairs the route resolved
-            once for this page load.
-
-    Returns:
-        One :class:`~app.services.property_equity_chart.SecuredLoanSeries` per
-        outstanding loan (empty when every secured loan is paid off).
-    """
-    series: list[property_equity_chart.SecuredLoanSeries] = []
-    for loan_params, state in resolved_loans:
-        if state.current_balance <= Decimal("0"):
-            continue
-        full_contractual = contractual_schedule_from_origination(
-            loan_params, load_rate_changes(loan_params.account_id),
-        )
-        tracking_start = (
-            state.schedule[0].payment_date if state.schedule else None
-        )
-        back_projection = [
-            row for row in full_contractual
-            if tracking_start is None or row.payment_date < tracking_start
-        ]
-        series.append(property_equity_chart.SecuredLoanSeries(
-            back_projection=back_projection,
-            schedule=state.schedule,
-            current_balance=state.current_balance,
-        ))
-    return series
-
-
 def _property_chart_context(
     params: AssetAppreciationParams,
     equity: home_equity_service.HomeEquity,
-    resolved_loans: list[tuple[LoanParams, LoanState]],
-    today: date,
+    property_account: Account,
+    balance_ctx: BalanceContext,
 ) -> dict[str, object]:
     """Serialize the property equity-over-time chart for the detail band.
 
@@ -695,9 +644,11 @@ def _property_chart_context(
     whose value has not been set yet).  Otherwise the market-value /
     secured-debt / equity series come from
     :func:`app.services.property_equity_chart.build_property_equity_chart`
-    (fed the loans the route already resolved once, so the chart and the equity
-    hero read one resolution), floated here into the ``data-chart`` JSON the
-    template hands to ``property_detail.js``; ``chart_state`` drives the caption
+    (fed by the seam's :func:`app.services.balance_at.secured_loan_series`, which
+    FOLDS each loan's per-month debt off the read pass's ONE memoized resolution --
+    the same one the equity hero reads, so the chart and the hero cannot disagree,
+    and this route never holds a resolver bundle), floated here into the ``data-chart``
+    JSON the template hands to ``property_detail.js``; ``chart_state`` drives the caption
     variant (``standard`` / ``zero_rate`` / ``no_loans``), ``today_index`` the
     Today boundary, and ``debt_tier`` the per-month estimated / confirmed /
     projected styling.  ``has_estimated_debt`` -- ``True`` when any month is the
@@ -710,9 +661,11 @@ def _property_chart_context(
         equity: The :class:`~app.services.home_equity_service.HomeEquity`
             snapshot (its ``market_value`` gates ``has_equity_chart`` and is the
             chart's anchor).
-        resolved_loans: The ``(LoanParams, LoanState)`` pairs resolved once for
-            this load (shared with the equity hero).
-        today: The as-of / compounding-origin date.
+        property_account: The Property account; the seam reads its
+            ``secured_loans`` to pack the chart's debt series.
+        balance_ctx: The read pass's
+            :class:`~app.services.balance_at.BalanceContext`; its ``as_of``
+            is the chart's compounding origin.
 
     Returns:
         The ``has_equity_chart`` / ``chart_json`` / ``chart_state`` context the
@@ -729,10 +682,10 @@ def _property_chart_context(
             "has_estimated_debt": False,
         }
     chart = property_equity_chart.build_property_equity_chart(
-        _secured_loan_series(resolved_loans),
+        balance_at.secured_loan_series(property_account, balance_ctx),
         equity.market_value,
         params.annual_appreciation_rate,
-        today,
+        balance_ctx.as_of,
     )
     return {
         "has_equity_chart": True,
@@ -789,23 +742,14 @@ def property_detail(account_id):
         db.session.add(params)
         db.session.commit()
 
-    scenario = get_baseline_scenario(current_user.id)
-    scenario_id = scenario.id if scenario else None
-    today = date.today()
+    balance_ctx = BalanceContext.build(current_user.id)
 
-    # Resolve each secured loan ONCE, then feed both the equity hero and the
-    # equity chart from that single pass (no loan is resolved twice per load).
-    resolved_loans: list[tuple[LoanParams, LoanState]] = []
-    for loan in account.secured_loans:
-        resolved = resolve_account_loan(loan.id, scenario_id, today)
-        if resolved is not None:
-            resolved_loans.append(resolved)
-    # ``current_anchor_balance`` is NOT NULL (CHECK-constrained), so it is read
-    # straight -- no dead ``or 0`` anchor-NULL fork (C7-2).
-    equity = home_equity_service.compute_home_equity(
-        account.current_anchor_balance,
-        [state.current_balance for _params, state in resolved_loans],
-    )
+    # Every secured loan is read from the read pass's ONE memoized resolution,
+    # so the equity hero, the equity chart, and the /savings cockpit's equity
+    # card all read the same mortgage balance -- this page used to resolve them
+    # itself and hand the pure ``compute_home_equity`` its own figures, a second
+    # equity path parallel to ``resolve_home_equity``.
+    equity = home_equity_service.resolve_home_equity(account, balance_ctx)
 
     return render_template(
         "accounts/property_detail.html",
@@ -813,7 +757,7 @@ def property_detail(account_id):
         params=params,
         equity=equity,
         secured_loans=account.secured_loans,
-        **_property_chart_context(params, equity, resolved_loans, today),
+        **_property_chart_context(params, equity, account, balance_ctx),
     )
 
 

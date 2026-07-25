@@ -1,0 +1,332 @@
+"""
+Shekel Budget App -- the balance seam's READ-PASS resolution context.
+
+The value object that makes "one loan resolution, at one pinned as-of" a
+STRUCTURAL property of a read pass rather than a discipline nobody could
+enforce.
+
+**Why this exists.**  A loan's resolved state was not a first-class value in
+this architecture.  Every surface that wanted any part of a loan -- its
+balance, its schedule, its payoff date, its payment feed -- re-derived the whole
+thing from scratch, off a clock each producer read for itself
+(``date.today()``, called in 12+ places in one ``/savings`` render).  Measured
+2026-07-13 on real data: ONE ``compute_dashboard_data`` call ran the loan
+resolver **eleven times for two loans** -- the balance maps, the trend window's
+honest-history gate, the liability band, the loan tile, the property-equity
+card, and an "ever paid off" probe each resolving independently
+(``docs/audits/balance_architecture/followup_redundant_loan_resolution.md``).
+
+That was filed as waste.  It was not only waste.  Because there was no single
+resolution to compare against, nothing revealed that one of those eleven -- the
+``date.max`` "ever paid off" probe -- resolved through a producer that
+*structurally cannot read the genesis ledger* (the confirmed view returns
+``None`` for any ``as_of`` after today), and so answered from the pre-read-switch
+anchor replay, which is blind to how much cash a payment actually moved.  The
+ten that agreed made the eleventh invisible.  **Redundant derivation is not a
+performance smell; it is where a divergence hides.**
+
+**The contract.**  A context is built ONCE per read pass, carries the pinned
+``as_of`` and baseline scenario, and lazily memoizes each loan's
+:class:`~app.services.balance_at._resolution.ResolvedLoan`.  Every consumer then reads
+one resolution, so the loan tile's balance, the net-worth hero, the liability
+band, and the debt card are identical BY CONSTRUCTION rather than by the luck of
+four producers agreeing.
+
+**Read pass, not request.**  This is deliberately NOT a request-scoped cache
+(``flask.g``), for two reasons.  It would break the Flask-free service boundary
+(``CLAUDE.md``), and -- the load-bearing one -- it would go STALE: the loan write
+paths (``loan_recurrence_sync``, the transfer posting sync) resolve loans in the
+middle of a mutation, and a request that writes and then re-renders must see the
+post-write loan.  A context is a plain value the caller constructs, so a write
+path simply builds a fresh one after its write.  There is no cache-invalidation
+class of bug here because there is no cache -- only a memo whose lifetime is the
+one read it was built for.
+
+**Two dates, and they are not the same date.**  ``ctx.as_of`` is the resolver's
+NOW: the date that decides what is confirmed and what the loan currently owes.
+The ``as_of`` argument of :func:`app.services.balance_at.balance_at` is the
+VALUATION date: the date to value the account AT, which may be in the past (the
+genesis ledger answers) or the future (the schedule projects).  They were
+conflated while "now" was an implicit ``date.today()`` inside each producer;
+separating them is what lets a caller value an account at any date without the
+loan silently resolving at a different one.
+
+Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes.
+"""
+
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from datetime import date
+from typing import TYPE_CHECKING, TypeVar
+
+from app.models.account import Account
+from app.models.scenario import Scenario
+from app.services.loan_ledger import LoanLedgerWalk, walk_loan_ledger
+from app.services.scenario_resolver import get_baseline_scenario
+
+if TYPE_CHECKING:
+    # Type-only: both RECORD types below are defined by seam SIBLINGS that import
+    # THIS module at runtime.  They type the caches the seam FILLS (this module
+    # never builds a plan and never resolves a loan), so they carry NO runtime edge
+    # back -- the sibling cycle a runtime import would close (finding N-25) stays
+    # open.
+    from ._plan import PlannedPayment
+    from ._resolution import ResolvedLoan
+
+# What a memo cache's derivation yields.  The three seam-FILLED caches
+# (:attr:`BalanceContext.loans` / :attr:`BalanceContext.plans` /
+# :attr:`BalanceContext.payoffs`) differ only in this type, so
+# :func:`_memoize_once` is generic over it and there is ONE store-once mechanism
+# rather than a copy per cache.
+_Derived = TypeVar("_Derived")
+
+
+@dataclass(frozen=True)
+class BalanceContext:
+    """One read pass's pinned as-of, scenario, and memoized loan derivations.
+
+    Frozen: the pinned inputs (``user_id`` / ``scenario`` / ``as_of``) cannot be
+    reassigned mid-pass, which is the whole point -- a producer that could move
+    the as-of under its consumers would reintroduce the multi-clock problem this
+    object exists to kill.  The memo caches are mutable dicts held BY the frozen
+    object (excluded from ``eq`` / ``repr``): derived state, not identity, so two
+    contexts with the same pins are equal whether or not either has resolved a
+    loan yet.
+
+    **One derivation this module still owns, and three it only stores.**  The WALK
+    memo (:meth:`loan_walk`) derives from the ``loan_ledger`` leaf BELOW this
+    module, which it imports outright, so it stays PRIVATE, filled by this
+    module's own method.  The RESOLUTION, PLAN, and PAYOFF caches (:attr:`loans` /
+    :attr:`plans` / :attr:`payoffs`) are derived in the ``balance_at`` seam modules
+    ABOVE it (``_resolution`` / ``_plan`` / ``_positions``, which import THIS
+    module); the context cannot import them back to compute them without inverting
+    the dependency arrow and closing a real import cycle (finding N-25), so those
+    caches are PUBLIC pass-through state the seam FILLS through
+    :func:`_memoize_once`.  Plan step D-ctx-b retired the earlier design that
+    INJECTED the builder into a context method: no builder crosses into the context
+    now -- the seam owns the derivation, the context owns the storage.  Plan step
+    E1d-a moved the RESOLUTION under that same rule (it was a context METHOD, the
+    one surface W9910 cannot see -- finding H1 of step D3's review), which is why
+    ``loans`` is a cache here rather than a ``resolved_loan`` method.
+
+    Exposing the caches hands out no balance the fence must guard: a plan is
+    payment RECORDS, a payoff is a ``date``, and a
+    :class:`~app.services.balance_at._resolution.ResolvedLoan` carries schedule
+    detail and NO balance-at-T (its ``current_balance`` was deleted at the root by
+    plan step D2a -- the reason step D3 un-fenced the memo in the first place).
+
+    Nor does exposing them let a consumer FORGE one.  A context is a plain value
+    its caller constructs and hands to the seam; writing a fabricated bundle into
+    ``loans`` is the caller lying to itself for the length of one read, not
+    reaching past a boundary -- the same standing the caller already has by
+    passing whatever ``as_of`` and ``scenario`` it likes.  The gate that matters
+    is on the DERIVATION (every producer private to this package, W9910), not on
+    the dict a pass carries its own answers in.
+
+    Attributes:
+        user_id: The owning user.  Every account a context resolves must belong
+            to them; the caller owns that check (the loaders trust it).
+        scenario: The baseline scenario, or ``None`` for a user with no baseline
+            (the degraded state: a loan then resolves from its anchor with no
+            payment feed, and the seam's cash paths cannot run at all -- see
+            :func:`require_scenario`).
+        as_of: The resolver's NOW for this pass -- the date each loan is
+            RESOLVED at.  Not the date an account is VALUED at (see the module
+            docstring).
+        loans: The read pass's per-loan resolution cache, keyed by ``account.id``
+            and FILLED by the seam's
+            :func:`~app.services.balance_at._resolution.resolved_loan` (this module
+            never resolves a loan).  A ``None`` value is a MEMOIZED "not a
+            configured loan", not an empty slot.
+        plans: The read pass's per-loan forward-payment-plan cache, keyed by
+            ``account.id`` and FILLED by the seam's
+            :func:`~app.services.balance_at._plan.memoized_plan` (this module
+            never builds a plan).
+        payoffs: The read pass's per-loan derived-payoff cache, keyed by
+            ``account.id`` and FILLED by the seam's
+            :func:`~app.services.balance_at._positions.memoized_payoff`.
+    """
+
+    user_id: int
+    scenario: Scenario | None
+    as_of: date
+    _walks: dict[int, LoanLedgerWalk] = field(
+        default_factory=dict, repr=False, compare=False,
+    )
+    loans: "dict[int, ResolvedLoan | None]" = field(
+        default_factory=dict, repr=False, compare=False,
+    )
+    plans: "dict[int, list[PlannedPayment]]" = field(
+        default_factory=dict, repr=False, compare=False,
+    )
+    payoffs: "dict[int, date | None]" = field(
+        default_factory=dict, repr=False, compare=False,
+    )
+
+    @classmethod
+    def build(
+        cls, user_id: int, as_of: date | None = None,
+    ) -> "BalanceContext":
+        """Build a context for *user_id*, resolving the baseline scenario once.
+
+        The constructor a route or a top-level producer uses: it performs the
+        single baseline-scenario lookup the whole read pass then shares, so the
+        scenario is not re-resolved by every producer that needs it.
+
+        Args:
+            user_id: The owning user.
+            as_of: The resolver's NOW.  Defaults to ``date.today()``, which is
+                the basis every existing caller used and which
+                :func:`app.utils.dates.display_today` documents as the
+                resolver's replay boundary (storage and the replay stay UTC; the
+                display timezone is a presentation concern).  Pass an explicit
+                date to value a pass at another moment -- a historical read, or
+                a caller whose civil window is display-timezone-bound (the
+                analytics Taxes tab), which previously supplied a date that
+                ``generate_debt_schedules`` silently discarded.
+
+        Returns:
+            The :class:`BalanceContext` for this read pass.
+        """
+        return cls(
+            user_id=user_id,
+            scenario=get_baseline_scenario(user_id),
+            as_of=as_of if as_of is not None else date.today(),
+        )
+
+    @property
+    def scenario_id(self) -> int | None:
+        """The baseline scenario's id, or ``None`` with no baseline.
+
+        The form the loaders and the resolver take.  Reading it off the context
+        (rather than each caller writing ``scenario.id if scenario else None``)
+        keeps the no-baseline degradation expressed in ONE place.
+        """
+        return self.scenario.id if self.scenario is not None else None
+
+    def loan_walk(self, account: Account) -> LoanLedgerWalk:
+        """Return *account*'s ledger walk for this pass, walking it at most once.
+
+        The memo that collapses a read pass's N folds of one loan to one WALK.
+        The seam's total loan producer
+        (:func:`app.services.balance_at.positions`) folds a loan's SOURCE events
+        for the past, and the scalar, the per-period map, and the liability band
+        each read it in a single ``/savings`` render.  The walk
+        (:func:`~app.services.loan_ledger.walk_loan_ledger`) is the expensive part
+        -- it loads the loan's params, anchors, rate periods, escrow lines and
+        settled shadows -- so re-walking it per producer is exactly the redundant
+        derivation the seam's resolution memo already removes.  The
+        first call walks; every later call in the same pass samples that same
+        :class:`~app.services.loan_ledger.LoanLedgerWalk` through
+        :func:`~app.services.balance_at._fold.fold_from_walk`.
+
+        The walk takes NO as-of and reads no clock -- it replays the loan's FACTS
+        whole (:func:`~app.services.loan_ledger.walk_loan_ledger`) -- so this memo
+        is a pure function of the loan and the pass's pinned ``scenario``, exactly
+        like the resolver memo above.  A reader bounds the walk to a date; the memo
+        does not.
+
+        **Un-FENCED at plan step D3, the same ground as the resolution memo.**
+        The walk is FACTS, not a balance-at-T (plan step D-fold), and the leaf's
+        own :func:`~app.services.loan_ledger.walk_loan_ledger` is public and
+        deliberately unfenced -- so this memo hands a consumer nothing it could
+        not already obtain, and the fold that turns a walk into a balance is a
+        seam-private module W9910 protects.  A consumer that wants a loan's
+        balance takes :func:`app.services.balance_at.balance_at`.
+
+        Args:
+            account: The loan account to walk.  Must belong to ``user_id`` (the
+                caller owns the ownership check).  A non-loan / unconfigured
+                account walks to an empty
+                :class:`~app.services.loan_ledger.LoanLedgerWalk` (the leaf's own
+                no-params contract), which the seam never reaches for -- it
+                resolves the schedule first.
+
+        Returns:
+            The memoized :class:`~app.services.loan_ledger.LoanLedgerWalk` for
+            this loan under the pass's scenario.
+        """
+        if account.id not in self._walks:
+            self._walks[account.id] = walk_loan_ledger(
+                account.id, self.scenario_id,
+            )
+        return self._walks[account.id]
+
+
+def _memoize_once(
+    cache: "dict[int, _Derived]",
+    key: int,
+    build: "Callable[[], _Derived]",
+) -> "_Derived":
+    """Return ``cache[key]``, computing it via ``build()`` at most once.
+
+    The ONE store-once rule behind the seam's three per-loan memos
+    (:func:`~app.services.balance_at._resolution.resolved_loan` fills
+    :attr:`BalanceContext.loans`;
+    :func:`~app.services.balance_at._plan.memoized_plan` fills
+    :attr:`BalanceContext.plans`;
+    :func:`~app.services.balance_at._positions.memoized_payoff` fills
+    :attr:`BalanceContext.payoffs`).  They share this rather than each carrying a
+    copy of the same three lines -- a copy is where two memos drift on the very
+    property they exist to guarantee.
+
+    **Membership, never truthiness.**  The check is ``key not in cache``, not a
+    truthiness test on the value, because every derivation has a legitimately
+    falsy answer: a ``None`` resolution (not a configured loan), an empty plan (a
+    not-yet-configured or fully-retired loan), and a ``None`` payoff (a loan that
+    never clears).  A truthiness check would re-derive those on EVERY read of every
+    pass -- unbounded, and green under every test that happens to use a loan whose
+    plan is non-empty.
+
+    **A raising build is not cached.**  ``cache[key]`` is assigned only from a
+    returned value, so a fail-loud guard inside *build* (the seam's
+    ``require_scenario``) fires on every call rather than being swallowed after the
+    first.
+
+    See :class:`BalanceContext` for why these three caches are PUBLIC
+    pass-through state the seam fills, while the WALK memo beside them is a
+    private method (the dependency arrow, finding N-25).
+
+    Args:
+        cache: The read pass's per-loan cache to fill, keyed by ``account.id``.
+        key: The account id this derivation is memoized under.
+        build: The zero-argument derivation, called at most once per *key*.
+
+    Returns:
+        The value stored for *key* (freshly built on the first call, replayed
+        after).
+    """
+    if key not in cache:
+        cache[key] = build()
+    return cache[key]
+
+
+def require_scenario(ctx: BalanceContext) -> None:
+    """Raise ``ValueError`` when *ctx* has no baseline scenario -- the fail-loud guard.
+
+    Every balance the seam produces is scoped to a baseline scenario, and
+    ``get_baseline_scenario`` can return ``None`` (a fresh user with no
+    baseline).  Centralising the guard keeps the contract and its message
+    single-sourced.  Callers that legitimately handle the no-baseline case keep
+    their own ``if ctx.scenario is None: return ...`` guard BEFORE calling the
+    seam; this is the defensive backstop that turns a missed guard into a clear
+    failure instead of a deep ``AttributeError`` (or a silent ``$0``).
+
+    The ONE seam entry that does not run this guard is
+    :func:`app.services.balance_at.liability_owed_at_dates`, where a missing
+    baseline is not an error but the degenerate case of its own rule (no loan is
+    resolvable, so every liability holds flat); its docstring owns that
+    rationale.
+
+    Args:
+        ctx: The read pass's :class:`BalanceContext`.
+
+    Raises:
+        ValueError: When ``ctx.scenario`` is ``None``.
+    """
+    if ctx.scenario is None:
+        raise ValueError(
+            "the balance_at seam requires a baseline scenario; build the "
+            "BalanceContext for a user who has one, and guard a None scenario "
+            "before calling the seam"
+        )

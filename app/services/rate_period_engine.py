@@ -257,6 +257,45 @@ def _advance_one_month(reference: date, payment_day: int) -> date:
     return date(target_year, target_month, min(payment_day, last_day))
 
 
+def first_installment_date(origination_date: date, payment_day: int) -> date:
+    """Return the date of a loan's FIRST contractual installment.
+
+    The project's single derivation of "when does this loan's first payment come
+    due?", and the loan's own convention rather than a calendar guess: the
+    engine seeds a from-origination projection at ``_advance_one_month`` of the
+    ORIGINATION anchor (:func:`replay_schedule`, the no-rows branch), i.e. the
+    ``payment_day`` of the month AFTER origination -- never a ``payment_day``
+    falling later in the origination month itself.  Concretely, a loan
+    originating 2026-04-15 with ``payment_day`` 20 first bills 2026-05-20, NOT
+    2026-04-20.
+
+    Deliberately NOT :func:`monthly_due_date`, which answers a different
+    question (the first ``payment_day`` ON OR AFTER a date -- the installment a
+    pay period contains) and would return that wrong 2026-04-20.
+
+    Exposed because the recurrence bound needs it
+    (:func:`app.services.loan_recurrence_sync.sync_recurring_payment_bounds`
+    writes it to ``RecurrenceRule.start_date`` so no payment generates before the
+    loan exists, plan step C9a).  The alternative -- reading
+    ``contractual_schedule_from_origination(...)[0].payment_date`` -- yields the
+    identical date (pinned by test) but builds the loan's entire 360-row schedule
+    and needs its rate feed to answer a question no rate can influence.
+
+    Pure: no I/O, no clock.
+
+    Args:
+        origination_date: The loan's immutable
+            :attr:`~app.models.loan_params.LoanParams.origination_date`.
+        payment_day: The loan's contractual day-of-month due day, 1-31.
+            Day-clamped to the target month's length (a ``payment_day`` of 31
+            resolves to Feb 28/29).
+
+    Returns:
+        The first contractual installment's due date.
+    """
+    return _advance_one_month(origination_date, payment_day)
+
+
 def monthly_due_date(period_start: date, payment_day: int) -> date:
     """Return a loan payment's true monthly due date from its pay-period start.
 
@@ -334,7 +373,7 @@ def is_confirmed_payment_eligible(
     disagree on which payments an anchor subsumes.
 
     :func:`replay_schedule` (the resolver's confirmed-payment replay) and
-    :func:`app.services.loan_posting_service.compute_loan_payment_splits` (the
+    :func:`app.services.loan_ledger.compute_loan_payment_splits` (the
     Build-Order Step 4 real-split walk) BOTH gate on this one predicate, so the
     posted loan-payment ledger and the resolver's replayed balance can never
     drift on which payment set they consider.
@@ -608,6 +647,91 @@ def period_for_date(periods: list[RatePeriod], target: date) -> RatePeriod:
     return chosen
 
 
+@dataclass(frozen=True)
+class ConfirmedRowInputs:
+    """The inputs that position and value ONE confirmed amortization row.
+
+    The cohesive argument bundle of :func:`confirmed_amortization_row`: the real
+    economics of one settled payment (its ACTUAL ``principal`` and ``interest``),
+    the installment it satisfies (its ``due_date`` and governing ``period``), the
+    loan's ``origination_date`` that numbers the row, and the running
+    ``remaining_balance`` owed after it that the caller's own walk produced.
+    Bundled so the shared builder the posted reader and the walk view both call
+    takes ONE argument rather than six positional values.
+
+    Attributes:
+        origination_date: The loan's origination date, numbering the row
+            (:func:`payment_number`).
+        due_date: The contractual installment this payment satisfies (the row's
+            date and number), NOT its settled date.
+        principal: The payment's REAL principal paid down (may be NEGATIVE for an
+            underpayment, plan D5).
+        interest: The payment's REAL accrued interest.
+        period: The :class:`RatePeriod` governing the installment -- its
+            ``period_pi`` sizes the extra split, its ``annual_rate`` tags the row.
+        remaining_balance: The balance owed AFTER this payment, from the caller's
+            running walk (already cent-quantized).
+    """
+
+    origination_date: date
+    due_date: date
+    principal: Decimal
+    interest: Decimal
+    period: RatePeriod
+    remaining_balance: Decimal
+
+
+def confirmed_amortization_row(row: ConfirmedRowInputs) -> AmortizationRow:
+    """Build a CONFIRMED history row from a payment's ACTUAL principal and interest.
+
+    The ONE construction of a confirmed schedule row, shared by the two producers
+    that read a loan's real payment history so they could not drift on HOW a
+    payment's actual economics become a row: the posted-ledger reader
+    ``confirmed_loan_history_rows`` and the walk-based confirmed view
+    (:func:`app.services.balance_at.confirmed_view`, plan step E1c).  Both read the
+    SAME split from the SAME walk (the posted legs are a projection of it, plan
+    step E1a), so their rows were byte-identical -- and extracting the emitter is
+    what made that equality STRUCTURAL rather than two copies that happened to
+    match, which is what let plan step E1d-b DELETE the reader and leave the view
+    as this builder's SOLE caller.  It stays a named emitter because the row's
+    shaping (its P&I / extra split, its numbering, its rate) is a display contract
+    worth stating once, and the projected-row builder below is its twin.
+
+    Unlike :func:`_replay_payment_row` (the CONTRACTUAL replay, where
+    ``principal = period_pi - interest``), this takes the payment's REAL principal
+    and interest and splits its P&I against the governing period's contractual
+    ``period_pi`` under the schedule-row invariant
+    ``principal + interest == payment + extra_payment``: the excess above
+    contractual is ``extra_payment`` (an off-schedule or extra payment), the rest
+    the contractual-shaped ``payment``.  So the schedule table's totals need no
+    per-row special-casing, and an underpayment (``principal < 0``, plan D5) or a
+    payoff overpayment surfaces in the row rather than being clamped.
+
+    Pure: plain data in, one row out.  The caller supplies the post-payment
+    ``remaining_balance`` from its own running walk, because the running balance is
+    the caller's -- the posted reader prefix-sums the linked-ledger nets, the walk
+    view folds the source splits -- while THIS row-shaping is identical for both.
+
+    Args:
+        row: The :class:`ConfirmedRowInputs` positioning and valuing this row.
+
+    Returns:
+        The confirmed :class:`~app.services.amortization_engine.AmortizationRow`.
+    """
+    extra = max(row.principal + row.interest - row.period.period_pi, ZERO_MONEY)
+    return AmortizationRow(
+        month=payment_number(row.origination_date, row.due_date),
+        payment_date=row.due_date,
+        payment=round_money(row.principal + row.interest - extra),
+        principal=row.principal,
+        interest=row.interest,
+        extra_payment=round_money(extra),
+        remaining_balance=row.remaining_balance,
+        is_confirmed=True,
+        interest_rate=row.period.annual_rate,
+    )
+
+
 def _replay_payment_row(
     balance: Decimal,
     period: RatePeriod,
@@ -741,7 +865,8 @@ def replay_schedule(
     #     due date.  ``_build_monthly_override`` uses the same pay-period
     #     start so the two partitions stay exact complements.
     # Walked in DUE-date order, matching the genesis write walk's own event
-    # merge, so the two consume the payments in one order.
+    # merge, so the two consume the payments in ONE ORDER -- and only order:
+    # they deliberately differ on the RATE key (see the loop below).
     eligible = sorted(
         (
             payment for payment in confirmed_payments
@@ -766,6 +891,21 @@ def replay_schedule(
         # payment's due date, so the schedule shows the real statement
         # date and ``next_pay_date`` advances to the correct following
         # month rather than landing one month early.
+        #
+        # THIS IS A DIFFERENT RATE KEY FROM THE GENESIS WALK, deliberately
+        # (finding N-36).  The walk keys the rate on the installment's DUE date
+        # -- contract time, ruling D5 -- but it reads RAW payments, while this
+        # replay consumes records that have been through
+        # ``loan_payment_service._redistribute_to_distinct_months``, which
+        # INVENTS a due date for a payment colliding on an already-allocated
+        # month.  Keying the rate on an invented date would let a schedule-
+        # alignment artifact move a replayed balance, so this stays on the
+        # pay-period start, which is always a fact.  Containment: this replay's
+        # rows and balance are DISCARDED whenever a ``confirmed_view`` is
+        # supplied (``_build_forward_inputs`` keeps only ``next_pay_date`` /
+        # ``remaining_months_as_of``), which is every production read since plan
+        # step E1d-b -- so the two keys can only differ on the unseeded
+        # what-if path, and never inside one rendered figure.
         period = period_for_date(periods, payment.period_start)
         due_date = payment.due_date
         row = _replay_payment_row(balance, period, due_date, origination_date)

@@ -23,9 +23,7 @@ from marshmallow import ValidationError
 
 from app.utils.auth_helpers import require_owner
 
-from app.extensions import db
 from app.models.account import Account
-from app.models.ref import AccountType
 from app.schemas.validation import DebtStrategyCalculateSchema
 from app.services.debt_strategy_service import (
     DebtAccount,
@@ -36,8 +34,8 @@ from app.services.debt_strategy_service import (
     StrategyResult,
     calculate_strategy,
 )
-from app.services.loan_resolution import resolve_account_loan
-from app.services.scenario_resolver import get_baseline_scenario
+from app.services import account_service, balance_at
+from app.services.balance_at import BalanceContext
 
 logger = logging.getLogger(__name__)
 
@@ -99,9 +97,9 @@ def _load_debt_accounts(user_id):
     """Load all active debt accounts with loan parameters for a user.
 
     Queries accounts where the account type has ``has_amortization=True``,
-    runs the loan resolver (E-18 / Commit 13) for each, and builds
-    :class:`DebtAccount` instances from the resolver state.  The same
-    ``current_balance`` / ``monthly_payment`` figures appear on the
+    reads each loan's terms and its seam-folded balance through ONE
+    ``BalanceContext`` pass, and builds :class:`DebtAccount` instances from
+    them.  The same balance / ``monthly_payment`` figures appear on the
     loan card, /savings debt card, and net-worth liability, so the
     strategy comparison cannot diverge from the per-loan displays
     (E-18 / Commit 15).
@@ -121,32 +119,27 @@ def _load_debt_accounts(user_id):
             has_arm: bool indicating whether any loaded account is ARM.
     """
     accounts = (
-        db.session.query(Account)
-        .join(Account.account_type)
-        .filter(
-            Account.user_id == user_id,
-            Account.is_active.is_(True),
-            AccountType.has_amortization.is_(True),
-        )
+        account_service.active_accounts_query(user_id, amortizing=True)
         .order_by(Account.sort_order, Account.name)
         .all()
     )
 
-    scenario = get_baseline_scenario(user_id)
-    scenario_id = scenario.id if scenario else None
-    today = date.today()
+    # ONE read pass: each loan is resolved once, and its BALANCE comes from the
+    # seam (``balance_at.balance_at``) rather than off a ``LoanState`` -- this
+    # page renders that balance, so it is a balance-at-T consumer like any other.
+    ctx = BalanceContext.build(user_id)
 
     debt_accounts = []
     has_arm = False
 
     for account in accounts:
-        resolved = resolve_account_loan(account.id, scenario_id, today)
-        if resolved is None:
+        terms = balance_at.loan_terms(account, ctx)
+        if terms is None:
             # Account exists but loan details not yet configured.
             continue
-        params, state = resolved
+        current_balance = balance_at.balance_at(account, ctx, ctx.as_of)
 
-        if params.is_arm:
+        if terms.is_arm:
             has_arm = True
 
         # Skip debts with zero principal or zero payment (fully paid
@@ -155,8 +148,8 @@ def _load_debt_accounts(user_id):
         # the legacy ``LoanParams.current_principal`` column still
         # carries a non-zero seed.
         if (
-            state.current_balance <= Decimal("0")
-            or state.monthly_payment <= Decimal("0")
+            current_balance <= Decimal("0")
+            or terms.monthly_payment <= Decimal("0")
         ):
             continue
 
@@ -172,9 +165,9 @@ def _load_debt_accounts(user_id):
         debt_accounts.append(DebtAccount(
             account_id=account.id,
             name=account.name,
-            current_principal=state.current_balance,
-            interest_rate=state.current_rate,
-            minimum_payment=state.monthly_payment,
+            current_principal=current_balance,
+            interest_rate=terms.current_rate,
+            minimum_payment=terms.monthly_payment,
         ))
 
     return debt_accounts, has_arm

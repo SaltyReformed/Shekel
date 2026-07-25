@@ -67,9 +67,9 @@ class EscrowVersionDisplay:  # pylint: disable=too-many-instance-attributes
     a CSS-modifier token (``current`` / ``scheduled`` / ``past``) interpolated into
     the row class, and ``status_label`` its human caption -- neither is compared in
     the template.  ``is_editable`` / ``is_deletable`` are the forward-only guard's
-    verdict for this row: a version at or before the latest settled payment's
-    pay-period start is frozen (editing / deleting it would move a settled split),
-    and a line's only version cannot be deleted (use the line-level remove).
+    verdict for this row: a version at or before the latest settled payment's DUE
+    date is frozen (editing / deleting it would move a settled split), and a
+    line's only version cannot be deleted (use the line-level remove).
     """
 
     id: int
@@ -220,15 +220,15 @@ def _after_forward_boundary(effective_date: date, boundary: date | None) -> bool
     """Whether an escrow version at ``effective_date`` clears the forward-only guard.
 
     ``True`` when the version takes effect strictly after ``boundary`` -- the latest
-    settled payment's pay-period start
-    (:func:`app.services.loan_loaders.latest_settled_payment_period_start`) -- so
+    settled payment's DUE date
+    (:func:`app.services.loan_loaders.latest_settled_payment_due_date`) -- so
     editing or deleting it cannot move an already-settled payment's escrow split.
     ``boundary is None`` (the loan has no settled payment) means nothing is frozen,
     so every version clears.
 
     Args:
         effective_date: The version's effective date.
-        boundary: The latest settled payment's pay-period start, or ``None``.
+        boundary: The latest settled payment's due date, or ``None``.
 
     Returns:
         ``True`` when the version is safe to edit / delete, ``False`` when frozen.
@@ -278,7 +278,7 @@ def _build_version_rows(
     Args:
         line: The :class:`~app.models.escrow_line.EscrowLine` with ``versions``.
         on_date: Today, for status classification.
-        boundary: The forward-only guard boundary (latest settled pay-period start).
+        boundary: The forward-only guard boundary (latest settled due date).
         current_monthly: The summary's cent-allocated monthly for the current row.
 
     Returns:
@@ -386,7 +386,7 @@ def build_escrow_card(
         on_date: Today -- the date the summary and the ``current`` / ``scheduled``
             status split resolve against.
         forward_boundary: The forward-only guard boundary -- the latest settled
-            payment's pay-period start, or ``None`` when nothing is settled -- that
+            payment's DUE date, or ``None`` when nothing is settled -- that
             decides each version row's ``is_editable`` / ``is_deletable``.
 
     Returns:
@@ -637,10 +637,11 @@ def _escrow_unchanged_by_merge(source, target, merged_versions: list) -> bool:
     dates the step-function escrow can change -- summed across the two SEPARATE
     lines against the single MERGED line.  A step function is constant between its
     breakpoints, so equality at every breakpoint is equality on every date.  When
-    it holds, no payment's escrow (settled or projected) moves, which is why the
-    merge needs no posting reconcile: the split reads escrow by amount via
-    :func:`escrow_monthly_as_of`, so escrow that is byte-identical on every date
-    leaves every derived split byte-identical too.
+    it holds, no payment's escrow (settled or projected) moves, so the merge
+    preserves every derived split byte-for-byte: the split reads escrow by amount
+    via :func:`escrow_monthly_as_of`, so escrow that is byte-identical on every date
+    leaves every derived split byte-identical too (a posting reconcile after the
+    merge therefore re-derives the same ledger -- an idempotent no-op).
 
     Args:
         source: The line being folded in.
@@ -680,8 +681,9 @@ def plan_escrow_line_merge(source, target) -> EscrowMergePlan:
 
     Only source versions are ever moved or dropped, so a merge cannot be used to
     mutate the target's own history.  Because escrow-per-date is preserved, the
-    forward-only guard is subsumed (no settled split moves) and the caller needs no
-    reconcile (the postings store the escrow amount, never a line id).
+    forward-only guard is subsumed (no settled split moves), so a posting reconcile
+    after a merge re-derives the same ledger -- an idempotent no-op (the postings
+    store the escrow amount, never a line id).
 
     Args:
         source: The :class:`~app.models.escrow_line.EscrowLine` to fold in and

@@ -96,6 +96,14 @@ def _create_loan_account(seed_user, db_session, *,
                          name="Test Loan"):
     """Create a loan account + LoanParams for tests.
 
+    Deliberately NOT routed through ``_test_helpers.create_loan_account`` (see the
+    same note on ``test_loan_anchor_event.py``'s builder).  This module tests the
+    d3d25212504b MIGRATION, which reads ``LoanParams.current_principal`` to seed the
+    backfilled anchor events, so it must construct the PRE-migration table state by
+    hand -- including a ``current_principal`` distinct from ``original_principal``,
+    which the shared factory does not expose because no reader reads that column.
+    It touches no balance seam.  Keep it hand-rolled; it is not an oversight.
+
     Mirrors the helper in ``test_loan_anchor_event.py`` but with a
     runtime-selectable type so individual tests can choose a fixed-
     rate or ARM-eligible account type.

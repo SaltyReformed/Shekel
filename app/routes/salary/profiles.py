@@ -19,7 +19,6 @@ from app.models.salary_profile import SalaryProfile
 from app.models.transaction_template import TransactionTemplate
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.category import Category
-from app.models.account import Account
 from app.models.ref import (
     CalcMethod,
     DeductionTiming,
@@ -29,6 +28,7 @@ from app.models.ref import (
 from app import ref_cache
 from app.enums import RecurrencePatternEnum, TxnTypeEnum
 from app.services import (
+    account_service,
     paycheck_calculator,
     pay_period_service,
     recurrence_engine,
@@ -113,15 +113,22 @@ def create_profile():
     # Get income transaction type ID from ref_cache.
     income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
 
-    # Get default account
-    account = (
-        db.session.query(Account)
-        .filter_by(user_id=current_user.id, is_active=True)
-        .first()
-    )
+    # Get the default deposit account -- a NON-LOAN (non-amortizing) account.
+    # A loan's balance is ledger-derived, not a transaction sum (ruling D4 /
+    # finding N-11): depositing salary income onto a loan would have the
+    # recurrence engine generate raw income transactions onto it
+    # (``recurrence_engine.generate_for_template`` copies ``template.account_id``)
+    # -- a cash leg the loan fold cannot see, the shape the transaction-create
+    # routes (``_reject_transaction_on_loan``) and the template form also
+    # refuse.  ``active_accounts_query(amortizing=False)`` is the shared
+    # kind-boundary composer the grid's account pickers use (ruling D4 / A1).
+    account = account_service.active_accounts_query(
+        current_user.id, amortizing=False,
+    ).first()
     if not account:
         flash(Markup(
-            'You need an active account before creating a salary profile. '
+            'You need an active account that is not a loan before creating a '
+            'salary profile. '
             '<a href="' + url_for("accounts.new_account") + '" class="alert-link">'
             'Create an account</a>.'
         ), "danger")

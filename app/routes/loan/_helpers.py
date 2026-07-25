@@ -33,21 +33,16 @@ from app.schemas.validation import (
     RateChangeSchema,
     RefinanceSchema,
 )
-from app.services import escrow_calculator, loan_resolver
+from app.services import balance_at, escrow_calculator, loan_resolver
+from app.services.balance_at import LoanFigures, LoanTerms
 from app.services.loan_loaders import (
-    latest_settled_payment_period_start,
+    latest_settled_payment_due_date,
     load_loan_anchor_facts,
 )
 from app.services.recurring_transfer_query import loan_standing_extra
-from app.services.loan_payment_service import (
-    LoanContext,
-    confirmed_loan_view,
-    load_loan_context,
-)
-from app.services.loan_resolution import resolve_loan_seeded
-from app.services.loan_resolver import LoanState
+from app.services.loan_payment_service import LoanContext, load_loan_context
 from app.services.rate_period_engine import payment_number
-from app.services.scenario_resolver import get_baseline_scenario
+from app.services.balance_at import BalanceContext
 from app.utils.auth_helpers import get_or_404
 from app.utils.money import round_money
 
@@ -144,147 +139,252 @@ def _require_configured_loan(account_id):
 
 @dataclass(frozen=True)
 class _RouteLoanContext:
-    """Resolver state plus the loaded loan context for the loan ROUTE surfaces.
+    """One read pass's loan state for the loan ROUTE surfaces, sourced from the seam.
 
-    Composes rather than copies: ``loan`` is the service-loaded
-    :class:`LoanContext` (the prepared payment / rate-change feeds, escrow,
-    and rate history); ``state`` is the resolver output; and
-    ``current_rate`` is the route-derived rate the refinance / payoff
-    calculators read.  Replaces the former untyped dict so the dashboard
-    and calculator consumers read typed attributes (``ctx.state`` /
-    ``ctx.loan.payments`` / ``ctx.current_rate``) instead of string keys.
+    The loan detail page reads its displayed balance and rich figures from the
+    :mod:`app.services.balance_at` seam like every other loan surface (plan step
+    C4), instead of resolving a private :class:`LoanState` and rendering
+    ``state.current_balance`` -- a balance-at-T produced outside the seam that,
+    for a loan whose genesis ledger is missing, answered from the money-blind
+    anchor replay while the seam folds the source facts (finding B-13).
+
+    Composes three inputs from ONE ``BalanceContext``:
+
+      * ``balance_ctx`` -- the read pass's context (memoizes the loan's single
+        resolution + ledger walk); its ``as_of`` is today.
+      * ``loan`` -- the service-loaded :class:`LoanContext` (prepared payments,
+        rate changes, escrow lines / components, monthly escrow, rate history)
+        the route's own schedule composer and escrow card need, which the seam
+        does not publish.
+      * ``figures`` -- the seam's :class:`LoanFigures` (payment, rate, payoff,
+        arm), carrying deliberately NO balance.
+
+    The balance is a property that reads the seam on demand; the figures fields
+    are exposed as properties so the dashboard / calculators read typed
+    attributes (``ctx.current_balance`` / ``ctx.monthly_payment`` /
+    ``ctx.current_rate`` / ``ctx.payoff_date``) exactly as they read the old
+    ``ctx.state.*``.
     """
 
-    state: LoanState
+    account: Account
+    balance_ctx: BalanceContext
     loan: LoanContext
-    current_rate: Decimal
+    figures: LoanFigures
+
+    @property
+    def current_balance(self) -> Decimal:
+        """The loan's balance-at-today from the seam (the fold, plan C4).
+
+        Reads :func:`app.services.balance_at.balance_at` at the pass's ``as_of``
+        (today) -- the same seam entry the /savings tile, the net-worth hero,
+        and /debt-strategy read, so the loan card's balance is now produced in
+        the one tested place instead of off a private resolver.
+        """
+        return balance_at.balance_at(
+            self.account, self.balance_ctx, self.balance_ctx.as_of,
+        )
+
+    @property
+    def monthly_payment(self) -> Decimal:
+        """The loan's P&I payment as of today (the seam's resolved figure)."""
+        return self.figures.terms.monthly_payment
+
+    @property
+    def current_rate(self) -> Decimal:
+        """The annual interest rate in effect today (the seam's resolved figure)."""
+        return self.figures.terms.current_rate
+
+    @property
+    def payoff_date(self) -> date | None:
+        """The DERIVED payoff -- the date the balance folds to zero (plan C8d).
+
+        ``None`` for a loan already RETIRED and for one that never pays off at
+        its current payment; :attr:`is_retired` separates the two.  It used to be
+        the committed schedule's last row, which reports a contractual date even
+        for a loan paying short.
+        """
+        return self.figures.payoff_date
+
+    @property
+    def is_retired(self) -> bool:
+        """Whether the loan has originated and now owes nothing (the seam figure).
+
+        The disambiguator for a ``None`` :attr:`payoff_date`: retired (badge it
+        "Paid off") versus never-pays-off (say so).
+        """
+        return self.figures.is_retired
 
 
-def _resolve(account, params) -> tuple[LoanState, LoanContext]:
-    """Run the loan resolver once; return ``(state, loaded context)``.
+def _require_figures(account, balance_ctx: BalanceContext) -> LoanFigures:
+    """Return a configured loan's seam :class:`LoanFigures`, or fail loud.
 
-    The single 4-step resolve sequence -- baseline scenario lookup ->
-    service context load -> anchor events -> resolver -- shared by
-    :func:`_resolve_loan_state` and :func:`_load_loan_context` so the
-    sequence lives in exactly one place.
+    The loan route only reaches the seam for a loan the caller has already
+    confirmed is configured (``_load_loan_account`` / ``_require_configured_loan``
+    loaded its :class:`LoanParams`), so ``None`` here -- the seam's not-a-loan
+    signal -- is a caller bug, not a display case.  Raising keeps the callers'
+    ``figures`` non-nullable and matches the seam's fail-loud contract, rather
+    than letting a ``None`` render an empty payment silently.
 
     Args:
-        account: ORM :class:`Account` instance.
-        params: ORM :class:`LoanParams` instance.
+        account: The configured loan account (ownership already verified by the
+            caller -- the seam's trust-the-caller contract).
+        balance_ctx: The read pass's :class:`BalanceContext`.
 
     Returns:
-        ``(LoanState, LoanContext)`` -- the resolver output and the
-        service-loaded context it was built from.
+        The loan's :class:`LoanFigures`.
+
+    Raises:
+        ValueError: When *account* has no ``LoanParams`` (a caller error).
     """
-    scenario = get_baseline_scenario(current_user.id)
-    scenario_id = scenario.id if scenario else None
-    ctx = load_loan_context(account.id, scenario_id, params)
-    # Read switch (plan Section 8): resolve through ``resolve_loan_seeded`` so
-    # the loan card's ``current_balance`` is the genesis-ledger confirmed
-    # balance (falling back to the anchor replay when the ledger has not
-    # opened this loan).  The anchor facts are synthesized from the immutable
-    # params + the loan's true-up events.  Ownership was already verified by
-    # ``_load_loan_account -> get_or_404`` before this runs, satisfying the
-    # reader's trust-the-caller contract.
-    state = resolve_loan_seeded(
-        loan_resolver.LoanInputs(
-            params, load_loan_anchor_facts(params),
-            ctx.payments, ctx.rate_changes,
-        ),
-        account.id, scenario_id, date.today(),
-    )
-    return state, ctx
+    figures = balance_at.loan_figures(account, balance_ctx)
+    if figures is None:
+        raise ValueError(
+            f"loan figures unavailable for account {account.id}: it has no "
+            f"LoanParams. Load a configured loan before reaching the seam."
+        )
+    return figures
 
 
-def _resolve_loan_state(account, params) -> LoanState:
-    """Return the resolver :class:`LoanState` for a loan.
+def _loan_terms_now(account) -> LoanTerms:
+    """Return a configured loan's CONTRACT terms as of today, resolving it once.
 
-    Thin accessor over :func:`_resolve` for the callers that need only
-    the resolver state (the escrow total-payment and payment-transfer
-    paths), not the loaded payment / rate-change feeds.
+    The accessor the loan route's non-balance WRITE surfaces read the monthly
+    payment / current rate off -- the escrow total-payment recompute
+    (:func:`_compute_total_payment`), the rate-history OOB swap
+    (:func:`app.routes.loan.escrow_rates._render_rate_history`), and the
+    payment-transfer default (:func:`app.routes.loan.payment_transfer._resolve_transfer_amount`).
+    They build a FRESH :class:`BalanceContext` (an as-of-today read pass) so the
+    figure reflects any just-committed rate / escrow change; the values are the
+    same the loan card shows, produced by the one seam resolution rather than a
+    private resolve.
+
+    **It takes :class:`~app.services.balance_at.LoanTerms`, not the wider
+    ``LoanFigures``** (plan step C8e).  These surfaces read only the payment and
+    the rate -- both derived from the loan's params and rate history alone -- so
+    binding them to the scenario-scoped bundle bound them to a baseline scenario
+    they never needed.  Step C8d made that visible by giving the bundle its first
+    scenario-scoped field: escrow editing began raising the seam's
+    ``require_scenario`` for a user whose baseline is missing, which is a state a
+    configured loan can outlive (see ``baseline_service``).  The narrow value
+    needs no scenario, so these surfaces keep working while the fail-loud stays on
+    the reads that genuinely need one.
 
     Args:
-        account: ORM :class:`Account` instance.
-        params: ORM :class:`LoanParams` instance.
+        account: The configured loan account (ownership already verified by the
+            caller).
 
     Returns:
-        :class:`LoanState` -- resolver source of truth for
-        current_balance / monthly_payment / schedule / payoff_date /
-        total_interest.
+        The loan's :class:`LoanTerms` as of today.
+
+    Raises:
+        ValueError: When *account* has no ``LoanParams`` (a caller error -- these
+            surfaces load a configured loan first).
     """
-    state, _ = _resolve(account, params)
-    return state
+    terms = balance_at.loan_terms(account, BalanceContext.build(current_user.id))
+    if terms is None:
+        raise ValueError(
+            f"loan terms unavailable for account {account.id}: it has no "
+            f"LoanParams. Load a configured loan before reaching the seam."
+        )
+    return terms
 
 
-def _load_loan_context(account, params) -> _RouteLoanContext:
-    """Load payment history, escrow, rate changes, and resolver state.
+def _load_route_context(account, params) -> _RouteLoanContext:
+    """Build the loan ROUTE's read pass: one BalanceContext + the loaded context.
 
-    Delegates payment / escrow / rate-change loading to
-    :func:`loan_payment_service.load_loan_context`, then runs the
-    loan resolver (E-18 / Commit 13) to derive the authoritative
-    current balance, monthly payment, and current rate.  Display
-    surfaces read ``ctx.state`` (``state.current_balance`` /
-    ``state.current_rate``) instead of the stored
-    ``LoanParams.current_principal`` column and the retired
-    ``LoanParams.interest_rate`` column (E-18 / Commit 15, decision D-A;
-    DH-#56 dropped ``interest_rate`` entirely in favour of the
-    origination :class:`RateHistory` row).
+    The single loader the loan detail READ surfaces (the dashboard GET, the
+    calculators, the standalone schedule) resolve a loan through.  It builds ONE
+    :class:`BalanceContext` for the pass -- so the balance and the rich figures
+    come from the same memoized resolution -- and loads the service
+    :class:`LoanContext` (payments / escrow / rate) the route's own schedule
+    composer and escrow card need.  It no longer runs the private resolver seeding
+    the pre-C4 route did: the balance is the seam's fold
+    (:attr:`_RouteLoanContext.current_balance`), and the payment / rate / payoff
+    are the seam's figures, so the loan tile is no longer the one surface whose
+    balance was produced outside the seam.
 
-    Returns a :class:`_RouteLoanContext` with:
-        state: :class:`LoanState` from the resolver.
-        loan: the service-loaded :class:`LoanContext` -- ``loan.payments``
-            (prepared, escrow-subtracted, month-aligned), ``loan.rate_changes``
-            (or None), ``loan.rate_history`` (RateHistory for display),
-            ``loan.escrow_components`` (active), ``loan.monthly_escrow``.
-        current_rate: Decimal annual interest rate in effect today --
-            ``state.current_rate`` (DH-#56), the loan's current rate used
-            by the refinance / payoff calculators as the existing loan's
-            rate.  Replaces the read of the retired
-            ``LoanParams.interest_rate`` column; the resolver derives it
-            from the rate-period containing today.
+    Ownership was already verified by ``_load_loan_account -> get_or_404`` before
+    this runs, satisfying the seam's trust-the-caller contract.
 
     Args:
-        account: Account model instance.
-        params: LoanParams model instance.
-    """
-    state, ctx = _resolve(account, params)
+        account: ORM :class:`Account` instance for a configured loan.
+        params: ORM :class:`LoanParams` instance (the escrow / payment loader's
+            input; also the seam resolution's, loaded once inside the seam).
 
+    Returns:
+        The :class:`_RouteLoanContext` for this read pass.
+    """
+    balance_ctx = BalanceContext.build(current_user.id)
+    loan = load_loan_context(account.id, balance_ctx.scenario_id, params)
     return _RouteLoanContext(
-        state=state,
-        loan=ctx,
-        current_rate=state.current_rate,
+        account=account,
+        balance_ctx=balance_ctx,
+        loan=loan,
+        figures=_require_figures(account, balance_ctx),
+    )
+
+
+def _total_payment_from_seam(account, escrow_components) -> Decimal:
+    """Return P&I (the seam figure) + *escrow_components* -- the one total-payment sum.
+
+    The single "total monthly payment" assembly: the loan's resolved P&I
+    (:func:`_loan_terms_now`, which owns the payment for both ARM -- re-amortized
+    from the latest anchor over the remaining term -- and fixed-rate loans) plus
+    the supplied escrow set, quantized by
+    :func:`~app.services.escrow_calculator.calculate_total_payment`.  Every
+    "P&I + escrow" figure funnels through here -- the escrow / rate OOB partials
+    (:func:`_compute_total_payment`) and the loan-payment default / auto-track
+    switch (:func:`app.routes.loan.payment_transfer._contractual_monthly_payment`)
+    -- so the number the loan card shows, the recurring-payment default, and the
+    drift / track-payment comparison are ONE computation and cannot silently
+    diverge.
+
+    The caller supplies the escrow set (today's active lines for the loan card and
+    the payment default; the drawer's set for an escrow OOB swap), so this stays a
+    pure sum with no load.
+
+    Args:
+        account: The configured loan account (ownership verified by the caller;
+            the seam resolves the P&I).
+        escrow_components: The resolved escrow lines to add to P&I
+            (:class:`~app.services.escrow_calculator.ResolvedEscrowLine`).
+
+    Returns:
+        The total monthly payment (P&I + escrow) as a ``Decimal``.
+    """
+    return escrow_calculator.calculate_total_payment(
+        _loan_terms_now(account).monthly_payment, escrow_components,
     )
 
 
 def _compute_total_payment(account, params, escrow_components):
     """Compute total monthly payment (P&I + escrow) for OOB updates.
 
-    Reads the resolver's ``monthly_payment`` so the escrow / delete-
-    escrow HTMX partials display the same P&I as the loan card.
-    Returns None when params are absent (no loan configured yet).
+    Reads the seam figure's ``monthly_payment`` (via the shared
+    :func:`_total_payment_from_seam`) so the escrow / delete-escrow HTMX partials
+    display the same P&I as the loan card.  Returns None when params are absent
+    (no loan configured yet).
 
     Args:
         account: ORM :class:`Account` instance for the loan account.
-            Required to load anchor events for the resolver.
+            The seam resolves it (ownership already verified by the caller).
         params: ORM :class:`LoanParams` instance, or None.
         escrow_components: Today's active escrow lines, resolved
             (:class:`~app.services.escrow_calculator.ResolvedEscrowLine`).
     """
     if params is None:
         return None
-    state = _resolve_loan_state(account, params)
-    return escrow_calculator.calculate_total_payment(
-        state.monthly_payment, escrow_components,
-    )
+    return _total_payment_from_seam(account, escrow_components)
 
 
 def _forward_boundary(account_id, scenario_id):
     """Return the escrow forward-only guard boundary for a loan, or ``None``.
 
-    The latest settled payment's pay-period start
-    (:func:`~app.services.loan_loaders.latest_settled_payment_period_start`) -- the
-    exact date the genesis split resolves each payment's escrow at, so a new or
-    edited escrow version strictly after it cannot move any settled payment's split.
+    The latest settled payment's DUE date
+    (:func:`~app.services.loan_loaders.latest_settled_payment_due_date`) -- the
+    exact date the genesis split resolves each payment's escrow at (ruling D5's
+    contract time, finding N-34), so a new or edited escrow version strictly
+    after it cannot move any settled payment's split.
     ``None`` (nothing is frozen) when the user has no baseline scenario or the loan
     has no settled payment.  Shared by the escrow HTMX routes (which apply the guard
     and mark each drawer row editable / deletable) and the loan dashboard GET (which
@@ -299,7 +399,7 @@ def _forward_boundary(account_id, scenario_id):
     """
     if scenario_id is None:
         return None
-    return latest_settled_payment_period_start(account_id, scenario_id)
+    return latest_settled_payment_due_date(account_id, scenario_id)
 
 
 def _balances_for_chart(rows, target_len):
@@ -445,7 +545,7 @@ def accelerated_overlay(scenarios):
 
 
 def build_baseline_scenarios(
-    loan_inputs, scenario_id, as_of, extra_principal=Decimal("0.00"),
+    loan_inputs, account, balance_ctx, extra_principal=Decimal("0.00"),
 ):
     """Run the baseline payoff-scenario composer call for the loan detail page.
 
@@ -462,11 +562,15 @@ def build_baseline_scenarios(
     planned trajectory -- reflects the overpayment, accelerating the band chart
     and the projected payoff exactly as the cash debit does.
 
-    Read switch: reads the genesis-ledger confirmed view ONCE via
-    :func:`loan_payment_service.confirmed_loan_view` and threads it into the
-    composer as ``confirmed_view``, so the chart / summary derive from the same
-    real owed balance AND ledger-derived confirmed history the loan card
-    (:func:`_resolve`) shows -- they cannot desync off-schedule.
+    Read switch: reads the genesis-ledger confirmed view ONCE via the seam's
+    :func:`app.services.balance_at.confirmed_view` -- the FOLD of the loan's
+    recorded events since plan step E1d-b, the SAME producer the seam's whole-loan
+    read seeds every resolution with -- and threads it into the composer as
+    ``confirmed_view``, so the chart / summary derive from the same real owed
+    balance AND confirmed history the loan card's seam balance
+    (:attr:`_RouteLoanContext.current_balance`) shows.  They cannot desync
+    off-schedule, and a loan whose posting cache is cold no longer drops to the
+    money-blind anchor replay here (finding B-12).
 
     Shared by the dashboard GET (which also reads the full scenario for the
     summary / breakdown) and the ARM rate-change band producer
@@ -476,29 +580,29 @@ def build_baseline_scenarios(
     Args:
         loan_inputs: The loan's :class:`loan_resolver.LoanInputs` bundle with
             ALL payments.
-        scenario_id: The baseline scenario id (or ``None``) for the ledger
-            seed scope.
-        as_of: The replay/projection boundary (typically ``date.today()``).
+        account: The loan :class:`~app.models.account.Account` the confirmed view
+            is built for.
+        balance_ctx: The read pass's :class:`BalanceContext` -- its ``scenario``
+            scopes the confirmed seed and its ``as_of`` IS the replay / projection
+            boundary, so the seed and the composer can no longer be handed two
+            different clocks.
         extra_principal: The loan's standing monthly overpayment (``0.00`` when
             none), threaded into the committed trajectory.
 
     Returns:
         The baseline :class:`loan_resolver.PayoffScenarios`.
     """
-    view = confirmed_loan_view(
-        loan_inputs.loan_params.account_id, scenario_id, as_of,
-    )
     return loan_resolver.compute_payoff_scenarios(
         loan_inputs=loan_inputs,
         extra_monthly=Decimal("0.00"),
-        as_of=as_of,
-        confirmed_view=view,
+        as_of=balance_ctx.as_of,
+        confirmed_view=balance_at.confirmed_view(account, balance_ctx),
         extra_principal=extra_principal,
     )
 
 
-def _loan_inputs(params, route_ctx) -> loan_resolver.LoanInputs:
-    """Bundle a loan's resolver inputs from its params + loaded route context.
+def _loan_inputs(params, loan_context: LoanContext) -> loan_resolver.LoanInputs:
+    """Bundle a loan's resolver inputs from its params + loaded :class:`LoanContext`.
 
     The single :class:`loan_resolver.LoanInputs` constructor for the loan ROUTE
     surfaces (the dashboard GET and the band-chart producer), so the
@@ -507,8 +611,8 @@ def _loan_inputs(params, route_ctx) -> loan_resolver.LoanInputs:
     Args:
         params: ORM :class:`LoanParams` instance (also the anchor-fact
             synthesis source).
-        route_ctx: The :class:`_RouteLoanContext` from
-            :func:`_load_loan_context`; its ``loan`` carries the prepared
+        loan_context: The service-loaded :class:`LoanContext` (``ctx.loan`` for a
+            route surface, or a directly-loaded one) carrying the prepared
             payments and rate changes.
 
     Returns:
@@ -517,9 +621,48 @@ def _loan_inputs(params, route_ctx) -> loan_resolver.LoanInputs:
     return loan_resolver.LoanInputs(
         loan_params=params,
         anchor_events=load_loan_anchor_facts(params),
-        payments=route_ctx.loan.payments,
-        rate_changes=route_ctx.loan.rate_changes,
+        payments=loan_context.payments,
+        rate_changes=loan_context.rate_changes,
     )
+
+
+def load_baseline_scenarios(account, params):
+    """Load a loan's context and compose its baseline payoff scenarios.
+
+    The shared load-and-compose the two SCHEDULE-projection surfaces run -- the
+    band-chart producer (:func:`build_loan_band_chart`) and the standalone
+    schedule route (:mod:`app.routes.loan.schedule`).  It loads the service
+    :class:`LoanContext` and composes the baseline
+    :class:`~app.services.loan_resolver.PayoffScenarios` (no what-if lever)
+    threaded with the loan's standing extra -- the committed trajectory the loan
+    card carries.  Returns both so the caller can read the ``LoanContext``
+    (escrow / rate feeds) alongside the composed scenarios.
+
+    It builds a :class:`BalanceContext` for the pass (plan step E1d-b) where it
+    previously resolved a bare scenario id: the confirmed slice these schedules
+    open with is now the seam's FOLD of the loan's recorded events, so the read
+    pass that memoizes the loan's walk is the input, not a scenario id.  That is
+    a strictly cheaper read too -- the context's construction IS the baseline
+    lookup this used to make on its own.
+
+    Ownership is verified by the caller (both call sites are ``require_owner`` /
+    ``_require_configured_loan``-gated), satisfying the composer's
+    trust-the-caller contract.
+
+    Args:
+        account: ORM :class:`Account` instance for the loan.
+        params: ORM :class:`LoanParams` instance.
+
+    Returns:
+        ``(LoanContext, PayoffScenarios)`` for this read.
+    """
+    balance_ctx = BalanceContext.build(current_user.id)
+    loan = load_loan_context(account.id, balance_ctx.scenario_id, params)
+    scenarios = build_baseline_scenarios(
+        _loan_inputs(params, loan), account, balance_ctx,
+        loan_standing_extra(account.id, current_user.id),
+    )
+    return loan, scenarios
 
 
 def build_loan_band_chart(account, params):
@@ -535,6 +678,12 @@ def build_loan_band_chart(account, params):
     (``add_rate_change`` is ``require_owner``-gated), satisfying the resolver's
     trust-the-caller contract.
 
+    The band is a schedule PROJECTION, not a balance-at-T, but its confirmed
+    slice is one: it runs the composer via :func:`load_baseline_scenarios`, whose
+    confirmed seed is the seam's fold since plan step E1d-b (the schedule the
+    client splits at the confirmed / projected boundary therefore carries the same
+    history the loan card does).
+
     Args:
         account: ORM :class:`Account` instance for the loan.
         params: ORM :class:`LoanParams` instance.
@@ -544,14 +693,8 @@ def build_loan_band_chart(account, params):
         ``current_index``) -- identical in shape to the dashboard's initial
         ``band_chart`` -- for the rate route to hand to ``loan_detail.js``.
     """
-    ctx = _load_loan_context(account, params)
-    scenario = get_baseline_scenario(current_user.id)
-    scenario_id = scenario.id if scenario else None
-    scenarios = build_baseline_scenarios(
-        _loan_inputs(params, ctx), scenario_id, date.today(),
-        loan_standing_extra(account.id, current_user.id),
-    )
-    return build_band_chart(scenarios, len(ctx.loan.payments) > 0)
+    loan, scenarios = load_baseline_scenarios(account, params)
+    return build_band_chart(scenarios, len(loan.payments) > 0)
 
 
 def _compute_schedule_totals(schedule, monthly_escrow=Decimal("0.00")):

@@ -6,7 +6,7 @@ confirmed balance is fully reconstructable as ``-(sum of its linked postings)``
 with no external anchor read (the foundation the read switch and Step-5 reporting
 move onto).
 
-Every anchor a loan carries posts one balanced correction (:mod:`._walk` computes
+Every anchor a loan carries posts one balanced correction (:mod:`app.services.loan_ledger` computes
 its ``owed_before``)::
 
     loan-linked ledger   (owed_before - anchor_balance)   [opening | trueup]
@@ -29,17 +29,13 @@ re-derives the target and posts the balancing delta, so a stale true-up
 self-heals.  Flushes but never commits -- the caller owns the transaction.
 """
 
-from datetime import date
-
 from app import ref_cache
 from app.enums import (
     LedgerAccountKindEnum,
     PostingKindEnum,
     PostingSourceEnum,
 )
-from app.extensions import db
-from app.models.pay_period import PayPeriod
-from app.services import account_projection, ledger_account_service
+from app.services import ledger_account_service
 from app.services._posting_reconcile import (
     CorrectionKey,
     LegMap,
@@ -49,14 +45,17 @@ from app.services._posting_reconcile import (
     merge_target_legs,
     posted_correction_legs,
 )
+from app.services.loan_ledger import (
+    LoanAnchorCorrection,
+    owner_pay_periods,
+    resolve_anchor_pay_period,
+    walk_loan_ledger,
+)
+from app.services.loan_loaders import LoanAnchorFact
 from app.services.posting_service import (
     PostingError,
     _ledger_account_for,
 )
-
-from app.services.loan_loaders import LoanAnchorFact
-
-from ._walk import LoanAnchorCorrection, walk_loan_ledger
 
 
 def _anchor_correction_kinds(
@@ -166,33 +165,6 @@ def _anchor_correction_targets(
     return target
 
 
-def _resolve_anchor_pay_period(
-    periods: list[PayPeriod], target_date: date,
-) -> PayPeriod:
-    """Return the pay period an anchor correction dated *target_date* books in.
-
-    ``journal_entries.pay_period_id`` is NOT NULL, so an anchor correction needs a
-    period even though the anchor date can predate every period (an imported loan
-    whose origination is years before the app's first period).  Uses the period
-    CONTAINING *target_date*, falling back to the user's EARLIEST period when the
-    date precedes all of them -- so an opening is attributed to a real period and
-    the reader (which bounds by period start) counts it from the first period on.
-
-    Args:
-        periods: The owner's pay periods, ascending by ``period_index`` (non-empty;
-            the caller guarantees it).
-        target_date: The anchor's date.
-
-    Returns:
-        The containing :class:`~app.models.pay_period.PayPeriod`, or the earliest
-        when *target_date* precedes all periods.
-    """
-    containing = account_projection.find_period_containing_date(
-        periods, target_date,
-    )
-    return containing if containing is not None else periods[0]
-
-
 def reconcile_loan_anchor_corrections(
     loan_account_id: int,
     scenario_id: int,
@@ -223,7 +195,7 @@ def reconcile_loan_anchor_corrections(
         loan_account_id: The loan whose anchor corrections to reconcile.
         scenario_id: The budget scenario to reconcile within.
         corrections: The loan's anchor corrections from :func:`walk_loan_ledger`
-            (origination opening + user-trueups on or before the walk's as-of).
+            (its origination opening + every user-trueup).
 
     Raises:
         PostingError: If the loan has anchor corrections to post but its owner has
@@ -234,12 +206,12 @@ def reconcile_loan_anchor_corrections(
     owner_id = account_owner_id(loan_account_id)
     if owner_id is None:
         return
-    periods = (
-        db.session.query(PayPeriod)
-        .filter(PayPeriod.user_id == owner_id)
-        .order_by(PayPeriod.period_index)
-        .all()
-    )
+    # The SAME calendar load the fold's visibility rule uses
+    # (:func:`app.services.loan_ledger.owner_pay_periods`), so the period this
+    # writer FILES an anchor under and the period the fold derives its visible-on
+    # date FROM can never come from two different lists.  That is what makes
+    # "two consumers, one rule" true of the period set as well as the lookup.
+    periods = owner_pay_periods(loan_account_id)
     if not periods:
         raise PostingError(
             f"Loan account {loan_account_id} has anchor corrections to post but "
@@ -260,14 +232,14 @@ def reconcile_loan_anchor_corrections(
         legs = delta_legs(target.get(key, {}), posted.get(key, {}))
         if not legs:
             continue
-        period = _resolve_anchor_pay_period(periods, key[1])
+        period = resolve_anchor_pay_period(periods, key[1])
         emit_anchor_correction_entry(
             owner_id, scenario_id, key, period.id, legs,
         )
 
 
 def sync_loan_anchor_corrections(
-    loan_account_id: int, scenario_id: int, as_of: date,
+    loan_account_id: int, scenario_id: int,
 ) -> None:
     """Walk a loan's anchors and reconcile ONLY their opening / true-up corrections.
 
@@ -280,13 +252,16 @@ def sync_loan_anchor_corrections(
     single-half entry point remains for reconciling anchors in isolation (the
     opening / true-up unit tests).
 
-    A loan with no anchors (unresolvable) is a no-op.  Flushes but does not
-    commit (the caller owns the transaction).
+    Posts EVERY anchor the loan carries, whatever its date -- the walk reads no
+    clock, and which anchors have HAPPENED as of a date is the readers' decision
+    (:func:`app.services.loan_ledger.walk_loan_ledger`, which also records where that decision is
+    currently made by the readers' CALLERS rather than the readers: N-10).  A loan
+    with no anchors (unresolvable) is a no-op.  Flushes but does not commit (the
+    caller owns the transaction).
 
     Args:
         loan_account_id: The loan whose anchor corrections to reconcile.
         scenario_id: The budget scenario to reconcile within.
-        as_of: The evaluation date; anchors after it are not yet corrections.
 
     Raises:
         PostingError: If the loan has anchor corrections to post but its owner has
@@ -294,5 +269,5 @@ def sync_loan_anchor_corrections(
     """
     reconcile_loan_anchor_corrections(
         loan_account_id, scenario_id,
-        walk_loan_ledger(loan_account_id, scenario_id, as_of).anchor_corrections,
+        walk_loan_ledger(loan_account_id, scenario_id).anchor_corrections,
     )

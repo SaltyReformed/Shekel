@@ -1919,7 +1919,8 @@ class TestInvestmentEntryAwareRouting:
         canonical producer's value so the contract is locked beyond
         the rendered string.
         """
-        from app.services import balance_resolver, pay_period_service  # pylint: disable=import-outside-toplevel
+        from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
+        from app.services.balance_at import _cash_engine as balance_resolver  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
             user = seed_user["user"]
@@ -2264,7 +2265,7 @@ class TestProjectionNoCurrentPeriodDoubleCount:
         """Seed a PROJECTED transfer into the investment account in *period*.
 
         A projected shadow income is BOTH counted in the entries-aware
-        end-of-current balance (``balance_calculator.sum_projected``) and
+        end-of-current balance (``cash_ledger.sum_projected``) and
         re-applied by the growth-engine timeline -- the exact double-count
         the seed correction removes.
         """

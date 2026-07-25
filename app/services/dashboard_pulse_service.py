@@ -36,10 +36,10 @@ from itertools import groupby
 from app.extensions import db
 from app.models.account import Account
 from app.models.pay_period import PayPeriod
-from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.user import UserSettings
 from app.services import balance_at, pay_period_service
+from app.services.balance_at import BalanceContext
 from app.services.dashboard_service import (
     _DEFAULT_STALENESS_DAYS,
     _get_last_anchor_date,
@@ -111,8 +111,9 @@ def compute_pulse_section(user_id: int) -> dict | None:
         The pulse-region dict, or ``None`` when the region cannot be
         computed (no account / scenario / current period).
     """
-    account, scenario, current_period = _resolve_section_context(user_id)
-    if account is None or scenario is None or current_period is None:
+    account, balance_ctx, current_period = _resolve_section_context(user_id)
+    if (account is None or balance_ctx.scenario is None
+            or current_period is None):
         return None
 
     settings = _get_user_settings(user_id)
@@ -146,7 +147,7 @@ def compute_pulse_section(user_id: int) -> dict | None:
     # ``balances`` is always a populated map; the chart / trough / peak keep
     # their existing missing-key skips for any period the resolver omits.
     end_balances = balance_at.cash_balance_map(
-        account, scenario, all_periods,
+        account, balance_ctx, all_periods,
     ).balances
     forward_periods = [
         p for p in all_periods
@@ -163,13 +164,13 @@ def compute_pulse_section(user_id: int) -> dict | None:
     if next_period is not None:
         period_ids.append(next_period.id)
     unpaid_rows = _query_unpaid_expense_rows(
-        account.id, scenario.id, period_ids,
+        account.id, balance_ctx.scenario.id, period_ids,
     )
 
     due_soon = _pulse_due_soon(unpaid_rows, current_period)
 
     return {
-        "hero": _pulse_hero(account, scenario, current_period, settings),
+        "hero": _pulse_hero(account, balance_ctx, current_period, settings),
         "chart": _pulse_chart(forward_periods, end_balances, settings),
         "trough": _pulse_trough(
             forward_periods, end_balances, current_period,
@@ -188,7 +189,7 @@ def compute_pulse_section(user_id: int) -> dict | None:
 
 def _pulse_hero(
     account: Account,
-    scenario: Scenario,
+    balance_ctx: BalanceContext,
     current_period: PayPeriod,
     settings: UserSettings | None,
 ) -> dict:
@@ -214,7 +215,8 @@ def _pulse_hero(
     Args:
         account: The resolved dashboard account (``resolve_grid_account``'s
             pick; may be any kind).
-        scenario: The baseline scenario.
+        balance_ctx: The read pass's
+            :class:`~app.services.balance_at.BalanceContext`.
         current_period: The period containing today.
         settings: The user's settings, or ``None``.
 
@@ -223,7 +225,9 @@ def _pulse_hero(
         ``period_end_date``, ``account_name``, ``account_id``,
         ``last_updated_date``, ``is_stale``, ``next_paycheck_date``.
     """
-    balance = balance_at.cash_balance_at(account, scenario, date.today())
+    balance = balance_at.cash_balance_at(
+        account, balance_ctx, balance_ctx.as_of,
+    )
     # One fetch of the raw anchor instant, two truncations: staleness
     # counts days in the UTC frame (storage convention, unchanged), the
     # caption shows the day in the user's display timezone so a late-
@@ -782,14 +786,23 @@ def compute_tracks_section(user_id: int) -> dict:
     # when this path runs, not on every dashboard_pulse_service import.
     from app.services import savings_dashboard_service  # pylint: disable=import-outside-toplevel
 
-    goal_data = savings_dashboard_service.compute_goal_progress(user_id)
+    # ONE read pass for all three producers: each loan is resolved once for the
+    # whole section rather than once per producer (they used to start three
+    # independent passes, so a two-loan user paid for six resolutions here).
+    balance_ctx = BalanceContext.build(user_id)
+
+    goal_data = savings_dashboard_service.compute_goal_progress(
+        user_id, balance_ctx,
+    )
     goals = [_track_goal_datum(gd) for gd in goal_data]
 
-    debt = savings_dashboard_service.compute_debt_summary(user_id)
+    debt = savings_dashboard_service.compute_debt_summary(user_id, balance_ctx)
     if debt is not None:
         debt = dict(debt)
         debt["principal_paid_fraction"] = (
-            savings_dashboard_service.compute_debt_principal_progress(user_id)
+            savings_dashboard_service.compute_debt_principal_progress(
+                user_id, balance_ctx,
+            )
         )
 
     return {"goals": goals, "debt": debt}

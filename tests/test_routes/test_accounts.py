@@ -26,7 +26,12 @@ from app.models.investment_params import InvestmentParams
 from app.models.user import User, UserSettings
 from app.models.ref import AccountType, Status, TransactionType
 from app.models.transaction import Transaction
-from app.services import account_service, balance_calculator, pay_period_service
+from app.services import (
+    account_service,
+    cash_ledger,
+    pay_period_service,
+)
+from app.services.balance_at import _calculator as balance_calculator
 from app.services.auth_service import hash_password
 
 
@@ -3016,7 +3021,7 @@ class TestCheckingDetail:
         """
         # Pylint: import-outside-toplevel -- deferred import is the file-wide
         # test convention.
-        from app.services import balance_resolver  # pylint: disable=import-outside-toplevel
+        from app.services.balance_at import _cash_engine as balance_resolver  # pylint: disable=import-outside-toplevel
         from app.utils.dates import to_display_date  # pylint: disable=import-outside-toplevel
         with app.app_context():
             periods = pay_period_service.generate_pay_periods(
@@ -3032,7 +3037,7 @@ class TestCheckingDetail:
 
             # The caption shows the anchor event's DISPLAY-timezone civil date,
             # computed here from the same ``created_at`` the caption renders.
-            anchor = balance_resolver.resolve_anchor(
+            anchor = cash_ledger.resolve_anchor(
                 acct, seed_user["scenario"].id,
             )
             anchor_date_str = to_display_date(anchor.created_at).strftime(
@@ -3047,7 +3052,7 @@ class TestCheckingDetail:
 # query without ``selectinload(Transaction.entries)`` (same shape as
 # the savings tile pre-Commit-6) and forked on the NULL-anchor case
 # differently from the grid.  The silent-degrade seam in
-# ``balance_calculator._entry_aware_amount`` (closed at the math layer
+# ``cash_ledger._amounts._entry_aware_amount`` (closed at the math layer
 # by Commit 5, structurally closed by the canonical producer in Commit
 # 5) yielded $160.00 on the grid and $114.29 on /accounts for the
 # audit's symptom #1 / #5 tuple.  Commit 7 routes the checking detail
@@ -3190,7 +3195,7 @@ class TestCheckingDetailCanonicalProducer:
         reported the silent-degrade value Decimal("114.29") via the
         unloaded-entries seam.
         """
-        from app.services import balance_resolver  # pylint: disable=import-outside-toplevel
+        from app.services.balance_at import _cash_engine as balance_resolver  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
             current_period = pay_period_service.get_current_period(
@@ -3782,7 +3787,7 @@ class TestCashDetailContext:
         """
         # Pylint: import-outside-toplevel -- deferred import is the file-wide
         # test convention.
-        from app.services import balance_resolver  # pylint: disable=import-outside-toplevel
+        from app.services.balance_at import _cash_engine as balance_resolver  # pylint: disable=import-outside-toplevel
         from app.utils.dates import to_display_date  # pylint: disable=import-outside-toplevel
         with app.app_context():
             checking_type = db.session.query(AccountType).filter_by(
@@ -3800,7 +3805,7 @@ class TestCashDetailContext:
             db.session.add(acct)
             db.session.commit()
 
-            anchor = balance_resolver.resolve_anchor(
+            anchor = cash_ledger.resolve_anchor(
                 acct, seed_user["scenario"].id,
             )
             # Non-vacuity: the event date and the period start genuinely differ.
@@ -3868,7 +3873,7 @@ class TestCashDetailContext:
         """
         # Pylint: import-outside-toplevel -- deferred import is the file-wide
         # test convention.
-        from app.services import net_worth_kernel  # pylint: disable=import-outside-toplevel
+        from app.services.balance_at import _kernel as net_worth_kernel  # pylint: disable=import-outside-toplevel
         with app.app_context():
             periods = pay_period_service.generate_pay_periods(
                 user_id=seed_user["user"].id,
@@ -5942,3 +5947,125 @@ class TestAccountsBlueprintReExport:
         from app.routes.accounts import accounts_bp as package_bp  # pylint: disable=import-outside-toplevel
         from app.routes.accounts._bp import accounts_bp as leaf_bp  # pylint: disable=import-outside-toplevel
         assert package_bp is leaf_bp
+
+
+class TestAnchorKindGate:
+    """The D4 / A1 amortizing-kind gate on every cash-anchor write door.
+
+    Finding B-15: ``PATCH /accounts/<id>/true-up`` (and the full-form
+    edit) wrote ``accounts.current_anchor_balance`` for an AMORTIZING
+    loan -- a second, stored, never-reconciled loan balance, which the
+    grid then rendered (the real Mortgage's column was set to $1.00
+    with an HTTP 200).  A loan's balance is ledger-derived and is
+    asserted through the loan page's own true-up; every cash-anchor
+    door now refuses the kind.
+    """
+
+    @staticmethod
+    def _loan(seed_user):
+        """Create a fully configured loan through the shared builder."""
+        from tests._test_helpers import create_loan_account  # pylint: disable=import-outside-toplevel
+
+        return create_loan_account(
+            seed_user, db.session, name="Gate Test Loan",
+            principal=Decimal("10000.00"), rate=Decimal("0.05000"),
+        )
+
+    def test_true_up_refuses_amortizing_loan(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """PATCH true-up on a loan: 422, and NOTHING is written.
+
+        Asserts all three no-write invariants: the cash anchor column is
+        unchanged, no ``AccountAnchorHistory`` row was appended, and no
+        ``LoanAnchorEvent`` was created (the refusal must not leak into
+        the loan's REAL true-up path either).
+        """
+        from app.models.loan_anchor_event import LoanAnchorEvent  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            loan = self._loan(seed_user)
+            column_before = loan.current_anchor_balance
+            history_before = (
+                db.session.query(AccountAnchorHistory)
+                .filter_by(account_id=loan.id).count()
+            )
+            events_before = (
+                db.session.query(LoanAnchorEvent)
+                .filter_by(account_id=loan.id).count()
+            )
+
+            response = auth_client.patch(
+                f"/accounts/{loan.id}/true-up",
+                data={"anchor_balance": "1.00"},
+            )
+
+            assert response.status_code == 422
+            assert b"not a cash anchor" in response.data
+
+            refreshed = db.session.get(Account, loan.id)
+            assert refreshed.current_anchor_balance == column_before
+            assert (
+                db.session.query(AccountAnchorHistory)
+                .filter_by(account_id=loan.id).count()
+            ) == history_before
+            assert (
+                db.session.query(LoanAnchorEvent)
+                .filter_by(account_id=loan.id).count()
+            ) == events_before
+
+    def test_anchor_form_refuses_amortizing_loan(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """GET anchor-form for a loan: 422 -- the editor never even opens."""
+        with app.app_context():
+            loan = self._loan(seed_user)
+
+            response = auth_client.get(f"/accounts/{loan.id}/anchor-form")
+
+            assert response.status_code == 422
+            assert b"not a cash anchor" in response.data
+
+    def test_update_form_rejects_loan_anchor_change(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """POST /accounts/<id> with a CHANGED anchor on a loan is refused."""
+        with app.app_context():
+            loan = self._loan(seed_user)
+            column_before = loan.current_anchor_balance
+
+            response = auth_client.post(f"/accounts/{loan.id}", data={
+                "name": loan.name,
+                "account_type_id": loan.account_type_id,
+                "anchor_balance": "1.00",
+            }, follow_redirects=True)
+
+            assert response.status_code == 200
+            assert b"not a cash anchor" in response.data
+
+            refreshed = db.session.get(Account, loan.id)
+            assert refreshed.current_anchor_balance == column_before
+
+    def test_update_form_allows_loan_edit_with_unchanged_anchor(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A loan rename with the form's unchanged anchor echo succeeds.
+
+        The edit form round-trips ``current_anchor_balance`` on every
+        submit; an unchanged echo is not an assertion, so gating it
+        would break every ordinary loan edit.
+        """
+        with app.app_context():
+            loan = self._loan(seed_user)
+
+            response = auth_client.post(f"/accounts/{loan.id}", data={
+                "name": "Renamed Gate Loan",
+                "account_type_id": loan.account_type_id,
+                "anchor_balance": str(loan.current_anchor_balance),
+            }, follow_redirects=True)
+
+            assert response.status_code == 200
+            assert b"not a cash anchor" not in response.data
+
+            refreshed = db.session.get(Account, loan.id)
+            assert refreshed.name == "Renamed Gate Loan"

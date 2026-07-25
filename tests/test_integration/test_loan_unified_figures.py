@@ -21,16 +21,6 @@ two files reinforce each other on the loan single-source-of-truth
 contract.
 """
 
-# pylint: disable=protected-access
-# Cross-surface single-source-of-truth tests deliberately reach into
-# the year_end_summary_service package's private
-# ``_balances._generate_debt_schedules`` /
-# ``_income_tax._compute_mortgage_interest`` helpers (Phase 2 split)
-# because the public ``compute_year_end_summary`` aggregate exposes
-# derived dec31 balances, not the schedule rows themselves -- and the
-# schedule-row equality is exactly what HIGH-08 / F-017..F-023 demand
-# we lock.
-
 import re
 import subprocess
 from datetime import date
@@ -38,23 +28,23 @@ from decimal import Decimal
 from pathlib import Path
 
 from app import ref_cache
-from app.enums import LoanAnchorSourceEnum, RecurrencePatternEnum
+from app.enums import AcctTypeEnum, RecurrencePatternEnum
 from app.extensions import db
-from app.models.loan_anchor_event import LoanAnchorEvent
-from app.models.loan_params import LoanParams
 from app.models.loan_payment_settings import LoanPaymentSettings
 from app.models.recurrence_rule import RecurrenceRule
-from app.models.ref import AccountType
 from app.models.transfer_template import TransferTemplate
-from app.services import (
-    account_service,
-    loan_payment_service,
-    loan_resolution,
-    loan_resolver,
-    year_end_summary_service,
-)
+from app.services import balance_at, loan_loaders, loan_payment_service, loan_posting_service, loan_resolver
+from app.services.balance_at import _kernel as net_worth_kernel
+from app.utils.dates import add_months
 from app.utils.money import round_money
-from tests._test_helpers import insert_origination_rate
+from app.services.balance_at import BalanceContext
+from app.services.balance_at._resolution import resolved_loan
+from tests._test_helpers import (
+    create_loan_account,
+    freeze_today,
+    loan_params_for,
+    seam_confirmed_view,
+)
 
 
 # ── Hand-computed reference values ────────────────────────────────
@@ -88,91 +78,55 @@ ARM_WINDOW = 60
 # ── Fixture helpers ───────────────────────────────────────────────
 
 
-def _create_fixed_loan(seed_user, period_id, *, name="C17 Mortgage"):
+def _create_fixed_loan(seed_user, period, *, name="C17 Mortgage"):
     """Materialise the canonical $300k fixed-rate mortgage.
 
     Mirrors ``test_loan_resolver_single_source._create_fixed_loan``
-    (same arithmetic, same anchor event) so the assertions in the
-    two files reinforce each other.
+    (same arithmetic, same anchor) so the assertions in the two files
+    reinforce each other: both route through the shared
+    :func:`create_loan_account` factory, which opens the loan's genesis
+    posting ledger in the same transaction as the ``LoanParams`` insert --
+    what every production loan write does (``app/routes/loan/params.py``).
+
+    Args:
+        seed_user: The ``seed_user`` fixture dict.
+        period: The :class:`PayPeriod` to anchor the account to.
+        name: The account name.
     """
-    loan_type = (
-        db.session.query(AccountType).filter_by(name="Mortgage").one()
+    account = create_loan_account(
+        seed_user, db.session, name=name, principal=FIXED_PRINCIPAL,
+        rate=FIXED_RATE, term=FIXED_TERM, origination_date=FIXED_ORIGINATION,
+        payment_day=1, account_type=AcctTypeEnum.MORTGAGE,
+        anchor_period=period,
     )
-    account = account_service.create_account(
-        account_service.AccountSpec(
-            user_id=seed_user["user"].id,
-            account_type_id=loan_type.id,
-            name=name,
-            anchor_balance=FIXED_PRINCIPAL,
-            anchor_period_id=period_id,
-        ),
-    )
-    db.session.flush()
-
-    loan_params = LoanParams(
-        account_id=account.id,
-        original_principal=FIXED_PRINCIPAL,
-        current_principal=FIXED_PRINCIPAL,
-        term_months=FIXED_TERM,
-        origination_date=FIXED_ORIGINATION,
-        payment_day=1,
-        is_arm=False,
-    )
-    db.session.add(loan_params)
-    db.session.flush()
-    insert_origination_rate(loan_params, FIXED_RATE)
-
-    db.session.add(LoanAnchorEvent(
-        account_id=account.id,
-        anchor_date=FIXED_ORIGINATION,
-        anchor_balance=FIXED_PRINCIPAL,
-        source_id=ref_cache.loan_anchor_source_id(
-            LoanAnchorSourceEnum.ORIGINATION,
-        ),
-    ))
-    db.session.commit()
-    return account, loan_params
+    return account, loan_params_for(db.session, account.id)
 
 
-def _create_arm_loan(seed_user, period_id, *, name="C17 ARM"):
-    """Materialise the canonical 5/5 ARM in its fixed-rate window."""
-    loan_type = (
-        db.session.query(AccountType).filter_by(name="Mortgage").one()
-    )
-    account = account_service.create_account(
-        account_service.AccountSpec(
-            user_id=seed_user["user"].id,
-            account_type_id=loan_type.id,
-            name=name,
-            anchor_balance=ARM_PRINCIPAL,
-            anchor_period_id=period_id,
-        ),
-    )
-    db.session.flush()
+def _create_arm_loan(seed_user, period, *, name="C17 ARM"):
+    """Materialise the canonical 5/5 ARM in its fixed-rate window.
 
-    loan_params = LoanParams(
-        account_id=account.id,
-        original_principal=ARM_PRINCIPAL,
-        current_principal=ARM_PRINCIPAL,
-        term_months=ARM_TERM,
-        origination_date=FIXED_ORIGINATION,
-        payment_day=1,
-        is_arm=True,
-        arm_first_adjustment_months=ARM_WINDOW,
-        arm_adjustment_interval_months=12,
-    )
-    db.session.add(loan_params)
-    db.session.flush()
-    insert_origination_rate(loan_params, ARM_RATE)
+    The shared factory carries no ARM knobs, so the ARM columns are set the way
+    production's own ARM edit does (``loan.update_params``): assign the params,
+    then re-sync the genesis ledger for every scenario before committing, so the
+    postings and the params land in one transaction and the loan is never left
+    on the no-ledger fallback.
 
-    db.session.add(LoanAnchorEvent(
-        account_id=account.id,
-        anchor_date=FIXED_ORIGINATION,
-        anchor_balance=ARM_PRINCIPAL,
-        source_id=ref_cache.loan_anchor_source_id(
-            LoanAnchorSourceEnum.ORIGINATION,
-        ),
-    ))
+    Args:
+        seed_user: The ``seed_user`` fixture dict.
+        period: The :class:`PayPeriod` to anchor the account to.
+        name: The account name.
+    """
+    account = create_loan_account(
+        seed_user, db.session, name=name, principal=ARM_PRINCIPAL,
+        rate=ARM_RATE, term=ARM_TERM, origination_date=FIXED_ORIGINATION,
+        payment_day=1, account_type=AcctTypeEnum.MORTGAGE,
+        anchor_period=period,
+    )
+    loan_params = loan_params_for(db.session, account.id)
+    loan_params.is_arm = True
+    loan_params.arm_first_adjustment_months = ARM_WINDOW
+    loan_params.arm_adjustment_interval_months = 12
+    loan_posting_service.sync_loan_postings_all_scenarios(account.id)
     db.session.commit()
     return account, loan_params
 
@@ -188,11 +142,7 @@ def _resolver_state(account, loan_params, as_of):
     ctx = loan_payment_service.load_loan_context(
         account.id, None, loan_params,
     )
-    anchor_events = (
-        db.session.query(LoanAnchorEvent)
-        .filter_by(account_id=account.id)
-        .all()
-    )
+    anchor_events = loan_loaders.load_loan_anchor_facts(loan_params)
     return loan_resolver.resolve_loan(
         loan_resolver.LoanInputs(
             loan_params, anchor_events, ctx.payments, ctx.rate_changes,
@@ -223,15 +173,15 @@ def test_per_period_principal_interest_single_source(
     """
     with app.app_context():
         account, loan_params = _create_fixed_loan(
-            seed_user, seed_periods[0].id,
+            seed_user, seed_periods[0],
         )
 
         state = _resolver_state(account, loan_params, date.today())
 
-        debt_schedules = year_end_summary_service._balances._generate_debt_schedules(
-            [account], seed_user["scenario"].id,
+        debt_schedules = net_worth_kernel.debt_schedule_rows(
+            [account], BalanceContext.build(seed_user["user"].id),
         )
-        year_end_schedule = debt_schedules[account.id].schedule
+        year_end_schedule = debt_schedules[account.id]
 
         # The two schedules MUST be the same length and identical
         # row-by-row -- year-end derives from the resolver, no
@@ -265,26 +215,34 @@ def test_per_period_principal_interest_single_source(
 
 
 def test_total_interest_one_definition(
-    app, seed_user, seed_periods,
+    app, seed_user, seed_periods, monkeypatch,
 ):
-    """C17-2 / HIGH-08 / F-019: the calendar-year mortgage interest
-    figure is an explicit, labeled subset of the resolver's life-of-
-    loan total -- not a separate computation.
+    """C17-2 / HIGH-08 / F-019: the calendar-year mortgage-interest figure
+    is a labeled slice of the loan's ONE life-of-loan interest source --
+    not a separate computation.
 
-    Hand-computed life-of-loan total for our fixture
-    (``$300,000`` / ``6%`` / ``360 months``, origination 2026-01-01)
-    is the sum of the per-month interest rows the engine produces.
-    The 2026 mortgage-interest subset is the sum of those same rows
-    whose ``payment_date.year == 2026``.  Computing both from
-    ``state.schedule`` proves the contract: there is one schedule;
-    the calendar-year view is a filter on it.
+    Step **C6c** moved that source off the resolver's contractual schedule
+    onto the loan's forward PLAN (the same model the balance folds).  For a
+    CURRENT loan -- no overdue installment the plan would honestly omit
+    (that B-9 behaviour is pinned in ``test_loan_interest_in_year``), no
+    live-vs-contractual drift -- the plan reproduces the contractual
+    paydown to the cent, so the seam's calendar-year figure still equals the
+    resolver schedule's 2026 subset.  This pins that reproduction (a
+    healthy-loan cross-check that the plan cutover moved no money) AND the
+    slice contract: 2026 is a strict, positive part of the life-of-loan
+    total.
+
+    Frozen 2026-01-15 -- just after the 2026-01-01 origination, before the
+    first installment -- so the loan is current and the figures are
+    deterministic rather than dependent on the wall clock.
     """
     with app.app_context():
+        freeze_today(monkeypatch, date(2026, 1, 15))
         account, loan_params = _create_fixed_loan(
-            seed_user, seed_periods[0].id,
+            seed_user, seed_periods[0],
         )
 
-        state = _resolver_state(account, loan_params, date.today())
+        state = _resolver_state(account, loan_params, date(2026, 1, 15))
 
         # Life-of-loan total interest, derived directly from the
         # resolver's single schedule.
@@ -293,31 +251,26 @@ def test_total_interest_one_definition(
         )
         # Resolver applies round_money at the LoanState boundary
         # (loan_resolver.py:647), so state.total_interest matches the
-        # rounded sum of row interests.
+        # rounded sum of row interests -- an invariant of the resolver's own
+        # two derivation paths, independent of where the tax figure reads from.
         assert state.total_interest == round_money(life_of_loan), (
             f"Resolver total_interest={state.total_interest} differs "
             f"from sum-of-rows round_money={round_money(life_of_loan)}"
             " -- the resolver's two derivation paths must agree."
         )
 
-        # The year-end calendar-year subset.  Year 2026 covers the
-        # first eleven payments (payment_day=1, origination
-        # 2026-01-01 ⇒ first payment 2026-02-01, last in-year payment
-        # 2026-12-01).
-        debt_schedules = year_end_summary_service._balances._generate_debt_schedules(
-            [account], seed_user["scenario"].id,
-        )
-        # This loan has no genesis opening posting (LoanParams added directly,
-        # no create_params chokepoint), so the hybrid falls back to the full
-        # schedule -- byte-identical to the labeled resolver subset below.
-        calendar_year_interest = (
-            year_end_summary_service._income_tax._compute_mortgage_interest(
-                2026, debt_schedules, seed_user["scenario"].id,
-            )
+        # The calendar-year figure, from the balance seam's one loan-interest
+        # producer.  The loan has no confirmed payments, so the fold's settled
+        # term is $0.00 and every 2026 payment is projected -- the plan-folded
+        # projection carries the whole figure.
+        calendar_year_interest = balance_at.loan_interest_in_year(
+            account, BalanceContext.build(seed_user["user"].id), 2026,
         )
 
-        # Hand-derive the same subset directly from the resolver
-        # schedule.  The aggregation MUST equal this.
+        # Cross-check: for this CURRENT loan the plan reproduces the
+        # contractual schedule, so the seam figure equals the resolver
+        # schedule's 2026 subset to the cent -- proof the plan cutover moved
+        # no money on a healthy loan.
         expected_subset = sum(
             (
                 row.interest for row in state.schedule
@@ -327,15 +280,15 @@ def test_total_interest_one_definition(
         )
         assert calendar_year_interest == expected_subset, (
             f"Year-end 2026 mortgage interest "
-            f"{calendar_year_interest} != labeled subset of resolver "
-            f"schedule {expected_subset} -- the calendar-year view "
-            "diverged from the life-of-loan source."
+            f"{calendar_year_interest} != contractual schedule 2026 subset "
+            f"{expected_subset} -- the plan-based figure diverged from the "
+            "contractual paydown for a CURRENT loan."
         )
 
-        # And the labeled subset is strictly less than the total.
-        assert expected_subset < life_of_loan, (
-            "Sanity: 2026's mortgage interest cannot equal the full "
-            "life-of-loan total (the loan runs into 2056)."
+        # And the calendar slice is strictly positive and less than the total.
+        assert Decimal("0.00") < expected_subset < life_of_loan, (
+            "Sanity: 2026's mortgage interest is a strict, positive slice of "
+            "the life-of-loan total (the loan runs into 2056)."
         )
 
 
@@ -466,17 +419,13 @@ def test_months_saved_single_quantity(
 
     with app.app_context():
         account, loan_params = _create_fixed_loan(
-            seed_user, seed_periods[0].id,
+            seed_user, seed_periods[0],
         )
 
         ctx = loan_payment_service.load_loan_context(
             account.id, None, loan_params,
         )
-        anchor_events = (
-            db.session.query(LoanAnchorEvent)
-            .filter_by(account_id=account.id)
-            .all()
-        )
+        anchor_events = loan_loaders.load_loan_anchor_facts(loan_params)
 
         extra = Decimal("200.00")
         scenarios = compute_payoff_scenarios(
@@ -540,8 +489,8 @@ def test_months_saved_single_quantity(
 def test_arm_payoff_date_consistent_across_surfaces(
     app, auth_client, seed_user, seed_periods,
 ):
-    """C17-5 / HIGH-08 / F-023: an ARM loan's payoff_date is identical
-    across resolver / dashboard / year-end-summary surfaces.
+    """C17-5 / HIGH-08 / F-023: an ARM loan's payoff is identical across
+    surfaces -- each surface compared against the producer it now reads.
 
     Pre-Commit-15 the dashboard derived its "Projected Payoff" card
     from ``amortization_engine.calculate_summary`` while the year-end
@@ -550,23 +499,38 @@ def test_arm_payoff_date_consistent_across_surfaces(
     ``calculate_remaining_months`` count made the symptom-#4 payment
     creep visible -- and the resulting schedules ended on different
     payment_dates.  Commit 13 fixed the payment number; Commit 17
-    pins that the payoff_date now matches across every surface that
-    reads the resolver's schedule.
+    pinned that the payoff matched across every surface.
+
+    **Plan step C8d re-partitioned those surfaces, and this test follows.**
+    The chip no longer reads a schedule at all: it reads the seam's DERIVED
+    payoff, the date the BALANCE folds to zero.  So there are two invariants,
+    not one -- the two SCHEDULE consumers still agree with each other, and the
+    chip agrees with the seam -- and for this fixture the two answers
+    deliberately DIFFER, which the control below pins.  This ARM originated
+    2026-01-01 and has never been paid, so its balance is still the full
+    $400,000.00: the contractual schedule says Jan 2056 (it amortizes six
+    installments nobody paid), while the fold says the borrower is still a
+    whole 360-month term away from its NEXT installment.  That gap IS finding
+    B-9, and the chip showing the honest side of it is the point of C8d.
     """
     with app.app_context():
         account, loan_params = _create_arm_loan(
-            seed_user, seed_periods[0].id,
+            seed_user, seed_periods[0],
         )
 
         state = _resolver_state(account, loan_params, date.today())
-        resolver_payoff = state.payoff_date
+        # The resolver publishes no payoff_date since plan C8d; its schedule's
+        # last row is the CONTRACTUAL endpoint, and that is what the other
+        # schedule consumer below must agree with.
+        resolver_payoff = (
+            state.schedule[-1].payment_date if state.schedule else None
+        )
 
         # Year-end-summary path: the same schedule the resolver
         # produced flows through ``_generate_debt_schedules``.
-        debt_schedules = year_end_summary_service._balances._generate_debt_schedules(
-            [account], seed_user["scenario"].id,
-        )
-        ye_schedule = debt_schedules[account.id].schedule
+        ctx = BalanceContext.build(seed_user["user"].id)
+        debt_schedules = net_worth_kernel.debt_schedule_rows([account], ctx)
+        ye_schedule = debt_schedules[account.id]
         ye_payoff = (
             ye_schedule[-1].payment_date if ye_schedule else None
         )
@@ -576,21 +540,41 @@ def test_arm_payoff_date_consistent_across_surfaces(
             f"year-end={ye_payoff} -- two surfaces, two payoff dates."
         )
 
-        # Dashboard "Projected Payoff" card: the route assembles its
-        # own ``AmortizationSummary`` from the resolver-anchored
-        # planned schedule (loan.py:557-565).  Verify the displayed
-        # date matches the resolver's ``payoff_date`` by reading the
-        # rendered loan card.
+        # The chip's producer since C8d: the fold to zero.  Hand-checked -- the
+        # loan has paid nothing, so its balance is still $400,000.00 and the
+        # contractual payment amortizes exactly that over exactly 360
+        # installments; the first one the plan synthesizes is the next one after
+        # today (a strictly-past installment with no record pays nothing, D1), so
+        # the loan clears 360 months after it.
+        seam_payoff = balance_at.loan_payoff_date(account, ctx)
+        assert seam_payoff is not None
+        first_forward = add_months(
+            date(date.today().year, date.today().month, 1), 1,
+        )
+        assert seam_payoff == add_months(first_forward, 359), (
+            f"Derived payoff {seam_payoff} is not 360 installments from the "
+            f"next one ({first_forward}); the fold is not starting from the "
+            "unpaid full principal."
+        )
+        # Control: the two answers genuinely differ here, so the chip assertion
+        # below cannot pass by both producers happening to agree.  Without it a
+        # chip still wired to the schedule would look correct.
+        assert seam_payoff != resolver_payoff, (
+            "The fixture no longer separates the fold from the contractual "
+            "schedule, so this test cannot show which one the chip reads."
+        )
+
+        # Dashboard "Projected Payoff" chip: it renders the seam's derived
+        # payoff (plan C8d), so verify the displayed date against THAT, not
+        # against the resolver's contractual schedule endpoint.
         resp = auth_client.get(f"/accounts/{account.id}/loan")
         assert resp.status_code == 200, (
             f"Loan dashboard GET failed: {resp.status_code}"
         )
         # The dashboard renders the abbreviated month / year of the
         # payoff date in the band's "Projected payoff" chip (template
-        # ``loan/dashboard.html``: ``%b %Y``).  For our ARM fixture (no
-        # payments, no extra) it must equal the resolver's life-of-loan
-        # endpoint.
-        expected_month_year = resolver_payoff.strftime("%b %Y")
+        # ``loan/dashboard.html``: ``%b %Y``).
+        expected_month_year = seam_payoff.strftime("%b %Y")
         html = resp.data.decode()
         # Anchor the assertion to the "Projected payoff" chip so a
         # different ``%b %Y`` token elsewhere on the page cannot mask a
@@ -605,8 +589,10 @@ def test_arm_payoff_date_consistent_across_surfaces(
         )
         card_text = card_match.group(1)
         assert card_text == expected_month_year, (
-            f"Projected Payoff card displayed {card_text!r}, "
-            f"expected resolver's payoff_date {expected_month_year!r}."
+            f"Projected Payoff chip displayed {card_text!r}, expected the "
+            f"seam's derived payoff {expected_month_year!r} (the contractual "
+            f"schedule says {resolver_payoff.strftime('%b %Y')} -- if the chip "
+            "shows THAT, it is still reading the schedule walk)."
         )
 
 
@@ -618,7 +604,7 @@ def _add_recurring_payment_with_extra(seed_user, loan_account, extra):
     1:1 ``loan_payment_settings`` row carries ``derive_from_loan`` plus the
     standing overpayment.  :func:`recurring_transfer_query.loan_standing_extra`
     reads it, so the resolver seam picks it up once step 8 threads it through
-    ``resolve_loan_seeded``.
+    the seam's whole-loan read.
     """
     user = seed_user["user"]
     rule = RecurrenceRule(
@@ -661,7 +647,7 @@ def test_standing_extra_payoff_consistent_across_surfaces(
     of the payment ALREADY debits the extra from checking, the contractual
     liability made projected net worth wrong.
 
-    This pins the fix: the summary seam (``resolve_account_loan``) and the
+    This pins the fix: the summary seam (``resolve_loan_bundle``) and the
     year-end debt aggregation must report the SAME payoff and life-of-loan
     interest as the committed detail trajectory.  The sibling
     ``test_arm_payoff_date_consistent_across_surfaces`` locks the no-payment case
@@ -674,7 +660,7 @@ def test_standing_extra_payoff_consistent_across_surfaces(
     """
     with app.app_context():
         account, loan_params = _create_fixed_loan(
-            seed_user, seed_periods[0].id,
+            seed_user, seed_periods[0],
         )
         extra = Decimal("500.00")
         _add_recurring_payment_with_extra(seed_user, account, extra)
@@ -684,11 +670,7 @@ def test_standing_extra_payoff_consistent_across_surfaces(
         ctx = loan_payment_service.load_loan_context(
             account.id, scenario_id, loan_params,
         )
-        anchor_events = (
-            db.session.query(LoanAnchorEvent)
-            .filter_by(account_id=account.id)
-            .all()
-        )
+        anchor_events = loan_loaders.load_loan_anchor_facts(loan_params)
         # The committed (plan-aware) reference: the loan detail page's producer,
         # honoring the standing extra the operator committed to.  resolve_loan
         # composes ``state.schedule = history_rows + committed_forward`` and
@@ -701,8 +683,8 @@ def test_standing_extra_payoff_consistent_across_surfaces(
             ),
             extra_monthly=Decimal("0.00"),
             as_of=today,
-            confirmed_view=loan_payment_service.confirmed_loan_view(
-                account.id, scenario_id, today,
+            confirmed_view=seam_confirmed_view(
+                loan_params.account_id, scenario_id, today,
             ),
             extra_principal=extra,
         )
@@ -722,15 +704,19 @@ def test_standing_extra_payoff_consistent_across_surfaces(
             "vacuous (contractual == committed)."
         )
 
-        # Summary seam: net worth, year-end, and debt-strategy all resolve a
-        # debt account through resolve_account_loan.
-        resolved = loan_resolution.resolve_account_loan(
-            account.id, scenario_id, today,
+        # Summary seam: every summary surface resolves a debt account through
+        # the seam's ONE memoized whole-loan read (``balance_at._resolution.resolved_loan``).
+        resolved = resolved_loan(
+            account,
+            BalanceContext.build(seed_user["user"].id, as_of=today),
         )
         assert resolved is not None
-        _params, state = resolved
-        assert state.payoff_date == ref_payoff, (
-            f"Summary-surface payoff {state.payoff_date} != committed detail "
+        state = resolved.state
+        summary_payoff = (
+            state.schedule[-1].payment_date if state.schedule else None
+        )
+        assert summary_payoff == ref_payoff, (
+            f"Summary-surface payoff {summary_payoff} != committed detail "
             f"payoff {ref_payoff}: the resolver seam still ignores the standing "
             "extra (contractual)."
         )
@@ -742,14 +728,122 @@ def test_standing_extra_payoff_consistent_across_surfaces(
         # Year-end / net-worth debt aggregation reads the same seam
         # (``_generate_debt_schedules`` IS ``net_worth_kernel.generate_debt_schedules``).
         debt_schedules = (
-            year_end_summary_service._balances._generate_debt_schedules(
-                [account], scenario_id,
+            net_worth_kernel.debt_schedule_rows(
+                [account], BalanceContext.build(seed_user["user"].id),
             )
         )
-        ye_schedule = debt_schedules[account.id].schedule
+        ye_schedule = debt_schedules[account.id]
         assert ye_schedule[-1].payment_date == ref_payoff, (
             f"Year-end debt schedule payoff {ye_schedule[-1].payment_date} != "
             f"committed {ref_payoff}."
+        )
+
+
+def test_standing_extra_folds_past_the_shadow_horizon(
+    app, seed_user, seed_periods_today,
+):
+    """C8a (N-15): the forward FOLD keeps a standing extra past the record horizon.
+
+    The sibling above proves the RESOLVER surfaces honor the standing extra; this
+    proves the FOLD (:func:`balance_at.balance_at` -> ``positions()``) does too.
+    Before C8a they disagreed: ``loan_plan``'s PLANNED tier folds the extra only
+    for the materialized ~24-month pay-period window (its live D3 cash), and its
+    ESTIMATED tail reverted to bare contractual P&I -- so the fold-derived balance
+    and payoff dropped the extra past the horizon while the resolver's committed
+    schedule applied it for the whole term (finding N-15).
+
+    The loan ORIGINATES at the current period (clean past: no overdue installment,
+    so the fold and the committed schedule agree on the whole timeline rather than
+    diverging on unpaid history via B-9), and has a recurring template but NO
+    generated projected shadows, so its ENTIRE forward is the ESTIMATED tier -- the
+    pure N-15 path.  The fold is parallel-run against the committed forward (the
+    same reference the sibling trusts, built from an INDEPENDENT producer,
+    ``project_forward``) on EVERY month: equal on all of them means the ESTIMATED
+    tier now applies the extra across the whole horizon.  The teeth: at a
+    post-horizon date the fold must sit STRICTLY BELOW the pure-contractual
+    (extra-free) balance -- a THIRD independent reference that fails the day the
+    extra stops being applied to the tail (the pre-C8a state, where fold ==
+    contractual there).
+    """
+    with app.app_context():
+        today = date.today()
+        current_period = next(
+            period for period in seed_periods_today
+            if period.start_date <= today <= period.end_date
+        )
+        account = create_loan_account(
+            seed_user, db.session, name="C8a Mortgage",
+            principal=FIXED_PRINCIPAL, rate=FIXED_RATE, term=FIXED_TERM,
+            origination_date=current_period.start_date, payment_day=1,
+            account_type=AcctTypeEnum.MORTGAGE, anchor_period=current_period,
+        )
+        loan_params = loan_params_for(db.session, account.id)
+        extra = Decimal("500.00")
+        _add_recurring_payment_with_extra(seed_user, account, extra)
+        scenario_id = seed_user["scenario"].id
+
+        ctx_loan = loan_payment_service.load_loan_context(
+            account.id, scenario_id, loan_params,
+        )
+        anchor_events = loan_loaders.load_loan_anchor_facts(loan_params)
+        # One composer call yields BOTH references: the committed forward (extra
+        # applied every month, the fold's target) and the pure-contractual
+        # original (extra-free, the teeth's third reference).
+        scenarios = loan_resolver.compute_payoff_scenarios(
+            loan_inputs=loan_resolver.LoanInputs(
+                loan_params, anchor_events, ctx_loan.payments,
+                ctx_loan.rate_changes,
+            ),
+            extra_monthly=Decimal("0.00"),
+            as_of=today,
+            confirmed_view=seam_confirmed_view(
+                loan_params.account_id, scenario_id, today,
+            ),
+            extra_principal=extra,
+        )
+        committed_forward = list(scenarios.committed_forward)
+        contractual_by_date = {
+            row.payment_date: row.remaining_balance
+            for row in scenarios.original_forward
+        }
+
+        # Not vacuous: the schedule runs years out (so the tail is genuinely past
+        # the ~24-month horizon), and the extra genuinely accelerates payoff.
+        assert committed_forward, "no committed forward to parallel-run against"
+        assert committed_forward[-1].payment_date < (
+            scenarios.original_forward[-1].payment_date
+        ), "standing extra did not accelerate payoff; test would be vacuous"
+
+        ctx = BalanceContext.build(seed_user["user"].id)
+
+        # The fold reproduces the committed forward on EVERY month, including the
+        # ESTIMATED tail -- an independent producer (project_forward) agreeing with
+        # the fold that the extra is applied for the whole term.
+        for row in committed_forward:
+            folded = balance_at.balance_at(account, ctx, row.payment_date)
+            assert folded == row.remaining_balance, (
+                f"Fold {folded} != committed {row.remaining_balance} at "
+                f"{row.payment_date}: the ESTIMATED tail dropped the standing "
+                "extra (N-15)."
+            )
+
+        # Teeth: a post-horizon date (~3 years out, well past the 24-month
+        # window) must fold BELOW the extra-free contractual balance -- proof the
+        # extra reaches the tail.  Pre-C8a the ESTIMATED tail carried no extra, so
+        # the fold equalled the contractual balance here and this failed.
+        probe_date = date(today.year + 3, 8, 1)
+        assert probe_date in contractual_by_date, (
+            "probe date not on the contractual grid; adjust the fixture"
+        )
+        months_out = (probe_date.year - today.year) * 12 + (
+            probe_date.month - today.month
+        )
+        assert months_out > 24, "probe date is inside the materialized horizon"
+        folded_probe = balance_at.balance_at(account, ctx, probe_date)
+        assert folded_probe < contractual_by_date[probe_date], (
+            f"Fold at {probe_date} ({folded_probe}) is not below the "
+            f"contractual {contractual_by_date[probe_date]}; the standing extra "
+            "is not applied to the ESTIMATED tail (N-15 regressed)."
         )
 
 
@@ -761,10 +855,9 @@ _APP_DIR = Path(__file__).resolve().parents[2] / "app"
 _LOAN_SINGLE_SOURCE_FILES = (
     "services/debt_strategy_service.py",
     # Phase 3 pylint-cleanup split: routes/loan.py is now the routes/loan/
-    # package, and year_end_summary_service is a package; the grep below
-    # runs with -r --include=*.py so every sub-module is scanned.
+    # package; the grep below runs with -r --include=*.py so every sub-module
+    # is scanned.
     "routes/loan",
-    "services/year_end_summary_service",
     "services/loan_payment_service.py",
 )
 

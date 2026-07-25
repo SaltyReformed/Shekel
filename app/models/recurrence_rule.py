@@ -59,12 +59,36 @@ class RecurrenceRule(UserScopedMixin, CreatedAtMixin, db.Model):
             name="ck_recurrence_rules_moy",
         ),
     )
-    # Optional: the pay period where recurrence should begin.
+    # Optional: the pay period where recurrence should begin.  A WEAK bound --
+    # it seeds ``effective_from`` only when the caller passes none
+    # (``recurrence_engine.resolve_generation_plan``), so a caller supplying its
+    # own effective_from (``transfer_recurrence.regenerate_for_template``,
+    # the unarchive path) silently bypasses it.  It is the form's "First
+    # paycheck" affordance, NOT a validity bound; ``start_date`` below is the
+    # bound.
     start_period_id = db.Column(
         db.Integer,
         db.ForeignKey("budget.pay_periods.id", ondelete="SET NULL"),
         nullable=True,
     )
+    # Optional start date -- recurrence generates nothing whose period ends
+    # before this date.  NULL means unbounded (no start), which is every rule
+    # the user configures by hand.
+    #
+    # The SYMMETRIC partner of ``end_date`` below, and enforced the same way:
+    # ``recurrence_engine.match_periods`` filters candidate periods on it
+    # UNCONDITIONALLY, so -- unlike ``start_period_id`` -- no caller can bypass
+    # it by supplying its own ``effective_from``.  Together the two columns are
+    # the rule's validity window.
+    #
+    # Written only by ``loan_recurrence_sync.sync_recurring_payment_bounds``,
+    # which derives it from the loan's FIRST CONTRACTUAL INSTALLMENT (plan step
+    # C9a): a loan payment cannot precede the loan.  A payment generated before
+    # origination is erased by the fold (it splits against a zero balance and
+    # the origination anchor then resets over it), so it debits cash for a loan
+    # that does not exist yet -- measured at $3,220.92 on a mortgage closing one
+    # month out.
+    start_date = db.Column(db.Date, nullable=True)
     # Optional end date -- recurrence stops generating after this date.
     # NULL means indefinite (no end).
     end_date = db.Column(db.Date, nullable=True)

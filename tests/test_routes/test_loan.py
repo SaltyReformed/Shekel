@@ -14,27 +14,45 @@ import pytest
 import sqlalchemy as sa
 
 from app import ref_cache
-from app.enums import StatusEnum
-from app.extensions import db
+from app.enums import AcctTypeEnum, StatusEnum
 from app.models.account import Account
 from app.models.escrow_line import EscrowComponentVersion, EscrowLine
+from app.models.journal_entry import JournalEntry
 from app.models.loan_params import LoanParams
 from app.models.loan_features import RateHistory
-from app.models.ref import AccountType
+from app.extensions import db as _db
+from app.models.ref import AccountType, Status
 from app.routes.loan._helpers import accelerated_overlay, build_band_chart
-from app.services.loan_posting_service import confirmed_loan_interest_in_year
+from app.services.balance_at import BalanceContext
+from app.services.loan_loaders import load_loan_params, load_rate_changes
+from app.services.balance_at._resolution import (
+    contractual_schedule_from_origination,
+)
 from app.services.transfer_service import TransferSpec, create_transfer
-from app.services import account_service, escrow_calculator, loan_loaders
+from app.utils.dates import add_months
+from app.services import (
+    account_service,
+    balance_at,
+    escrow_calculator,
+    loan_loaders,
+)
 
 from tests._test_helpers import (
     add_escrow_line,
+    clear_loan_ledger,
+    create_account_of_type,
+    create_loan_account,
     create_loan_with_trueup,
     create_settled_transfer,
     freeze_today,
-    insert_origination_event,
-    insert_origination_rate,
+    insert_tracking_start_event,
     insert_trueup_event,
+    linked_ledger_account,
+    linked_net_by_date,
+    loan_params_for,
+    posted_loan_balance_at,
     select_option_values,
+    settle_instant_on,
 )
 
 
@@ -55,7 +73,7 @@ def _freeze_today_inside_seed_range(monkeypatch):
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
-def _create_loan_account(seed_user, db_session, type_name, name, principal,
+def _create_loan_account(seed_user, db_session, account_type, name, principal,
                          rate, term, orig_date, payment_day, is_arm=False):
     """Helper to create a loan account with params for any amortizing type.
 
@@ -68,16 +86,15 @@ def _create_loan_account(seed_user, db_session, type_name, name, principal,
     stored column.
 
     To preserve the test contract without rewriting every caller,
-    this helper synthesises TWO events when the
-    ``original_principal``-vs-``current_principal`` gap is non-zero
-    (existing helper sets ``original = principal + 5000``,
-    simulating "$5,000 already paid down before the test starts"):
-
-      * an ORIGINATION event at ``original_principal`` (matches
-        Commit 12's backfill semantics and production's create_params),
-      * a USER_TRUEUP event one day after origination at the lower
-        ``current_principal`` value (represents "the user marked
-        the loan's true current balance as $X today").
+    this helper builds the loan with an ``original_principal`` of
+    ``principal + 5000`` (simulating "$5,000 already paid down before
+    the test starts") and then appends a USER_TRUEUP event one day
+    after origination at the lower ``principal`` value (represents
+    "the user marked the loan's true current balance as $X today").
+    The origination anchor is SYNTHESIZED from the params (no stored
+    ``LoanAnchorEvent`` -- matching production's ``create_params`` since
+    the read switch retired that write), so the loan carries exactly ONE
+    stored anchor event: the true-up.
 
     When ``principal == 0`` the gap is the full $5,000, so the
     trueup at $0 produces a paid-off loan state -- what
@@ -85,60 +102,44 @@ def _create_loan_account(seed_user, db_session, type_name, name, principal,
     the trueup at ``principal`` produces a partially-paid loan
     state -- what ``test_refinance_principal_auto_calculated`` and
     every other refinance / debt-card test needs.
+
+    Routes through :func:`tests._test_helpers.create_loan_account` (the ONE
+    shared loan builder) and :func:`tests._test_helpers.insert_trueup_event`,
+    so BOTH anchors are reconciled into the loan's genesis posting ledger in
+    the same transaction that writes them -- exactly what
+    ``loan.create_params`` / ``anchor_service`` do in production.  The
+    hand-rolled block this replaced opened no ledger at all, so every loan
+    here exercised the no-ledger fallback production never takes.
+
+    Args:
+        seed_user: The ``seed_user`` (or ``seed_second_user``) fixture dict.
+        db_session: The test ``db.session``.
+        account_type: The :class:`~app.enums.AcctTypeEnum` member to create
+            the loan account as.
+        name: The account name.
+        principal: The loan's current balance (the trueup anchor).
+        rate: The origination annual rate as a Decimal fraction.
+        term: The loan term in months.
+        orig_date: The loan origination date.
+        payment_day: The day-of-month payment day.
+        is_arm: Whether the loan is adjustable-rate.
+
+    Returns:
+        The created loan :class:`~app.models.account.Account`.
     """
     from datetime import timedelta  # pylint: disable=import-outside-toplevel
-    from app import ref_cache  # pylint: disable=import-outside-toplevel
-    from app.enums import LoanAnchorSourceEnum  # pylint: disable=import-outside-toplevel
-    from app.models.loan_anchor_event import LoanAnchorEvent  # pylint: disable=import-outside-toplevel
 
-    loan_type = db_session.query(AccountType).filter_by(name=type_name).one()
-    account = account_service.create_account(
-        account_service.AccountSpec(
-            user_id=seed_user["user"].id,
-            account_type_id=loan_type.id,
-            name=name,
-            anchor_balance=principal,
-        ),
+    account = create_loan_account(
+        seed_user, db_session, name=name,
+        principal=principal + Decimal("5000.00"), rate=rate, term=term,
+        origination_date=orig_date, payment_day=payment_day,
+        account_type=account_type,
     )
-    db_session.add(account)
-    db_session.flush()
-
-    original_principal = principal + Decimal("5000.00")
-    params = LoanParams(
-        account_id=account.id,
-        original_principal=original_principal,
-        current_principal=principal,
-        term_months=term,
-        origination_date=orig_date,
-        payment_day=payment_day,
-        is_arm=is_arm,
-    )
-    db_session.add(params)
-    db_session.flush()
-    # Origination LoanAnchorEvent (E-18 / Commit 15): the resolver
-    # requires at least one event per loan.  Production's
-    # ``loan.create_params`` writes the same paired row; tests that
-    # build LoanParams directly must mirror it.
-    insert_origination_event(params)
-    # Origination RateHistory row (DH-#56): the loan's base rate lives
-    # in the RateHistory row effective at origination, not the dropped
-    # ``LoanParams.interest_rate`` column.  The resolver raises
-    # ``ValueError`` on an empty rate feed, so seed it alongside the
-    # origination anchor event.
-    insert_origination_rate(params, rate)
-    # User-trueup event at the lower current_principal -- preserves
-    # the pre-Commit-15 test contract that ``principal`` matches the
-    # displayed Current Principal.  Dated one day after origination
-    # so the resolver's (anchor_date, created_at) DESC selector
-    # picks this event over the origination event.
-    db_session.add(LoanAnchorEvent(
-        account_id=account.id,
-        anchor_date=orig_date + timedelta(days=1),
-        anchor_balance=principal,
-        source_id=ref_cache.loan_anchor_source_id(
-            LoanAnchorSourceEnum.USER_TRUEUP,
-        ),
-    ))
+    params = loan_params_for(db_session, account.id)
+    # Set BEFORE the trueup's ledger re-sync so the postings are reconciled
+    # against the loan's final terms.
+    params.is_arm = is_arm
+    insert_trueup_event(params, principal, orig_date + timedelta(days=1))
     db_session.commit()
     return account
 
@@ -146,7 +147,7 @@ def _create_loan_account(seed_user, db_session, type_name, name, principal,
 def _create_auto_loan(seed_user, db_session, name="My Auto Loan"):
     """Helper: auto loan account with params."""
     return _create_loan_account(
-        seed_user, db_session, "Auto Loan", name,
+        seed_user, db_session, AcctTypeEnum.AUTO_LOAN, name,
         Decimal("25000.00"), Decimal("0.05000"), 60,
         date(2025, 1, 1), 15,
     )
@@ -155,40 +156,27 @@ def _create_auto_loan(seed_user, db_session, name="My Auto Loan"):
 def _create_mortgage(seed_user, db_session, name="My Mortgage"):
     """Helper: mortgage account with params."""
     return _create_loan_account(
-        seed_user, db_session, "Mortgage", name,
+        seed_user, db_session, AcctTypeEnum.MORTGAGE, name,
         Decimal("250000.00"), Decimal("0.06500"), 360,
         date(2023, 6, 1), 1,
     )
 
 
-def _create_other_loan(second_user, db_session, type_name="Auto Loan"):
-    """Create a loan account owned by the second user."""
-    loan_type = db_session.query(AccountType).filter_by(name=type_name).one()
-    account = account_service.create_account(
-        account_service.AccountSpec(
-            user_id=second_user["user"].id,
-            account_type_id=loan_type.id,
-            name="Other Loan",
-            anchor_balance=Decimal("15000.00"),
-        ),
-    )
-    db_session.add(account)
-    db_session.flush()
+def _create_other_loan(second_user, db_session,
+                       account_type=AcctTypeEnum.AUTO_LOAN):
+    """Create a loan account owned by the second user.
 
-    params = LoanParams(
-        account_id=account.id,
-        original_principal=Decimal("20000.00"),
-        current_principal=Decimal("15000.00"),
-        term_months=48,
-        origination_date=date(2024, 6, 1),
-        payment_day=1,
+    A $20,000 loan (the origination anchor -- the hand-rolled block this
+    replaced wrote no trueup, so the origination principal IS the resolved
+    balance) at 4% over 48 months, originated 2024-06-01.  Built through the
+    shared factory, so its genesis posting ledger is opened with it.
+    """
+    return create_loan_account(
+        second_user, db_session, name="Other Loan",
+        principal=Decimal("20000.00"), rate=Decimal("0.04000"), term=48,
+        origination_date=date(2024, 6, 1), payment_day=1,
+        account_type=account_type,
     )
-    db_session.add(params)
-    db_session.flush()
-    insert_origination_event(params)
-    insert_origination_rate(params, Decimal("0.04000"))
-    db_session.commit()
-    return account
 
 
 # ── Dashboard Tests ──────────────────────────────────────────────────
@@ -205,6 +193,57 @@ class TestLoanDashboard:
         assert resp.status_code == 200
         assert b"Balance owed" in resp.data
 
+    def test_broken_loan_detail_page_folds_not_the_money_blind_replay(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A broken loan's detail page shows the seam's fold, not the replay (B-13, C4).
+
+        Before C4 the loan route rendered ``LoanState.current_balance``: for a loan
+        whose genesis POSTING ledger is missing, the resolver falls back to the
+        MONEY-BLIND anchor replay, which advances only the SCHEDULED principal per
+        payment and discards the actual cash.  C4 points the route at the
+        ``balance_at`` seam, which FOLDS the loan's source facts (origination anchor
+        + settled shadows), so the page shows what the borrower actually owes.
+
+        The $240,000 loan (6%, originated 2024-09-01) receives ONE $10,000 payment:
+        $1,200 interest that month ($240,000 x 0.06 / 12) and $8,800 principal, so
+        the fold owes $240,000 - $8,800 = $231,200.00.  The money-blind replay
+        advances only the scheduled first-month principal of $238.92 ->
+        $239,761.08, silently ignoring the $8,561.08 the borrower actually paid
+        down.  The posting ledger is cleared EXPLICITLY (``clear_loan_ledger`` --
+        production cannot make this state) so the resolver's fallback is the one
+        under test.
+
+        Control that fires: asserting the pre-C4 replay value ($239,761.08) is
+        ABSENT proves the route moved off the money-blind path -- reverting C4 to
+        ``ctx.state.current_balance`` renders that value and turns this red.
+        """
+        acct = create_loan_account(
+            seed_user, db.session, name="Broken Mortgage",
+            principal=Decimal("240000.00"), rate=Decimal("0.06000"),
+            term=360, origination_date=date(2024, 9, 1), payment_day=1,
+            account_type=AcctTypeEnum.MORTGAGE, anchor_period=seed_periods[0],
+        )
+        checking = create_account_of_type(
+            seed_user, db.session, "Checking", "Chk",
+            anchor_balance=Decimal("50000.00"),
+        )
+        db.session.commit()
+        create_settled_transfer(
+            seed_user, db.session, checking, acct, seed_periods[0],
+            amount=Decimal("10000.00"),
+            paid_at=settle_instant_on(seed_periods[0].start_date),
+        )
+        db.session.commit()
+        # The BROKEN state, built on purpose: only the postings are removed; the
+        # LoanParams + settled shadows the fold reads are untouched.
+        clear_loan_ledger(acct.id)
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        assert b"$231,200.00" in resp.data          # the seam's fold (C4)
+        assert b"$239,761.08" not in resp.data       # the money-blind replay
+
     @pytest.mark.parametrize("payment_day,expected", [
         (1, "1st"), (2, "2nd"), (3, "3rd"),
         (11, "11th"), (12, "12th"), (13, "13th"),
@@ -220,13 +259,45 @@ class TestLoanDashboard:
         as '21th'/'22th'/'23th'/'31th', and the teens were never exercised.
         """
         acct = _create_loan_account(
-            seed_user, db.session, "Mortgage", "Ordinal Mortgage",
+            seed_user, db.session, AcctTypeEnum.MORTGAGE, "Ordinal Mortgage",
             Decimal("250000.00"), Decimal("0.06500"), 360,
             date(2023, 6, 1), payment_day,
         )
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
         assert f"{expected} of each month".encode() in resp.data
+
+    def test_dashboard_anchor_scorecard_badges(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The Balance anchors card badges origination AND a tracking-start (C1).
+
+        A mid-life-import loan (origination + a tracking-start assertion) renders
+        the anchor scorecard with an "Origination" badge on the origination
+        opening row and a "Tracking start" badge on the tracking-start assertion
+        row -- since C1 the label rides ``is_tracking_start``, not ``is_opening``
+        (the origination is the opening now, the tracking-start a non-opening
+        assertion).
+        """
+        acct = create_loan_account(
+            seed_user, db.session, name="Imported Mortgage",
+            principal=Decimal("250000.00"), rate=Decimal("0.06000"),
+            term=360, origination_date=date(2023, 6, 1),
+            account_type=AcctTypeEnum.MORTGAGE,
+        )
+        insert_tracking_start_event(
+            loan_params_for(db.session, acct.id),
+            Decimal("180000.00"), date(2026, 2, 10),
+        )
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        assert b"Balance anchors" in resp.data
+        # Match the badge spans specifically, not the "Origination date" field
+        # label elsewhere on the page.
+        assert b">Origination</span>" in resp.data
+        assert b">Tracking start</span>" in resp.data
 
     def test_dashboard_setup_when_no_params(self, auth_client, seed_user, db, seed_periods):
         """Dashboard renders setup page when params don't exist yet."""
@@ -401,10 +472,9 @@ class TestLoanSetup:
             .count()
         ) == 0
 
-        # The genesis OPENING posted instead: the reader answers the full
+        # The genesis OPENING posted instead: the postings sum to the full
         # original principal owed in the baseline scenario.
-        from app.services import loan_posting_service  # pylint: disable=import-outside-toplevel
-        assert loan_posting_service.confirmed_loan_balance_at(
+        assert posted_loan_balance_at(
             account.id, seed_user["scenario"].id, date.today(),
         ) == Decimal("30000.00")
 
@@ -475,8 +545,7 @@ class TestLoanSetup:
         assert events[0].anchor_balance == Decimal("25000.00")
 
         # The ledger reconciled to the asserted value...
-        from app.services import loan_posting_service  # pylint: disable=import-outside-toplevel
-        assert loan_posting_service.confirmed_loan_balance_at(
+        assert posted_loan_balance_at(
             account.id, seed_user["scenario"].id, date.today(),
         ) == Decimal("25000.00")
         # ...and the card shows it.
@@ -964,12 +1033,13 @@ class TestEscrow:
     ):
         """A settled payment's posted split survives merging its escrow line.
 
-        The safety proof that merge needs no posting reconcile: a payment settled in
-        period 0 (2026-01-02, before the 2026-03-01 boundary) posts a split whose
-        escrow leg is "Old Tax" $6,000/yr = $500.00/mo.  After merging "Old Tax" into
-        "New Tax" -- which the route does NOT reconcile -- the posted principal /
-        interest / escrow are byte-identical, and a later reconcile re-derives the
-        SAME split from the merged line (escrow-per-date is preserved).
+        The proof that a merge moves no settled split even though it now reconciles
+        like every escrow write (E1b): a payment settled in period 0 (2026-01-02,
+        before the 2026-03-01 boundary) posts a split whose escrow leg is "Old Tax"
+        $6,000/yr = $500.00/mo.  Merging "Old Tax" into "New Tax" preserves
+        escrow-per-date, so the sync the route now runs re-derives the SAME
+        principal / interest / escrow -- byte-identical, the E1a assert passing --
+        and a later reconcile re-derives it again.
         """
         from app.services.loan_posting_service import (  # pylint: disable=import-outside-toplevel
             backfill_all_loan_postings,
@@ -981,6 +1051,7 @@ class TestEscrow:
         create_settled_transfer(
             seed_user, db.session, seed_user["account"], acct,
             seed_periods[0], amount=Decimal("2000.00"),
+            paid_at=settle_instant_on(seed_periods[0].start_date),
         )
         db.session.commit()
         backfill_all_loan_postings()
@@ -996,7 +1067,8 @@ class TestEscrow:
         )
         assert resp.status_code == 200
 
-        # The posted split is byte-identical -- the merge ran no reconcile ...
+        # The posted split is byte-identical -- the merge's E1b reconcile
+        # re-derives the SAME split, escrow-per-date being preserved ...
         after = confirmed_loan_payment_history(acct.id, scenario_id, date.today())
         assert after[0].escrow == before[0].escrow
         assert after[0].principal == before[0].principal
@@ -1041,7 +1113,7 @@ class TestEscrow:
 
     def test_escrow_delete_idor(self, auth_client, second_user, db, seed_periods):
         """DELETE another user's escrow returns 404 and leaves it active."""
-        other = _create_other_loan(second_user, db.session, "Mortgage")
+        other = _create_other_loan(second_user, db.session, AcctTypeEnum.MORTGAGE)
         line_id = add_escrow_line(
             db.session, other.id, "Tax", Decimal("3000.00"),
         ).line_id
@@ -1174,12 +1246,19 @@ class TestEscrow:
     def test_forward_guard_rejects_on_or_before_latest_settled(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """Add-version on/before the latest settled payment's period start is rejected.
+        """Add-version on/before the latest settled payment's DUE date is rejected.
 
-        A settled payment in seed_periods[0] (start 2026-01-02) freezes the escrow
-        the split at that date reads.  A version effective 2026-01-02 (== the start)
-        would move that settled split, so it is rejected; 2026-01-03 (strictly
+        A settled payment in seed_periods[0] (start 2026-01-02) satisfies the
+        2026-02-01 installment (``payment_day`` 1), and its split resolves escrow
+        on that DUE date -- contract time, ruling D5 / finding N-34 -- so that is
+        the frozen boundary.  A version effective 2026-02-01 (== the due date)
+        would move that settled split, so it is rejected; 2026-02-02 (strictly
         after) is allowed.
+
+        **A period-start boundary is what this must not be:** the payment's period
+        starts 2026-01-02, a full month before the installment it pays, so the old
+        boundary admitted every date in between -- each of which still governs the
+        settled split.  2026-01-03 is asserted rejected for exactly that reason.
         """
         acct = _create_mortgage(seed_user, db.session)
         line_id = add_escrow_line(
@@ -1193,33 +1272,46 @@ class TestEscrow:
         db.session.commit()
         assert seed_periods[0].start_date == date(2026, 1, 2)
 
+        # Inside the period-start .. due-date window: the old guard allowed this.
+        inside_window = auth_client.post(
+            f"/accounts/{acct.id}/loan/escrow/{line_id}/version",
+            data={"annual_amount": "8000.00", "effective_date": "2026-01-03"},
+        )
+        assert inside_window.status_code == 400
+        assert b"latest recorded payment" in inside_window.data
+
         on_boundary = auth_client.post(
             f"/accounts/{acct.id}/loan/escrow/{line_id}/version",
-            data={"annual_amount": "8000.00", "effective_date": "2026-01-02"},
+            data={"annual_amount": "8000.00", "effective_date": "2026-02-01"},
         )
         assert on_boundary.status_code == 400
         assert b"latest recorded payment" in on_boundary.data
 
         after = auth_client.post(
             f"/accounts/{acct.id}/loan/escrow/{line_id}/version",
-            data={"annual_amount": "8000.00", "effective_date": "2026-01-03"},
+            data={"annual_amount": "8000.00", "effective_date": "2026-02-02"},
         )
         assert after.status_code == 200
         assert (
             db.session.query(EscrowComponentVersion)
-            .filter_by(line_id=line_id, effective_date=date(2026, 1, 3)).count() == 1
+            .filter_by(line_id=line_id, effective_date=date(2026, 2, 2)).count() == 1
         )
 
     def test_forward_guard_boundary_is_latest_settled(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """The guard boundary is the LATEST settled payment's start, not the earliest.
+        """The guard boundary is the LATEST settled payment's due date, not the earliest.
 
-        Two settled payments: seed_periods[0] (start 2026-01-02) and seed_periods[2]
-        (start 2026-01-30).  The boundary is the LATER start (2026-01-30), so a
-        version effective 2026-01-16 -- after the first payment but on/before the
-        second -- is STILL rejected (a min-based guard would wrongly allow it, the
-        exact bug this correction avoids); only strictly after 2026-01-30 is allowed.
+        Two settled payments whose installments differ: seed_periods[0] (start
+        2026-01-02, due 2026-02-01) and seed_periods[3] (start 2026-02-13, due
+        2026-03-01).  The boundary is the LATER due date (2026-03-01), so a version
+        effective 2026-02-15 -- after the first payment's installment but before the
+        second's -- is STILL rejected (a min-based guard would wrongly allow it, the
+        exact bug this correction avoids); only strictly after 2026-03-01 is allowed.
+
+        The two periods are chosen so their DUE dates differ: periods 0, 1 and 2 all
+        satisfy the same 2026-02-01 installment, which would make max and min
+        coincide and leave this test no teeth.
         """
         acct = _create_mortgage(seed_user, db.session)
         line_id = add_escrow_line(
@@ -1232,20 +1324,23 @@ class TestEscrow:
         )
         create_settled_transfer(
             seed_user, db.session, seed_user["account"], acct,
-            seed_periods[2], amount=Decimal("1500.00"),
+            seed_periods[3], amount=Decimal("1500.00"),
         )
         db.session.commit()
-        assert seed_periods[2].start_date == date(2026, 1, 30)
+        assert seed_periods[3].start_date == date(2026, 2, 13)
 
         between = auth_client.post(
             f"/accounts/{acct.id}/loan/escrow/{line_id}/version",
-            data={"annual_amount": "8000.00", "effective_date": "2026-01-16"},
+            data={"annual_amount": "8000.00", "effective_date": "2026-02-15"},
         )
         assert between.status_code == 400
+        # Rejected by the SETTLED-payment boundary, not by the origination bound
+        # or a same-date collision (which would satisfy a bare 400).
+        assert b"latest recorded payment" in between.data
 
         after = auth_client.post(
             f"/accounts/{acct.id}/loan/escrow/{line_id}/version",
-            data={"annual_amount": "8000.00", "effective_date": "2026-01-31"},
+            data={"annual_amount": "8000.00", "effective_date": "2026-03-02"},
         )
         assert after.status_code == 200
 
@@ -1503,7 +1598,7 @@ class TestEscrow:
         self, auth_client, second_user, db, seed_periods,
     ):
         """Another user's escrow version routes return 404 (no existence oracle)."""
-        other = _create_other_loan(second_user, db.session, "Mortgage")
+        other = _create_other_loan(second_user, db.session, AcctTypeEnum.MORTGAGE)
         version = add_escrow_line(db.session, other.id, "Tax", Decimal("7200.00"))
         db.session.commit()
         edit = auth_client.post(
@@ -1532,7 +1627,7 @@ class TestEscrow:
         version edit / delete.
         """
         mine = _create_mortgage(seed_user, db.session)
-        victim = _create_other_loan(second_user, db.session, "Mortgage")
+        victim = _create_other_loan(second_user, db.session, AcctTypeEnum.MORTGAGE)
         victim_version = add_escrow_line(
             db.session, victim.id, "Tax", Decimal("7200.00"),
         )
@@ -1556,9 +1651,11 @@ class TestEscrow:
     ):
         """A version in (today, boundary] can't be deleted when a payment is paid ahead.
 
-        Frozen today is 2026-03-20; seed_periods[6] starts 2026-03-27.  Settling a
-        payment for period[6] BEFORE its period begins (an early-settle) puts the
-        boundary at 2026-03-27, in the FUTURE.  A version effective 2026-03-25
+        Frozen today is 2026-03-20; seed_periods[6] starts 2026-03-27 and its
+        installment falls 2026-04-01 (``payment_day`` 1).  Settling a payment for
+        period[6] BEFORE its period begins (an early-settle) puts the boundary at
+        that DUE date -- 2026-04-01, in the FUTURE (ruling D5 / finding N-34; it
+        was the 2026-03-27 period start before).  A version effective 2026-03-25
         (after today, but on/before the boundary) underpins that settled payment's
         escrow split, so deleting it must be rejected even though it is "after
         today" -- the exact bypass the ``> today``-only guard allowed.
@@ -1580,11 +1677,12 @@ class TestEscrow:
         db.session.commit()
         assert seed_periods[6].start_date == date(2026, 3, 27)
         lines = loan_loaders.load_escrow_lines(acct.id)
-        escrow_at_settled_start = escrow_calculator.escrow_monthly_as_of(
-            lines, date(2026, 3, 27),
+        escrow_at_installment = escrow_calculator.escrow_monthly_as_of(
+            lines, date(2026, 4, 1),
         )
-        # 4800 / 12 = 400.00 (the 2026-03-25 version wins as of 2026-03-27).
-        assert escrow_at_settled_start == Decimal("400.00")
+        # 4800 / 12 = 400.00 (the 2026-03-25 version wins as of the 04-01
+        # installment -- the date the settled payment's split reads).
+        assert escrow_at_installment == Decimal("400.00")
 
         resp = auth_client.post(
             f"/accounts/{acct.id}/loan/escrow/version/{gap_version.id}/delete",
@@ -1595,7 +1693,7 @@ class TestEscrow:
         assert db.session.get(EscrowComponentVersion, gap_version.id) is not None
         lines = loan_loaders.load_escrow_lines(acct.id)
         assert escrow_calculator.escrow_monthly_as_of(
-            lines, date(2026, 3, 27),
+            lines, date(2026, 4, 1),
         ) == Decimal("400.00")
 
     def test_delete_line_blocked_by_early_settle_boundary(
@@ -1604,9 +1702,10 @@ class TestEscrow:
         """Line remove (tombstone as of today) is blocked while a payment is paid ahead.
 
         The removal tombstone lands at today (2026-03-20); with an early-settled
-        payment for period[6] (starts 2026-03-27) the boundary is 2026-03-27, so a
-        tombstone at today is on/before the boundary and would zero the line for
-        that settled payment.  The route must reject the removal.
+        payment for period[6] (starts 2026-03-27, installment due 2026-04-01) the
+        boundary is that DUE date, so a tombstone at today is on/before the
+        boundary and would zero the line for that settled payment.  The route must
+        reject the removal.
         """
         acct = _create_mortgage(seed_user, db.session)
         line = add_escrow_line(db.session, acct.id, "Tax", Decimal("3600.00"))
@@ -1627,10 +1726,269 @@ class TestEscrow:
         reloaded = db.session.get(EscrowLine, line.line_id)
         assert all(not v.is_removed for v in reloaded.versions)
         lines = loan_loaders.load_escrow_lines(acct.id)
-        # 3600 / 12 = 300.00, unchanged for the early-settled payment.
+        # 3600 / 12 = 300.00, unchanged at the early-settled payment's 04-01
+        # installment -- the date its split resolves escrow on.
         assert escrow_calculator.escrow_monthly_as_of(
-            lines, date(2026, 3, 27),
+            lines, date(2026, 4, 1),
         ) == Decimal("300.00")
+
+
+# ── Escrow Posting-Sync Tests (E1b) ──────────────────────────────────
+
+
+def _make_sync_loan(seed_user, db_session):
+    """Create a $100,000 / 6% mortgage originated 2023-06-01 (clean arithmetic).
+
+    Interest on a payment folded against the origination principal is
+    100000 * 0.06 / 12 = 500.00 exactly, so a $1,000 payment splits 500 interest /
+    500 principal with no rounding -- the shape the E1b sync tests fold against.
+    """
+    return create_loan_account(
+        seed_user, db_session, name="Sync Mortgage",
+        principal=Decimal("100000.00"), rate=Decimal("0.06000"), term=360,
+        origination_date=date(2023, 6, 1), payment_day=1,
+        account_type=AcctTypeEnum.MORTGAGE,
+    )
+
+
+# Each escrow WRITE route, as a (precondition + POST) callable returning the
+# response.  Every escrow effective date is strictly AFTER the settled payment's
+# 2026-02-01 DUE date -- the forward-only boundary, which is the date its split
+# resolves escrow on (ruling D5, finding N-34), NOT the 2026-01-16 pay-period
+# start these dates were first chosen against.  So no case moves the settled
+# split, and the only ledger change the sync makes is to HEAL the forged cash
+# entry, proving the route ran the sync regardless of its escrow op.
+
+
+def _write_add_escrow(client, db_session, loan):
+    """add_escrow: POST a brand-new line, its opening version future-dated."""
+    return client.post(
+        f"/accounts/{loan.id}/loan/escrow",
+        data={"name": "Property Tax", "annual_amount": "4800.00",
+              "effective_date": "2026-04-01"},
+    )
+
+
+def _write_delete_escrow(client, db_session, loan):
+    """delete_escrow: tombstone a post-boundary line as of today."""
+    line = add_escrow_line(
+        db_session, loan.id, "Old Tax", Decimal("6000.00"),
+        effective_date=date(2026, 3, 1),
+    ).line
+    db_session.commit()
+    return client.post(f"/accounts/{loan.id}/loan/escrow/{line.id}/delete")
+
+
+def _write_add_version(client, db_session, loan):
+    """add_escrow_version: schedule a future change on an existing line."""
+    line = add_escrow_line(
+        db_session, loan.id, "Tax", Decimal("6000.00"),
+        effective_date=date(2026, 3, 1),
+    ).line
+    db_session.commit()
+    return client.post(
+        f"/accounts/{loan.id}/loan/escrow/{line.id}/version",
+        data={"annual_amount": "7200.00", "effective_date": "2026-05-01"},
+    )
+
+
+def _write_edit_version(client, db_session, loan):
+    """edit_escrow_version: edit a future (post-boundary) version's amount."""
+    version = add_escrow_line(
+        db_session, loan.id, "Tax", Decimal("6000.00"),
+        effective_date=date(2026, 4, 1),
+    )
+    db_session.commit()
+    return client.post(
+        f"/accounts/{loan.id}/loan/escrow/version/{version.id}/edit",
+        data={"annual_amount": "7200.00"},
+    )
+
+
+def _write_delete_version(client, db_session, loan):
+    """delete_escrow_version: delete a future scheduled version."""
+    version = add_escrow_line(
+        db_session, loan.id, "Tax", Decimal("6000.00"),
+        effective_date=date(2026, 5, 1),
+    )
+    db_session.commit()
+    return client.post(
+        f"/accounts/{loan.id}/loan/escrow/version/{version.id}/delete",
+    )
+
+
+def _write_rename(client, db_session, loan):
+    """rename_escrow_line: rename a line in place (display-only)."""
+    line = add_escrow_line(
+        db_session, loan.id, "Tax", Decimal("6000.00"),
+        effective_date=date(2026, 3, 1),
+    ).line
+    db_session.commit()
+    return client.post(
+        f"/accounts/{loan.id}/loan/escrow/{line.id}/rename",
+        data={"name": "Property Tax"},
+    )
+
+
+def _write_merge(client, db_session, loan):
+    """merge_escrow_line: fold a removed predecessor into the active line."""
+    boundary = date(2026, 4, 1)
+    old = add_escrow_line(
+        db_session, loan.id, "Old Tax", Decimal("6000.00"),
+        effective_date=date(2026, 3, 1),
+    ).line
+    db_session.add(EscrowComponentVersion(
+        line_id=old.id, effective_date=boundary,
+        annual_amount=Decimal("0.00"), is_removed=True,
+    ))
+    add_escrow_line(
+        db_session, loan.id, "New Tax", Decimal("7200.00"),
+        effective_date=boundary,
+    )
+    db_session.commit()
+    new = (
+        db_session.query(EscrowLine)
+        .filter_by(account_id=loan.id, name="New Tax").one()
+    )
+    return client.post(
+        f"/accounts/{loan.id}/loan/escrow/{new.id}/merge",
+        data={"source_line_id": old.id},
+    )
+
+
+_ESCROW_WRITES = [
+    ("add_escrow", _write_add_escrow),
+    ("delete_escrow", _write_delete_escrow),
+    ("add_escrow_version", _write_add_version),
+    ("edit_escrow_version", _write_edit_version),
+    ("delete_escrow_version", _write_delete_version),
+    ("rename_escrow_line", _write_rename),
+    ("merge_escrow_line", _write_merge),
+]
+
+
+class TestEscrowPostingSync:
+    """Every escrow write reconciles the loan's posting ledger (E1b, finding N-3).
+
+    Before E1b the seven escrow write routes committed without funnelling the loan
+    through the posting sync chokepoint -- escrow was the one loan-write door that
+    left the postings unre-derived, protected only by the forward-only guard.  Now
+    each route ends on ``_commit_escrow_change``, which runs
+    ``sync_loan_postings_all_scenarios`` before committing, so the linked ledger
+    re-derives as a checked projection (the E1a assert runs) after every escrow
+    write.  These tests prove the wiring end-to-end -- a stale posting self-heals
+    through EACH of the seven routes (the firing control) -- and that a clean escrow
+    write on the normal path moves no money (the sync is a benign no-op under the
+    guard).
+    """
+
+    @pytest.mark.parametrize(
+        "escrow_write",
+        [write for _label, write in _ESCROW_WRITES],
+        ids=[label for label, _write in _ESCROW_WRITES],
+    )
+    def test_escrow_write_reconciles_a_stale_posting(
+        self, escrow_write, auth_client, seed_user, db, seed_periods,
+    ):
+        """Each escrow write route re-derives a stale-dated loan posting (E1b).
+
+        The firing control (verification standard 7.3).  A $1,000 payment settles
+        2026-01-20 against the folded $100,000 balance: interest
+        100000 * 0.06 / 12 = 500.00, principal 500.00, so the linked ledger nets
+        cash +1000.00 - correction 500.00 = +500.00 on 01-20.  Its cash entry is
+        then forged onto 2026-01-05 (the pre-E1a cross-date residue the dev-clone
+        sweep found), leaving +1000.00 on 01-05 and only the -500.00 correction on
+        01-20.  Performing the escrow write must run the loan sync, whose lineage
+        pass re-dates the cash entry back: 01-05 nets to 0.00 and 01-20 back to
+        +500.00.  Without E1b the escrow route never syncs and the forgery survives,
+        so this fails.  Every escrow effective date is after the 01-16 boundary, so
+        the escrow op moves no settled split -- the heal is purely the sync's,
+        proving each of the seven routes reaches it.
+        """
+        loan = _make_sync_loan(seed_user, db.session)
+        scenario_id = seed_user["scenario"].id
+        xfer = create_settled_transfer(
+            seed_user, db.session, seed_user["account"], loan, seed_periods[1],
+            amount=Decimal("1000.00"), paid_at=settle_instant_on(date(2026, 1, 20)),
+        )
+        db.session.commit()
+        linked_id = linked_ledger_account(db.session, loan.id).id
+        assert linked_net_by_date(db.session, linked_id, scenario_id)[
+            date(2026, 1, 20)
+        ] == Decimal("500.00")
+
+        # Forge the pre-E1a cross-date residue: the settled payment's cash entry
+        # carries a WRONG date.  Raw SQL bypasses the append-only ORM listener,
+        # exactly as the legacy writes that predate it did (the test runs as the
+        # table owner).
+        cash_entry_id = (
+            db.session.query(JournalEntry.id)
+            .filter(
+                JournalEntry.transfer_id == xfer.id,
+                JournalEntry.scenario_id == scenario_id,
+            )
+            .scalar()
+        )
+        db.session.execute(
+            sa.text(
+                "UPDATE budget.journal_entries SET entry_date = :day "
+                "WHERE id = :entry_id"
+            ),
+            {"day": date(2026, 1, 5), "entry_id": cash_entry_id},
+        )
+        db.session.commit()
+        assert linked_net_by_date(db.session, linked_id, scenario_id)[
+            date(2026, 1, 5)
+        ] == Decimal("1000.00")
+
+        resp = escrow_write(auth_client, db.session, loan)
+        assert resp.status_code == 200
+
+        # The escrow write ran the loan sync: the forged entry is re-dated back.
+        by_date = linked_net_by_date(db.session, linked_id, scenario_id)
+        assert by_date.get(date(2026, 1, 5), Decimal("0.00")) == Decimal("0.00")
+        assert by_date[date(2026, 1, 20)] == Decimal("500.00")
+
+    def test_a_clean_escrow_write_moves_no_money(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A guard-passing escrow write on a clean loan leaves the ledger unmoved (E1b).
+
+        The baseline-unmoved / no-spurious-fire control: the sync E1b runs on every
+        escrow write, but under the forward-only guard an escrow change never moves a
+        settled split, so on a loan whose postings already project its facts the sync
+        is an idempotent no-op.  A $1,000 payment settles 2026-01-20 (interest 500.00,
+        principal 500.00, net +500.00 on 01-20); adding a future-dated escrow line
+        then returns 200 (the E1a assert did not fire on a 500), writes the line, and
+        leaves the linked ledger byte-identical per date.  This proves the write is
+        SAFE, not that the sync ran -- the sibling firing control proves the sync
+        runs; here a skipped sync would look identical, and that is the point (a
+        clean escrow write must move no money either way).
+        """
+        loan = _make_sync_loan(seed_user, db.session)
+        scenario_id = seed_user["scenario"].id
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], loan, seed_periods[1],
+            amount=Decimal("1000.00"), paid_at=settle_instant_on(date(2026, 1, 20)),
+        )
+        db.session.commit()
+        linked_id = linked_ledger_account(db.session, loan.id).id
+        nets_before = linked_net_by_date(db.session, linked_id, scenario_id)
+        assert nets_before[date(2026, 1, 20)] == Decimal("500.00")
+
+        resp = auth_client.post(
+            f"/accounts/{loan.id}/loan/escrow",
+            data={"name": "Property Tax", "annual_amount": "4800.00",
+                  "effective_date": "2026-04-01"},
+        )
+        assert resp.status_code == 200
+        # The mutation itself worked: the escrow line was written.
+        assert (
+            db.session.query(EscrowLine)
+            .filter_by(account_id=loan.id, name="Property Tax").count() == 1
+        )
+        # No money moved: the linked ledger is byte-identical per date.
+        assert linked_net_by_date(db.session, linked_id, scenario_id) == nets_before
 
 
 # ── Rate History Tests ───────────────────────────────────────────────
@@ -1774,7 +2132,7 @@ class TestRateHistory:
 
     def test_rate_change_idor(self, auth_client, second_user, db, seed_periods):
         """Rate change to another user's loan returns 404 with no side effects."""
-        other = _create_other_loan(second_user, db.session, "Mortgage")
+        other = _create_other_loan(second_user, db.session, AcctTypeEnum.MORTGAGE)
         # DH-#56: the fixture seeds an origination RateHistory row, so the
         # "no side effects" invariant is that the count is UNCHANGED by the
         # IDOR POST -- not that it is zero.
@@ -2596,7 +2954,7 @@ class TestLoanNegativePaths:
 
     def test_escrow_idor_add(self, auth_client, second_user, db, seed_periods):
         """Escrow add to another user's loan returns 404."""
-        other = _create_other_loan(second_user, db.session, "Mortgage")
+        other = _create_other_loan(second_user, db.session, AcctTypeEnum.MORTGAGE)
         resp = auth_client.post(
             f"/accounts/{other.id}/loan/escrow",
             data={"name": "Stolen", "annual_amount": "9999.00"},
@@ -2611,11 +2969,11 @@ class TestLoanNegativePaths:
 
 # All five amortizing account types with realistic parameters.
 _AMORTIZING_TYPES = [
-    ("Mortgage", Decimal("250000.00"), Decimal("0.06500"), 360, 600),
-    ("Auto Loan", Decimal("25000.00"), Decimal("0.05000"), 60, 120),
-    ("Student Loan", Decimal("45000.00"), Decimal("0.04500"), 120, 300),
-    ("Personal Loan", Decimal("10000.00"), Decimal("0.08000"), 48, 120),
-    ("HELOC", Decimal("50000.00"), Decimal("0.07250"), 180, 360),
+    (AcctTypeEnum.MORTGAGE, Decimal("250000.00"), Decimal("0.06500"), 360, 600),
+    (AcctTypeEnum.AUTO_LOAN, Decimal("25000.00"), Decimal("0.05000"), 60, 120),
+    (AcctTypeEnum.STUDENT_LOAN, Decimal("45000.00"), Decimal("0.04500"), 120, 300),
+    (AcctTypeEnum.PERSONAL_LOAN, Decimal("10000.00"), Decimal("0.08000"), 48, 120),
+    (AcctTypeEnum.HELOC, Decimal("50000.00"), Decimal("0.07250"), 180, 360),
 ]
 
 
@@ -2627,10 +2985,10 @@ class TestLoanDashboardRegression:
     engine and loan UI.
     """
 
-    @pytest.mark.parametrize("type_name,principal,rate,term,max_term", _AMORTIZING_TYPES)
+    @pytest.mark.parametrize("account_type,principal,rate,term,max_term", _AMORTIZING_TYPES)
     def test_dashboard_renders_for_all_amortizing_types(
         self, auth_client, seed_user, db, seed_periods,
-        type_name, principal, rate, term, max_term,
+        account_type, principal, rate, term, max_term,
     ):
         """Dashboard must render successfully for every amortizing account type.
 
@@ -2638,7 +2996,7 @@ class TestLoanDashboardRegression:
         all existing types continue to work.
         """
         acct = _create_loan_account(
-            seed_user, db.session, type_name, f"Test {type_name}",
+            seed_user, db.session, account_type, f"Test {account_type.value}",
             principal, rate, term, date(2024, 1, 1), 1,
         )
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
@@ -2647,10 +3005,10 @@ class TestLoanDashboardRegression:
         # Dashboard should display the monthly payment.
         assert "Monthly" in html or "monthly" in html
 
-    @pytest.mark.parametrize("type_name,principal,rate,term,max_term", _AMORTIZING_TYPES)
+    @pytest.mark.parametrize("account_type,principal,rate,term,max_term", _AMORTIZING_TYPES)
     def test_payoff_extra_payment_all_types(
         self, auth_client, seed_user, db, seed_periods,
-        type_name, principal, rate, term, max_term,
+        account_type, principal, rate, term, max_term,
     ):
         """Payoff calculator extra-payment mode works for all amortizing types.
 
@@ -2658,7 +3016,7 @@ class TestLoanDashboardRegression:
         present in the response.
         """
         acct = _create_loan_account(
-            seed_user, db.session, type_name, f"Test {type_name}",
+            seed_user, db.session, account_type, f"Test {account_type.value}",
             principal, rate, term, date(2024, 1, 1), 1,
         )
         resp = auth_client.post(
@@ -2699,11 +3057,15 @@ class TestLoanDashboardRegression:
 
         F-27 ("fix + reframe, show both"): with a projected transfer
         paying the loan, the headline is the extra needed ON TOP of the
-        plan (plan months suppress the searched extra, the committed-
-        scenario convention) alongside the plan's own payoff date; the
-        raw no-plan figure stays as the secondary line.  Without the
-        fix, the route discarded ``ctx.loan.payments`` and showed only
-        the overstated raw number.
+        plan; the raw no-plan figure stays as the secondary line.
+        Without the fix, the route discarded ``ctx.loan.payments`` and
+        showed only the overstated raw number.
+
+        Since plan step C8f the headline folds the loan's forward PLAN
+        (``balance_at.loan_required_extra``) and the panel no longer
+        prints "Current Plan Pays Off" -- that is the payoff CHIP's
+        question, and answering it here from a second producer is how
+        the panel came to contradict the chip.
         """
         acct = _create_mortgage(seed_user, db.session)
         # Projected (future) transfer well above the ~$1,580 contractual
@@ -2720,11 +3082,13 @@ class TestLoanDashboardRegression:
         )
         assert resp.status_code == 200
         html = resp.data.decode()
-        # The plan-aware headline and the plan payoff date render...
+        # The plan-aware headline renders...
         assert "Add on Top of Your Current Plan" in html
-        assert "Current Plan Pays Off" in html
-        # ...and the raw figure stays as the secondary line.
+        # ...the raw figure stays as the secondary line...
         assert "Without your recurring plan" in html
+        # ...and the payoff date is NOT restated here (C8f): one question,
+        # one producer, one place on the page.
+        assert "Current Plan Pays Off" not in html
 
     def test_payoff_zero_extra_payment_shows_standard_metrics(
         self, auth_client, seed_user, db, seed_periods,
@@ -2781,7 +3145,7 @@ class TestLoanDashboardRegression:
         for 'not found' and 'not yours' per the security response rule.
         """
         other_acct = _create_loan_account(
-            seed_second_user, db.session, "Mortgage", "Other Mortgage",
+            seed_second_user, db.session, AcctTypeEnum.MORTGAGE, "Other Mortgage",
             Decimal("200000.00"), Decimal("0.06000"), 360,
             date(2024, 1, 1), 1,
         )
@@ -2802,7 +3166,17 @@ def _create_transfer_to_loan(seed_user, loan_account, period, amount,
 
     Enforces shadow transaction invariants by using the production
     code path.  Does NOT directly insert shadow transactions.
+
+    A transfer created ALREADY settled carries an explicit settle instant at
+    its period's start (step E1a: a born-settled create without one stamps
+    ``now()``, and the real clock sits past these fixtures' frozen todays and
+    seeded 2026 periods -- the payment would be invisible to every bounded
+    read).  Period start is the exact visibility these fixtures had before
+    E1a, when a born-settled create left ``paid_at`` NULL and every reader
+    fell back to the period start, so no test's arithmetic moves.
     """
+    status_id = ref_cache.status_id(status_enum)
+    settled = _db.session.get(Status, status_id).is_settled
     return create_transfer(
         TransferSpec(
             user_id=seed_user["user"].id,
@@ -2811,8 +3185,9 @@ def _create_transfer_to_loan(seed_user, loan_account, period, amount,
             pay_period_id=period.id,
             scenario_id=seed_user["scenario"].id,
             amount=amount,
-            status_id=ref_cache.status_id(status_enum),
+            status_id=status_id,
             category_id=seed_user["categories"]["Rent"].id,
+            paid_at=settle_instant_on(period.start_date) if settled else None,
         ),
     )
 
@@ -3184,7 +3559,7 @@ class TestTransferPrompt:
     ):
         """POST to other user's debt account returns 404 (security)."""
         other_loan = _create_loan_account(
-            seed_second_user, db.session, "Mortgage", "Other Mortgage",
+            seed_second_user, db.session, AcctTypeEnum.MORTGAGE, "Other Mortgage",
             Decimal("200000.00"), Decimal("0.06000"), 360,
             date(2024, 1, 1), 1,
         )
@@ -3409,6 +3784,342 @@ class TestTransferPrompt:
         )
 
 
+# ── Payment Drift Warning + Auto-Track Switch Tests (C7 / ruling D3) ──
+
+
+class TestPaymentDrift:
+    """The loan detail underpayment-drift warning and its one-click auto-track switch.
+
+    A MANUAL recurring payment whose stored base has fallen short of the
+    contractual monthly payment (P&I + today's escrow) -- after an escrow or rate
+    change the stored amount never absorbed -- warns on the loan detail page and
+    offers to switch the payment to ``derive_from_loan`` so it tracks the contract
+    automatically (step C7, ruling D3).  A derive payment already tracks and never
+    warns; an at- or above-contract payment never warns (a deliberate overpayment
+    does not trip it).
+    """
+
+    @staticmethod
+    def _contract(acct, user_id):
+        """The loan's contractual monthly payment today (P&I + escrow) via the seam.
+
+        The same figure the route's ``_contractual_monthly_payment`` writes and the
+        loan card displays as "Total Monthly": the seam ``loan_terms`` P&I plus
+        today's ``resolve_active_lines`` escrow.  Used to size a drift precisely
+        without hard-coding the resolver-derived P&I.
+        """
+        terms = balance_at.loan_terms(acct, BalanceContext.build(user_id))
+        components = escrow_calculator.resolve_active_lines(
+            loan_loaders.load_escrow_lines(acct.id), date.today(),
+        )
+        return escrow_calculator.calculate_total_payment(
+            terms.monthly_payment, components,
+        )
+
+    @staticmethod
+    def _legacy_manual_transfer(seed_user, db_session, acct, amount):
+        """Create a legacy manual recurring payment with NO settings row.
+
+        Mirrors the two real production loans (a payment created before the
+        loan_payment_settings feature): an active monthly TransferTemplate with a
+        recurrence rule and a stored ``default_amount``, and no 1:1 settings row --
+        which every reader treats as manual mode (derive_from_loan False, no extra).
+        """
+        from app.enums import RecurrencePatternEnum  # pylint: disable=import-outside-toplevel
+        from app.models.recurrence_rule import RecurrenceRule  # pylint: disable=import-outside-toplevel
+        from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
+
+        monthly_id = ref_cache.recurrence_pattern_id(
+            RecurrencePatternEnum.MONTHLY,
+        )
+        rule = RecurrenceRule(
+            user_id=seed_user["user"].id, pattern_id=monthly_id, day_of_month=1,
+        )
+        db_session.add(rule)
+        db_session.flush()
+        tpl = TransferTemplate(
+            user_id=seed_user["user"].id,
+            from_account_id=seed_user["account"].id,
+            to_account_id=acct.id,
+            recurrence_rule_id=rule.id,
+            name="Legacy Mortgage Payment",
+            default_amount=amount,
+            is_active=True,
+        )
+        db_session.add(tpl)
+        db_session.commit()
+        return tpl
+
+    def test_dashboard_warns_when_manual_payment_short(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A manual payment $50 below contract warns with the exact shortfall.
+
+        The transfer is created via the amount override (manual mode,
+        derive_from_loan False) at ``contract - $50.00``, so the shortfall is
+        exactly $50.00.  The warning names the stored amount, the shortfall, and
+        the contract, and offers the auto-track action.  The stored amount is
+        warning-only on this page (the projection uses the contractual schedule),
+        so matching it proves the warning renders it.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        checking = seed_user["account"]
+        contract = self._contract(acct, seed_user["user"].id)
+        stored = contract - Decimal("50.00")
+        auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={"source_account_id": str(checking.id), "amount": str(stored)},
+        )
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "short of the contractual monthly payment" in html
+        assert f"${stored:,.2f}" in html          # stored transfer amount
+        assert "$50.00" in html                    # the exact shortfall
+        assert f"${contract:,.2f}" in html         # the contractual payment
+        assert f"/accounts/{acct.id}/loan/track-payment" in html
+        assert "Switch to automatic payment" in html
+
+    def test_dashboard_warns_when_legacy_manual_payment_short(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The real-loan shape -- a manual payment with NO settings row -- warns too.
+
+        Both production loans predate loan_payment_settings, so their recurring
+        payment has no settings row.  A missing row is manual mode, so a stored
+        amount below contract must warn exactly as an amount-override manual
+        payment does.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        contract = self._contract(acct, seed_user["user"].id)
+        self._legacy_manual_transfer(
+            seed_user, db.session, acct, contract - Decimal("50.00"),
+        )
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "short of the contractual monthly payment" in html
+        assert "$50.00" in html
+
+    def test_dashboard_warns_when_base_short_despite_standing_extra(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A short BASE warns even when a standing extra pushes total cash over contract.
+
+        The firing control for ruling D3's ``extra_principal``-cancellation
+        property: the warning compares the extra-free BASE (``default_amount``) to
+        the contractual P&I + escrow, so a manual payment with base = contract-$50
+        and a $75 standing extra -- total live cash contract+$25, ABOVE contract --
+        must STILL warn, because the base under-covers P&I + escrow.  A regression
+        that added the extra to the compared (stored) side (``stored =
+        default_amount + extra``) would suppress this warning and still pass every
+        other test in the class; this asserts the $50.00 base shortfall renders.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        checking = seed_user["account"]
+        contract = self._contract(acct, seed_user["user"].id)
+        auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={
+                "source_account_id": str(checking.id),
+                "amount": str(contract - Decimal("50.00")),
+                "extra_principal": "75.00",
+            },
+        )
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "short of the contractual monthly payment" in html
+        assert "$50.00" in html          # the BASE shortfall, extra excluded
+
+    @pytest.mark.parametrize("delta", [Decimal("0.00"), Decimal("100.00")])
+    def test_dashboard_no_warning_when_manual_at_or_above_contract(
+        self, auth_client, seed_user, db, seed_periods, delta,
+    ):
+        """A payment exactly at or above contract never warns.
+
+        Ruling D3: a deliberate overpayment does not trip the drift warning; the
+        warning is underpayment-only.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        checking = seed_user["account"]
+        contract = self._contract(acct, seed_user["user"].id)
+        auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={
+                "source_account_id": str(checking.id),
+                "amount": str(contract + delta),
+            },
+        )
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        assert "short of the contractual monthly payment" not in resp.data.decode()
+
+    def test_dashboard_no_warning_when_derive_even_after_escrow_rise(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A DERIVE payment never warns, even when its stored base is now stale.
+
+        The control that proves derive mode is EXCLUDED, not merely free of drift:
+        a derive transfer is created (default_amount = contract at creation), then a
+        $200/mo escrow line is added so the contract rises ABOVE the stored base.
+        The underpayment predicate (stored < contract) is now TRUE -- asserted
+        directly -- yet no warning shows, because a derive payment recomputes its
+        cash to the contract on every read and cannot drift.
+        """
+        from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
+
+        acct = _create_mortgage(seed_user, db.session)
+        checking = seed_user["account"]
+        auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={"source_account_id": str(checking.id)},   # derive default
+        )
+        # Raise the contract above the stored base by adding escrow AFTER creation.
+        add_escrow_line(db.session, acct.id, "Taxes", Decimal("2400.00"))
+        db.session.commit()
+
+        tpl = (
+            db.session.query(TransferTemplate)
+            .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)
+            .first()
+        )
+        new_contract = self._contract(acct, seed_user["user"].id)
+        # The control: the stored base is now below contract (would warn if manual).
+        assert tpl.default_amount < new_contract
+        assert tpl.settings.derive_from_loan is True
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        assert "short of the contractual monthly payment" not in resp.data.decode()
+
+    def test_track_payment_flips_to_derive_and_clears_warning(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The one-click switch flips a short manual payment to auto-track.
+
+        A manual payment $50 below contract warns; POSTing track-payment sets
+        derive_from_loan True and resets the stored base to the contract, so a
+        re-render shows no warning and the loan now tracks the contract.
+        """
+        from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
+
+        acct = _create_mortgage(seed_user, db.session)
+        checking = seed_user["account"]
+        contract = self._contract(acct, seed_user["user"].id)
+        auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={
+                "source_account_id": str(checking.id),
+                "amount": str(contract - Decimal("50.00")),
+            },
+        )
+        # Precondition: the warning is showing.
+        pre = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert "short of the contractual monthly payment" in pre.data.decode()
+
+        resp = auth_client.post(f"/accounts/{acct.id}/loan/track-payment")
+        assert resp.status_code == 302
+        assert f"/accounts/{acct.id}/loan" in resp.headers.get("Location", "")
+
+        tpl = (
+            db.session.query(TransferTemplate)
+            .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)
+            .first()
+        )
+        db.session.expire(tpl)
+        assert tpl.settings.derive_from_loan is True
+        assert tpl.default_amount == contract
+
+        post = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert "short of the contractual monthly payment" not in post.data.decode()
+
+    def test_track_payment_creates_settings_row_for_legacy_manual(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Switching a legacy no-settings payment creates the settings row (derive).
+
+        The real-loan shape has no loan_payment_settings row; the switch must
+        create one with derive_from_loan True (a missing row is manual mode), keep
+        the extra at zero, and reset the stored base to the contract.
+        """
+        acct = _create_mortgage(seed_user, db.session)
+        contract = self._contract(acct, seed_user["user"].id)
+        tpl = self._legacy_manual_transfer(
+            seed_user, db.session, acct, contract - Decimal("50.00"),
+        )
+        assert tpl.settings is None   # legacy shape: no settings row
+
+        resp = auth_client.post(f"/accounts/{acct.id}/loan/track-payment")
+        assert resp.status_code == 302
+
+        db.session.expire(tpl)
+        assert tpl.settings is not None
+        assert tpl.settings.derive_from_loan is True
+        assert tpl.settings.extra_principal == Decimal("0.00")
+        assert tpl.default_amount == contract
+
+    def test_track_payment_preserves_standing_extra(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Switching to auto-track preserves the standing extra principal.
+
+        A manual payment with a $75 standing extra, $50 below contract on its base:
+        the switch flips derive True and keeps extra at $75 (the extra rides on top
+        of the tracked base, unchanged), resetting the base to the contract.
+        """
+        from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
+
+        acct = _create_mortgage(seed_user, db.session)
+        checking = seed_user["account"]
+        contract = self._contract(acct, seed_user["user"].id)
+        auth_client.post(
+            f"/accounts/{acct.id}/loan/create-transfer",
+            data={
+                "source_account_id": str(checking.id),
+                "amount": str(contract - Decimal("50.00")),
+                "extra_principal": "75.00",
+            },
+        )
+
+        resp = auth_client.post(f"/accounts/{acct.id}/loan/track-payment")
+        assert resp.status_code == 302
+
+        tpl = (
+            db.session.query(TransferTemplate)
+            .filter_by(to_account_id=acct.id, user_id=seed_user["user"].id)
+            .first()
+        )
+        db.session.expire(tpl)
+        assert tpl.settings.derive_from_loan is True
+        assert tpl.settings.extra_principal == Decimal("75.00")
+        assert tpl.default_amount == contract
+
+    def test_track_payment_no_recurring_payment_warns(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """Switching a loan with no recurring payment warns, no 500."""
+        acct = _create_mortgage(seed_user, db.session)
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/track-payment",
+            follow_redirects=True,
+        )
+        assert resp.status_code == 200
+        assert b"no recurring payment" in resp.data.lower()
+
+    def test_track_payment_idor(
+        self, second_auth_client, seed_user, db, seed_periods,
+    ):
+        """A non-owner switching a loan's payment gets a 404 (not-yours == not-found)."""
+        acct = _create_mortgage(seed_user, db.session)
+        resp = second_auth_client.post(f"/accounts/{acct.id}/loan/track-payment")
+        assert resp.status_code == 404
+
+
 # ── ARM Rate History Integration Tests (Commit 5.7-1) ──────────────
 
 
@@ -3430,7 +4141,7 @@ class TestARMRateHistoryIntegration:
         verifies the dashboard renders and shows rate history data.
         """
         acct = _create_loan_account(
-            seed_user, db.session, "Mortgage", "ARM Mortgage",
+            seed_user, db.session, AcctTypeEnum.MORTGAGE, "ARM Mortgage",
             Decimal("100000.00"), Decimal("0.05000"), 360,
             date(2024, 1, 1), 1, is_arm=True,
         )
@@ -3654,7 +4365,7 @@ class TestMultiScenarioVisualization:
         baseline (current_index 0); the rate chip carries the ARM tag.
         """
         acct = _create_loan_account(
-            seed_user, db.session, "Mortgage", "ARM Mortgage",
+            seed_user, db.session, AcctTypeEnum.MORTGAGE, "ARM Mortgage",
             Decimal("100000.00"), Decimal("0.05000"), 360,
             date(2024, 1, 1), 1, is_arm=True,
         )
@@ -3957,43 +4668,47 @@ def _create_fresh_mortgage(seed_user, db_session, principal=Decimal("250000.00")
                 month=first_of_this_month.month - 1,
             )
     return _create_loan_account_exact(
-        seed_user, db_session, "Mortgage", "Fresh Mortgage",
-        principal, principal, rate, term, origination_date, payment_day,
+        seed_user, db_session, AcctTypeEnum.MORTGAGE, "Fresh Mortgage",
+        principal, rate, term, origination_date, payment_day,
     )
 
 
-def _create_loan_account_exact(seed_user, db_session, type_name, name,
-                                original_principal, current_principal,
-                                rate, term, orig_date, payment_day,
-                                is_arm=False):
-    """Like _create_loan_account but with explicit original_principal."""
-    loan_type = db_session.query(AccountType).filter_by(name=type_name).one()
-    account = account_service.create_account(
-        account_service.AccountSpec(
-            user_id=seed_user["user"].id,
-            account_type_id=loan_type.id,
-            name=name,
-            anchor_balance=current_principal,
-        ),
-    )
-    db_session.add(account)
-    db_session.flush()
+def _create_loan_account_exact(seed_user, db_session, account_type, name,
+                                original_principal, rate, term, orig_date,
+                                payment_day):
+    """Like :func:`_create_loan_account` but with NO trueup anchor.
 
-    params = LoanParams(
-        account_id=account.id,
-        original_principal=original_principal,
-        current_principal=current_principal,
-        term_months=term,
-        origination_date=orig_date,
-        payment_day=payment_day,
-        is_arm=is_arm,
+    The loan carries only its origination anchor, so ``original_principal``
+    IS its resolved balance -- there is no ``+ $5,000`` paid-down gap and no
+    trueup event.  (The hand-rolled block this replaced also took a
+    ``current_principal``, but it only ever landed in the non-authoritative
+    ``LoanParams.current_principal`` column and the loan account's unread
+    anchor balance: with no trueup event, the resolver and the genesis ledger
+    both seeded from ``original_principal`` regardless.  The parameter is gone
+    rather than kept as a decorative no-op.)
+
+    Routes through the shared factory, so the loan's genesis posting ledger is
+    opened in the same transaction as its ``LoanParams``.
+
+    Args:
+        seed_user: The ``seed_user`` fixture dict.
+        db_session: The test ``db.session``.
+        account_type: The :class:`~app.enums.AcctTypeEnum` member.
+        name: The account name.
+        original_principal: The origination principal (the resolved balance).
+        rate: The origination annual rate as a Decimal fraction.
+        term: The loan term in months.
+        orig_date: The loan origination date.
+        payment_day: The day-of-month payment day.
+
+    Returns:
+        The created loan :class:`~app.models.account.Account`.
+    """
+    return create_loan_account(
+        seed_user, db_session, name=name, principal=original_principal,
+        rate=rate, term=term, origination_date=orig_date,
+        payment_day=payment_day, account_type=account_type,
     )
-    db_session.add(params)
-    db_session.flush()
-    insert_origination_event(params)
-    insert_origination_rate(params, rate)
-    db_session.commit()
-    return account
 
 
 class TestAmortizationSchedule:
@@ -4206,8 +4921,8 @@ class TestAmortizationSchedule:
         30-year assumption.
         """
         acct = _create_loan_account_exact(
-            seed_user, db.session, "Auto Loan", "Short Loan",
-            Decimal("5000.00"), Decimal("5000.00"),
+            seed_user, db.session, AcctTypeEnum.AUTO_LOAN, "Short Loan",
+            Decimal("5000.00"),
             Decimal("0.06500"), 12, date(2026, 3, 1), 1,
         )
         resp = auth_client.get(f"/accounts/{acct.id}/loan/schedule")
@@ -4261,8 +4976,8 @@ class TestAmortizationSchedule:
         # Small loan: $1000 at 5% for 12 months, origination Jan 2026.
         # First payment month: Feb 2026 (seed_periods[3] = Feb 13).
         acct = _create_loan_account_exact(
-            seed_user, db.session, "Auto Loan", "Paid Off",
-            Decimal("1000.00"), Decimal("0.00"),
+            seed_user, db.session, AcctTypeEnum.AUTO_LOAN, "Paid Off",
+            Decimal("1000.00"),
             Decimal("0.05000"), 12, date(2026, 1, 1), 1,
         )
         # Large confirmed payment in Feb covers the full balance.
@@ -4292,7 +5007,7 @@ class TestAmortizationSchedule:
         column header and rate values should appear in the schedule.
         """
         acct = _create_loan_account(
-            seed_user, db.session, "Mortgage", "ARM Schedule",
+            seed_user, db.session, AcctTypeEnum.MORTGAGE, "ARM Schedule",
             Decimal("100000.00"), Decimal("0.05000"), 360,
             date(2024, 1, 1), 1, is_arm=True,
         )
@@ -4427,28 +5142,31 @@ class TestAmortizationSchedule:
             f"Expected total payment {formatted_payment} not found"
         )
 
-    def test_schedule_overpayment_not_shown_as_extra(
+    def test_schedule_overpayment_shows_the_actual_extra(
         self, auth_client, seed_user, db, seed_periods,
     ):
-        """C-5.13-12 (re-pinned): a confirmed overpayment is NOT auto-shown as Extra.
+        """C-5.13-12 (re-pinned again, step E1a): a POSTED overpayment shows its real extra.
 
-        Re-pinned under the contractual-schedule balance model (CLAUDE
-        rule 5 exception; the developer chose "deliberate extra principal
-        is recorded as an explicit event").  The prior test created a
-        DONE transfer above the contractual P&I and expected the schedule
-        to break out the difference as an "Extra" column.  Under the new
-        model the historical balance follows the contractual schedule and
-        the cash overage is ignored -- extra principal is now an explicit
-        balance true-up, not an amount inferred from a transfer's cash --
-        so every schedule row carries ``extra_payment=0``,
-        ``schedule_totals.has_extra`` is False, and the Extra column is
-        hidden.
+        The prior pin ("the cash overage is ignored") dated from the
+        contractual-schedule balance model, which the balance arc
+        SUPERSEDED: since the read switch (PR #52) a confirmed schedule
+        row is read from the ledger and carries the payment's ACTUAL
+        economics -- ``extra_payment`` is the real excess above the
+        governing period's contractual P&I ("off-schedule the rows show
+        what actually happened", plan step C3).  The old pin stayed
+        green only because a transfer created ALREADY settled never
+        posted (the unposted-ledger hole step E1a closed): its cash
+        never reached the ledger, so the row had no economics to show.
+        With the payment genuinely posted, the $2,080.17 cash against
+        the $1,580.17 contractual P&I is interest + principal with a
+        real $500.00 excess, and hiding it would misreport what the
+        borrower actually paid.
         """
         acct = _create_fresh_mortgage(
             seed_user, db.session, origination_date=date(2026, 1, 1),
         )
-        # A DONE transfer above the contractual P&I ($2080.17 vs
-        # $1580.17).  The $500 overage is no longer auto-applied.
+        # A DONE transfer above the contractual P&I ($2080.17 vs $1580.17):
+        # the $500.00 overage is the payment's ACTUAL extra.
         _create_transfer_to_loan(
             seed_user, acct, seed_periods[3], Decimal("2080.17"),
             status_enum=StatusEnum.DONE,
@@ -4458,9 +5176,14 @@ class TestAmortizationSchedule:
         resp = auth_client.get(f"/accounts/{acct.id}/loan/schedule")
         assert resp.status_code == 200
         html = resp.data.decode()
-        # No row carries extra, so the Extra column does not render.
-        assert ">Extra</th>" not in html, (
-            "A historical overpayment must not auto-populate an Extra column"
+        # The ledger-derived confirmed row carries the real excess, so the
+        # Extra column renders and shows it.  The ``$`` anchor keeps the
+        # amount from false-matching a thousands figure like $1,500.00.
+        assert ">Extra</th>" in html, (
+            "A posted overpayment's actual extra must render on the schedule"
+        )
+        assert "$500.00" in html, (
+            "The confirmed row must carry the payment's real $500.00 extra"
         )
 
     def test_schedule_uses_committed_schedule(
@@ -4547,7 +5270,7 @@ class TestDashboardPayoffConsistency:
         """Payoff committed chart data matches dashboard committed chart.
 
         Both routes render committed balance data for Chart.js.  Since
-        both use _load_loan_context for payment preparation, the
+        both use _load_route_context for payment preparation, the
         committed balance arrays must be identical.
 
         Origination is pinned to March 1, 2026 so seed_periods[7]
@@ -4584,7 +5307,7 @@ class TestDashboardPayoffConsistency:
         overlay = _parse_chart_array(payoff_resp.data.decode(), "overlay")
         assert overlay is not None, "Payoff missing overlay chart data"
 
-        # Both derive from _load_loan_context -> compute_payoff_scenarios, so the
+        # Both derive from _load_route_context -> compute_payoff_scenarios, so the
         # overlay's forward slice must byte-match the band's committed forward
         # slice; the overlay is null across the confirmed-history region.
         current_index = band["current_index"]
@@ -4599,7 +5322,7 @@ class TestDashboardPayoffConsistency:
     ):
         """Payoff calculator with prepared payments does not crash.
 
-        After the DRY refactor, both routes use _load_loan_context.
+        After the DRY refactor, both routes use _load_route_context.
         Verify the payoff calculator handles prepared payments correctly
         in both extra_payment and target_date modes.
         """
@@ -4982,7 +5705,7 @@ class TestDashboardChartComposer:
         serializes a floor series.)
         """
         acct = _create_loan_account(
-            seed_user, db.session, "Mortgage", "ARM 5/1",
+            seed_user, db.session, AcctTypeEnum.MORTGAGE, "ARM 5/1",
             Decimal("100000.00"), Decimal("0.05000"), 360,
             date(2024, 1, 1), 1, is_arm=True,
         )
@@ -5192,7 +5915,7 @@ class TestRecurrenceEndDateUpdate:
         unset, the change sets it.
         """
         acct = _create_loan_account(
-            seed_user, db.session, "Mortgage", "ARM End Date Mortgage",
+            seed_user, db.session, AcctTypeEnum.MORTGAGE, "ARM End Date Mortgage",
             Decimal("250000.00"), Decimal("0.05000"), 360,
             date(2023, 6, 1), 1, is_arm=True,
         )
@@ -5222,8 +5945,8 @@ class TestRecurrenceEndDateUpdate:
         from datetime import datetime  # pylint: disable=import-outside-toplevel
 
         acct = _create_loan_account_exact(
-            seed_user, db.session, "Auto Loan", "Paid Off Loan",
-            Decimal("1000.00"), Decimal("0.00"),
+            seed_user, db.session, AcctTypeEnum.AUTO_LOAN, "Paid Off Loan",
+            Decimal("1000.00"),
             Decimal("0.05000"), 12, date(2026, 1, 1), 1,
         )
         _tpl, rule = _create_transfer_template(seed_user, db.session, acct)
@@ -5311,7 +6034,7 @@ class TestRecurrenceEndDateUpdate:
         from app.models.recurrence_rule import RecurrenceRule  # pylint: disable=import-outside-toplevel
         from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
 
-        other_loan = _create_other_loan(second_user, db.session, "Mortgage")
+        other_loan = _create_other_loan(second_user, db.session, AcctTypeEnum.MORTGAGE)
 
         # Create a transfer template for the other user's loan.
         monthly_id = ref_cache.recurrence_pattern_id(
@@ -5412,33 +6135,16 @@ def _create_exact_mortgage(seed_user, db_session):
     matches exactly: M = P * [r(1+r)^n] / [(1+r)^n - 1] where
     P=200000, r=0.065/12, n=360.  Origination today so remaining
     months = 360.
-    """
-    loan_type = db_session.query(AccountType).filter_by(name="Mortgage").one()
-    account = account_service.create_account(
-        account_service.AccountSpec(
-            user_id=seed_user["user"].id,
-            account_type_id=loan_type.id,
-            name="Exact Test Mortgage",
-            anchor_balance=Decimal("200000.00"),
-        ),
-    )
-    db_session.add(account)
-    db_session.flush()
 
-    params = LoanParams(
-        account_id=account.id,
-        original_principal=Decimal("200000.00"),
-        current_principal=Decimal("200000.00"),
-        term_months=360,
-        origination_date=date.today(),
-        payment_day=1,
+    Built through the shared factory, so the loan's genesis posting ledger is
+    opened with it (as production's ``loan.create_params`` does).
+    """
+    return create_loan_account(
+        seed_user, db_session, name="Exact Test Mortgage",
+        principal=Decimal("200000.00"), rate=Decimal("0.06500"), term=360,
+        origination_date=date.today(), payment_day=1,
+        account_type=AcctTypeEnum.MORTGAGE,
     )
-    db_session.add(params)
-    db_session.flush()
-    insert_origination_event(params)
-    insert_origination_rate(params, Decimal("0.06500"))
-    db_session.commit()
-    return account
 
 
 class TestRefinanceCalculator:
@@ -5534,7 +6240,7 @@ class TestRefinanceCalculator:
 
     def test_refinance_idor(self, auth_client, second_user, db, seed_periods):
         """C-5.10-5: Refinance on another user's loan returns 404."""
-        other = _create_other_loan(second_user, db.session, "Mortgage")
+        other = _create_other_loan(second_user, db.session, AcctTypeEnum.MORTGAGE)
         resp = auth_client.post(
             f"/accounts/{other.id}/loan/refinance",
             data={"new_rate": "5.0", "new_term_months": "360"},
@@ -5675,7 +6381,7 @@ class TestRefinanceCalculator:
         fixed rate should show savings.
         """
         acct = _create_loan_account(
-            seed_user, db.session, "Mortgage", "ARM Mortgage",
+            seed_user, db.session, AcctTypeEnum.MORTGAGE, "ARM Mortgage",
             Decimal("250000.00"), Decimal("0.06500"), 360,
             date(2023, 6, 1), 1, is_arm=True,
         )
@@ -5706,7 +6412,7 @@ class TestRefinanceCalculator:
     ):
         """C-5.10-12: Paid-off loan returns error, not a comparison."""
         acct = _create_loan_account(
-            seed_user, db.session, "Mortgage", "Paid Off Mortgage",
+            seed_user, db.session, AcctTypeEnum.MORTGAGE, "Paid Off Mortgage",
             Decimal("0.00"), Decimal("0.06500"), 360,
             date(2023, 6, 1), 1,
         )
@@ -5951,12 +6657,23 @@ class TestRefinanceForwardOnlyBaseline:
             total_interest_accelerated=Decimal("250.00"),
         )
         state = LoanState(
-            current_balance=Decimal("99000.00"),
             monthly_payment=Decimal("1000.00"),
             current_rate=Decimal("0.06"),
             schedule=confirmed + committed_forward,
-            payoff_date=date(2026, 3, 1),
             total_interest=Decimal("1247.50"),
+        )
+        # The balance the route threads in explicitly (C4); a LoanState field
+        # until plan step D2a deleted it (the route reads the seam's fold).
+        current_balance = Decimal("99000.00")
+        # The route context stand-in.  ``_build_refinance_comparison`` reads only
+        # ``monthly_payment`` and ``payoff_date`` off it, and since plan C8d the
+        # payoff is the seam's DERIVED figure carried on the route context, not a
+        # ``LoanState`` field -- so the stand-in is the context's shape, not the
+        # resolver's.  The value here is the empty-slice fallback only; this
+        # fixture's ``original_forward`` is non-empty, so it must NOT be read.
+        route_ctx = SimpleNamespace(
+            monthly_payment=state.monthly_payment,
+            payoff_date=date(2026, 3, 1),
         )
         params = SimpleNamespace(payment_day=1)
         data = {
@@ -5966,8 +6683,11 @@ class TestRefinanceForwardOnlyBaseline:
             "new_rate": Decimal("0.05"),
         }
 
+        # C4: the balance is threaded in explicitly (read once by the route);
+        # ``route_ctx`` stands in for the route context's monthly_payment /
+        # payoff_date.
         comparison = _build_refinance_comparison(
-            state, scenarios, data, params,
+            current_balance, route_ctx, scenarios, data, params,
         )
 
         # Current side reads the CONTRACTUAL original_forward: 2 months,
@@ -5984,6 +6704,151 @@ class TestRefinanceForwardOnlyBaseline:
         # provably reading original_forward, not state.schedule.
         assert comparison["current_remaining_months"] != len(committed_forward)
         assert comparison["current_total_interest"] != state.total_interest
+
+
+class TestTargetDatePanelAgreesWithTheChip:
+    """Plan C8f: the target-date panel and the payoff chip fold ONE model.
+
+    The panel used to binary-search the resolver's contractual schedule walk while
+    the chip folded the loan's plan.  For a loan behind that schedule the two
+    disagree, and the disagreement was user-visible and unlabelled: the panel
+    would announce "your current payment plan already pays this loan off by the
+    target date" for a target the chip's own payoff date was months PAST.
+    """
+
+    def test_a_target_the_loan_misses_is_not_called_already_paid_off(
+        self, app, auth_client, seed_user, db, seed_periods,
+    ):
+        """A target between the CONTRACTUAL and the FOLD payoff needs a top-up.
+
+        That window is exactly where the two models disagreed.  The loan is trued
+        up $5,000 above its contractual schedule, so the fold retires it well
+        after the contract does; a target inside the gap is one the schedule walk
+        called "already met" and the fold does not.
+        """
+        acct = create_loan_account(
+            seed_user, db.session, name="Behind Schedule",
+            principal=Decimal("240000.00"), term=360,
+            origination_date=date(2026, 1, 1), payment_day=1,
+        )
+        insert_trueup_event(
+            loan_params_for(db.session, acct.id), Decimal("245000.00"),
+        )
+        _create_transfer_to_loan(
+            seed_user, acct, seed_periods[2], Decimal("1500.00"),
+            status_enum=StatusEnum.PROJECTED,
+        )
+        db.session.commit()
+
+        with app.app_context():
+            ctx = BalanceContext.build(seed_user["user"].id)
+            account = db.session.get(Account, acct.id)
+            fold_payoff = balance_at.loan_payoff_date(account, ctx)
+            contractual = contractual_schedule_from_origination(
+                load_loan_params(acct.id), load_rate_changes(acct.id),
+            )[-1].payment_date
+        assert fold_payoff is not None
+        assert contractual < fold_payoff, (
+            "precondition: the fold must retire this loan AFTER the contractual "
+            "schedule, or the target window this test needs does not exist"
+        )
+        # Inside the gap: after the contractual payoff, before the fold's.
+        target = add_months(fold_payoff, -6)
+        assert contractual < target < fold_payoff
+
+        resp = auth_client.post(
+            f"/accounts/{acct.id}/loan/payoff",
+            data={"mode": "target_date", "target_date": target.isoformat()},
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "already pays this loan off" not in html, (
+            f"the panel claims the plan already clears the loan by {target}, but "
+            f"the chip on the same page shows it paying off {fold_payoff} -- the "
+            "panel is searching a different forward model than the chip folds"
+        )
+        assert "Add on Top of Your Current Plan" in html
+
+
+class TestPayoffChipDisplayStates:
+    """Plan C8d: the "Projected payoff" chip has THREE states, one per answer.
+
+    The chip renders the DERIVED payoff, which is ``None`` for two very
+    different loans.  Rendering both the same way is what finding B-20 was: a
+    loan paid off by a lump-sum true-up showed its ORIGINATION date as a
+    "projected payoff" -- a past date presented as a future event.
+    """
+
+    def test_a_paying_loan_shows_its_payoff_month(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The ordinary state: a month, from the fold to zero."""
+        acct = _create_fresh_mortgage(
+            seed_user, db.session, origination_date=date(2026, 1, 1),
+        )
+        db.session.commit()
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "Projected payoff" in html
+        assert "Paid off" not in html
+        assert "No payoff at current payment" not in html
+        with auth_client.application.app_context():
+            ctx = BalanceContext.build(seed_user["user"].id)
+            account = db.session.get(Account, acct.id)
+            payoff = balance_at.loan_payoff_date(account, ctx)
+        assert payoff is not None
+        assert payoff.strftime("%b %Y") in html
+
+    def test_a_retired_loan_is_badged_paid_off(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """B-20: a loan trued up to zero is BADGED, never dated.
+
+        The chip must not fall back to a date at all -- and specifically not to
+        the origination date the retired resolver fallback used to supply, which
+        is what this asserts is absent.
+        """
+        acct = _create_fresh_mortgage(
+            seed_user, db.session, origination_date=date(2026, 1, 1),
+        )
+        db.session.commit()
+        insert_trueup_event(loan_params_for(db.session, acct.id), Decimal("0.00"))
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "Paid off" in html
+        assert "Projected payoff" not in html
+        # The pre-C8d fallback rendered the ORIGINATION month here.
+        assert "Jan 2026" not in html
+
+    def test_a_loan_that_never_clears_says_so(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """The third state: legible text, not a hidden chip.
+
+        Trued up so high the level payment cannot cover the monthly interest
+        ($900,000 at 6.5% accrues ~$4,875/mo against a ~$1,580 payment), the
+        balance grows and the fold never reaches zero.  The user is told, which
+        reinforces C7's drift warning rather than leaving a gap where a payoff
+        date used to be.
+        """
+        acct = _create_fresh_mortgage(
+            seed_user, db.session, origination_date=date(2026, 1, 1),
+        )
+        db.session.commit()
+        insert_trueup_event(
+            loan_params_for(db.session, acct.id), Decimal("900000.00"),
+        )
+        db.session.commit()
+
+        resp = auth_client.get(f"/accounts/{acct.id}/loan")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        assert "No payoff at current payment" in html
+        assert "Paid off" not in html
 
 
 class TestRefinanceAndPayoffByDateProjectForwardMigration:
@@ -6243,27 +7108,20 @@ class TestLoanBalanceTrueUp:
     Test IDs follow the Commit-16 plan checklist (C16-1 .. C16-7).
     """
 
-    def _count_events(self, db_session, account):
-        return (
-            db_session.query(LoanAnchorEvent)
-            .filter_by(account_id=account.id)
-            .count()
-        )
-
     # C16-1
     def test_trueup_appends_event(self, auth_client, seed_user, db, seed_periods):
         """POST trueup creates a new LoanAnchorEvent; no prior row mutated.
 
-        Hand-check: the ``_create_auto_loan`` fixture writes two
-        anchor events (origination at $30,000 plus a user_trueup at
-        $25,000).  After POSTing today / $24,000:
+        Hand-check: the ``_create_auto_loan`` fixture writes ONE stored
+        anchor event (a user_trueup at $25,000; the origination is
+        synthesized from params, not stored -- as production's create_params
+        does since the read switch).  After POSTing today / $24,000:
           * 302 redirect to /accounts/<id>/loan.
-          * Three anchor events on disk (origination + seed trueup +
-            new trueup).
+          * Two anchor events on disk (seed trueup + new trueup).
           * The new event has source_id == USER_TRUEUP id, balance
             $24,000, anchor_date == 2026-03-20 (the frozen "today"
             for this test file).
-          * The prior two events are byte-identical (no UPDATE).
+          * The prior event is byte-identical (no UPDATE).
         """
         from app.models.loan_anchor_event import LoanAnchorEvent as _LAE  # pylint: disable=import-outside-toplevel
         from app import ref_cache  # pylint: disable=import-outside-toplevel
@@ -6280,8 +7138,9 @@ class TestLoanBalanceTrueUp:
             (e.id, e.anchor_date, e.anchor_balance, e.source_id, e.created_at)
             for e in before_events
         ]
-        assert len(before_snapshot) == 2, (
-            "Fixture is expected to seed two events; if this assertion "
+        assert len(before_snapshot) == 1, (
+            "Fixture is expected to seed one stored event (the true-up; "
+            "origination is synthesized, not stored); if this assertion "
             "fails the helper has drifted and the rest of this test "
             "is meaningless."
         )
@@ -6303,7 +7162,7 @@ class TestLoanBalanceTrueUp:
             .order_by(_LAE.id)
             .all()
         )
-        assert len(after_events) == 3
+        assert len(after_events) == 2
 
         after_by_id = {e.id: e for e in after_events}
         for snap in before_snapshot:
@@ -6480,9 +7339,10 @@ class TestLoanBalanceTrueUp:
     ):
         """Two distinct trueups produce two new rows; prior rows untouched.
 
-        Hand-check: starting from the seeded two events, post two
-        different trueups (different dates).  Final state must have
-        four events; all earlier rows byte-identical.
+        Hand-check: starting from the seeded ONE event (the true-up;
+        origination is synthesized, not stored), post two different
+        trueups (different dates).  Final state must have three events;
+        all earlier rows byte-identical.
         """
         from app.models.loan_anchor_event import LoanAnchorEvent as _LAE  # pylint: disable=import-outside-toplevel
         acct = _create_auto_loan(seed_user, db.session)
@@ -6496,7 +7356,7 @@ class TestLoanBalanceTrueUp:
                 .all()
             )
         ]
-        assert len(snapshot_before) == 2
+        assert len(snapshot_before) == 1
 
         # First trueup -- different date than any seed event.
         auth_client.post(
@@ -6522,7 +7382,7 @@ class TestLoanBalanceTrueUp:
             .order_by(_LAE.id)
             .all()
         )
-        assert len(all_events) == 4
+        assert len(all_events) == 3
 
         events_by_id = {e.id: e for e in all_events}
         for snap in snapshot_before:
@@ -6717,7 +7577,7 @@ class TestLoanDetailMeasuredSurfaces:
         element ids (only the in-band chip and the escrow-header badge).
         """
         acct = _create_loan_account(
-            seed_user, db.session, "Mortgage", "Dup-ID Mortgage",
+            seed_user, db.session, AcctTypeEnum.MORTGAGE, "Dup-ID Mortgage",
             Decimal("200000.00"), Decimal("0.05000"), 360,
             date(2024, 1, 1), 1, is_arm=True,
         )
@@ -6758,17 +7618,13 @@ class TestLoanDetailMeasuredSurfaces:
         )
         db.session.commit()
 
-        scenario_id = seed_user["scenario"].id
         # The measured facts: the 2026 (Eastern) year holds the payment's
-        # interest; the 2027 (UTC) year holds nothing.  The loan is backfilled,
-        # so the producer returns $0.00 (not None) for 2027 -- exactly the value
-        # the pre-fix UTC code would have rendered into the chip.
-        interest_2026 = confirmed_loan_interest_in_year(
-            loan.id, scenario_id, 2026,
-        )
-        interest_2027 = confirmed_loan_interest_in_year(
-            loan.id, scenario_id, 2027,
-        )
+        # interest; the 2027 (UTC) year holds nothing.  The fold-based chip
+        # producer is TOTAL, so it returns $0.00 (not None) for 2027 -- exactly
+        # the value the pre-fix UTC code would have rendered into the chip.
+        ctx = BalanceContext.build(seed_user["user"].id)
+        interest_2026 = balance_at.loan_interest_paid_in_year(loan, ctx, 2026)
+        interest_2027 = balance_at.loan_interest_paid_in_year(loan, ctx, 2027)
         assert interest_2026 > Decimal("0.00")
         assert interest_2027 == Decimal("0.00")
 

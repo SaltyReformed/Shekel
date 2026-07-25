@@ -610,3 +610,39 @@ class TestSection8Settings:
             resp = auth_client.get("/settings")
             assert resp.status_code == 200
             assert b"Dashboard &" in resp.data and b"Analytics" in resp.data
+
+
+class TestDefaultGridAccountPicker:
+    """The D4 / A1 gate on the Default Grid Account picker's options."""
+
+    def test_picker_excludes_amortizing_loan(self, app, auth_client, seed_user):
+        """The general section's picker offers cash kinds, never a loan.
+
+        The resolver refuses an amortizing default (finding B-3), so the
+        picker must not offer one -- a selectable option the resolver
+        ignores would be a lie in the UI.
+        """
+        with app.app_context():
+            from app.services import account_service  # pylint: disable=import-outside-toplevel
+            from decimal import Decimal  # pylint: disable=import-outside-toplevel
+
+            mortgage_type = db.session.query(AccountType).filter_by(
+                name="Mortgage",
+            ).one()
+            account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=mortgage_type.id,
+                    name="Picker Gate Mortgage",
+                    anchor_balance=Decimal("0"),
+                ),
+            )
+            db.session.commit()
+
+            resp = auth_client.get("/settings")
+
+            assert resp.status_code == 200
+            # Positive control: the cash account IS offered.
+            assert b"Checking" in resp.data
+            # The loan is not.
+            assert b"Picker Gate Mortgage" not in resp.data

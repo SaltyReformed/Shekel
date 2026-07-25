@@ -21,16 +21,19 @@ from app.services.auth_service import hash_password
 from app.services import (
     account_service,
     balance_at,
+    cash_ledger,
     income_service,
     pay_period_service,
     posting_service,
 )
 from app.utils.error_fragments import DESIGNED_FRAGMENT_HEADER
+from app.services.balance_at import BalanceContext
 
 from tests._test_helpers import (
     create_hysa_account,
     field_is_disabled,
     freeze_today,
+    posted_loan_balance_at,
 )
 
 
@@ -1742,6 +1745,71 @@ class TestCreateBaseline:
                 checking_id, new_baseline.id,
             ) == Decimal("1000.00")
 
+    def test_create_baseline_reposts_a_stranded_loan_opening(
+        self, app, auth_client, db, seed_user, seed_periods,
+    ):
+        """G1: the recovery path must repost the LOAN openings too, not just cash.
+
+        The loan half of the test above.  A loan's opening posts per SCENARIO, so a
+        baseline-less owner's loan has nowhere to put it; deleting the baseline
+        reproduces that state exactly (the CASCADE disposes its journal entries,
+        the loan's opening among them).
+
+        The route recovered the ACCOUNT anchors and not the loans.  Before the fold
+        cutover an ORIGINATED loan with no OPENING posting made the balance seam
+        500 every loan surface; since steps C3b1/C3b3 the seam folds the balance
+        from SOURCE facts, so a missing opening no longer breaks reads -- but the
+        POSTING ledger (the general ledger the balance sheet and statements read)
+        is out of sync until this reposts the opening.  So the recovery is pinned
+        by reading the POSTINGS, not ``balance_at``: the posting window answers
+        ONLY when the opening was reposted, where ``balance_at`` folds $200,000
+        from source either way and cannot tell reposted from not.
+
+        NEGATIVE CONTROL: drop the ``resync_user_loan_postings`` call from
+        ``baseline_service.create_baseline_scenario`` and
+        ``posted_loan_balance_at`` returns ``None`` (the opening is never
+        reposted), while ``balance_at`` still folds $200,000.00 from source.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.enums import AcctTypeEnum
+        from app.services import balance_at
+        from app.services.balance_at import BalanceContext
+        from tests._test_helpers import create_loan_account
+
+        with app.app_context():
+            loan = create_loan_account(
+                seed_user, db.session, name="Mortgage",
+                principal=Decimal("200000.00"), rate=Decimal("0.05000"),
+                term=360, origination_date=date(2026, 1, 15), payment_day=1,
+                account_type=AcctTypeEnum.MORTGAGE,
+                anchor_period=seed_periods[0],
+            )
+            loan_id = loan.id
+            Scenario.query.filter_by(
+                user_id=seed_user["user"].id, is_baseline=True
+            ).delete()
+            db.session.commit()
+
+            assert auth_client.post("/create-baseline").status_code == 302
+
+            bctx = BalanceContext.build(seed_user["user"].id)
+            reloaded = db.session.get(Account, loan_id)
+            new_baseline = Scenario.query.filter_by(
+                user_id=seed_user["user"].id, is_baseline=True,
+            ).one()
+            # The recovery REPOSTED the loan's opening: the posting reader answers
+            # $200,000 from the reconciled general ledger (None if still missing).
+            # This is what pins the recovery -- balance_at cannot, since it folds
+            # the same $200,000 from source whether or not the opening was reposted.
+            assert posted_loan_balance_at(
+                loan_id, new_baseline.id, bctx.as_of,
+            ) == Decimal("200000.00")
+            # And the user-facing balance is correct: no payment made, so the loan
+            # still owes its opening.
+            assert balance_at.balance_at(
+                reloaded, bctx, bctx.as_of,
+            ) == Decimal("200000.00")
+
     def test_create_baseline_requires_login(self, app, client):
         """POST /create-baseline without authentication redirects to login.
 
@@ -1892,6 +1960,7 @@ class TestAccountIdColumn:
         account = seed_user["account"]
         category = seed_user["categories"]["Groceries"]
         scenario = seed_user["scenario"]
+        bctx = BalanceContext.build(seed_user["user"].id)
         projected = db.session.query(Status).filter_by(name="Projected").one()
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
@@ -1921,6 +1990,7 @@ class TestAccountIdColumn:
         account = seed_user["account"]
         category = seed_user["categories"]["Groceries"]
         scenario = seed_user["scenario"]
+        bctx = BalanceContext.build(seed_user["user"].id)
         expense_type = (
             db.session.query(TransactionType).filter_by(name="Expense").one()
         )
@@ -1952,6 +2022,7 @@ class TestAccountIdColumn:
         account = seed_user["account"]
         category = seed_user["categories"]["Groceries"]
         scenario = seed_user["scenario"]
+        bctx = BalanceContext.build(seed_user["user"].id)
         expense_type = (
             db.session.query(TransactionType).filter_by(name="Expense").one()
         )
@@ -1977,6 +2048,7 @@ class TestAccountIdColumn:
         """POST /transactions/inline without account_id returns validation error."""
         category = seed_user["categories"]["Groceries"]
         scenario = seed_user["scenario"]
+        bctx = BalanceContext.build(seed_user["user"].id)
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
         resp = auth_client.post("/transactions/inline", data={
@@ -1995,6 +2067,7 @@ class TestAccountIdColumn:
         other_account = second_user["account"]
         category = seed_user["categories"]["Groceries"]
         scenario = seed_user["scenario"]
+        bctx = BalanceContext.build(seed_user["user"].id)
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
         resp = auth_client.post("/transactions/inline", data={
@@ -2059,6 +2132,7 @@ class TestAccountScopedGrid:
         """Default grid (checking) shows only checking transactions, not savings."""
         checking = seed_user["account"]
         scenario = seed_user["scenario"]
+        bctx = BalanceContext.build(seed_user["user"].id)
         savings = self._create_savings_account(seed_user["user"], seed_periods_today)
 
         self._create_txn(checking, seed_periods_today[0], scenario, "Rent", 1200,
@@ -2086,6 +2160,7 @@ class TestAccountScopedGrid:
         """
         checking = seed_user["account"]
         scenario = seed_user["scenario"]
+        bctx = BalanceContext.build(seed_user["user"].id)
         savings = self._create_savings_account(seed_user["user"], seed_periods_today)
 
         # Use a visible period (current period index ~5).
@@ -2149,6 +2224,7 @@ class TestAccountScopedGrid:
         """
         checking = seed_user["account"]
         scenario = seed_user["scenario"]
+        bctx = BalanceContext.build(seed_user["user"].id)
         savings = self._create_savings_account(seed_user["user"], seed_periods_today)
 
         self._create_txn(checking, seed_periods_today[0], scenario, "Rent", 500,
@@ -2168,6 +2244,7 @@ class TestAccountScopedGrid:
         """GET /grid/balance-row with account_id returns that account's balances."""
         checking = seed_user["account"]
         scenario = seed_user["scenario"]
+        bctx = BalanceContext.build(seed_user["user"].id)
         savings = self._create_savings_account(seed_user["user"], seed_periods_today)
 
         self._create_txn(checking, seed_periods_today[0], scenario, "Expense on Checking", 300,
@@ -2204,6 +2281,7 @@ class TestAccountScopedGrid:
         """
         checking = seed_user["account"]
         scenario = seed_user["scenario"]
+        bctx = BalanceContext.build(seed_user["user"].id)
         savings = self._create_savings_account(seed_user["user"], seed_periods_today)
 
         # Use the current period so it falls within the visible window.
@@ -2259,6 +2337,7 @@ class TestAccountScopedGrid:
         """
         checking = seed_user["account"]
         scenario = seed_user["scenario"]
+        bctx = BalanceContext.build(seed_user["user"].id)
         savings = self._create_savings_account(seed_user["user"], seed_periods_today)
 
         self._create_txn(checking, seed_periods_today[0], scenario, "Rent", 1200,
@@ -2308,6 +2387,7 @@ class TestAccountScopedGrid:
         """
         checking = seed_user["account"]
         scenario = seed_user["scenario"]
+        bctx = BalanceContext.build(seed_user["user"].id)
         current = pay_period_service.get_current_period(seed_user["user"].id)
 
         active = self._create_txn(checking, current, scenario, "Active Expense", 100,
@@ -2330,6 +2410,7 @@ class TestAccountScopedGrid:
         """Soft-deleted transactions (is_deleted=True) do not appear."""
         checking = seed_user["account"]
         scenario = seed_user["scenario"]
+        bctx = BalanceContext.build(seed_user["user"].id)
 
         txn = self._create_txn(checking, seed_periods_today[0], scenario, "Deleted Expense", 999,
                                category=seed_user["categories"]["Rent"])
@@ -2352,6 +2433,7 @@ class TestAccountScopedGrid:
         """
         checking = seed_user["account"]
         scenario = seed_user["scenario"]
+        bctx = BalanceContext.build(seed_user["user"].id)
         savings = self._create_savings_account(seed_user["user"], seed_periods_today)
 
         # Create projected transactions on both accounts in period 0.
@@ -2390,6 +2472,7 @@ class TestAccountScopedGrid:
         savings = self._create_savings_account(seed_user["user"], seed_periods_today)
         category = seed_user["categories"]["Salary"]
         scenario = seed_user["scenario"]
+        bctx = BalanceContext.build(seed_user["user"].id)
         income_type = db.session.query(TransactionType).filter_by(name="Income").one()
         db.session.commit()
 
@@ -2426,6 +2509,7 @@ class TestAccountScopedGrid:
         """
         checking = seed_user["account"]
         scenario = seed_user["scenario"]
+        bctx = BalanceContext.build(seed_user["user"].id)
         savings = self._create_savings_account(seed_user["user"], seed_periods_today)
 
         current = pay_period_service.get_current_period(seed_user["user"].id)
@@ -4337,7 +4421,7 @@ class TestGridSubtotalsRegressionBaseline:
 
     Pre-Commit-10 the grid subtotal was an inline ``sum(...
     effective_amount ...)`` loop in ``app/routes/grid.py``.  Commit 10
-    routes the subtotal through ``balance_resolver.period_subtotal``,
+    routes the subtotal through ``cash_ledger.period_subtotal``,
     which uses ``effective_amount`` for income and the entries-aware
     reduction for expenses; for income with no entries the
     ``effective_amount`` rule is unchanged, so this 5A.1-era regression
@@ -4356,11 +4440,12 @@ class TestGridSubtotalsRegressionBaseline:
         the corrected behavior: effective_amount now returns actual when
         populated, so the grid subtotal automatically shows 400.
         Commit 10 routes the subtotal through
-        ``balance_resolver.period_subtotal`` whose income leg still uses
+        ``cash_ledger.period_subtotal`` whose income leg still uses
         ``effective_amount``, so the assertion is unchanged.
         """
         with app.app_context():
             scenario = seed_user["scenario"]
+            bctx = BalanceContext.build(seed_user["user"].id)
             account = seed_user["account"]
 
             projected = db.session.query(Status).filter_by(
@@ -4416,7 +4501,7 @@ class TestGridPeriodSubtotalCanonical:
     F-004 (Q-10) flagged this as a same-page divergence: the subtotal
     row and the balance row consumed the same in-memory transactions
     but with different expense formulas.  Commit 10 collapses the
-    grid subtotal onto ``balance_resolver.period_subtotal``, so a
+    grid subtotal onto ``cash_ledger.period_subtotal``, so a
     Projected envelope expense with cleared entries now reports the
     same entries-aware impact on both rows; ``balance[p] -
     balance[p-1] == subtotal[p].net`` by construction.
@@ -4522,7 +4607,7 @@ class TestGridPeriodSubtotalCanonical:
           balance[periods[5]] - balance[periods[4]] = -50.00 == net.
         """
         from app.models.transaction_entry import TransactionEntry
-        from app.services import balance_resolver
+        from app.services.balance_at import _cash_engine as balance_resolver
 
         with app.app_context():
             projected = db.session.query(Status).filter_by(
@@ -4571,7 +4656,7 @@ class TestGridPeriodSubtotalCanonical:
                 seed_user["scenario"].id,
                 periods,
             )
-            sub = balance_resolver.period_subtotal(
+            sub = cash_ledger.period_subtotal(
                 seed_user["account"],
                 seed_user["scenario"].id,
                 target_period,
@@ -4611,7 +4696,7 @@ class TestGridPeriodSubtotalCanonical:
         assert not offenders, (
             "app/routes/grid.py contains an inline subtotal loop "
             f"({offenders!r}); route through "
-            "balance_resolver.period_subtotal instead (F-002 Pair C, "
+            "cash_ledger.period_subtotal instead (F-002 Pair C, "
             "F-004 same-page regression)"
         )
 
@@ -6931,11 +7016,12 @@ class TestGridInterestAccrual:
             seed_user, db.session, seed_periods_today[0], Decimal("100000.00"),
         )
         scenario = seed_user["scenario"]
+        bctx = BalanceContext.build(seed_user["user"].id)
         user_id = seed_user["user"].id
         all_periods = pay_period_service.get_all_periods(user_id)
         current = pay_period_service.get_current_period(user_id)
         # Seam truth the route must render (current is the leftmost visible col).
-        view = balance_at.grid_balance_view(hysa, scenario, all_periods)
+        view = balance_at.grid_balance_view(hysa, bctx, all_periods)
         accrued = view.balances[current.id]
         interest = view.increments[current.id]
 
@@ -7034,6 +7120,7 @@ class TestGridInterestAccrual:
             seed_user, db.session, seed_periods_today[0], Decimal("10000.00"),
         )
         scenario = seed_user["scenario"]
+        bctx = BalanceContext.build(seed_user["user"].id)
         user_id = seed_user["user"].id
         status = db.session.query(Status).filter_by(name="Projected").one()
         income_type = (
@@ -7060,7 +7147,7 @@ class TestGridInterestAccrual:
         current = pay_period_service.get_current_period(user_id)
         # The seam's accrued balance under the SAME live map the route builds.
         live_view = balance_at.grid_balance_view(
-            hysa, scenario, all_periods,
+            hysa, bctx, all_periods,
             amount_overrides={income.id: Decimal("5000.00")},
         )
         accrued_live = live_view.balances[current.id]
@@ -7075,3 +7162,62 @@ class TestGridInterestAccrual:
         # Both surfaces render the live-income accrued balance -- no flicker.
         assert f"${accrued_live:,.0f}" in full
         assert f"${accrued_live:,.0f}" in refresh
+
+
+class TestGridKindGate:
+    """The D4 / A1 gate: the grid never renders an AMORTIZING account.
+
+    Finding B-3 (live): with ``?account_id=<loan>`` the grid rendered
+    the real Mortgage's balance RISING by the full PITI each month --
+    the cash-flow producer reads payment transfers INTO the loan as
+    inflows.  The resolver now treats a loan override exactly like a
+    missing account and falls back.
+    """
+
+    @staticmethod
+    def _mortgage(seed_user):
+        """Create a bare active Mortgage-type account (kind is the gate)."""
+        mortgage_type = db.session.query(AccountType).filter_by(
+            name="Mortgage",
+        ).one()
+        loan = account_service.create_account(
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=mortgage_type.id,
+                name="Gate Mortgage",
+                anchor_balance=Decimal("0"),
+            ),
+        )
+        db.session.commit()
+        return loan
+
+    def test_account_id_override_with_loan_falls_back_to_checking(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """GET /grid?account_id=<loan> renders the checking fallback."""
+        with app.app_context():
+            loan = self._mortgage(seed_user)
+
+            response = auth_client.get(f"/grid?account_id={loan.id}")
+
+            assert response.status_code == 200
+            assert b"Checking Balance" in response.data
+            assert b"Gate Mortgage Balance" not in response.data
+
+    def test_default_grid_setting_with_loan_falls_back_to_checking(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A saved loan default (pre-gate data) no longer re-points the grid."""
+        with app.app_context():
+            loan = self._mortgage(seed_user)
+            settings = db.session.query(UserSettings).filter_by(
+                user_id=seed_user["user"].id,
+            ).one()
+            settings.default_grid_account_id = loan.id
+            db.session.commit()
+
+            response = auth_client.get("/grid")
+
+            assert response.status_code == 200
+            assert b"Checking Balance" in response.data
+            assert b"Gate Mortgage Balance" not in response.data

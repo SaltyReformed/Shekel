@@ -135,10 +135,11 @@ def carry_forward(period_id):
     except NotFoundError as exc:
         return str(exc), 404
     except ValidationError as exc:
-        # Envelope branch refused -- e.g. settled target canonical,
-        # template inactive in target period, or a corrupt multi-row
-        # target state.  Rollback so no source row is left settled
-        # and no target row is left bumped (batch atomicity per
+        # Refused by the envelope branch (a corrupt multi-row target state), or
+        # -- since plan step C9b -- by ruling R-C, when a carried loan payment's
+        # destination period would place its installment at or before the loan's
+        # origination, where the fold would erase it.  Rollback so no source row
+        # is left settled and no target row is left bumped (batch atomicity per
         # docs/carry-forward-aftermath-implementation-plan.md).
         db.session.rollback()
         return str(exc), 400

@@ -68,6 +68,21 @@ def _create_loan_account(seed_user, db_session, *,
     is consistent.  ``account_service.create_account`` writes the
     Account + origination AccountAnchorHistory (E-19); this helper
     layers the LoanParams row on top.
+
+    Deliberately NOT routed through ``_test_helpers.create_loan_account``, unlike
+    every other loan builder in the suite.  Two reasons, both structural:
+
+    * These are MODEL tests (the append-only ``before_update`` / ``before_delete``
+      listeners and the same-day unique index).  They never read a balance through
+      the ``balance_at`` seam, so the genesis posting ledger the factory opens is
+      irrelevant to them -- they assert on table rows, not on money.
+    * They need ``current_principal`` to DIFFER from ``original_principal``.  That
+      column is a non-authoritative seed (E-18 / Commit 15) that no reader reads,
+      so the shared factory deliberately does not expose it; widening the factory's
+      API to carry a deprecated column just to absorb this file would be a step
+      backwards.
+
+    Keep it hand-rolled.  It is not an oversight.
     """
     loan_type = db_session.query(AccountType).filter_by(name="Mortgage").one()
     account = account_service.create_account(

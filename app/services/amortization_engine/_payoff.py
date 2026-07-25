@@ -5,7 +5,7 @@ payment retires this loan by a target date?".  Builds on
 :mod:`._projection`'s :func:`project_forward` -- a baseline run plus a
 binary search over ``extra_monthly`` -- and honors an optional
 committed-plan ``monthly_override`` (F-27) so the loan resolver's
-``target_date_outlook`` can answer relative to the user's recurring
+``balance_at.loan_required_extra`` can answer relative to the user's recurring
 payments.  Pure functions, no database access.
 """
 
@@ -209,7 +209,7 @@ def calculate_payoff_by_date(
     then delegates the baseline projection, gates, and binary search to
     :func:`required_extra_for_projection` (whose ``monthly_override``
     mode is the F-27 committed-plan path used by
-    ``loan_resolver.target_date_outlook``).
+    ``balance_at.loan_required_extra``, which folds the plan instead).
 
     Args:
         request: A :class:`PayoffRequest` bundling the loan's current

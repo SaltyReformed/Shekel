@@ -29,39 +29,75 @@ from app.exceptions import RecurrenceConflict, ValidationError
 from app.services import account_service
 
 # Map human-readable pattern names to RecurrencePatternEnum members for
-# use in FakeRule and test helpers.  Allows tests to construct FakeRule
+# use in build_rule and test helpers.  Allows tests to construct a rule
 # with a pattern name string and resolve it to the integer ID via ref_cache.
 _PATTERN_NAME_TO_ENUM = {e.value: e for e in RecurrencePatternEnum}
 
 
-# --- Fake Objects for Pure Pattern Matching Tests ----------------------------
+# --- Rule / period objects for the pure pattern-matching tests ---------------
 
 
-class FakePattern:
-    def __init__(self, name):
-        self.name = name
+def build_rule(pattern_name="Every Period", interval_n=1,
+               offset_periods=0, day_of_month=None, month_of_year=None,
+               start_period_id=None, start_date=None, end_date=None,
+               due_day_of_month=None):
+    """Build a REAL, unsaved ``RecurrenceRule`` for the pure matcher tests.
 
+    ``match_periods`` and ``compute_due_date`` are pure functions of a rule's
+    columns, so they need no database -- but they DO need the real column
+    surface.  This used to be a hand-rolled ``FakeRule`` stub, which is the
+    anti-pattern finding B-17 names: a test double that mirrors the model by
+    hand silently drifts from it.  It drifted the moment ``start_date`` was
+    added (plan step C9a) -- 17 tests died on ``AttributeError`` rather than on
+    a behaviour change, and had the matcher instead read a column the stub
+    lacked while the stub still satisfied every assertion, they would have gone
+    green on a rule shape that cannot exist.
 
-class FakeRule:
-    def __init__(self, pattern_name="Every Period", interval_n=1,
-                 offset_periods=0, day_of_month=None, month_of_year=None,
-                 start_period_id=None, start_period=None, end_date=None,
-                 due_day_of_month=None):
-        self.pattern = FakePattern(pattern_name)
-        # Resolve pattern_id from ref_cache for ID-based dispatch.
-        enum_member = _PATTERN_NAME_TO_ENUM.get(pattern_name)
-        self.pattern_id = (
+    An unsaved model instance costs nothing extra (no session, no flush) and
+    guarantees the real COLUMN SURFACE: a column the model does not have raises
+    ``TypeError`` here, and a column it does have cannot differ in name or type
+    from the one production reads.
+
+    It does NOT guarantee real DEFAULTS -- SQLAlchemy applies ``default=`` at
+    INSERT, so an unflushed ``RecurrenceRule()`` carries ``None`` for
+    ``interval_n`` and ``offset_periods`` despite their ``default=1`` /
+    ``default=0``.  That is why both are passed explicitly below, and any future
+    column with a Python-side default the matcher branches on must be passed
+    here too, or these tests will exercise a rule shape production never sees.
+
+    Args:
+        pattern_name: Display name of the recurrence pattern, resolved to
+            ``pattern_id`` through ``ref_cache`` (needs an app context, as the
+            stub's own constructor did).
+        interval_n: ``every_n_periods`` interval.
+        offset_periods: Offset within the interval cycle.
+        day_of_month: Scheduling day for monthly / quarterly / annual.
+        month_of_year: Month for the annual / semi-annual patterns.
+        start_period_id: The optional "First paycheck" period FK (a WEAK
+            bound -- see the model).
+        start_date: The rule's opening validity bound.
+        end_date: The rule's closing validity bound.
+        due_day_of_month: Real bill due day when it differs from
+            ``day_of_month``.
+
+    Returns:
+        An unsaved :class:`~app.models.recurrence_rule.RecurrenceRule`.
+    """
+    enum_member = _PATTERN_NAME_TO_ENUM.get(pattern_name)
+    return RecurrenceRule(
+        pattern_id=(
             ref_cache.recurrence_pattern_id(enum_member)
             if enum_member else None
-        )
-        self.interval_n = interval_n
-        self.offset_periods = offset_periods
-        self.day_of_month = day_of_month
-        self.due_day_of_month = due_day_of_month
-        self.month_of_year = month_of_year
-        self.start_period_id = start_period_id
-        self.start_period = start_period
-        self.end_date = end_date
+        ),
+        interval_n=interval_n,
+        offset_periods=offset_periods,
+        day_of_month=day_of_month,
+        due_day_of_month=due_day_of_month,
+        month_of_year=month_of_year,
+        start_period_id=start_period_id,
+        start_date=start_date,
+        end_date=end_date,
+    )
 
 
 class FakePeriod:
@@ -457,7 +493,7 @@ class TestMatchPeriodsEdgeCases:
 
     def test_effective_from_filters_earlier_periods(self, biweekly_periods):
         """Only periods on/after effective_from are candidates."""
-        rule = FakeRule(pattern_name="Every Period")
+        rule = build_rule(pattern_name="Every Period")
         # Use the 4th period's start_date as effective_from.
         effective_from = biweekly_periods[3].start_date
 
@@ -470,7 +506,7 @@ class TestMatchPeriodsEdgeCases:
 
     def test_unknown_pattern_returns_empty(self, biweekly_periods):
         """Unrecognized pattern ID returns an empty list."""
-        rule = FakeRule(pattern_name="bogus_pattern")
+        rule = build_rule(pattern_name="bogus_pattern")
         effective_from = biweekly_periods[0].start_date
 
         # Pass a bogus integer pattern_id that doesn't match any known pattern.
@@ -485,7 +521,7 @@ class TestMatchPeriodsFull:
 
     def test_every_period_returns_all_candidates(self, biweekly_periods):
         """every_period returns all periods after effective_from filtering."""
-        rule = FakeRule(pattern_name="Every Period")
+        rule = build_rule(pattern_name="Every Period")
         effective_from = biweekly_periods[0].start_date
 
         matched = match_periods(rule, rule.pattern_id, biweekly_periods,
@@ -495,7 +531,7 @@ class TestMatchPeriodsFull:
 
     def test_no_periods_empty_result(self):
         """Empty periods list produces an empty result."""
-        rule = FakeRule(pattern_name="Every Period")
+        rule = build_rule(pattern_name="Every Period")
 
         matched = match_periods(rule, rule.pattern_id, [],
                                  date(2026, 1, 1))
@@ -535,7 +571,7 @@ class TestMatchPeriodsEdgeCaseSafety:
         ``or 1`` silently treating it as every-period -- which, in a
         budget app, would over-generate real projected transactions.
         """
-        rule = FakeRule(
+        rule = build_rule(
             pattern_name="Every N Periods",
             interval_n=0,
             offset_periods=0,
@@ -556,7 +592,7 @@ class TestMatchPeriodsEdgeCaseSafety:
         raises TypeError rather than the old ``or 1`` silently treating
         the rule as every-period.
         """
-        rule = FakeRule(
+        rule = build_rule(
             pattern_name="Every N Periods",
             interval_n=None,
             offset_periods=0,
@@ -578,10 +614,10 @@ class TestMatchPeriodsEdgeCaseSafety:
         DB constraint ck_recurrence_rules_dom prevents
         day_of_month < 1 from being stored.
         """
-        rule_zero = FakeRule(
+        rule_zero = build_rule(
             pattern_name="Monthly", day_of_month=0,
         )
-        rule_one = FakeRule(
+        rule_one = build_rule(
             pattern_name="Monthly", day_of_month=1,
         )
         effective = biweekly_periods[0].start_date
@@ -659,10 +695,10 @@ class TestMatchPeriodsEdgeCaseSafety:
         DB column allows NULL (optional for non-monthly
         patterns), so None is a valid state the fallback handles.
         """
-        rule_none = FakeRule(
+        rule_none = build_rule(
             pattern_name="Monthly", day_of_month=None,
         )
-        rule_one = FakeRule(
+        rule_one = build_rule(
             pattern_name="Monthly", day_of_month=1,
         )
         effective = biweekly_periods[0].start_date
@@ -700,12 +736,12 @@ class TestMatchPeriodsEdgeCaseSafety:
         # Path (a): via match_periods -- 0 or 1 = 1.
         # Targets {1, 4, 7, 10} (Jan/Apr/Jul/Oct).
         # Prevented in production by ck_recurrence_rules_moy.
-        rule_zero = FakeRule(
+        rule_zero = build_rule(
             pattern_name="Quarterly",
             month_of_year=0,
             day_of_month=15,
         )
-        rule_one = FakeRule(
+        rule_one = build_rule(
             pattern_name="Quarterly",
             month_of_year=1,
             day_of_month=15,
@@ -777,7 +813,7 @@ class TestMatchPeriodsEdgeCaseSafety:
 
         # Via match_periods -- 13 or 1 = 13 (truthy).
         # No fallback; passes 13 to _match_annual.
-        rule = FakeRule(
+        rule = build_rule(
             pattern_name="Annual",
             month_of_year=13,
             day_of_month=15,
@@ -1997,7 +2033,7 @@ class TestEndDate:
         """end_date stops generation after that date (every_period)."""
         # End date after the 5th period's start_date (period index 4).
         end = biweekly_periods[4].start_date
-        rule = FakeRule(pattern_name="Every Period", end_date=end)
+        rule = build_rule(pattern_name="Every Period", end_date=end)
         effective_from = biweekly_periods[0].start_date
 
         matched = match_periods(rule, rule.pattern_id, biweekly_periods,
@@ -2009,7 +2045,7 @@ class TestEndDate:
 
     def test_end_date_none_means_indefinite(self, biweekly_periods):
         """NULL end_date generates for all periods (no change from default)."""
-        rule = FakeRule(pattern_name="Every Period", end_date=None)
+        rule = build_rule(pattern_name="Every Period", end_date=None)
         effective_from = biweekly_periods[0].start_date
 
         matched = match_periods(rule, rule.pattern_id, biweekly_periods,
@@ -2020,7 +2056,7 @@ class TestEndDate:
     def test_end_date_with_monthly_pattern(self, biweekly_periods):
         """end_date works with monthly pattern -- only months before end."""
         # End in March 2026.
-        rule = FakeRule(pattern_name="Monthly", day_of_month=15,
+        rule = build_rule(pattern_name="Monthly", day_of_month=15,
                         end_date=date(2026, 3, 31))
         effective_from = biweekly_periods[0].start_date
 
@@ -2034,7 +2070,7 @@ class TestEndDate:
 
     def test_end_date_before_first_period(self, biweekly_periods):
         """end_date before all periods returns empty list."""
-        rule = FakeRule(pattern_name="Every Period",
+        rule = build_rule(pattern_name="Every Period",
                         end_date=date(2025, 12, 31))
         effective_from = biweekly_periods[0].start_date
 
@@ -2048,7 +2084,7 @@ class TestEndDate:
         # effective_from at period 5, end_date at period 10.
         effective_from = biweekly_periods[5].start_date
         end = biweekly_periods[10].start_date
-        rule = FakeRule(pattern_name="Every Period", end_date=end)
+        rule = build_rule(pattern_name="Every Period", end_date=end)
 
         matched = match_periods(rule, rule.pattern_id, biweekly_periods,
                                  effective_from)
@@ -2062,7 +2098,7 @@ class TestEndDate:
     def test_end_date_mid_period_includes_that_period(self, biweekly_periods):
         """A period whose start_date is on the end_date is included."""
         target_period = biweekly_periods[7]
-        rule = FakeRule(pattern_name="Every Period",
+        rule = build_rule(pattern_name="Every Period",
                         end_date=target_period.start_date)
         effective_from = biweekly_periods[0].start_date
 
@@ -2075,7 +2111,7 @@ class TestEndDate:
         """end_date works correctly with every_n_periods pattern."""
         # Every 3 periods, end at period 12.
         end = biweekly_periods[11].start_date
-        rule = FakeRule(pattern_name="Every N Periods", interval_n=3,
+        rule = build_rule(pattern_name="Every N Periods", interval_n=3,
                         offset_periods=0, end_date=end)
         effective_from = biweekly_periods[0].start_date
 
@@ -2703,7 +2739,7 @@ class TestDueDateGeneration:
             )
 
             # Test with day_of_month set (monthly-style).
-            rule_monthly = FakeRule(
+            rule_monthly = build_rule(
                 pattern_name="Monthly", day_of_month=20,
             )
             period = FakePeriod(
@@ -2718,7 +2754,7 @@ class TestDueDateGeneration:
             assert result == date(2026, 3, 20)
 
             # Test with no day_of_month (every-period style).
-            rule_every = FakeRule(pattern_name="Every Period")
+            rule_every = build_rule(pattern_name="Every Period")
             result = recurrence_engine.compute_due_date(
                 rule_every, period,
             )

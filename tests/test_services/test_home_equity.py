@@ -13,6 +13,7 @@ from app.models.asset_appreciation_params import AssetAppreciationParams  # noqa
 from app.models.ref import AccountType
 from app.services import account_service, home_equity_service
 from app.services.home_equity_service import HomeEquity, compute_home_equity
+from app.services.balance_at import BalanceContext
 from tests._test_helpers import create_loan_account
 
 
@@ -99,7 +100,7 @@ class TestResolveHomeEquity:
 
             scenario = seed_user["scenario"]
             equity = home_equity_service.resolve_home_equity(
-                prop, scenario.id, date.today(),
+                prop, BalanceContext.build(seed_user["user"].id),
             )
             # market value 400000; the unpaid loan resolves to its 250000
             # anchor; equity = 400000 - 250000 = 150000; ltv = 0.6250.
@@ -125,7 +126,7 @@ class TestResolveHomeEquity:
             )
             db.session.commit()
             equity = home_equity_service.resolve_home_equity(
-                prop, seed_user["scenario"].id, date.today(),
+                prop, BalanceContext.build(seed_user["user"].id),
             )
             # No secured loans -> total_debt 0, equity = market value.
             assert equity.total_debt == Decimal("0")

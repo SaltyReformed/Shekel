@@ -457,6 +457,16 @@ def match_periods(rule, pattern_id, periods, effective_from):
     deliberately part of this module's public surface rather than a
     leading-underscore helper.
 
+    The rule's own validity window (``start_date`` / ``end_date``) is applied
+    HERE rather than through ``effective_from``, and that placement is
+    load-bearing: ``effective_from`` is a per-CALL boundary any caller may
+    supply (``transfer_recurrence.regenerate_for_template`` and the unarchive
+    path both pass their own), so a bound expressed only through it is silently
+    discarded on those paths.  Applying both window ends to the candidate list
+    makes them unbypassable -- which is what lets a loan payment's
+    ``start_date`` guarantee no installment is ever generated before the loan
+    originates (plan step C9a).
+
     Args:
         rule:           The RecurrenceRule object.
         pattern_id:     The recurrence pattern integer ID.
@@ -469,6 +479,13 @@ def match_periods(rule, pattern_id, periods, effective_from):
     # Filter by effective date first.  Use end_date so that the current
     # pay period is included when effective_from falls mid-period.
     candidates = [p for p in periods if p.end_date >= effective_from]
+
+    # Filter by rule start_date -- generate nothing that ends before the rule
+    # begins.  Mirrors the effective_from comparison above (period END vs the
+    # bound), so a period CONTAINING the bound still generates: a loan whose
+    # first installment falls mid-period bills in that period, not the next.
+    if rule.start_date is not None:
+        candidates = [p for p in candidates if p.end_date >= rule.start_date]
 
     # Filter by rule end_date -- stop generating after this date.
     if rule.end_date is not None:

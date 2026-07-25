@@ -17,8 +17,8 @@ stream, and derives the current applicable rate from the
 :class:`RateHistory` series.  Display and money surfaces (loan
 dashboard card, /savings debt card, /savings account card, year-end
 net-worth liability, debt strategy) read the resolver's
-``state.current_rate`` / ``state.current_balance``, never a stored
-scalar.  ``current_principal`` remains a nullable, non-authoritative
+``state.current_rate`` and the ``balance_at`` seam's folded balance,
+never a stored scalar.  ``current_principal`` remains a nullable, non-authoritative
 seed (its OPT-1 drop is still deferred); the origination
 ``LoanAnchorEvent`` derives ``anchor_balance`` from
 ``original_principal``, not ``current_principal``, so that seed is
@@ -76,10 +76,10 @@ class LoanParams(AccountScopedUniqueMixin, TimestampMixin, db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     original_principal = db.Column(db.Numeric(12, 2), nullable=False)
-    # Non-authoritative seed; resolver is source of truth (E-18).
+    # Non-authoritative seed; the balance seam is the source of truth
+    # (E-18; plan step D2a folded the balance out of the resolver).
     # Demoted to nullable by migration ``c4f0a5b71e83`` (Commit 15).
-    # Display surfaces MUST read
-    # ``loan_resolver.resolve_loan(...).current_balance`` instead of
+    # Display surfaces MUST read ``balance_at.balance_at`` instead of
     # this column.  Remains populated by the setup flow so the
     # origination ``LoanAnchorEvent`` backfill has a known starting
     # value; Commit 16 retargets the dashboard "edit principal" UX

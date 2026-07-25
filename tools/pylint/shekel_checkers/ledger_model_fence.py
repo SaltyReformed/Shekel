@@ -10,9 +10,10 @@ packages, the ledger report service). A consumer that holds one of these model
 classes -- or the module that defines it -- can query the ledger, or
 construct/mutate a row, OUTSIDE those seams: the exact bypass Build-Order
 Steps 2-5 built the seams to prevent (``docs/audits/balance_architecture/``).
-The fence is the import analog of the W9906 balance-producer and W9907
-status-write fences: it binds at the point a model (or its module) enters a
-module, where the name is still visible, rather than at every downstream use.
+The fence is the import analog of the W9907 status-write fence (and of the
+balance-producer read fence, which structure retired at plan step E1e): it binds
+at the point a model (or its module) enters a module, where the name is still
+visible, rather than at every downstream use.
 
 It binds on two axes, so a module-path rename cannot slip a model class past it:
 
@@ -21,7 +22,7 @@ It binds on two axes, so a module-path rename cannot slip a model class past it:
   the F-1 package re-export; ``from app.models.journal_entry import Posting``;
   ``from ..models.journal_entry import Posting`` -- a relative path; an alias).
   The three class names are distinctive enough to carry no non-ledger collision
-  (the W9906 precedent for name-fencing);
+  (the precedent the balance-producer fence set for name-fencing);
 * by MODULE -- binding a defining submodule reaches the model as
   ``<module>.Posting``, so ``from app.models.journal_entry import <anything>``
   (the whole ledger submodule is off-limits), ``from app.models import
@@ -71,7 +72,7 @@ _LEDGER_MODEL_NAMES = frozenset({"Posting", "JournalEntry", "LedgerAccount"})
 # guard that counts a linked account's postings. Fully-qualified names, matched
 # exactly or as a package prefix (the three packages) via the fail-closed
 # :func:`_module_in_allowlist` -- the same match/prefix/fail-closed contract the
-# W9906 fence relies on. ``app.models`` is listed as a package prefix ON PURPOSE:
+# balance-producer fence relied on. ``app.models`` is listed as a package prefix ON PURPOSE:
 # a model legitimately references sibling models (relationships, FK type hints),
 # so the whole models layer governs its own internal imports; the fence keeps the
 # service / route / util layers out. Grep-verified complete against every current
@@ -100,8 +101,8 @@ class ShekelLedgerModelFenceChecker(BaseChecker):
     defines one -- can query or mutate the append-only ledger outside those
     seams, the bypass class Build-Order Steps 2-5 exist to prevent
     (docs/audits/balance_architecture/). This checker is the deterministic import
-    fence for that class, the ledger analog of the W9906 balance-producer and
-    W9907 status-write fences. Only the posting-ledger write core, its readers,
+    fence for that class, the ledger analog of the W9907 status-write fence.
+    Only the posting-ledger write core, its readers,
     and the utilities that legitimately hold a model class
     (:data:`_LEDGER_MODEL_ALLOWLIST`) may import a ledger model; every other
     module must reach the ledger through those services. The fence binds on the
@@ -136,9 +137,10 @@ class ShekelLedgerModelFenceChecker(BaseChecker):
             "relative path, an alias) and by MODULE (binding a defining "
             "submodule via from app.models.journal_entry import <anything>, from "
             "app.models import journal_entry, or import app.models.ledger_account "
-            "reaches the model as <module>.Posting). The status/balance fences "
-            "(W9906/W9907) guard the write and read seams; this guards the "
-            "import that would let a module skip them.",
+            "reaches the model as <module>.Posting). The status fence (W9907) "
+            "guards the write seam and the balance seam is now structural "
+            "(W9910); this guards the import that would let a module skip "
+            "either.",
         ),
     }
 

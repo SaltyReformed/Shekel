@@ -34,6 +34,10 @@ from app.services import (
     recurrence_engine,
     recurring_view,
 )
+from app.services.account_projection import (
+    AccountProjectionKind,
+    classify_account,
+)
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.balance_predicates import is_projected_clause
 from app.routes._commit_helpers import (
@@ -150,8 +154,13 @@ def _validate_template_form(data, on_invalid, template=None):
     ``in data`` is correct for both paths.  Checks, in order:
 
       1. ``account_id`` (when present) names an Account the user owns.
-      2. ``category_id`` (when present) names a Category the user owns.
-      3. The resulting envelope-tracking state is expense-only
+      2. ``account_id`` (when present) is NOT an amortizing loan -- a
+         template on a loan would have the recurrence engine generate raw
+         transactions onto it (finding N-11 / ruling D4; the create routes
+         refuse the same shape via
+         :func:`app.routes.transactions.create._reject_transaction_on_loan`).
+      3. ``category_id`` (when present) names a Category the user owns.
+      4. The resulting envelope-tracking state is expense-only
          (:func:`_is_tracking_on_non_expense`).
 
     Args:
@@ -169,6 +178,21 @@ def _validate_template_form(data, on_invalid, template=None):
         acct = db.session.get(Account, data["account_id"])
         if not acct or acct.user_id != current_user.id:
             flash("Invalid account.", "danger")
+            return on_invalid.to_response()
+        if classify_account(acct) is AccountProjectionKind.AMORTIZING:
+            # N-11 / ruling D4: a loan's balance is ledger-derived, not a
+            # transaction sum.  A template targeting a loan would have the
+            # recurrence engine generate raw transactions onto the loan
+            # account (``recurrence_engine`` copies ``template.account_id``),
+            # posting a bare cash leg the fold cannot see -- the same shape
+            # the create routes refuse (``_reject_transaction_on_loan``) and
+            # the transfer service forbids for a transfer out of a loan (R6).
+            flash(
+                "A loan's balance is not a transaction sum, so a template "
+                "cannot target a loan account. Record loan payments as "
+                "transfers.",
+                "danger",
+            )
             return on_invalid.to_response()
     if "category_id" in data:
         cat = db.session.get(Category, data["category_id"])

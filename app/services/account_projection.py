@@ -18,11 +18,20 @@ Pure functions over Account / AccountType / int.  No Flask imports
 ``ref_cache_module`` keeps this module free of circular import
 worries with :mod:`app.ref_cache` while preserving the IDs-for-logic
 standard (``docs/coding-standards.md:174-178``).
+
+**Kind metadata only: this module answers "what KIND is this account?",
+never "what is it worth on date T?".**  It came off the balance-producer
+call allowlist at plan step D1b -- it calls no balance producer, so the
+exemption only permitted a bypass -- and that allowlist has since been
+deleted whole (plan step E1e).  It REMAINS on the W9909 completeness
+registry, so a new public function here must be classified as a producer
+or a non-producer before it will lint.  Why that half
+stayed (it defined the loan forward-projection producers until one day
+before D1b, and :func:`classify_account` takes a live
+:class:`~app.models.account.Account`) is recorded once, at
+``shekel_checkers.balance_seam._KIND_CLASSIFIER_MODULES``.
 """
 
-from collections import OrderedDict
-from datetime import date
-from decimal import Decimal
 from enum import Enum
 
 from app.enums import AcctTypeEnum
@@ -42,7 +51,7 @@ class AccountProjectionKind(Enum):
        composer).
     2. :data:`INTEREST` -- interest projection layered over the
        balance calculator
-       (:func:`app.services.balance_calculator.calculate_balances_with_interest`).
+       (:func:`app.services.balance_at._calculator.calculate_balances_with_interest`).
     3. :data:`APPRECIATING` -- the growth engine run as pure compound
        appreciation with no contributions
        (:func:`app.services.growth_engine.project_balance`, fed by
@@ -54,7 +63,7 @@ class AccountProjectionKind(Enum):
     4. :data:`INVESTMENT` -- growth engine
        (:func:`app.services.growth_engine.project_balance`).
     5. :data:`PLAIN` -- the generic entries-aware producer
-       (:func:`app.services.balance_resolver.balances_for`).
+       (:func:`app.services.balance_at._cash_engine.balances_for`).
     """
 
     AMORTIZING = "amortizing"
@@ -157,300 +166,3 @@ def is_payroll_deduction_funded(
         for t in _PAYROLL_DEDUCTION_FUNDED_TYPES
     }
     return account_type_id in funded_ids
-
-
-def balance_from_schedule_at_date(
-    sorted_schedule: list,
-    target: date,
-    current_balance: Decimal,
-) -> Decimal:
-    """Remaining balance after the last scheduled payment on or before *target*.
-
-    Walks *sorted_schedule* (chronological by ``payment_date``) and returns
-    the ``remaining_balance`` of the latest row whose ``payment_date`` is on
-    or before *target*.  When no row qualifies -- *target* precedes the
-    schedule's first payment -- returns *current_balance*.
-
-    *current_balance* (the loan's resolver-derived balance as of today), NOT
-    its original principal, is the correct pre-schedule value: the resolver
-    builds a TODAY-forward schedule from the current balance, so a date before
-    the first upcoming payment is simply at today's balance.  Reporting the
-    origination amount there made the loan leap down from its original
-    principal the moment the first payment landed -- a phantom liability drop,
-    and net-worth jump, of (original principal - current balance).
-
-    The shared primitive behind both :func:`compute_loan_period_balance_map`
-    (per-period) and the year-end debt-progress section (at Jan 1 / Dec 31),
-    so the two cannot drift on how a loan balance is read from a schedule.
-
-    Args:
-        sorted_schedule: Non-empty ``AmortizationRow`` list sorted ascending
-            by ``payment_date``.
-        target: The date to read the balance at.
-        current_balance: The loan's resolver-derived current balance, used
-            when *target* precedes the first scheduled payment.
-
-    Returns:
-        The ``Decimal`` remaining balance at *target*.
-    """
-    balance = current_balance
-    for row in sorted_schedule:
-        if row.payment_date <= target:
-            balance = row.remaining_balance
-        else:
-            break
-    return balance
-
-
-def compute_loan_period_balance_map(
-    schedule: list,
-    periods: list,
-    current_balance: Decimal,
-) -> "OrderedDict[int, Decimal]":
-    """Map an amortization schedule to per-period remaining balances.
-
-    For each ``PayPeriod`` in *periods*, returns the
-    :attr:`~app.services.amortization_engine.AmortizationRow.remaining_balance`
-    from the last schedule row whose ``payment_date`` is on or before
-    ``period.end_date``.  Periods before the schedule's first payment -- and
-    every period when the schedule is empty -- return *current_balance*.
-
-    *current_balance* is the loan's resolver-derived balance as of today
-    (:attr:`~app.services.loan_resolver.LoanState.current_balance`), NOT its
-    original principal.  The resolver's schedule is TODAY-forward, so a period
-    before the first upcoming payment is at today's balance; reporting the
-    origination amount there made the loan leap down to its real balance when
-    the first payment landed -- a phantom liability drop / net-worth jump of
-    (original principal - current balance).  An empty schedule (a paid-off or
-    fully-resolved loan with no remaining rows) likewise sits at its current
-    balance at every period.
-
-    Period-end-keyed is the project's canonical loan-balance derivation as of
-    F-21 / Commit 19 of ``remediation_follow_up_plan.md`` -- it answers "what
-    does the borrower owe AFTER the payment due in this period?"  The savings
-    cockpit and the year-end net-worth / debt-progress sections all route
-    through this producer and the shared
-    :func:`balance_from_schedule_at_date`, so their loan balances cannot drift.
-
-    Args:
-        schedule: List of
-            :class:`~app.services.amortization_engine.AmortizationRow`
-            sorted chronologically.  An empty schedule returns
-            *current_balance* for every period.
-        periods: List of :class:`~app.models.pay_period.PayPeriod`
-            objects.  Order does not matter; the map keys by
-            ``period.id``.
-        current_balance: The loan's resolver-derived current balance, the
-            pre-first-payment and empty-schedule fallback.
-
-    Returns:
-        ``OrderedDict`` mapping ``period.id`` to ``Decimal``
-        remaining balance.
-    """
-    balances: "OrderedDict[int, Decimal]" = OrderedDict()
-
-    if not schedule:
-        for period in periods:
-            balances[period.id] = current_balance
-        return balances
-
-    # Defensive sort -- the resolver emits chronological schedules,
-    # but a future caller might assemble one differently.
-    sorted_schedule = sorted(schedule, key=lambda r: r.payment_date)
-
-    for period in periods:
-        balances[period.id] = balance_from_schedule_at_date(
-            sorted_schedule, period.end_date, current_balance,
-        )
-
-    return balances
-
-
-def splice_confirmed_and_projected_loan_balances(
-    periods: list,
-    confirmed_map: "OrderedDict[int, Decimal]",
-    projected_map: "OrderedDict[int, Decimal]",
-    as_of: date,
-) -> "OrderedDict[int, Decimal]":
-    """Read the confirmed ledger for begun periods, the projection for the future.
-
-    The genesis per-period read switch (plan Section 9): a loan's per-period
-    balance map is authoritative from two producers over two disjoint regions,
-    keyed on whether each period has BEGUN by *as_of* (today):
-
-    * **Begun (``period.start_date <= as_of``): the confirmed ledger.**  The
-      genesis sum-of-postings map
-      (:func:`app.services.loan_posting_service.confirmed_loan_balance_map`),
-      which reflects the REAL principal booked by every settled payment -- so
-      an off-schedule payment (extra or short) lands in the balance exactly,
-      where the resolver's replay-driven *projected_map* would show only the
-      SCHEDULED principal.  This is the whole point of the read switch: the
-      past reads facts, not a re-amortization.
-    * **Future (``period.start_date > as_of``): the re-seeded projection.**  The
-      *projected_map* forward rows, which the read switch already re-seeds from
-      the ledger's confirmed balance (the ``ConfirmedLedgerView`` threaded into
-      the resolver), so the loan amortizes its REAL owed balance over the
-      remaining term.  The confirmed
-      map cannot answer the future -- it carries the last confirmed balance
-      flat -- so the projection owns the future tail.
-
-    Both inputs are keyed by ``period.id`` over the SAME *periods*, so every
-    period is present in each; the splice simply chooses the authoritative
-    source per period.  Pure: no I/O; the caller
-    (:func:`app.services.net_worth_kernel._build_amortizing_balance_map`) reads
-    both maps, then splices here so the boundary rule lives in one place beside
-    the schedule-only :func:`compute_loan_period_balance_map` it overlays.
-
-    Args:
-        periods: The pay periods to key the result by (the output domain and
-            order).  Each must appear in both *confirmed_map* and
-            *projected_map*.
-        confirmed_map: The genesis ledger per-period map (begun periods read
-            this).  Keyed by ``period.id``.
-        projected_map: The resolver schedule per-period map (future periods
-            read this).  Keyed by ``period.id``.
-        as_of: The confirmed/projection boundary date (typically
-            ``date.today()``): a period whose ``start_date`` is on or before it
-            has begun and reads the ledger; a later period reads the
-            projection.
-
-    Returns:
-        An ``OrderedDict`` mapping ``period.id`` to the authoritative
-        cent-quantized balance for each period.
-    """
-    result: "OrderedDict[int, Decimal]" = OrderedDict()
-    for period in periods:
-        if period.start_date <= as_of:
-            result[period.id] = confirmed_map[period.id]
-        else:
-            result[period.id] = projected_map[period.id]
-    return result
-
-
-def forward_balance_at_date(
-    schedule: list,
-    target: date,
-    current_balance: Decimal,
-) -> Decimal:
-    """Return a loan's PROJECTED balance at a future date.
-
-    *current_balance* -- the confirmed present, which the read switch seeds from
-    the genesis ledger -- reduced by the scheduled payments still TO COME by
-    *target*.  Walks ONLY the schedule's UNCONFIRMED rows, and that exclusion is
-    the whole point:
-
-    * A confirmed row's paydown is ALREADY inside *current_balance* (the ledger
-      summed it), so the row is not a future event.  Its ``remaining_balance`` is
-      a HISTORICAL balance, and reading it for a future date reports whatever the
-      loan owed back then.
-    * The confirmed rows are also an INCOMPLETE record of the past.  They are
-      payment rows only -- a balance true-up is a ledger event with no schedule
-      row -- so a loan trued-up after its last payment has a last confirmed row
-      whose balance is stale by the true-up.  Walking it reported a balance the
-      loan does not owe (a real $3.94 divergence on production data), while the
-      ledger, which books the true-up, was right.
-    * A confirmed row's ``payment_date`` is its INSTALLMENT date, which for an
-      early- or late-settled payment need not sit on the same side of *target*
-      as the cash did.
-
-    The past therefore belongs to the ledger
-    (:func:`app.services.loan_posting_service.confirmed_loan_balance_at`) and the
-    future to this projection; no consumer should derive one from the other.  An
-    OVERDUE payment (unconfirmed, already past due) stays in the walk, preserving
-    the project's due-basis treatment of it.
-
-    Args:
-        schedule: The resolver's :class:`AmortizationRow` list (confirmed
-            history rows plus committed forward rows).
-        target: The future date to value the loan at.
-        current_balance: The loan's confirmed balance today (the resolver's
-            ledger-seeded ``current_balance``) -- the projection's seed, and the
-            answer when no forward payment has come due by *target*.
-
-    Returns:
-        The projected ``Decimal`` balance owed at *target*.
-    """
-    forward_rows = sorted(
-        (row for row in schedule if not row.is_confirmed),
-        key=lambda row: row.payment_date,
-    )
-    return balance_from_schedule_at_date(
-        forward_rows, target, current_balance,
-    )
-
-
-def compute_forward_loan_period_balance_map(
-    schedule: list,
-    periods: list,
-    current_balance: Decimal,
-) -> "OrderedDict[int, Decimal]":
-    """Map a loan's FORWARD projection to per-period balances.
-
-    The per-period form of :func:`forward_balance_at_date` (same boundary rule,
-    keyed by ``period.end_date`` like its schedule-only sibling
-    :func:`compute_loan_period_balance_map`): each period reports the confirmed
-    present reduced by the scheduled payments due by that period's end.
-
-    This is the projection half of the genesis per-period read switch --
-    :func:`splice_confirmed_and_projected_loan_balances` overlays the confirmed
-    ledger on every BEGUN period and keeps this for the future -- so it is only
-    ever read for periods after ``as_of``.  It answers those periods from the
-    confirmed present forward, rather than re-deriving them from confirmed
-    history rows that the ledger has already superseded.
-
-    Args:
-        schedule: The resolver's :class:`AmortizationRow` list.
-        periods: The pay periods to key the result by.
-        current_balance: The loan's ledger-seeded confirmed balance today.
-
-    Returns:
-        ``OrderedDict`` mapping ``period.id`` to the projected ``Decimal``
-        balance at that period's end.
-    """
-    forward_rows = sorted(
-        (row for row in schedule if not row.is_confirmed),
-        key=lambda row: row.payment_date,
-    )
-    balances: "OrderedDict[int, Decimal]" = OrderedDict()
-    for period in periods:
-        balances[period.id] = balance_from_schedule_at_date(
-            forward_rows, period.end_date, current_balance,
-        )
-    return balances
-
-
-def find_period_containing_date(periods: list, target: date):
-    """Return the pay period whose interval contains *target*.
-
-    A period "contains" *target* when
-    ``period.start_date <= target <= period.end_date``.  When no
-    period contains *target* (the date falls in a gap or beyond the
-    user's generated horizon), falls back to the latest period whose
-    ``end_date`` is on or before *target*; if none exists either,
-    returns ``None``.
-
-    The fallback is the same shape the year-end summary's
-    :func:`_find_period_on_or_before_date` uses -- it preserves the
-    period-end-keyed semantic when a target date sits just past the
-    last generated period (the user's last known balance at the
-    horizon is the natural answer).
-
-    Args:
-        periods: List of :class:`~app.models.pay_period.PayPeriod`
-            objects.
-        target: The date to locate.
-
-    Returns:
-        The matching :class:`~app.models.pay_period.PayPeriod`, or
-        ``None`` when no period precedes *target*.
-    """
-    containing = None
-    fallback = None
-    for period in periods:
-        if period.start_date <= target <= period.end_date:
-            if containing is None or period.period_index > containing.period_index:
-                containing = period
-        elif period.end_date < target:
-            if fallback is None or period.period_index > fallback.period_index:
-                fallback = period
-    return containing if containing is not None else fallback

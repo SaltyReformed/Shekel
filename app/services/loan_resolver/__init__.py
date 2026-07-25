@@ -91,9 +91,7 @@ The resolver collapses both onto a single derivation:
 
 from ._payoff import (
     PayoffScenarios,
-    TargetDateOutlook,
     compute_payoff_scenarios,
-    target_date_outlook,
 )
 from ._periods import (
     ConfirmedLedgerView,
@@ -105,6 +103,7 @@ from ._periods import (
 from ._state import (
     LoanState,
     compute_monthly_payment_baseline,
+    current_rate_baseline,
     resolve_loan,
 )
 
@@ -113,12 +112,11 @@ __all__ = [
     "LoanInputs",
     "LoanState",
     "PayoffScenarios",
-    "TargetDateOutlook",
     "compute_monthly_payment_baseline",
     "compute_payoff_scenarios",
+    "current_rate_baseline",
     "engine_terms",
     "resolve_loan",
     "resolve_periods",
     "select_latest_anchor",
-    "target_date_outlook",
 ]

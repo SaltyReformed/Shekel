@@ -1,21 +1,19 @@
 """Tests for the Property (appreciating physical-asset) projection.
 
-Covers the classifier (Property -> APPRECIATING), the net-worth kernel's
-appreciation balance map (compound forward, flat-carry backward), and the
-emergent net-worth netting of a home against its mortgage.
+Covers the classifier (Property -> APPRECIATING) and the net-worth kernel's
+appreciation balance map (compound forward, flat-carry backward).
+
+Net-worth NETTING (a home against its mortgage) is not covered here -- see
+the tombstone at the foot of this file.
 """
 
 from decimal import Decimal
 
 from app.models.asset_appreciation_params import AssetAppreciationParams
 from app.models.ref import AccountType
-from app.services import (
-    account_service,
-    growth_engine,
-    net_worth_kernel,
-    pay_period_service,
-    savings_dashboard_service,
-)
+from app.services.balance_at import BalanceContext
+from app.services import account_service, growth_engine, pay_period_service, savings_dashboard_service
+from app.services.balance_at import _kernel as net_worth_kernel
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
@@ -78,8 +76,8 @@ class TestAppreciationBalanceMap:
                 Decimal("400000.00"), rate=Decimal("0.03000"),
             )
             balances = net_worth_kernel.build_account_balance_map(
-                acct, seed_user["scenario"], all_periods,
-                debt_schedule=None, investment_params=None,
+                acct, BalanceContext.build(seed_user["user"].id), all_periods,
+                investment_params=None,
                 deductions=[], salary_gross_biweekly=Decimal("0.00"),
             )
 
@@ -121,8 +119,8 @@ class TestAppreciationBalanceMap:
                 Decimal("400000.00"), rate=Decimal("0.00000"),
             )
             balances = net_worth_kernel.build_account_balance_map(
-                acct, seed_user["scenario"], all_periods,
-                debt_schedule=None, investment_params=None,
+                acct, BalanceContext.build(seed_user["user"].id), all_periods,
+                investment_params=None,
                 deductions=[], salary_gross_biweekly=Decimal("0.00"),
             )
             # rate 0 -> no growth; every period equals the anchor value.
@@ -144,8 +142,8 @@ class TestAppreciationBalanceMap:
                 Decimal("400000.00"), rate=None,  # no params row
             )
             balances = net_worth_kernel.build_account_balance_map(
-                acct, seed_user["scenario"], all_periods,
-                debt_schedule=None, investment_params=None,
+                acct, BalanceContext.build(seed_user["user"].id), all_periods,
+                investment_params=None,
                 deductions=[], salary_gross_biweekly=Decimal("0.00"),
             )
             for period in all_periods:
@@ -192,8 +190,9 @@ class TestSavingsDashboardProjection:
                 seed_user["user"].id,
             )
             modeled_map = net_worth_kernel.build_account_balance_map(
-                acct, seed_user["scenario"], seed_periods_today,
-                debt_schedule=None, investment_params=None,
+                acct, BalanceContext.build(seed_user["user"].id),
+                seed_periods_today,
+                investment_params=None,
                 deductions=[], salary_gross_biweekly=Decimal("0.00"),
             )
             assert entry["current_balance"] == modeled_map[current_period.id]
@@ -204,16 +203,21 @@ class TestSavingsDashboardProjection:
             assert entry["needs_setup"] is False
 
 
-class TestNetWorthNetting:
-    """A Property nets against its mortgage in the emergent net-worth sum."""
-
-    def test_property_nets_against_mortgage(self):
-        """Asset adds, liability subtracts its magnitude -> equity emerges."""
-        account_data = [
-            {"balances": {7: Decimal("400000.00")}, "is_liability": False},  # home
-            {"balances": {7: Decimal("250000.00")}, "is_liability": True},   # mortgage
-        ]
-        # 400000 - abs(250000) = 150000 of equity, with no special calc.
-        assert net_worth_kernel.sum_net_worth_at_period(
-            7, account_data,
-        ) == Decimal("150000.00")
+# ``TestNetWorthNetting`` stood here.  It asserted that a Property nets
+# against its mortgage, but it did so by calling the kernel's
+# ``sum_net_worth_at_period`` with two hand-built dicts -- a function with no
+# production caller, so the test exercised no path a screen renders and could
+# not have caught a netting regression.  Both were deleted.
+#
+# The live netting is covered on the real path in
+# ``test_savings_dashboard_service.py``, by tests that build real accounts and
+# read the cockpit producer: ``test_assets_minus_liabilities`` (a real
+# mortgage against real assets).  The ``abs`` on a negatively-stored
+# liability has a SEPARATE control at each of its two reduction sites:
+#   * hero            -- test_a_negative_balance_liability_still_adds_its_magnitude
+#   * per-period band -- test_series_liability_band_holds_a_negative_balance_magnitude
+# None of them uses a Property specifically; the netting rule is keyed on the
+# liability flag, not on the asset's kind.  Deliberately NOT cited:
+# ``test_net_equals_assets_minus_liabilities_each_point`` -- the series appends
+# ``assets - liabilities`` and those same two values, so that assertion is a
+# tautology and pins nothing.

@@ -600,6 +600,7 @@ from tests._test_helpers import (
     insert_trueup_event,
     make_appreciating_account,
     make_investment_account,
+    posted_loan_balance_at,
 )
 
 
@@ -1562,6 +1563,71 @@ def cross_page_loan_ctx(db, seed_user):
     }
 
 
+@pytest.fixture()
+def cross_page_loan_unpaid_ctx(db, seed_user):
+    """An amortizing loan originated in the PAST with NO payment and NO true-up.
+
+    The loan shape the cross-page lock could not previously see: the one in which
+    a schedule-walking producer CAN phantom-pay the debt down.
+    ``cross_page_loan_ctx`` asserts a true-up dated TODAY, which re-anchors the
+    resolver's schedule today-forward and so leaves no past-dated UNPAID rows
+    behind; this fixture deliberately leaves them.  Originated 18 months ago at
+    $240,000 over 360 months, never paid and never trued up, the resolver's
+    schedule carries ~17 PROJECTED installments dated on or before today.
+
+    Every one of those rows is a payment that was never made, so not one dollar of
+    principal was ever paid: the honest balance is the full $240,000 opening, on
+    EVERY surface and at EVERY period.  A producer that walked the schedule instead
+    of the ledger would report LESS.
+
+    The loan IS opened in the ledger (``create_loan_account`` writes through
+    production's reconcile path), exactly as a real configured loan is -- so on
+    the current code every surface reads the ledger and agrees at $240,000, and
+    the accompanying test PASSES.  It is a regression lock, not a reproducer: it
+    holds the line against a schedule producer being reintroduced for the past,
+    which is what let the /savings tile and the net-worth trend disagree on their
+    own 'today' point (a no-ledger path production never took, but every loan test
+    did).
+
+    Returns a ctx dict mirroring ``cross_page_loan_ctx``, plus ``P`` (the original
+    principal, which is also the correct balance everywhere) and
+    ``past_period`` (a period strictly before today, where an unpaid projected
+    installment would have phantom-paid the debt down).
+    """
+    user = seed_user["user"]
+    scenario = seed_user["scenario"]
+    all_periods, anchor_period = _build_cross_page_calendar_periods(db, user)
+    _neutralize_seed_checking(db, seed_user, anchor_period)
+
+    today = date.today()
+    original_principal = Decimal("240000.00")  # P -- never paid down
+    loan = create_loan_account(
+        seed_user, db.session, name="Never-Paid Loan",
+        principal=original_principal, rate=Decimal("0.06000"), term=360,
+        origination_date=today - timedelta(days=548),
+    )
+    db.session.commit()
+
+    anchor_pos = next(
+        i for i, p in enumerate(all_periods) if p.id == anchor_period.id
+    )
+    past_period = all_periods[anchor_pos - 1]
+
+    return {
+        "user_id": user.id,
+        "account": loan,
+        "account_id": loan.id,
+        "scenario": scenario,
+        "scenario_id": scenario.id,
+        "all_periods": all_periods,
+        "anchor_period": anchor_period,
+        "year": anchor_period.start_date.year,
+        "month": anchor_period.start_date.month,
+        "P": original_principal,
+        "past_period": past_period,
+    }
+
+
 def _unseeded_replay_balance(loan_id, scenario_id, as_of):
     """Return a loan's un-seeded schedule-replay balance (the pre-switch value).
 
@@ -1573,16 +1639,21 @@ def _unseeded_replay_balance(loan_id, scenario_id, as_of):
     # the convention every helper in this conftest follows.
     # pylint: disable=import-outside-toplevel
     from app.services import loan_loaders, loan_payment_service, loan_resolver
+    from app.services.loan_resolver._periods import _replay_from_anchor
+    from app.utils.money import round_money
 
     params = loan_loaders.load_loan_params(loan_id)
     ctx = loan_payment_service.load_loan_context(loan_id, scenario_id, params)
-    return loan_resolver.resolve_loan(
-        loan_resolver.LoanInputs(
-            params, loan_loaders.load_loan_anchor_facts(params),
-            ctx.payments, ctx.rate_changes,
-        ),
-        as_of,
-    ).current_balance
+    inputs = loan_resolver.LoanInputs(
+        params, loan_loaders.load_loan_anchor_facts(params),
+        ctx.payments, ctx.rate_changes,
+    )
+    # The replay derivation directly: ``LoanState.current_balance`` carried it
+    # until plan step D2a deleted the field (the seam folds displayed balances).
+    periods = loan_resolver.resolve_periods(params, inputs.rate_changes)
+    return round_money(
+        _replay_from_anchor(inputs, periods, as_of).balance_as_of
+    )
 
 
 @pytest.fixture()
@@ -1595,8 +1666,8 @@ def cross_page_loan_off_schedule_ctx(db, seed_user):
     split) and its one confirmed payment pays cash far above the scheduled P&I,
     so the REAL principal it books down diverges from the schedule replay.  The
     read switch (plan Section 8) makes the SCALAR surfaces -- the /savings tile
-    (``_compute_loan_account``) and the loan-detail producer
-    (``resolve_account_loan``) -- read that real ledger balance, NOT the replay.
+    (``_compute_loan_account``) and the loan-detail page (the ``balance_at``
+    seam scalar since plan C4) -- read that real ledger balance, NOT the replay.
 
     Returns the reader-shaped ctx plus ``ledger`` (the genesis reader's balance,
     what the surfaces must now show) and ``replay`` (the un-seeded resolver's
@@ -1610,10 +1681,10 @@ def cross_page_loan_off_schedule_ctx(db, seed_user):
     # Pylint: ``import-outside-toplevel`` -- the app services / test helpers are
     # loaded lazily, the convention every fixture in this conftest follows.
     # pylint: disable=import-outside-toplevel
-    from app.services import loan_posting_service
     from tests._test_helpers import (
         create_loan_with_trueup,
         create_settled_transfer,
+        settle_instant_on,
     )
 
     user = seed_user["user"]
@@ -1642,15 +1713,18 @@ def cross_page_loan_off_schedule_ctx(db, seed_user):
         i for i, p in enumerate(all_periods) if p.id == anchor_period.id
     )
     payment_period = all_periods[anchor_idx - 2]
+    # Settled on its own period start (a past date), so it is visible today under
+    # C2's settled-date clock regardless of the UTC/display-tz offset.
     create_settled_transfer(
         seed_user, db.session, seed_user["account"], loan, payment_period,
         amount=Decimal("5000.00"),
+        paid_at=settle_instant_on(payment_period.start_date),
     )
     db.session.commit()
 
     # The genesis reader (what the surfaces now read) vs the un-seeded schedule
     # replay (what they read before the switch): off-schedule they DIVERGE.
-    ledger = loan_posting_service.confirmed_loan_balance_at(
+    ledger = posted_loan_balance_at(
         loan.id, scenario.id, today,
     )
     replay = _unseeded_replay_balance(loan.id, scenario.id, today)

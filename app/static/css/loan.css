@@ -24,6 +24,18 @@
   background: color-mix(in srgb, var(--shekel-warning) 16%, transparent);
 }
 
+/* A chip whose value is a SENTENCE, not a figure: the "No payoff at current
+   payment" state of the payoff chip (plan C8d).  The stat row's default value
+   size is tuned for money, and a phrase at that weight both overflows the row
+   and reads as a number.  Steps it down to the caption scale while keeping the
+   chip's own shape, so it sits in the row without competing with the figures
+   beside it.  Colour comes from .pulse-chip--warning; this is size only. */
+.loan-chip-text {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
 /* =============================================
    PAYMENT ALLOCATION BAR (polish audit P-DT2)
    ============================================= */

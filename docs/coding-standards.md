@@ -54,7 +54,12 @@ quality problem in this project.
   financial calculations, document the formula or business rule.
 - **Comments must explain why, not what.** `# Subtract expenses` is noise.
   `# Exclude settled transactions -- already reflected in the anchor balance` explains a decision.
-- **Docstrings on every module, class, and function.** No exceptions.
+- **Docstrings on every module, class, and function -- public AND private.** Gated by
+  `no-docstring-rgx=^__repr__$` in `.pylintrc`, which also puts every private docstring's `Args:`
+  section under `differing-param-doc` / `missing-param-doc`. One exemption: `__repr__`, whose
+  one-line body is its own documentation. Note what the gate does NOT catch -- a docstring with no
+  `Args:` section at all passes (`accept-no-param-doc` defaults to yes), so omitting the section is
+  not a way to satisfy the rule.
 
 ### Error Handling
 

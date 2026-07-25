@@ -6,7 +6,9 @@ is hand-reproduced in 20+ sites across the codebase in three structurally
 different forms:
 
 - Python in-loop skips, e.g. ``if txn.status_id != projected_id``
-  (``balance_calculator.py`` three sites, ``grid.py``, ``credit_workflow.py``).
+  (``cash_ledger._flows`` / ``cash_ledger._amounts``, ``grid.py``,
+  ``credit_workflow.py``; the three former ``balance_calculator.py`` sites moved
+  to the cash ledger leaf at plan step D1c and that module now has none).
 - SQLAlchemy filters, e.g. ``Status.excludes_from_balance.is_(False)``
   reproduced across ``year_end_summary_service.py``,
   ``savings_dashboard_service.py``, ``loan_payment_service.py``.
@@ -224,7 +226,7 @@ def is_projected(txn: Transaction) -> bool:
 
     Centralizes the inline ``status_id != ref_cache.status_id(
     StatusEnum.PROJECTED)`` and ``status_id == projected_id`` comparisons
-    that recur across ``balance_calculator.py``, ``grid.py``, and
+    that recur across ``cash_ledger``, ``grid.py``, and
     ``credit_workflow.py``. The comparison is pure status equality and
     does not consider ``is_deleted`` -- callers that need the combined
     "live and balance-contributing" gate compose this predicate with

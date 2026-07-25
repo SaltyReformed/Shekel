@@ -149,7 +149,7 @@ def resolve_periods(loan_params, rate_changes):
     :func:`._payoff.compute_payoff_scenarios`) so the period set they read
     cannot drift apart.  Re-exported from the package so the out-of-package
     Build-Order Step 4 split walk
-    (:func:`app.services.loan_posting_service.compute_loan_payment_splits`) reads the
+    (:func:`app.services.loan_ledger.compute_loan_payment_splits`) reads the
     identical period set -- its accrued-interest rate per payment is sampled
     from these very periods, so a posted loan-payment split can never disagree
     with the resolver's replayed balance on the rate in effect.
@@ -234,16 +234,19 @@ class ConfirmedLedgerView:
     the same one-value-threaded-once lesson the C8 seam recorded.
 
     Produced only by
-    :func:`app.services.loan_payment_service.confirmed_loan_view` (the single
+    :func:`app.services.balance_at.confirmed_view` (the single
     reader call site); the pure resolver consumes it blind.
 
     Attributes:
-        balance: The ledger-confirmed balance owed as of the evaluation date
-            (:func:`app.services.loan_posting_service.confirmed_loan_balance_at`).
-            Becomes BOTH ``LoanState.current_balance`` and the forward
-            projection's starting balance.
-        history_rows: The ledger-derived confirmed schedule rows
-            (:func:`app.services.loan_posting_service.confirmed_loan_history_rows`),
+        balance: The record-confirmed balance owed as of the evaluation date
+            (folded from the loan's walk by the seam's ``confirmed_view`` since
+            plan step E1d-b; it was the posting reader's sum until then).
+            Becomes the schedule composer's forward starting balance (the
+            loan's displayed balance folds in the ``balance_at`` seam, plan
+            step D2a).
+        history_rows: The record-derived confirmed schedule rows (the seam's
+            :func:`app.services.balance_at.confirmed_view`, folded from the loan's
+            walk since plan step E1d-b),
             chronological, each carrying its payment's ACTUAL principal /
             interest and the real running balance.  Becomes the confirmed
             slice of every schedule surface (``LoanState.schedule``,
@@ -315,7 +318,7 @@ def select_latest_anchor(anchor_events: list) -> object:
     event.
 
     Re-exported from the package so the out-of-package Build-Order Step 4
-    split walk (:func:`app.services.loan_posting_service.compute_loan_payment_splits`)
+    split walk (:func:`app.services.loan_ledger.compute_loan_payment_splits`)
     seeds its running balance from the IDENTICAL anchor the resolver replays
     from -- the posted loan-payment ledger and the resolver's balance can never
     disagree on which dated balance is the opening point.

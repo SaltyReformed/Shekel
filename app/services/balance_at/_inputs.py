@@ -6,11 +6,17 @@ the ONE per-kind dispatch site (:func:`_account_balance_map`), and the
 :func:`_require_scenario` guard every public entry (bar the liability view --
 see :mod:`._liability`) runs first.
 
-Kept in one leaf submodule so the view modules (:mod:`._kind_correct`,
+Kept in one submodule so the view modules (:mod:`._kind_correct`,
 :mod:`._cash_flow`, :mod:`._grid`, :mod:`._liability`) depend only on these
 primitives and never on each other's internals.  The package's SOLID dependency
-direction is ``<view module> -> _inputs``, and ``_inputs`` imports nothing back
-from the package.
+direction is ``<view module> -> _inputs``.  ``_inputs`` in turn depends only on
+the leaf PRODUCERS its dispatch fans out to -- the engine cluster
+(:mod:`app.services.balance_at._kernel`) and the loan producer
+(:func:`._positions.positions_period_map`, the one per-kind branch that lives in
+the seam because it reads ``positions`` above the kernel).  Neither producer
+imports ``_inputs`` back (``_positions`` takes its no-baseline guard straight
+from :mod:`app.services.balance_at._context`, the C3b3 cycle break), so the
+direction stays acyclic.
 """
 
 from collections import OrderedDict
@@ -19,11 +25,7 @@ from decimal import Decimal
 
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
-from app.models.scenario import Scenario
-from app.services import (
-    income_service,
-    net_worth_kernel,
-)
+from app.services import income_service
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
@@ -33,6 +35,10 @@ from app.services.projection_inputs import (
     load_investment_params_for_accounts,
 )
 
+from ._context import BalanceContext, require_scenario
+from . import _kernel
+from ._positions import positions_period_map
+
 ZERO = Decimal("0")
 
 
@@ -41,7 +47,7 @@ class _AssembledInputs:
     """The batch-loaded per-account projection inputs for a set of accounts.
 
     Bundles the four shared-loader outputs that
-    :func:`app.services.net_worth_kernel.build_account_balance_map`
+    :func:`app.services.balance_at._kernel.build_account_balance_map`
     dispatches on -- the amortization schedules, the investment-params map,
     the per-account deductions, and the engine gross-biweekly -- so the
     single-account (:func:`~app.services.balance_at.balance_map`) and batch
@@ -54,7 +60,7 @@ class _AssembledInputs:
 
     Attributes:
         debt_schedules: account_id ->
-            :class:`~app.services.net_worth_kernel.DebtSchedule` for the
+            :class:`~app.services.balance_at._kernel.DebtSchedule` for the
             amortizing-loan subset (its schedule plus the resolver's current
             balance).  Non-loan accounts are absent.
         investment_params_map: account_id ->
@@ -70,14 +76,14 @@ class _AssembledInputs:
             the set.
     """
 
-    debt_schedules: dict[int, net_worth_kernel.DebtSchedule]
+    debt_schedules: dict[int, _kernel.DebtSchedule]
     investment_params_map: dict[int, InvestmentParams]
     deductions_by_account: dict[int, list]
     salary_gross_biweekly: Decimal
 
 
 def _assemble_inputs(
-    accounts: list[Account], scenario: Scenario,
+    accounts: list[Account], ctx: BalanceContext,
 ) -> _AssembledInputs:
     """Batch-load the per-account projection inputs ONCE for *accounts*.
 
@@ -86,7 +92,7 @@ def _assemble_inputs(
     list) and :func:`~app.services.balance_at.build_maps` (called with the whole
     set), so single- and batch-assembly run identical loader logic and preserve
     the N+1 avoidance: one
-    :func:`~app.services.net_worth_kernel.generate_debt_schedules` over the
+    :func:`~app.services.balance_at._kernel.generate_debt_schedules` over the
     amortizing-loan subset, one investment-params query, one deductions query,
     and one raise-aware gross fetch for the whole set.
 
@@ -94,12 +100,20 @@ def _assemble_inputs(
     ``_load_account_params`` and the year-end summary already use -- this
     seam reuses them rather than writing new inline param queries.
 
+    Assembling per call is what keeps single-account and batch reads from
+    drifting -- but it used to mean N seam calls in one request did N LOAN
+    RESOLUTIONS.  The context now owns the resolutions, so re-assembling is
+    cheap: the second and later assemblies in a pass re-slice the same memoized
+    :class:`~app.services.balance_at._resolution.ResolvedLoan` instead of replaying the
+    amortization.  Statelessness is preserved; only the waste is gone.
+
     Args:
         accounts: The accounts to assemble inputs for, each with its
             ``account_type`` relationship available for the classifier.  An
             empty list returns an empty bundle without issuing any query.
-        scenario: The baseline scenario (its id scopes the loan resolver's
-            payment history).
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
+            (it scopes the loan resolver's payment history and memoizes each
+            loan's resolution for the pass).
 
     Returns:
         The :class:`_AssembledInputs` bundle.
@@ -123,8 +137,8 @@ def _assemble_inputs(
         account for account in accounts
         if classify_account(account) is AccountProjectionKind.AMORTIZING
     ]
-    debt_schedules = net_worth_kernel.generate_debt_schedules(
-        loan_accounts, scenario.id,
+    debt_schedules = _kernel.generate_debt_schedules(
+        loan_accounts, ctx,
     )
 
     # The shared loader owns the canonical-classifier filter, so a
@@ -169,61 +183,70 @@ def _assemble_inputs(
 
 def _account_balance_map(
     account: Account,
-    scenario: Scenario,
+    ctx: BalanceContext,
     periods: list,
     inputs: _AssembledInputs,
     amount_overrides: dict[int, Decimal] | None,
 ) -> OrderedDict[int, Decimal] | None:
-    """Dispatch ONE account's per-period balance map from *inputs*.
+    """Dispatch ONE account's per-period balance map.
 
-    The seam's single dispatch site, shared by
+    The seam's single per-period dispatch site, shared by
     :func:`~app.services.balance_at.balance_map` and
-    :func:`~app.services.balance_at.build_maps`.  Delegates to the shared
-    :func:`app.services.net_worth_kernel.account_balance_map_from_inputs`,
-    which unpacks the bundle for *account* and calls the kernel's per-kind
-    dispatcher -- the same unpack the year-end adapter's
-    ``_dispatch_account_balance_map`` runs, hoisted into the engine cluster
-    so the two cannot drift (R0801).  The seam never re-implements the
-    classify ladder; it supplies this account's assembled inputs.
+    :func:`~app.services.balance_at.build_maps`.  It has exactly two arms:
+
+    * **AMORTIZING loans** read the seam's own :func:`positions_period_map`
+      (plan step C3b3): the fold for begun periods, the projection for the
+      future, from the ONE total loan producer
+      (:func:`app.services.balance_at.positions`) -- so the scalar, the map, and
+      the liability band all answer a loan from ``positions`` and cannot
+      disagree.  This one per-kind branch lives HERE in the seam, not in the
+      kernel's dispatcher, because ``positions`` sits ABOVE
+      :mod:`app.services.balance_at._kernel` (at its module-size cap, and it cannot
+      import the seam back).
+    * **Every other kind** delegates to the shared
+      :func:`app.services.balance_at._kernel.account_balance_map_from_inputs`,
+      which unpacks the bundle for *account* and calls the kernel's per-kind
+      ladder (cash / interest / investment / appreciation).  The seam does not
+      re-implement that ladder.
 
     Args:
         account: The account to project.
-        scenario: The baseline scenario.
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
         periods: The pay periods to project over (the output domain).
-        inputs: The :class:`_AssembledInputs` bundle for the account's set.
+        inputs: The :class:`_AssembledInputs` bundle for the account's set.  Its
+            ``debt_schedules`` membership gates the loan arm.
         amount_overrides: Optional ``{transaction_id: Decimal}`` live map,
             forwarded to the kernel's cash path; ``None`` for the net-worth
-            batch path, which never applies live overrides.
+            batch path, which never applies live overrides.  The loan arm never
+            reads it (a loan's balance is not a transaction sum).
 
     Returns:
         The OrderedDict period_id -> Decimal balance, or ``None`` when the
-        account has no anchor period (the kernel's own no-anchor contract).
+        account has no anchor period (the kernel's own no-anchor contract, which
+        the loan arm reproduces).
     """
-    return net_worth_kernel.account_balance_map_from_inputs(
-        account, scenario, periods, inputs, amount_overrides=amount_overrides,
+    # AMORTIZING loans read the seam's positions()-based per-period map.  The gate
+    # is the same debt-schedule membership the retired kernel AMORTIZING branch
+    # used: a Mortgage-typed account with no LoanParams is absent from
+    # ``debt_schedules``, so it falls through to the kernel's cash producer here
+    # rather than reaching positions()'s fail-loud for an unconfigured loan.
+    if (classify_account(account) is AccountProjectionKind.AMORTIZING
+            and account.id in inputs.debt_schedules):
+        # The no-anchor-period contract build_account_balance_map enforced
+        # upstream of its (now-retired) AMORTIZING branch; positions_period_map
+        # does not replicate it.  Unreachable today (the column is NOT NULL) but
+        # keeps the map's contract identical.
+        if account.current_anchor_period_id is None:
+            return None
+        return positions_period_map(account, ctx, periods)
+    return _kernel.account_balance_map_from_inputs(
+        account, ctx, periods, inputs, amount_overrides=amount_overrides,
     )
 
 
-def _require_scenario(scenario: Scenario) -> None:
-    """Raise ``ValueError`` when *scenario* is None -- the seam's fail-loud guard.
-
-    Every public seam entry resolves balances against a baseline scenario,
-    and ``get_baseline_scenario`` can return None (a fresh user with no
-    baseline).  Centralising the guard here (rather than repeating it in each
-    entry point) keeps the contract and its message single-sourced.  Callers
-    that legitimately handle the no-baseline case keep their own
-    ``if scenario is None: return ...`` guard BEFORE calling the seam; this is
-    the defensive backstop that turns a missed guard into a clear failure
-    instead of a deep ``AttributeError`` on ``scenario.id`` (or a silent $0).
-
-    The ONE public entry that does not run this guard is
-    :func:`~app.services.balance_at.liability_owed_at_dates`, where a missing
-    baseline is not an error but the degenerate case of its own rule (no loan is
-    resolvable, so every liability holds flat); its docstring owns that
-    rationale.
-    """
-    if scenario is None:
-        raise ValueError(
-            "the balance_at seam requires a baseline scenario; resolve via "
-            "get_baseline_scenario and guard None before calling"
-        )
+# The seam's fail-loud no-baseline guard.  It lives on the context (the object
+# that OWNS the scenario) rather than here, and is re-exported so every seam
+# entry keeps calling ``_require_scenario(ctx)`` under one name; see
+# :func:`app.services.balance_at.require_scenario` for the contract and
+# the one entry (``liability_owed_at_dates``) that deliberately skips it.
+_require_scenario = require_scenario

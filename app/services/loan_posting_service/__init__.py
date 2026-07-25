@@ -5,10 +5,10 @@ Posts a loan's confirmed history into the append-only double-entry ledger so its
 balance is fully reconstructable as ``-(sum of its linked postings)`` -- the
 genesis (opening-equity) design that lets the read switch retire the resolver's
 read-time replay of confirmed history.  A loan's ledger is TWO kinds of balanced
-correction, both computed by ONE deterministic running-balance walk function
-(:mod:`._walk`), invoked per sync -- so the split and the anchor corrections
-agree on the balance interest accrues on, never the drift separate walk
-implementations would risk:
+correction, both PROJECTED from ONE deterministic running-balance walk
+(:func:`app.services.loan_ledger.walk_loan_ledger`), invoked per sync -- so the
+split and the anchor corrections agree on the balance interest accrues on, never
+the drift separate walk implementations would risk:
 
 * **Payment splits** (:mod:`._payments`, Step 4): the real principal / interest /
   escrow / refund split of each confirmed payment, layered as a correction on top
@@ -18,6 +18,20 @@ implementations would risk:
   every user balance TRUE-UP, so the from-origination sum-of-postings reproduces
   the resolver on a trued-up loan.
 
+## Where the walk lives, and why it is not here
+
+**This package is the GENERAL ledger -- the balance sheet, the statements, the
+attribution.  It is not the answer to "what do I owe."**  The walk every
+correction is projected from is :mod:`app.services.loan_ledger`, a LEAF this
+package depends on: a loan's balance is a fold over its event stream, and these
+postings are a PROJECTION of that fold onto the chart of accounts.  The walk
+lived here until plan step B1, which put the general ledger in the position of
+owning the balance and left every other consumer reaching through this package's
+privates for the split.  The direction now runs one way, which is what lets the
+posted rows become a CHECKED projection of the fold (``sum(postings) ==
+fold(ACTUAL events)``, asserted per visible date at every sync since plan step
+E1a) instead of the source of truth they were mistaken for.
+
 ## Package layout
 
 Split by concern (the module outgrew the size limit; mirrors
@@ -25,22 +39,24 @@ Split by concern (the module outgrew the size limit; mirrors
 ``from app.services import loan_posting_service`` and ``loan_posting_service.X``
 keep working unchanged:
 
-* :mod:`._walk` -- the shared foundation: the single chronological walk that
-  produces every correction, plus the split / correction dataclasses.
 * :mod:`._payments` -- the per-payment split reconcile + payment-only sync.
 * :mod:`._anchors` -- the opening + true-up correction reconcile + anchor-only sync.
 * :mod:`._sync` -- the UNIFIED per-scenario sync (``sync_loan_postings``: one walk,
   both reconciles), the loan-GLOBAL all-scenarios sync, the duplicate translation,
   and the historical backfill.
-* :mod:`._reader` -- the genesis READ side: a loan's balance as ``-(sum of its
-  linked postings)`` (``confirmed_loan_balance_at`` / ``confirmed_loan_balance_map``,
-  no anchor read, no boundary filter), the ACTUAL interest its confirmed
-  payments paid in a year (``confirmed_loan_interest_in_year``, for Schedule A,
-  attributed by the payment's display-timezone civil paid date -- the L9
-  rule), and the ledger-derived
-  amortization HISTORY rows (``confirmed_loan_history_rows``, each confirmed
-  payment's actual principal / interest and running balance read from the
-  posted legs).  Wired by the read switch.
+* :mod:`._reader` -- the ATTRIBUTION read side: what each settled payment's
+  posted legs say it paid (interest / escrow / real principal per shadow), plus
+  the shared load the payment-history table opens with.  It answers no balance:
+  the two sum-of-postings balance readers that lived there
+  (``confirmed_loan_balance_at`` / ``confirmed_loan_balance_map``) are DELETED
+  at plan step E1e, having lost their last ``app/`` caller when the seam cut a
+  loan's past onto the event FOLD (steps C3b1 / C3b3) and its confirmed schedule
+  rows onto the walk (step E1d-b).  Their remaining job -- the independent window
+  the fold and the resolver are graded against -- moved to the oracle's own side
+  (``tests/_test_helpers.py``'s ``posted_loan_balance_at``), so no public balance
+  producer exists outside the ``balance_at`` seam.  The paid-in-year tax / chip
+  figures folded off the postings onto the loan ledger at steps C3c / C6c
+  (:mod:`app.services.balance_at`), so this package no longer reads them either.
 
 ## Shared infrastructure and isolation
 
@@ -62,11 +78,17 @@ transaction boundary).
 unified :func:`sync_loan_postings` (loan-params create / edit, the balance
 true-up, the ARM rate / origination-rate change, and every transfer settle /
 revert / edit / delete / restore), so a loan's opening, true-ups, and confirmed
-payments are all posted as they happen.  Reads still flow through the resolver /
-``balance_at`` seam until the read switch flips them onto ``sum(loan-ledger
-postings)``; the anchor-correction postings are therefore inert on displayed
-balances until then, and the ``LoanAnchorEvent`` write is retired only once every
-reader has moved (the final read-switch commit).
+payments are all posted as they happen.  Every one of those doors then runs the
+step-E1a assert, so a sync that reconciled the ledger away from the fold rolls
+back at the write that caused it.
+
+**Read status.**  No displayed balance reads these postings.  The read switch
+that once pointed at them is retired: the balance seam folds a loan's past from
+SOURCE events (steps C3b1 / C3b3) and its confirmed rows from the walk (step
+E1d-b), so a cold or stale posting cache is a repairable inconsistency, never a
+read outage.  What DOES read them is the general ledger's own presentation --
+the balance sheet and statements (:mod:`app.services.ledger_report_service`) and
+this package's per-payment attribution (:mod:`._display`).
 """
 
 from ._anchors import sync_loan_anchor_corrections
@@ -74,18 +96,11 @@ from ._display import (
     LoanAnchorDrift,
     LoanPaymentHistoryRow,
     confirmed_loan_payment_history,
-    confirmed_loan_principal_in_year,
     loan_balance_anchor_history,
 )
 from ._payments import (
     reverse_loan_payment_postings_for_shadow,
     sync_loan_payment_postings,
-)
-from ._reader import (
-    confirmed_loan_balance_at,
-    confirmed_loan_balance_map,
-    confirmed_loan_history_rows,
-    confirmed_loan_interest_in_year,
 )
 from ._sync import (
     backfill_all_loan_postings,
@@ -94,28 +109,12 @@ from ._sync import (
     sync_loan_postings,
     sync_loan_postings_all_scenarios,
 )
-from ._walk import (
-    LoanAnchorCorrection,
-    LoanLedgerWalk,
-    LoanPaymentSplit,
-    compute_loan_payment_splits,
-    walk_loan_ledger,
-)
 
 __all__ = [
-    "LoanAnchorCorrection",
     "LoanAnchorDrift",
-    "LoanLedgerWalk",
     "LoanPaymentHistoryRow",
-    "LoanPaymentSplit",
     "backfill_all_loan_postings",
-    "compute_loan_payment_splits",
-    "confirmed_loan_balance_at",
-    "confirmed_loan_balance_map",
-    "confirmed_loan_history_rows",
-    "confirmed_loan_interest_in_year",
     "confirmed_loan_payment_history",
-    "confirmed_loan_principal_in_year",
     "loan_balance_anchor_history",
     "resync_user_loan_postings",
     "reverse_loan_payment_postings_for_shadow",
@@ -124,5 +123,4 @@ __all__ = [
     "sync_loan_payment_postings",
     "sync_loan_postings",
     "sync_loan_postings_all_scenarios",
-    "walk_loan_ledger",
 ]

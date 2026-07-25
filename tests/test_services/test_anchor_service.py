@@ -762,9 +762,9 @@ class TestRecordLoanTrackingStart:
           * outcome is COMMITTED
           * exactly one tracking_start event is appended (origination + tracking = 2)
           * it carries the TRACKING_START source, balance, and date
-          * the opening synthesized for the genesis walk is now that tracking-start
-            (``is_tracking_start`` True, balance 18000) -- proving the walk will
-            seed from it, not the 20000 origination.
+          * the loan still OPENS at its $20,000 origination (step C1); the
+            tracking-start loads as a non-opening assertion (``is_opening`` False,
+            ``is_tracking_start`` True, balance 18000) that RESETS the walk.
         """
         with app.app_context():
             account = _make_loan_account(seed_user)
@@ -798,12 +798,15 @@ class TestRecordLoanTrackingStart:
                 .filter_by(account_id=account.id)
                 .one()
             )
-            opening = next(
-                fact for fact in loan_loaders.load_loan_anchor_facts(params)
-                if fact.is_opening
-            )
-            assert opening.is_tracking_start is True
-            assert opening.anchor_balance == Decimal("18000.00")
+            facts = loan_loaders.load_loan_anchor_facts(params)
+            (opening,) = [fact for fact in facts if fact.is_opening]
+            assert opening.is_tracking_start is False
+            assert opening.anchor_balance == Decimal("20000.00")
+            (tracking_fact,) = [
+                fact for fact in facts if fact.is_tracking_start
+            ]
+            assert tracking_fact.is_opening is False
+            assert tracking_fact.anchor_balance == Decimal("18000.00")
 
     def test_double_call_same_returns_duplicate_same_day(
         self, app, db, seed_user, seed_periods_today,
@@ -995,3 +998,62 @@ class TestApplyLoanAnchorTrueUpModuleContract:
                 if hasattr(idx, "name")
             }
             assert LOAN_ANCHOR_EVENT_UNIQUE_INDEX in index_names
+
+
+class TestApplyAnchorTrueUpKindGate:
+    """The D4 / A1 amortizing-kind guard on the CASH true-up entry point."""
+
+    def test_refuses_amortizing_loan_before_staging(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """An amortizing account raises, with NOTHING staged or written.
+
+        Finding B-15: this entry point wrote
+        ``accounts.current_anchor_balance`` for a loan -- a second,
+        stored, never-reconciled loan balance.  The guard fires before
+        ``stage_anchor_true_up``, so the session holds no pending
+        mutation and no history row: the column, the history count, and
+        the session's dirty/new sets are all unchanged.
+        """
+        with app.app_context():
+            mortgage_type = db.session.query(AccountType).filter_by(
+                name="Mortgage",
+            ).one()
+            loan = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=mortgage_type.id,
+                    name="Kind Gate Loan",
+                    anchor_balance=Decimal("0"),
+                ),
+            )
+            db.session.commit()
+            column_before = loan.current_anchor_balance
+            history_before = (
+                db.session.query(AccountAnchorHistory)
+                .filter_by(account_id=loan.id).count()
+            )
+
+            current_period = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            with pytest.raises(
+                anchor_service.AmortizingAccountAnchorError,
+            ) as excinfo:
+                apply_anchor_true_up(
+                    account=loan,
+                    new_balance=Decimal("1.00"),
+                    anchor_period=current_period,
+                    user_id=seed_user["user"].id,
+                )
+
+            # The message names the correct path for the caller.
+            assert "apply_loan_anchor_true_up" in str(excinfo.value)
+            # Raised BEFORE staging: session clean, nothing written.
+            assert not db.session.dirty
+            assert not db.session.new
+            assert loan.current_anchor_balance == column_before
+            assert (
+                db.session.query(AccountAnchorHistory)
+                .filter_by(account_id=loan.id).count()
+            ) == history_before

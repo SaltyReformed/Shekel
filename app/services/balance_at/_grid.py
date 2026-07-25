@@ -38,15 +38,14 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from app.models.account import Account
-from app.models.scenario import Scenario
-from app.services import balance_resolver
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
 from app.utils.money import round_money
 
-from . import _cash_flow, _kind_correct
+from ._context import BalanceContext
+from . import _cash_engine, _cash_flow, _kind_correct
 from ._inputs import ZERO, _require_scenario
 
 
@@ -88,7 +87,7 @@ class GridBalanceView:
 
 def _accruing_grid_view(
     kc_balances: "OrderedDict[int, Decimal]",
-    cash_result: balance_resolver.BalanceResult,
+    cash_result: _cash_engine.BalanceResult,
 ) -> GridBalanceView:
     """Assemble a :class:`GridBalanceView` for an INTEREST account.
 
@@ -122,7 +121,7 @@ def _accruing_grid_view(
             anchor-forward periods as the cash producer, except a possible
             leading anchor-cache-divergence prefix (cash periods the interest
             map lacks), which the loop handles.
-        cash_result: The cash-flow :class:`~app.services.balance_resolver.BalanceResult`
+        cash_result: The cash-flow :class:`~app.services.balance_at._cash_engine.BalanceResult`
             (its cent-quantized ``balances`` are the premium baseline, and
             its ``stale_anchor_warning`` rides through unchanged).
 
@@ -165,7 +164,7 @@ def _accruing_grid_view(
 
 def grid_balance_view(
     account: Account,
-    scenario: Scenario,
+    ctx: BalanceContext,
     periods: list,
     *,
     amount_overrides: "dict[int, Decimal] | None" = None,
@@ -207,7 +206,7 @@ def grid_balance_view(
     Args:
         account: The account to project (the grid / obligations account; any
             kind).  ``classify_account`` drives the dispatch.
-        scenario: The baseline scenario.
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
         periods: The pay periods to project over, ordered by
             ``period_index`` (pass the full anchor-forward set so the
             previous-period premium baseline is available at the window's
@@ -226,7 +225,7 @@ def grid_balance_view(
         ValueError: When ``scenario`` is None -- callers that resolve a
             nullable baseline must guard first.
     """
-    _require_scenario(scenario)
+    _require_scenario(ctx)
     if classify_account(account) is AccountProjectionKind.INTEREST:
         # Thread ONE income basis to both walks so the premium is pure
         # interest, not an income mismatch.  The cash walk (balances_for)
@@ -238,16 +237,16 @@ def grid_balance_view(
         # both walks (and its subtotal row) on live income.
         overrides = {} if amount_overrides is None else amount_overrides
         cash_result = _cash_flow.cash_balance_map(
-            account, scenario, periods, amount_overrides=overrides,
+            account, ctx, periods, amount_overrides=overrides,
         )
         kc_balances = _kind_correct.balance_map(
-            account, scenario, periods, amount_overrides=overrides,
+            account, ctx, periods, amount_overrides=overrides,
         )
         if kc_balances is not None:
             return _accruing_grid_view(kc_balances, cash_result)
     else:
         cash_result = _cash_flow.cash_balance_map(
-            account, scenario, periods, amount_overrides=amount_overrides,
+            account, ctx, periods, amount_overrides=amount_overrides,
         )
     return GridBalanceView(
         balances=cash_result.balances,

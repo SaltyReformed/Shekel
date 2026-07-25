@@ -22,13 +22,12 @@ from app.enums import RecurrencePatternEnum, TxnTypeEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.pay_period import PayPeriod
-from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.services import balance_at
 from app.services.account_resolver import resolve_analytics_account
 from app.services.pay_period_service import get_overlapping_periods
-from app.services.scenario_resolver import get_baseline_scenario
+from app.services.balance_at import BalanceContext
 from app.utils.balance_predicates import (
     balance_contributing_clause,
     is_balance_contributing,
@@ -273,8 +272,8 @@ def get_month_detail(  # pylint: disable=too-many-arguments
             f"account_id={account_id} year={year} month={month}",
         )
 
-    scenario = get_baseline_scenario(user_id)
-    if scenario is None:
+    balance_ctx = BalanceContext.build(user_id)
+    if balance_ctx.scenario is None:
         raise CalendarAccountNotResolvableError(
             f"Baseline scenario not resolvable for user_id={user_id} "
             f"year={year} month={month}",
@@ -285,13 +284,13 @@ def get_month_detail(  # pylint: disable=too-many-arguments
 
     periods = get_overlapping_periods(user_id, first_day, last_day)
     transactions = _query_transactions_for_range(
-        account.id, scenario.id, user_id, first_day, last_day,
+        account.id, balance_ctx.scenario.id, user_id, first_day, last_day,
     )
 
     ctx = _MonthBuildContext(
         year=year, account=account, periods=periods,
         transactions=transactions, large_threshold=large_threshold,
-        scenario=scenario, today=today,
+        balance_ctx=balance_ctx, today=today,
     )
     return _build_month_summary(month, ctx)
 
@@ -323,8 +322,8 @@ def get_year_overview(
             f"account_id={account_id} year={year}",
         )
 
-    scenario = get_baseline_scenario(user_id)
-    if scenario is None:
+    balance_ctx = BalanceContext.build(user_id)
+    if balance_ctx.scenario is None:
         raise CalendarAccountNotResolvableError(
             f"Baseline scenario not resolvable for user_id={user_id} "
             f"year={year}",
@@ -334,13 +333,13 @@ def get_year_overview(
     last_day = date(year, 12, 31)
     periods = get_overlapping_periods(user_id, first_day, last_day)
     all_txns = _query_transactions_for_range(
-        account.id, scenario.id, user_id, first_day, last_day,
+        account.id, balance_ctx.scenario.id, user_id, first_day, last_day,
     )
 
     ctx = _MonthBuildContext(
         year=year, account=account, periods=periods,
         transactions=all_txns, large_threshold=large_threshold,
-        scenario=scenario, today=None,
+        balance_ctx=balance_ctx, today=None,
     )
     months = [_build_month_summary(m, ctx) for m in range(1, 13)]
 
@@ -595,7 +594,7 @@ class _MonthBuildContext:
     periods: list[PayPeriod]
     transactions: list[Transaction]
     large_threshold: int
-    scenario: Scenario
+    balance_ctx: BalanceContext
     today: date | None
 
 
@@ -627,7 +626,9 @@ def _build_month_summary(month: int, ctx: _MonthBuildContext) -> MonthSummary:
         (expense for _income, expense in day_totals.values()), Decimal("0"),
     )
 
-    end_balance = _compute_month_end_balance(ctx.account, ctx.year, month, ctx.scenario)
+    end_balance = _compute_month_end_balance(
+        ctx.account, ctx.year, month, ctx.balance_ctx,
+    )
     third_paycheck_months = _detect_third_paycheck_months(ctx.periods, ctx.year)
 
     paycheck_days = sorted({
@@ -686,7 +687,7 @@ def _compute_daily_view(
     first_day = date(ctx.year, month, 1)
     last_day = date(ctx.year, month, calendar.monthrange(ctx.year, month)[1])
     series = balance_at.cash_daily_balance_series(
-        ctx.account, ctx.scenario, first_day, last_day,
+        ctx.account, ctx.balance_ctx, first_day, last_day,
     )
     daily_balances = {day.day: balance for day, balance in series.items()}
 
@@ -838,7 +839,7 @@ def _compute_month_end_balance(
     account: Account,
     year: int,
     month: int,
-    scenario: Scenario,
+    balance_ctx: BalanceContext,
 ) -> Decimal:
     """Project the account's cash-flow balance at the calendar month-end (E-27).
 
@@ -863,7 +864,8 @@ def _compute_month_end_balance(
         account: The :class:`~app.models.account.Account` to summarize.
         year: Target calendar year.
         month: Target calendar month (1-12).
-        scenario: The baseline :class:`~app.models.scenario.Scenario`.
+        balance_ctx: The read pass's
+            :class:`~app.services.balance_at.BalanceContext`.
 
     Returns:
         ``Decimal`` -- the projected balance on the last day of the
@@ -871,4 +873,4 @@ def _compute_month_end_balance(
         :func:`~app.utils.money.round_money` inside the resolver.
     """
     last_day = date(year, month, calendar.monthrange(year, month)[1])
-    return balance_at.cash_balance_at(account, scenario, last_day)
+    return balance_at.cash_balance_at(account, balance_ctx, last_day)

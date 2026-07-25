@@ -26,8 +26,20 @@
        the same display-vs-edit split the dashboard hero uses.
    The id is account-scoped so N cards never collide, and the cell is
    raised above the card's .stretched-link (accounts.css) so the click
-   opens the editor instead of following the card link. #}
-{% if current_balance is not none %}
+   opens the editor instead of following the card link.
+
+   An AMORTIZING loan's cell is READ-ONLY (ruling D4 / step A1, finding
+   B-15): a loan's balance is ledger-derived and is asserted through the
+   loan page's own true-up, so the cash anchor editor is never offered --
+   the PATCH would be refused with 422.  Branches on the
+   has_amortization boolean column, never a type-name string. #}
+{% if current_balance is none %}
+<div class="acct-card__num font-mono">--</div>
+{% elif account.account_type.has_amortization %}
+<div class="acct-card__num font-mono{% if current_balance < 0 %} acct-card__num--neg{% endif %}{% if is_liability %} acct-card__num--liability{% endif %}">
+  {{ money(current_balance) }}
+</div>
+{% else %}
 <div id="acct-balance-{{ account.id }}"
      class="acct-card__num acct-card__num--edit font-mono{% if current_balance < 0 %} acct-card__num--neg{% endif %}{% if is_liability %} acct-card__num--liability{% endif %}"
      hx-get="{{ url_for('accounts.anchor_form', account_id=account.id, revert='accounts') }}"
@@ -41,6 +53,4 @@
   {{ money(current_balance) }}
   <i class="bi bi-pencil-square acct-card__edit-icon" aria-hidden="true"></i>
 </div>
-{% else %}
-<div class="acct-card__num font-mono">--</div>
 {% endif %}

@@ -36,14 +36,15 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.services import (
     balance_at,
-    balance_resolver,
+    cash_ledger,
     income_service,
     pay_period_service,
     paycheck_calculator,
     savings_dashboard_service,
-    year_end_summary_service,
 )
+from app.services.balance_at import _cash_engine as balance_resolver
 from app.services.tax_config_service import load_tax_configs
+from app.services.balance_at import BalanceContext
 from tests._test_helpers import freeze_today, make_investment_account
 
 
@@ -315,6 +316,7 @@ class TestLiveIncomeThroughBalanceResolver:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = seed_user["scenario"]
+            bctx = BalanceContext.build(seed_user["user"].id)
             account = seed_user["account"]
             profile = _create_profile(user_id, scenario.id)
             template = _make_salary_template(seed_user, profile)
@@ -340,7 +342,7 @@ class TestLiveIncomeThroughBalanceResolver:
             assert expected_net != Decimal("1.00")
 
             # period_subtotal income line reflects the live net.
-            subtotal = balance_resolver.period_subtotal(
+            subtotal = cash_ledger.period_subtotal(
                 account, scenario.id, period,
             )
             assert subtotal.income == expected_net, (
@@ -371,6 +373,7 @@ class TestLiveIncomeThroughBalanceResolver:
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = seed_user["scenario"]
+            bctx = BalanceContext.build(seed_user["user"].id)
             account = seed_user["account"]
             profile = _create_profile(user_id, scenario.id)
             template = _make_salary_template(seed_user, profile)
@@ -383,7 +386,7 @@ class TestLiveIncomeThroughBalanceResolver:
             )
             db.session.commit()
 
-            subtotal = balance_resolver.period_subtotal(
+            subtotal = cash_ledger.period_subtotal(
                 account, scenario.id, period,
             )
             assert subtotal.income == Decimal("1234.56"), (
@@ -535,6 +538,7 @@ class TestConsumerIntegration:
         """
         with app.app_context():
             scenario = seed_user["scenario"]
+            bctx = BalanceContext.build(seed_user["user"].id)
             user_id = seed_user["user"].id
             profile = _create_profile(user_id, scenario.id)
             _add_one_time_raise(
@@ -559,17 +563,8 @@ class TestConsumerIntegration:
                 seed_user, db.session, seed_periods_today[0],
                 Decimal("10000.00"),
             )
-            seam_inputs = balance_at._assemble_inputs([inv], scenario)
+            seam_inputs = balance_at._assemble_inputs([inv], bctx)
             assert seam_inputs.salary_gross_biweekly == canonical
-
-            # Year-end consumer: thin delegator over income_service
-            # (moved to the ._data sub-module in the Phase 2 split).
-            year_end_val = (
-                year_end_summary_service._data._load_salary_gross_biweekly(
-                    user_id, scenario,
-                )
-            )
-            assert year_end_val == canonical
 
             # Investment consumer: Commit 17 introduced a thin
             # ``_salary_gross_biweekly`` wrapper around

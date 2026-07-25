@@ -30,25 +30,26 @@ import re
 from datetime import date
 from decimal import Decimal
 
-import pytest
-
 from app import ref_cache
-from app.enums import LoanAnchorSourceEnum, StatusEnum, TxnTypeEnum
+from app.enums import AcctTypeEnum, StatusEnum, TxnTypeEnum
 from app.extensions import db
-from app.models.loan_anchor_event import LoanAnchorEvent
-from app.models.loan_params import LoanParams
-from app.models.ref import AccountType
 from app.models.transaction import Transaction
 from app.services import (
-    account_service,
+    loan_loaders,
     loan_payment_service,
+    loan_posting_service,
     loan_resolver,
     savings_dashboard_service,
     transfer_service,
-    year_end_summary_service,
 )
-from app.services.scenario_resolver import get_baseline_scenario
-from tests._test_helpers import insert_origination_rate
+from app.services.loan_resolver._periods import _replay_from_anchor
+from app.utils.money import round_money
+from tests._test_helpers import (
+    create_loan_account,
+    create_settled_transfer,
+    loan_params_for,
+    settle_instant_on,
+)
 
 
 # -- Hand-computed reference values (mirror principal-settle ones) ---------
@@ -88,144 +89,101 @@ ARM_FIXED_WINDOW_PAYMENT = Decimal("2398.20")
 # -- Fixture helpers -------------------------------------------------------
 
 
-def _create_fixed_loan(seed_user, period_id):
+def _create_fixed_loan(seed_user, period):
     """Materialise the canonical fixed-rate $300k mortgage.
 
-    Creates the :class:`Account`, :class:`LoanParams`, and origination
-    :class:`LoanAnchorEvent`; commits.  Returns the account and
-    loan_params.
+    Routes through the shared :func:`create_loan_account` factory, which builds
+    the :class:`Account`, the :class:`LoanParams`, the origination
+    :class:`RateHistory` / anchor, AND the loan's genesis posting ledger in one
+    transaction -- the same dance ``app/routes/loan/params.py`` performs on every
+    production loan write.  Commits.  Returns the account and loan_params.
+
+    Args:
+        seed_user: The ``seed_user`` fixture dict.
+        period: The :class:`PayPeriod` to anchor the account to.
     """
-    loan_type = (
-        db.session.query(AccountType).filter_by(name="Mortgage").one()
+    account = create_loan_account(
+        seed_user, db.session, name="Single-Source Mortgage",
+        principal=FIXED_PRINCIPAL, rate=FIXED_RATE, term=FIXED_TERM,
+        origination_date=ORIGINATION_DATE, payment_day=1,
+        account_type=AcctTypeEnum.MORTGAGE, anchor_period=period,
     )
-    account = account_service.create_account(
-        account_service.AccountSpec(
-            user_id=seed_user["user"].id,
-            account_type_id=loan_type.id,
-            name="Single-Source Mortgage",
-            anchor_balance=FIXED_PRINCIPAL,
-            anchor_period_id=period_id,
-        ),
-    )
-    db.session.flush()
-
-    loan_params = LoanParams(
-        account_id=account.id,
-        original_principal=FIXED_PRINCIPAL,
-        current_principal=FIXED_PRINCIPAL,
-        term_months=FIXED_TERM,
-        origination_date=ORIGINATION_DATE,
-        payment_day=1,
-        is_arm=False,
-    )
-    db.session.add(loan_params)
-    db.session.flush()
-    insert_origination_rate(loan_params, FIXED_RATE)
-
-    db.session.add(LoanAnchorEvent(
-        account_id=account.id,
-        anchor_date=ORIGINATION_DATE,
-        anchor_balance=FIXED_PRINCIPAL,
-        source_id=ref_cache.loan_anchor_source_id(
-            LoanAnchorSourceEnum.ORIGINATION,
-        ),
-    ))
-    db.session.commit()
-    return account, loan_params
+    return account, loan_params_for(db.session, account.id)
 
 
-def _create_arm_loan(seed_user, period_id):
+def _create_arm_loan(seed_user, period):
     """Materialise the canonical 5/5 ARM in its fixed-rate window.
 
     Anchor at origination; no payments; the resolver's monthly_payment
     must equal :data:`ARM_FIXED_WINDOW_PAYMENT` for every ``as_of``
     inside the window (E-02 invariant, Commit 13 stability lock).
+
+    The shared factory carries no ARM knobs, so the ARM columns are set the way
+    production's own ARM edit does (``loan.update_params``): assign the params,
+    then re-sync the genesis ledger for every scenario before committing, so the
+    postings and the params land in one transaction and the loan is never left
+    on the no-ledger fallback.
+
+    Args:
+        seed_user: The ``seed_user`` fixture dict.
+        period: The :class:`PayPeriod` to anchor the account to.
     """
-    loan_type = (
-        db.session.query(AccountType).filter_by(name="Mortgage").one()
+    account = create_loan_account(
+        seed_user, db.session, name="Single-Source ARM",
+        principal=ARM_PRINCIPAL, rate=ARM_RATE, term=ARM_TERM,
+        origination_date=ORIGINATION_DATE, payment_day=1,
+        account_type=AcctTypeEnum.MORTGAGE, anchor_period=period,
     )
-    account = account_service.create_account(
-        account_service.AccountSpec(
-            user_id=seed_user["user"].id,
-            account_type_id=loan_type.id,
-            name="Single-Source ARM",
-            anchor_balance=ARM_PRINCIPAL,
-            anchor_period_id=period_id,
-        ),
-    )
-    db.session.flush()
-
-    loan_params = LoanParams(
-        account_id=account.id,
-        original_principal=ARM_PRINCIPAL,
-        current_principal=ARM_PRINCIPAL,
-        term_months=ARM_TERM,
-        origination_date=ORIGINATION_DATE,
-        payment_day=1,
-        is_arm=True,
-        arm_first_adjustment_months=ARM_WINDOW,
-        arm_adjustment_interval_months=12,
-    )
-    db.session.add(loan_params)
-    db.session.flush()
-    insert_origination_rate(loan_params, ARM_RATE)
-
-    db.session.add(LoanAnchorEvent(
-        account_id=account.id,
-        anchor_date=ORIGINATION_DATE,
-        anchor_balance=ARM_PRINCIPAL,
-        source_id=ref_cache.loan_anchor_source_id(
-            LoanAnchorSourceEnum.ORIGINATION,
-        ),
-    ))
+    loan_params = loan_params_for(db.session, account.id)
+    loan_params.is_arm = True
+    loan_params.arm_first_adjustment_months = ARM_WINDOW
+    loan_params.arm_adjustment_interval_months = 12
+    loan_posting_service.sync_loan_postings_all_scenarios(account.id)
     db.session.commit()
     return account, loan_params
 
 
 def _settle_one_payment(seed_user, loan_account, period, auth_client):
-    """Drive a PITI transfer through the production mark-done route.
+    """Settle a PITI transfer through the sole writer, pinned to the period start.
 
-    Mirrors the integration test in
-    ``test_loan_principal_settles.py``: create the transfer Projected,
-    then POST ``/transactions/<shadow_id>/mark-done`` so both shadows
-    reach the DONE settled status via the live state machine.
+    Routes through ``create_settled_transfer`` -- transfer_service, the same
+    settle state machine (``update_transfer`` to DONE) the mark-done route drives
+    -- with ``paid_at`` pinned to the period's start, so the payment is visible
+    today under C2's settled-date clock.  The HTTP mark-done route stamps
+    ``now()``, whose UTC-civil date can sit a day ahead of the host's
+    ``date.today()`` and hide the payment; that route path is covered directly by
+    ``test_loan_principal_settles.py``.  ``auth_client`` is kept for call-site
+    symmetry though the settle no longer uses it.
     """
-    checking = seed_user["account"]
-    scenario = seed_user["scenario"]
-    category = seed_user["categories"]["Car Payment"]
-    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
-    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-
-    xfer = transfer_service.create_transfer(
-        transfer_service.TransferSpec(
-            user_id=seed_user["user"].id,
-            from_account_id=checking.id,
-            to_account_id=loan_account.id,
-            pay_period_id=period.id,
-            scenario_id=scenario.id,
-            amount=FIXED_PI,
-            status_id=projected_id,
-            category_id=category.id,
-            notes="C15 PITI settle",
-        ),
-    )
-    db.session.commit()
-
-    income_shadow = (
-        db.session.query(Transaction)
-        .filter(
-            Transaction.transfer_id == xfer.id,
-            Transaction.account_id == loan_account.id,
-            Transaction.transaction_type_id == income_type_id,
-            Transaction.is_deleted.is_(False),
-        )
-        .one()
-    )
-    resp = auth_client.post(f"/transactions/{income_shadow.id}/mark-done")
-    assert resp.status_code == 200, (
-        f"mark-done failed with {resp.status_code}: {resp.data!r}"
+    create_settled_transfer(
+        seed_user, db.session, seed_user["account"], loan_account, period,
+        amount=FIXED_PI, paid_at=settle_instant_on(period.start_date),
     )
     db.session.expire_all()
+
+
+def _replay_window(account_id, loan_params, ctx):
+    """Return the anchor + confirmed-payment replay balance as of today.
+
+    The sanity-floor window the deleted ``LoanState.current_balance`` carried
+    (plan step D2a): the same production derivation one level down
+    (``_replay_from_anchor``, which still seeds the schedule composer's
+    starting state), so the hand-computed pins keep their values while the
+    display surfaces under test read the seam.
+    """
+    del account_id  # identity carried by loan_params; kept for call clarity
+    inputs = loan_resolver.LoanInputs(
+        loan_params,
+        loan_loaders.load_loan_anchor_facts(loan_params),
+        ctx.payments,
+        ctx.rate_changes,
+    )
+    periods = loan_resolver.resolve_periods(
+        inputs.loan_params, inputs.rate_changes,
+    )
+    return round_money(
+        _replay_from_anchor(inputs, periods, date.today()).balance_as_of
+    )
 
 
 def _loan_card_principal(auth_client, account_id):
@@ -281,26 +239,6 @@ def _savings_debt_card_total_debt(user_id):
     return summary["total_debt"]
 
 
-def _net_worth_liability_balance(user_id, year, loan_account_id):
-    """Return the loan balance from the year-end net-worth section.
-
-    Drives ``year_end_summary_service.compute_year_end_summary`` so
-    the test asserts against the *real* service output -- not a
-    re-derivation -- and confirms the schedule-walking net-worth
-    branch reads the resolver's schedule for the loan.
-    """
-    summary = year_end_summary_service.compute_year_end_summary(user_id, year)
-    # ``debt_progress`` lists per-debt Dec-31 balances; the
-    # liability that nets against assets in the net-worth section is
-    # the same number.
-    for entry in summary["debt_progress"]:
-        if entry["account_id"] == loan_account_id:
-            return entry["dec31_balance"]
-    raise AssertionError(
-        f"Loan account {loan_account_id} not found in debt_progress"
-    )
-
-
 # -- C15-1 / C15-6 fixed-rate cross-surface tests --------------------------
 
 
@@ -310,9 +248,9 @@ def test_fixed_loan_card_equals_savings_equals_resolver_before_settle(
     """C15-1 (pre-settle): every surface displays the same $300,000 anchor.
 
     Fresh fixed-rate mortgage with one origination event and zero
-    confirmed payments.  All three display surfaces must show
-    ``$300,000.00`` exactly -- the resolver's
-    ``state.current_balance`` for ``as_of = date.today()``.
+    confirmed payments.  Both display surfaces must show
+    ``$300,000.00`` exactly -- the seam-folded balance for
+    ``as_of = date.today()`` (the anchor replay agrees, the sanity floor).
 
     Pre-Commit-15 this would have rendered the stored
     ``LoanParams.current_principal`` ($300,000) on the loan card and
@@ -324,32 +262,20 @@ def test_fixed_loan_card_equals_savings_equals_resolver_before_settle(
     """
     with app.app_context():
         account, loan_params = _create_fixed_loan(
-            seed_user, seed_periods[0].id,
+            seed_user, seed_periods[0],
         )
 
         ctx = loan_payment_service.load_loan_context(
             account.id, seed_user["scenario"].id, loan_params,
         )
-        resolver_state = loan_resolver.resolve_loan(
-            loan_resolver.LoanInputs(
-                loan_params,
-                db.session.query(LoanAnchorEvent)
-                    .filter_by(account_id=account.id).all(),
-                ctx.payments,
-                ctx.rate_changes,
-            ),
-            date.today(),
-        )
-        assert resolver_state.current_balance == FIXED_PRINCIPAL, (
-            f"Sanity floor: resolver should report {FIXED_PRINCIPAL} "
-            f"for a fresh loan, got {resolver_state.current_balance}."
+        replayed = _replay_window(account.id, loan_params, ctx)
+        assert replayed == FIXED_PRINCIPAL, (
+            f"Sanity floor: the anchor replay should report {FIXED_PRINCIPAL} "
+            f"for a fresh loan, got {replayed}."
         )
 
         card_balance = _loan_card_principal(auth_client, account.id)
         debt_balance = _savings_debt_card_total_debt(seed_user["user"].id)
-        net_worth_balance = _net_worth_liability_balance(
-            seed_user["user"].id, ORIGINATION_DATE.year, account.id,
-        )
 
         assert card_balance == FIXED_PRINCIPAL, (
             f"Loan card displayed {card_balance}, expected {FIXED_PRINCIPAL}"
@@ -357,18 +283,6 @@ def test_fixed_loan_card_equals_savings_equals_resolver_before_settle(
         assert debt_balance == FIXED_PRINCIPAL, (
             f"/savings debt card displayed {debt_balance}, "
             f"expected {FIXED_PRINCIPAL}"
-        )
-        # Net-worth balance is the Dec-31 value of the resolver's
-        # schedule.  With no settles in this test (and as_of=today),
-        # the schedule runs contractually forward and the Dec-31 row
-        # reflects ~11 months of contractual payments.  The lock here
-        # is that the SAME schedule populates every surface, not that
-        # the Dec-31 value equals the principal exactly.  Cross-
-        # surface principal alignment for the unmoved case is the
-        # card/debt-card pair; net-worth's role is the post-settle
-        # alignment test below.
-        assert isinstance(net_worth_balance, Decimal), (
-            "Net-worth liability missing for the loan account"
         )
 
 
@@ -392,7 +306,7 @@ def test_fixed_loan_card_equals_savings_after_settle(  # C15-1 / C15-6
     """
     with app.app_context():
         account, loan_params = _create_fixed_loan(
-            seed_user, seed_periods[0].id,
+            seed_user, seed_periods[0],
         )
         _settle_one_payment(
             seed_user, account, seed_periods[3], auth_client,
@@ -402,29 +316,21 @@ def test_fixed_loan_card_equals_savings_after_settle(  # C15-1 / C15-6
         ctx = loan_payment_service.load_loan_context(
             account.id, scenario_id, loan_params,
         )
-        resolver_state = loan_resolver.resolve_loan(
-            loan_resolver.LoanInputs(
-                loan_params,
-                db.session.query(LoanAnchorEvent)
-                    .filter_by(account_id=account.id).all(),
-                ctx.payments,
-                ctx.rate_changes,
-            ),
-            date.today(),
-        )
-        assert resolver_state.current_balance == BALANCE_AFTER_ONE_SETTLE
+        assert _replay_window(
+            account.id, loan_params, ctx,
+        ) == BALANCE_AFTER_ONE_SETTLE
 
         # F-008 / F-015 / F-016 / symptom #5 re-pin: loan card display
-        # equals the resolver's current_balance, not the stored
+        # equals the seam-folded balance, not the stored
         # ``current_principal`` column.  Arithmetic above; same Decimal
-        # the resolver returns.
+        # the replay window reports.
         card_balance = _loan_card_principal(auth_client, account.id)
         assert card_balance == BALANCE_AFTER_ONE_SETTLE, (
             f"Loan card displayed {card_balance}, expected "
             f"{BALANCE_AFTER_ONE_SETTLE} (resolver-derived)."
         )
 
-        # /savings debt card: total_debt sums resolver current_balance
+        # /savings debt card: total_debt sums the seam-folded balances
         # across loan accounts.  Single loan, so total == card balance.
         debt_balance = _savings_debt_card_total_debt(seed_user["user"].id)
         assert debt_balance == BALANCE_AFTER_ONE_SETTLE, (
@@ -463,7 +369,7 @@ def test_arm_monthly_payment_card_equals_resolver_constant(  # C15-2
     """
     with app.app_context():
         account, loan_params = _create_arm_loan(
-            seed_user, seed_periods[0].id,
+            seed_user, seed_periods[0],
         )
 
         ctx = loan_payment_service.load_loan_context(
@@ -472,8 +378,7 @@ def test_arm_monthly_payment_card_equals_resolver_constant(  # C15-2
         resolver_state = loan_resolver.resolve_loan(
             loan_resolver.LoanInputs(
                 loan_params,
-                db.session.query(LoanAnchorEvent)
-                    .filter_by(account_id=account.id).all(),
+                loan_loaders.load_loan_anchor_facts(loan_params),
                 ctx.payments,
                 ctx.rate_changes,
             ),

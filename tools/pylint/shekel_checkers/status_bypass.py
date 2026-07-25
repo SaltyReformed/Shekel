@@ -6,7 +6,7 @@ non-transfer ``Transaction.status_id`` change must funnel through
 maintains ``paid_at``, and refreshes the eager ``status`` relationship) so the
 settled-state boundary is uniform and a confirmed settle can never be emitted
 twice or skipped (Build-Order Step 3's named highest risk). The status analog
-of the W9906 balance fence.
+of the balance-seam fence.
 """
 
 from astroid import nodes
@@ -183,7 +183,7 @@ class ShekelTransactionStatusBypassChecker(BaseChecker):
     (``app.services.status_seam``) and ``transfer_service`` (which legitimately
     mirrors ``status_id`` onto a transfer's two shadow ``Transaction`` rows,
     indistinguishable from a real transaction at the AST) may write it.  The
-    status analog of the W9906 balance-seam fence.
+    status analog of the balance-seam fence.
 
     Four write forms are matched (the 2026-07-02 adversarial review's H3/R3
     closed the last three, which were conventions with no machine rule):
@@ -257,7 +257,7 @@ class ShekelTransactionStatusBypassChecker(BaseChecker):
 
         ``node`` is every call expression; the cheap shape checks (frozenset
         name lookups) run first and the module-identity walk runs only for an
-        actual status write, mirroring the W9906 fence's ordering.  The three
+        actual status write, mirroring the balance fence's ordering.  The three
         shapes -- a born-settled ``Transaction`` / ``Transfer`` constructor
         kwarg, a literal ``setattr(<x>, "status_id", ...)``, and a
         ``status_id`` payload in a bulk ``.update(...)`` / ``.values(...)``

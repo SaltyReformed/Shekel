@@ -2,7 +2,7 @@
 Shekel Budget App -- Daily end-of-day cash-flow balance series tests.
 
 Pins the calendar's flagship running-balance producer
-(:mod:`app.services.daily_balance_series`, exposed via the seam as
+(:mod:`app.services.balance_at._daily_series`, exposed via the seam as
 ``balance_at.cash_daily_balance_series``).  The load-bearing property is the
 reconciliation invariant: the day-textured running balance STEPS on each
 day's projected flow yet lands exactly on the period-flat seam scalar at
@@ -33,8 +33,10 @@ from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.services import balance_at, daily_balance_series
+from app.services import balance_at
+from app.services.balance_at import _daily_series as daily_balance_series
 from app.services.scenario_resolver import get_baseline_scenario
+from app.services.balance_at import BalanceContext
 
 _JAN_FIRST = date(2026, 1, 1)
 _JAN_LAST = date(2026, 1, 31)
@@ -89,8 +91,9 @@ def _seed_january(db, seed_user, seed_periods):
 def _january_series(seed_user):
     """Return the seam's January daily series for the seed user's account."""
     scenario = get_baseline_scenario(seed_user["user"].id)
+    bctx = BalanceContext.build(seed_user["user"].id)
     return balance_at.cash_daily_balance_series(
-        seed_user["account"], scenario, _JAN_FIRST, _JAN_LAST,
+        seed_user["account"], bctx, _JAN_FIRST, _JAN_LAST,
     )
 
 
@@ -140,13 +143,14 @@ class TestDailySeriesRunningBalance:
         with app.app_context():
             _seed_january(db, seed_user, seed_periods)
             scenario = get_baseline_scenario(seed_user["user"].id)
+            bctx = BalanceContext.build(seed_user["user"].id)
             series = balance_at.cash_daily_balance_series(
-                seed_user["account"], scenario, _JAN_FIRST, _JAN_LAST,
+                seed_user["account"], bctx, _JAN_FIRST, _JAN_LAST,
             )
             for period in seed_periods:
                 if _JAN_FIRST <= period.end_date <= _JAN_LAST:
                     scalar = balance_at.cash_balance_at(
-                        seed_user["account"], scenario, period.end_date,
+                        seed_user["account"], bctx, period.end_date,
                     )
                     assert series[period.end_date] == scalar
 
@@ -197,8 +201,9 @@ class TestDailySeriesEdges:
         with app.app_context():
             _seed_january(db, seed_user, seed_periods)
             scenario = get_baseline_scenario(seed_user["user"].id)
+            bctx = BalanceContext.build(seed_user["user"].id)
             series = balance_at.cash_daily_balance_series(
-                seed_user["account"], scenario,
+                seed_user["account"], bctx,
                 date(2025, 12, 1), date(2025, 12, 31),
             )
         assert len(series) == 31
@@ -255,8 +260,9 @@ class TestDailySeriesEdges:
             ))
             db.session.commit()
             scenario = get_baseline_scenario(seed_user["user"].id)
+            bctx = BalanceContext.build(seed_user["user"].id)
             series = balance_at.cash_daily_balance_series(
-                seed_user["account"], scenario, _JAN_FIRST, _JAN_LAST,
+                seed_user["account"], bctx, _JAN_FIRST, _JAN_LAST,
             )
             p0_end = seed_periods[0].end_date
             # Entry-aware reservation ($200 held back), not the $500 estimate.
@@ -264,7 +270,7 @@ class TestDailySeriesEdges:
             assert series[p0_end] == Decimal("800.00")
             # And it equals the seam scalar at the period end (reconciliation).
             assert series[p0_end] == balance_at.cash_balance_at(
-                seed_user["account"], scenario, p0_end,
+                seed_user["account"], bctx, p0_end,
             )
 
     def test_out_of_period_due_date_clamps_into_its_period(
@@ -283,15 +289,16 @@ class TestDailySeriesEdges:
             )
             db.session.commit()
             scenario = get_baseline_scenario(seed_user["user"].id)
+            bctx = BalanceContext.build(seed_user["user"].id)
             series = balance_at.cash_daily_balance_series(
-                seed_user["account"], scenario, _JAN_FIRST, _JAN_LAST,
+                seed_user["account"], bctx, _JAN_FIRST, _JAN_LAST,
             )
             # Period 0 end reflects the clamped -100 (1000 - 100 = 900).
             p0_end = seed_periods[0].end_date
             assert series[p0_end] == Decimal("900.00")
             # And it equals the seam scalar there (reconciliation holds).
             assert series[p0_end] == balance_at.cash_balance_at(
-                seed_user["account"], scenario, p0_end,
+                seed_user["account"], bctx, p0_end,
             )
             # The flow landed on 01-15, not on its raw 01-20 due date.
             assert series[date(2026, 1, 15)] == Decimal("900.00")
@@ -303,8 +310,9 @@ class TestDailySeriesEdges:
         """last_day < first_day yields an empty map, not an error."""
         with app.app_context():
             scenario = get_baseline_scenario(seed_user["user"].id)
+            bctx = BalanceContext.build(seed_user["user"].id)
             series = balance_at.cash_daily_balance_series(
-                seed_user["account"], scenario, _JAN_LAST, _JAN_FIRST,
+                seed_user["account"], bctx, _JAN_LAST, _JAN_FIRST,
             )
         assert series == {}
 
@@ -314,9 +322,10 @@ class TestDailySeriesEdges:
         """A datetime/None argument fails loudly rather than silently."""
         with app.app_context():
             scenario = get_baseline_scenario(seed_user["user"].id)
+            bctx = BalanceContext.build(seed_user["user"].id)
             with pytest.raises(TypeError):
                 balance_at.cash_daily_balance_series(
-                    seed_user["account"], scenario, "2026-01-01", _JAN_LAST,
+                    seed_user["account"], bctx, "2026-01-01", _JAN_LAST,
                 )
 
     def test_scenario_none_raises_value_error(
@@ -326,7 +335,12 @@ class TestDailySeriesEdges:
         with app.app_context():
             with pytest.raises(ValueError):
                 balance_at.cash_daily_balance_series(
-                    seed_user["account"], None, _JAN_FIRST, _JAN_LAST,
+                    seed_user["account"],
+                    BalanceContext(
+                        user_id=seed_user["user"].id, scenario=None,
+                        as_of=date.today(),
+                    ),
+                    _JAN_FIRST, _JAN_LAST,
                 )
 
 
@@ -340,8 +354,9 @@ class TestDailySeriesProducerDirect:
         with app.app_context():
             _seed_january(db, seed_user, seed_periods)
             scenario = get_baseline_scenario(seed_user["user"].id)
+            bctx = BalanceContext.build(seed_user["user"].id)
             via_seam = balance_at.cash_daily_balance_series(
-                seed_user["account"], scenario, _JAN_FIRST, _JAN_LAST,
+                seed_user["account"], bctx, _JAN_FIRST, _JAN_LAST,
             )
             direct = daily_balance_series.build_daily_series(
                 seed_user["account"], scenario.id, _JAN_FIRST, _JAN_LAST,

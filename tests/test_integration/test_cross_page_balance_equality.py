@@ -27,10 +27,7 @@ rendering surface MUST return the identical Decimal:
                                 re-call of the seam beneath it).
   4. Dashboard               -- ``dashboard_service.compute_balance_section``
                                 (the pulse hero) + ``GET /dashboard``.
-  5. Year-end net-worth      -- ``year_end_summary_service.compute_year_end_summary``
-                                's per-account input at the month
-                                containing the anchor period.
-  6. Calendar month-end      -- ``calendar_service.get_month_detail``'s
+  5. Calendar month-end      -- ``calendar_service.get_month_detail``'s
                                 ``projected_end_balance`` at the
                                 calendar month-end of the anchor
                                 period (the C9-3 boundary invariant
@@ -71,16 +68,17 @@ import pytest
 
 from app.services import (
     balance_at,
-    balance_resolver,
     calendar_service,
+    cash_ledger,
     dashboard_service,
     home_equity_service,
     investment_dashboard_service,
-    loan_payment_service,
-    loan_resolution,
     savings_dashboard_service,
-    year_end_summary_service,
 )
+from app.services.balance_at import _kernel as net_worth_kernel
+from app.services.balance_at import _cash_engine as balance_resolver
+from app.services.balance_at import BalanceContext
+from app.services.balance_at._resolution import resolved_loan
 
 
 # ── Parameter matrix (cases 1..5 of the plan's Commit 11 spec) ─────
@@ -191,6 +189,20 @@ _CASES = [
 # analog).
 
 
+def _bctx(ctx):
+    """Return the read-pass BalanceContext for a cross-page fixture.
+
+    The fixtures hand back a raw ``scenario``; the seam now takes the
+    context that owns it (the scenario, the pinned as-of, and the memo
+    that resolves each loan exactly once for the pass).
+    """
+    return BalanceContext(
+        user_id=ctx["account"].user_id,
+        scenario=ctx["scenario"],
+        as_of=date.today(),
+    )
+
+
 def _grid_value(ctx):
     """Read the grid surface's balance for the anchor period.
 
@@ -204,7 +216,7 @@ def _grid_value(ctx):
     ``balances_for`` calls in the per-kind locks.
     """
     result = balance_at.cash_balance_map(
-        ctx["account"], ctx["scenario"], ctx["all_periods"],
+        ctx["account"], _bctx(ctx), ctx["all_periods"],
     )
     return result.balances[ctx["anchor_period"].id]
 
@@ -280,25 +292,6 @@ def _accounts_checking_value(ctx):
     return Decimal(match.group(1))
 
 
-def _year_end_per_account_value(ctx):
-    """Read year-end net-worth's per-account input at the anchor month.
-
-    The year-end ``compute_year_end_summary`` aggregates net worth at
-    each month-end across every account.  With our single-account
-    fixture the per-account input is the value the aggregate
-    contributes for that month; for an asset account this equals the
-    account balance at the period whose ``end_date <= last_day_of_month``
-    -- the anchor period itself, because the anchor month's last day
-    IS ``anchor_period.end_date``.
-    """
-    summary = year_end_summary_service.compute_year_end_summary(
-        ctx["user_id"], ctx["year"],
-    )
-    monthly_values = summary["net_worth"]["monthly_values"]
-    # monthly_values is 12-long, ordered Jan..Dec -- index = month-1.
-    return monthly_values[ctx["month"] - 1]["balance"]
-
-
 def _calendar_value(ctx):
     """Read the calendar surface's ``projected_end_balance`` for the anchor month.
 
@@ -323,7 +316,6 @@ _SURFACE_READERS = {
     "dashboard": _dashboard_value,
     "savings": _savings_value,
     "accounts_checking": _accounts_checking_value,
-    "year_end_net_worth": _year_end_per_account_value,
     "calendar": _calendar_value,
 }
 
@@ -535,7 +527,7 @@ class TestSubtotalReconciliation:
             balance_result = balance_resolver.balances_for(
                 ctx["account"], ctx["scenario_id"], ctx["all_periods"],
             )
-            subtotal = balance_resolver.period_subtotal(
+            subtotal = cash_ledger.period_subtotal(
                 ctx["account"], ctx["scenario_id"], ctx["anchor_period"],
             )
 
@@ -573,7 +565,7 @@ class TestSubtotalReconciliation:
             )
             next_period = ctx["all_periods"][anchor_idx_in_list + 1]
             next_balance = balance_result.balances[next_period.id]
-            next_subtotal = balance_resolver.period_subtotal(
+            next_subtotal = cash_ledger.period_subtotal(
                 ctx["account"], ctx["scenario_id"], next_period,
             )
             forward_delta = next_balance - projected_balance
@@ -798,20 +790,6 @@ def _net_worth_series(ctx):
     return data["net_worth"]["series"]
 
 
-def _year_end_month_balance(ctx):
-    """Return year-end net worth at the anchor month (the aggregate input).
-
-    With a single isolated account this equals that account's signed
-    contribution to net worth at the anchor period: ``+balance`` for an
-    asset, ``-abs(balance)`` for a liability (the loan reader negates it
-    back to a positive balance).
-    """
-    summary = year_end_summary_service.compute_year_end_summary(
-        ctx["user_id"], ctx["year"],
-    )
-    return summary["net_worth"]["monthly_values"][ctx["month"] - 1]["balance"]
-
-
 def _savings_tile_value(ctx):
     """Read the ``/savings`` per-account tile current_balance for the account.
 
@@ -839,37 +817,15 @@ def _trend_liabilities_value(ctx):
     return series["liabilities"][series["current_index"]]
 
 
-def _asset_year_end_value(ctx):
-    """Year-end balance for an isolated ASSET (its positive contribution)."""
-    return _year_end_month_balance(ctx)
-
-
-def _loan_year_end_value(ctx):
-    """Year-end balance for an isolated LOAN, negated to the positive balance.
-
-    The year-end aggregate subtracts a liability as ``-abs(balance)``, so an
-    isolated loan yields ``-C``; negating recovers the positive ``C`` every
-    other loan surface reports, keeping the equality assertion uniform.
-    """
-    return -_year_end_month_balance(ctx)
-
-
 def _loan_detail_value(ctx):
-    """Read the loan-detail balance (``resolve_account_loan`` current_balance).
+    """Read the loan-detail balance (the seam scalar the page renders).
 
-    The service-level equivalent of ``GET /accounts/<id>/loan``: the
-    resolver's ``LoanState.current_balance`` as of today, a positive amount
-    owed.
+    The service-level equivalent of ``GET /accounts/<id>/loan``: since plan
+    step C4 the loan detail page reads ``balance_at.balance_at`` (the fold)
+    for its displayed balance, and since D2a the resolver bundle carries no
+    balance at all, so this window reads exactly what the page reads.
     """
-    resolved = loan_resolution.resolve_account_loan(
-        ctx["account_id"], ctx["scenario_id"], date.today(),
-    )
-    assert resolved is not None, (
-        f"resolve_account_loan returned None for loan "
-        f"account_id={ctx['account_id']}"
-    )
-    _params, state = resolved
-    return state.current_balance
+    return balance_at.balance_at(ctx["account"], _bctx(ctx), date.today())
 
 
 def _property_detail_value(ctx):
@@ -881,7 +837,7 @@ def _property_detail_value(ctx):
     zero, so market value alone is the cross-page value.
     """
     return home_equity_service.resolve_home_equity(
-        ctx["account"], ctx["scenario_id"], date.today(),
+        ctx["account"], _bctx(ctx),
     ).market_value
 
 
@@ -900,20 +856,19 @@ def _loan_schedule_table_value(ctx):
     user beside their most recent real payment.  Since the C11 history read
     switch those confirmed rows are ledger-derived, so this must equal the
     loan card / tile to the penny.  A loan with no confirmed row yet reads
-    the card's ``current_balance`` (an empty table shows no history), keeping
+    the card's seam-folded balance (an empty table shows no history), keeping
     the reader total for the on-schedule kind test too.
     """
-    resolved = loan_resolution.resolve_account_loan(
-        ctx["account_id"], ctx["scenario_id"], date.today(),
-    )
+    resolved = resolved_loan(ctx["account"], _bctx(ctx))
     assert resolved is not None, (
-        f"resolve_account_loan returned None for loan "
+        f"resolved_loan returned None for loan "
         f"account_id={ctx['account_id']}"
     )
-    _params, state = resolved
-    confirmed_rows = [row for row in state.schedule if row.is_confirmed]
+    confirmed_rows = [
+        row for row in resolved.state.schedule if row.is_confirmed
+    ]
     if not confirmed_rows:
-        return state.current_balance
+        return balance_at.balance_at(ctx["account"], _bctx(ctx), date.today())
     return confirmed_rows[-1].remaining_balance
 
 
@@ -932,7 +887,7 @@ def _balance_at_scalar_value(ctx, target):
     "today" with an overdue payment it deliberately reads below the card.
     """
     return balance_at.balance_at(
-        ctx["account"], ctx["scenario"], target,
+        ctx["account"], _bctx(ctx), target,
     )
 
 
@@ -943,20 +898,17 @@ def _balance_at_scalar_value(ctx, target):
 _LOAN_SURFACE_READERS = {
     "savings": _savings_tile_value,
     "loan_detail": _loan_detail_value,
-    "year_end": _loan_year_end_value,
     "net_worth_trend": _trend_liabilities_value,
     "schedule_table": _loan_schedule_table_value,
 }
 _PROPERTY_SURFACE_READERS = {
     "savings": _savings_tile_value,
     "property_detail": _property_detail_value,
-    "year_end": _asset_year_end_value,
     "net_worth_trend": _trend_assets_value,
 }
 _INVESTMENT_SURFACE_READERS = {
     "savings": _savings_tile_value,
     "investment_dashboard": _investment_dashboard_value,
-    "year_end": _asset_year_end_value,
     "net_worth_trend": _trend_assets_value,
 }
 
@@ -967,20 +919,47 @@ class TestLoanCrossPageEquality:
     A single isolated amortizing loan (current balance C, original principal
     P, with C != P) must report C identically on the /savings tile, the
     loan-detail producer, the negated year-end liability aggregate, and the
-    net-worth trend's liabilities at today.  The boundary assertion
-    additionally locks the pre-payment-period rule (PR #44 / aba0242): the
-    balance seam must return C -- the current balance held flat -- at a
-    pre-anchor period, NEVER the original principal P.
+    net-worth trend's liabilities at today.
+
+    The boundary assertions additionally lock the balance rule at the three
+    points a loan's per-period map is answered from, since each has a DIFFERENT
+    producer and only one of them can see any given defect:
+
+    * **A begun period at/after the true-up** (the anchor period) -- the confirmed
+      LEDGER.  Returns C, never the original principal P.
+    * **A begun period that ended BEFORE the true-up** -- the confirmed ledger
+      again, which reports what it knew then: the $240,000 opening, since this loan
+      has no recorded payment.  A re-anchored schedule must never back-project
+      today's balance over a past it has no evidence for.
+    * **The first FUTURE period** -- the forward PROJECTION, which amortizes DOWN
+      from C, so it sits below C.  A map reporting the original principal here
+      (one that fell back to the whole-schedule walk) would sit far above C.
+
+    A note on what this test can NO LONGER catch, so nobody trusts it for more
+    than it does.  Before the ledger read switch, EVERY period came from the
+    schedule walk seeded with ``current_balance``, so a pre-payment period was a
+    live probe of that seed -- which is what made it the PR #44 / aba0242 lock
+    (that bug passed ``original_principal`` where the seed belongs).  Now the
+    ledger owns every BEGUN period, and the seed is read only for a target
+    preceding the first scheduled payment, so the seed is invisible to all three
+    assertions above.  Confirmed by reintroducing the defect: seeding the forward
+    projection with ``original_principal`` changes no value this test sees.  The
+    fence on that argument is now STRUCTURAL, not this test: the forward seed is
+    single-sourced from the opening anchor (never ``original_principal``) in
+    ``net_worth_kernel._projection_seed``, so no call site passes the seed at all
+    (C6b deleted the schedule-forward primitives that once took it, and the W9905
+    checker that policed them retired with them).
     """
 
     def test_all_surfaces_equal(self, app, cross_page_loan_ctx, auth_client):
-        """Every loan surface returns C; the pre-anchor balance is C, not P.
+        """Every loan surface returns C; the anchor period is C, the past is the ledger.
 
-        C = $200,000 (trued up today) and P = $240,000 (origination
-        principal) differ, so the boundary assertion is falsifiable: a
-        producer that returned the original principal at the pre-payment
-        boundary would yield P there, failing ``== C``.  All four cross-page
-        surfaces read C at today.
+        C = $200,000 (trued up today) and P = $240,000 (origination principal)
+        differ, so none of the boundary assertions is tautological.  All five
+        cross-page surfaces read C at today.  The seam then reports C at the anchor
+        period (never P), the ledger's $240,000 opening at a period that ended
+        before the true-up was asserted, and a value below C at the first future
+        period (the projection amortizing down from C).
         """
         with app.app_context():
             ctx = cross_page_loan_ctx
@@ -991,21 +970,63 @@ class TestLoanCrossPageEquality:
             }
             _assert_surfaces_equal(surface_values, expected, "loan kind")
 
-            # Boundary lock: the balance seam holds the current balance C
-            # flat at a pre-anchor period; returning the original principal
-            # P there is the exact PR #44 / aba0242 bug.  C != P is what
-            # makes this non-tautological (verified by the second assert).
             balances = balance_at.balance_map(
-                ctx["account"], ctx["scenario"], ctx["all_periods"],
+                ctx["account"], _bctx(ctx), ctx["all_periods"],
             )
-            pre_balance = balances[ctx["pre_anchor_period"].id]
-            assert pre_balance == ctx["C"], (
-                f"pre-anchor balance {pre_balance!r} != current balance "
+
+            # Boundary lock (PR #44 / aba0242): at the anchor period -- the
+            # period the true-up lands in, and still pre-first-payment -- the
+            # seam holds the current balance C flat.  Returning the original
+            # principal P for the loan's CURRENT balance is the exact PR #44 bug
+            # (its cause: the schedule map was seeded with original_principal).
+            # C != P is what makes this non-tautological.
+            anchor_balance = balances[ctx["anchor_period"].id]
+            assert anchor_balance == ctx["C"], (
+                f"anchor-period balance {anchor_balance!r} != current balance "
                 f"{ctx['C']!r}; the loan pre-payment boundary regressed"
             )
-            assert pre_balance != ctx["P"], (
-                f"pre-anchor balance {pre_balance!r} == original principal "
+            assert anchor_balance != ctx["P"], (
+                f"anchor-period balance {anchor_balance!r} == original principal "
                 f"{ctx['P']!r}; this is the exact PR #44 boundary bug"
+            )
+
+            # Ledger authority: the true-up is dated TODAY, so a period that
+            # ENDED before it reports what the confirmed ledger knew then -- the
+            # $240,000 opening, undisturbed, because this loan has no recorded
+            # payment.  C is an assertion about today and is NOT back-projected
+            # across the past.  Verified against the real dev clone, whose
+            # Mortgage likewise steps down at each recorded event rather than
+            # carrying today's balance backward.
+            pre_balance = balances[ctx["pre_anchor_period"].id]
+            assert pre_balance == ctx["P"], (
+                f"pre-anchor balance {pre_balance!r} != the ledger's opening "
+                f"{ctx['P']!r}; the schedule is answering for the past again"
+            )
+
+            # The future belongs to the projection, and it amortizes DOWN from C:
+            # the first future period must sit strictly below C.  This catches a
+            # forward projection that reports the original principal -- e.g. one
+            # that carried today's balance backward -- which would land it near P,
+            # far ABOVE C.
+            #
+            # It does NOT catch a wrong forward SEED in isolation, and no assertion
+            # on this fixture can: since step C6b the forward branch folds the
+            # loan's PLAN from its ledger-confirmed seed (positions() -> loan_plan
+            # -> fold_forward), every period here has BEGUN (so it reads the fold of
+            # the past) except the future ones, and the true-up dated today puts the
+            # first installment inside the very next period -- so there is no future
+            # period before the first paydown to expose the seed on its own.  The
+            # seed is single-sourced from the opening anchor (never
+            # original_principal) in net_worth_kernel's _projection_seed.
+            future = [
+                p for p in ctx["all_periods"] if p.start_date > date.today()
+            ]
+            assert future, "expected a future period"
+            first_future = balances[future[0].id]
+            assert first_future < ctx["C"], (
+                f"first future period {first_future!r} is not below the trued-up "
+                f"balance {ctx['C']!r}; the forward projection is not amortizing "
+                f"down from the current balance"
             )
 
             # Route wiring: the loan detail page renders without raising.
@@ -1015,6 +1036,69 @@ class TestLoanCrossPageEquality:
                 "loan kind"
             )
 
+    def test_unpaid_loan_owes_its_opening_on_every_surface(
+        self, app, cross_page_loan_unpaid_ctx, auth_client,
+    ):
+        """A never-paid loan owes its FULL opening on every surface, at every period.
+
+        The shape the cross-page lock was blind to.  ``cross_page_loan_ctx``
+        true-ups the loan TODAY, which re-anchors the schedule today-forward and
+        leaves no past-dated unpaid rows -- the one loan shape in which a
+        schedule-walking producer cannot phantom-pay the debt down.  This loan was
+        originated 18 months ago and never paid, so its schedule carries ~17
+        PROJECTED installments dated on or before today.
+
+        Not one of them was paid, so not one dollar of principal was: every
+        surface must report the full $240,000 opening.  A producer that reduces
+        the balance by unpaid scheduled principal reports LESS -- and because only
+        some producers walk the schedule, the page contradicts itself (the
+        /savings tile and the net-worth trend's own 'today' point disagreeing was
+        the symptom that opened this arc).
+
+        Non-vacuity is asserted, not assumed: the schedule really does carry
+        unpaid rows dated on or before today, so a phantom paydown had something
+        to bite on.
+        """
+        with app.app_context():
+            ctx = cross_page_loan_unpaid_ctx
+            expected = ctx["P"]  # never paid -> still owes the whole opening
+            bctx = _bctx(ctx)
+
+            # Non-vacuity: unpaid installments dated on or before today exist.
+            schedule = net_worth_kernel.debt_schedule_rows(
+                [ctx["account"]], bctx,
+            )[ctx["account_id"]]
+            stale_projected = [
+                row for row in schedule
+                if not row.is_confirmed and row.payment_date <= bctx.as_of
+            ]
+            assert stale_projected, (
+                "fixture regressed: the schedule must carry unpaid rows dated on "
+                "or before today, or this test pins nothing"
+            )
+
+            surface_values = {
+                name: reader(ctx)
+                for name, reader in _LOAN_SURFACE_READERS.items()
+            }
+            _assert_surfaces_equal(surface_values, expected, "unpaid loan")
+
+            # The per-period map agrees with the scalar the surfaces read -- at
+            # today AND at a past period.  These are the two producers that
+            # diverged: the scalar walked confirmed rows, its per-period sibling
+            # walked all of them.
+            balances = balance_at.balance_map(
+                ctx["account"], bctx, ctx["all_periods"],
+            )
+            assert balances[ctx["anchor_period"].id] == expected
+            assert balances[ctx["past_period"].id] == expected
+
+            resp = auth_client.get(f"/accounts/{ctx['account_id']}/loan")
+            assert resp.status_code == 200, (
+                f"/accounts/<id>/loan returned {resp.status_code} for the "
+                "never-paid loan"
+            )
+
     def test_all_surfaces_read_the_ledger_off_schedule(
         self, app, cross_page_loan_off_schedule_ctx, auth_client,
     ):
@@ -1022,7 +1106,7 @@ class TestLoanCrossPageEquality:
 
         The C8 read switch (plan Section 8) flipped the two SCALAR surfaces --
         the /savings tile (``_compute_loan_account``) and the loan-detail
-        producer (``resolve_account_loan``).  The C9 per-period read switch
+        balance (the ``balance_at`` seam scalar).  The C9 per-period read switch
         (plan Section 9) flipped the two MAP surfaces -- the year-end
         net-worth aggregate and the net-worth-trend liabilities lane, both
         fed by the ``balance_at`` seam's per-period map, spliced from the
@@ -1082,11 +1166,9 @@ class TestLoanCrossPageEquality:
             # nothing has settled since -- the ledger-derived rows make the
             # walk read the REAL balance, equal to today's card, and NOT the
             # replay's scheduled figure.
-            resolved = loan_resolution.resolve_account_loan(
-                ctx["account_id"], ctx["scenario_id"], date.today(),
-            )
+            resolved = resolved_loan(ctx["account"], _bctx(ctx))
             confirmed_rows = [
-                row for row in resolved[1].schedule if row.is_confirmed
+                row for row in resolved.state.schedule if row.is_confirmed
             ]
             assert confirmed_rows, "fixture lost its confirmed payment"
             scalar = _balance_at_scalar_value(
@@ -1216,7 +1298,7 @@ class TestInvestmentCrossPageEquality:
             # The canonical model-from-anchor value at today, read straight
             # from the seam (the producer the rerouted tile now reads).
             modeled = balance_at.balance_map(
-                ctx["account"], ctx["scenario"], ctx["all_periods"],
+                ctx["account"], _bctx(ctx), ctx["all_periods"],
             )[ctx["current_period"].id]
 
             # Non-tautological AND magnitude-bounded: the modeled balance must
@@ -1246,7 +1328,6 @@ class TestInvestmentCrossPageEquality:
             modeled_readers = {
                 "savings": _savings_tile_value,
                 "investment_dashboard": _investment_dashboard_value,
-                "year_end": _asset_year_end_value,
                 "net_worth_trend": _trend_assets_value,
             }
             surface_values = {
@@ -1282,7 +1363,8 @@ class TestSecuredHomeEquityEquality:
             ctx = cross_page_secured_ctx
             pv, mc = ctx["PV"], ctx["MC"]
             equity = home_equity_service.resolve_home_equity(
-                ctx["property_account"], ctx["scenario_id"], date.today(),
+                ctx["property_account"],
+                BalanceContext.build(ctx["property_account"].user_id),
             )
             dashboard = savings_dashboard_service.compute_dashboard_data(
                 ctx["user_id"],
@@ -1293,13 +1375,13 @@ class TestSecuredHomeEquityEquality:
             mortgage_tile = _match_account_data(
                 dashboard, ctx["mortgage_account_id"],
             )["current_balance"]
-            resolved = loan_resolution.resolve_account_loan(
-                ctx["mortgage_account_id"], ctx["scenario_id"], date.today(),
+            # The loan-detail balance is the seam scalar the page renders
+            # (plan step C4; the resolver bundle carries no balance since D2a).
+            loan_detail = balance_at.balance_at(
+                ctx["mortgage_account"],
+                BalanceContext.build(ctx["mortgage_account"].user_id),
+                date.today(),
             )
-            assert resolved is not None, "securing mortgage did not resolve"
-            # resolved is (LoanParams, LoanState); the loan-detail balance is
-            # the state's current_balance (index 1).
-            loan_detail = resolved[1].current_balance
 
             # Property leg: market value == the property tile == PV.
             assert equity.market_value == prop_tile == pv, (
@@ -1315,15 +1397,13 @@ class TestSecuredHomeEquityEquality:
                 f"savings_tile={mortgage_tile!r}, "
                 f"loan_detail={loan_detail!r}, MC={mc!r}"
             )
-            # Equity == year-end net worth == trend net == PV - MC.
-            year_end_nw = _year_end_month_balance(ctx)
+            # Equity == trend net == PV - MC.
             series = dashboard["net_worth"]["series"]
             trend_net = series["net"][series["current_index"]]
             # PV - MC = 400000.00 - 250000.00 = 150000.00.
-            assert equity.equity == year_end_nw == trend_net == (pv - mc), (
+            assert equity.equity == trend_net == (pv - mc), (
                 f"equity disagreed: equity={equity.equity!r}, "
-                f"year_end_nw={year_end_nw!r}, trend_net={trend_net!r}, "
-                f"PV-MC={(pv - mc)!r}"
+                f"trend_net={trend_net!r}, PV-MC={(pv - mc)!r}"
             )
 
 

@@ -81,6 +81,22 @@ class W4Inputs:
     extra_withholding: Decimal = ZERO
 
     def __post_init__(self):
+        """Coerce every field to its target type on construction.
+
+        The four money fields are rebuilt as ``Decimal(str(value))`` and the two
+        dependent counts as ``int``.  Callers pass raw model values -- an ORM
+        column, or a bare ``0`` from an ``or 0`` default
+        (:func:`app.services.paycheck_calculator` does exactly this) -- so the
+        string hop is what keeps a ``float`` from ever reaching a
+        ``Decimal`` constructor, the project's money rule, in ONE place instead
+        of at every argument.
+
+        It does NOT quantize: these are ANNUALIZED W-4 amounts, and
+        :func:`calculate_federal_withholding` rounds HALF_UP to cents once at the
+        end.  Rounding the inputs would inject error rather than remove it.
+
+        ``object.__setattr__`` because the dataclass is frozen.
+        """
         for money_field in (
             "additional_income",
             "pre_tax_deductions",

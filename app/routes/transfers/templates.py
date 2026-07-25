@@ -29,6 +29,7 @@ from app.utils import archive_helpers
 from app.services import (
     account_service,
     category_service,
+    loan_recurrence_sync,
     pay_period_service,
     transfer_recurrence,
     transfer_service,
@@ -627,6 +628,17 @@ def _materialize_initial_transfers(template, rule, start_period_id):
     """
     once_id = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.ONCE)
     is_one_time = rule.pattern_id == once_id
+
+    # Bound the rule to the destination loan's life BEFORE anything generates
+    # (plan step C9a).  The transfer form offers every active account as a
+    # destination, so a loan payment can be set up here as readily as on the
+    # loan page -- but this path builds its rule from the FORM, so nothing has
+    # ever given it the loan's ``start_date``.  Unbounded, it generated an
+    # installment into every materialized pay period, including those preceding
+    # origination: measured 3 pre-origination payments on a mortgage closing
+    # 2026-04-15, each a phantom cash debit and an erased payment once settled.
+    # A no-op for every non-loan destination, so no kind check is needed here.
+    loan_recurrence_sync.bind_rule_to_loan(rule, template.to_account_id)
 
     if is_one_time and start_period_id:
         # One-time transfer: create a single Transfer in the selected

@@ -26,6 +26,7 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.user import User, UserSettings
 from app.services.auth_service import hash_password
 from app.services import account_service
+from tests._test_helpers import create_loan_account
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -322,6 +323,45 @@ class TestTemplateCreate:
 
             assert resp.status_code == 200
             assert b"Invalid category" in resp.data
+
+    def test_create_template_on_loan_account_is_refused(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """POST /templates targeting a loan account is refused; no template made.
+
+        A template on a loan would have the recurrence engine generate raw
+        transactions onto the loan account (``recurrence_engine`` copies
+        ``template.account_id``) -- the N-11 shape the create routes already
+        refuse.  The shared ``_validate_template_form`` gate closes this
+        second source.  The negative control is
+        ``test_create_template_no_recurrence``: the identical form on a
+        checking account is accepted.
+        """
+        with app.app_context():
+            loan = create_loan_account(
+                seed_user, db.session,
+                principal=Decimal("200000.00"), rate=Decimal("0.06"),
+                origination_date=date(2026, 1, 1), name="Loan Template Target",
+            )
+            db.session.commit()
+            txn_type = db.session.query(TransactionType).filter_by(
+                name="Expense",
+            ).one()
+            category = seed_user["categories"]["Rent"]
+
+            resp = auth_client.post("/templates", data={
+                "name": "On A Loan",
+                "default_amount": "300.00",
+                "category_id": category.id,
+                "transaction_type_id": txn_type.id,
+                "account_id": loan.id,
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"not a transaction sum" in resp.data
+            assert db.session.query(TransactionTemplate).filter_by(
+                name="On A Loan",
+            ).count() == 0
 
 
 # ── Update Tests ─────────────────────────────────────────────────────

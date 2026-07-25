@@ -7,11 +7,14 @@ TRUE-UP as balanced anchor corrections.  Both derive from ONE chronological
 running-balance walk that seeds at origination and RESETS at each anchor.  The
 payment split is wired into the transfer chokepoints (auto-posted on settle via
 ``transfer_service``); the anchor corrections (``sync_loan_anchor_corrections``)
-and the confirmed-balance reader (``confirmed_loan_balance_at`` /
-``confirmed_loan_balance_map``) are inert -- these tests drive them directly.  The
-reader tests freeze ``date.today()`` because the scalar reader guards its domain
-(``as_of <= today``); the ledger it reads is the same genesis ledger the split +
-anchor tests above build.
+are driven directly.  What the posted legs SUM to is read back through the test
+suite's dated posting window (``tests._test_helpers.posted_loan_balance_at`` /
+``posted_loan_balance_map``) -- plan step E1e deleted the production readers that
+used to answer that, since nothing in ``app/`` called them; the values pinned
+below are the LEDGER's, and the window is only how the test looks at it.  Those
+tests freeze ``date.today()`` so the wiring's sync-as-of is deterministic across
+CI clocks; the ledger they read is the same genesis ledger the split + anchor
+tests above build.
 
 The split fixtures are SYNTHETIC with HAND-COMPUTED literals: a $100,000 balance
 at 6% gives a clean $500.00 first-month interest (``100000 * 0.06 / 12``), so
@@ -31,9 +34,11 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 
 import pytest
+import sqlalchemy as sa
 
 from app import ref_cache
 from app.enums import (
+    AcctTypeEnum,
     LedgerAccountKindEnum,
     PostingKindEnum,
     PostingSourceEnum,
@@ -47,15 +52,15 @@ from app.models.loan_params import LoanParams
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.services import (
+    loan_ledger,
     loan_loaders,
-    loan_payment_service,
     loan_posting_service,
-    loan_resolver,
     posting_service,
     transfer_service,
 )
 from tests._test_helpers import (
     add_escrow_line,
+    clear_loan_ledger,
     create_loan_account,
     create_loan_with_trueup,
     create_settled_transfer,
@@ -65,8 +70,12 @@ from tests._test_helpers import (
     insert_trueup_event,
     ledger_accounts_for_account,
     ledger_net,
+    linked_net_by_date,
     loan_correction_entries,
     loan_income_shadow,
+    posted_loan_balance_at,
+    posted_loan_balance_map,
+    settle_instant_on,
     SPLIT_LOAN,
 )
 
@@ -123,16 +132,23 @@ def _add_rate_change(loan, effective_date, rate):
     _db.session.commit()
 
 
-def _settle_payment(seed_user, loan, period, cash, actual=None):
+def _settle_payment(seed_user, loan, period, cash, actual=None, settled_on=None):
     """Settle a Checking -> loan payment transfer; return its income shadow.
 
     Creates and settles the transfer through ``transfer_service`` (so the
     Step-2 cash entry auto-posts), then returns the loan-side income shadow the
     Step-4 correction books under.
+
+    ``settled_on`` (a civil date) pins the payment's ``paid_at``, so a test
+    reading a PAST balance can place the payment on a known day -- balance step
+    C2 keys a payment's visibility on its SETTLED date.  Left ``None`` it keeps
+    the fixture's realistic ``db.func.now()`` default.
     """
+    kwargs = {"amount": cash, "actual_amount": actual}
+    if settled_on is not None:
+        kwargs["paid_at"] = settle_instant_on(settled_on)
     xfer = create_settled_transfer(
-        seed_user, _db.session, seed_user["account"], loan, period,
-        amount=cash, actual_amount=actual,
+        seed_user, _db.session, seed_user["account"], loan, period, **kwargs,
     )
     return xfer, _income_shadow(xfer.id, loan.id)
 
@@ -230,8 +246,8 @@ class TestComputeLoanPaymentSplits:
             )
             db.session.commit()
 
-            splits = loan_posting_service.compute_loan_payment_splits(
-                loan.id, seed_user["scenario"].id, _AS_OF,
+            splits = loan_ledger.compute_loan_payment_splits(
+                loan.id, seed_user["scenario"].id,
             )
             assert len(splits) == 1
             split = splits[0]
@@ -259,8 +275,8 @@ class TestComputeLoanPaymentSplits:
                 _settle_payment(seed_user, loan, period, Decimal("1000.00"))
             db.session.commit()
 
-            splits = loan_posting_service.compute_loan_payment_splits(
-                loan.id, seed_user["scenario"].id, _AS_OF,
+            splits = loan_ledger.compute_loan_payment_splits(
+                loan.id, seed_user["scenario"].id,
             )
             assert [(s.interest, s.principal) for s in splits] == [
                 (Decimal("500.00"), Decimal("500.00")),
@@ -284,8 +300,8 @@ class TestComputeLoanPaymentSplits:
             )
             db.session.commit()
 
-            splits = loan_posting_service.compute_loan_payment_splits(
-                loan.id, seed_user["scenario"].id, _AS_OF,
+            splits = loan_ledger.compute_loan_payment_splits(
+                loan.id, seed_user["scenario"].id,
             )
             assert splits[0].principal == Decimal("1000.00")
             assert splits[0].excess == Decimal("0.00")
@@ -306,8 +322,8 @@ class TestComputeLoanPaymentSplits:
             )
             db.session.commit()
 
-            splits = loan_posting_service.compute_loan_payment_splits(
-                loan.id, seed_user["scenario"].id, _AS_OF,
+            splits = loan_ledger.compute_loan_payment_splits(
+                loan.id, seed_user["scenario"].id,
             )
             assert splits[0].interest == Decimal("500.00")
             assert splits[0].principal == Decimal("-100.00")
@@ -328,8 +344,8 @@ class TestComputeLoanPaymentSplits:
             )
             db.session.commit()
 
-            splits = loan_posting_service.compute_loan_payment_splits(
-                loan.id, seed_user["scenario"].id, _AS_OF,
+            splits = loan_ledger.compute_loan_payment_splits(
+                loan.id, seed_user["scenario"].id,
             )
             assert splits[0].escrow == Decimal("100.00")
             assert splits[0].principal == Decimal("400.00")
@@ -372,8 +388,8 @@ class TestComputeLoanPaymentSplits:
             )
             db.session.commit()
 
-            splits = loan_posting_service.compute_loan_payment_splits(
-                loan.id, seed_user["scenario"].id, _AS_OF,
+            splits = loan_ledger.compute_loan_payment_splits(
+                loan.id, seed_user["scenario"].id,
             )
             # Chronological: P1 start 2026-01-16 (V1 $100); P_late start
             # 2026-03-13 (V2 $200).  Distinct escrow proves the as-of keying.
@@ -390,8 +406,8 @@ class TestComputeLoanPaymentSplits:
             ))
             db.session.commit()
 
-            resplits = loan_posting_service.compute_loan_payment_splits(
-                loan.id, seed_user["scenario"].id, _AS_OF,
+            resplits = loan_ledger.compute_loan_payment_splits(
+                loan.id, seed_user["scenario"].id,
             )
             assert [s.escrow for s in resplits] == [
                 Decimal("100.00"), Decimal("200.00"),
@@ -413,8 +429,8 @@ class TestComputeLoanPaymentSplits:
             )
             db.session.commit()
 
-            splits = loan_posting_service.compute_loan_payment_splits(
-                loan.id, seed_user["scenario"].id, _AS_OF,
+            splits = loan_ledger.compute_loan_payment_splits(
+                loan.id, seed_user["scenario"].id,
             )
             assert splits[0].interest == Decimal("1.50")
             assert splits[0].principal == Decimal("300.00")
@@ -439,8 +455,8 @@ class TestComputeLoanPaymentSplits:
             )
             db.session.commit()
 
-            splits = loan_posting_service.compute_loan_payment_splits(
-                loan.id, seed_user["scenario"].id, _AS_OF,
+            splits = loan_ledger.compute_loan_payment_splits(
+                loan.id, seed_user["scenario"].id,
             )
             assert len(splits) == 2
             assert splits[1].interest == Decimal("0.00")
@@ -470,8 +486,8 @@ class TestComputeLoanPaymentSplits:
             )
             db.session.commit()
 
-            splits = loan_posting_service.compute_loan_payment_splits(
-                loan.id, seed_user["scenario"].id, _AS_OF,
+            splits = loan_ledger.compute_loan_payment_splits(
+                loan.id, seed_user["scenario"].id,
             )
             assert [(s.interest, s.principal) for s in splits] == [
                 (Decimal("500.00"), Decimal("500.00")),
@@ -496,8 +512,8 @@ class TestComputeLoanPaymentSplits:
             )
             db.session.commit()
 
-            splits = loan_posting_service.compute_loan_payment_splits(
-                loan.id, seed_user["scenario"].id, _AS_OF,
+            splits = loan_ledger.compute_loan_payment_splits(
+                loan.id, seed_user["scenario"].id,
             )
             assert splits[0].principal == Decimal("800.00")
 
@@ -510,21 +526,29 @@ class TestComputeLoanPaymentSplits:
         anchor as a running-balance reset, so a payment due BEFORE the trueup is
         NOT excluded (the Step-4 behavior) -- it is split on the origination
         balance the walk carries until the trueup resets it.  With the trueup
-        moved to 2026-04-15, period 1's payment (pay-period start 2026-01-16, due
+        moved to 2026-03-15, period 1's payment (pay-period start 2026-01-16, due
         2026-02-01) precedes it and accrues on the $250,000 origination principal:
         interest = round(250000 * 0.06 / 12) = 1250.00;
         principal = 1000 - 1250 - 0 = -250.00 (negative amortization, surfaced).
         The 1250.00 (vs the trueup's 500.00) is what proves the origination reset.
+
+        The trueup is dated 2026-03-15 rather than 2026-04-15 (its original value)
+        because this suite freezes today at 2026-03-20 and the posting sync bounds
+        its walk at today: a future-dated anchor posts NOTHING, leaving the loan
+        half-opened (opening present, trueup missing) -- a shape production forbids
+        outright (the trueup schema rejects a future ``anchor_date``).  Any date
+        strictly after the payment's 2026-02-01 due date and on/before the frozen
+        today reproduces the case, so every asserted number is unchanged.
         """
         with app.app_context():
-            loan = _make_loan(seed_user, anchor_date=date(2026, 4, 15))
+            loan = _make_loan(seed_user, anchor_date=date(2026, 3, 15))
             _settle_payment(
                 seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
             )
             db.session.commit()
 
-            splits = loan_posting_service.compute_loan_payment_splits(
-                loan.id, seed_user["scenario"].id, _AS_OF,
+            splits = loan_ledger.compute_loan_payment_splits(
+                loan.id, seed_user["scenario"].id,
             )
             assert len(splits) == 1
             assert splits[0].interest == Decimal("1250.00")
@@ -551,8 +575,8 @@ class TestComputeLoanPaymentSplits:
             _settle_payment(seed_user, loan, seed_periods[_P2], Decimal("1000.00"))
             db.session.commit()
 
-            splits = loan_posting_service.compute_loan_payment_splits(
-                loan.id, seed_user["scenario"].id, _AS_OF,
+            splits = loan_ledger.compute_loan_payment_splits(
+                loan.id, seed_user["scenario"].id,
             )
             assert [(s.interest, s.principal) for s in splits] == [
                 (Decimal("1250.00"), Decimal("-250.00")),
@@ -575,8 +599,8 @@ class TestComputeLoanPaymentSplits:
             ).update({"status_id": ref_cache.status_id(StatusEnum.PROJECTED)})
             db.session.commit()
 
-            splits = loan_posting_service.compute_loan_payment_splits(
-                loan.id, seed_user["scenario"].id, _AS_OF,
+            splits = loan_ledger.compute_loan_payment_splits(
+                loan.id, seed_user["scenario"].id,
             )
             assert splits == []
 
@@ -584,10 +608,144 @@ class TestComputeLoanPaymentSplits:
         """An account with no LoanParams is not yet resolvable -- no splits."""
         with app.app_context():
             checking = seed_user["account"]  # a plain Checking, no LoanParams
-            splits = loan_posting_service.compute_loan_payment_splits(
-                checking.id, seed_user["scenario"].id, _AS_OF,
+            splits = loan_ledger.compute_loan_payment_splits(
+                checking.id, seed_user["scenario"].id,
             )
             assert splits == []
+
+
+# ---------------------------------------------------------------------------
+# the write walk reads no clock -- A3
+# ---------------------------------------------------------------------------
+
+
+class TestWalkReadsNoClock:
+    """The persisted ledger is a function of the loan's DATA, not the wall clock.
+
+    The walk used to drop any anchor dated after the sync's as-of, which made what
+    the ledger PERSISTED depend on the moment the sync happened to run.  That is
+    not a cache; it is a corruption generator, and it had two live consequences a
+    loan configured before its closing date could reach through the ordinary UI.
+
+    Both tests here use a $200,000 / 5% / 360mo mortgage originating 2026-04-15 --
+    AFTER the suite's frozen today (2026-03-20), which ``origination_date``
+    permits (unlike a true-up's ``anchor_date``, it carries no not-future
+    validator, and the developer ruled the app must support it).
+
+    Arithmetic (200,000 @ 5.000%, payment_day=1):
+      monthly P&I = 1,073.64
+      first installment 2026-05-01:
+        interest  = round(200000 * 0.05/12) = 833.33
+        principal = 1073.64 - 833.33        =   240.31
+    """
+
+    ORIGINATION = date(2026, 4, 15)
+    PRINCIPAL = Decimal("200000.00")
+
+    def _upcoming_mortgage(self, seed_user):
+        """Create the mortgage that has not closed yet."""
+        return create_loan_account(
+            seed_user, _db.session, name="Closing In April",
+            principal=self.PRINCIPAL, rate=Decimal("0.05000"),
+            term=360, origination_date=self.ORIGINATION, payment_day=1,
+            account_type=AcctTypeEnum.MORTGAGE,
+        )
+
+    def test_early_settled_payment_splits_against_the_real_balance(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A payment settled before origination still splits on the opening balance.
+
+        The payment is settled TODAY (2026-03-20) into the pay period starting
+        2026-04-24, so its installment is DUE 2026-05-01 -- after the 2026-04-15
+        origination.  Settling early is a supported state, not an abuse: the walk
+        deliberately splits every settled payment whatever its pay period
+        ("posting early changes when the fact is RECORDED, never when it is
+        SHOWN").
+
+        Before A3 the sync's as-of was 2026-03-20, so the origination anchor was
+        dropped, the running balance seeded at $0.00, and ``split_one_payment``'s
+        ``balance <= 0`` arm routed the ENTIRE $1,073.64 to ``excess`` -- real
+        mortgage cash reclassified as a Refund Receivable asset, with the whole
+        Schedule-A deductible interest erased.  Measured on the real Mortgage, the
+        same line cost $7,643.80.
+
+        NEGATIVE CONTROL: restore the ``anchor.anchor_date <= as_of`` filter in
+        ``loan_ledger.merge_anchor_and_payment_events`` and this reports
+        ``excess=1073.64`` with interest, escrow and principal all $0.00.
+        """
+        with app.app_context():
+            loan = self._upcoming_mortgage(seed_user)
+            due_period = next(
+                p for p in seed_periods if p.start_date >= date(2026, 4, 24)
+            )
+            _settle_payment(
+                seed_user, loan, due_period, Decimal("1073.64"),
+            )
+            db.session.commit()
+
+            splits = loan_ledger.compute_loan_payment_splits(
+                loan.id, seed_user["scenario"].id,
+            )
+            assert len(splits) == 1
+            split = splits[0]
+            # The installment this payment satisfies is due after origination, so
+            # the loan exists by then and the cash divides normally.
+            assert split.interest == Decimal("833.33")
+            assert split.principal == Decimal("240.31")
+            assert split.escrow == Decimal("0.00")
+            assert split.excess == Decimal("0.00")
+
+    def test_the_posted_ledger_is_identical_at_two_different_clocks(
+        self, app, db, seed_user, seed_periods, monkeypatch,
+    ):
+        """Syncing before vs after origination persists the SAME ledger.
+
+        The property A3 exists to establish, stated directly: the walk's output is
+        a function of the loan's facts alone.  The loan is configured and synced at
+        2026-03-20 (before it closes); the clock then moves past origination to
+        2026-05-07 and the SAME sync re-runs.  Reconcile-to-target means an
+        already-correct ledger is not re-posted, so an unchanged ledger is the
+        proof: the first sync already recorded everything.
+
+        Both halves are asserted, because the clock moved both: the OPENING leg
+        (-$200,000.00 on the linked ledger) and the payment's split correction.
+
+        NEGATIVE CONTROL (measured): restore the ``anchor.anchor_date <= as_of``
+        filter and the first sync posts no opening AND routes the whole payment to
+        Refund, so the linked ledger nets to exactly ``0.00`` -- the loan reads as
+        owing NOTHING while $1,073.64 of the borrower's cash sits in a Refund
+        Receivable.  The assert below then fails ``0.00 != -199759.69``.
+        """
+        with app.app_context():
+            loan = self._upcoming_mortgage(seed_user)
+            due_period = next(
+                p for p in seed_periods if p.start_date >= date(2026, 4, 24)
+            )
+            _settle_payment(
+                seed_user, loan, due_period, Decimal("1073.64"),
+            )
+            db.session.commit()
+            scenario_id = seed_user["scenario"].id
+            linked_id = _linked_ledger_id(loan)
+
+            # The settle already synced, as of 2026-03-20 -- before origination.
+            linked_after_first = _ledger_net(linked_id, scenario_id)
+            entries_after_first = _genesis_entry_count(seed_user["user"].id)
+            # -200,000.00 opening + 1,073.64 cash - 833.33 interest
+            # - 0.00 escrow = -199,759.69 owed, from a sync run 26 days before
+            # the loan even closes.
+            assert linked_after_first == Decimal("-199759.69")
+
+            # The clock crosses origination; the same sync re-runs.
+            freeze_today(monkeypatch, date(2026, 5, 7))
+            loan_posting_service.sync_loan_postings_all_scenarios(loan.id)
+            db.session.commit()
+
+            assert _ledger_net(linked_id, scenario_id) == linked_after_first
+            assert _genesis_entry_count(
+                seed_user["user"].id,
+            ) == entries_after_first
 
 
 # ---------------------------------------------------------------------------
@@ -601,22 +759,27 @@ class TestTrackingStartOpening:
     def test_split_and_balance_open_from_tracking_start(
         self, app, db, seed_user, seed_periods, monkeypatch,
     ):
-        """A mid-life loan opens at its tracking-start balance; the payment accrues on it.
+        """A mid-life loan opens at ORIGINATION; a tracking-start resets it (step C1).
 
-        Origination is $250,000 @ 6% (2025-01-01), but the operator started
-        tracking with a $100,000 balance as of 2026-01-05.  The single $1,000
-        payment therefore accrues interest on $100,000:
+        Origination is $250,000 @ 6% (2025-01-01) and IS the ledger opening, but
+        the operator started tracking with a $100,000 balance as of 2026-01-05, an
+        ordinary assertion that RESETS the walk.  The single $1,000 payment
+        (2026-02-01, after the reset) therefore accrues interest on $100,000:
 
           * interest = round(100000 * 0.06 / 12) = 500.00 (NOT origination's
             250000 -> 1250.00, which is the pre-fix bug this pins against)
           * principal = 1000 - 500 - 0 = 500.00
-          * confirmed balance opens at 100000 and amortizes to 100000 - 500 =
-            99500.00 (origination's 250000 never enters the ledger)
-          * Schedule-A interest for 2026 is the same 500.00.
+          * confirmed balance at/after the tracking-start is 100000, amortizing
+            to 100000 - 500 = 99500.00
+          * a date BETWEEN origination and the tracking-start reads the $250,000
+            origination opening held FLAT -- the honest pre-tracking plateau
+            (B-11), never $0.00
+
+        (The Schedule-A / paid-YTD interest figure moved off the postings onto the
+        fold at step C6c; it is pinned in ``test_loan_paid_in_year.py``.)
         """
-        # ``confirmed_loan_balance_at`` answers only ``as_of <= today``; freeze
-        # today after the payment period so the confirmed read is in range and
-        # the wiring's sync-as-of is deterministic across CI clocks.
+        # Freeze today after the payment period so the wiring's sync-as-of is
+        # deterministic across CI clocks.
         as_of = date(2026, 6, 30)
         freeze_today(monkeypatch, as_of)
         with app.app_context():
@@ -640,8 +803,8 @@ class TestTrackingStartOpening:
             )
             db.session.commit()
 
-            splits = loan_posting_service.compute_loan_payment_splits(
-                loan.id, scenario_id, as_of,
+            splits = loan_ledger.compute_loan_payment_splits(
+                loan.id, scenario_id,
             )
             assert len(splits) == 1
             split = splits[0]
@@ -649,23 +812,29 @@ class TestTrackingStartOpening:
             assert split.principal == Decimal("500.00")
             assert split.escrow == Decimal("0.00")
 
-            assert loan_posting_service.confirmed_loan_balance_at(
+            assert posted_loan_balance_at(
                 loan.id, scenario_id, as_of,
             ) == Decimal("99500.00")
 
-            assert loan_posting_service.confirmed_loan_interest_in_year(
-                loan.id, scenario_id, 2026,
-            ) == Decimal("500.00")
+            # C1: a date between origination (2025-01-01) and the tracking-start
+            # (2026-01-05) reads the $250,000 origination opening held FLAT -- the
+            # honest pre-tracking plateau -- never $0.00 (the pre-C1 false zero).
+            assert posted_loan_balance_at(
+                loan.id, scenario_id, date(2025, 6, 1),
+            ) == _ORIGINATION_PRINCIPAL
 
-    def test_drift_scorecard_labels_the_tracking_start_opening(
+    def test_drift_scorecard_labels_the_tracking_start(
         self, app, db, seed_user,
     ):
-        """The anchor drift scorecard marks the opening as a tracking-start.
+        """The drift scorecard shows origination + a labeled tracking-start (C1).
 
-        A configured mid-life loan (no payments) shows exactly one drift row: the
-        tracking-start opening at its recorded balance, flagged
-        ``is_tracking_start`` so the display labels it "Tracking start" rather
-        than "Origination".
+        A configured mid-life loan (no payments) shows two drift rows,
+        chronological: the $250,000 origination OPENING (``is_opening``, no
+        drift), then the $100,000 tracking-start ASSERTION flagged
+        ``is_tracking_start`` so the display badges that row "Tracking start".
+        The tracking-start's drift is the honest pre-tracking gap it booked:
+        recorded 100000 - the walk's owed_before 250000 (origination held flat to
+        that date) = -150000.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -683,11 +852,16 @@ class TestTrackingStartOpening:
             rows = loan_posting_service.loan_balance_anchor_history(
                 loan.id, scenario_id, _AS_OF,
             )
-            assert len(rows) == 1
+            assert len(rows) == 2
             assert rows[0].is_opening is True
-            assert rows[0].is_tracking_start is True
-            assert rows[0].recorded == Decimal("100000.00")
-            assert rows[0].anchor_date == date(2026, 1, 5)
+            assert rows[0].is_tracking_start is False
+            assert rows[0].recorded == _ORIGINATION_PRINCIPAL
+            assert rows[0].anchor_date == _ORIGINATION_DATE
+            assert rows[1].is_opening is False
+            assert rows[1].is_tracking_start is True
+            assert rows[1].recorded == Decimal("100000.00")
+            assert rows[1].anchor_date == date(2026, 1, 5)
+            assert rows[1].drift == Decimal("-150000.00")
 
 
 # ---------------------------------------------------------------------------
@@ -726,7 +900,7 @@ class TestSyncLoanPaymentPostings:
             db.session.commit()
 
             loan_posting_service.sync_loan_payment_postings(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
 
@@ -784,7 +958,7 @@ class TestSyncLoanPaymentPostings:
             db.session.commit()
 
             loan_posting_service.sync_loan_payment_postings(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
             assert all(len(_correction_entries(s.id)) == 1 for s in shadows)
@@ -794,7 +968,7 @@ class TestSyncLoanPaymentPostings:
 
             # Idempotent across the whole loan: a re-sync adds no entries.
             loan_posting_service.sync_loan_payment_postings(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
             assert all(len(_correction_entries(s.id)) == 1 for s in shadows)
@@ -810,13 +984,13 @@ class TestSyncLoanPaymentPostings:
             db.session.commit()
 
             loan_posting_service.sync_loan_payment_postings(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
             assert len(_correction_entries(shadow.id)) == 1
 
             loan_posting_service.sync_loan_payment_postings(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
             assert len(_correction_entries(shadow.id)) == 1
@@ -834,7 +1008,7 @@ class TestSyncLoanPaymentPostings:
             db.session.commit()
 
             loan_posting_service.sync_loan_payment_postings(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
 
@@ -860,7 +1034,7 @@ class TestSyncLoanPaymentPostings:
             db.session.commit()
 
             loan_posting_service.sync_loan_payment_postings(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
 
@@ -896,7 +1070,7 @@ class TestSyncLoanPaymentPostings:
                 checking.id, scenario_id,
             )
             loan_posting_service.sync_loan_payment_postings(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
             checking_after = posting_service.account_posting_total(
@@ -925,7 +1099,7 @@ class TestSyncLoanPaymentPostings:
 
             loan_ledger = _linked_ledger_id(loan)
             loan_posting_service.sync_loan_payment_postings(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
 
@@ -969,7 +1143,7 @@ class TestSyncLoanPaymentPostings:
             )
             db.session.commit()
             loan_posting_service.sync_loan_payment_postings(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
             interest_ledger = _find_loan_ledger(
@@ -986,7 +1160,7 @@ class TestSyncLoanPaymentPostings:
             )
             db.session.commit()
             loan_posting_service.sync_loan_payment_postings(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
 
@@ -1017,7 +1191,7 @@ class TestSyncLoanPaymentPostings:
             )
             db.session.commit()
             loan_posting_service.sync_loan_payment_postings(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
             entries_before = len(_correction_entries(shadow.id))
@@ -1033,30 +1207,27 @@ class TestSyncLoanPaymentPostings:
     def test_early_settled_payment_splits_at_settle(
         self, app, db, monkeypatch, seed_user, seed_periods,
     ):
-        """A payment settled before its period begins posts its split immediately.
+        """A payment settled before its period begins posts its split AND shows at settle.
 
-        Settlement is the confirming event (the 2026-07-02 adversarial review's
-        R1, fixing H2): the Step-2 cash entry posts the moment a payment
-        settles, so the split correction must post in the SAME moment or the
-        loan-linked ledger holds raw cash with no interest backout from the
-        payment's period start until the next loan write.  Both entries carry
-        the payment's OWN pay period, so the readers' period bound still keeps
-        the early payment out of every balance displayed before its period
-        begins.
+        Two properties meet here.  The WRITE property (the 2026-07-02 review's R1,
+        fixing H2): the Step-2 cash entry posts the moment a payment settles, so the
+        split correction must post in the SAME moment or the loan-linked ledger
+        holds raw cash with no interest backout.  The C2 DISPLAY property: a payment
+        is visible from its SETTLED date, so an EARLY settle shows immediately -- its
+        REAL split, never the raw cash the pre-split ledger would have held.
 
-        Frozen today 2026-02-10: the P1 payment's period has begun, the P3
-        payment's (due 04-01) has not.  Arithmetic: P1 splits interest
-        100000 * 0.005 = 500.00 -> balance 99500; the early P3 payment splits
-        NEXT on that running balance -- interest round(99500 * 0.005) = 497.50,
-        principal 1000 - 497.50 = 502.50 -> balance 98997.50.  So:
+        Frozen today 2026-02-10.  P1 is settled 2026-01-20 (inside its period); P3
+        (budgeted to period 5, due 04-01) is settled EARLY on 2026-02-05 -- its
+        PERIOD has not begun, but its settle has.  The split keys on the DUE date,
+        so P1 (due 02-01) splits first -- interest 100000 * 0.005 = 500.00 -> 99500
+        -- then P3 -- interest round(99500 * 0.005) = 497.50, principal 502.50 ->
+        98997.50.  So:
 
         * the P3 correction exists AT SETTLE (no manual sync), legs
           Loan -497.50 / Interest +497.50, attributed to P3's period;
-        * the scalar reader at today still reads 99500.00 (period not begun);
-        * the map at P3's period reads the REAL 98997.50 -- NOT the raw-cash
-          98500.00 (= 99500 - 1000) the pre-fix ledger showed (H2's
-          demonstrated mis-statement, the assertion that fails on the old
-          code).
+        * BOTH settled dates (01-20, 02-05) are on or before the frozen today, so
+          the scalar reads the REAL 98997.50 -- never the raw cash
+          99500 - 1000 = 98500.00 the unsplit ledger would show (H2).
         """
         with app.app_context():
             frozen = date(2026, 2, 10)
@@ -1065,14 +1236,15 @@ class TestSyncLoanPaymentPostings:
             loan = _make_loan(seed_user)
             _settle_payment(
                 seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
+                settled_on=date(2026, 1, 20),
             )
             _, early_shadow = _settle_payment(
                 seed_user, loan, seed_periods[_P3], Decimal("1000.00"),
+                settled_on=date(2026, 2, 5),
             )
             db.session.commit()
-            # The premise: P1's period has begun by the frozen today, P3's has
-            # not (its due 04-01 payment is an EARLY settle).
-            assert seed_periods[_P1].start_date <= frozen
+            # The premise: P3's PERIOD has not begun by the frozen today, but its
+            # settle (2026-02-05) has -- an EARLY settle.
             assert seed_periods[_P3].start_date > frozen
 
             # The correction posted at settle, through the transfer wiring --
@@ -1093,16 +1265,14 @@ class TestSyncLoanPaymentPostings:
                 ref_cache.posting_kind_id(PostingKindEnum.INTEREST),
             )
 
-            # Display is untouched today: the scalar excludes the not-yet-begun
-            # period (100000 - 500 = 99500.00, the P1-only balance).
-            assert loan_posting_service.confirmed_loan_balance_at(
+            # C2: both payments are visible from their settled dates (<= frozen),
+            # so the scalar shows the REAL split -- never the raw cash 98500.00.
+            assert posted_loan_balance_at(
                 loan.id, scenario_id, frozen,
-            ) == Decimal("99500.00")
+            ) == Decimal("98997.50")
 
-            # At P3's period the map shows the REAL principal drop: 99500 -
-            # 502.50 = 98997.50 -- never the raw cash 99500 - 1000 = 98500.00
-            # the unsplit ledger showed (H2).
-            balance_map = loan_posting_service.confirmed_loan_balance_map(
+            # The map at P3's period agrees (period-END keyed).
+            balance_map = posted_loan_balance_map(
                 loan.id, scenario_id, seed_periods,
             )
             assert balance_map[seed_periods[_P3].id] == Decimal("98997.50")
@@ -1193,7 +1363,7 @@ class TestReverseLoanPaymentPostings:
             )
             db.session.commit()
             loan_posting_service.sync_loan_payment_postings(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
             interest_ledger = _find_loan_ledger(
@@ -1264,7 +1434,7 @@ class TestReverseLoanPaymentPostings:
             )
             db.session.commit()
             loan_posting_service.sync_loan_payment_postings(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
             assert posting_service.account_posting_total(
@@ -1277,7 +1447,7 @@ class TestReverseLoanPaymentPostings:
             ).update({"status_id": ref_cache.status_id(StatusEnum.PROJECTED)})
             db.session.commit()
             loan_posting_service.sync_loan_payment_postings(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
 
@@ -1338,7 +1508,7 @@ class TestSyncLoanAnchorCorrections:
                 rate=_RATE, origination_date=_ORIGINATION_DATE,
             )
             loan_posting_service.sync_loan_anchor_corrections(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
 
@@ -1372,7 +1542,7 @@ class TestSyncLoanAnchorCorrections:
             scenario_id = seed_user["scenario"].id
             loan = _make_loan(seed_user)  # origination 250000, trueup 100000
             loan_posting_service.sync_loan_anchor_corrections(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
 
@@ -1403,7 +1573,7 @@ class TestSyncLoanAnchorCorrections:
             scenario_id = seed_user["scenario"].id
             loan = _make_loan(seed_user)
             loan_posting_service.sync_loan_anchor_corrections(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
             before = len(_anchor_correction_entries(
@@ -1414,7 +1584,7 @@ class TestSyncLoanAnchorCorrections:
             assert before == 2
 
             loan_posting_service.sync_loan_anchor_corrections(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
             after = len(_anchor_correction_entries(
@@ -1437,7 +1607,7 @@ class TestSyncLoanAnchorCorrections:
             scenario_id = seed_user["scenario"].id
             loan = _make_loan(seed_user, anchor_balance=Decimal("250000.00"))
             loan_posting_service.sync_loan_anchor_corrections(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
 
@@ -1471,10 +1641,10 @@ class TestSyncLoanAnchorCorrections:
             db.session.commit()
 
             loan_posting_service.sync_loan_payment_postings(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             loan_posting_service.sync_loan_anchor_corrections(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
 
@@ -1508,7 +1678,7 @@ class TestSyncLoanAnchorCorrections:
             # The opening + true-up (and their per-loan equity ledger) are posted
             # lazily on this first sync.
             loan_posting_service.sync_loan_anchor_corrections(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
             equity_ledger = _find_loan_ledger(
@@ -1543,7 +1713,7 @@ class TestSyncLoanAnchorCorrections:
                 loan.id, scenario_id, PostingSourceEnum.LOAN_TRUEUP,
             ))
             loan_posting_service.sync_loan_postings(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
             assert len(_anchor_correction_entries(
@@ -1580,8 +1750,8 @@ class TestSyncLoanAnchorCorrections:
             db.session.commit()
 
             # P1 is split BEFORE the reset -> interest on the origination balance.
-            splits = loan_posting_service.compute_loan_payment_splits(
-                loan.id, scenario_id, _AS_OF,
+            splits = loan_ledger.compute_loan_payment_splits(
+                loan.id, scenario_id,
             )
             assert len(splits) == 1
             assert splits[0].interest == Decimal("1250.00")
@@ -1589,10 +1759,10 @@ class TestSyncLoanAnchorCorrections:
             # With opening + true-up the reader lands on the verified 100000 --
             # P1's principal subsumed by the reset (a swapped tie-break -> -99500).
             loan_posting_service.sync_loan_payment_postings(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             loan_posting_service.sync_loan_anchor_corrections(
-                loan.id, scenario_id, _AS_OF,
+                loan.id, scenario_id,
             )
             db.session.commit()
             assert posting_service.account_posting_total(
@@ -1647,35 +1817,41 @@ class TestUnifiedAllScenariosSync:
 
 
 # ---------------------------------------------------------------------------
-# confirmed_loan_balance_at / _map -- the genesis reader (the read switch)
+# What the posted legs SUM to, read through the dated posting window
 # ---------------------------------------------------------------------------
 
-# The frozen "today" for the after-window reader class (see its _frozen_today
-# fixture): after the Jan-May 2026 seed periods and the 2026-12-31 _AS_OF, so an
-# in-domain read never trips the scalar's guard while a 2027 as_of exercises it.
+# The frozen "today" for the class below: after the Jan-May 2026 seed periods and
+# the 2026-12-31 _AS_OF, so the genesis walk is eligible for every fixture and no
+# assertion depends on the wall clock.
 _FROZEN_TODAY = date(2027, 1, 1)
 
 
-class TestConfirmedLoanBalanceReader:
-    """The reader reports a loan's balance as -(sum of its linked postings).
+class TestPostedLoanBalanceSums:
+    """The posted legs sum to the loan's balance: -(sum of its linked postings).
 
     Every posting the write side books onto the loan's linked ledger -- the
-    opening, each payment's Step-2 cash and Step-4 split, each true-up -- is
-    summed and negated, bounded by pay-period start and scenario.  The literals
-    are the same hand-computed figures the split tests above prove
+    opening, each payment's Step-2 cash and Step-4 split, each true-up -- summed
+    and negated, bounded by ``entry_date <= as_of`` and by scenario.  The
+    literals are the same hand-computed figures the split tests above prove
     (100000 - 500 - 502.50 - 505.01 = 98492.49 over three $1,000 payments), read
-    back through the ledger.
+    back off the ledger.
+
+    **These pin the LEDGER, not a reader.**  Plan step E1e deleted the two
+    production sum-of-postings readers -- nothing in ``app/`` called them once the
+    balance seam folded a loan from source events -- so the sum is read through
+    the test suite's own window (:func:`tests._test_helpers.posted_loan_balance_at`).
+    Every expected value here is unchanged by that move: it was always the
+    ledger's number.
     """
 
     @pytest.fixture(autouse=True)
     def _frozen_today(self, monkeypatch):
-        """Freeze today after the seed window so an in-domain read is stable.
+        """Freeze today after the seed window so every fixture is deterministic.
 
-        The scalar reader guards ``as_of <= today``; 2027-01-01 sits after the
-        Jan-May 2026 seed periods and the 2026-12-31 ``_AS_OF``, so every in-domain
-        read is deterministic (not wall-clock dependent) and a 2027 ``as_of``
-        exercises the guard.  Class-scoped, so only the reader tests freeze -- the
-        split / anchor tests above keep the real clock.
+        2027-01-01 sits after the Jan-May 2026 seed periods and the 2026-12-31
+        ``_AS_OF``, so the genesis walk is eligible for every loan built here and
+        no assertion depends on the wall clock.  Class-scoped, so only these tests
+        freeze -- the split / anchor tests above keep the real clock.
         """
         freeze_today(monkeypatch, _FROZEN_TODAY)
 
@@ -1699,11 +1875,11 @@ class TestConfirmedLoanBalanceReader:
             loan_posting_service.sync_loan_postings_all_scenarios(loan.id)
             db.session.commit()
 
-            assert loan_posting_service.confirmed_loan_balance_at(
+            assert posted_loan_balance_at(
                 loan.id, scenario_id, _AS_OF,
             ) == Decimal("250000.00")
             # No payments -> the opening balance carries flat across every period.
-            result = loan_posting_service.confirmed_loan_balance_map(
+            result = posted_loan_balance_map(
                 loan.id, scenario_id, seed_periods,
             )
             assert set(result.values()) == {Decimal("250000.00")}
@@ -1726,7 +1902,7 @@ class TestConfirmedLoanBalanceReader:
             )
             db.session.commit()
 
-            assert loan_posting_service.confirmed_loan_balance_at(
+            assert posted_loan_balance_at(
                 loan.id, scenario_id, _AS_OF,
             ) == Decimal("99500.00")
 
@@ -1751,7 +1927,7 @@ class TestConfirmedLoanBalanceReader:
             )
             db.session.commit()
 
-            assert loan_posting_service.confirmed_loan_balance_at(
+            assert posted_loan_balance_at(
                 loan.id, scenario_id, _AS_OF,
             ) == Decimal("99000.00")
 
@@ -1776,7 +1952,7 @@ class TestConfirmedLoanBalanceReader:
                 _settle_payment(seed_user, loan, period, Decimal("1000.00"))
             db.session.commit()
 
-            assert loan_posting_service.confirmed_loan_balance_at(
+            assert posted_loan_balance_at(
                 loan.id, scenario_id, _AS_OF,
             ) == Decimal("98492.49")
 
@@ -1800,7 +1976,7 @@ class TestConfirmedLoanBalanceReader:
             )
             db.session.commit()
 
-            result = loan_posting_service.confirmed_loan_balance_at(
+            result = posted_loan_balance_at(
                 loan.id, scenario_id, _AS_OF,
             )
             # == 0.00 (not None): None == Decimal fails, so this proves both.
@@ -1829,7 +2005,7 @@ class TestConfirmedLoanBalanceReader:
             )
             db.session.commit()
 
-            assert loan_posting_service.confirmed_loan_balance_at(
+            assert posted_loan_balance_at(
                 loan.id, scenario_id, _AS_OF,
             ) == Decimal("0.00")
             # The surplus lives on the Refund ledger, invisible to the reader.
@@ -1838,24 +2014,24 @@ class TestConfirmedLoanBalanceReader:
             )
             assert _ledger_net(refund.id, scenario_id) == Decimal("49500.00")
 
-    def test_as_of_bounds_the_sum_by_pay_period_start(
+    def test_as_of_bounds_the_sum_by_settled_date(
         self, app, db, seed_user, seed_periods,
     ):
-        """A historical as_of counts only the payments whose period has begun.
+        """A historical as_of counts only the payments SETTLED by then (step C2).
 
         Over the SAME fully-posted ledger (three $1,000 payments in periods 1/3/5,
-        due 02-01 / 03-01 / 04-01), the reader is a point-in-time sum bounded by
-        ``pay_period.start_date <= as_of``:
+        each settled ON its period start here), the reader is a point-in-time sum
+        bounded by each posting's ``entry_date`` -- a payment's SETTLED date:
 
-          * before P1's period (period-0 end): opening + true-up only -> 100000.00
-          * P1's period start .. its end:       + P1 -> 99500.00 (stable within the
-                                                period -- start and end agree, since
-                                                a posting's period start IS a
-                                                boundary)
-          * P2's period start:                  + P2 -> 98997.50
-          * P3's period start .. _AS_OF:         + P3 -> 98492.49
+          * before P1's settle (period-0 end): opening + true-up only -> 100000.00
+          * P1's settle .. period end:          + P1 -> 99500.00 (settled on the
+                                                period start, so stable through it)
+          * P2's settle:                        + P2 -> 98997.50
+          * P3's settle .. _AS_OF:              + P3 -> 98492.49
 
-        No re-walk and no boundary rule -- just which periods have begun.
+        No re-walk and no period boundary rule -- just which payments have settled.
+        The split still keys on the DUE date (02-01 / 03-01 / 04-01), so the
+        principal amounts are unchanged; only WHEN each is visible follows settle.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -1863,18 +2039,21 @@ class TestConfirmedLoanBalanceReader:
             for period in (
                 seed_periods[_P1], seed_periods[_P2], seed_periods[_P3],
             ):
-                _settle_payment(seed_user, loan, period, Decimal("1000.00"))
+                _settle_payment(
+                    seed_user, loan, period, Decimal("1000.00"),
+                    settled_on=period.start_date,
+                )
             db.session.commit()
 
             def read(as_of):
-                return loan_posting_service.confirmed_loan_balance_at(
+                return posted_loan_balance_at(
                     loan.id, scenario_id, as_of,
                 )
 
-            # P1 is in period 1; period 0 ends the day before it begins.
+            # P1 settled on period 1's start; period 0 ends the day before.
             assert read(seed_periods[0].end_date) == Decimal("100000.00")
             assert read(seed_periods[_P1].start_date) == Decimal("99500.00")
-            # Anywhere within P1's period gives P1's balance (start == end bound).
+            # Through P1's period its settle (the period start) is past -> 99500.
             assert read(seed_periods[_P1].end_date) == Decimal("99500.00")
             assert read(seed_periods[_P2].start_date) == Decimal("98997.50")
             assert read(seed_periods[_P3].start_date) == Decimal("98492.49")
@@ -1885,36 +2064,50 @@ class TestConfirmedLoanBalanceReader:
     ):
         """A loan with no opening posting reads None, never $0.
 
-        A loan whose ledger carries no OPENING (never synced) is unconfigured:
-        both the scalar and the map return ``None`` so the caller routes to its
-        needs-setup path, distinct from a real $0 (a paid-off) balance.
+        A loan whose ledger carries no OPENING is unconfigured: both the scalar
+        and the map return ``None`` so the caller routes to its needs-setup path,
+        distinct from a real $0 (a paid-off) balance.
+
+        The broken loan is built EXPLICITLY (``clear_loan_ledger``): the linked
+        ledger still exists (the create hook pairs it) but carries no opening
+        posting.  Production cannot reach this state -- ``loan.create_params``
+        opens the ledger in the same transaction as the ``LoanParams`` insert --
+        so the premise is stated rather than inherited from a builder that never
+        opened the ledger at all.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
-            # Built but never synced -> the linked ledger exists (the create hook
-            # pairs it) but carries no opening posting.
             loan = create_loan_account(
                 seed_user, db.session, principal=_ORIGINATION_PRINCIPAL,
                 rate=_RATE, origination_date=_ORIGINATION_DATE,
             )
+            clear_loan_ledger(loan.id)
 
-            assert loan_posting_service.confirmed_loan_balance_at(
+            assert posted_loan_balance_at(
                 loan.id, scenario_id, _AS_OF,
             ) is None
-            assert loan_posting_service.confirmed_loan_balance_map(
+            assert posted_loan_balance_map(
                 loan.id, scenario_id, seed_periods,
             ) is None
 
-    def test_future_as_of_raises(
+    def test_a_future_as_of_carries_the_confirmed_sum_flat(
         self, app, db, seed_user, seed_periods,
     ):
-        """The scalar reader refuses a date after today, but reads in-domain fine.
+        """Past today the sum is unchanged -- there is nothing later to add.
 
-        A future ``as_of`` is a forward projection, not a confirmed sum; the
-        reader raises rather than silently returning today's balance, forcing the
-        caller to route a future date to the projection.  The guard does not break
-        an ordinary in-domain read: the same configured loan reads its 100000.00
-        verified balance at an in-window date.
+        Every posted entry is dated today or earlier, so ``entry_date <= as_of``
+        selects the identical set for any future date and the window carries the
+        confirmed balance FLAT.  It is NOT a projection and must never be read as
+        one -- a forward balance comes from
+        :func:`app.services.balance_at.balance_at`, which folds the plan.
+
+        The deleted production reader RAISED here instead (a domain guard that
+        forced its callers to route a future date to the projection).  That guard
+        existed for callers; the window has none but this suite, and the flat
+        answer is what lets the per-period form below check a period boundary
+        past today.  Non-vacuity: the in-domain read at the true-up's own date is
+        asserted too (C2 -- an anchor counts from its own civil date, so an
+        earlier date would still read the origination principal).
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -1922,27 +2115,24 @@ class TestConfirmedLoanBalanceReader:
             loan_posting_service.sync_loan_postings_all_scenarios(loan.id)
             db.session.commit()
 
-            # In domain (<= the frozen 2027-01-01 today): reads the opening +
-            # true-up balance.
-            assert loan_posting_service.confirmed_loan_balance_at(
-                loan.id, scenario_id, seed_periods[0].start_date,
+            assert posted_loan_balance_at(
+                loan.id, scenario_id, _ANCHOR_DATE,
             ) == Decimal("100000.00")
-            # After today: refused, not clamped to today's balance.
-            with pytest.raises(ValueError, match="as_of <= today"):
-                loan_posting_service.confirmed_loan_balance_at(
-                    loan.id, scenario_id, date(2027, 1, 2),
-                )
+            # After the frozen 2027-01-01 today: the same sum, carried flat.
+            assert posted_loan_balance_at(
+                loan.id, scenario_id, date(2027, 1, 2),
+            ) == Decimal("100000.00")
 
-    def test_reader_is_scenario_scoped_and_none_off_scenario(
+    def test_window_is_scenario_scoped_and_none_off_scenario(
         self, app, db, seed_user, seed_periods,
     ):
-        """The reader isolates scenarios; a scenario with no opening reads None.
+        """The window isolates scenarios; a scenario with no opening reads None.
 
         A $1,000 payment settled in the baseline auto-posts the opening, true-up,
         and split there only (a what-if with no payment is neither in the payment
         set nor the baseline).  The baseline reads 99500.00; the what-if -- which
-        holds no opening -- reads ``None`` (the M2 what-if fallback the read
-        switch closes later), never a misleading $0 or the baseline's balance.
+        holds no opening -- reads ``None``, never a misleading $0 or the
+        baseline's balance.
         """
         with app.app_context():
             baseline = seed_user["scenario"]
@@ -1958,13 +2148,13 @@ class TestConfirmedLoanBalanceReader:
             )
             db.session.commit()
 
-            assert loan_posting_service.confirmed_loan_balance_at(
+            assert posted_loan_balance_at(
                 loan.id, baseline.id, _AS_OF,
             ) == Decimal("99500.00")
-            assert loan_posting_service.confirmed_loan_balance_at(
+            assert posted_loan_balance_at(
                 loan.id, whatif.id, _AS_OF,
             ) is None
-            assert loan_posting_service.confirmed_loan_balance_map(
+            assert posted_loan_balance_map(
                 loan.id, whatif.id, seed_periods,
             ) is None
 
@@ -1974,8 +2164,9 @@ class TestConfirmedLoanBalanceReader:
         """The map gives each period the cumulative balance, flat between payments.
 
         Three $1,000 payments land in periods 1 / 3 / 5 (the opening + true-up in
-        period 0).  Each period holds the balance AFTER the payment attributed to
-        it, carried flat across payment-less periods:
+        period 0), each settled ON its period start.  The map is period-END keyed
+        (step C2), so each period holds the balance AFTER every payment settled by
+        its end, carried flat across payment-less periods:
 
           period 0: 100000.00 (opening + true-up, pre-payment)
           period 1: 99500.00  (+ P1)      period 2: 99500.00  (flat)
@@ -1990,10 +2181,13 @@ class TestConfirmedLoanBalanceReader:
             for period in (
                 seed_periods[_P1], seed_periods[_P2], seed_periods[_P3],
             ):
-                _settle_payment(seed_user, loan, period, Decimal("1000.00"))
+                _settle_payment(
+                    seed_user, loan, period, Decimal("1000.00"),
+                    settled_on=period.start_date,
+                )
             db.session.commit()
 
-            result = loan_posting_service.confirmed_loan_balance_map(
+            result = posted_loan_balance_map(
                 loan.id, scenario_id, seed_periods,
             )
             expected = {
@@ -2012,12 +2206,13 @@ class TestConfirmedLoanBalanceReader:
             # Keyed in the passed period order.
             assert list(result.keys()) == [p.id for p in seed_periods]
 
-class TestConfirmedLoanBalanceReaderFuturePeriods:
-    """The map carries future periods flat (no domain guard); the scalar raises.
+
+class TestPostedLoanBalanceFuturePeriods:
+    """The posted sum carries future periods flat, in both forms.
 
     A separate class because it freezes today MID seed-window (so some seed
-    periods are genuinely after today), where ``TestConfirmedLoanBalanceReader``
-    freezes after the window.
+    periods are genuinely after today), where
+    :class:`TestPostedLoanBalanceSums` freezes after the window.
     """
 
     @pytest.fixture(autouse=True)
@@ -2025,23 +2220,23 @@ class TestConfirmedLoanBalanceReaderFuturePeriods:
         """Freeze today inside the seed window so periods 4-9 are in the future.
 
         2026-02-20 sits in period 3 of the Jan-May seed window, leaving periods
-        4-9 starting after today -- the future tail the map must answer (carried
-        flat) while the scalar refuses it.
+        4-9 starting after today -- the future tail the sum must answer, carried
+        flat because no posted entry is dated later than today.
         """
         freeze_today(monkeypatch, date(2026, 2, 20))
 
-    def test_map_carries_flat_for_future_periods_while_scalar_raises(
+    def test_map_carries_flat_for_future_periods(
         self, app, db, seed_user, seed_periods,
     ):
-        """The map answers post-today periods (carried flat); the scalar raises.
+        """Post-today periods carry the confirmed sum flat, scalar and map alike.
 
         A payment-less trued-up loan (opening -250000 + true-up +150000 =
         -100000) posts its opening + true-up as of the frozen 2026-02-20.  Every
         period -- including periods 4-9, which start after today -- carries the
-        flat 100000.00 confirmed balance in the map WITHOUT raising, so the read
-        switch can pass its whole display window and overlay the projection on the
-        future tail.  The scalar reader, a single ambiguous point, still refuses a
-        future date.
+        flat 100000.00 confirmed balance, because no posted entry is dated later
+        than today and so none is added by a later boundary.  The scalar agrees at
+        a future period's start, which is what makes the two forms one derivation
+        rather than two.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -2053,831 +2248,20 @@ class TestConfirmedLoanBalanceReaderFuturePeriods:
             assert seed_periods[3].start_date <= date(2026, 2, 20)
             assert seed_periods[4].start_date > date(2026, 2, 20)
 
-            result = loan_posting_service.confirmed_loan_balance_map(
+            result = posted_loan_balance_map(
                 loan.id, scenario_id, seed_periods,
             )
             # Every period -- historical AND future -- carries the flat balance.
             assert set(result.values()) == {Decimal("100000.00")}
             assert len(result) == len(seed_periods)
 
-            # A historical point is answered; a future point is refused.
-            assert loan_posting_service.confirmed_loan_balance_at(
+            # Historical AND future points agree with the map.
+            assert posted_loan_balance_at(
                 loan.id, scenario_id, seed_periods[3].start_date,
             ) == Decimal("100000.00")
-            with pytest.raises(ValueError, match="as_of <= today"):
-                loan_posting_service.confirmed_loan_balance_at(
-                    loan.id, scenario_id, seed_periods[4].start_date,
-                )
-
-
-def _paid_on(year: int, month: int, day: int) -> datetime:
-    """Return a noon-UTC settle instant, so its civil date is unambiguous."""
-    return datetime(year, month, day, 12, 0, tzinfo=timezone.utc)
-
-
-class TestConfirmedLoanInterestReader:
-    """The reader reports a loan's ACTUAL interest paid in a year, by paid date.
-
-    ``confirmed_loan_interest_in_year`` sums the per-loan ``loan_interest``
-    legs -- the same $500.00-on-$100,000 splits the split tests above prove --
-    and attributes each payment's NET interest to its CURRENT civil paid date,
-    so a reverted payment nets to zero rather than stranding across a year
-    boundary.  Every payment is settled with an EXPLICIT ``paid_at`` so the
-    attribution year is deterministic (not wall-clock dependent).
-    """
-
-    @pytest.fixture(autouse=True)
-    def _frozen_today(self, monkeypatch):
-        """Freeze today after the seed window so the settle walk is stable.
-
-        The settle wiring walks confirmed payments with pay-period start
-        ``<= date.today()``; 2027-01-01 sits after the Jan-May 2026 seed periods,
-        so every settled payment is confirmed regardless of the wall clock.  The
-        interest reader itself takes a YEAR (no ``as_of <= today`` guard), so the
-        attribution comes solely from each payment's explicit ``paid_at``.
-        """
-        freeze_today(monkeypatch, _FROZEN_TODAY)
-
-    def test_single_payment_interest_by_paid_year(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """One $1,000 payment paid in 2026 reports $500.00 interest for 2026 only.
-
-        Trued up to $100,000, one post-anchor $1,000 payment accrues interest
-        round(100000 * 0.005) = 500.00.  Paid 2026-03-15, so 2026 sees the full
-        500.00 and the adjacent years see nothing.
-        """
-        with app.app_context():
-            scenario_id = seed_user["scenario"].id
-            loan = _make_loan(seed_user)
-            create_settled_transfer(
-                seed_user, db.session, seed_user["account"], loan,
-                seed_periods[_P1], amount=Decimal("1000.00"),
-                paid_at=_paid_on(2026, 3, 15),
-            )
-            db.session.commit()
-
-            assert loan_posting_service.confirmed_loan_interest_in_year(
-                loan.id, scenario_id, 2026,
-            ) == Decimal("500.00")
-            assert loan_posting_service.confirmed_loan_interest_in_year(
-                loan.id, scenario_id, 2025,
-            ) == Decimal("0.00")
-            assert loan_posting_service.confirmed_loan_interest_in_year(
-                loan.id, scenario_id, 2027,
-            ) == Decimal("0.00")
-
-    def test_running_interest_across_payments(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """Three 2026 payments sum their real interest: 500 + 497.50 + 494.99.
-
-        The running-balance walk accrues on the shrinking real balance
-        (100000 -> 99500 -> 98997.50): interest 500.00 / 497.50 / 494.99, so the
-        year's paid interest is 1492.49 -- the ACTUAL figure, from the ledger.
-        """
-        with app.app_context():
-            scenario_id = seed_user["scenario"].id
-            loan = _make_loan(seed_user)
-            for period in (
-                seed_periods[_P1], seed_periods[_P2], seed_periods[_P3],
-            ):
-                create_settled_transfer(
-                    seed_user, db.session, seed_user["account"], loan, period,
-                    amount=Decimal("1000.00"), paid_at=_paid_on(2026, 6, 1),
-                )
-            db.session.commit()
-
-            # 500.00 + 497.50 + 494.99 = 1492.49.
-            assert loan_posting_service.confirmed_loan_interest_in_year(
-                loan.id, scenario_id, 2026,
-            ) == Decimal("1492.49")
-
-    def test_interest_follows_the_paid_date_not_the_pay_period(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """A 2026-period payment PAID in 2025 reports its interest in 2025.
-
-        Mortgage interest is deductible in the year PAID, not the year the
-        payment was scheduled.  A period-``_P1`` payment (a 2026 pay period)
-        settled with ``paid_at`` 2025-12-20 attributes its 500.00 interest to
-        2025, and 2026 sees nothing -- proving the reader keys on the civil paid
-        date, not the pay period.
-        """
-        with app.app_context():
-            scenario_id = seed_user["scenario"].id
-            loan = _make_loan(seed_user)
-            create_settled_transfer(
-                seed_user, db.session, seed_user["account"], loan,
-                seed_periods[_P1], amount=Decimal("1000.00"),
-                paid_at=_paid_on(2025, 12, 20),
-            )
-            db.session.commit()
-
-            assert loan_posting_service.confirmed_loan_interest_in_year(
-                loan.id, scenario_id, 2025,
-            ) == Decimal("500.00")
-            assert loan_posting_service.confirmed_loan_interest_in_year(
-                loan.id, scenario_id, 2026,
-            ) == Decimal("0.00")
-
-    def test_new_years_eve_evening_settle_deducts_in_the_display_year(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """THE L9 CASE: a settle at 8:05 PM EST Dec 31 deducts in the Dec 31 year.
-
-        A payment settled 2025-12-31 20:05 Eastern is stored as
-        2026-01-01 01:05 UTC, so its journal ``entry_date`` books 2026 (the
-        UTC storage rule).  Schedule-A attribution follows the user's
-        wall-clock day (L9, decided 2026-07-03): the 500.00 interest deducts
-        in 2025, and 2026 sees nothing.  The pre-L9 UTC attribution reported
-        the reverse.
-        """
-        with app.app_context():
-            scenario_id = seed_user["scenario"].id
-            loan = _make_loan(seed_user)
-            create_settled_transfer(
-                seed_user, db.session, seed_user["account"], loan,
-                seed_periods[_P1], amount=Decimal("1000.00"),
-                paid_at=datetime(2026, 1, 1, 1, 5, tzinfo=timezone.utc),
-            )
-            db.session.commit()
-
-            assert loan_posting_service.confirmed_loan_interest_in_year(
-                loan.id, scenario_id, 2025,
-            ) == Decimal("500.00")
-            assert loan_posting_service.confirmed_loan_interest_in_year(
-                loan.id, scenario_id, 2026,
-            ) == Decimal("0.00")
-
-    def test_reverted_payment_nets_to_zero_across_the_year_boundary(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """A payment reverted across a year boundary strands NO interest.
-
-        The headline of the by-paid-date design.  A ``_P1`` payment (a 2026 pay
-        period) is settled with ``paid_at`` 2025-12-20, so its 500.00 interest
-        first lands in 2025.  Reverting it clears ``paid_at``, so the reversal
-        leg is dated at the pay-period START (2026) -- a DIFFERENT year than the
-        original.  Because the reader groups the legs by their payment and
-        attributes the NET (here zero), the payment drops out of BOTH years,
-        instead of the +500 / -500 that summing each leg by its own entry date
-        would strand.
-        """
-        with app.app_context():
-            scenario_id = seed_user["scenario"].id
-            loan = _make_loan(seed_user)
-            xfer = create_settled_transfer(
-                seed_user, db.session, seed_user["account"], loan,
-                seed_periods[_P1], amount=Decimal("1000.00"),
-                paid_at=_paid_on(2025, 12, 20),
-            )
-            db.session.commit()
-            # Pre-revert: the 500.00 is attributed to the 2025 paid date.
-            assert loan_posting_service.confirmed_loan_interest_in_year(
-                loan.id, scenario_id, 2025,
-            ) == Decimal("500.00")
-
-            transfer_service.update_transfer(
-                xfer.id, seed_user["user"].id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-            )
-            db.session.commit()
-
-            # Post-revert: the payment's net interest is zero -- it strands
-            # nothing in EITHER year (the reversal at the 2026 period start does
-            # not leave a spurious -500 in 2026, nor the +500 in 2025).
-            assert loan_posting_service.confirmed_loan_interest_in_year(
-                loan.id, scenario_id, 2025,
-            ) == Decimal("0.00")
-            assert loan_posting_service.confirmed_loan_interest_in_year(
-                loan.id, scenario_id, 2026,
-            ) == Decimal("0.00")
-
-    def test_unconfigured_loan_returns_none(
-        self, app, db, seed_user,
-    ):
-        """A loan with no OPENING posting reads None, so the caller falls back.
-
-        ``create_loan_account`` alone posts no genesis opening (the sync is not
-        run), so the loan is unconfigured in the ledger: the reader returns
-        ``None`` (route to the schedule), never a misleading $0.
-        """
-        with app.app_context():
-            scenario_id = seed_user["scenario"].id
-            loan = create_loan_account(
-                seed_user, db.session, principal=_ORIGINATION_PRINCIPAL,
-                rate=_RATE, origination_date=_ORIGINATION_DATE,
-            )
-            db.session.commit()
-
-            assert loan_posting_service.confirmed_loan_interest_in_year(
-                loan.id, scenario_id, 2026,
-            ) is None
-
-    def test_interest_is_scenario_scoped(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """Each scenario reports only its own paid interest, never the other's.
-
-        The baseline settles TWO payments (interest 500.00 + 497.50 = 997.50); a
-        what-if settles ONE (interest 500.00).  Each scenario's reader returns
-        only its own total -- a leak would sum them (1497.50) -- so the genesis
-        interest read is scenario-scoped.
-        """
-        with app.app_context():
-            baseline = seed_user["scenario"]
-            whatif = Scenario(
-                user_id=seed_user["user"].id, name="What-if", is_baseline=False,
-            )
-            db.session.add(whatif)
-            db.session.commit()
-
-            loan = _make_loan(seed_user)
-            for period in (seed_periods[_P1], seed_periods[_P2]):
-                create_settled_transfer(
-                    seed_user, db.session, seed_user["account"], loan, period,
-                    amount=Decimal("1000.00"), paid_at=_paid_on(2026, 6, 1),
-                )
-            create_settled_transfer(
-                seed_user, db.session, seed_user["account"], loan,
-                seed_periods[_P1], amount=Decimal("1000.00"),
-                paid_at=_paid_on(2026, 6, 1), scenario=whatif,
-            )
-            db.session.commit()
-
-            # 500.00 + 497.50 = 997.50 in the baseline; 500.00 in the what-if.
-            assert loan_posting_service.confirmed_loan_interest_in_year(
-                loan.id, baseline.id, 2026,
-            ) == Decimal("997.50")
-            assert loan_posting_service.confirmed_loan_interest_in_year(
-                loan.id, whatif.id, 2026,
-            ) == Decimal("500.00")
-
-    def test_escrow_is_excluded(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """Only ``loan_interest`` legs count; escrow is not deductible interest.
-
-        A $1,200/yr ($100/mo) escrow loan settles a $1,000 payment: the split is
-        interest 500.00, escrow 100.00, principal 400.00.  The reader reports the
-        500.00 interest ONLY -- the $100.00 escrow (posted to its own ledger) is
-        excluded, so the figure is not the 600.00 an all-per-loan-legs sum gives.
-        """
-        with app.app_context():
-            scenario_id = seed_user["scenario"].id
-            loan = _make_loan(seed_user, escrow_annual=Decimal("1200.00"))
-            create_settled_transfer(
-                seed_user, db.session, seed_user["account"], loan,
-                seed_periods[_P1], amount=Decimal("1000.00"),
-                paid_at=_paid_on(2026, 3, 15),
-            )
-            db.session.commit()
-
-            # Escrow WAS posted (proving the exclusion is real, not vacuous).
-            escrow_ledger = _find_loan_ledger(
-                loan.id, LedgerAccountKindEnum.LOAN_ESCROW,
-            )
-            assert _ledger_net(escrow_ledger.id, scenario_id) == Decimal("100.00")
-            # ...but only the 500.00 interest is reported.
-            assert loan_posting_service.confirmed_loan_interest_in_year(
-                loan.id, scenario_id, 2026,
-            ) == Decimal("500.00")
-
-    def test_hard_deleted_payment_is_not_deducted(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """A hard-deleted payment contributes no interest (its legs are SET NULL).
-
-        Settling P1 ($1,000, interest 500.00) then P2 ($1,000, interest 497.50 on
-        the 99,500 balance) totals 997.50.  HARD-deleting P2 reverses its
-        correction to zero BEFORE the delete SET-NULLs the entry's
-        ``transaction_id``; the reader's ``transaction_id IS NOT NULL`` filter
-        drops the dead legs, leaving only P1's surviving 500.00 -- a deleted
-        payment is not a deduction.
-        """
-        with app.app_context():
-            scenario_id = seed_user["scenario"].id
-            loan = _make_loan(seed_user)
-            create_settled_transfer(
-                seed_user, db.session, seed_user["account"], loan,
-                seed_periods[_P1], amount=Decimal("1000.00"),
-                paid_at=_paid_on(2026, 3, 15),
-            )
-            deleted = create_settled_transfer(
-                seed_user, db.session, seed_user["account"], loan,
-                seed_periods[_P2], amount=Decimal("1000.00"),
-                paid_at=_paid_on(2026, 4, 15),
-            )
-            db.session.commit()
-            # Both count before the delete: 500.00 + 497.50 = 997.50.
-            assert loan_posting_service.confirmed_loan_interest_in_year(
-                loan.id, scenario_id, 2026,
-            ) == Decimal("997.50")
-
-            transfer_service.delete_transfer(
-                deleted.id, seed_user["user"].id, soft=False,
-            )
-            db.session.commit()
-
-            # Only the surviving P1's 500.00 remains.
-            assert loan_posting_service.confirmed_loan_interest_in_year(
-                loan.id, scenario_id, 2026,
-            ) == Decimal("500.00")
-
-
-class TestConfirmedLoanHistoryRows:
-    """The history reader rebuilds the confirmed schedule from posted legs.
-
-    ``confirmed_loan_history_rows`` is the ledger-derived amortization HISTORY
-    adapter: one row per confirmed payment, its interest from the posted
-    ``loan_interest`` legs, its principal from the payment's net on the linked
-    ledger, and its running balance from the cumulative linked net -- never the
-    resolver's contractual replay.  On-schedule the rows are byte-identical to
-    the replay's (pinned against the resolver directly); off-schedule they show
-    the actual economics the replay cannot.  The loan is the shared SPLIT_LOAN
-    fixture: contractual P&I round_money(250000 * 0.005 * 1.005^360 /
-    (1.005^360 - 1)) = 1498.88, trued up to $100,000 (monthly rate 0.005).
-    """
-
-    @pytest.fixture(autouse=True)
-    def _frozen_today(self, monkeypatch):
-        """Freeze today after the seed window (same rationale as the reader)."""
-        freeze_today(monkeypatch, _FROZEN_TODAY)
-
-    def test_on_schedule_rows_are_byte_identical_to_the_replay_rows(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """Two contractual payments read back the replay's exact rows.
-
-        Two settled payments of exactly the contractual P&I (1498.88):
-
-          row 1 (due 02-01): interest round(100000 * 0.005) = 500.00,
-            principal 1498.88 - 500.00 = 998.88, balance 99001.12
-          row 2 (due 03-01): interest round(99001.12 * 0.005) = 495.01,
-            principal 1003.87, balance 97997.25
-
-        The resolver's replay computes the identical figures for an on-schedule
-        loan (same accrual formula on the same running balance), so the
-        ledger-derived rows must equal the resolver's confirmed schedule rows
-        FIELD BY FIELD -- month, date, payment, principal, interest, extra,
-        balance, flag, and rate.  This is the compatibility pin that lets the
-        read switch replace the replay's history without moving any
-        on-schedule number.
-        """
-        with app.app_context():
-            scenario_id = seed_user["scenario"].id
-            loan = _make_loan(seed_user)
-            for period in (seed_periods[_P1], seed_periods[_P2]):
-                _settle_payment(
-                    seed_user, loan, period, Decimal("1498.88"),
-                )
-            db.session.commit()
-
-            rows = loan_posting_service.confirmed_loan_history_rows(
-                loan.id, scenario_id, _AS_OF,
-            )
-            # Hand-computed spot pins (independent of the resolver).
-            assert [
-                (r.payment_date, r.interest, r.principal, r.remaining_balance)
-                for r in rows
-            ] == [
-                (date(2026, 2, 1), Decimal("500.00"),
-                 Decimal("998.88"), Decimal("99001.12")),
-                (date(2026, 3, 1), Decimal("495.01"),
-                 Decimal("1003.87"), Decimal("97997.25")),
-            ]
-
-            # Field-by-field equality with the resolver's replayed history.
-            params = _loan_params(loan)
-            ctx = loan_payment_service.load_loan_context(
-                loan.id, scenario_id, params,
-            )
-            state = loan_resolver.resolve_loan(
-                loan_resolver.LoanInputs(
-                    params,
-                    loan_loaders.load_loan_anchor_facts(params),
-                    ctx.payments,
-                    ctx.rate_changes,
-                ),
-                _AS_OF,
-            )
-            replay_rows = [r for r in state.schedule if r.is_confirmed]
-            assert rows == replay_rows
-
-    def test_extra_payment_row_shows_the_actual_split_and_extra(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """An off-schedule extra payment's row carries its real economics.
-
-        A $2,000 payment on the $100,000 balance: interest round(100000 *
-        0.005) = 500.00, principal 2000 - 500 = 1500.00, balance 98500.00.
-        Against the 1498.88 contractual P&I the actual P&I of 2000.00 carries
-        extra 2000.00 - 1498.88 = 501.12, leaving payment 1498.88 -- the
-        schedule-row invariant ``principal + interest == payment + extra``
-        (1500.00 + 500.00 == 1498.88 + 501.12), the same algebra a projected
-        row with extra uses, so the table's totals add up unchanged.  The
-        replay would show only the scheduled 998.88 principal; the ledger row
-        shows what the cash actually did.
-        """
-        with app.app_context():
-            scenario_id = seed_user["scenario"].id
-            loan = _make_loan(seed_user)
-            _settle_payment(
-                seed_user, loan, seed_periods[_P1], Decimal("2000.00"),
-            )
-            db.session.commit()
-
-            (row,) = loan_posting_service.confirmed_loan_history_rows(
-                loan.id, scenario_id, _AS_OF,
-            )
-            assert row.interest == Decimal("500.00")
-            assert row.principal == Decimal("1500.00")
-            assert row.extra_payment == Decimal("501.12")
-            assert row.payment == Decimal("1498.88")
-            assert row.remaining_balance == Decimal("98500.00")
-            assert row.is_confirmed is True
-
-    def test_short_payment_row_shows_negative_principal(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """An underpayment's row surfaces the real negative principal.
-
-        A $400 payment against 500.00 accrued interest: principal
-        400 - 500 = -100.00 (the balance GROWS to 100100.00), payment 400.00
-        (the actual P&I, under contractual so extra is 0.00).  Surfaced,
-        never clamped -- the same D5 honesty the split walk pins.
-        """
-        with app.app_context():
-            scenario_id = seed_user["scenario"].id
-            loan = _make_loan(seed_user)
-            _settle_payment(
-                seed_user, loan, seed_periods[_P1], Decimal("400.00"),
-            )
-            db.session.commit()
-
-            (row,) = loan_posting_service.confirmed_loan_history_rows(
-                loan.id, scenario_id, _AS_OF,
-            )
-            assert row.interest == Decimal("500.00")
-            assert row.principal == Decimal("-100.00")
-            assert row.extra_payment == Decimal("0.00")
-            assert row.payment == Decimal("400.00")
-            assert row.remaining_balance == Decimal("100100.00")
-
-    def test_payoff_overpayment_row_caps_principal_and_excludes_the_refund(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """A payoff overpayment's row ends at 0.00 with the refund excluded.
-
-        A $150,000 payment on the $100,000 balance: interest 500.00, principal
-        capped at the 100000.00 that closes the loan, and the 49500.00 surplus
-        on the Refund ledger -- NOT in the row (it is not P&I).  The actual P&I
-        is 100500.00, so extra = 100500.00 - 1498.88 = 99001.12 and payment
-        stays the contractual-shaped 1498.88 (principal + interest == payment +
-        extra holds: 100500.00 == 1498.88 + 99001.12).  The balance reads a
-        clean 0.00.
-        """
-        with app.app_context():
-            scenario_id = seed_user["scenario"].id
-            loan = _make_loan(seed_user)
-            _settle_payment(
-                seed_user, loan, seed_periods[_P1], Decimal("150000.00"),
-            )
-            db.session.commit()
-
-            (row,) = loan_posting_service.confirmed_loan_history_rows(
-                loan.id, scenario_id, _AS_OF,
-            )
-            assert row.interest == Decimal("500.00")
-            assert row.principal == Decimal("100000.00")
-            assert row.extra_payment == Decimal("99001.12")
-            assert row.payment == Decimal("1498.88")
-            assert row.remaining_balance == Decimal("0.00")
-            assert not row.remaining_balance.is_signed()
-
-    def test_trueup_between_payments_moves_the_next_row_balance(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """A mid-history true-up resets the balance the NEXT row reads.
-
-        P1 ($1,000, due 02-01) splits 500.00 / 500.00 leaving 99500.00; a
-        true-up then asserts $95,000 on 02-15; P2 ($1,000, due 03-01) accrues
-        on the VERIFIED balance: interest round(95000 * 0.005) = 475.00,
-        principal 525.00, balance 94475.00.  The true-up itself emits no row
-        (it is not a payment) but its correction posting moves the running
-        balance between the rows -- the pre-true-up row keeps its actual
-        interest (the arc's from-origination history), and the post-true-up
-        row lands on the asserted trajectory.
-
-        The pre-true-up row is also the NEW display surface: the resolver's
-        replay starts at the LATEST anchor (02-15), so its confirmed schedule
-        hides the 02-01 payment forever; the ledger history shows the real
-        recorded payment and still lands on the asserted trajectory -- pinned
-        below against the un-seeded resolver directly.
-        """
-        with app.app_context():
-            scenario_id = seed_user["scenario"].id
-            loan = _make_loan(seed_user)
-            _settle_payment(
-                seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
-            )
-            insert_trueup_event(
-                _loan_params(loan), Decimal("95000.00"), date(2026, 2, 15),
-            )
-            db.session.commit()
-            loan_posting_service.sync_loan_postings_all_scenarios(loan.id)
-            db.session.commit()
-            _settle_payment(
-                seed_user, loan, seed_periods[_P2], Decimal("1000.00"),
-            )
-            db.session.commit()
-
-            rows = loan_posting_service.confirmed_loan_history_rows(
-                loan.id, scenario_id, _AS_OF,
-            )
-            assert [
-                (r.payment_date, r.interest, r.principal, r.remaining_balance)
-                for r in rows
-            ] == [
-                (date(2026, 2, 1), Decimal("500.00"),
-                 Decimal("500.00"), Decimal("99500.00")),
-                (date(2026, 3, 1), Decimal("475.00"),
-                 Decimal("525.00"), Decimal("94475.00")),
-            ]
-
-            # The un-seeded resolver replays from the LATEST anchor (02-15),
-            # so its confirmed schedule hides the real 02-01 payment; the
-            # ledger history is the only surface that shows it.
-            params = _loan_params(loan)
-            ctx = loan_payment_service.load_loan_context(
-                loan.id, scenario_id, params,
-            )
-            state = loan_resolver.resolve_loan(
-                loan_resolver.LoanInputs(
-                    params,
-                    loan_loaders.load_loan_anchor_facts(params),
-                    ctx.payments,
-                    ctx.rate_changes,
-                ),
-                _AS_OF,
-            )
-            replay_dates = [
-                r.payment_date for r in state.schedule if r.is_confirmed
-            ]
-            assert replay_dates == [date(2026, 3, 1)]
-
-    def test_reverted_payment_does_not_wobble_row_balances(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """A reverted payment's two-dated residue never pollutes a row balance.
-
-        A reverted payment's ledger residue nets to zero but at TWO dates:
-        its original entries at the civil paid date (02-20) and its reversal
-        entries at the pay-period start (01-30, the cleared-``paid_at``
-        fallback).  A confirmed sibling due BETWEEN them (02-01) would absorb
-        half the pair if the residue were treated as dated balance events.
-        The classifier instead recognises the whole transfer as payment
-        LINEAGE and drops it, so the confirmed $1,100 payment's row reads its
-        exact economics -- interest 500.00, principal 600.00, balance
-        100000 - 600 = 99400.00 -- and the final row still equals the scalar
-        reader to the penny.
-        """
-        with app.app_context():
-            scenario_id = seed_user["scenario"].id
-            loan = _make_loan(seed_user)
-            _settle_payment(
-                seed_user, loan, seed_periods[_P1], Decimal("1100.00"),
-            )
-            reverted = create_settled_transfer(
-                seed_user, db.session, seed_user["account"], loan,
-                seed_periods[2], amount=Decimal("1000.00"),
-                paid_at=_paid_on(2026, 2, 20),
-            )
-            db.session.commit()
-            transfer_service.update_transfer(
-                reverted.id, seed_user["user"].id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-            )
-            db.session.commit()
-
-            rows = loan_posting_service.confirmed_loan_history_rows(
-                loan.id, scenario_id, _AS_OF,
-            )
-            assert [
-                (r.payment_date, r.interest, r.principal, r.remaining_balance)
-                for r in rows
-            ] == [
-                (date(2026, 2, 1), Decimal("500.00"),
-                 Decimal("600.00"), Decimal("99400.00")),
-            ]
-            assert rows[-1].remaining_balance == (
-                loan_posting_service.confirmed_loan_balance_at(
-                    loan.id, scenario_id, _AS_OF,
-                )
-            )
-
-    def test_settled_payment_in_a_not_yet_begun_period_is_excluded(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """A payment settled ahead of its period stays out until the period begins.
-
-        With payments in periods 1 and 5, a read at 2026-02-10 -- after period
-        1 began (its 02-01 due row counts) but before period 5 begins on
-        03-27 -- must exclude the early-settled payment ENTIRELY, exactly as
-        the scalar reader's period bound does: one row, balance 99500.00,
-        equal to the scalar at the same as_of.  Treating the future payment's
-        postings as dated balance events would desync the schedule table from
-        the loan card by the full cash.
-        """
-        with app.app_context():
-            scenario_id = seed_user["scenario"].id
-            loan = _make_loan(seed_user)
-            _settle_payment(
-                seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
-            )
-            _settle_payment(
-                seed_user, loan, seed_periods[_P3], Decimal("1000.00"),
-            )
-            db.session.commit()
-
-            mid_window = date(2026, 2, 10)
-            rows = loan_posting_service.confirmed_loan_history_rows(
-                loan.id, scenario_id, mid_window,
-            )
-            assert [
-                (r.payment_date, r.remaining_balance) for r in rows
-            ] == [
-                (date(2026, 2, 1), Decimal("99500.00")),
-            ]
-            assert rows[-1].remaining_balance == (
-                loan_posting_service.confirmed_loan_balance_at(
-                    loan.id, scenario_id, mid_window,
-                )
-            )
-
-    def test_trueup_dated_on_a_due_date_applies_after_that_days_payment(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """A true-up dated exactly on a due date subsumes that day's payment.
-
-        The write walk's tie-break (a payment sorts BEFORE a same-date anchor)
-        must be mirrored by the history walk or the row would accrue on the
-        wrong balance.  P1 leaves 99500.00; a true-up asserts $95,000 dated
-        exactly on P2's 03-01 due date; P2's row is walked FIRST -- interest
-        round(99500 * 0.005) = 497.50, principal 502.50, row balance
-        98997.50 -- and the reset applies after it, so the scalar reads the
-        asserted 95000.00.  (An anchor-first order would show 475.00 interest
-        on the reset balance -- the mutation this test kills.)
-        """
-        with app.app_context():
-            scenario_id = seed_user["scenario"].id
-            loan = _make_loan(seed_user)
-            _settle_payment(
-                seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
-            )
-            insert_trueup_event(
-                _loan_params(loan), Decimal("95000.00"), date(2026, 3, 1),
-            )
-            db.session.commit()
-            loan_posting_service.sync_loan_postings_all_scenarios(loan.id)
-            db.session.commit()
-            _settle_payment(
-                seed_user, loan, seed_periods[_P2], Decimal("1000.00"),
-            )
-            db.session.commit()
-
-            rows = loan_posting_service.confirmed_loan_history_rows(
-                loan.id, scenario_id, _AS_OF,
-            )
-            assert [
-                (r.payment_date, r.interest, r.principal, r.remaining_balance)
-                for r in rows
-            ] == [
-                (date(2026, 2, 1), Decimal("500.00"),
-                 Decimal("500.00"), Decimal("99500.00")),
-                (date(2026, 3, 1), Decimal("497.50"),
-                 Decimal("502.50"), Decimal("98997.50")),
-            ]
-            assert loan_posting_service.confirmed_loan_balance_at(
-                loan.id, scenario_id, _AS_OF,
-            ) == Decimal("95000.00")
-
-    def test_final_row_balance_matches_the_scalar_reader(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """The last row's balance IS the confirmed-balance scalar (one truth).
-
-        Three $1,000 payments (500.00 / 502.50 / 505.01 principal on the
-        shrinking real balance) leave 100000 - 1507.51 = 98492.49.  The history
-        walk and the scalar reader sum the SAME linked postings, so the final
-        row's ``remaining_balance`` must equal ``confirmed_loan_balance_at`` to
-        the penny -- the transitivity pin that keeps the schedule table's last
-        confirmed row equal to the loan card.
-        """
-        with app.app_context():
-            scenario_id = seed_user["scenario"].id
-            loan = _make_loan(seed_user)
-            for period in (
-                seed_periods[_P1], seed_periods[_P2], seed_periods[_P3],
-            ):
-                _settle_payment(seed_user, loan, period, Decimal("1000.00"))
-            db.session.commit()
-
-            rows = loan_posting_service.confirmed_loan_history_rows(
-                loan.id, scenario_id, _AS_OF,
-            )
-            assert rows[-1].remaining_balance == Decimal("98492.49")
-            assert rows[-1].remaining_balance == (
-                loan_posting_service.confirmed_loan_balance_at(
-                    loan.id, scenario_id, _AS_OF,
-                )
-            )
-
-    def test_configured_loan_with_no_payments_returns_an_empty_list(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """An opened loan with no confirmed payment reads [] -- not None.
-
-        The opening posting alone means the ledger CAN answer (the loan is
-        configured); there is simply no history yet.  ``[]`` routes the caller
-        to an empty confirmed slice, where ``None`` would wrongly fall back to
-        the replay.
-        """
-        with app.app_context():
-            scenario_id = seed_user["scenario"].id
-            loan = _make_loan(seed_user)
-            loan_posting_service.sync_loan_postings_all_scenarios(loan.id)
-            db.session.commit()
-
-            assert loan_posting_service.confirmed_loan_history_rows(
-                loan.id, scenario_id, _AS_OF,
-            ) == []
-
-    def test_unconfigured_loan_returns_none(self, app, db, seed_user):
-        """A loan with no opening posting reads None (keep the replay rows).
-
-        Mirrors the balance reader's sentinel: no OPENING posting means the
-        ledger cannot answer for this loan / scenario, so the caller keeps the
-        resolver's replay -- never an empty history that would blank a real
-        schedule.
-        """
-        with app.app_context():
-            scenario_id = seed_user["scenario"].id
-            loan = create_loan_account(
-                seed_user, db.session, principal=_ORIGINATION_PRINCIPAL,
-                rate=_RATE, origination_date=_ORIGINATION_DATE,
-            )
-            # Deliberately NO sync: params exist but nothing is posted.
-            assert loan_posting_service.confirmed_loan_history_rows(
-                loan.id, scenario_id, _AS_OF,
-            ) is None
-
-    def test_history_is_scenario_scoped(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """A what-if scenario the opening was never posted into reads None.
-
-        The baseline carries the full history; a second scenario carries no
-        postings at all, so the reader reports None there (the M2 what-if
-        fallback) while the baseline's rows are untouched.
-        """
-        with app.app_context():
-            scenario_id = seed_user["scenario"].id
-            loan = _make_loan(seed_user)
-            _settle_payment(
-                seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
-            )
-            what_if = Scenario(
-                user_id=seed_user["user"].id, name="What-if",
-                is_baseline=False,
-            )
-            db.session.add(what_if)
-            db.session.commit()
-
-            assert loan_posting_service.confirmed_loan_history_rows(
-                loan.id, what_if.id, _AS_OF,
-            ) is None
-            assert len(loan_posting_service.confirmed_loan_history_rows(
-                loan.id, scenario_id, _AS_OF,
-            )) == 1
-
-    def test_future_as_of_raises(self, app, db, seed_user, seed_periods):
-        """A future as_of is out of the confirmed domain and raises.
-
-        Mirrors the scalar reader's guard: 2027-06-01 is after the frozen
-        2027-01-01 today, so the reader refuses rather than answering a
-        projection question with a history sum.
-        """
-        with app.app_context():
-            scenario_id = seed_user["scenario"].id
-            loan = _make_loan(seed_user)
-            db.session.commit()
-
-            with pytest.raises(ValueError, match="as_of <= today"):
-                loan_posting_service.confirmed_loan_history_rows(
-                    loan.id, scenario_id, date(2027, 6, 1),
-                )
+            assert posted_loan_balance_at(
+                loan.id, scenario_id, seed_periods[4].start_date,
+            ) == Decimal("100000.00")
 
 
 class TestUserScopedResync:
@@ -2931,11 +2315,21 @@ class TestUserScopedResync:
         id, posts its opening + true-up (the loan-linked ledger nets -100000), and
         posts NOTHING for the second user (zero genesis entries) -- the scoping
         that keeps a single-user reset from reconciling another owner's loans.
+
+        Both ledgers are CLEARED first (``clear_loan_ledger``), which is what the
+        re-sync's real caller does to them: ``pay_period_admin.reset_pay_periods``
+        wipes the user's pay periods, and ``journal_entries.pay_period_id`` is ON
+        DELETE CASCADE, so the reset disposes exactly these genesis entries and
+        this re-sync is what re-derives them.  The builders open both ledgers (as
+        production does), so the un-posted starting state has to be made, not
+        inherited.
         """
         with app.app_context():
             loan1 = _make_loan(seed_user)
             loan2 = _make_loan(seed_second_user)
             db.session.commit()
+            clear_loan_ledger(loan1.id)
+            clear_loan_ledger(loan2.id)
             u1 = seed_user["user"].id
             u2 = seed_second_user["user"].id
 
@@ -2949,3 +2343,409 @@ class TestUserScopedResync:
             # User 2's loan was never visited: no genesis entries posted.
             assert _genesis_entry_count(u2) == 0
             assert loan2.id not in posted
+
+
+class TestPrePeriodAnchor:
+    """An anchor older than every pay period the user has.
+
+    Direct coverage for the ``entry_date`` reader bound (step C2's one clock).
+    The shape that once needed a special rule: a journal entry carries its true
+    civil ``entry_date`` AND a NOT NULL ``pay_period_id``, and when an anchor
+    predates every pay period the user has, ``resolve_anchor_pay_period`` is
+    FORCED to file it under the earliest period.  A reader bounding by the pay
+    period believed that and reported a loan originated before the user's
+    pay-period history as owing NOTHING for the whole span in between (the
+    year-end summary turned that $0 into a NEGATIVE principal-paid figure).
+    Bounding by ``entry_date`` -- the anchor's own civil date -- reads it
+    correctly with no special case, which is what these pin.
+    """
+
+    def test_anchor_older_than_every_pay_period_is_still_owed(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A loan originated BEFORE the user's first pay period still owes it all.
+
+        ``seed_periods`` begins 2026-01-02.  This loan is originated 2025-06-01, so
+        its opening is forced into the earliest period (there is no period covering
+        2025) -- and before this fix the reader therefore reported the loan as owing
+        $0.00 for every date in 2025, despite the debt plainly existing.
+
+        The opening asserts $250,000 and no payment is recorded, so the honest
+        balance on 2025-12-31 is the full $250,000 -- and so is EVERY seed
+        period's, since they all end in 2026 (after the origination) and no
+        payment ever lands.  Both are pinned to that hand-computed literal, at a
+        date inside the pre-period gap and at every period boundary.
+
+        **Both halves assert the literal, deliberately.**  The obvious
+        alternative -- assert the per-period value equals the scalar at that
+        period's end -- is now ``f(x) == f(x)``: the per-period window is
+        DEFINED as the scalar applied at each period end (plan step E1e), where
+        the deleted production map was an independent prefix-sum whose boundary
+        handling such a comparison did pin.  A cross-derivation check that
+        cannot fail is worse than none, so the value carries the teeth here.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = create_loan_account(
+                seed_user, db.session, name="Old Loan",
+                principal=Decimal("250000.00"), rate=_RATE, term=360,
+                origination_date=date(2025, 6, 1),
+            )
+
+            # A date inside the gap: after origination, before any pay period.
+            owed = posted_loan_balance_at(
+                loan.id, scenario_id, date(2025, 12, 31),
+            )
+            assert owed == Decimal("250000.00"), (
+                f"a loan originated 2025-06-01 read as owing {owed} on "
+                f"2025-12-31; the ledger is dating its opening by the pay period "
+                f"it was FILED under, not the date it asserts"
+            )
+
+            # Every period boundary reads the same $250,000: the opening counts
+            # from its own 2025-06-01 civil date (step C2), which precedes every
+            # seed period's end, and nothing pays it down.
+            bmap = posted_loan_balance_map(
+                loan.id, scenario_id, seed_periods,
+            )
+            assert bmap is not None
+            assert len(bmap) == len(seed_periods)
+            assert set(bmap.values()) == {Decimal("250000.00")}, (
+                f"a pre-period opening read unevenly across period boundaries: "
+                f"{sorted(str(v) for v in set(bmap.values()))}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# The checked projection (plan step E1a): sum(postings) == fold(events),
+# asserted per visible date at every write, and the date-aware reconcile
+# (finding N-13) that makes the assert safe on a legitimate paid_at edit.
+# ---------------------------------------------------------------------------
+
+
+def _linked_net_by_date(ledger_id, scenario_id):
+    """Return ``{entry_date: net}`` over one ledger's postings in a scenario.
+
+    Delegates to the shared :func:`tests._test_helpers.linked_net_by_date` -- an
+    INDEPENDENT re-implementation of the grouped read the checked-projection assert
+    performs (production groups via ``_visible_nets``), kept independent of the
+    production query so this suite still has teeth if that query drifts.
+    """
+    return linked_net_by_date(_db.session, ledger_id, scenario_id)
+
+
+def _source_entry_count(transfer_id, shadow_id):
+    """Count the journal entries a payment owns (cash + correction lineage)."""
+    return (
+        _db.session.query(JournalEntry)
+        .filter(
+            _db.or_(
+                JournalEntry.transfer_id == transfer_id,
+                JournalEntry.transaction_id == shadow_id,
+            )
+        )
+        .count()
+    )
+
+
+class TestCheckedProjection:
+    """The posted linked ledger must equal the fold of the loan's events (E1a).
+
+    ``sync_loan_postings`` runs the per-visible-date assert after both
+    reconciles: the walk's dated deltas (negated into posting space) must match
+    the linked ledger's per-``entry_date`` nets exactly.  These tests prove the
+    assert has teeth (a forced $1.00 walk-invisible posting fires it) and that
+    the date-aware reconcile keeps it from firing on the one legitimate edit
+    that moves a date without moving an amount -- a settled ``paid_at`` edit
+    (finding N-13) -- converging in ONE pass in both directions.
+    """
+
+    def test_walk_invisible_posting_fires_the_assert(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A $1.00 posting the walk cannot model makes the sync refuse to run green.
+
+        The negative control (verification standard 7.3): a balanced raw entry
+        with a $1.00 leg on the loan's LINKED ledger -- the N-11 legacy shape,
+        forbidden at the source since BG/R6 but forced here directly -- is
+        invisible to the walk, so the per-date comparison must fail AT THAT
+        DATE and name it.  Without this control the assert could be deleted
+        and every test would stay green.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user)
+            _settle_payment(
+                seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
+                settled_on=date(2026, 1, 20),
+            )
+            db.session.commit()
+            # The settle chokepoint already ran the sync + assert green.
+
+            equity_ledger = _find_loan_ledger(
+                loan.id, LedgerAccountKindEnum.EQUITY_OPENING,
+            )
+            drift_entry = JournalEntry(
+                user_id=seed_user["user"].id,
+                scenario_id=scenario_id,
+                pay_period_id=seed_periods[_P1].id,
+                entry_date=date(2026, 2, 15),
+                source_kind_id=ref_cache.posting_source_id(
+                    PostingSourceEnum.TRANSACTION
+                ),
+                description="forced walk-invisible drift",
+            )
+            db.session.add(drift_entry)
+            db.session.flush()
+            expense_kind = ref_cache.posting_kind_id(PostingKindEnum.EXPENSE)
+            db.session.add(Posting(
+                journal_entry_id=drift_entry.id,
+                ledger_account_id=_linked_ledger_id(loan),
+                amount=Decimal("1.00"),
+                posting_kind_id=expense_kind,
+            ))
+            db.session.add(Posting(
+                journal_entry_id=drift_entry.id,
+                ledger_account_id=equity_ledger.id,
+                amount=Decimal("-1.00"),
+                posting_kind_id=expense_kind,
+            ))
+            db.session.flush()
+
+            with pytest.raises(
+                posting_service.PostingError,
+                match="diverges from the fold .*2026-02-15",
+            ):
+                loan_posting_service.sync_loan_postings(loan.id, scenario_id)
+            db.session.rollback()
+
+    def test_paid_at_edit_redates_the_postings(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A settled ``paid_at`` edit moves every posting to the new settle date.
+
+        The N-13 regression.  P1's $1,000.00 payment settles 2026-01-20:
+        interest 100000 * 0.06 / 12 = 500.00, principal 500.00, so the linked
+        ledger nets +1000.00 (cash) - 500.00 (correction) = +500.00 on 01-20.
+        A PURE ``paid_at`` edit to 2026-02-05 changes no amount, so the
+        pre-E1a reconcile wrote nothing and the entries kept the old date --
+        while the fold moved to 02-05, a divergence the checked-projection
+        assert now refuses.  After the edit: 01-20 nets 0.00 (reversed at its
+        own date), 02-05 nets +500.00, and a repeat sync writes NOTHING (the
+        reconcile converged in one pass -- no churn).
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user)
+            xfer, shadow = _settle_payment(
+                seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
+                settled_on=date(2026, 1, 20),
+            )
+            db.session.commit()
+            linked_id = _linked_ledger_id(loan)
+            assert _linked_net_by_date(linked_id, scenario_id)[
+                date(2026, 1, 20)
+            ] == Decimal("500.00")
+
+            # The pure paid_at edit -- no amount, status, or period change.
+            # update_transfer runs the (now date-aware) reconciles + the
+            # checked-projection assert; a raise here IS the N-13 regression.
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id,
+                paid_at=settle_instant_on(date(2026, 2, 5)),
+            )
+            db.session.commit()
+
+            by_date = _linked_net_by_date(linked_id, scenario_id)
+            # Old date: reversed at its own date (present but net zero).
+            assert by_date[date(2026, 1, 20)] == Decimal("0.00")
+            # New date: the full effect -- cash +1000.00, correction -500.00.
+            assert by_date[date(2026, 2, 5)] == Decimal("500.00")
+
+            # Convergence: a repeat of BOTH syncs writes nothing.
+            before = _source_entry_count(xfer.id, shadow.id)
+            posting_service.sync_transfer_postings(xfer, settled=True)
+            loan_posting_service.sync_loan_postings(loan.id, scenario_id)
+            db.session.flush()
+            assert _source_entry_count(xfer.id, shadow.id) == before
+
+    def test_backward_paid_at_move_converges(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Moving ``paid_at`` EARLIER re-dates and converges in one pass too.
+
+        The churn control: a latest-entry-date staleness heuristic would see
+        the old-dated reversal as "the latest posting" after a BACKWARD move
+        and re-churn (reverse + repost) on every later sync forever.  The
+        per-(period, date) reconcile keys each delta to its exact date, so the
+        backward move (02-05 -> 01-20) lands in one pass: 02-05 nets 0.00,
+        01-20 nets +500.00, and a repeat sync writes nothing.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user)
+            xfer, shadow = _settle_payment(
+                seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
+                settled_on=date(2026, 2, 5),
+            )
+            db.session.commit()
+            linked_id = _linked_ledger_id(loan)
+
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id,
+                paid_at=settle_instant_on(date(2026, 1, 20)),
+            )
+            db.session.commit()
+
+            by_date = _linked_net_by_date(linked_id, scenario_id)
+            assert by_date[date(2026, 2, 5)] == Decimal("0.00")
+            assert by_date[date(2026, 1, 20)] == Decimal("500.00")
+
+            before = _source_entry_count(xfer.id, shadow.id)
+            posting_service.sync_transfer_postings(xfer, settled=True)
+            loan_posting_service.sync_loan_postings(loan.id, scenario_id)
+            db.session.flush()
+            assert _source_entry_count(xfer.id, shadow.id) == before
+
+    def test_legacy_stale_dated_cash_pair_self_heals(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A pre-E1a cross-date transfer residue heals in the loan sync itself.
+
+        The REAL-data shape the dev-clone sweep found (the Mortgage's July
+        payment): the date-blind pre-E1a reconcile reversed a cash entry at a
+        DIFFERENT date than it posted, leaving a net-zero transfer-source pair
+        straddling two dates -- residue no loan-side reconcile can touch, so
+        without the lineage-transfer pass the checked-projection assert would
+        fire on it forever (the C9a self-500 class).  Forged here by re-dating
+        the settled payment's cash entry (exactly what the legacy data
+        contains), the loan sync must re-date it back (reverse at the forged
+        date, re-post at the settle date), pass its own assert, and converge
+        (a second sync writes nothing).
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user)
+            xfer, shadow = _settle_payment(
+                seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
+                settled_on=date(2026, 1, 20),
+            )
+            db.session.commit()
+            linked_id = _linked_ledger_id(loan)
+
+            # Forge the legacy shape: the cash entry carries a WRONG date, as
+            # a pre-E1a revert / re-settle left it.  Raw SQL, because the
+            # forge must bypass the ORM append-only listener exactly as the
+            # legacy writes predate it (the test runs as the table owner;
+            # production's role REVOKE does not bind here).
+            cash_entry_id = (
+                db.session.query(JournalEntry.id)
+                .filter(
+                    JournalEntry.transfer_id == xfer.id,
+                    JournalEntry.scenario_id == scenario_id,
+                )
+                .scalar()
+            )
+            db.session.execute(
+                sa.text(
+                    "UPDATE budget.journal_entries SET entry_date = :day "
+                    "WHERE id = :entry_id"
+                ),
+                {"day": date(2026, 1, 5), "entry_id": cash_entry_id},
+            )
+            db.session.commit()
+            assert _linked_net_by_date(linked_id, scenario_id)[
+                date(2026, 1, 5)
+            ] == Decimal("1000.00")
+
+            # The loan sync heals it: lineage-transfer pass re-dates, then
+            # the checked-projection assert passes.
+            loan_posting_service.sync_loan_postings(loan.id, scenario_id)
+            db.session.commit()
+            by_date = _linked_net_by_date(linked_id, scenario_id)
+            # Forged date: reversed at its own date; settle date: the full
+            # effect (cash +1000.00, correction -500.00).
+            assert by_date[date(2026, 1, 5)] == Decimal("0.00")
+            assert by_date[date(2026, 1, 20)] == Decimal("500.00")
+
+            # Convergence: a repeat sync writes nothing.
+            before = _source_entry_count(xfer.id, shadow.id)
+            loan_posting_service.sync_loan_postings(loan.id, scenario_id)
+            db.session.flush()
+            assert _source_entry_count(xfer.id, shadow.id) == before
+
+    def test_reverted_transfer_stale_residue_self_heals(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Pre-E1a cross-date residue on a REVERTED payment heals too (review H2).
+
+        A reverted payment is OUTSIDE the walk's settled set, so a heal pass
+        keyed on the walk's payments would never touch its entries -- while
+        the pre-E1a date-blind reconcile could leave its settle/reversal pair
+        straddling two dates (net zero in TOTAL, nonzero per DATE), and the
+        checked-projection assert would then fire on every later sync of the
+        loan with nothing able to converge it.  The lineage pass therefore
+        derives its candidates from the LEDGER: forged here by re-dating the
+        reverted payment's reversal entry (the legacy shape), the loan sync
+        must re-sync that transfer with its CURRENT unsettled sense, zero
+        every date, pass its own assert, and converge.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            loan = _make_loan(seed_user)
+            xfer, shadow = _settle_payment(
+                seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
+                settled_on=date(2026, 1, 20),
+            )
+            db.session.commit()
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            )
+            db.session.commit()
+            linked_id = _linked_ledger_id(loan)
+            # Clean revert: the settle date nets zero (the anchor dates --
+            # the opening and true-up -- legitimately keep their nets).
+            assert _linked_net_by_date(linked_id, scenario_id)[
+                date(2026, 1, 20)
+            ] == Decimal("0.00")
+
+            # Forge the pre-E1a residue: the REVERSAL entry (the newest
+            # transfer-source entry) re-dated away from the settle date, so
+            # 01-20 holds +1000.00 and 01-08 holds -1000.00.
+            reversal_id = (
+                db.session.query(JournalEntry.id)
+                .filter(
+                    JournalEntry.transfer_id == xfer.id,
+                    JournalEntry.scenario_id == scenario_id,
+                )
+                .order_by(JournalEntry.id.desc())
+                .limit(1)
+                .scalar()
+            )
+            db.session.execute(
+                sa.text(
+                    "UPDATE budget.journal_entries SET entry_date = :day "
+                    "WHERE id = :entry_id"
+                ),
+                {"day": date(2026, 1, 8), "entry_id": reversal_id},
+            )
+            db.session.commit()
+            by_date = _linked_net_by_date(linked_id, scenario_id)
+            assert by_date[date(2026, 1, 20)] == Decimal("1000.00")
+            assert by_date[date(2026, 1, 8)] == Decimal("-1000.00")
+
+            # The loan sync heals it from the LEDGER-derived candidate set
+            # (the transfer is NOT in the walk -- it is reverted) and passes
+            # its own checked-projection assert: both payment dates net zero.
+            loan_posting_service.sync_loan_postings(loan.id, scenario_id)
+            db.session.commit()
+            by_date = _linked_net_by_date(linked_id, scenario_id)
+            assert by_date[date(2026, 1, 20)] == Decimal("0.00")
+            assert by_date[date(2026, 1, 8)] == Decimal("0.00")
+
+            # Convergence: a repeat sync writes nothing.
+            before = _source_entry_count(xfer.id, shadow.id)
+            loan_posting_service.sync_loan_postings(loan.id, scenario_id)
+            db.session.flush()
+            assert _source_entry_count(xfer.id, shadow.id) == before

@@ -133,16 +133,26 @@ def _resolve_horizon_domain(
 
     Returns:
         ``(horizon_end, debt_free_date, is_loan_free)`` -- the year-end
-        domain end, the last future payoff date (``None`` when loan-free),
-        and whether the fixed fallback window was used.
+        domain end, the last future payoff date (``None`` when loan-free OR
+        when an active loan never clears), and whether the user has no debt
+        line at all.  Those two ``None`` cases differ in ``is_loan_free``:
+        a borrower whose loan never pays off is NOT loan-free, and the
+        caller must not caption them as debt-free.
     """
+    active = [
+        ad for ad in account_data
+        if ad.get("loan_params") and not ad.get("is_paid_off")
+    ]
+    # An ACTIVE loan with no payoff never clears at its current payment (plan
+    # C8d), so there is no debt-free date at all -- and the user is emphatically
+    # not loan-free.  Skipping it would take ``max()`` over the loans that DO
+    # clear and plant a "Debt-free" milestone on a borrower who still owes; with
+    # every loan in that state it would fall through to the loan-free fallback
+    # window entirely.
+    if any(ad.get("payoff_date") is None for ad in active):
+        return date(today.year + _LOAN_FREE_HORIZON_YEARS, 12, 31), None, False
     payoff_dates = [
-        ad["payoff_date"]
-        for ad in account_data
-        if ad.get("loan_params")
-        and ad.get("payoff_date") is not None
-        and not ad.get("is_paid_off")
-        and ad["payoff_date"] > today
+        ad["payoff_date"] for ad in active if ad["payoff_date"] > today
     ]
     debt_free_date = max(payoff_dates) if payoff_dates else None
     if debt_free_date is not None:
@@ -184,7 +194,7 @@ def _period_id_at(axis: list, target: date) -> int | None:
     local because the axis periods are
     :class:`~app.services.growth_engine.SyntheticPeriod` namedtuples, which
     carry no ``period_index`` for the general
-    :func:`app.services.account_projection.find_period_containing_date`.
+    :func:`app.services.loan_ledger.find_period_containing_date`.
 
     Args:
         axis: The chronological synthetic period axis.
@@ -278,7 +288,7 @@ def _retirement_investment_bands(
     The employer-contribution base is held CONSTANT (``employer_salary_basis``
     is ``None``), which is what the ruled oracle used and what every
     net-worth consumer does -- the ``2 years`` band's investment growth
-    (``net_worth_investment._forward_project_rows`` ->
+    (``balance_at._investment._forward_project_rows`` ->
     ``growth_engine.project_balance`` with no ``salary_basis``) keeps the
     constant base too, so the Horizon retirement band and the ``2 years``
     retirement band agree at their shared today point and share one growth
@@ -430,7 +440,7 @@ def _liability_band(
     The two forward models (an amortizing loan follows its resolver schedule; a
     liability with no forward model holds flat at its current owed magnitude)
     are the SEAM's rules, not this module's -- a balance-at-T boundary rule
-    living in a presentation module is the exact pattern the W9906 fence exists
+    living in a presentation module is the exact pattern the balance seam exists
     to prevent, and this band held half of one until the seam grew the liability
     view (``followup_fence_loan_owed_at_dates.md``).  The seam also owns the
     ``abs`` owed-magnitude convention and the today point, so index 0 is each
@@ -461,10 +471,9 @@ def _liability_band(
 
     owed_by_account = balance_at.liability_owed_at_dates(
         [ad["account"] for ad in liability_ads],
-        core.scenario,
+        core.balance_ctx,
         frame.sample_dates,
         {ad["account"].id: ad["current_balance"] for ad in liability_ads},
-        frame.today,
     )
     for ad in liability_ads:
         _add_into(band, owed_by_account[ad["account"].id])
@@ -702,7 +711,7 @@ def build_horizon(
     if not core.all_periods:
         return None
 
-    today = date.today()
+    today = core.balance_ctx.as_of
     horizon_end, debt_free_date, is_loan_free = _resolve_horizon_domain(
         account_data, today,
     )

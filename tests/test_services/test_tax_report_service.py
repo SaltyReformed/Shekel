@@ -25,26 +25,29 @@ year-periods query the producer runs):
     i=0 01-02  i=1 01-16  i=2 01-30 ... i=12 06-19  i=13 07-03 ... i=25 12-18
 """
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
+from app.enums import AcctTypeEnum
 from app.extensions import db as _db
 from app.models.pay_period import PayPeriod
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.ref import CalcMethod, DeductionTiming, FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.models.ytd_tax_checkpoint import YtdTaxCheckpoint
-from app.services import net_worth_kernel, paycheck_calculator
+from app.services import balance_at, paycheck_calculator
+from app.services.balance_at import _kernel as net_worth_kernel
 from app.services.auth_service import _seed_tax_data_for_user
-from app.services.scenario_resolver import get_baseline_scenario
 from app.services.tax_config_service import load_tax_configs_for_year
-from app.services.tax_report_service import TaxReport, compute_tax_report
-from app.services.year_end_summary_service._income_tax import (
-    _compute_mortgage_interest,
+from app.services.tax_report_service import (
+    TaxReport,
+    compute_tax_report,
 )
+from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
     SPLIT_LOAN,
     create_loan_with_trueup,
+    create_settled_transfer,
     freeze_today,
 )
 
@@ -571,27 +574,52 @@ class TestMultiProfileSum:
 
 
 class TestScheduleAMortgageInterest:
-    """The Schedule A mortgage term REUSES the year-end hybrid exactly."""
+    """The Schedule A mortgage term REUSES the year-end hybrid exactly.
+
+    Three tests with deliberately different reach, because no one of them can do
+    another's job:
+
+    * :meth:`test_mortgage_interest_matches_year_end_hybrid` proves the WIRING --
+      that the Taxes tab spends the seam's figure and ties it into
+      ``itemized_estimate``.  Its oracle CALLS ``balance_at.loan_interest_in_year``,
+      so it is a consistency check: it holds however wrong that function is.
+    * :meth:`test_schedule_a_deducts_the_hand_computed_interest_in_the_year_paid`
+      proves the VALUE, against arithmetic done by hand.  It is the only thing
+      standing under this number, and it is deliberately on the LIVE path so it
+      outlives the year-end summary service's deletion (plan F2 / R-D).
+    * :meth:`test_a_car_loans_interest_is_not_home_mortgage_interest` proves the
+      DOMAIN -- whose interest may enter the figure at all (N-9).
+
+    All three seed the loan's KIND explicitly.  The wiring test did not, and
+    silently asserted a nonzero home-mortgage deduction built from a car loan.
+    """
 
     def test_mortgage_interest_matches_year_end_hybrid(
         self, app, db, seed_user, monkeypatch,
     ):
-        """A seeded mortgage gives nonzero 2026 interest == the oracle.
+        """A seeded mortgage gives nonzero 2026 interest == the seam figure.
 
         Standing up a fresh liability/withholding fixture plus a full loan
-        is disproportionate, so the mortgage term is pinned as a CONSISTENCY
-        ORACLE: the producer's ``schedule_a.components.mortgage_interest``
-        must equal an independent ``_compute_mortgage_interest`` over the
-        same debt-schedule generation the orchestrator uses (both resolve
-        the loan at the frozen 2026-06-01 clock), and be strictly positive
-        (non-vacuous).  ``itemized_estimate`` then ties out to
-        mortgage + hybrid state withholding.
+        is disproportionate, so the mortgage term is pinned here as a
+        CONSISTENCY ORACLE: the producer's
+        ``schedule_a.components.mortgage_interest`` must equal
+        ``balance_at.loan_interest_in_year`` for the same loan and context the
+        orchestrator uses (both resolve the loan at the frozen 2026-06-01 clock),
+        and be strictly positive (non-vacuous).  ``itemized_estimate`` then ties
+        out to mortgage + hybrid state withholding.
+
+        **This proves the wiring, NOT the number.**  The oracle below is the very
+        function under test, so a defect inside it moves both sides together and
+        this test stays green -- the shape the plan's Section 7.2 forbids relying
+        on alone.  The value is pinned by the hand-computed test beneath.
         """
         freeze_today(monkeypatch, date(2026, 6, 1))
-        scenario_id = get_baseline_scenario(seed_user["user"].id).id
-
         _seed_and_profile(seed_user)
         _make_full_year_periods(seed_user["user"])
+        # A MORTGAGE, which is what this test's name and docstring always
+        # claimed: the fixture took ``create_loan_with_trueup``'s AUTO_LOAN
+        # default, so before ``_load_mortgage_accounts`` existed this asserted
+        # a nonzero HOME-MORTGAGE deduction built from a car loan.
         loan = create_loan_with_trueup(
             seed_user, db.session,
             origination_principal=SPLIT_LOAN.origination_principal,
@@ -599,6 +627,7 @@ class TestScheduleAMortgageInterest:
             anchor_date=SPLIT_LOAN.anchor_date,
             rate=SPLIT_LOAN.rate,
             origination_date=SPLIT_LOAN.origination_date,
+            account_type=AcctTypeEnum.MORTGAGE,
         )
         db.session.commit()
 
@@ -606,13 +635,11 @@ class TestScheduleAMortgageInterest:
             seed_user["user"].id, 2026, date(2026, 6, 1),
         )
 
-        # Independent oracle: the same hybrid over the same schedule.
-        debt_schedules = net_worth_kernel.generate_debt_schedules(
-            [loan], scenario_id,
-        )
-        oracle_interest = _compute_mortgage_interest(
-            2026, debt_schedules, scenario_id,
-        )
+        # Consistency oracle: the same seam producer for the same loan.  NOT an
+        # independent check of the number -- see the class docstring.  With one
+        # mortgage, _build_schedule_a's sum over mortgage accounts is exactly this.
+        bctx = BalanceContext.build(seed_user["user"].id)
+        oracle_interest = balance_at.loan_interest_in_year(loan, bctx, 2026)
 
         assert oracle_interest > ZERO  # non-vacuous
         assert report.schedule_a.components.mortgage_interest == oracle_interest
@@ -624,3 +651,121 @@ class TestScheduleAMortgageInterest:
             report.schedule_a.itemized_estimate - Decimal("16100.00")
         )
         assert report.schedule_a.components.property_tax is None
+
+    def test_schedule_a_deducts_the_hand_computed_interest_in_the_year_paid(
+        self, app, db, seed_user, monkeypatch,
+    ):
+        """THE VALUE: $500.00 of interest, PAID in 2025, deducts in 2025.
+
+        The Taxes tab is the only live consumer of the mortgage-interest hybrid,
+        and nothing pinned its NUMBER -- the test above spends the function under
+        test as its own oracle.  So this hand-computes the figure end to end, on
+        the live ``compute_tax_report`` path.
+
+        The fixture is chosen so the answer is exactly derivable by hand rather
+        than by re-running the amortization:
+
+        * ``SPLIT_LOAN`` trues the loan up to $100,000.00 on 2026-01-10, so the
+          resolver's schedule runs FORWARD from that anchor and its first row is
+          2026-02-01.  **2025 therefore contains no amortization rows at all**
+          (asserted below), which makes the year's figure PURE LEDGER -- the
+          projected term is structurally zero, not incidentally zero.
+        * The one payment splits against the balance in force at its due date:
+          interest = 100000.00 * (0.06000 / 12) = **500.00**.
+        * It is scheduled for 2026-02-01 but SETTLED 2025-12-20.  Mortgage
+          interest deducts in the year PAID, so it belongs to 2025.
+
+        The negative control is the year itself: a payment-DATE basis reports
+        0.00 here (the payment's installment is a 2026 row), so the assertion can
+        only pass on the paid-date basis the deduction actually requires.
+
+        The loan is a MORTGAGE because :func:`_load_mortgage_accounts` selects
+        only mortgages: an AUTO_LOAN here would contribute nothing and this
+        oracle would vacuously pin $0.00.  ``create_loan_with_trueup`` defaults
+        to AUTO_LOAN, and taking that default is what hid N-9 in the first place.
+        """
+        freeze_today(monkeypatch, date(2026, 6, 1))
+        _seed_and_profile(seed_user)
+        periods = _make_full_year_periods(seed_user["user"])
+        loan = create_loan_with_trueup(
+            seed_user, db.session,
+            origination_principal=SPLIT_LOAN.origination_principal,
+            anchor_balance=SPLIT_LOAN.anchor_balance,
+            anchor_date=SPLIT_LOAN.anchor_date,
+            rate=SPLIT_LOAN.rate,
+            origination_date=SPLIT_LOAN.origination_date,
+            account_type=AcctTypeEnum.MORTGAGE,
+        )
+        # Due 2026-02-01 (period index 1, payment_day 1); settled 2025-12-20.
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], loan,
+            periods[1], amount=Decimal("1000.00"),
+            paid_at=datetime(2025, 12, 20, 12, 0, tzinfo=timezone.utc),
+        )
+        db.session.commit()
+
+        # The premise, asserted rather than assumed: 2025 carries no schedule
+        # rows, so the figure below cannot be coming from the projection.
+        bctx = BalanceContext.build(seed_user["user"].id)
+        rows_2025 = [
+            row
+            for row in net_worth_kernel.debt_schedule_rows([loan], bctx)[loan.id]
+            if row.payment_date.year == 2025
+        ]
+        assert rows_2025 == []
+
+        report = compute_tax_report(
+            seed_user["user"].id, 2025, date(2026, 6, 1),
+        )
+
+        # 100000.00 * 0.06000 / 12 = 500.00, deducted in the year PAID.
+        assert report.schedule_a.components.mortgage_interest == Decimal("500.00")
+        assert report.schedule_a.itemized_estimate == (
+            Decimal("500.00") + report.withholding.total.state
+        )
+
+    def test_a_car_loans_interest_is_not_home_mortgage_interest(
+        self, app, db, seed_user, monkeypatch,
+    ):
+        """An AUTO_LOAN contributes NOTHING to the Schedule A mortgage term.
+
+        Personal interest is not deductible.  The pre-fix ``_load_debt_accounts``
+        selected on ``has_amortization`` alone -- which is set on AUTO_LOAN,
+        STUDENT_LOAN, PERSONAL_LOAN and HELOC just as it is on MORTGAGE -- so
+        this exact fixture reported **$5,221.16** of a car loan's interest as
+        home mortgage interest (measured 2026-07-16 by restoring the old
+        selection).
+
+        The loan here is otherwise identical to the mortgage the sibling tests
+        seed -- same principal, rate, dates, and true-up -- so the ONLY thing
+        producing the zero is the account's KIND.
+
+        Both assertions discriminate: restore the amortization-only selection and
+        the first reads $5,221.16 and the second is off by the same.  ``margin``
+        is deliberately NOT asserted -- the standard deduction happens to win
+        either way here, so it would pass while the number was wrong, and this
+        file has enough of those already.  The harm is not that this fixture
+        flips the election; it is that the deduction is overstated by $5,221.16,
+        which flips it for anyone near the threshold.
+        """
+        freeze_today(monkeypatch, date(2026, 6, 1))
+        _seed_and_profile(seed_user)
+        _make_full_year_periods(seed_user["user"])
+        create_loan_with_trueup(
+            seed_user, db.session,
+            origination_principal=SPLIT_LOAN.origination_principal,
+            anchor_balance=SPLIT_LOAN.anchor_balance,
+            anchor_date=SPLIT_LOAN.anchor_date,
+            rate=SPLIT_LOAN.rate,
+            origination_date=SPLIT_LOAN.origination_date,
+            account_type=AcctTypeEnum.AUTO_LOAN,
+        )
+        db.session.commit()
+
+        report = compute_tax_report(
+            seed_user["user"].id, 2026, date(2026, 6, 1),
+        )
+
+        assert report.schedule_a.components.mortgage_interest == ZERO
+        # Nothing but the state withholding is left to itemize.
+        assert report.schedule_a.itemized_estimate == report.withholding.total.state

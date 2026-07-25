@@ -122,6 +122,10 @@ def _render_entry_list(
         conflict: When True, surface a warning banner that the
             most recent edit was rejected by the optimistic-lock
             check.  See commit C-18.
+        host: The validated ``host`` id-prefix for this request
+            (:func:`_request_host`), threaded through so the re-rendered
+            partial keeps the DOM id of the element HTMX is swapping
+            (:func:`_entry_list_host_id`).  ``""`` for the bare list.
         error: Optional rejection message.  When set, the template
             surfaces a danger banner naming why the last submission
             was refused (the designed error-fragment path; see

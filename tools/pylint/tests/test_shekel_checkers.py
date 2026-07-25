@@ -7,33 +7,41 @@ legitimate form is NOT flagged), because a checker that over-fires creates the
 cargo-cult-disable noise the rules exist to prevent.
 """
 
+import sys
 from pathlib import Path
 
 import astroid
+import pytest
 from astroid import nodes
 from pylint.testutils import CheckerTestCase, MessageTest
 
 from shekel_checkers import (
-    _BALANCE_PRODUCERS,
-    _BALANCE_SEAM_MODULES,
-    _ENGINE_CLUSTER_MODULES,
+    _CASH_LEDGER_MODULES,
     _FENCED_MODULE_RULINGS,
+    _LOAN_PAYMENT_SEAM_MODULES,
+    _SEAM_PRIVATE_CONTEXT_MODULES,
     _LEDGER_LEAF_MODULE_NAMES,
     _LEDGER_MODEL_ALLOWLIST,
     _LEDGER_MODEL_MODULES,
+    _KIND_CLASSIFIER_MODULES,
     _LEDGER_MODEL_NAMES,
     _LOAN_LEDGER_DEFINING_MODULES,
-    _LOAN_LEDGER_READER_MODULES,
-    _LOAN_LEDGER_READER_PRODUCERS,
+    _LOAN_RESOLVER_ENGINE_MODULES,
     _STATUS_SEAM_MODULES,
+    _is_public_export_surface,
     ShekelBalanceSeamChecker,
     ShekelDisableRationaleChecker,
     ShekelLedgerModelFenceChecker,
-    ShekelLoanBalanceSourceChecker,
     ShekelMoneyChecker,
+    ShekelPackagePrivacyChecker,
     ShekelRefNameChecker,
     ShekelTransactionStatusBypassChecker,
 )
+
+# The physical-membership primitive is tested DIRECTLY (its placeholder-path
+# guards have no other discriminating observer); it is internal to the checker
+# module rather than a package re-export, so it is imported from its home.
+from shekel_checkers.package_privacy import _importer_file_inside
 
 # repo root: this file is <root>/tools/pylint/tests/test_*.py
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -42,7 +50,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 def _fenced_module_sources(module_name: str) -> list[Path]:
     """Return every source file a fenced *module_name* scope covers.
 
-    A flat module (``app.services.net_worth_kernel``) is one file.  A PACKAGE
+    A flat module (``app.services.account_projection``) is one file.  A PACKAGE
     (``app.services.loan_posting_service``) is every ``.py`` file inside it --
     because the checker scopes a package by prefix, so a producer born in ANY
     submodule (``_reader``, ``_display``, ``_walk``) is in scope and must be
@@ -62,6 +70,29 @@ def _fenced_module_sources(module_name: str) -> list[Path]:
         f"scope names something that does not exist"
     )
     return sorted(package.glob("*.py"))
+
+
+def _public_export_names(tree: nodes.Module) -> list[str]:
+    """Return every public name a consumer outside *tree*'s module can call.
+
+    The registry-vs-reality mirror of the checker's own
+    ``_is_public_export_surface``, and it MUST agree with it on what "the export
+    surface" means -- otherwise this guard stops pinning the thing it claims to
+    pin. That is not hypothetical: while both looked only at ``tree.body``, a
+    public ``BalanceContext.loan`` handed routes a ``ResolvedLoan`` unseen by
+    either. So rather than re-implement the rule (a second copy that can drift),
+    this walks every FunctionDef in the tree and asks the CHECKER'S OWN predicate.
+
+    Args:
+        tree: The parsed module.
+
+    Returns:
+        The public export names, in source order.
+    """
+    return [
+        node.name for node in tree.nodes_of_class(nodes.FunctionDef)
+        if _is_public_export_surface(node)
+    ]
 
 
 class TestShekelMoneyChecker(CheckerTestCase):
@@ -480,620 +511,56 @@ class TestShekelDisableRationaleChecker(CheckerTestCase):
             self.checker.process_module(module)
 
 
-class TestShekelLoanBalanceSourceChecker(CheckerTestCase):
-    """The loan balance-map fallback must be the resolver balance, not a stored column.
-
-    ``compute_loan_period_balance_map`` / ``balance_from_schedule_at_date`` take
-    the loan's resolver-derived ``current_balance`` as the pre-first-payment /
-    empty-schedule fallback; passing a stored column (``original_principal`` /
-    ``current_principal``) is the recurring net-worth bug (F-21 / PR #44). Every
-    flagged form is paired with the conforming call that must NOT fire.
-    """
-
-    CHECKER_CLASS = ShekelLoanBalanceSourceChecker
-
-    def test_flags_original_principal_attribute(self) -> None:
-        """compute_loan_period_balance_map(..., params.original_principal): the PR #44 bug."""
-        node = astroid.extract_node(
-            "compute_loan_period_balance_map(schedule, periods, params.original_principal)",
-        )
-        with self.assertAddsMessages(
-            MessageTest("shekel-original-principal-as-balance", node=node),
-            ignore_position=True,
-        ):
-            self.checker.visit_call(node)
-
-    def test_flags_original_principal_on_other_producer(self) -> None:
-        """balance_from_schedule_at_date(..., params.original_principal) is flagged too."""
-        node = astroid.extract_node(
-            "balance_from_schedule_at_date(sorted_schedule, target, params.original_principal)",
-        )
-        with self.assertAddsMessages(
-            MessageTest("shekel-original-principal-as-balance", node=node),
-            ignore_position=True,
-        ):
-            self.checker.visit_call(node)
-
-    def test_flags_bare_name_original_principal(self) -> None:
-        """The bare-name parameter form (the live /savings bug pre-fix) is flagged."""
-        node = astroid.extract_node(
-            "compute_loan_period_balance_map(schedule, periods, original_principal)",
-        )
-        with self.assertAddsMessages(
-            MessageTest("shekel-original-principal-as-balance", node=node),
-            ignore_position=True,
-        ):
-            self.checker.visit_call(node)
-
-    def test_flags_current_principal_keyword(self) -> None:
-        """The demoted current_principal column passed by the current_balance keyword is flagged."""
-        node = astroid.extract_node(
-            "compute_loan_period_balance_map(schedule, periods, "
-            "current_balance=acct.current_principal)",
-        )
-        with self.assertAddsMessages(
-            MessageTest("shekel-original-principal-as-balance", node=node),
-            ignore_position=True,
-        ):
-            self.checker.visit_call(node)
-
-    def test_flags_qualified_producer_call(self) -> None:
-        """The attribute-call form (module.compute_loan_period_balance_map) is flagged."""
-        node = astroid.extract_node(
-            "account_projection.compute_loan_period_balance_map("
-            "schedule, periods, params.original_principal)",
-        )
-        with self.assertAddsMessages(
-            MessageTest("shekel-original-principal-as-balance", node=node),
-            ignore_position=True,
-        ):
-            self.checker.visit_call(node)
-
-    def test_allows_current_balance_attribute(self) -> None:
-        """The resolver-derived state.current_balance is the correct fallback; not flagged."""
-        node = astroid.extract_node(
-            "compute_loan_period_balance_map(schedule, periods, state.current_balance)",
-        )
-        with self.assertNoMessages():
-            self.checker.visit_call(node)
-
-    def test_allows_bare_current_balance_name(self) -> None:
-        """A bare current_balance local (the year-end form) is the correct fallback; not flagged."""
-        node = astroid.extract_node(
-            "balance_from_schedule_at_date(sorted_schedule, target, current_balance)",
-        )
-        with self.assertNoMessages():
-            self.checker.visit_call(node)
-
-    def test_ignores_original_principal_to_other_function(self) -> None:
-        """original_principal passed to an unrelated function is not this checker's concern."""
-        node = astroid.extract_node(
-            "build_rate_periods(terms, params.original_principal)",
-        )
-        with self.assertNoMessages():
-            self.checker.visit_call(node)
-
-    def test_ignores_call_without_balance_argument(self) -> None:
-        """A producer call missing the balance argument is not flagged and does not crash."""
-        node = astroid.extract_node(
-            "compute_loan_period_balance_map(schedule, periods)",
-        )
-        with self.assertNoMessages():
-            self.checker.visit_call(node)
-
-
 class TestShekelBalanceSeamChecker(CheckerTestCase):
-    """``shekel-balance-producer-bypass``: balances come through the seam only.
+    """``shekel-unclassified-fenced-export``: the fence's fail-closed residue.
 
     Every screen must obtain an account's balance through
-    ``app.services.balance_at``; only the seam and the engine cluster it
-    composes (balance_resolver, balance_calculator, account_projection,
-    net_worth_kernel) may call a balance producer directly. The
-    rule keys off the ENCLOSING module (``node.root().name``), so each case is
-    parsed inside a named module via :func:`astroid.parse` (``module_name=``)
-    rather than the bare :func:`astroid.extract_node` the shape-only checkers
-    use -- that yields an empty module name. Every flagged form is paired with
-    the conforming form that must NOT fire, and register-bound loops assert
-    the fence covers EVERY guarded producer and EVERY allowlisted module --
-    at the call site AND at the import (the aliased-import evasion class the
-    2026-07-02 review's R3 closed).
+    ``app.services.balance_at``, and that is now STRUCTURAL, not name-keyed:
+    plan step D1d moved every producer inside the seam as a private submodule
+    (``_cash_engine`` / ``_calculator`` / ``_daily_series`` / ``_kernel`` /
+    ``_investment``), W9910 forbids reaching one from outside the package in
+    every import spelling, and plan step E1e DELETED the last public producer
+    outside the seam (the two genesis posting readers) rather than fencing it.
+    So the call-fence tests are gone with the call fence -- the W9910 suite owns
+    every import spelling now, and the reader spellings a consumer would write
+    are E0611 / E1101 under ``--fail-on=E``.
+
+    What survives here is the one judgment no AST rule can make: whether a new
+    PUBLIC name in a balance-ingredient package is a producer.  The rule keys
+    off the ENCLOSING module (``node.root().name``), so each case is parsed
+    inside a named module via :func:`astroid.parse` (``module_name=``) rather
+    than the bare :func:`astroid.extract_node` the shape-only checkers use --
+    that yields an empty module name.  Every flagged form is paired with the
+    conforming form that must NOT fire, and register-bound loops assert the
+    check covers EVERY scoped module and EVERY classified name.
     """
 
     CHECKER_CLASS = ShekelBalanceSeamChecker
-
-    @staticmethod
-    def _producer_call(call_source: str, module_name: str) -> nodes.Call:
-        """Return the Call node for *call_source* parsed inside *module_name*.
-
-        The enclosing module's name drives the seam allowlist check, so it is
-        set explicitly. The snippet is a single assignment, so the module
-        body's one statement carries the call under test as its value -- no
-        nested calls, so the node is unambiguous.
-        """
-        module = astroid.parse(
-            f"result = {call_source}\n", module_name=module_name,
-        )
-        return module.body[0].value
-
-    def test_flags_attribute_producer_from_consumer(self) -> None:
-        """A route calling balance_resolver.balances_for directly is flagged."""
-        node = self._producer_call(
-            "balance_resolver.balances_for(account, scenario_id, periods)",
-            "app.routes.grid",
-        )
-        with self.assertAddsMessages(
-            MessageTest(
-                "shekel-balance-producer-bypass",
-                node=node,
-                args=("balances_for",),
-            ),
-            ignore_position=True,
-        ):
-            self.checker.visit_call(node)
-
-    def test_flags_bare_name_producer_from_consumer(self) -> None:
-        """A bare-imported producer call from a consumer is flagged.
-
-        Uses compute_loan_period_balance_map -- imported and called by its bare
-        name, the form net_worth_kernel itself uses internally.
-        """
-        node = self._producer_call(
-            "compute_loan_period_balance_map(schedule, periods, current_balance)",
-            "app.services.savings_dashboard_service._projections",
-        )
-        with self.assertAddsMessages(
-            MessageTest(
-                "shekel-balance-producer-bypass",
-                node=node,
-                args=("compute_loan_period_balance_map",),
-            ),
-            ignore_position=True,
-        ):
-            self.checker.visit_call(node)
-
-    def test_flags_investment_builder_from_consumer(self) -> None:
-        """build_investment_balance_map is guarded too: no reaching past the seam.
-
-        Extracted from net_worth_kernel to net_worth_investment and made public
-        (the kernel dispatches into it), but it stays a fenced balance producer:
-        a consumer outside the engine cluster must go through the balance_at seam.
-        """
-        node = self._producer_call(
-            "net_worth_investment.build_investment_balance_map("
-            "account, params, scenario, periods)",
-            "app.services.investment_dashboard_service",
-        )
-        with self.assertAddsMessages(
-            MessageTest(
-                "shekel-balance-producer-bypass",
-                node=node,
-                args=("build_investment_balance_map",),
-            ),
-            ignore_position=True,
-        ):
-            self.checker.visit_call(node)
-
-    def test_flags_every_guarded_producer_from_a_consumer(self) -> None:
-        """EVERY name in _BALANCE_PRODUCERS is flagged when called from a consumer.
-
-        Binds the test to the producer set itself, so a name added to (or
-        dropped from) the frozenset is automatically covered -- the fence is
-        only as strong as that set is complete.
-        """
-        for producer in sorted(_BALANCE_PRODUCERS):
-            node = self._producer_call(
-                f"{producer}(account, scenario, periods)", "app.routes.grid",
-            )
-            with self.assertAddsMessages(
-                MessageTest(
-                    "shekel-balance-producer-bypass",
-                    node=node,
-                    args=(producer,),
-                ),
-                ignore_position=True,
-            ):
-                self.checker.visit_call(node)
-
-    def test_allows_producer_from_seam(self) -> None:
-        """The seam itself (app.services.balance_at) may call a producer; not flagged."""
-        node = self._producer_call(
-            "balance_resolver.balances_for(account, scenario_id, periods)",
-            "app.services.balance_at",
-        )
-        with self.assertNoMessages():
-            self.checker.visit_call(node)
-
-    def test_allows_producer_from_every_engine_cluster_module(self) -> None:
-        """Each allowlisted engine-cluster module may call a producer (they compose each other).
-
-        The companion to the every-producer loop: asserts the allowlist covers
-        every module the seam's documented dependency direction names, so
-        narrowing the set would surface here rather than as a surprise W9906 on
-        an engine module. The allowlist holds fully-qualified names, so each is
-        used directly as the enclosing module.
-        """
-        for module_name in sorted(_BALANCE_SEAM_MODULES):
-            node = self._producer_call(
-                "compute_loan_period_balance_map(schedule, periods, current_balance)",
-                module_name,
-            )
-            with self.assertNoMessages():
-                self.checker.visit_call(node)
-
-    def test_allows_producer_from_cluster_package_submodule(self) -> None:
-        """A submodule of a cluster module (if one is split into a package) stays inside the fence.
-
-        Locks the package-prefix match in :func:`_in_balance_seam_cluster`: a
-        future ``app/services/balance_resolver/_core.py`` resolves to
-        ``app.services.balance_resolver._core`` and must remain exempt.
-        """
-        node = self._producer_call(
-            "balances_for(account, scenario_id, periods)",
-            "app.services.balance_resolver._core",
-        )
-        with self.assertNoMessages():
-            self.checker.visit_call(node)
-
-    def test_flags_same_basename_in_another_package(self) -> None:
-        """A same-named module in another package is NOT exempted (no silent bypass by collision).
-
-        The fence keys off the FULL module path, so a hypothetical
-        ``app/routes/balance_at.py`` -- basename ``balance_at`` -- is still
-        flagged for a direct producer call. This is the false-negative the
-        basename-only match would have allowed.
-        """
-        node = self._producer_call(
-            "balance_resolver.balances_for(account, scenario_id, periods)",
-            "app.routes.balance_at",
-        )
-        with self.assertAddsMessages(
-            MessageTest(
-                "shekel-balance-producer-bypass",
-                node=node,
-                args=("balances_for",),
-            ),
-            ignore_position=True,
-        ):
-            self.checker.visit_call(node)
-
-    def test_flags_producer_in_unresolvable_module(self) -> None:
-        """An empty / unresolvable module name fails closed: the producer call is flagged.
-
-        Locks the documented fail-closed behavior of
-        :func:`_in_balance_seam_cluster` -- when the module name cannot be
-        resolved, the safe direction for a fence is to flag, not exempt.
-        """
-        node = self._producer_call(
-            "balances_for(account, scenario_id, periods)", "",
-        )
-        with self.assertAddsMessages(
-            MessageTest(
-                "shekel-balance-producer-bypass",
-                node=node,
-                args=("balances_for",),
-            ),
-            ignore_position=True,
-        ):
-            self.checker.visit_call(node)
-
-    def test_flags_every_loan_ledger_reader_from_a_consumer(self) -> None:
-        """EVERY genesis loan-ledger reader is flagged from a consumer module.
-
-        The read switch's final commit fences the confirmed balance readers:
-        a route or dashboard calling one directly bypasses the
-        ``confirmed_loan_view`` injection seam.  Bound to the reader set
-        itself so a future reader added to the frozenset is automatically
-        covered.
-        """
-        for reader in sorted(_LOAN_LEDGER_READER_PRODUCERS):
-            node = self._producer_call(
-                f"{reader}(account_id, scenario_id, as_of)",
-                "app.routes.loan.dashboard",
-            )
-            with self.assertAddsMessages(
-                MessageTest(
-                    "shekel-balance-producer-bypass",
-                    node=node,
-                    args=(reader,),
-                ),
-                ignore_position=True,
-            ):
-                self.checker.visit_call(node)
-
-    def test_allows_loan_ledger_reader_from_every_sanctioned_module(self) -> None:
-        """Each reader-allowlisted module may call a genesis reader; not flagged.
-
-        The reader allowlist is the seam cluster PLUS the defining
-        ``loan_posting_service`` package and the ``loan_payment_service``
-        view seam; each is asserted, so narrowing the set surfaces here
-        rather than as a surprise W9906 on the injection path.
-        """
-        for module_name in sorted(_LOAN_LEDGER_READER_MODULES):
-            node = self._producer_call(
-                "confirmed_loan_balance_at(account_id, scenario_id, as_of)",
-                module_name,
-            )
-            with self.assertNoMessages():
-                self.checker.visit_call(node)
-
-    def test_allows_loan_ledger_reader_from_posting_package_submodule(self) -> None:
-        """The defining package's submodules stay inside the reader fence.
-
-        ``loan_posting_service`` is a package; its ``_reader`` / oracle-facing
-        internals resolve to submodule names and must remain exempt via the
-        package-prefix match.
-        """
-        node = self._producer_call(
-            "confirmed_loan_balance_at(account_id, scenario_id, as_of)",
-            "app.services.loan_posting_service._reader",
-        )
-        with self.assertNoMessages():
-            self.checker.visit_call(node)
-
-    def test_loan_ledger_reader_fails_closed_in_unresolvable_module(self) -> None:
-        """An unresolvable module name fails closed for the readers too."""
-        node = self._producer_call(
-            "confirmed_loan_balance_map(account_id, scenario_id, periods)", "",
-        )
-        with self.assertAddsMessages(
-            MessageTest(
-                "shekel-balance-producer-bypass",
-                node=node,
-                args=("confirmed_loan_balance_map",),
-            ),
-            ignore_position=True,
-        ):
-            self.checker.visit_call(node)
-
-    # ── the import-level fence (the aliased-import evasion class, R3) ──
-
-    @staticmethod
-    def _import_node(import_source: str, module_name: str) -> nodes.ImportFrom:
-        """Return the ImportFrom node for *import_source* parsed in *module_name*.
-
-        The enclosing module's name drives the allowlist check, so it is set
-        explicitly; the snippet is a single import statement, so the module
-        body's one statement is the ``ImportFrom`` under test.
-        """
-        module = astroid.parse(f"{import_source}\n", module_name=module_name)
-        return module.body[0]
-
-    def test_flags_aliased_producer_import_from_consumer(self) -> None:
-        """``from ... import balances_for as bf`` from a consumer is flagged.
-
-        This is the evasion class the import fence exists for: after the
-        aliased import every call reads ``bf(...)``, which matches no producer
-        name, so call-site matching alone would never fire again.
-        """
-        node = self._import_node(
-            "from app.services.balance_resolver import balances_for as bf",
-            "app.routes.grid",
-        )
-        with self.assertAddsMessages(
-            MessageTest(
-                "shekel-balance-producer-bypass",
-                node=node,
-                args=("balances_for",),
-            ),
-            ignore_position=True,
-        ):
-            self.checker.visit_importfrom(node)
-
-    def test_flags_every_producer_import_from_consumer(self) -> None:
-        """EVERY name in _BALANCE_PRODUCERS is flagged when imported by a consumer.
-
-        The unaliased form is flagged too -- a module that may not call a
-        producer has no legitimate reason to import it.  Bound to the producer
-        set itself, like the call-site loop, so the import fence can never
-        silently cover fewer names than the call fence.
-        """
-        for producer in sorted(_BALANCE_PRODUCERS):
-            node = self._import_node(
-                f"from app.services.engine import {producer}",
-                "app.routes.grid",
-            )
-            with self.assertAddsMessages(
-                MessageTest(
-                    "shekel-balance-producer-bypass",
-                    node=node,
-                    args=(producer,),
-                ),
-                ignore_position=True,
-            ):
-                self.checker.visit_importfrom(node)
-
-    def test_flags_multi_name_producer_import_reports_each(self) -> None:
-        """One import statement naming two producers reports both."""
-        node = self._import_node(
-            "from app.services.balance_calculator import "
-            "calculate_balances, calculate_balances_with_interest",
-            "app.routes.grid",
-        )
-        with self.assertAddsMessages(
-            MessageTest(
-                "shekel-balance-producer-bypass",
-                node=node,
-                args=("calculate_balances",),
-            ),
-            MessageTest(
-                "shekel-balance-producer-bypass",
-                node=node,
-                args=("calculate_balances_with_interest",),
-            ),
-            ignore_position=True,
-        ):
-            self.checker.visit_importfrom(node)
-
-    def test_allows_producer_import_from_every_cluster_module(self) -> None:
-        """Each engine-cluster module may import a producer (they compose each other)."""
-        for module_name in sorted(_BALANCE_SEAM_MODULES):
-            node = self._import_node(
-                "from app.services.account_projection import "
-                "compute_loan_period_balance_map",
-                module_name,
-            )
-            with self.assertNoMessages():
-                self.checker.visit_importfrom(node)
-
-    def test_allows_module_import_from_consumer(self) -> None:
-        """``from app.services import balance_calculator`` imports the MODULE; not flagged.
-
-        A module import keeps the producer's own name at every call site
-        (``balance_calculator.calculate_balances(...)``), where the call fence
-        already sees it -- so it needs no import-level guard.
-        """
-        node = self._import_node(
-            "from app.services import balance_calculator",
-            "app.routes.grid",
-        )
-        with self.assertNoMessages():
-            self.checker.visit_importfrom(node)
-
-    def test_flags_loan_ledger_reader_import_from_consumer(self) -> None:
-        """A genesis loan-ledger reader imported by a consumer is flagged (aliased or not)."""
-        node = self._import_node(
-            "from app.services.loan_posting_service import "
-            "confirmed_loan_balance_at as reader",
-            "app.routes.loan.dashboard",
-        )
-        with self.assertAddsMessages(
-            MessageTest(
-                "shekel-balance-producer-bypass",
-                node=node,
-                args=("confirmed_loan_balance_at",),
-            ),
-            ignore_position=True,
-        ):
-            self.checker.visit_importfrom(node)
-
-    def test_allows_loan_ledger_reader_import_from_every_sanctioned_module(self) -> None:
-        """Each reader-allowlisted module may import a genesis reader.
-
-        Covers the two real in-tree import shapes: the defining package's
-        ``__init__`` re-export and net_worth_kernel's documented private
-        ``_reader`` reach-in (both resolve through the reader allowlist).
-        """
-        for module_name in sorted(_LOAN_LEDGER_READER_MODULES):
-            node = self._import_node(
-                "from app.services.loan_posting_service._reader import "
-                "confirmed_loan_balance_map",
-                module_name,
-            )
-            with self.assertNoMessages():
-                self.checker.visit_importfrom(node)
-
-    def test_allows_seam_entry_call_from_consumer(self) -> None:
-        """A consumer calling the seam's own balance_map entry is the sanctioned path; not flagged.
-
-        ``balance_map`` is a seam entry point, not a guarded producer, so the
-        attribute name does not match -- this is exactly how every rerouted
-        consumer now reads balances.
-        """
-        node = self._producer_call(
-            "balance_at.balance_map(account, scenario, periods)",
-            "app.routes.grid",
-        )
-        with self.assertNoMessages():
-            self.checker.visit_call(node)
-
-    def test_allows_project_balance_from_consumer(self) -> None:
-        """project_balance is a rich primitive, not a producer; not flagged.
-
-        It returns ProjectedBalance contribution/growth detail the seam
-        composes, so a chart consumer may call it directly.
-        """
-        node = self._producer_call(
-            "growth_engine.project_balance(account, params, scenario, periods)",
-            "app.services.investment_dashboard_service",
-        )
-        with self.assertNoMessages():
-            self.checker.visit_call(node)
-
-    def test_allows_resolve_loan_from_consumer(self) -> None:
-        """resolve_loan returns the rich LoanState, not a balance map; never flagged."""
-        node = self._producer_call(
-            "loan_resolver.resolve_loan(account, scenario_id)",
-            "app.routes.loan._helpers",
-        )
-        with self.assertNoMessages():
-            self.checker.visit_call(node)
-
-    def test_flags_investment_base_balance_map_from_consumer(self) -> None:
-        """The cash-basis seed accessor IS guarded: a consumer call is flagged.
-
-        Closing the fence hole made ``net_worth_kernel.investment_base_balance_map``
-        a guarded producer.  It returns a DISPLAY-shaped cash-basis (pre-growth)
-        map -- the one balance-map accessor a consumer could have rendered as a
-        real balance (the investment understatement bug the seam exists to
-        kill).  A consumer reaching it directly is now flagged; the sanctioned
-        seed read is the seam entry (see the next test).  This is also covered
-        by ``test_flags_every_guarded_producer_from_a_consumer``; kept explicit
-        because the prose comment in ``shekel_checkers/balance_seam.py`` names it.
-        """
-        node = self._producer_call(
-            "net_worth_kernel.investment_base_balance_map(account, scenario, periods)",
-            "app.services.investment_dashboard_service",
-        )
-        with self.assertAddsMessages(
-            MessageTest(
-                "shekel-balance-producer-bypass",
-                node=node,
-                args=("investment_base_balance_map",),
-            ),
-            ignore_position=True,
-        ):
-            self.checker.visit_call(node)
-
-    def test_allows_investment_seed_map_seam_entry_from_consumer(self) -> None:
-        """The seam's investment_seed_map is the compliant seed read; never flagged.
-
-        After the fence hole closed, the sanctioned consumers (investment /
-        retirement / year-end growth) read the cash-basis seed through
-        ``balance_at.investment_seed_map`` instead of the now-guarded kernel
-        producer.  That seam entry is NOT a producer name, so a consumer calling
-        it is never flagged -- the fence-compliant path the reroute put every
-        seed consumer on.
-        """
-        node = self._producer_call(
-            "balance_at.investment_seed_map(account, scenario, periods)",
-            "app.services.investment_dashboard_service",
-        )
-        with self.assertNoMessages():
-            self.checker.visit_call(node)
-
-    def test_ignores_unrelated_call_from_consumer(self) -> None:
-        """A call to some unrelated function is not this checker's concern."""
-        node = self._producer_call(
-            "build_rate_periods(terms, principal)", "app.routes.grid",
-        )
-        with self.assertNoMessages():
-            self.checker.visit_call(node)
-
-    # ── W9909: the fail-closed completeness half of the fence ──────────
 
     @staticmethod
     def _function_def(source: str, module_name: str) -> nodes.FunctionDef:
         """Return the FunctionDef for *source* parsed inside *module_name*.
 
         The enclosing module's name drives the fenced-surface scoping, so it is
-        set explicitly (as in :meth:`_producer_call`). The snippet defines
-        exactly one top-level function, so the module body's first statement is
-        the node under test.
+        set explicitly.  The snippet defines exactly one top-level function, so
+        the module body's first statement is the node under test.
         """
         module = astroid.parse(source, module_name=module_name)
         return module.body[0]
 
-    def test_flags_unclassified_public_function_in_engine_cluster(self) -> None:
-        """A NEW public function in the kernel, classified as neither, is flagged.
+    def test_flags_unclassified_public_function_in_loan_resolver(self) -> None:
+        """A NEW public function in the loan-resolver tier is flagged (B-12 closed).
 
-        This is the regression test for the fence's fail-open default: it is
-        exactly the shape of ``loan_owed_at_dates`` (born inside the cluster,
-        never listed, silently reachable) and of ``investment_base_balance_map``
-        before it. It must fail the moment the function is DEFINED.
+        This is the regression test for the fence's fail-open default: exactly
+        the shape of ``loan_owed_at_dates`` (born inside a covered tier, never
+        listed, silently reachable) -- and the ``loan_resolver`` package was
+        the findings ledger's "wholly unfenced producer tier" until plan step
+        D3 scoped it.  It must fail the moment the function is DEFINED, in any
+        submodule (the package key prefix-matches).
         """
         node = self._function_def(
             "def owed_at_some_dates(accounts, scenario_id):\n    return {}\n",
-            "app.services.net_worth_kernel",
+            "app.services.loan_resolver._state",
         )
         with self.assertAddsMessages(
             MessageTest(
@@ -1141,8 +608,8 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
     def test_ignores_private_function_in_fenced_module(self) -> None:
         """A private (underscore) cluster function is not part of the export surface."""
         node = self._function_def(
-            "def _build_amortizing_balance_map(account, scenario):\n    return {}\n",
-            "app.services.net_worth_kernel",
+            "def _account_interest_projection(account, scenario):\n    return {}\n",
+            "app.services.balance_at._kernel",
         )
         with self.assertNoMessages():
             self.checker.visit_functiondef(node)
@@ -1179,22 +646,270 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
             "    def owed_at_some_dates(dates):\n"
             "        return {}\n"
             "    return owed_at_some_dates\n",
-            module_name="app.services.net_worth_kernel",
+            module_name="app.services.balance_at._kernel",
         )
         nested = module.body[0].body[0]
         with self.assertNoMessages():
             self.checker.visit_functiondef(nested)
 
+    # ── The context's loan handle: the hole a public METHOD opened ──────
+
+    @staticmethod
+    def _method_def(source: str, module_name: str) -> nodes.FunctionDef:
+        """Return the first METHOD of the first class in *source*.
+
+        The method-level counterpart of :meth:`_function_def`. The snippet
+        defines exactly one class with one method, so the class body's first
+        statement is the node under test.
+        """
+        module = astroid.parse(source, module_name=module_name)
+        return module.body[0].body[0]
+
+    def test_flags_unclassified_public_method_in_fenced_module(self) -> None:
+        """A NEW public METHOD in a fenced module, unclassified, is flagged.
+
+        THE regression test for this checker's second fail-open hole.
+        ``visit_functiondef`` used to return early for anything whose parent was
+        not the Module, so a public method was never classified at all -- and
+        ``BalanceContext.loan`` became exactly that: a public method handing any
+        caller a ``ResolvedLoan`` whose then-extant ``state.current_balance`` was
+        a balance-at-today one attribute read away. Measured before the fix: a
+        route reading ``ctx.loan_state(account).current_balance`` rated 10.00/10.
+        D3's adversarial review re-measured the same shape from the other side
+        (a ``ctx.balance_now(account)`` folding the memoized walk rated
+        10.00/10 with the ``_context`` ruling deleted), which is why that
+        ruling is the ONE seam-private scope D3 keeps: ``BalanceContext`` is
+        publicly re-exported, and W9910 cannot see a method on an object a
+        consumer holds.
+        """
+        node = self._method_def(
+            "class BalanceContext:\n"
+            "    def balance_now(self, account):\n"
+            "        return fold_from_walk(self.loan_walk(account), [self.as_of])\n",
+            "app.services.balance_at._context",
+        )
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-unclassified-fenced-export",
+                node=node,
+                args=("balance_now",),
+                line=2, col_offset=4,
+                end_line=2, end_col_offset=19,
+            ),
+        ):
+            self.checker.visit_functiondef(node)
+
+    def test_ignores_private_method_in_fenced_module(self) -> None:
+        """A private method is not reachable from outside; not an export."""
+        node = self._method_def(
+            "class BalanceContext:\n"
+            "    def _memoize(self, account):\n"
+            "        return None\n",
+            "app.services.balance_at._context",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_functiondef(node)
+
+    def test_ignores_public_method_of_private_class_in_fenced_module(self) -> None:
+        """A public method of a PRIVATE class: a consumer cannot name the class."""
+        node = self._method_def(
+            "class _Memo:\n"
+            "    def balance_right_now(self, account):\n"
+            "        return None\n",
+            "app.services.balance_at._context",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_functiondef(node)
+
+    def test_flags_public_method_of_a_NESTED_public_class(self) -> None:
+        """A method of a public class nested in a public class is still reachable.
+
+        ``Outer.Inner().balance_right_now()`` is nameable from a consumer, so it is
+        export surface. A fixed two-level parent test (``parent is a ClassDef whose
+        parent is the Module``) drops it silently. No fenced module has this shape
+        today -- and "it cannot happen today" is exactly the reasoning that
+        produced both holes this checker exists to close, so the walk is up the
+        whole ancestor chain and this pins it.
+        """
+        module = astroid.parse(
+            "class Outer:\n"
+            "    class Inner:\n"
+            "        def balance_right_now(self, account):\n"
+            "            return None\n",
+            module_name="app.services.loan_resolver._state",
+        )
+        node = module.body[0].body[0].body[0]
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-unclassified-fenced-export",
+                node=node,
+                args=("balance_right_now",),
+                line=3, col_offset=8,
+                end_line=3, end_col_offset=29,
+            ),
+        ):
+            self.checker.visit_functiondef(node)
+
+    def test_flags_public_function_defined_under_a_module_level_if(self) -> None:
+        """A top-level function inside an ``if`` / ``try`` is still an export.
+
+        ``node.parent`` is the ``If``, not the Module, so a bare
+        ``isinstance(parent, Module)`` test drops it -- and a conditional
+        definition (a feature flag, a try/except import shim) is a perfectly
+        ordinary way to define a public producer.
+        """
+        module = astroid.parse(
+            "import os\n"
+            "if os.environ.get('X'):\n"
+            "    def balance_right_now(account):\n"
+            "        return None\n",
+            module_name="app.services.loan_resolver._state",
+        )
+        node = module.body[1].body[0]
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-unclassified-fenced-export",
+                node=node,
+                args=("balance_right_now",),
+                line=3, col_offset=4,
+                end_line=3, end_col_offset=25,
+            ),
+        ):
+            self.checker.visit_functiondef(node)
+
+    def test_flags_unclassified_export_in_every_hand_scoped_module(self) -> None:
+        """Every W9909-scoped module really is covered -- named literally.
+
+        Since plan step D3 the whole registry scope is hand-written constants
+        sitting a few lines from the entries they cover -- the residue of
+        PUBLIC balance-ingredient packages W9910 cannot protect:
+
+        * ``_LOAN_LEDGER_DEFINING_MODULES`` (``loan_ledger`` +
+          ``loan_posting_service``, the walk and the posting readers)
+        * ``_CASH_LEDGER_MODULES`` (``cash_ledger``, D1a then D1c)
+        * ``_KIND_CLASSIFIER_MODULES`` (``account_projection``, D1b)
+        * ``_LOAN_RESOLVER_ENGINE_MODULES`` (``loan_resolver``, D3 -- B-12's
+          "wholly unfenced tier", closed)
+        * ``_LOAN_PAYMENT_SEAM_MODULES`` (``loan_payment_service``, D3's
+          review -- the one reader-allowlisted module outside the defining
+          package)
+        * ``_SEAM_PRIVATE_CONTEXT_MODULES`` (``balance_at._context`` -- the
+          one seam-private ruling D3 keeps: ``BalanceContext`` is publicly
+          re-exported, so a new public METHOD on it reaches every route with
+          no ``__init__`` edit, and W9910 cannot see attribute access)
+
+        For those, a set-equality guard would be SELF-ATTESTING: delete the
+        registry entry and empty the constant -- two adjacent edits in one
+        file, which is exactly the shape of the change that would do it -- and
+        the suite stays green.  Measured on an earlier tree: **150 passed**
+        with ``account_projection`` dropped from both, and the balance-at-T
+        probe that motivated its entry then rated 10.00/10 again.
+
+        **So the module names below are written out LITERALLY, and that is the
+        point.**  Binding this loop to the constants would reproduce the hole one
+        level down: emptying a constant would make the loop vacuous instead of
+        failing.  A behavioural pin that names its subject cannot go quiet.
+        """
+        for module_name in (
+            "app.services.account_projection",
+            "app.services.cash_ledger",
+            "app.services.loan_ledger",
+            "app.services.loan_posting_service",
+            "app.services.loan_payment_service",
+            "app.services.loan_resolver",
+            "app.services.balance_at._context",
+        ):
+            node = self._function_def(
+                "def balance_on(account, target):\n    return None\n",
+                module_name,
+            )
+            with self.assertAddsMessages(
+                MessageTest(
+                    "shekel-unclassified-fenced-export",
+                    node=node,
+                    args=("balance_on",),
+                ),
+                ignore_position=True,
+            ):
+                self.checker.visit_functiondef(node)
+
+    def test_package_scope_covers_a_submodule_that_does_not_exist_yet(
+        self,
+    ) -> None:
+        """A NEW submodule of a scoped PACKAGE is covered the day it is written.
+
+        This is what plan step D1c bought by making ``cash_ledger`` a package
+        instead of two flat modules plus five stranded functions, and it is
+        worth a behavioural pin rather than trust in
+        :func:`_fenced_module_ruling`'s prefix match.
+
+        The hole it closes is Section 8's: *a fail-CLOSED gate is scoped by
+        module identity, so creating a module is how you escape it.*  While the
+        cash layer was ``cash_events`` + ``period_flows``, its scope was a
+        hand-written LIST, and writing ``app/services/cash_amounts.py`` would
+        have left that scope silently -- which is exactly how N-28 happened at
+        D1a.  A package key is matched by PREFIX, so escaping now means leaving
+        the package, a far more visible act than adding a file to it.
+
+        Uses a submodule name that deliberately does NOT exist on disk: the
+        checker keys on the enclosing module's NAME, so coverage must not
+        depend on the file having been created yet.
+        """
+        node = self._function_def(
+            "def balance_on(account, target):\n    return None\n",
+            "app.services.cash_ledger._not_written_yet",
+        )
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-unclassified-fenced-export",
+                node=node,
+                args=("balance_on",),
+            ),
+            ignore_position=True,
+        ):
+            self.checker.visit_functiondef(node)
+
+    def test_package_scope_stops_at_the_package_boundary(self) -> None:
+        """Teeth for the prefix match: a look-alike SIBLING is not scoped.
+
+        The guard above would pass for the wrong reason if the match were a
+        bare string prefix, so this pins the trailing-dot half of
+        :func:`_module_in_allowlist`'s convention: ``cash_ledger_helpers``
+        starts with ``cash_ledger`` but is a different module, outside the
+        package, and must not inherit its ruling.
+
+        It also states the residual honestly -- a package scope does NOT cover
+        a sibling created beside it.  That is the remaining escape, and it is
+        deliberately louder than the one D1c closed: it requires leaving the
+        leaf the cash rules live in.
+        """
+        node = self._function_def(
+            "def balance_on(account, target):\n    return None\n",
+            "app.services.cash_ledger_helpers",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_functiondef(node)
+
     def test_rulings_cover_every_producer_defining_module(self) -> None:
-        """The ruling registry scopes EXACTLY the producer-defining modules.
+        """The ruling registry scopes EXACTLY the declared module scopes.
 
         The completeness check can only protect a module it scopes, so the scope
-        itself needs a guard: if an engine-cluster module (or the loan-ledger
-        package) were added to the fence but not given a ruling, W9909 would
-        silently stop covering it -- the fail-open hole one level up. Pins the
-        registry's key set against the two module scopes the fence is built from.
+        itself needs a guard: if a package were added to a scope constant but
+        not given a ruling (or the reverse), W9909 would silently stop covering
+        it -- the fail-open hole one level up. Pins the registry's key set
+        against the five scope constants the D3 residue is built from.  (The
+        LITERAL module-name pin lives in
+        :meth:`test_flags_unclassified_export_in_every_hand_scoped_module`,
+        so emptying a constant AND its entry together still fails.)
         """
-        expected = _ENGINE_CLUSTER_MODULES | _LOAN_LEDGER_DEFINING_MODULES
+        expected = (
+            _LOAN_LEDGER_DEFINING_MODULES
+            | _LOAN_RESOLVER_ENGINE_MODULES
+            | _LOAN_PAYMENT_SEAM_MODULES
+            | _SEAM_PRIVATE_CONTEXT_MODULES
+            | _CASH_LEDGER_MODULES
+            | _KIND_CLASSIFIER_MODULES
+        )
         assert set(_FENCED_MODULE_RULINGS) == expected
 
     def test_classification_sets_match_the_real_fenced_modules(self) -> None:
@@ -1203,11 +918,19 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         The checker enforces completeness against whatever the sets say; this
         pins the sets against the actual source on disk, in both directions:
 
-        * every public top-level function really defined in a fenced module is
-          classified (no hole the checker itself could not see -- e.g. if a
-          module were dropped from the scope), and
+        * every public top-level function AND every public METHOD of a public
+          class really defined in a fenced module is classified (no hole the
+          checker itself could not see -- e.g. if a module were dropped from the
+          scope), and
         * every classified name really exists (no stale entry silently
           un-fencing a name that was renamed).
+
+        **The methods are walked, not just the top-level functions, and that is
+        the point.**  This guard previously read only ``tree.body``, so it carried
+        the identical blind spot the checker did: ``BalanceContext.loan`` was a
+        public method handing routes a ``ResolvedLoan``, and neither the checker
+        nor the guard that is supposed to pin the checker's coverage could see it.
+        A guard that shares the bug it guards against is not a guard.
 
         Parses the source with astroid rather than importing ``app`` so the
         checker's unit tests stay free of the Flask/SQLAlchemy import graph.
@@ -1219,21 +942,16 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
                 tree = astroid.parse(
                     source_path.read_text(encoding="utf-8"), module_name=module,
                 )
-                for child in tree.body:
-                    if (
-                        isinstance(child, nodes.FunctionDef)
-                        and not child.name.startswith("_")
-                    ):
-                        defined.add(child.name)
-                        assert child.name in classified, (
-                            f"{module}.{child.name} is an UNCLASSIFIED public "
-                            f"function in a fenced module: add it to the producer "
-                            f"set (it answers balance-at-T) or the non-producer "
-                            f"set (it does not)"
-                        )
+                for name in _public_export_names(tree):
+                    defined.add(name)
+                    assert name in classified, (
+                        f"{module}.{name} is an UNCLASSIFIED public export in a "
+                        f"fenced module: add it to the producer set (it answers "
+                        f"balance-at-T) or the non-producer set (it does not)"
+                    )
             # Only the module's OWN non-producer rulings are pinned for staleness:
-            # the producer set is shared across the cluster (a producer defined in
-            # balance_resolver is legitimately absent from net_worth_kernel).
+            # the producer set is shared across the cluster (a producer defined
+            # in ``_cash_engine`` is legitimately absent from ``_kernel``).
             stale = non_producers - defined
             assert not stale, (
                 f"{module}: non-producer rulings for functions it no longer "
@@ -1252,7 +970,7 @@ class TestShekelTransactionStatusBypassChecker(CheckerTestCase):
     fenced (H3/R3 of the 2026-07-02 review closed the last three): direct
     assignment, the literal ``setattr`` form, a ``status_id`` payload in a bulk
     ``.update()`` / ``.values()`` call, and a born-settled ``Transaction`` /
-    ``Transfer`` constructor kwarg.  Like the W9906 fence the
+    ``Transfer`` constructor kwarg.  Like every module-scoped fence here the
     rule keys off the ENCLOSING module (``node.root().name``), so each snippet is
     parsed inside a named module via :func:`astroid.parse` (``module_name=``).
     Every flagged form is paired with the conforming form that must NOT fire, and
@@ -1724,7 +1442,7 @@ class TestShekelLedgerModelFenceChecker(CheckerTestCase):
     ``LedgerAccount``) may be imported only by the posting-ledger write core, its
     readers, and the two utilities that legitimately hold a model class
     (:data:`_LEDGER_MODEL_ALLOWLIST`); every other module must reach the
-    append-only ledger through those services. Like the W9906/W9907 fences the
+    append-only ledger through those services. Like the W9907 status fence the
     rule keys off the ENCLOSING module (``node.root().name``), so each snippet is
     parsed inside a named module via :func:`astroid.parse` (``module_name=``).
     Both fence axes are exercised: the NAME axis (a model class imported from the
@@ -2138,3 +1856,657 @@ class TestShekelLedgerModelFenceChecker(CheckerTestCase):
             )
             with self.assertNoMessages():
                 self.checker.visit_importfrom(node)
+
+
+# ── shekel-private-module-import (W9910) fixtures ──
+
+
+@pytest.fixture(scope="module", name="privacy_fixture_root")
+def _privacy_fixture_root(tmp_path_factory: pytest.TempPathFactory):
+    """On-disk fixture packages for the resolution-dependent privacy tests.
+
+    The W9910 rule is mostly pure string analysis, but two behaviors depend on
+    astroid RESOLVING real modules: the ``from P import _x`` module-vs-name
+    split, and the physical-membership second chance for namespace packages.
+    Testing those against the live ``app`` tree would couple the checker tests
+    to the application's import graph (and to ``app`` being importable at all),
+    so a hermetic fixture tree is built once per module and put on ``sys.path``:
+
+    * ``dgate_res_pkg`` -- a REGULAR package: ``__init__`` defines a private
+      NAME, ``_engine`` is a private MODULE, ``public_mod`` is a public module
+      defining a private NAME.
+    * ``dgate_res_ns`` -- a NAMESPACE package (no ``__init__.py``) holding a
+      private module, mirroring ``scripts/_script_lib.py``, plus a private
+      subPACKAGE (``_libpkg``) whose boundary a namespace sibling must NOT
+      inherit membership of (the per-boundary rule).
+
+    The fixture names are used ONLY as resolution targets, never as a parsed
+    module's ``module_name`` -- :func:`astroid.parse` registers string-built
+    modules in the manager cache under their given name (with the ``"<?>"``
+    placeholder file), so reusing a name in both roles would let one test's
+    fake module shadow another test's on-disk resolution, making outcomes
+    order-dependent. The pure string-rule tests use the disjoint
+    ``dgate_probe_*`` names, which never exist on disk and are never resolved.
+
+    Yields:
+        The root directory holding both fixture packages.
+    """
+    root = tmp_path_factory.mktemp("dgate_fixture")
+    pkg = root / "dgate_res_pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text(
+        "_package_private_name = object()\n", encoding="utf-8",
+    )
+    (pkg / "_engine.py").write_text(
+        "def build_balance_map():\n    return {}\n", encoding="utf-8",
+    )
+    (pkg / "public_mod.py").write_text(
+        "_module_private_name = object()\n", encoding="utf-8",
+    )
+    namespace = root / "dgate_res_ns"
+    (namespace / "_libpkg").mkdir(parents=True)
+    (namespace / "_ns_lib.py").write_text(
+        "def helper():\n    return 1\n", encoding="utf-8",
+    )
+    (namespace / "_libpkg" / "__init__.py").write_text("", encoding="utf-8")
+    (namespace / "_libpkg" / "_deep.py").write_text(
+        "def deep_helper():\n    return 2\n", encoding="utf-8",
+    )
+    # Both probe files exist on disk: the physical-membership test only honors
+    # REAL files (astroid's "<?>" placeholder must never suppress a finding),
+    # so the outsider control must fail on DIRECTORY containment, not on a
+    # missing file.
+    (namespace / "sibling_tool.py").write_text(
+        "from dgate_res_ns._ns_lib import helper\n", encoding="utf-8",
+    )
+    (root / "outsider.py").write_text(
+        "from dgate_res_ns._ns_lib import helper\n", encoding="utf-8",
+    )
+    sys.path.insert(0, str(root))
+    yield root
+    sys.path.remove(str(root))
+
+
+class TestShekelPackagePrivacyChecker(CheckerTestCase):
+    """``shekel-private-module-import``: a package's private modules are private.
+
+    The balance arc's D-gate (docs/audits/balance_architecture/README.md): a
+    module outside package ``P`` may not import ``P._x``, nor any name from
+    it, in any spelling -- including ``from P._x import name``, the form the
+    stock ``import-private-name`` extension is fail-open for (finding N-26),
+    and imports under ``if TYPE_CHECKING:`` (finding N-25's shape). The rule
+    keys off the ENCLOSING module name (plus the physical-file second chance
+    for namespace packages), so each case is parsed inside a named module via
+    :func:`astroid.parse`. Every flagged form is paired with the conforming
+    form that must NOT fire.
+    """
+
+    CHECKER_CLASS = ShekelPackagePrivacyChecker
+
+    @staticmethod
+    def _import_statement(
+        source: str,
+        module_name: str,
+        path: "str | None" = None,
+        is_package: bool = False,
+    ) -> nodes.NodeNG:
+        """Return the last statement of *source* parsed inside *module_name*.
+
+        Args:
+            source: Python source whose final statement is the import under test.
+            module_name: Dotted name given to the enclosing module.
+            path: Optional file path recorded on the module (drives the
+                physical-membership test).
+            is_package: Mark the module as a package ``__init__`` (drives
+                relative-import resolution depth).
+
+        Returns:
+            The final top-level statement node (an Import or ImportFrom).
+        """
+        module = astroid.parse(source, module_name=module_name, path=path)
+        if is_package:
+            module.package = True
+        return module.body[-1]
+
+    # ── the N-26 hole and its siblings: every spelling is flagged ──
+
+    def test_flags_from_private_module_import_name(self) -> None:
+        """``from P._x import name`` from outside P is flagged -- the N-26 form.
+
+        This exact spelling rates 10.00/10 under the stock
+        ``import-private-name`` extension (measured on pylint 4.0.5), and it is
+        the form the seam's private engine modules are exposed to.
+        """
+        node = self._import_statement(
+            "from app.services.balance_at._kernel import build_account_balance_map",
+            "app.routes.grid",
+        )
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-private-module-import",
+                node=node,
+                args=(
+                    "app.services.balance_at._kernel",
+                    "app.services.balance_at",
+                ),
+            ),
+            ignore_position=True,
+        ):
+            self.checker.visit_importfrom(node)
+
+    def test_flags_aliased_from_import(self) -> None:
+        """Aliasing the imported name does not evade the fence."""
+        node = self._import_statement(
+            "from app.services.balance_at._kernel import "
+            "build_account_balance_map as calc",
+            "app.routes.grid",
+        )
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-private-module-import",
+                node=node,
+                args=(
+                    "app.services.balance_at._kernel",
+                    "app.services.balance_at",
+                ),
+            ),
+            ignore_position=True,
+        ):
+            self.checker.visit_importfrom(node)
+
+    def test_flags_from_package_import_private_module(
+        self, privacy_fixture_root: Path,
+    ) -> None:
+        """``from P import _x`` where ``_x`` IS a module of P is flagged.
+
+        The spelling is ambiguous between a private submodule (fenced) and a
+        private name defined in P's ``__init__`` (out of scope); astroid
+        resolution decides, and here ``_engine.py`` exists on disk.
+        """
+        assert privacy_fixture_root.is_dir()
+        node = self._import_statement(
+            "from dgate_res_pkg import _engine", "consumer_outside",
+        )
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-private-module-import",
+                node=node,
+                args=("dgate_res_pkg._engine", "dgate_res_pkg"),
+            ),
+            ignore_position=True,
+        ):
+            self.checker.visit_importfrom(node)
+
+    def test_flags_plain_import(self) -> None:
+        """``import P._x`` from outside P is flagged at the Import node."""
+        node = self._import_statement(
+            "import app.services.balance_at._kernel", "app.routes.grid",
+        )
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-private-module-import",
+                node=node,
+                args=(
+                    "app.services.balance_at._kernel",
+                    "app.services.balance_at",
+                ),
+            ),
+            ignore_position=True,
+        ):
+            self.checker.visit_import(node)
+
+    def test_flags_aliased_plain_import_reports_each_name(self) -> None:
+        """``import P._x as y, P._z`` reports EVERY violating dotted path."""
+        node = self._import_statement(
+            "import app.services.balance_at._fold as fold, "
+            "app.services.balance_at._plan",
+            "app.routes.grid",
+        )
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-private-module-import",
+                node=node,
+                args=(
+                    "app.services.balance_at._fold",
+                    "app.services.balance_at",
+                ),
+            ),
+            MessageTest(
+                "shekel-private-module-import",
+                node=node,
+                args=(
+                    "app.services.balance_at._plan",
+                    "app.services.balance_at",
+                ),
+            ),
+            ignore_position=True,
+        ):
+            self.checker.visit_import(node)
+
+    def test_flags_type_checking_import(self) -> None:
+        """An import under ``if TYPE_CHECKING:`` is NOT exempt (N-25's shape).
+
+        A public signature typed from another package's private module is a
+        boundary leak; the D-gate ruling explicitly forbids the exemption, and
+        this test pins that the checker sees the nested ImportFrom like any
+        other.
+        """
+        module = astroid.parse(
+            "from typing import TYPE_CHECKING\n"
+            "if TYPE_CHECKING:\n"
+            "    from app.services.balance_at._context import BalanceContext\n",
+            module_name="app.routes.grid",
+        )
+        node = module.body[-1].body[0]
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-private-module-import",
+                node=node,
+                args=(
+                    "app.services.balance_at._context",
+                    "app.services.balance_at",
+                ),
+            ),
+            ignore_position=True,
+        ):
+            self.checker.visit_importfrom(node)
+
+    def test_flags_nested_private_subpackage_at_first_crossing(self) -> None:
+        """A path through a private subPACKAGE reports the FIRST boundary crossed."""
+        node = self._import_statement(
+            "from dgate_probe_pkg._sub.leaf import VALUE", "consumer_outside",
+        )
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-private-module-import",
+                node=node,
+                args=("dgate_probe_pkg._sub", "dgate_probe_pkg"),
+            ),
+            ignore_position=True,
+        ):
+            self.checker.visit_importfrom(node)
+
+    def test_flags_sibling_package_prefix_collision(self) -> None:
+        """A package whose name merely EXTENDS the owner's is outside it.
+
+        ``app.services.balance_at2`` must not inherit ``app.services.balance_at``'s
+        membership -- the trailing-dot rule every fence in this plugin carries.
+        """
+        node = self._import_statement(
+            "from app.services.balance_at._kernel import build_account_balance_map",
+            "app.services.balance_at2.helper",
+        )
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-private-module-import",
+                node=node,
+                args=(
+                    "app.services.balance_at._kernel",
+                    "app.services.balance_at",
+                ),
+            ),
+            ignore_position=True,
+        ):
+            self.checker.visit_importfrom(node)
+
+    def test_flags_relative_import_crossing_packages(self) -> None:
+        """A RELATIVE import that climbs into a sibling package's private is flagged.
+
+        In ``app.services.other_pkg.helper`` (a module of the package
+        ``app.services.other_pkg``), two leading dots name ``app.services``, so
+        the clause resolves to ``app.services.balance_at._kernel`` -- a privacy
+        crossing exactly like its absolute twin.
+        """
+        node = self._import_statement(
+            "from ..balance_at._kernel import build_account_balance_map",
+            "app.services.other_pkg.helper",
+        )
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-private-module-import",
+                node=node,
+                args=(
+                    "app.services.balance_at._kernel",
+                    "app.services.balance_at",
+                ),
+            ),
+            ignore_position=True,
+        ):
+            self.checker.visit_importfrom(node)
+
+    def test_flags_unknown_importer_fails_closed(self) -> None:
+        """An importer with no module name is inside nothing: the import flags."""
+        node = self._import_statement(
+            "from app.services.balance_at._kernel import build_account_balance_map",
+            "",
+        )
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-private-module-import",
+                node=node,
+                args=(
+                    "app.services.balance_at._kernel",
+                    "app.services.balance_at",
+                ),
+            ),
+            ignore_position=True,
+        ):
+            self.checker.visit_importfrom(node)
+
+    def test_flags_unresolvable_relative_fails_closed(self) -> None:
+        """A relative import that cannot be resolved still flags its private target."""
+        node = self._import_statement(
+            "from ._engine import build_balance_map", "",
+        )
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-private-module-import",
+                node=node,
+                args=("._engine", "<unresolvable>"),
+            ),
+            ignore_position=True,
+        ):
+            self.checker.visit_importfrom(node)
+
+    def test_flags_namespace_package_reach_from_outside(
+        self, privacy_fixture_root: Path,
+    ) -> None:
+        """A file OUTSIDE a namespace package's directory may not import its private.
+
+        The control for the physical-membership exemption below: same import,
+        same owner, and the importing file EXISTS on disk -- but outside
+        ``dgate_res_ns/`` -- so the suppression must fail on directory
+        containment itself, and the crossing fires.
+        """
+        node = self._import_statement(
+            "from dgate_res_ns._ns_lib import helper",
+            "outsider",
+            path=str(privacy_fixture_root / "outsider.py"),
+        )
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-private-module-import",
+                node=node,
+                args=("dgate_res_ns._ns_lib", "dgate_res_ns"),
+            ),
+            ignore_position=True,
+        ):
+            self.checker.visit_importfrom(node)
+
+    def test_flags_namespace_sibling_reaching_private_subpackage(
+        self, privacy_fixture_root: Path,
+    ) -> None:
+        """Physical membership is PER BOUNDARY: a sibling is not inside ``_libpkg``.
+
+        This step's adversarial review demonstrated the evasion on the first
+        draft: a statement-wide physical suppression let a namespace sibling
+        reach ``P._libpkg._deep`` silently where the regular-package twin
+        flags. The sibling's file sits inside ``dgate_res_ns`` but NOT inside
+        ``dgate_res_ns/_libpkg``, so the deeper boundary must still fire.
+        """
+        node = self._import_statement(
+            "from dgate_res_ns._libpkg._deep import deep_helper",
+            "sibling_tool",
+            path=str(privacy_fixture_root / "dgate_res_ns" / "sibling_tool.py"),
+        )
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-private-module-import",
+                node=node,
+                args=("dgate_res_ns._libpkg._deep", "dgate_res_ns._libpkg"),
+            ),
+            ignore_position=True,
+        ):
+            self.checker.visit_importfrom(node)
+
+    def test_flags_namespace_sibling_binding_private_submodule(
+        self, privacy_fixture_root: Path,
+    ) -> None:
+        """When the base crossing dissolves, the name scan must still run.
+
+        ``from dgate_res_ns._libpkg import _deep`` from a namespace sibling:
+        the base's ``_libpkg`` boundary is dissolved by physical membership of
+        ``dgate_res_ns``, so the statement must FALL THROUGH to the
+        ``from P import _x`` scan -- where ``_deep`` resolves as a module of a
+        package the importer is NOT inside, and flags. The review's second
+        demonstrated evasion (the early return skipped this scan).
+        """
+        node = self._import_statement(
+            "from dgate_res_ns._libpkg import _deep",
+            "sibling_tool",
+            path=str(privacy_fixture_root / "dgate_res_ns" / "sibling_tool.py"),
+        )
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-private-module-import",
+                node=node,
+                args=("dgate_res_ns._libpkg._deep", "dgate_res_ns._libpkg"),
+            ),
+            ignore_position=True,
+        ):
+            self.checker.visit_importfrom(node)
+
+    def test_flags_private_name_from_unresolvable_package(self) -> None:
+        """An unresolvable ``from`` base presumes the private target is a module.
+
+        The ratified fail-closed direction of the module-vs-name split: when
+        ``dgate_probe_missing`` resolves nowhere (not on disk, never parsed),
+        the checker cannot prove ``_x`` is a mere name, so it must flag --
+        inverting this presumption is exactly the N-26-style fail-open
+        regression the review measured the first draft's tests blind to.
+        """
+        node = self._import_statement(
+            "from dgate_probe_missing import _x", "consumer_outside",
+        )
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-private-module-import",
+                node=node,
+                args=("dgate_probe_missing._x", "dgate_probe_missing"),
+            ),
+            ignore_position=True,
+        ):
+            self.checker.visit_importfrom(node)
+
+    def test_flags_unresolvable_relative_private_name(self) -> None:
+        """The unresolvable fail-closed path also covers a private imported NAME.
+
+        ``from . import _engine`` under an unknown importer: the base cannot
+        be resolved and the private thing is the NAME, so the name arm of
+        ``_flag_unresolvable`` must report it (deleting that loop previously
+        kept the whole suite green -- this is its discriminating observer).
+        """
+        node = self._import_statement("from . import _engine", "")
+        with self.assertAddsMessages(
+            MessageTest(
+                "shekel-private-module-import",
+                node=node,
+                args=("._engine", "<unresolvable>"),
+            ),
+            ignore_position=True,
+        ):
+            self.checker.visit_importfrom(node)
+
+    # ── the conforming forms: intra-package use is the point of privacy ──
+
+    def test_allows_intra_package_absolute_import(self) -> None:
+        """A module inside the package may import its package's private module."""
+        node = self._import_statement(
+            "from dgate_probe_pkg._engine import build_balance_map",
+            "dgate_probe_pkg.public_mod",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_importfrom(node)
+
+    def test_allows_seam_submodules_importing_each_other(self) -> None:
+        """The real seam's private modules compose each other freely."""
+        node = self._import_statement(
+            "from app.services.balance_at._context import _memoize_once",
+            "app.services.balance_at._plan",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_importfrom(node)
+
+    def test_allows_own_init_importing_private_module(self) -> None:
+        """A package ``__init__`` may bind its own private submodules absolutely."""
+        node = self._import_statement(
+            "from dgate_probe_pkg import _engine", "dgate_probe_pkg",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_importfrom(node)
+
+    def test_allows_subpackage_module_reaching_up(self) -> None:
+        """A module nested deeper inside the package is still inside it."""
+        node = self._import_statement(
+            "from dgate_probe_pkg import _engine", "dgate_probe_pkg._sub.leaf",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_importfrom(node)
+
+    def test_allows_relative_sibling_module(self) -> None:
+        """``from . import _sibling`` is inherently intra-package."""
+        node = self._import_statement(
+            "from . import _engine", "dgate_probe_pkg.public_mod",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_importfrom(node)
+
+    def test_allows_relative_import_from_package_init(self) -> None:
+        """``from . import _x`` in a package ``__init__`` resolves to the package itself.
+
+        Discriminates the ``Module.package`` branch of the relative resolver:
+        without it the ``__init__`` would resolve one level too high and the
+        import would be flagged as unresolvable.
+        """
+        node = self._import_statement(
+            "from . import _engine", "dgate_probe_pkg", is_package=True,
+        )
+        with self.assertNoMessages():
+            self.checker.visit_importfrom(node)
+
+    def test_allows_relative_climb_within_package(self) -> None:
+        """``from .._x import name`` stays legal while it stays inside the package."""
+        node = self._import_statement(
+            "from .._engine import build_balance_map", "dgate_probe_pkg._sub.leaf",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_importfrom(node)
+
+    def test_allows_private_name_from_public_module(
+        self, privacy_fixture_root: Path,
+    ) -> None:
+        """A private NAME defined in a public module is out of this rule's scope.
+
+        ``_module_private_name`` is a name in ``public_mod.py``, not a module,
+        so the module-vs-name resolution must NOT flag it -- package-private
+        names are a convention this rule deliberately leaves alone (the checker
+        docstring records the boundary; the measured tree relies on it).
+        """
+        assert privacy_fixture_root.is_dir()
+        node = self._import_statement(
+            "from dgate_res_pkg.public_mod import _module_private_name",
+            "consumer_outside",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_importfrom(node)
+
+    def test_allows_private_name_from_package_init(
+        self, privacy_fixture_root: Path,
+    ) -> None:
+        """A private NAME defined in a package ``__init__`` is not a module either."""
+        assert privacy_fixture_root.is_dir()
+        node = self._import_statement(
+            "from dgate_res_pkg import _package_private_name",
+            "consumer_outside",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_importfrom(node)
+
+    def test_allows_top_level_private_modules(self) -> None:
+        """``__future__`` / ``_thread`` have no owning package: never flagged."""
+        future_node = self._import_statement(
+            "from __future__ import annotations", "app.routes.grid",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_importfrom(future_node)
+        thread_node = self._import_statement(
+            "import _thread", "app.routes.grid",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_import(thread_node)
+
+    def test_allows_dunder_module_segment(self) -> None:
+        """A dunder segment (``__main__``) is public by convention, not private."""
+        node = self._import_statement(
+            "import dgate_probe_pkg.__main__", "consumer_outside",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_import(node)
+
+    def test_allows_namespace_package_sibling_by_file(
+        self, privacy_fixture_root: Path,
+    ) -> None:
+        """A file INSIDE a namespace package's directory is a member of it.
+
+        The ``scripts/`` case: pylint names ``scripts/rotate_sessions.py`` as
+        the TOP-LEVEL module ``rotate_sessions`` (no ``__init__.py``), yet the
+        file sits beside ``scripts/_script_lib.py`` and is exactly the sibling
+        that private library exists for. Membership falls through to the
+        physical-file test, which resolves the owner's directories through
+        astroid.
+        """
+        node = self._import_statement(
+            "from dgate_res_ns._ns_lib import helper",
+            "sibling_tool",
+            path=str(privacy_fixture_root / "dgate_res_ns" / "sibling_tool.py"),
+        )
+        with self.assertNoMessages():
+            self.checker.visit_importfrom(node)
+
+    def test_allows_namespace_sibling_plain_import(
+        self, privacy_fixture_root: Path,
+    ) -> None:
+        """The physical-membership exemption covers the plain-import spelling too."""
+        node = self._import_statement(
+            "import dgate_res_ns._ns_lib",
+            "sibling_tool",
+            path=str(privacy_fixture_root / "dgate_res_ns" / "sibling_tool.py"),
+        )
+        with self.assertNoMessages():
+            self.checker.visit_import(node)
+
+    def test_file_membership_rejects_placeholder_paths(self) -> None:
+        """A string-built module can never prove physical membership.
+
+        The discriminating observer for the existence guards in
+        ``_importer_file_inside``: a consumer AND an owner both string-built
+        (astroid caches them by name with the ``"<?>"`` placeholder file).
+        Without the guards, the owner's placeholder dirname resolves to the
+        working directory, which CONTAINS the consumer's placeholder abspath
+        -- the false suppression that silently passed eight flag tests during
+        this step's own development. The premise (astroid returns the cached
+        string-built module for a by-name resolution) is asserted first, so
+        an astroid caching change surfaces here as a loud premise failure
+        rather than a vacuous pass.
+        """
+        owner = astroid.parse("", module_name="dgate_poison_owner")
+        consumer = astroid.parse(
+            "from dgate_poison_owner import _x", module_name="dgate_consumer",
+        )
+        resolved = consumer.import_module(
+            "dgate_poison_owner", relative_only=False,
+        )
+        assert resolved is owner
+        assert _importer_file_inside(consumer, "dgate_poison_owner") is False
+
+    def test_allows_beyond_top_level_without_private_target(self) -> None:
+        """A relative import past the top level with nothing private stays silent.
+
+        That malformation is pylint's own E0402 territory; this rule only
+        speaks when something private is named.
+        """
+        node = self._import_statement(
+            "from ...nowhere import something", "app.grid",
+        )
+        with self.assertNoMessages():
+            self.checker.visit_importfrom(node)

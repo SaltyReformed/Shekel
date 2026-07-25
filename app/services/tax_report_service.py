@@ -16,11 +16,13 @@ preview, and the Schedule A check -- for one tax year:
 * **Hybrid W-2 preview** = per-filer W-2 boxes built from the hybrid gross
   and the four hybrid withholding lines, labelled "measured through <stub
   date>, modeled after" via the carried measured / modeled split.
-* **Schedule A check** = itemized estimate (mortgage interest REUSED from
-  the year-end summary's ledger+schedule hybrid, plus the hybrid state
-  income tax withheld) versus the standard deduction.  Informational only:
-  the v1 LIABILITY stays standard-deduction based; the itemize election is
-  out of scope and disclosed.
+* **Schedule A check** = itemized estimate (mortgage interest from the
+  balance seam's one loan-interest producer
+  :func:`app.services.balance_at.loan_interest_in_year` -- the loan's own
+  fold for the settled past, its schedule for the future -- plus the hybrid
+  state income tax withheld) versus the standard deduction.  Informational
+  only: the v1 LIABILITY stays standard-deduction based; the itemize
+  election is out of scope and disclosed.
 
 Single-filer identity (audit ruling): every ACTIVE salary profile in the
 baseline scenario belongs to ONE filer (multiple jobs, one 1040).  Wages,
@@ -52,26 +54,33 @@ non-liability disclosures).
 
 Boundary discipline: no Flask import (``today`` and the query results are
 plain data).  DB reads (baseline scenario, active profiles, the year's pay
-periods, and the debt accounts the Schedule A hybrid needs) live in the
+periods, and the mortgage accounts the Schedule A figure needs) live in the
 service layer, mirroring the year-end summary orchestrator's precedent --
 this module loads the year's periods exactly as ``_load_common_data`` does.
 No tax arithmetic is re-implemented: the liability, the withholding hybrid,
 the bracket ladder, the primary-profile rule, and the mortgage-interest
-hybrid are all reused from their owning modules.
+figure are all reused from their owning modules (the last from the balance
+seam, :func:`app.services.balance_at.loan_interest_in_year`).
 """
 
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
+from app import ref_cache
+from app.enums import AcctTypeEnum
 from app.extensions import db
 from app.models.pay_period import PayPeriod
-from app.services import net_worth_kernel, paycheck_calculator, tax_calculator
+from app.services import (
+    balance_at,
+    paycheck_calculator,
+    tax_calculator,
+)
 from app.services.projection_inputs import (
     load_active_accounts_with_types,
     load_active_salary_profiles,
 )
-from app.services.scenario_resolver import get_baseline_scenario
+from app.services.balance_at import BalanceContext
 from app.services.tax_config_service import load_tax_configs_for_year
 from app.services.tax_liability_service import (
     AnnualLiability,
@@ -80,9 +89,6 @@ from app.services.tax_liability_service import (
 from app.services.tax_withholding_service import (
     WithholdingComponents,
     compute_withholding_to_date,
-)
-from app.services.year_end_summary_service._income_tax import (
-    _compute_mortgage_interest,
 )
 
 ZERO = Decimal("0")
@@ -193,9 +199,10 @@ class W2Preview:
 class ItemizedComponents:
     """The itemizable Schedule A components the app can source.
 
-    ``mortgage_interest`` REUSES the year-end summary's ledger-actual +
-    schedule-projected hybrid; ``state_income_tax`` is the hybrid state
-    income tax withheld.  ``property_tax`` is ``None`` -- there is no
+    ``mortgage_interest`` is the fold-actual + schedule-projected figure from
+    :func:`app.services.balance_at.loan_interest_in_year`; ``state_income_tax``
+    is the hybrid state income tax withheld.  ``property_tax`` is ``None`` -- there
+    is no
     unambiguous property-tax source to query (escrow line items are
     free-text named, with no ref-table kind separating a tax line from
     insurance), so it is OMITTED.
@@ -358,7 +365,13 @@ def compute_tax_report(user_id: int, year: int, today: date) -> TaxReport | None
         empty state).  A user with profiles but no pay periods for the year
         degrades to an all-modeled zero report (no crash).
     """
-    scenario = get_baseline_scenario(user_id)
+    # The report's civil window is the DISPLAY-timezone year, so the loan
+    # schedules behind Schedule A must be resolved against that same ``today``.
+    # The context pins it; ``generate_debt_schedules`` used to take no date at
+    # all and re-derive its own ``date.today()``, silently discarding the one
+    # this producer was handed (the New-Year UTC/display seam).
+    balance_ctx = BalanceContext.build(user_id, as_of=today)
+    scenario = balance_ctx.scenario
     if scenario is None:
         return None
     profiles = load_active_salary_profiles(user_id, scenario.id)
@@ -386,7 +399,7 @@ def compute_tax_report(user_id: int, year: int, today: date) -> TaxReport | None
             withholding, box1_wages, configs.get("fica_config"),
         ),
         schedule_a=_build_schedule_a(
-            user_id, year, scenario.id, withholding, liability,
+            user_id, year, balance_ctx, withholding, liability,
         ),
         chips=_build_chips(
             liability, box1_wages, configs.get("bracket_set"), next_stub,
@@ -402,8 +415,7 @@ def compute_tax_report(user_id: int, year: int, today: date) -> TaxReport | None
 def _load_year_periods(user_id: int, year: int) -> list:
     """Return the user's pay periods whose payday falls in *year*.
 
-    Mirrors ``year_end_summary_service._data._load_common_data``: pay
-    periods with ``start_date`` in the calendar year, ordered by
+    Pay periods with ``start_date`` in the calendar year, ordered by
     ``period_index``.
 
     Args:
@@ -609,36 +621,41 @@ def _build_w2_preview(
 def _build_schedule_a(
     user_id: int,
     year: int,
-    scenario_id: int,
+    balance_ctx: BalanceContext,
     withholding: WithholdingSummary,
     liability: AnnualLiability,
 ) -> ScheduleACheck:
     """Build the informational Schedule A itemize-vs-standard check.
 
-    Mortgage interest REUSES the year-end summary's ledger-actual +
-    schedule-projected hybrid: it loads the user's debt accounts, generates
-    their amortization schedules via the shared
-    :func:`net_worth_kernel.generate_debt_schedules`, and delegates to the
-    same ``_compute_mortgage_interest`` the orchestrator calls (no second
-    implementation).  The state income-tax component is the hybrid state
-    withholding.  Property tax is omitted (no unambiguous source).
+    Mortgage interest comes from the balance seam's ONE loan-interest producer
+    (:func:`app.services.balance_at.loan_interest_in_year`): it loads the user's
+    MORTGAGE accounts (:func:`_load_mortgage_accounts` -- NOT every amortizing
+    account; a car loan's interest is not deductible) and sums each loan's interest
+    PAID in the year, folded from the loan's own events for the settled past and
+    projected from its schedule for the future -- the same total producer the
+    balance derives from, so the deduction and the balance can no longer disagree
+    (plan step C3c, closing B-6).  The state income-tax component is the hybrid
+    state withholding.  Property tax is omitted (no unambiguous source).
 
     Args:
         user_id: The owning user (scopes the debt-account load).
         year: The tax year (interest is summed in the year PAID).
-        scenario_id: The baseline scenario (scopes schedules + ledger read).
+        balance_ctx: The read pass's
+            :class:`~app.services.balance_at.BalanceContext` (scopes the
+            fold + schedule read, and pins the display-tz ``as_of``).
         withholding: The summed withholding-to-date (state component).
         liability: The liability (its federal standard deduction).
 
     Returns:
         The populated :class:`ScheduleACheck`.
     """
-    debt_accounts = _load_debt_accounts(user_id)
-    debt_schedules = net_worth_kernel.generate_debt_schedules(
-        debt_accounts, scenario_id,
-    )
-    mortgage_interest = _compute_mortgage_interest(
-        year, debt_schedules, scenario_id,
+    mortgage_accounts = _load_mortgage_accounts(user_id)
+    mortgage_interest = sum(
+        (
+            balance_at.loan_interest_in_year(account, balance_ctx, year)
+            for account in mortgage_accounts
+        ),
+        ZERO,
     )
     state_income_tax = withholding.total.state
     itemized_estimate = mortgage_interest + state_income_tax
@@ -657,23 +674,48 @@ def _build_schedule_a(
     )
 
 
-def _load_debt_accounts(user_id: int) -> list:
-    """Return the user's active amortizing (loan) accounts.
+def _load_mortgage_accounts(user_id: int) -> list:
+    """Return the user's active MORTGAGE accounts -- Schedule A line 8's domain.
 
-    Mirrors ``_load_common_data``'s ``debt_accounts`` selection: the shared
-    :func:`~app.services.projection_inputs.load_active_accounts_with_types`
-    loader (account_type eager-loaded, no N+1) filtered to the accounts
-    whose ``account_type.has_amortization`` is set.
+    Deliberately NOT ``_load_common_data``'s ``debt_accounts`` selection, which
+    this used to mirror, and the divergence IS the fix.  The two answer different
+    questions: that one asks "what do I owe on?" and rightly takes every
+    amortizing account; this one asks "whose interest is deductible as home
+    mortgage interest?", and only a mortgage's is.
+
+    Mirroring the debt selection put a CAR LOAN's interest into the home-mortgage
+    deduction.  ``has_amortization`` is set on ``AUTO_LOAN``, ``STUDENT_LOAN``,
+    ``PERSONAL_LOAN`` and ``HELOC`` as well as ``MORTGAGE``, so every one of them
+    was summed into ``schedule_a.components.mortgage_interest``.  Personal
+    interest (car, personal loan) is not deductible at all, and student-loan
+    interest is an above-the-line adjustment, never Schedule A -- so a user with
+    a car loan had their itemize-vs-standard comparison inflated by its full
+    annual interest, and could be told to itemize when the standard deduction
+    wins.
+
+    Selected by account_type ID (the project's ref-table rule: IDs for logic),
+    not by a collateral link: the TYPE is the user's own declaration that the
+    account is a mortgage, whereas ``collateral_account_id`` is optional and a
+    real mortgage may simply not have it filled in.
+
+    **Known omission, deliberate.**  A HELOC's interest IS deductible when the
+    proceeds bought, built, or substantially improved the residence, and is not
+    otherwise -- a use-of-proceeds fact the app does not record.  This Schedule A
+    is an informational itemize-vs-standard check that already omits what it
+    cannot source unambiguously (property tax, ``property_tax_included=False``);
+    excluding the HELOC follows that stance rather than guessing at the
+    taxpayer's intent.  Revisit if the app ever records use of proceeds.
 
     Args:
         user_id: The owning user.
 
     Returns:
-        The active loan account list (possibly empty).
+        The active mortgage account list (possibly empty).
     """
+    mortgage_type_id = ref_cache.acct_type_id(AcctTypeEnum.MORTGAGE)
     return [
         a for a in load_active_accounts_with_types(user_id)
-        if a.account_type and a.account_type.has_amortization
+        if a.account_type_id == mortgage_type_id
     ]
 
 

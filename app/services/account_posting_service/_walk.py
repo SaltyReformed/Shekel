@@ -28,7 +28,7 @@ nets to zero and drops out regardless of partition) and future-proof for new
 source kinds (any transaction- or transfer-linked entry is attributed by its
 linkage, not by an enumerated source-kind list).
 
-The loan analogue is :mod:`app.services.loan_posting_service._walk`; loans
+The loan analogue is :mod:`app.services.loan_ledger`; loans
 never walk here (their anchors are dated ``LoanAnchorEvent`` facts replayed
 with amortization, a different mechanism), and :func:`walk_account_ledger`
 refuses an amortizing account outright.
@@ -62,7 +62,7 @@ class AccountAnchorFact:
     Wraps one :class:`~app.models.account.AccountAnchorHistory` row as a
     plain fact the walk and the reconcile consume.  The rows are ordered by
     ``(created_at, id)`` -- the same latest-``created_at`` chronology
-    ``balance_resolver.resolve_anchor`` reads, with ``id`` as the
+    ``cash_ledger.resolve_anchor`` reads, with ``id`` as the
     deterministic tie-breaker -- and the FIRST row is the account's OPENING
     (the origination row ``account_service.create_account`` appends);
     every later row is a user TRUE-UP.
@@ -118,7 +118,7 @@ def _as_utc_instant(instant: datetime) -> datetime:
     """Return *instant* as an aware-UTC ``datetime``.
 
     The instant-level counterpart of
-    :func:`app.services.posting_service._utc_civil_date`, sharing its
+    :func:`app.utils.dates.utc_civil_date`, sharing its
     convention: an aware value converts to UTC, a naive value is assumed
     UTC (every ``timestamptz`` in this app is stored UTC).  Normalizing
     every attribution and assertion instant through this one helper makes
@@ -160,7 +160,7 @@ def _anchor_facts(account_id: int) -> list[AccountAnchorFact]:
 
     Loads every :class:`~app.models.account.AccountAnchorHistory` row for
     the account ordered by ``(created_at, id)`` -- so the latest fact is the
-    row ``balance_resolver.resolve_anchor`` resolves, with ``id`` breaking a
+    row ``cash_ledger.resolve_anchor`` resolves, with ``id`` breaking a
     (practically unreachable) same-instant tie deterministically -- and
     marks the first row as the OPENING.  The balance routes through
     ``Decimal(str(...))`` per the project's Decimal-construction rule.

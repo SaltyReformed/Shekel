@@ -5,23 +5,26 @@ Assembles the per-account dict the dashboard template renders.  Every
 non-loan account's balance over time comes from the single
 :mod:`app.services.balance_at` seam (cash, interest-bearing, investment, and
 appreciating-property accounts each dispatch per kind inside it); a loan tile
-instead reads the loan resolver directly for its rich figures -- current
-balance, monthly payment, rate, payoff -- and shows no projected horizons.
-No Flask imports.
+reads its rich figures -- current balance, monthly payment, rate, payoff --
+off the read pass's ONE
+:class:`~app.services.balance_at._resolution.ResolvedLoan`, and shows no projected
+horizons.
+
+This module no longer imports the resolver or the clock.  It used to load a
+loan's context and anchor facts and run ``resolve_loan`` twice per loan (once
+for the tile, once for a ``date.max`` "ever paid off" probe); both reads now
+come from the context, which resolves each loan exactly once for the whole
+render.  No Flask imports.
 """
 
 from collections import OrderedDict
-from datetime import date
 from decimal import Decimal
 
-from app.services import balance_at, loan_resolver
+from app.services import balance_at
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
-from app.services.loan_loaders import load_loan_anchor_facts
-from app.services.loan_payment_service import load_loan_context
-from app.services.loan_resolution import resolve_loan_seeded
 from app.services.net_worth_account_data import is_liability_account
 from app.services.savings_dashboard_service._types import _LoanAccountResult
 from app.utils.period_projections import project_balance_horizons
@@ -53,14 +56,14 @@ def _account_balance_maps(accounts, ctx):
         accounts that have a map; an account the seam omits (no anchor
         period) is simply absent.
     """
-    if ctx.scenario is None:
+    if ctx.balance_ctx.scenario is None:
         return {}
     non_loan_accounts = [
         acct for acct in accounts
         if acct.id not in ctx.params.loan_params_map
     ]
     return balance_at.build_maps(
-        non_loan_accounts, ctx.scenario, ctx.all_periods,
+        non_loan_accounts, ctx.balance_ctx, ctx.all_periods,
     )
 
 
@@ -90,88 +93,45 @@ def _current_balance_from_map(balances, acct, ctx):
     return balances.get(ctx.current_period.id)
 
 
-def _loan_ever_paid_off(acct_loan_params, anchor_facts, loan_ctx):
-    """Return whether confirmed payments have EVER retired this loan.
-
-    Distinct from "balance is zero as of today": the per-tile current
-    balance correctly excludes settled payments dated in the future,
-    whereas this flag asks "have my confirmed payments ever retired this
-    loan?", regardless of when those payments are dated.  A resolver call
-    with ``as_of=date.max`` replays every confirmed payment forward and
-    answers that directly.  Requires at least one confirmed payment so a
-    brand-new loan with a zero anchor balance (degenerate input) does not
-    render as "paid off" -- preserves the historical ``_check_loan_paid_off``
-    semantic.
-
-    Args:
-        acct_loan_params: The account's LoanParams.
-        anchor_facts: The account's anchor facts (synthesized origination +
-            true-ups, from ``loan_loaders.load_loan_anchor_facts``).
-        loan_ctx: The loaded loan context (payments + rate changes).
-
-    Returns:
-        True when confirmed payments have ever retired the loan.
-    """
-    has_confirmed = any(p.is_confirmed for p in loan_ctx.payments)
-    if not has_confirmed:
-        return False
-    ever_state = loan_resolver.resolve_loan(
-        loan_resolver.LoanInputs(
-            acct_loan_params, anchor_facts,
-            loan_ctx.payments, loan_ctx.rate_changes,
-        ),
-        date.max,
-    )
-    return ever_state.current_balance == Decimal("0.00")
-
-
-def _compute_loan_account(acct, acct_loan_params, scenario_id):
+def _compute_loan_account(acct, ctx):
     """Resolve current balance, payment, rate, and payoff for a loan.
 
-    Loads the loan context (payments + escrow + rate changes) and runs the
-    loan resolver (E-18 / Commit 13), the source of truth for
-    current_balance, monthly_payment, current_rate, and payoff_date -- the
-    same dollar figures rendered on the loan card and the year-end net-worth
-    liability.  The resolver-derived ``current_balance`` replaces the stored
-    ``LoanParams.current_principal`` read that pre-E-18 produced the F-008
-    stored-vs-engine divergence on this tile.
+    BOTH reads go through the :mod:`app.services.balance_at` seam, and both hit
+    the read pass's ONE memoized resolution:
 
-    The loan tile renders Monthly Payment + payoff date, not projected
-    balance horizons, and the loan's net-worth contribution is produced by
-    the net-worth section through the :mod:`app.services.balance_at` seam, so
-    this resolver call is the loan tile's only balance source -- the tile
-    does NOT also read the seam (which would resolve the loan a second time).
+    * the BALANCE from :func:`~app.services.balance_at.balance_at` -- the same
+      seam entry every other account kind on this page reads, so the loan tile
+      is no longer the one kind whose displayed balance was produced outside the
+      seam.  It used to be ``LoanState.current_balance``, read straight off the
+      resolver; that value IS a balance-at-T, and because the name-keyed fence
+      of the day bound on function names and could not see an attribute read,
+      the loan's balance -- the hero's biggest number -- reached the screen with
+      every gate silent.  Plan step D2a deleted the attribute at the root.
+    * the rich FIGURES from :func:`~app.services.balance_at.loan_figures`, a
+      value object that deliberately carries no balance, so this module cannot
+      render one by accident.
+
+    Both come from one resolution, so the tile's balance and the loan's
+    net-worth contribution are the same number BY CONSTRUCTION rather than
+    because two producers happened to agree.
 
     Args:
         acct: The loan Account instance.
-        acct_loan_params: The account's LoanParams.
-        scenario_id: The baseline scenario id (or None).
+        ctx: The shared :class:`_ProjectionContext` (its ``balance_ctx`` owns
+            the resolution).
 
     Returns:
-        A :class:`_LoanAccountResult` with the resolver-derived figures.
+        A :class:`_LoanAccountResult`, or ``None`` when the account is not a
+        configured loan (no ``LoanParams``).
     """
-    loan_ctx = load_loan_context(acct.id, scenario_id, acct_loan_params)
-    anchor_facts = load_loan_anchor_facts(acct_loan_params)
-    # Read switch (plan Section 8): resolve through ``resolve_loan_seeded`` so
-    # the /savings tile's ``current_balance`` is the genesis-ledger confirmed
-    # balance (falling back to the anchor replay when the ledger has not opened
-    # this loan).  ``acct`` comes from the user's own account set, so ownership
-    # is already established for the reader's trust-the-caller contract.
-    state = resolve_loan_seeded(
-        loan_resolver.LoanInputs(
-            acct_loan_params, anchor_facts,
-            loan_ctx.payments, loan_ctx.rate_changes,
-        ),
-        acct.id, scenario_id, date.today(),
-    )
+    figures = balance_at.loan_figures(acct, ctx.balance_ctx)
+    if figures is None:
+        return None
     return _LoanAccountResult(
-        current_balance=state.current_balance,
-        monthly_payment=state.monthly_payment,
-        current_rate=state.current_rate,
-        payoff_date=state.payoff_date,
-        is_paid_off=_loan_ever_paid_off(
-            acct_loan_params, anchor_facts, loan_ctx,
+        current_balance=balance_at.balance_at(
+            acct, ctx.balance_ctx, ctx.balance_ctx.as_of,
         ),
+        figures=figures,
     )
 
 
@@ -243,17 +203,14 @@ def _project_one_account(acct, ctx, balance_maps):
     acct_investment_params = ctx.params.investment_params_map.get(acct.id)
 
     loan_result = (
-        _compute_loan_account(
-            acct, acct_loan_params,
-            ctx.scenario.id if ctx.scenario else None,
-        )
-        if acct_loan_params else None
+        _compute_loan_account(acct, ctx) if acct_loan_params else None
     )
 
     if loan_result is not None:
-        # Loan tile: a loan-resolver (rich-primitive) consumer.  The seam is
-        # not consulted -- current_balance is the as-of-today LoanState
-        # balance, and the tile renders payment + payoff, not horizons.
+        # Loan tile: both figures come from the seam (see
+        # :func:`_compute_loan_account`) -- the balance from ``balance_at``, the
+        # payment / rate / payoff from ``loan_figures``.  It renders no horizons,
+        # so it takes no balance map.
         current_bal = loan_result.current_balance
         projected = {}
     else:
@@ -276,7 +233,14 @@ def _project_one_account(acct, ctx, balance_maps):
         "current_balance": current_bal,
         "projected": projected,
         "needs_setup": needs_setup,
-        "is_paid_off": loan_result.is_paid_off if loan_result else False,
+        "is_paid_off": loan_result.figures.is_paid_off if loan_result else False,
+        # A loan the user has configured but not yet BORROWED owes $0.00 today,
+        # and a consumer that reads that zero as "this debt is repaid" reports
+        # the opposite of the truth (the debt track counted an unclosed
+        # mortgage as 100% paid).  See ``LoanFigures.is_originated``.
+        "is_originated": (
+            loan_result.figures.terms.is_originated if loan_result else True
+        ),
         # Category-keyed liability flag (the id-based canonical classifier),
         # so the cockpit cell balance can take the danger token the group
         # subtotal, chip, and bar segment already do -- one quantity, one
@@ -289,12 +253,12 @@ def _project_one_account(acct, ctx, balance_maps):
         ad["investment_params"] = acct_investment_params
     if acct_loan_params:
         ad["loan_params"] = acct_loan_params
-        ad["monthly_payment"] = loan_result.monthly_payment
+        ad["monthly_payment"] = loan_result.figures.terms.monthly_payment
         # DH-#56: the loan's current rate (resolver-derived) replaces the
         # retired ``LoanParams.interest_rate`` column read on the /savings
         # debt card and in the weighted-average-rate metric.
-        ad["current_rate"] = loan_result.current_rate
-        ad["payoff_date"] = loan_result.payoff_date
+        ad["current_rate"] = loan_result.figures.terms.current_rate
+        ad["payoff_date"] = loan_result.figures.payoff_date
     return ad
 
 

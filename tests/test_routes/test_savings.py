@@ -32,7 +32,7 @@ from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 
-from tests._test_helpers import freeze_today
+from tests._test_helpers import create_loan_account, freeze_today
 
 
 @pytest.fixture(autouse=True)
@@ -72,7 +72,7 @@ def _create_savings_account(
             through ``account_service.create_account`` so the dated
             ``AccountAnchorHistory`` SoT (E-19, Commit 4) and the
             cache columns agree from t0.  Required by Commit 6:
-            ``balance_resolver.resolve_anchor`` reads history, so
+            ``cash_ledger.resolve_anchor`` reads history, so
             mutating only the cache columns after creation no longer
             propagates to ``/savings``.
         anchor_period_id: Pay period to anchor the new account
@@ -2099,42 +2099,19 @@ def _create_small_loan(seed_user, name="Test Loan",
                        rate=Decimal("0.05000"), term=24):
     """Create a small loan with LoanParams for paid-off badge testing.
 
-    Origination is Jan 2026 with term=24 so remaining months is
-    comfortably positive (~21 from April 2026).
+    Routes through the ONE shared loan builder
+    (:func:`tests._test_helpers.create_loan_account`), whose defaults are this
+    loan: an Auto Loan originated 2026-01-01 with payment_day 1, so remaining
+    months is comfortably positive (~21 from April 2026).  The factory opens
+    the loan's genesis posting ledger in the same transaction as its
+    ``LoanParams``, exactly as ``loan.create_params`` does in production; the
+    hand-rolled block this replaced never did, so these cards rendered a loan
+    in a state production cannot produce.
     """
-    from app.models.loan_params import LoanParams  # pylint: disable=import-outside-toplevel
-
-    loan_type = db.session.query(AccountType).filter_by(name="Auto Loan").one()
-    account = account_service.create_account(
-        account_service.AccountSpec(
-            user_id=seed_user["user"].id,
-            account_type_id=loan_type.id,
-            name=name,
-            anchor_balance=principal,
-        ),
+    return create_loan_account(
+        seed_user, db.session, name=name, principal=principal,
+        rate=rate, term=term,
     )
-    db.session.add(account)
-    db.session.flush()
-
-    params = LoanParams(
-        account_id=account.id,
-        original_principal=principal,
-        current_principal=principal,
-        term_months=term,
-        origination_date=date(2026, 1, 1),
-        payment_day=1,
-    )
-    db.session.add(params)
-    db.session.flush()
-    # E-18 / Commit 15: origination LoanAnchorEvent required by resolver.
-    # DH-#56: origination RateHistory row carries the loan's base rate.
-    from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
-        insert_origination_event, insert_origination_rate,
-    )
-    insert_origination_event(params)
-    insert_origination_rate(params, rate)
-    db.session.commit()
-    return account
 
 
 def _make_confirmed_transfer(seed_user, to_account, period, amount):
@@ -3643,3 +3620,33 @@ class TestCockpitBalance:
             )
             assert resp.status_code == 200
             assert "acct-card__num--liability" not in resp.data.decode()
+
+
+class TestCockpitBalanceKindGate:
+    """The D4 / A1 gate: a loan's cockpit balance cell is read-only."""
+
+    def test_cockpit_balance_loan_cell_is_read_only(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A loan's cell shows the balance but never offers the anchor editor.
+
+        Finding B-15's UI door: the cockpit's click-to-edit cell opened
+        the CASH anchor editor for a loan card, whose save wrote
+        ``accounts.current_anchor_balance`` on the loan.  The cell still
+        renders the (ledger-derived) balance with its liability ink; the
+        editor affordance (hx-get to anchor-form, the edit modifier, the
+        pencil icon) is absent -- a loan's true-up lives on the loan page.
+        """
+        with app.app_context():
+            loan = _create_small_loan(seed_user)
+            resp = auth_client.get(
+                f"/savings/cockpit/{loan.id}/balance",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            body = resp.data.decode()
+            assert "anchor-form" not in body
+            assert "acct-card__num--edit" not in body
+            assert "acct-card__edit-icon" not in body
+            # The balance itself still renders, with the liability ink.
+            assert "acct-card__num--liability" in body

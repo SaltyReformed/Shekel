@@ -59,7 +59,10 @@
       </tr>
       <tr>
         <td>Payoff Date</td>
-        <td>{{ comparison.current_payoff.strftime('%b %Y') }}</td>
+        {# ``current_payoff`` falls back to the loan's DERIVED payoff when the
+           contractual forward slice is empty, and that is ``None`` for a retired
+           loan or one that never clears at its current payment (plan C8d). #}
+        <td>{% if comparison.current_payoff is not none %}{{ comparison.current_payoff.strftime('%b %Y') }}{% else %}--{% endif %}</td>
         <td>{{ comparison.refi_payoff.strftime('%b %Y') }}</td>
         <td></td>
       </tr>

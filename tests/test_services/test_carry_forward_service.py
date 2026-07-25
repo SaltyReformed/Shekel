@@ -37,12 +37,12 @@ from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.services import (
     account_service,
-    balance_calculator,
     carry_forward_service,
     recurrence_engine,
     transfer_recurrence,
     transfer_service,
 )
+from app.services.balance_at import _calculator as balance_calculator
 
 
 def _create_transaction(seed_user, seed_periods, period_index=0,

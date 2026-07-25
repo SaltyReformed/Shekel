@@ -46,22 +46,25 @@ import pytest
 
 from app import ref_cache
 from app.enums import (
-    LoanAnchorSourceEnum,
+    AcctTypeEnum,
     StatusEnum,
     TxnTypeEnum,
 )
 from app.extensions import db
-from app.models.loan_anchor_event import LoanAnchorEvent
-from app.models.loan_params import LoanParams
-from app.models.ref import AccountType
 from app.models.transaction import Transaction
 from app.services import (
-    account_service,
+    loan_loaders,
     loan_payment_service,
     loan_resolver,
     transfer_service,
 )
-from tests._test_helpers import add_escrow_line, insert_origination_rate
+from app.services.loan_resolver._periods import _replay_from_anchor
+from app.utils.money import round_money
+from tests._test_helpers import (
+    add_escrow_line,
+    create_loan_account,
+    loan_params_for,
+)
 
 
 # -- Hand-computed reference values -----------------------------------------
@@ -117,97 +120,49 @@ PRINCIPAL_PORTION_M1 = Decimal("298.65")
 # -- Helpers ----------------------------------------------------------------
 
 
-def _create_mortgage(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+def _create_mortgage(
+    seed_user,
+    anchor_period,
     *,
-    user_id: int,
-    anchor_period_id: int,
-    original_principal: Decimal = ORIGINAL_PRINCIPAL,
-    current_principal: Decimal | None = None,
-    interest_rate: Decimal = INTEREST_RATE,
-    term_months: int = TERM_MONTHS,
-    origination_date: date = ORIGINATION_DATE,
-    payment_day: int = 1,
     escrow_annual: Decimal | None = None,
 ):
-    """Materialise a fixed-rate mortgage account ready for the resolver.
+    """Materialise the canonical fixed-rate mortgage ready for the resolver.
 
-    Creates the :class:`Account` (Mortgage type via the canonical
-    factory), the matching :class:`LoanParams`, and the origination
-    :class:`LoanAnchorEvent` that Commit 12's migration would have
-    inserted for any pre-existing loan.  New-loan-creation paths
-    (loan dashboard / E-18 UX) do not yet auto-insert the origination
-    event -- see Follow-up F-9 -- so the test creates it explicitly.
+    Routes through the shared :func:`create_loan_account` factory (Mortgage
+    account via ``account_service.create_account``, the matching
+    :class:`LoanParams`, the origination :class:`RateHistory` / anchor the
+    resolver requires, and the loan's GENESIS POSTING LEDGER -- opened in the
+    same transaction, exactly as ``app/routes/loan/params.py`` does on every
+    production loan write).  The old hand-rolled block here omitted the ledger,
+    so its loans exercised the no-ledger fallback production never takes.
 
     Args:
-        user_id: Owner of the loan account.
-        anchor_period_id: PayPeriod id to anchor the Account against
+        seed_user: The ``seed_user`` fixture dict (supplies owner + scenario).
+        anchor_period: The :class:`PayPeriod` to anchor the Account against
             (E-19 / Commit 3 requires every Account to have one).
-        original_principal: Loan ``original_principal`` (Numeric(12,2)).
-        current_principal: Stored ``current_principal`` for the
-            non-authoritative seed column.  Defaults to
-            ``original_principal``.
-        interest_rate: Annual rate as a decimal fraction (e.g. 0.06).
-        term_months: Contractual term in months.
-        origination_date: Loan origination date; also the
-            ``LoanAnchorEvent.anchor_date`` for the origination event.
-        payment_day: Day-of-month the lender expects payment on.
         escrow_annual: If provided, attach a single escrow line (one
             origination-dated version) with this annual amount so the
             resolved monthly escrow is a non-zero figure.
 
     Returns:
-        Tuple of (account, loan_params, origination_event) all
-        flushed but not committed; the caller commits.
+        Tuple of (account, loan_params).  The factory commits; the escrow line
+        is flushed and carried by the caller's commit.
     """
-    if current_principal is None:
-        current_principal = original_principal
-
-    loan_type = (
-        db.session.query(AccountType).filter_by(name="Mortgage").one()
+    account = create_loan_account(
+        seed_user, db.session, name="Principal-Settle Mortgage",
+        principal=ORIGINAL_PRINCIPAL, rate=INTEREST_RATE, term=TERM_MONTHS,
+        origination_date=ORIGINATION_DATE, payment_day=1,
+        account_type=AcctTypeEnum.MORTGAGE, anchor_period=anchor_period,
     )
-    account = account_service.create_account(
-        account_service.AccountSpec(
-            user_id=user_id,
-            account_type_id=loan_type.id,
-            name="Principal-Settle Mortgage",
-            anchor_balance=original_principal,
-            anchor_period_id=anchor_period_id,
-            notes="C14 mortgage origination",
-        ),
-    )
-    db.session.flush()
-
-    loan_params = LoanParams(
-        account_id=account.id,
-        original_principal=original_principal,
-        current_principal=current_principal,
-        term_months=term_months,
-        origination_date=origination_date,
-        payment_day=payment_day,
-        is_arm=False,
-    )
-    db.session.add(loan_params)
-    db.session.flush()
-    insert_origination_rate(loan_params, interest_rate)
-
-    origination_event = LoanAnchorEvent(
-        account_id=account.id,
-        anchor_date=origination_date,
-        anchor_balance=original_principal,
-        source_id=ref_cache.loan_anchor_source_id(
-            LoanAnchorSourceEnum.ORIGINATION,
-        ),
-    )
-    db.session.add(origination_event)
-    db.session.flush()
+    loan_params = loan_params_for(db.session, account.id)
 
     if escrow_annual is not None:
         add_escrow_line(
             db.session, account.id, "Property Tax", escrow_annual,
-            effective_date=origination_date,
+            effective_date=ORIGINATION_DATE,
         )
 
-    return account, loan_params, origination_event
+    return account, loan_params
 
 
 def _create_piti_transfer(  # pylint: disable=too-many-arguments,too-many-positional-arguments
@@ -268,29 +223,32 @@ def _income_shadow(transfer_id: int, loan_account_id: int) -> Transaction:
 def _resolve_balance(
     account_id: int, loan_params, scenario_id: int, as_of: date,
 ) -> Decimal:
-    """Load the resolver inputs and return the current_balance Decimal.
+    """Load the resolver inputs and return the anchor-replay balance.
 
-    Mirrors the consumer pattern Commit 15 will route through:
-    load anchor events from the database, prepare the payment feed
-    via :func:`loan_payment_service.load_loan_context`, then call
-    :func:`loan_resolver.resolve_loan`.
+    The window the deleted ``LoanState.current_balance`` carried on this
+    (unseeded) path (plan step D2a): the anchor + confirmed-payment replay
+    (``_replay_from_anchor``), the same production derivation that still seeds
+    the schedule composer's starting state.  Loads mirror the production
+    bundle: anchor FACTS via :func:`loan_loaders.load_loan_anchor_facts` (the
+    origination opening SYNTHESIZED from params plus every stored true-up /
+    tracking-start assertion -- never a raw ``LoanAnchorEvent`` query, which
+    since the read switch would miss the synthesized origination), and the
+    payment feed via :func:`loan_payment_service.load_loan_context`.
     """
-    anchor_events = (
-        db.session.query(LoanAnchorEvent)
-        .filter_by(account_id=account_id)
-        .all()
-    )
+    anchor_events = loan_loaders.load_loan_anchor_facts(loan_params)
     context = loan_payment_service.load_loan_context(
         account_id, scenario_id, loan_params,
     )
-    state = loan_resolver.resolve_loan(
-        loan_resolver.LoanInputs(
-            loan_params, anchor_events, context.payments,
-            context.rate_changes,
-        ),
-        as_of,
+    inputs = loan_resolver.LoanInputs(
+        loan_params, anchor_events, context.payments,
+        context.rate_changes,
     )
-    return state.current_balance
+    periods = loan_resolver.resolve_periods(
+        inputs.loan_params, inputs.rate_changes,
+    )
+    return round_money(
+        _replay_from_anchor(inputs, periods, as_of).balance_as_of
+    )
 
 
 # -- Test class -------------------------------------------------------------
@@ -323,10 +281,8 @@ class TestLoanPrincipalSettles:
         category = seed_user["categories"]["Car Payment"]
 
         escrow_annual = MONTHLY_ESCROW_ANNUAL if escrow else None
-        mortgage, loan_params, _origination = _create_mortgage(
-            user_id=user.id,
-            anchor_period_id=periods[0].id,
-            escrow_annual=escrow_annual,
+        mortgage, loan_params = _create_mortgage(
+            seed_user, periods[0], escrow_annual=escrow_annual,
         )
         db.session.commit()
 
@@ -668,10 +624,7 @@ def test_resolved_balance_stable_across_future_as_of(  # noqa: D401
         periods = seed_periods
         category = seed_user["categories"]["Car Payment"]
 
-        mortgage, loan_params, _origination = _create_mortgage(
-            user_id=user.id,
-            anchor_period_id=periods[0].id,
-        )
+        mortgage, loan_params = _create_mortgage(seed_user, periods[0])
         db.session.commit()
 
         xfer = _create_piti_transfer(

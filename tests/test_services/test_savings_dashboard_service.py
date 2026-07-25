@@ -10,7 +10,12 @@ from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import CompoundingFrequencyEnum, GoalModeEnum, IncomeUnitEnum
+from app.enums import (
+    AcctTypeEnum,
+    CompoundingFrequencyEnum,
+    GoalModeEnum,
+    IncomeUnitEnum,
+)
 from app.extensions import db
 from app.models.account import Account
 from app.models.ref import AccountType, FilingStatus
@@ -18,6 +23,7 @@ from app.models.salary_profile import SalaryProfile
 from app.models.savings_goal import SavingsGoal
 from app.services import savings_dashboard_service, pay_period_service
 from app.services import account_service
+from app.services.balance_at import BalanceContext
 
 
 class TestComputeDashboardData:
@@ -983,6 +989,162 @@ class TestPaidOffFlag:
             assert loan_ad["is_paid_off"] is False
 
 
+class TestPaidOffReadsTheLedgerNotTheReplay:
+    """``is_paid_off`` is a LEDGER read, not a schedule replay.
+
+    The flag used to be answered by ``resolve_loan(inputs, date.max)`` with no
+    ``confirmed_view`` -- a producer that structurally cannot consult the genesis
+    ledger (the confirmed view returns ``None`` for any ``as_of`` after
+    today) and that is BLIND TO MONEY: the replay advances one SCHEDULED step per
+    confirmed payment and discards the cash actually paid.
+
+    Each test here pins the fix by ALSO evaluating that retired producer, so the
+    assertion is non-vacuous in both directions: the replay genuinely disagrees
+    with the ledger on this data, and the app now follows the ledger.
+    """
+
+    def _replay_says_paid_off(self, acct, scenario_id):
+        """Return what the RETIRED date.max replay probe would have answered.
+
+        The exact call the old ``_loan_ever_paid_off`` made: no ``confirmed_view``
+        (so no ledger), no ``extra_principal``, ``as_of=date.max``.
+        """
+        # Pylint: import-outside-toplevel -- the file-wide deferred-import
+        # convention for test-local symbols.
+        # pylint: disable=import-outside-toplevel
+        from app.services import loan_resolver
+        from app.services.loan_loaders import (
+            load_loan_anchor_facts, load_loan_params,
+        )
+        from app.services.loan_payment_service import load_loan_context
+        from app.services.loan_resolver._periods import _replay_from_anchor
+        from app.utils.money import round_money
+
+        params = load_loan_params(acct.id)
+        loan_ctx = load_loan_context(acct.id, scenario_id, params)
+        inputs = loan_resolver.LoanInputs(
+            params, load_loan_anchor_facts(params),
+            loan_ctx.payments, loan_ctx.rate_changes,
+        )
+        # The replay derivation directly (``LoanState.current_balance`` carried
+        # it until plan step D2a deleted the field): the same money-blind
+        # schedule-step probe the retired ``_loan_ever_paid_off`` ran.
+        replayed = round_money(_replay_from_anchor(
+            inputs,
+            loan_resolver.resolve_periods(params, inputs.rate_changes),
+            date.max,
+        ).balance_as_of)
+        return replayed == Decimal("0.00")
+
+    def test_off_schedule_payoff_needs_no_trueup_band_aid(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """One lump-sum settled payment retires the loan -- no true-up required.
+
+        A $1,000 / 24-month loan whose scheduled principal is ~$40/mo, retired by
+        a SINGLE settled $1,100 payment.  The genesis ledger books the real
+        principal, so it reads $0.00 owed and the tile's balance is $0.
+
+        The retired replay takes ONE ~$40 scheduled step and still owes ~$960, so
+        it answered "not paid off" -- which is why the app previously required the
+        operator to record a manual balance true-up to $0 after any lump-sum
+        payoff (a band-aid for a producer that could not see the cash).  Reading
+        the ledger removes that requirement: the payment alone is enough.
+        """
+        # Pylint: import-outside-toplevel -- the file-wide deferred-import
+        # convention for test-local symbols.
+        # pylint: disable=import-outside-toplevel
+        from tests._test_helpers import create_settled_transfer, settle_instant_on
+
+        with app.app_context():
+            acct = _create_small_loan(seed_user, db.session)
+            # The production settle chokepoint, so the payment posts its REAL
+            # split to the genesis ledger exactly as a live settle does.  Settled
+            # on the current period's start (a past date), so it is visible today
+            # under C2's settled-date clock regardless of the UTC/display offset.
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], acct,
+                seed_periods_today[4], amount=Decimal("1100.00"),
+                paid_at=settle_instant_on(seed_periods_today[4].start_date),
+            )
+            db.session.commit()
+
+            # NON-VACUITY: the retired producer disagrees on exactly this data.
+            assert self._replay_says_paid_off(
+                acct, seed_user["scenario"].id,
+            ) is False, (
+                "fixture regressed: the replay must still owe here, or this "
+                "test no longer pins the ledger-vs-replay divergence"
+            )
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            loan_ad = next(
+                ad for ad in result["account_data"]
+                if ad["account"].id == acct.id
+            )
+            # The ledger booked the real principal: nothing is owed.
+            assert loan_ad["current_balance"] == Decimal("0.00")
+            assert loan_ad["is_paid_off"] is True
+
+    def test_short_paid_loan_never_vanishes_from_total_debt(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A loan paid SHORT stays in total_debt, even when the replay hits zero.
+
+        The dangerous inverse.  A $1,000 / 2-month loan's scheduled payment is
+        ~$502, so TWO confirmed payments exhaust the replay's term and drive its
+        balance to $0.00 -- regardless of how little cash was actually paid.  Here
+        each payment is only $100, so the ledger (which books the REAL principal)
+        still owes several hundred dollars.
+
+        Under the retired probe that made ``is_paid_off`` True, and
+        ``_metrics._loan_current_balance`` drops a paid-off loan from
+        ``total_debt`` -- so real, still-owed debt silently vanished from the debt
+        card and its full original principal counted as paid.  The ledger read
+        keeps the loan on the books.
+        """
+        # Pylint: import-outside-toplevel -- the file-wide deferred-import
+        # convention for test-local symbols.
+        # pylint: disable=import-outside-toplevel
+        from tests._test_helpers import create_settled_transfer
+
+        with app.app_context():
+            acct = _create_small_loan(seed_user, db.session, term=2)
+            for idx in (3, 4):
+                create_settled_transfer(
+                    seed_user, db.session, seed_user["account"], acct,
+                    seed_periods_today[idx], amount=Decimal("100.00"),
+                )
+            db.session.commit()
+
+            # NON-VACUITY: the retired producer really did call this paid off.
+            assert self._replay_says_paid_off(
+                acct, seed_user["scenario"].id,
+            ) is True, (
+                "fixture regressed: the replay must reach zero here, or this "
+                "test no longer pins the debt-vanishing regression"
+            )
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            loan_ad = next(
+                ad for ad in result["account_data"]
+                if ad["account"].id == acct.id
+            )
+            # The ledger still owes, so the loan is NOT paid off ...
+            assert loan_ad["current_balance"] > Decimal("0.00")
+            assert loan_ad["is_paid_off"] is False
+            # ... and it therefore still counts toward the debt card's total.
+            assert result["debt_summary"] is not None
+            assert (
+                result["debt_summary"]["total_debt"]
+                >= loan_ad["current_balance"]
+            )
+
+
 class TestArchivedAccounts:
     """Tests for archived account loading in the dashboard service.
 
@@ -1198,68 +1360,27 @@ class TestDebtSummary:
                      = 14225 / 225000
                      = 0.06322...
         """
-        with app.app_context():
-            mortgage_type = (
-                db.session.query(AccountType)
-                .filter_by(name="Mortgage").one()
-            )
-            mortgage = account_service.create_account(
-                account_service.AccountSpec(
-                    user_id=seed_user["user"].id,
-                    account_type_id=mortgage_type.id,
-                    name="Mortgage",
-                    anchor_balance=Decimal("200000.00"),
-                ),
-            )
-            db.session.add(mortgage)
-            db.session.flush()
+        from tests._test_helpers import create_loan_account  # pylint: disable=import-outside-toplevel
 
-            from app.models.loan_params import LoanParams as LP
-            from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
-                insert_origination_event as _ioe,
-                insert_origination_rate as _ior,
-            )
-            lp1 = LP(
-                account_id=mortgage.id,
-                original_principal=Decimal("200000.00"),
-                current_principal=Decimal("200000.00"),
-                term_months=360,
+        with app.app_context():
+            create_loan_account(
+                seed_user, db.session, name="Mortgage",
+                principal=Decimal("200000.00"),
+                rate=Decimal("0.06500"),  # DH-#56 origination rate
+                term=360,
                 origination_date=date(2024, 1, 1),
                 payment_day=1,
+                account_type=AcctTypeEnum.MORTGAGE,
             )
-            db.session.add(lp1)
-            db.session.flush()
-            _ioe(lp1)
-            _ior(lp1, Decimal("0.06500"))  # DH-#56 origination rate
-
-            auto_type = (
-                db.session.query(AccountType)
-                .filter_by(name="Auto Loan").one()
-            )
-            auto = account_service.create_account(
-                account_service.AccountSpec(
-                    user_id=seed_user["user"].id,
-                    account_type_id=auto_type.id,
-                    name="Auto",
-                    anchor_balance=Decimal("25000.00"),
-                ),
-            )
-            db.session.add(auto)
-            db.session.flush()
-
-            lp2 = LP(
-                account_id=auto.id,
-                original_principal=Decimal("25000.00"),
-                current_principal=Decimal("25000.00"),
-                term_months=60,
+            create_loan_account(
+                seed_user, db.session, name="Auto",
+                principal=Decimal("25000.00"),
+                rate=Decimal("0.04900"),  # DH-#56 origination rate
+                term=60,
                 origination_date=date(2024, 6, 1),
                 payment_day=15,
+                account_type=AcctTypeEnum.AUTO_LOAN,
             )
-            db.session.add(lp2)
-            db.session.flush()
-            _ioe(lp2)
-            _ior(lp2, Decimal("0.04900"))  # DH-#56 origination rate
-            db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
                 seed_user["user"].id,
@@ -1408,46 +1529,25 @@ class TestDebtSummary:
         A short-term loan (24 months) and a long-term mortgage (360
         months).  The debt-free date should match the mortgage's payoff.
         """
-        with app.app_context():
-            from app.models.loan_params import LoanParams as LP
+        from tests._test_helpers import create_loan_account  # pylint: disable=import-outside-toplevel
 
+        with app.app_context():
             # Short-term loan
             _create_small_loan(
                 seed_user, db.session, name="Short Loan", term=24,
             )
 
             # Long-term mortgage
-            mortgage_type = (
-                db.session.query(AccountType)
-                .filter_by(name="Mortgage").one()
-            )
-            mortgage = account_service.create_account(
-                account_service.AccountSpec(
-                    user_id=seed_user["user"].id,
-                    account_type_id=mortgage_type.id,
-                    name="Long Mortgage",
-                    anchor_balance=Decimal("0"),
-                ),
-            )
-            db.session.add(mortgage)
-            db.session.flush()
-            lp = LP(
-                account_id=mortgage.id,
-                original_principal=Decimal("200000.00"),
-                current_principal=Decimal("200000.00"),
-                term_months=360,
+            create_loan_account(
+                seed_user, db.session, name="Long Mortgage",
+                principal=Decimal("200000.00"),
+                rate=Decimal("0.06500"),  # DH-#56 origination rate
+                term=360,
                 origination_date=date(2024, 1, 1),
                 payment_day=1,
+                account_type=AcctTypeEnum.MORTGAGE,
+                anchor_balance=Decimal("0"),
             )
-            db.session.add(lp)
-            db.session.flush()
-            from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
-                insert_origination_event as _ioe,
-                insert_origination_rate as _ior,
-            )
-            _ioe(lp)
-            _ior(lp, Decimal("0.06500"))  # DH-#56 origination rate
-            db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
                 seed_user["user"].id,
@@ -1469,45 +1569,28 @@ class TestDebtSummary:
         A mortgage with $7,200/year escrow ($600/month).  The monthly
         total must include P&I + escrow.
         """
+        from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
+            add_escrow_line,
+            create_loan_account,
+            loan_params_for,
+        )
+
         with app.app_context():
-            from app.models.loan_params import LoanParams as LP
-
-            mortgage_type = (
-                db.session.query(AccountType)
-                .filter_by(name="Mortgage").one()
-            )
-            mortgage = account_service.create_account(
-                account_service.AccountSpec(
-                    user_id=seed_user["user"].id,
-                    account_type_id=mortgage_type.id,
-                    name="Escrow Mortgage",
-                    anchor_balance=Decimal("0"),
-                ),
-            )
-            db.session.add(mortgage)
-            db.session.flush()
-
-            lp = LP(
-                account_id=mortgage.id,
-                original_principal=Decimal("200000.00"),
-                current_principal=Decimal("200000.00"),
-                term_months=360,
+            mortgage = create_loan_account(
+                seed_user, db.session, name="Escrow Mortgage",
+                principal=Decimal("200000.00"),
+                rate=Decimal("0.06500"),  # DH-#56 origination rate
+                term=360,
                 origination_date=date(2024, 1, 1),
                 payment_day=1,
+                account_type=AcctTypeEnum.MORTGAGE,
+                anchor_balance=Decimal("0"),
             )
-            db.session.add(lp)
-            db.session.flush()
-            from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
-                add_escrow_line,
-                insert_origination_event as _ioe,
-                insert_origination_rate as _ior,
-            )
-            _ioe(lp)
-            _ior(lp, Decimal("0.06500"))  # DH-#56 origination rate
+            params = loan_params_for(db.session, mortgage.id)
 
             add_escrow_line(
                 db.session, mortgage.id, "Property Tax", Decimal("7200.00"),
-                effective_date=lp.origination_date,
+                effective_date=params.origination_date,
             )
             db.session.commit()
 
@@ -2217,7 +2300,7 @@ class TestDTIRaiseAware:
 # Pre-Commit-6 the savings dashboard built its own transaction query
 # without ``selectinload(Transaction.entries)`` and called the engine
 # directly.  When an envelope expense had cleared debit entries, the
-# silent-degrade seam in ``balance_calculator._entry_aware_amount``
+# silent-degrade seam in ``cash_ledger._amounts._entry_aware_amount``
 # (removed at the math layer by Commit 5) returned
 # ``effective_amount`` unchanged.  Result: the same data shipped
 # $160.00 on the grid and $114.29 on /savings -- symptom #1.  Commit 6
@@ -2367,7 +2450,7 @@ class TestCanonicalProducerRouting:
         return Decimal("160.00").  Pre-Commit-6, /savings returned
         Decimal("114.29") via the silent-degrade seam.
         """
-        from app.services import balance_resolver  # pylint: disable=import-outside-toplevel
+        from app.services.balance_at import _cash_engine as balance_resolver  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
             # Current period == anchor period: seed_periods_today
@@ -2581,254 +2664,6 @@ class TestCanonicalProducerRouting:
 # ── F-21 / Commit 19: Loan period-balance dispatcher ──────────────
 
 
-class TestLoanProjectedBalanceDispatcher:
-    """F-21 / Commit 19: loan period-balance dispatcher unification.
-
-    The savings dashboard's 3/6/12-month projected loan balances and
-    the year-end net-worth / debt-progress liability columns both
-    route through
-    :func:`app.services.account_projection.compute_loan_period_balance_map`.
-    The locked canonical is period-end-keyed -- the balance AFTER any
-    payment due in the period containing the target date.  Pre-F-21
-    the savings dashboard ran a parallel target-month-first walk over
-    ``state.schedule`` (last row on-or-before
-    ``date(target_y, target_m, 1)``) that produced cents-precise
-    drift across the two surfaces.
-    """
-
-    def test_dispatcher_returns_period_end_keyed_balance(self):
-        """C19-1: hand-crafted schedule + periods prove the semantic.
-
-        Hand arithmetic for a synthetic $1,000 three-payment schedule
-        (payments dated mid-month so each falls cleanly inside one
-        calendar-month period):
-
-          Period 1 (Jan 1 .. Jan 31, end_date=Jan 31):
-            Jan 15 payment <= Jan 31  -> remaining_balance 910.00.
-            balance_map[1] == Decimal("910.00").
-          Period 2 (Feb 1 .. Feb 28, end_date=Feb 28):
-            Feb 15 payment <= Feb 28  -> remaining_balance 819.00.
-            balance_map[2] == Decimal("819.00").
-          Period 3 (Mar 1 .. Mar 31, end_date=Mar 31):
-            Mar 15 payment <= Mar 31  -> remaining_balance 727.00.
-            balance_map[3] == Decimal("727.00").
-
-        Each period's balance is the balance AFTER the payment due
-        within the period -- the F-21 period-end-keyed canonical.
-        """
-        # pylint: disable=import-outside-toplevel
-        from types import SimpleNamespace
-
-        from app.services.account_projection import (
-            compute_loan_period_balance_map,
-        )
-
-        schedule = [
-            SimpleNamespace(
-                payment_date=date(2026, 1, 15),
-                remaining_balance=Decimal("910.00"),
-            ),
-            SimpleNamespace(
-                payment_date=date(2026, 2, 15),
-                remaining_balance=Decimal("819.00"),
-            ),
-            SimpleNamespace(
-                payment_date=date(2026, 3, 15),
-                remaining_balance=Decimal("727.00"),
-            ),
-        ]
-        periods = [
-            SimpleNamespace(
-                id=1,
-                start_date=date(2026, 1, 1),
-                end_date=date(2026, 1, 31),
-                period_index=1,
-            ),
-            SimpleNamespace(
-                id=2,
-                start_date=date(2026, 2, 1),
-                end_date=date(2026, 2, 28),
-                period_index=2,
-            ),
-            SimpleNamespace(
-                id=3,
-                start_date=date(2026, 3, 1),
-                end_date=date(2026, 3, 31),
-                period_index=3,
-            ),
-        ]
-
-        result = compute_loan_period_balance_map(
-            schedule, periods, current_balance=Decimal("1000.00"),
-        )
-
-        assert result[1] == Decimal("910.00")
-        assert result[2] == Decimal("819.00")
-        assert result[3] == Decimal("727.00")
-
-    def test_dispatcher_returns_current_balance_before_first_payment(
-        self,
-    ):
-        """C19-1 (boundary): periods preceding the first payment return the
-        loan's current balance, NOT its original principal.
-
-        This is the phantom-net-worth-jump fix: the resolver schedule is
-        today-forward, so a period before the first upcoming payment is at
-        the loan's current balance.  Reporting the origination amount there
-        made the loan leap down to its real balance the moment the first
-        payment landed -- a phantom liability drop / net-worth jump of
-        (original principal - current balance).
-
-        Period 1 ends Dec 31, 2025; the first scheduled payment is
-        Jan 15, 2026.  The dispatcher returns the loan's current balance
-        ($1,000.00) for period 1 because no payment yet lands within its
-        end_date.  Period 2 (ends Jan 31) sits after the Jan 15 payment, so
-        it carries the post-payment remaining balance ($910.00).
-        """
-        # pylint: disable=import-outside-toplevel
-        from types import SimpleNamespace
-
-        from app.services.account_projection import (
-            compute_loan_period_balance_map,
-        )
-
-        schedule = [
-            SimpleNamespace(
-                payment_date=date(2026, 1, 15),
-                remaining_balance=Decimal("910.00"),
-            ),
-        ]
-        periods = [
-            SimpleNamespace(
-                id=1,
-                start_date=date(2025, 12, 1),
-                end_date=date(2025, 12, 31),
-                period_index=0,
-            ),
-            SimpleNamespace(
-                id=2,
-                start_date=date(2026, 1, 1),
-                end_date=date(2026, 1, 31),
-                period_index=1,
-            ),
-        ]
-
-        result = compute_loan_period_balance_map(
-            schedule, periods, current_balance=Decimal("1000.00"),
-        )
-
-        assert result[1] == Decimal("1000.00")
-        assert result[2] == Decimal("910.00")
-
-    def test_no_phantom_jump_from_original_principal(self):
-        """Regression: pre-first-payment periods report the current balance.
-
-        The production bug (a phantom ~$18.5k net-worth jump): the Van Loan's
-        latest anchor was recent, so its resolver schedule first paid on
-        2026-07-22 -- AFTER two forward pay periods.  Those periods reported
-        the loan's ORIGINAL principal ($32,402.45) instead of its current
-        balance ($15,663.59); when the 07-22 payment landed, the liability
-        "snapped" down to ~$15.2k, read as a ~$17.2k net-worth jump in one
-        period.
-
-        With the fix, pre-first-payment periods report the current balance, so
-        the only period-over-period change is the real amortization step
-        (~one payment), never (original principal - current balance).
-        """
-        # pylint: disable=import-outside-toplevel
-        from types import SimpleNamespace
-
-        from app.services.account_projection import (
-            compute_loan_period_balance_map,
-        )
-
-        current_balance = Decimal("15663.59")     # resolver balance today
-        # Today-forward schedule: first payment 2026-07-22, then 2026-08-22 --
-        # the realistic ~$458/mo principal step from the production loan.
-        schedule = [
-            SimpleNamespace(
-                payment_date=date(2026, 7, 22),
-                remaining_balance=Decimal("15205.63"),
-            ),
-            SimpleNamespace(
-                payment_date=date(2026, 8, 22),
-                remaining_balance=Decimal("14745.51"),
-            ),
-        ]
-        # Periods 1 and 2 END before the 07-22 first payment; period 3 ends
-        # after it; period 4 ends after the 08-22 payment.
-        periods = [
-            SimpleNamespace(id=1, start_date=date(2026, 7, 2),
-                            end_date=date(2026, 7, 15), period_index=1),
-            SimpleNamespace(id=2, start_date=date(2026, 7, 16),
-                            end_date=date(2026, 7, 21), period_index=2),
-            SimpleNamespace(id=3, start_date=date(2026, 7, 22),
-                            end_date=date(2026, 7, 29), period_index=3),
-            SimpleNamespace(id=4, start_date=date(2026, 8, 20),
-                            end_date=date(2026, 8, 26), period_index=4),
-        ]
-
-        result = compute_loan_period_balance_map(
-            schedule, periods, current_balance=current_balance,
-        )
-
-        # Pre-first-payment periods: the current balance, NOT $32,402.45.
-        assert result[1] == Decimal("15663.59")
-        assert result[2] == Decimal("15663.59")
-        # The scheduled payments then amortize the balance down.
-        assert result[3] == Decimal("15205.63")
-        assert result[4] == Decimal("14745.51")
-        # The phantom jump is gone: the period-over-period drop across the
-        # first payment is one amortization step ($457.96), NOT
-        # (original principal - current balance) == $32,402.45 - $15,663.59
-        # == $16,738.86.
-        assert result[2] - result[3] == Decimal("457.96")
-
-    def test_empty_schedule_returns_current_balance_for_all_periods(
-        self,
-    ):
-        """An empty schedule returns the current balance for every period.
-
-        Models a loan with no scheduled rows (the resolver
-        short-circuited or the loan is paid off / has zero remaining
-        months).  The dispatcher must not raise and must not silently
-        drop the period -- the F-21 contract is "always return a
-        Decimal" -- and the value is the loan's current balance, not its
-        original principal.
-        """
-        # pylint: disable=import-outside-toplevel
-        from types import SimpleNamespace
-
-        from app.services.account_projection import (
-            compute_loan_period_balance_map,
-        )
-
-        periods = [
-            SimpleNamespace(
-                id=1,
-                start_date=date(2026, 1, 1),
-                end_date=date(2026, 1, 31),
-                period_index=1,
-            ),
-            SimpleNamespace(
-                id=2,
-                start_date=date(2026, 2, 1),
-                end_date=date(2026, 2, 28),
-                period_index=2,
-            ),
-        ]
-
-        result = compute_loan_period_balance_map(
-            [], periods, current_balance=Decimal("1234.56"),
-        )
-
-        assert result[1] == Decimal("1234.56")
-        assert result[2] == Decimal("1234.56")
-
-
-# ── Net-Worth Cockpit Producer Tests (Loop B Phase 1) ───────────────
-
-
 def _add_savings_account(seed_user, anchor_period_id, balance):
     """Create a liquid Savings account anchored to a period.
 
@@ -2852,52 +2687,42 @@ def _add_savings_account(seed_user, anchor_period_id, balance):
     return acct
 
 
-def _add_mortgage_account(seed_user, anchor_period_id, balance):
+def _add_mortgage_account(
+    seed_user, anchor_period_id, balance, origination_date=None,
+):
     """Create a Mortgage (liability) account with a loan schedule.
 
-    Mortgage originated 2025-01-01 at 6.5%, 30-year, so the resolver's
-    as-of-today current balance equals the origination principal and the
-    amortization schedule drives the forward liability series.
+    Mortgage at 6.5%, 30-year, defaulting to a 2025-01-01 origination so the
+    resolver's as-of-today current balance equals the origination principal.
+    *origination_date* is overridable: since step C6b the forward liability is a
+    FOLD of the loan's payment PLAN (not a schedule walk), so a loan originated in
+    the past with NO payment records is delinquent -- its unpaid overdue
+    installments never pay it down (finding B-9), and only the FUTURE contractual
+    installments are synthesized, which cannot make up the gap.  A test that needs
+    a loan to amortize cleanly to ZERO must originate it with no overdue gap (pass
+    ``date.today()``), the realistic on-schedule case.
+
+    Routed through the shared ``create_loan_account`` factory rather than
+    re-rolling the account + ``LoanParams`` + rate block: the hand-rolled copy this
+    replaces never opened the loan's genesis posting ledger, so every mortgage in
+    this suite ran on the no-ledger fallback -- a path production never takes.
 
     Returns:
         The new mortgage Account.
     """
     # pylint: disable=import-outside-toplevel
     from datetime import date as _date
-    from app.models.loan_params import LoanParams
-    from tests._test_helpers import (
-        insert_origination_event,
-        insert_origination_rate,
-    )
+    from app.enums import AcctTypeEnum
+    from app.models.pay_period import PayPeriod
+    from tests._test_helpers import create_loan_account
 
-    mortgage_type = (
-        db.session.query(AccountType).filter_by(name="Mortgage").one()
+    return create_loan_account(
+        seed_user, db.session, name="Home Mortgage",
+        principal=balance, rate=Decimal("0.06500"), term=360,
+        origination_date=origination_date or _date(2025, 1, 1), payment_day=1,
+        account_type=AcctTypeEnum.MORTGAGE,
+        anchor_period=db.session.get(PayPeriod, anchor_period_id),
     )
-    acct = account_service.create_account(
-        account_service.AccountSpec(
-            user_id=seed_user["user"].id,
-            account_type_id=mortgage_type.id,
-            name="Home Mortgage",
-            anchor_balance=balance,
-            anchor_period_id=anchor_period_id,
-        ),
-    )
-    db.session.add(acct)
-    db.session.flush()
-    params = LoanParams(
-        account_id=acct.id,
-        original_principal=balance,
-        current_principal=balance,
-        term_months=360,
-        origination_date=_date(2025, 1, 1),
-        payment_day=1,
-    )
-    db.session.add(params)
-    db.session.flush()
-    insert_origination_event(params)
-    insert_origination_rate(params, Decimal("0.06500"))
-    db.session.commit()
-    return acct
 
 
 def _add_property_account(seed_user, anchor_period_id, market_value):
@@ -2982,6 +2807,53 @@ class TestNetWorthHero:
 
             assert nw["total_liabilities"] == Decimal("240000.00")
             assert nw["total_liabilities"] > Decimal("0.00")
+
+    def test_a_negative_balance_liability_still_adds_its_magnitude(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A liability whose balance is stored NEGATIVE adds its magnitude.
+
+        The reduction is ``total_liabilities += abs(balance)``, so the sign a
+        liability happens to be stored with must not change net worth.  A
+        Credit Card's cash balance is negative (money owed leaves the
+        account), unlike a mortgage's positive owed figure -- so this is the
+        shape that actually exercises the ``abs``.  Every other liability in
+        this file's fixtures is stored POSITIVE, where ``abs`` is a no-op and
+        a regression to a bare ``+= balance`` would pass green.
+
+        Checking ($1,000) is the only asset; the card anchors at -$500.00:
+          total_assets       = 1000.00
+          total_liabilities  = abs(-500.00) = 500.00
+          net_worth          = 1000.00 - 500.00 = 500.00
+
+        Without the ``abs`` the card would ADD to net worth
+        (1000.00 - -500.00 = 1500.00), reporting a debt as an asset.
+        """
+        with app.app_context():
+            cc_type = (
+                db.session.query(AccountType)
+                .filter_by(name="Credit Card", user_id=None).one()
+            )
+            card = account_service.create_account(account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=cc_type.id,
+                name="Visa",
+                anchor_balance=Decimal("-500.00"),
+                anchor_period_id=seed_periods[0].id,
+            ))
+            db.session.add(card)
+            db.session.commit()
+
+            nw = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id
+            )["net_worth"]
+
+            # Seed Checking only.
+            assert nw["total_assets"] == Decimal("1000.00")
+            # abs(-500.00) = 500.00 -- the magnitude, not the signed balance.
+            assert nw["total_liabilities"] == Decimal("500.00")
+            # 1000.00 - 500.00 = 500.00 (NOT 1500.00, the no-abs answer).
+            assert nw["net_worth"] == Decimal("500.00")
 
     def test_liquid_excludes_non_liquid(
         self, app, db, seed_user, seed_periods,
@@ -3077,6 +2949,56 @@ class TestNetWorthSeries:
                     series["assets"][i] - series["liabilities"][i]
                 )
 
+    def test_series_liability_band_holds_a_negative_balance_magnitude(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A negative-balance liability adds its MAGNITUDE to the series band.
+
+        The per-period reduction (``_sum_composition_at_period``) has its own
+        ``abs`` -- a SECOND site from the hero's -- and this is what pins it.
+        A Credit Card's cash balance is stored negative, and it carries no
+        amortization schedule, so it holds flat at its anchor across every
+        point:
+          liabilities[i]                = abs(-500.00) = 500.00
+          composition["liability"][i]   = 500.00
+          net[i]                        = 1000.00 - 500.00 = 500.00
+
+        Without the ``abs`` the band would read -500.00 and net[i] would read
+        1500.00 -- the card ADDING to net worth -- while the today hero on the
+        SAME page still read 500.00.  Two producers contradicting each other
+        on one screen is the failure this arc exists to end, so both ``abs``
+        sites need their own control; the hero's is
+        ``test_a_negative_balance_liability_still_adds_its_magnitude``.
+        """
+        with app.app_context():
+            cc_type = (
+                db.session.query(AccountType)
+                .filter_by(name="Credit Card", user_id=None).one()
+            )
+            card = account_service.create_account(account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=cc_type.id,
+                name="Visa",
+                anchor_balance=Decimal("-500.00"),
+                anchor_period_id=seed_periods[0].id,
+            ))
+            db.session.add(card)
+            db.session.commit()
+
+            series = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id
+            )["net_worth"]["series"]
+
+            assert len(series["liabilities"]) > 0
+            for i in range(len(series["liabilities"])):
+                # abs(-500.00) = 500.00 at every point (the card holds flat).
+                assert series["liabilities"][i] == Decimal("500.00")
+                assert series["composition"]["liability"][i] == Decimal(
+                    "500.00",
+                )
+                # Seed Checking 1000.00 - 500.00 = 500.00 (NOT 1500.00).
+                assert series["net"][i] == Decimal("500.00")
+
     def test_current_period_point_equals_hero_for_liquid_only(
         self, app, db, seed_user, seed_periods,
     ):
@@ -3108,28 +3030,31 @@ class TestNetWorthSeries:
             # Flat liquid-only: every trend point (history tail + forward).
             assert all(v == Decimal("5000.00") for v in nw["series"]["net"])
 
-    def test_current_period_point_diverges_from_hero_for_amortizing_loan(
+    def test_current_period_point_agrees_with_hero_for_amortizing_loan(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """For a loan, the current-period series point differs from the hero.
+        """For a loan, the current-period series point EQUALS the hero.
 
-        The two figures deliberately read DIFFERENT sources, and this test
-        guards that they keep doing so (the documented caveat to the
-        liquid-only ``series[current_index] == hero`` case above).  The
-        current period sits at ``series["current_index"]`` within the trend
-        window (the history tail precedes it):
+        This test used to assert the opposite -- that the two figures
+        deliberately "read DIFFERENT sources" and must keep diverging.  They must
+        not.  A page whose loan tile and whose net-worth trend disagree about the
+        same loan on the same day is a page contradicting itself, and that
+        contradiction was the symptom that opened this whole arc::
 
-        - The hero (``compute_net_worth_today``) reduces over each
-          account's as-of-today ``current_balance``.  The mortgage has no
-          confirmed payments, so the loan resolver replays nothing forward
-          and reports its $240,000 origination principal.
-        - The series reads the dense amortization-schedule map, whose
-          current-period (period-end) value has already paid principal
-          DOWN below $240,000 by today.
+            the /savings loan tile and the net-worth trend's own 'today'
+            point disagree: tile=240000.00 trend=236544.21
 
-        Checking $1,000 and a $240,000 mortgage (anchored at index 0):
-          hero net        = 1000.00 - 240000.00 = -239000.00 (anchor)
-          series[current] = 1000.00 - (amortized < 240000.00) > -239000.00
+        The divergence had one cause: the hero read the loan's honest balance,
+        while the trend's dense map walked the amortization SCHEDULE and let ~14
+        unpaid, purely projected installments pay the principal down.  The mortgage
+        has NO confirmed payments, so not one dollar of principal was ever paid,
+        and $240,000 is the only true answer.  Both producers now read the confirmed
+        ledger for a period that has begun, so both give it.
+
+        Checking $1,000 and a $240,000 never-paid mortgage:
+          hero net        = 1000.00 - 240000.00 = -239000.00
+          series[current] = 1000.00 - 240000.00 = -239000.00  (agrees)
+          series[future]  = 1000.00 - (amortized < 240000.00) > -239000.00
         """
         with app.app_context():
             _add_mortgage_account(
@@ -3141,14 +3066,18 @@ class TestNetWorthSeries:
             )["net_worth"]
 
             current = nw["series"]["current_index"]
-            # Hero uses the as-of-today anchor (no confirmed payments):
-            # 1000.00 (checking) - 240000.00 (mortgage) = -239000.00
+            # No confirmed payment: 1000.00 (checking) - 240000.00 (mortgage).
             assert nw["net_worth"] == Decimal("-239000.00")
-            # The current-period series point uses the schedule (period-end),
-            # amortized below 240000, so net is HIGHER (less liability) and
-            # strictly differs from the hero -- the two-source split holds.
-            assert nw["series"]["net"][current] > nw["net_worth"]
-            assert nw["series"]["net"][current] != nw["net_worth"]
+            # The tile and the trend's own 'today' point agree, to the cent.
+            assert nw["series"]["net"][current] == nw["net_worth"], (
+                f"the /savings hero ({nw['net_worth']}) and the net-worth "
+                f"trend's current-period point "
+                f"({nw['series']['net'][current]}) disagree; the page is "
+                f"contradicting itself about the same loan on the same day"
+            )
+            # Amortization is real in the FUTURE, where the projection answers:
+            # the last trend point sits above the flat-debt line.
+            assert nw["series"]["net"][-1] > nw["net_worth"]
 
 
 class TestBuildTrendPeriods:
@@ -3210,34 +3139,29 @@ class TestBuildTrendPeriods:
 
     @staticmethod
     def _debt_schedule(first_payment_period_index, periods):
-        """A one-row loan :class:`DebtSchedule` first paying in a period.
+        """A one-row loan schedule first paying in a period.
 
         The row's ``payment_date`` is that period's ``end_date``, so the
         loan gate resolves the loan's honest start to that period's index.
-        ``current_balance`` is arbitrary here -- the gate reads only the
-        schedule rows, not the balance.
+        The gate reads only the schedule ROWS -- which is why it is now handed
+        rows (``debt_schedule_rows``) rather than the balance-bearing
+        ``DebtSchedule`` bundle.
         """
         # pylint: disable=import-outside-toplevel
         from types import SimpleNamespace
-        from app.services.net_worth_kernel import DebtSchedule
-        return DebtSchedule(
-            schedule=[SimpleNamespace(
-                payment_date=periods[first_payment_period_index].end_date,
-                remaining_balance=Decimal("1000.00"),
-            )],
-            current_balance=Decimal("1000.00"),
-        )
+        return [SimpleNamespace(
+            payment_date=periods[first_payment_period_index].end_date,
+            remaining_balance=Decimal("1000.00"),
+        )]
 
     @staticmethod
     def _empty_debt_schedule():
-        """An empty-schedule :class:`DebtSchedule` (a paid-off / resolved loan).
+        """An EMPTY loan schedule (a paid-off / fully-resolved loan).
 
         The gate must NOT constrain the window for such a loan -- its flat
         current balance is its real balance at every period.
         """
-        # pylint: disable=import-outside-toplevel
-        from app.services.net_worth_kernel import DebtSchedule
-        return DebtSchedule(schedule=[], current_balance=Decimal("1000.00"))
+        return []
 
     def test_tail_reaches_back_to_cash_anchor(self):
         """History reaches back to the cash account's anchor period.
@@ -3700,7 +3624,9 @@ class TestNetWorthHorizon:
                 _DashboardCoreData,
             )
             core = _DashboardCoreData(
-                accounts=[], scenario=None, all_periods=[], current_period=None,
+                accounts=[],
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
+                all_periods=[], current_period=None,
             )
             assert build_horizon(seed_user["user"].id, core, [], {}) is None
 
@@ -3940,10 +3866,18 @@ class TestNetWorthHorizon:
         The liability band starts at the loan's current balance ($240,000) and
         the final sample -- past the payoff -- is zero owed; the domain end
         year is the payoff year plus one.
+
+        Originated TODAY (no overdue gap), so the forward fold synthesizes its
+        WHOLE contractual schedule from the full balance and amortizes cleanly to
+        zero -- the on-schedule case.  A past origination with no payment records
+        would be delinquent under the C6b plan fold and never reach zero (B-9).
         """
         with app.app_context():
             periods = seed_periods_today
-            _add_mortgage_account(seed_user, periods[0].id, Decimal("240000.00"))
+            _add_mortgage_account(
+                seed_user, periods[0].id, Decimal("240000.00"),
+                origination_date=date.today(),
+            )
             uid = seed_user["user"].id
 
             payoff = savings_dashboard_service.compute_dashboard_data(
@@ -4410,3 +4344,283 @@ class TestAccountBalanceCell:
             )
             assert cell is not None
             assert cell["is_liability"] is False
+
+
+class TestOneResolutionPerLoanPerReadPass:
+    """Every producer resolves each loan EXACTLY ONCE per read pass.
+
+    The DRY property made into a deterministic gate rather than a hope.  Before
+    the read-pass :class:`~app.services.balance_at.BalanceContext`, ONE
+    ``compute_dashboard_data`` ran the loan resolver ELEVEN times for two loans:
+    the balance maps, the trend window's honest-history gate, the liability band,
+    the loan tile, the property-equity card, and an "ever paid off" probe each
+    resolved independently.
+
+    That was filed as waste, and the waste was the least of it: because there was
+    no single resolution to compare against, nothing revealed that one of the
+    eleven answered from a producer that could not read the genesis ledger
+    (``followup_redundant_loan_resolution.md``).  Redundant derivation is where a
+    divergence hides, so "resolved once" is pinned HERE, at the count -- a new
+    consumer that re-resolves a loan behind the seam's back fails this test
+    rather than silently agreeing until the day it does not.
+
+    The spy sits on ``resolve_loan_bundle``: the single db-facing load the memo
+    wraps, so it counts every resolution anywhere in the pass regardless of which
+    module asked.
+    """
+
+    def _count_resolutions(self, monkeypatch):
+        """Spy on the db-facing loan resolver; return the per-account call list."""
+        # Pylint: import-outside-toplevel -- the file-wide deferred-import
+        # convention for test-local symbols.
+        from app.services.balance_at import (  # pylint: disable=import-outside-toplevel
+            _resolution as resolution_module,
+        )
+
+        calls = []
+        real = resolution_module.resolve_loan_bundle
+
+        def _spy(account, ctx):
+            calls.append(account.id)
+            return real(account, ctx)
+
+        monkeypatch.setattr(resolution_module, "resolve_loan_bundle", _spy)
+        return calls
+
+    def test_dashboard_data_resolves_each_loan_once(
+        self, app, db, seed_user, seed_periods_today, monkeypatch,
+    ):
+        """/savings resolves each of two loans exactly once (was 11 runs for 2)."""
+        with app.app_context():
+            first = _create_small_loan(seed_user, db.session, name="Loan A")
+            second = _create_small_loan(seed_user, db.session, name="Loan B")
+            db.session.commit()
+            ids = {first.id, second.id}
+
+            calls = self._count_resolutions(monkeypatch)
+            savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+
+            assert set(calls) == ids
+            for loan_id in ids:
+                assert calls.count(loan_id) == 1, (
+                    f"loan {loan_id} was resolved {calls.count(loan_id)} times "
+                    "in one /savings render; it must be resolved exactly once"
+                )
+
+    def test_tracks_section_resolves_each_loan_once(
+        self, app, db, seed_user, seed_periods_today, monkeypatch,
+    ):
+        """The dashboard's tracks section shares ONE pass across its 3 producers.
+
+        ``compute_tracks_section`` runs the goal, debt-summary, and
+        principal-progress producers back to back.  Each used to start its own
+        read pass, so a two-loan user paid for six resolutions; they now share one
+        context.
+        """
+        with app.app_context():
+            loan = _create_small_loan(seed_user, db.session, name="Tracks Loan")
+            db.session.commit()
+            loan_id = loan.id
+
+            calls = self._count_resolutions(monkeypatch)
+            # Pylint: import-outside-toplevel -- deferred, matching the producer's
+            # own lazy import of the savings package.
+            from app.services import (  # pylint: disable=import-outside-toplevel
+                dashboard_pulse_service,
+            )
+            dashboard_pulse_service.compute_tracks_section(
+                seed_user["user"].id,
+            )
+
+            assert calls.count(loan_id) == 1
+
+    def test_horizon_resolves_each_loan_once(
+        self, app, db, seed_user, seed_periods_today, monkeypatch,
+    ):
+        """The standalone Horizon producer resolves each loan once (was 6 for 2)."""
+        with app.app_context():
+            loan = _create_small_loan(seed_user, db.session, name="Horizon Loan")
+            db.session.commit()
+            loan_id = loan.id
+
+            calls = self._count_resolutions(monkeypatch)
+            savings_dashboard_service.compute_net_worth_horizon(
+                seed_user["user"].id,
+            )
+
+            assert calls.count(loan_id) == 1
+
+
+class TestTypeDriftedLoanParamsRow:
+    """An orphan ``LoanParams`` on a non-amortizing type is not treated as a loan.
+
+    The reachable drift state: the account edit form allows changing
+    ``account_type_id`` (``accounts/crud.py``), nothing deletes the params row on
+    a type change, so a Mortgage re-typed to Credit Card KEEPS its ``LoanParams``.
+    ``followup_horizon_loan_predicate_split.md`` proposed that the Horizon's
+    domain / milestones (which read ``ad["loan_params"]``) would then disagree
+    with its liability band (which asks the canonical classifier), drawing a
+    payoff flag on a debt line that never retires.
+
+    They do NOT disagree, and this test is the evidence the follow-up said did not
+    exist.  ``_data._load_loan_params_and_escrow`` builds ``loan_params_map`` from
+    the accounts whose TYPE carries ``has_amortization`` -- the SAME flag
+    ``classify_account`` branches on -- so a drifted account never enters the map,
+    never gets ``loan_params`` in its projection dict, and is therefore skipped by
+    the domain and the milestones exactly as the band skips it.  One flag, one
+    answer, three consumers.
+    """
+
+    def test_drifted_account_is_a_plain_liability_everywhere(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A re-typed loan carries no loan fields and raises no payoff milestone."""
+        with app.app_context():
+            acct = _create_small_loan(seed_user, db.session, name="Drifted")
+            assert acct.loan_params is not None
+
+            # Re-type it to a NON-amortizing liability, exactly as the edit route
+            # allows; the LoanParams row deliberately survives.
+            card_type = (
+                db.session.query(AccountType)
+                .filter_by(name="Credit Card").one()
+            )
+            assert card_type.has_amortization is False
+            acct.account_type_id = card_type.id
+            db.session.commit()
+            acct_id = acct.id
+
+            data = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            entry = next(
+                ad for ad in data["account_data"] if ad["account"].id == acct_id
+            )
+
+            # No loan fields: the tile shows no payment / rate / payoff, so the
+            # Horizon's domain and its milestone flags cannot pick it up.
+            assert "loan_params" not in entry
+            assert entry.get("payoff_date") is None
+            assert entry["is_paid_off"] is False
+
+            # And it raises no "paid off" milestone on the Horizon.
+            horizon = data["net_worth"]["horizon"]
+            assert horizon is not None
+            assert not [
+                m for m in horizon["milestones"]
+                if m["kind"] == "payoff" and "Drifted" in m["label"]
+            ]
+
+
+class TestUnclearingDebtHasNoDebtFreeDate:
+    """A loan that never pays off must not be dropped from the debt-free date.
+
+    Plan C8d made ``payoff_date`` legitimately ``None`` for a loan whose payment
+    never clears it.  Both debt-free producers filtered those out and took
+    ``max()`` over what remained, so a borrower owing $900,000 on a loan the loan
+    page labels "No payoff at current payment" was told they go debt-free when
+    their small loan ends -- and with every loan in that state, the Horizon fell
+    through to its LOAN-FREE fallback window entirely.  Before C8d this could not
+    happen: ``LoanState.payoff_date`` was non-nullable.
+    """
+
+    def _never_clearing_loan(self, seed_user, db_session, periods):
+        """A loan whose level payment cannot cover its own monthly interest.
+
+        Trued up to $900,000 against a $240,000/30yr contract (a ~$1,439 payment
+        versus $4,500 of monthly interest at 6%), so the balance grows and the
+        fold never reaches zero.
+        """
+        # Pylint: ``import-outside-toplevel`` -- test-local helpers, matching
+        # this module's convention of importing them where used.
+        from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
+            create_loan_account, insert_trueup_event, loan_params_for,
+        )
+        acct = create_loan_account(
+            seed_user, db_session, name="Never Clears",
+            principal=Decimal("240000.00"), rate=Decimal("0.06000"), term=360,
+            origination_date=date(2026, 1, 1), anchor_period=periods[0],
+        )
+        insert_trueup_event(
+            loan_params_for(db_session, acct.id), Decimal("900000.00"),
+        )
+        db_session.commit()
+        return acct
+
+    def test_the_debt_summary_reports_no_debt_free_date(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The date is ``None`` and the reason is flagged, not silently dropped."""
+        with app.app_context():
+            from app.services import balance_at  # pylint: disable=import-outside-toplevel
+            acct = self._never_clearing_loan(seed_user, db.session, seed_periods)
+
+            ctx = BalanceContext.build(seed_user["user"].id)
+            figures = balance_at.loan_figures(acct, ctx)
+            assert figures.payoff_date is None, "precondition: it never clears"
+            assert figures.is_retired is False
+
+            data = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            summary = data["debt_summary"]
+            assert summary is not None
+            assert summary["total_debt"] > Decimal("0.00")
+            assert summary["projected_debt_free_date"] is None, (
+                "the cockpit reports a debt-free date while a loan on the same "
+                "page never pays off"
+            )
+            assert summary["has_unclearing_debt"] is True
+
+    def test_a_clearing_loan_beside_it_does_not_supply_the_date(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The healthy loan's payoff must NOT stand in as the debt-free date.
+
+        The measured shape: a $12,000 loan that clears in 2028 alongside a
+        $900,000 loan that never does.  Taking ``max()`` over the loans that DO
+        clear yields 2028 -- a date at which the borrower still owes $900,000.
+        """
+        with app.app_context():
+            from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
+                create_loan_account,
+            )
+            self._never_clearing_loan(seed_user, db.session, seed_periods)
+            create_loan_account(
+                seed_user, db.session, name="Healthy Small",
+                principal=Decimal("12000.00"), rate=Decimal("0.05000"),
+                term=24, origination_date=date(2026, 1, 1),
+                anchor_period=seed_periods[0],
+            )
+            db.session.commit()
+
+            data = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            assert data["debt_summary"]["projected_debt_free_date"] is None
+
+    def test_the_horizon_is_not_loan_free(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The Horizon plants no "Debt-free" flag and does not go loan-free."""
+        with app.app_context():
+            # Pylint: ``import-outside-toplevel`` -- the private producer under
+            # test, imported where used.
+            from app.services.savings_dashboard_service._horizon import (  # pylint: disable=import-outside-toplevel
+                _resolve_horizon_domain,
+            )
+            self._never_clearing_loan(seed_user, db.session, seed_periods)
+
+            data = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            _end, debt_free, is_loan_free = _resolve_horizon_domain(
+                data["account_data"], date(2026, 3, 20),
+            )
+            assert debt_free is None
+            assert is_loan_free is False, (
+                "a borrower carrying a loan that never pays off was handed the "
+                "loan-free horizon window"
+            )

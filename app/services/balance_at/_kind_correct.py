@@ -18,26 +18,28 @@ from datetime import date
 from decimal import Decimal
 
 from app.models.account import Account
-from app.models.scenario import Scenario
 from app.services import (
-    balance_resolver,
-    net_worth_investment,
-    net_worth_kernel,
+    cash_ledger,
     pay_period_service,
 )
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
-    find_period_containing_date,
 )
+from app.services.loan_ledger import find_period_containing_date
 from app.utils.money import round_money
 
+from ._context import BalanceContext
+
+from . import _cash_engine, _investment
 from ._inputs import _account_balance_map, _assemble_inputs, _require_scenario
+from ._positions import positions
+from ._resolution import resolved_loan
 
 
 def balance_map(
     account: Account,
-    scenario: Scenario,
+    ctx: BalanceContext,
     periods: list,
     *,
     amount_overrides: "dict[int, Decimal] | None" = None,
@@ -59,11 +61,11 @@ def balance_map(
     uniform across kinds, and that asymmetry is load-bearing for callers:
 
     * **PLAIN** routes to
-      :func:`~app.services.balance_resolver.balances_for`, which AUTO-BUILDS a
+      :func:`~app.services.balance_at._cash_engine.balances_for`, which AUTO-BUILDS a
       live projected-net map when ``amount_overrides`` is None -- so omitting
       it yields LIVE income.
     * **INTEREST** routes to
-      :func:`~app.services.balance_calculator.calculate_balances_with_interest`,
+      :func:`~app.services.balance_at._calculator.calculate_balances_with_interest`,
       which does NOT auto-build -- so omitting it yields STORED income (the
       stored ``estimated_amount``), not live.
 
@@ -80,7 +82,9 @@ def balance_map(
         account: The account to project.  Its ``user_id`` scopes the
             deduction / gross loaders; its ``account_type`` drives the
             classifier.
-        scenario: The baseline scenario.
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
+            (its scenario scopes the producers; its ``as_of`` is the resolver's
+            now, and it memoizes each loan's resolution for the pass).
         periods: The pay periods to project over, ordered by
             ``period_index``.
         amount_overrides: Optional ``{transaction_id: Decimal}`` live
@@ -104,16 +108,16 @@ def balance_map(
     # ``if scenario is None: return []`` guard, so the legitimate empty state
     # is preserved; the seam raising here is the defensive contract that turns
     # a deep AttributeError (or a silent $0 net worth) into a clear failure.
-    _require_scenario(scenario)
-    inputs = _assemble_inputs([account], scenario)
+    _require_scenario(ctx)
+    inputs = _assemble_inputs([account], ctx)
     return _account_balance_map(
-        account, scenario, periods, inputs, amount_overrides,
+        account, ctx, periods, inputs, amount_overrides,
     )
 
 
 def build_maps(
     accounts: list[Account],
-    scenario: Scenario,
+    ctx: BalanceContext,
     periods: list,
 ) -> "dict[int, OrderedDict[int, Decimal]]":
     """Return account_id -> period balance map for many accounts (batch).
@@ -135,7 +139,7 @@ def build_maps(
 
     Args:
         accounts: The accounts to project (the same user's active set).
-        scenario: The baseline scenario.
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
         periods: The pay periods to project over (the dense domain -- pass
             ALL of the user's periods so the cash / investment paths have
             their anchor seed).
@@ -148,12 +152,12 @@ def build_maps(
         ValueError: When ``scenario`` is None -- callers that resolve a
             nullable baseline must guard first.
     """
-    _require_scenario(scenario)
-    inputs = _assemble_inputs(accounts, scenario)
+    _require_scenario(ctx)
+    inputs = _assemble_inputs(accounts, ctx)
     result: "dict[int, OrderedDict[int, Decimal]]" = {}
     for account in accounts:
         balances = _account_balance_map(
-            account, scenario, periods, inputs, None,
+            account, ctx, periods, inputs, None,
         )
         if balances is None:
             continue
@@ -162,7 +166,7 @@ def build_maps(
 
 
 def balance_at(
-    account: Account, scenario: Scenario, as_of: date,
+    account: Account, ctx: BalanceContext, as_of: date,
 ) -> Decimal:
     """Return one account's balance as of a calendar date *as_of*.
 
@@ -170,17 +174,20 @@ def balance_at(
     :func:`~app.services.account_projection.classify_account`:
 
     * **PLAIN (checking / plain savings)** -> the date-precise
-      :func:`~app.services.balance_resolver.balance_as_of_date`, which owns
+      :func:`~app.services.balance_at._cash_engine.balance_as_of_date`, which owns
       its own period loading and intra-period entry-date precision.  PLAIN is
       the only kind whose KIND-CORRECT balance IS its transaction balance, so
       the scalar can answer it date-precisely.
-    * **AMORTIZING (loan)** -> :func:`~app.services.net_worth_kernel.amortizing_balance_at`:
-      the genesis LEDGER for a date at or before today (the only complete record
-      of the past -- it books the true-ups that never appear as schedule rows),
-      and the forward schedule projection after.  This is also the accessor a
-      consumer wanting a loan's PAST balance must use; the seam's forward-only
-      liability view (:func:`~app.services.balance_at.liability_owed_at_dates`)
-      deliberately refuses a past date.
+    * **AMORTIZING (loan)** -> :func:`~app.services.balance_at.positions`: the event
+      FOLD over the loan's SOURCE facts for a date at or before the resolver's now
+      (the only complete record of the past -- it books the true-ups that never
+      appear as schedule rows), and the forward schedule projection after (step
+      C3b).  An AMORTIZING account with no ``LoanParams`` has no schedule to fold and
+      degrades to the cash producer here (``positions()`` is loan-only).  This
+      scalar is also the accessor a consumer wanting a loan's PAST balance must use;
+      the seam's forward-only liability view
+      (:func:`~app.services.balance_at.liability_owed_at_dates`) deliberately refuses
+      a past date.
     * **INTEREST / INVESTMENT / APPRECIATING** -> the value of
       :func:`balance_map` at the period containing *as_of* (these kinds are
       period-granular: their model is period-keyed, so a date resolves to its
@@ -202,18 +209,28 @@ def balance_at(
     falls before the user's entire pay-period horizon (no period contains or
     precedes it) or the account has no projectable map, the seam returns the
     canonical anchor balance from
-    :func:`~app.services.balance_resolver.resolve_anchor`, rounded to cents.
-    This mirrors :func:`~app.services.balance_resolver.balance_as_of_date`'s
+    :func:`~app.services.cash_ledger.resolve_anchor`, rounded to cents.
+    This mirrors :func:`~app.services.balance_at._cash_engine.balance_as_of_date`'s
     pre-anchor convention (a date the projection cannot reach returns the
     anchor balance), so every kind answers an unreachable date the same way.
     A genuinely corrupt account with no anchor history makes
     ``resolve_anchor`` raise, which is the correct loud failure rather than
     a silently wrong number.
 
+    **Two dates, deliberately distinct.**  ``ctx.as_of`` is the resolver's NOW --
+    the moment a loan is RESOLVED at, deciding what is confirmed and what it
+    currently owes.  *as_of* is the VALUATION date -- the moment to value the
+    account AT, which may be long past or far future.  They are the same value on
+    a plain "what is it worth today" read, which is exactly why they were
+    conflated for so long: "now" was an unnamed ``date.today()`` inside each
+    producer, so a caller asking for a historical valuation silently got it
+    measured against a loan resolved at today, with no way to say otherwise.
+
     Args:
         account: The account to value.
-        scenario: The baseline scenario (its id scopes the resolver / loan
-            schedule).
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
+            (its scenario scopes the resolver / loan schedule; its ``as_of`` is
+            the resolver's NOW -- see above).
         as_of: The calendar date to value the account at.
 
     Returns:
@@ -223,7 +240,7 @@ def balance_at(
         ValueError: When ``scenario`` is None -- callers that resolve a
             nullable baseline must guard first.
     """
-    _require_scenario(scenario)
+    _require_scenario(ctx)
     kind = classify_account(account)
 
     # PLAIN is the only kind whose kind-correct balance IS its transaction
@@ -233,20 +250,31 @@ def balance_at(
     # consistent with the map for an HYSA (the no-interest transaction balance
     # is ``cash_balance_at``'s job, not this kind-correct scalar's).
     if kind is AccountProjectionKind.PLAIN:
-        return balance_resolver.balance_as_of_date(account, scenario.id, as_of)
+        return _cash_engine.balance_as_of_date(
+            account, ctx.scenario.id, as_of,
+        )
 
     if kind is AccountProjectionKind.AMORTIZING:
-        # Ledger for the past, forward projection after -- the kernel producer
-        # that keeps this scalar on the same source as the loan card and the
-        # ``2 years`` band's begun periods.
-        return net_worth_kernel.amortizing_balance_at(account, scenario, as_of)
+        # A configured loan reads the ONE total producer positions(): the FOLD over
+        # source events for a past date, the schedule projection after (step C3b).
+        # An AMORTIZING account with no LoanParams -- a Mortgage typed but never
+        # filled in -- has no schedule to fold, so it degrades to the cash producer
+        # over its own transaction rows.  positions() fails loud for such an
+        # account, so the degrade is decided HERE on the resolver's fact, exactly
+        # the routing amortizing_balance_at did internally before the cutover
+        # (``resolved_loan(...) is None`` iff generate_debt_schedules would skip it).
+        if resolved_loan(account, ctx) is None:
+            return _cash_engine.balance_as_of_date(
+                account, ctx.scenario.id, as_of,
+            )
+        return positions(account, ctx, [as_of])[as_of]
 
     # INTEREST / INVESTMENT / APPRECIATING: locate the period containing as_of
     # and read the period-keyed map's value there.  INTEREST routes here (not
     # the cash branch above) so the scalar accrues interest in step with
     # balance_map for an HYSA.
     periods = pay_period_service.get_all_periods(account.user_id)
-    balances = balance_map(account, scenario, periods)
+    balances = balance_map(account, ctx, periods)
     target_period = find_period_containing_date(periods, as_of)
     if balances is not None and target_period is not None:
         located = balances.get(target_period.id)
@@ -260,12 +288,12 @@ def balance_at(
     # as_of precedes the user's pay-period horizon, or the account has no
     # projectable map: fall back to the canonical anchor balance.
     return round_money(
-        balance_resolver.resolve_anchor(account, scenario.id).balance,
+        cash_ledger.resolve_anchor(account, ctx.scenario.id).balance,
     )
 
 
 def investment_seed_map(
-    account: Account, scenario: Scenario, periods: list,
+    account: Account, ctx: BalanceContext, periods: list,
 ) -> "OrderedDict[int, Decimal]":
     """Return an investment's cash-basis (pre-growth) SEED map.
 
@@ -280,17 +308,18 @@ def investment_seed_map(
     growth, re-growing the current period).
 
     The seam owns this read (delegating to
-    :func:`~app.services.net_worth_investment.investment_base_balance_map`) so
+    :func:`~app.services.balance_at._investment.investment_base_balance_map`) so
     that EVERY balance map -- the modeled one a screen DISPLAYS and the
     pre-growth one a chart SEEDS from -- flows through this one package, and the
-    raw kernel producer stays fenced behind the W9906 seam checker.  A consumer
+    raw producer sits in a private seam module W9910 protects.  A consumer
     that needs the seed reads it HERE, never the kernel function directly; the
     distinct name (``investment_seed_map`` vs ``balance_map``) is the signal
     that its value is a projection seed, not a balance to render.
 
     Args:
         account: The investment account.
-        scenario: The baseline scenario (its id scopes the resolver).
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
+            (its scenario scopes the resolver).
         periods: The pay periods to span (ordered by ``period_index``; must
             include the anchor so the resolver has its running seed).
 
@@ -302,14 +331,14 @@ def investment_seed_map(
         ValueError: When ``scenario`` is None -- callers that resolve a
             nullable baseline must guard first.
     """
-    _require_scenario(scenario)
-    return net_worth_investment.investment_base_balance_map(
-        account, scenario, periods,
+    _require_scenario(ctx)
+    return _investment.investment_base_balance_map(
+        account, ctx.scenario, periods,
     )
 
 
 def investment_growth_since_anchor(
-    account: Account, scenario: Scenario, periods: list, current_period,
+    account: Account, ctx: BalanceContext, periods: list, current_period,
 ) -> "tuple[Decimal, Decimal] | None":
     """Return ``(growth, contributed)`` since the anchor, or ``None`` (hidden).
 
@@ -318,18 +347,18 @@ def investment_growth_since_anchor(
     :func:`._inputs._assemble_inputs` the balance maps use -- so the
     decomposition reconciles with :func:`balance_map` to the cent -- and
     delegates to
-    :func:`~app.services.net_worth_investment.investment_growth_since_anchor`
+    :func:`~app.services.balance_at._investment.investment_growth_since_anchor`
     (its docstring owns the reconciliation contract).  ``None`` when the
     account has no investment params / anchor / post-anchor window; raises
     ``ValueError`` when ``scenario`` is None.
     """
-    _require_scenario(scenario)
-    inputs = _assemble_inputs([account], scenario)
+    _require_scenario(ctx)
+    inputs = _assemble_inputs([account], ctx)
     params = inputs.investment_params_map.get(account.id)
     if params is None:
         return None
-    return net_worth_investment.investment_growth_since_anchor(
-        account, params, scenario, periods,
+    return _investment.investment_growth_since_anchor(
+        account, params, ctx.scenario, periods,
         inputs.deductions_by_account.get(account.id, []),
         inputs.salary_gross_biweekly, current_period,
     )

@@ -26,7 +26,7 @@ from app.models.transfer_template import TransferTemplate
 from app.models.savings_goal import SavingsGoal
 from app.models.ref import AccountType, Status, TransactionType
 from app.services.auth_service import hash_password
-from app.services import balance_calculator
+from app.services.balance_at import _calculator as balance_calculator
 from app.services import account_service
 
 

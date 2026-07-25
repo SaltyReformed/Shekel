@@ -26,6 +26,7 @@ from app.models.ref import AccountType, AccountTypeCategory, FilingStatus, TaxTy
 from app.models.tax_config import TaxBracketSet, FicaConfig, StateTaxConfig
 from app.models.user import MfaConfig, User, UserSettings
 from app.services import (
+    account_resolver,
     account_service,
     pay_period_admin,
     pay_period_service,
@@ -124,7 +125,10 @@ def _section_context(section):
     """
     loaders = {
         "general": lambda: {
-            "accounts": account_service.list_active_accounts(current_user.id),
+            # The Default Grid Account picker offers only grid-eligible
+            # accounts (ruling D4 / step A1: the grid refuses an
+            # amortizing loan, so the picker must never offer one).
+            "accounts": account_resolver.list_grid_accounts(current_user.id),
         },
         "categories": _load_categories_context,
         "tax": _load_tax_context,

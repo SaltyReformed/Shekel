@@ -1,9 +1,18 @@
-"""Loan-resolver state: the current (balance, payment, schedule, payoff) producer.
+"""Loan-resolver state: the (payment, rate, schedule, interest) producer.
 
 :func:`resolve_loan` is the single-source-of-truth producer every loan-touching
 surface reads through; :func:`compute_monthly_payment_baseline` is the
-cheaper "what does the user pay each month" lookup that skips the balance
-replay and schedule generation.
+cheaper "what does the user pay each month" lookup that skips the schedule
+generation.
+
+There is deliberately no BALANCE here (plan step D2a).  ``LoanState`` carried a
+``current_balance`` -- a balance-at-``as_of`` -- which made every holder of the
+bundle one attribute read away from a loan balance that never passed the
+``balance_at`` seam, and for a loan whose posting ledger cannot answer it fell
+back to the anchor replay, which is BLIND TO MONEY (it advances one scheduled
+step per confirmed payment and discards the cash).  The seam's readers fold the
+loan's recorded events instead (``balance_at._fold``), so the balance a page
+shows and the seed its projections start from are ONE derivation.
 
 Pure: no Flask, no ``db.session``; the caller loads the data and passes it in.
 """
@@ -24,7 +33,6 @@ from ._periods import (
     ZERO_MONEY,
     ConfirmedLedgerView,
     LoanInputs,
-    _replay_from_anchor,
     resolve_periods,
 )
 
@@ -36,13 +44,19 @@ class LoanState:
     Frozen because the resolver returns a snapshot the caller must
     not mutate.  Every consumer (loan dashboard card, /savings debt
     card, net-worth liability, debt-strategy, year-end summary) reads
-    these five fields and renders them; the immutability guarantees
+    these four fields and renders them; the immutability guarantees
     the same instance cannot be silently amended between consumers.
 
+    There is deliberately no ``current_balance`` here (plan step D2a).  A
+    balance-at-``as_of`` on this bundle put a loan balance one attribute read
+    from any holder with every gate silent, and for a loan whose posting
+    ledger cannot answer it was the money-blind anchor replay -- while every
+    displayed balance folds the loan's recorded events
+    (``balance_at.positions``).  The seam's readers derive the balance from
+    the fold (``balance_at._fold.fold_from_walk`` over the read pass's
+    memoized walk), so the balance and its consumers cannot fork.
+
     Attributes:
-        current_balance: Loan balance after replaying confirmed
-            payments forward from the latest anchor.  Display this
-            instead of ``LoanParams.current_principal``.
         monthly_payment: P&I payment as of ``as_of``.  For an ARM
             inside its fixed-rate window this is held constant for
             every ``as_of`` in the window (E-02 invariant).  Outside
@@ -63,20 +77,26 @@ class LoanState:
             schedule-derived -- the same figures this card displays).
             Generated once via the amortization engine; consumers
             read it without recomputing.
-        payoff_date: Last ``payment_date`` in ``schedule`` (the
-            month the loan reaches zero).  ``origination_date`` when
-            the schedule is empty (zero balance / zero remaining
-            months).
         total_interest: Sum of ``row.interest`` across the schedule
             (life-of-loan total).  ``Decimal("0.00")`` when the
             schedule is empty.
+
+    There is deliberately no ``payoff_date`` here (plan step C8d).  It
+    was the schedule walk's last row -- and that walk amortizes one
+    contractual installment per month whether or not a payment stands
+    behind it, and forces a final row at the contractual date for a
+    loan paying short, so the "payoff" it reported was a property of
+    the schedule rather than of the balance.  The payoff is now
+    DERIVED from the fold that produces the balance itself
+    (:func:`app.services.balance_at.loan_payoff_date` -- the date the
+    balance reaches zero), so the payoff and the balance cannot
+    disagree.  A consumer takes it from
+    :attr:`~app.services.balance_at.LoanFigures.payoff_date`.
     """
 
-    current_balance: Decimal
     monthly_payment: Decimal
     current_rate: Decimal
     schedule: list[AmortizationRow]
-    payoff_date: date
     total_interest: Decimal
 
 
@@ -93,8 +113,7 @@ def compute_monthly_payment_baseline(
     to size the escrow-subtraction threshold so the schedule's
     projected P&I matches the loan card's P&I exactly.  Returns the
     same value as ``resolve_loan(...).monthly_payment`` for the same
-    inputs, without running the full balance replay or schedule
-    generation.
+    inputs, without running the full schedule generation.
 
     The monthly P&I is the level payment of the rate period containing
     ``as_of`` (see :func:`build_rate_periods`): held constant within the
@@ -121,23 +140,58 @@ def compute_monthly_payment_baseline(
     ).period_pi
 
 
+def current_rate_baseline(
+    loan_params,
+    rate_changes: list[RateChangeRecord] | None,
+    as_of: date,
+) -> Decimal:
+    """Return the loan's current annual interest rate -- the rate-period rate.
+
+    Single source of truth for "what rate is in effect on ``as_of``" for callers
+    that need the rate WITHOUT the full schedule generation
+    :func:`resolve_loan` runs -- the standalone amortization-schedule route,
+    whose ARM rate column falls back to it for rows carrying no per-row rate, and
+    which composes its own schedule (so a full resolve just to read the rate
+    would derive the schedule twice).  Returns the same value as
+    ``resolve_loan(...).current_rate`` for the same inputs -- the governing rate
+    period's annual rate (DH-#56: the resolver-derived rate that replaced the
+    retired ``LoanParams.interest_rate`` column) -- by the same cheap rate-period
+    lookup :func:`compute_monthly_payment_baseline` uses for the payment.
+
+    Args:
+        loan_params: Loan parameter object exposing the fields
+            :func:`build_rate_periods` reads (origination, principal,
+            base rate, term, ARM cadence).
+        rate_changes: Optional ARM rate-history feeding each period's
+            rate.  ``None`` or empty for a fixed-rate loan.
+        as_of: Evaluation date; selects the governing rate period.
+
+    Returns:
+        The Decimal annual rate (a fraction, e.g. ``Decimal("0.06000")``),
+        equal to ``resolve_loan(...).current_rate`` for the same inputs.
+    """
+    return period_for_date(
+        resolve_periods(loan_params, rate_changes), as_of,
+    ).annual_rate
+
+
 def resolve_loan(
     loan_inputs: LoanInputs,
     as_of: date,
     confirmed_view: ConfirmedLedgerView | None = None,
     extra_principal: Decimal = ZERO_MONEY,
 ) -> LoanState:
-    """Resolve a loan to its (balance, payment, schedule, payoff, interest).
+    """Resolve a loan to its (payment, rate, schedule, interest).
 
     Single-source-of-truth producer for every loan-touching surface.
-    Replays confirmed payments forward from the latest
-    :class:`LoanAnchorEvent` to derive the current balance; computes
-    the monthly payment per the ARM-window-aware rules documented at
+    Computes the monthly payment per the ARM-window-aware rules documented at
     package scope; generates the full schedule via
     :func:`._payoff.compute_payoff_scenarios` (the COMMITTED, plan-aware
     composition ``history_rows + committed_forward``, honoring the projected
-    recurring payments and the standing ``extra_principal``); derives the payoff
-    date and total interest from the same schedule.
+    recurring payments and the standing ``extra_principal``); derives the
+    total interest from the same schedule.  The loan's BALANCE is not here
+    (plan step D2a): the ``balance_at`` seam folds it from the loan's recorded
+    events (see the :class:`LoanState` docstring).
 
     The function is pure: it takes plain data (the :class:`LoanInputs`
     bundle of model instances and plain Python lists), returns a frozen
@@ -160,17 +214,11 @@ def resolve_loan(
        directly.
     3. ``LoanState.schedule = history_rows + committed_forward`` -- the
        COMMITTED, plan-aware trajectory (step 8).  Projected (unconfirmed)
-       payments never reduce the current balance (step 4 derives it
-       independently); they surface only in this forward schedule, as planned
+       payments surface only in this forward schedule, as planned
        commitments, not historical fact.
-    4. Derive the current balance from the anchor + confirmed-payment
-       replay via :func:`._periods._replay_from_anchor` (independent of
-       the schedule walk -- the resolver owns its balance derivation so a
-       future projection change cannot silently change
-       ``state.current_balance``).
-    5. Compute the monthly payment per ARM-in-window vs.
+    4. Compute the monthly payment per ARM-in-window vs.
        ARM-out-of-window vs. fixed-rate rules.
-    6. Return the LoanState; consumers read its fields without
+    5. Return the LoanState; consumers read its fields without
        recomputing.
 
     Args:
@@ -184,12 +232,11 @@ def resolve_loan(
             and the out-of-window monthly-payment computation.
         confirmed_view: The loan's genesis-ledger confirmed view (the read
             switch), or ``None`` to keep the anchor replay.  When supplied,
-            its ``balance`` becomes BOTH the ``current_balance`` AND the
-            forward projection's starting balance, and its ``history_rows``
-            become the schedule's confirmed slice (threaded once to
-            :func:`._payoff.compute_payoff_scenarios`) -- one bundle, so the
-            headline balance, the schedule's history, and the projection
-            cannot desync off-schedule.  ``None`` leaves this function on the
+            its ``balance`` becomes the forward projection's starting balance
+            and its ``history_rows`` become the schedule's confirmed slice
+            (threaded once to :func:`._payoff.compute_payoff_scenarios`) --
+            one bundle, so the schedule's history and the projection cannot
+            desync off-schedule.  ``None`` leaves the composer on the
             anchor replay unchanged (an unconfigured loan, or a caller that
             deliberately reads the schedule balance -- e.g. the "ever paid
             off" ``date.max`` probe).
@@ -197,13 +244,14 @@ def resolve_loan(
             ``loan_payment_settings``; ``Decimal("0.00")`` when none), applied
             to every forward month of the committed schedule so the payoff date,
             total interest, and forward balances reflect the real plan (step 8).
-            The summary read path (``loan_resolution.resolve_loan_seeded``) loads
+            The summary read path (``balance_at._resolution.resolved_loan``) loads
             it centrally via
-            :func:`recurring_transfer_query.loan_standing_extra_for_account`; a
-            direct caller (e.g. the ``date.max`` probe) may leave it ``0.00``.
+            :func:`recurring_transfer_query.loan_standing_extra_for_account` and
+            threads it into the resolve; a direct caller (e.g. the ``date.max``
+            probe) may leave it ``0.00``.
 
     Returns:
-        A :class:`LoanState` with the five resolver fields.
+        A :class:`LoanState` with the four resolver fields.
 
     Raises:
         ValueError: When ``loan_inputs.anchor_events`` is empty (the
@@ -227,9 +275,10 @@ def resolve_loan(
     # the confirmed-history rows plus that committed forward slice -- the loan's
     # real plan, not the lender minimum (the step-8 seam fix,
     # ``docs/design/escrow_line_identity_refactor.md`` Sec. 16).  ARM vs.
-    # fixed-rate anchor handling is owned by the composer.  The current balance
-    # below is derived INDEPENDENTLY (an unconfirmed payment never reduces it),
-    # so routing projected payments forward here cannot move ``current_balance``.
+    # fixed-rate anchor handling is owned by the composer.  An unconfirmed
+    # payment surfaces ONLY in this forward schedule: the loan's BALANCE folds
+    # from recorded events in the balance seam, so routing projected payments
+    # forward here cannot move any displayed balance.
     # Fixed-rate trueups remain a follow-up: see F-8 in
     # ``docs/audits/financial_calculations/remediation_follow_up.md``.
     scenarios = compute_payoff_scenarios(
@@ -243,22 +292,6 @@ def resolve_loan(
         scenarios.committed_forward
     )
 
-    # Current balance: the genesis-ledger confirmed balance when the read
-    # switch supplies a view, else the schedule-replay balance.  The replay
-    # advances one scheduled step per confirmed payment from the latest
-    # anchor (principal = period P&I - interest), discarding the cash and
-    # escrow.  Threading ONE ``confirmed_view`` here AND into the composer
-    # above (never two mechanisms) keeps this headline balance, the
-    # schedule's confirmed rows, and the forward seed identical, so they
-    # cannot desync off-schedule.  The schedule-replay call stays independent
-    # of the composer's own so a future projection change cannot silently
-    # move the unseeded balance.
-    current_balance_full = (
-        _replay_from_anchor(loan_inputs, periods, as_of).balance_as_of
-        if confirmed_view is None
-        else confirmed_view.balance
-    )
-
     # Monthly P&I is the current rate period's level payment, held
     # constant within the period and recast only at an adjustment
     # boundary -- independent of the anchor balance, so a balance
@@ -269,22 +302,17 @@ def resolve_loan(
     monthly_payment = current_period.period_pi
     current_rate = current_period.annual_rate
 
-    # Derive payoff_date and total_interest from the single
-    # schedule generation (DRY -- no second engine call).
-    if schedule:
-        payoff_date = schedule[-1].payment_date
-        total_interest_full = sum(
-            (row.interest for row in schedule), ZERO_MONEY,
-        )
-    else:
-        payoff_date = loan_inputs.loan_params.origination_date
-        total_interest_full = ZERO_MONEY
+    # Life-of-loan interest from the single schedule generation (DRY --
+    # no second engine call).  The payoff date is NOT derived here: it
+    # is a fold-to-zero over the loan's forward plan, produced by the
+    # balance seam (see the :class:`LoanState` docstring, plan C8d).
+    total_interest_full = sum(
+        (row.interest for row in schedule), ZERO_MONEY,
+    )
 
     return LoanState(
-        current_balance=round_money(current_balance_full),
         monthly_payment=monthly_payment,
         current_rate=current_rate,
         schedule=schedule,
-        payoff_date=payoff_date,
         total_interest=round_money(total_interest_full),
     )

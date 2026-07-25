@@ -2192,7 +2192,7 @@ class TestOneTimeTransfer:
         The checking balance should decrease and savings balance should
         increase by the transfer amount.
         """
-        from app.services import balance_calculator  # pylint: disable=import-outside-toplevel
+        from app.services.balance_at import _calculator as balance_calculator  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
             savings = _create_savings_account(seed_user)

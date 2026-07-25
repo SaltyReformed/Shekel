@@ -11,29 +11,23 @@ biweekly month overlaps before passing payments to the amortization
 engine.
 """
 
-from datetime import date, timedelta
+from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
 from app.extensions import db
-from app.models.account import Account
 from app.models.loan_params import LoanParams
 from app.models.ref import AccountType
 from app.models.transaction import Transaction
 from app.services.amortization_engine import PaymentRecord
-from app.services import loan_loaders
 from app.services.loan_payment_service import (
     compute_contractual_pi,
-    confirmed_loan_view,
     get_payment_history,
-    load_loan_context,
-    load_loan_params,
     prepare_payments_for_engine,
 )
-from app.services.loan_resolution import resolve_loan_seeded
 from app.services.transfer_service import TransferSpec, create_transfer
-from app.services import account_service, loan_resolver
+from app.services import account_service
 from app.services.rate_period_engine import monthly_due_date
 
 # The ``payment_day`` of the mortgage ``_create_loan_account`` builds; the
@@ -73,18 +67,14 @@ def _create_loan_account(seed_user):
     )
     db.session.add(params)
     db.session.flush()
-    # E-18 / Commit 15: origination LoanAnchorEvent.  This module
-    # does not exercise the resolver directly (it tests
-    # loan_payment_service which is a pure data-loading shim) but
-    # downstream tests calling load_loan_context + resolver expect
-    # an event-present invariant.  DH-#56: the rate now lives in the
-    # origination RateHistory row (the retired LoanParams.interest_rate
-    # column), so seed it alongside the anchor event.
+    # DH-#56: the loan's base rate lives in the origination RateHistory row
+    # (the retired LoanParams.interest_rate column), and the resolver raises on
+    # an empty rate-change feed, so seed it.  The origination balance anchor is
+    # synthesized from LoanParams (step C1 / the read switch) rather than stored
+    # as a LoanAnchorEvent, so no anchor-event insert is needed.
     from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
-        insert_origination_event,
         insert_origination_rate,
     )
-    insert_origination_event(params)
     insert_origination_rate(params, Decimal("0.06500"))
     return account
 
@@ -736,14 +726,25 @@ class TestPreparePaymentsForEngine:
         for p in result:
             assert p.amount == Decimal("1517.00")
 
-    def test_escrow_subtraction_is_date_aware(self):
-        """Each payment subtracts the escrow IN EFFECT ON ITS OWN DATE.
+    def test_escrow_subtraction_keys_on_the_due_date_not_the_pay_period(self):
+        """Each payment subtracts the escrow IN EFFECT FOR ITS INSTALLMENT.
 
         One escrow line, two versions: $283/mo (annual $3,396) from 2020-01-01,
-        then $333/mo (annual $3,996) effective 2026-06-01.  A Jan payment
-        resolves the old $283; a Jul payment resolves the new $333.  Both net
-        to $1,517 P&I after subtracting THEIR date's escrow -- proving the Jul
-        payment used $333, since an old-$283 subtraction would leave $1,567.
+        then $333/mo (annual $3,996) effective **2026-05-25**.  The second
+        payment is booked in the pay period starting 2026-05-21 and satisfies
+        the 2026-06-01 installment, so the new version lands STRICTLY inside
+        that window -- the shape finding N-34 is about, and the reason this
+        test discriminates:
+
+          * DUE-date keying (ruling D5, as built): $333 backed out, so
+            1850 - min(333, 1850 - 1517) = **1,517.00** (the P&I).
+          * PAY-PERIOD-START keying (the N-34 defect): $283 backed out, leaving
+            **1,567.00** -- $50 of escrow mis-recovered as P&I, which the
+            resolver's forward override then amortizes as extra principal.
+
+        The first payment (period start and installment both 2026-01-01, before
+        either version boundary) resolves the old $283 either way, so it holds
+        the non-window case still.
         """
         from app.models.escrow_line import EscrowComponentVersion, EscrowLine
         line = EscrowLine(name="Tax & Insurance")
@@ -753,14 +754,20 @@ class TestPreparePaymentsForEngine:
                 annual_amount=Decimal("3396.00"), is_removed=False,
             ),
             EscrowComponentVersion(
-                effective_date=date(2026, 6, 1),
+                effective_date=date(2026, 5, 25),
                 annual_amount=Decimal("3996.00"), is_removed=False,
             ),
         ]
+        # The second record is a REAL biweekly shape: its pay period starts
+        # 2026-05-21, its installment falls 2026-06-01, and the version sits
+        # between them.  (Every other record in this class has
+        # payment_date == due_date, where the two keyings cannot disagree.)
         payments = [
             PaymentRecord(date(2026, 1, 1), monthly_due_date(date(2026, 1, 1), 1), Decimal("1800.00"), True),
-            PaymentRecord(date(2026, 7, 1), monthly_due_date(date(2026, 7, 1), 1), Decimal("1850.00"), True),
+            PaymentRecord(date(2026, 5, 21), date(2026, 6, 1), Decimal("1850.00"), True),
         ]
+        assert payments[1].payment_date < date(2026, 5, 25) < payments[1].due_date
+
         result = prepare_payments_for_engine(
             payments,
             payment_day=1,
@@ -771,7 +778,7 @@ class TestPreparePaymentsForEngine:
         assert len(result) == 2
         # Jan payment: 1800 - min(283, 1800-1517) = 1800 - 283 = 1517 (old).
         assert result[0].amount == Decimal("1517.00")
-        # Jul payment: 1850 - min(333, 1850-1517) = 1850 - 333 = 1517 (NEW).
+        # Jun installment: 1850 - min(333, 1850-1517) = 1850 - 333 = 1517 (NEW).
         assert result[1].amount == Decimal("1517.00")
 
     def test_below_pi_not_adjusted(self):
@@ -895,83 +902,3 @@ class TestPreparePaymentsForEngine:
         assert result[0].due_date == date(2027, 1, 1)
         assert result[1].payment_date == date(2026, 12, 19)
         assert result[1].due_date == date(2027, 2, 1)
-
-
-class TestReadSwitchSeedHelpers:
-    """``confirmed_loan_view`` / ``resolve_loan_seeded`` -- the read-switch seam.
-
-    These pin the SAFETY half of the loan read switch: the view reader falls
-    back to ``None`` -- routing the resolver to its anchor replay, exactly
-    the pre-switch behaviour -- whenever the genesis ledger cannot answer (no
-    scenario, a future date, or a loan with no OPENING posting).  ``_create_loan_account`` builds a loan with a linked ledger but
-    NO genesis postings, so it exercises that fallback directly; the "reads the
-    real ledger balance" half is pinned end-to-end by the reconciliation oracle
-    (``TestReadSwitchProductionPath``), which needs posted genesis.
-    """
-
-    def test_seed_is_none_without_a_scenario(self, app, db, seed_user):
-        """No scenario -> ``None`` (there is no scenario to scope postings to)."""
-        with app.app_context():
-            loan = _create_loan_account(seed_user)
-            db.session.commit()
-            assert confirmed_loan_view(loan.id, None, date.today()) is None
-
-    def test_seed_is_none_for_a_future_as_of(self, app, db, seed_user):
-        """A future ``as_of`` -> ``None`` (a projection, out of the reader's domain).
-
-        The confirmed ledger answers only ``as_of <= today``; the seam returns
-        ``None`` for a future date so the resolver projects it, rather than
-        letting the reader raise.
-        """
-        with app.app_context():
-            loan = _create_loan_account(seed_user)
-            db.session.commit()
-            future = date.today() + timedelta(days=1)
-            assert confirmed_loan_view(
-                loan.id, seed_user["scenario"].id, future,
-            ) is None
-
-    def test_seed_is_none_for_an_unopened_loan(self, app, db, seed_user):
-        """A configured loan with no OPENING posting -> ``None`` (needs-setup route).
-
-        ``_create_loan_account`` posts no genesis, so the reader finds no OPENING
-        leg and the seam returns ``None`` -- never a misleading ``$0`` -- so the
-        resolver stays on its anchor replay.
-        """
-        with app.app_context():
-            loan = _create_loan_account(seed_user)
-            db.session.commit()
-            assert confirmed_loan_view(
-                loan.id, seed_user["scenario"].id, date.today(),
-            ) is None
-
-    def test_resolve_loan_seeded_falls_back_to_anchor_replay_without_genesis(
-        self, app, db, seed_user,
-    ):
-        """Without genesis, the seeded helper == the un-seeded resolver, to the penny.
-
-        The load-bearing safety property: a loan the ledger has not opened
-        resolves exactly as it did before the read switch.  ``resolve_loan_seeded``
-        reads a ``None`` seed and threads it through, so ``resolve_loan`` runs its
-        anchor replay unchanged -- identical to calling it with no seed.
-        Non-vacuous: the balance is a real, positive figure (the resolver ran), and
-        equality would break if the fallback fed a wrong seed instead of ``None``.
-        """
-        with app.app_context():
-            loan = _create_loan_account(seed_user)
-            db.session.commit()
-            scenario_id = seed_user["scenario"].id
-            params = load_loan_params(loan.id)
-            ctx = load_loan_context(loan.id, scenario_id, params)
-            loan_inputs = loan_resolver.LoanInputs(
-                params, loan_loaders.load_loan_anchor_facts(params),
-                ctx.payments, ctx.rate_changes,
-            )
-
-            seeded = resolve_loan_seeded(
-                loan_inputs, loan.id, scenario_id, date.today(),
-            )
-            unseeded = loan_resolver.resolve_loan(loan_inputs, date.today())
-
-            assert seeded.current_balance == unseeded.current_balance
-            assert seeded.current_balance > Decimal("0.00")

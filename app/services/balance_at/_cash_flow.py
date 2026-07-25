@@ -14,22 +14,19 @@ from datetime import date
 from decimal import Decimal
 
 from app.models.account import Account
-from app.models.scenario import Scenario
-from app.services import (
-    balance_resolver,
-    daily_balance_series,
-)
+from ._context import BalanceContext
 
+from . import _cash_engine, _daily_series
 from ._inputs import _require_scenario
 
 
 def cash_balance_map(
     account: Account,
-    scenario: Scenario,
+    ctx: BalanceContext,
     periods: list,
     *,
     amount_overrides: "dict[int, Decimal] | None" = None,
-) -> balance_resolver.BalanceResult:
+) -> _cash_engine.BalanceResult:
     """Return one account's cash-flow running balance across *periods*.
 
     The cash-flow view: the account's projected end balance per period as a
@@ -52,9 +49,9 @@ def cash_balance_map(
     return any kind).  So these surfaces ask for the cash-flow balance of
     whatever account they are pointed at, regardless of its kind.
 
-    Delegates to :func:`~app.services.balance_resolver.balances_for` -- the
+    Delegates to :func:`~app.services.balance_at._cash_engine.balances_for` -- the
     canonical entries-aware producer -- and returns its
-    :class:`~app.services.balance_resolver.BalanceResult` verbatim, so the
+    :class:`~app.services.balance_at._cash_engine.BalanceResult` verbatim, so the
     caller also gets the ``stale_anchor_warning`` flag the grid surfaces in
     its banner (a data-quality signal ABOUT the projection, not a balance,
     so it rides on the result rather than becoming a separate seam concern).
@@ -67,7 +64,7 @@ def cash_balance_map(
     Args:
         account: The account whose cash-flow balance to project.  Its
             ``user_id`` scopes the producer; its kind is NOT consulted.
-        scenario: The baseline scenario.
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
         periods: The pay periods to project over, ordered by
             ``period_index`` (must include the anchor period; pre-anchor
             periods are omitted from the result by the producer).
@@ -75,7 +72,7 @@ def cash_balance_map(
             projected-net map (the grid threads its pre-built map here).
 
     Returns:
-        The :class:`~app.services.balance_resolver.BalanceResult`: the
+        The :class:`~app.services.balance_at._cash_engine.BalanceResult`: the
         period_id -> Decimal balance map plus the ``stale_anchor_warning``
         flag.
 
@@ -83,20 +80,20 @@ def cash_balance_map(
         ValueError: When ``scenario`` is None -- callers that resolve a
             nullable baseline must guard first.
     """
-    _require_scenario(scenario)
-    return balance_resolver.balances_for(
-        account, scenario.id, periods, amount_overrides=amount_overrides,
+    _require_scenario(ctx)
+    return _cash_engine.balances_for(
+        account, ctx.scenario.id, periods, amount_overrides=amount_overrides,
     )
 
 
 def cash_balance_at(
-    account: Account, scenario: Scenario, as_of: date,
+    account: Account, ctx: BalanceContext, as_of: date,
 ) -> Decimal:
     """Return one account's cash-flow balance as of a calendar date *as_of*.
 
     The scalar cash-flow view -- the date-precise counterpart of
     :func:`cash_balance_map`.  Delegates to
-    :func:`~app.services.balance_resolver.balance_as_of_date`, which sums
+    :func:`~app.services.balance_at._cash_engine.balance_as_of_date`, which sums
     the account's Projected, entry-aware transaction rows up to *as_of*
     (intra-period precise: entries dated after *as_of* are excluded).  Used
     by the calendar's month-end balance, which must reconcile with the day
@@ -109,7 +106,8 @@ def cash_balance_at(
 
     Args:
         account: The account to value.  Its kind is NOT consulted.
-        scenario: The baseline scenario (its id scopes the producer).
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
+            (its scenario scopes the producer).
         as_of: The calendar date to value the account at.
 
     Returns:
@@ -122,13 +120,13 @@ def cash_balance_at(
         TypeError: When ``as_of`` is not a :class:`datetime.date` (raised by
             the underlying producer).
     """
-    _require_scenario(scenario)
-    return balance_resolver.balance_as_of_date(account, scenario.id, as_of)
+    _require_scenario(ctx)
+    return _cash_engine.balance_as_of_date(account, ctx.scenario.id, as_of)
 
 
 def cash_daily_balance_series(
     account: Account,
-    scenario: Scenario,
+    ctx: BalanceContext,
     first_day: date,
     last_day: date,
     *,
@@ -138,7 +136,7 @@ def cash_daily_balance_series(
 
     The daily-granularity cash-flow view -- the running-balance counterpart
     of the period-flat :func:`cash_balance_at`.  Delegates to
-    :func:`app.services.daily_balance_series.build_daily_series`, which walks
+    :func:`app.services.balance_at._daily_series.build_daily_series`, which walks
     each calendar day in ``[first_day, last_day]`` as a true checkbook
     balance that steps on that day's projected, period-clamped, entry-aware
     flows and reconciles with the grid at every period end
@@ -152,7 +150,8 @@ def cash_daily_balance_series(
     Args:
         account: The account to project.  Its kind is NOT consulted; must be
             session-attached.
-        scenario: The baseline scenario (its id scopes the producer).
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
+            (its scenario scopes the producer).
         first_day: Inclusive first calendar day of the range.
         last_day: Inclusive last calendar day of the range.
         amount_overrides: Optional ``{transaction_id: Decimal}`` live
@@ -170,8 +169,8 @@ def cash_daily_balance_series(
         TypeError: When ``first_day`` / ``last_day`` are not
             :class:`datetime.date`.
     """
-    _require_scenario(scenario)
-    return daily_balance_series.build_daily_series(
-        account, scenario.id, first_day, last_day,
+    _require_scenario(ctx)
+    return _daily_series.build_daily_series(
+        account, ctx.scenario.id, first_day, last_day,
         amount_overrides=amount_overrides,
     )

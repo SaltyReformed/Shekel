@@ -316,13 +316,16 @@ def _compute_principal_paid_fraction(
 
     "All loans the pipeline surfaces" is, reachably, all of the user's
     NON-ARCHIVED (``is_active=True``) loan accounts that have a
-    ``LoanParams`` row.  Archived accounts are filtered out upstream by
-    ``_load_dashboard_core_data`` (``is_active=True``) and never reach
-    ``account_data``, so they cannot be included; a loan with no
-    ``LoanParams`` row carries no ``original_principal`` and is likewise
-    not a loan-ad here.  Paid-off loans, by contrast, remain active
-    accounts and DO appear in ``account_data`` carrying
-    ``is_paid_off=True``, so the all-loans-ever set is fully reachable.
+    ``LoanParams`` row AND HAVE ORIGINATED.  Archived accounts are
+    filtered out upstream by ``_load_dashboard_core_data``
+    (``is_active=True``) and never reach ``account_data``, so they cannot
+    be included; a loan with no ``LoanParams`` row carries no
+    ``original_principal`` and is likewise not a loan-ad here.  Paid-off
+    loans, by contrast, remain active accounts and DO appear in
+    ``account_data`` carrying ``is_paid_off=True``, so the
+    all-loans-ever set is fully reachable.  A loan the user has
+    configured but not yet BORROWED (a mortgage closing next month) is
+    excluded from both sums -- see the loop.
 
     ``original_principal`` is a NOT NULL, ``> 0`` column on
     :class:`~app.models.loan_params.LoanParams`, so any real loan-ad
@@ -346,6 +349,18 @@ def _compute_principal_paid_fraction(
     total_original = Decimal("0.00")
     total_current = Decimal("0.00")
     for ad in loan_ads:
+        # A loan that has not been BORROWED yet is in NEITHER sum.  Its principal
+        # is not money the user owes, and none of it has been repaid.  Counting it
+        # would put its full original principal in the denominator against a
+        # current balance of $0.00 -- the seam's correct answer for a debt that
+        # does not exist yet -- and report every cent of it as PAID: an unclosed
+        # $200,000 mortgage beside a never-paid $100,000 auto loan read 66.67%
+        # repaid on a borrower who had repaid nothing.  It would also break this
+        # marker's one design invariant below: the fraction would COLLAPSE from
+        # 66.67% to 0% on closing day, when the mortgage's balance steps from
+        # $0.00 to $200,000.
+        if not ad["is_originated"]:
+            continue
         # ALL loans ever: every loan-ad contributes its original
         # principal to the denominator.  A paid-off loan contributes
         # Decimal("0.00") to the current-balance sum (regardless of the
@@ -386,12 +401,15 @@ def _accumulate_loan_debt(
     Returns:
         ``(total_debt, total_monthly, weighted_rate_sum, payoff_dates)``
         -- the running sums (Decimals) and the list of per-loan payoff
-        dates.
+        dates, or ``None`` for that last element when ANY active loan has no
+        payoff at all: there is then no date by which the user is debt-free, and
+        a list would let the caller compute one from the loans that do clear.
     """
     total_debt = Decimal("0.00")
     total_monthly = Decimal("0.00")
     weighted_rate_sum = Decimal("0.00")
     payoff_dates = []
+    never_clears = False
 
     for ad in loan_ads:
         # The same contribute-or-skip rule the principal-paid fraction
@@ -421,10 +439,26 @@ def _accumulate_loan_debt(
         total_monthly += monthly_total
         weighted_rate_sum += rate * principal
 
-        if ad.get("payoff_date"):
-            payoff_dates.append(ad["payoff_date"])
+        # The payoff is DERIVED and legitimately absent since plan C8d, and an
+        # absent one POISONS the debt-free date rather than being skipped.  This
+        # loan is ACTIVE (it survived the contribute-or-skip gate above, so it
+        # owes money) and has no payoff, which means it never clears at its
+        # current payment -- there IS no date by which this user is debt-free.
+        # Dropping it and taking ``max()`` over the rest reports the date the
+        # OTHER loans finish, so a borrower owing $900,000 on a loan the same page
+        # labels "No payoff at current payment" was told they go debt-free when
+        # their car loan ends.  ``None`` here is the honest answer, and the caller
+        # renders its absence.
+        payoff = ad.get("payoff_date")
+        if payoff is None:
+            never_clears = True
+        else:
+            payoff_dates.append(payoff)
 
-    return total_debt, total_monthly, weighted_rate_sum, payoff_dates
+    return (
+        total_debt, total_monthly, weighted_rate_sum,
+        None if never_clears else payoff_dates,
+    )
 
 
 def _compute_debt_summary(
@@ -448,7 +482,7 @@ def _compute_debt_summary(
 
     Returns:
         Dict with keys: total_debt, total_monthly_payments,
-        weighted_avg_rate, projected_debt_free_date.
+        weighted_avg_rate, projected_debt_free_date, has_unclearing_debt.
         Returns None if no loan accounts with params exist.
     """
     loan_ads = [ad for ad in account_data if ad.get("loan_params")]
@@ -466,6 +500,8 @@ def _compute_debt_summary(
     else:
         weighted_avg_rate = Decimal("0.00000")
 
+    # ``None`` (not an empty list) means an active loan never clears, so there is
+    # no debt-free date to report -- see :func:`_accumulate_loan_debt`.
     debt_free_date = max(payoff_dates) if payoff_dates else None
 
     return {
@@ -473,6 +509,13 @@ def _compute_debt_summary(
         "total_monthly_payments": round_money(total_monthly),
         "weighted_avg_rate": weighted_avg_rate,
         "projected_debt_free_date": debt_free_date,
+        # Why the date is absent, which the caller must SAY rather than simply
+        # omit: an active loan that never clears at its current payment is a
+        # different state from "every loan is already paid off", and the loan
+        # detail page already names it in words on the same condition ("No payoff
+        # at current payment", plan C8d).  ``payoff_dates is None`` is the
+        # poisoned marker :func:`_accumulate_loan_debt` sets.
+        "has_unclearing_debt": payoff_dates is None,
     }
 
 

@@ -7,13 +7,10 @@ from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import CompoundingFrequencyEnum
-from app.extensions import db
+from app.enums import AcctTypeEnum, CompoundingFrequencyEnum
 from app.models.account import Account, AccountAnchorHistory
-from app.models.category import Category
 from app.models.interest_params import InterestParams
 from app.models.loan_params import LoanParams
-from app.models.pay_period import PayPeriod
 from app.models.ref import AccountType, Status, TransactionType
 from app.models.savings_goal import SavingsGoal
 from app.models.transaction import Transaction
@@ -23,7 +20,7 @@ from app.models.user import User, UserSettings
 from app.services.auth_service import hash_password
 from app.services import account_service
 
-from tests._test_helpers import insert_origination_event, insert_origination_rate
+from tests._test_helpers import create_loan_account, loan_params_for
 
 
 def _create_savings_account(
@@ -136,32 +133,14 @@ class TestDashboardGrouping:
 
     def test_dashboard_mortgage_shows_rate(self, auth_client, seed_user, db, seed_periods_today):
         """Mortgage card shows interest rate."""
-        mortgage_type = db.session.query(AccountType).filter_by(name="Mortgage").one()
-        acct = account_service.create_account(
-            account_service.AccountSpec(
-                user_id=seed_user["user"].id,
-                account_type_id=mortgage_type.id,
-                name="Home Loan",
-                anchor_balance=Decimal("200000.00"),
-            ),
+        create_loan_account(
+            seed_user, db.session, name="Home Loan",
+            principal=Decimal("250000.00"), rate=Decimal("0.06500"), term=360,
+            anchor_balance=Decimal("200000.00"),
+            origination_date=date(2023, 1, 1), payment_day=1,
+            account_type=AcctTypeEnum.MORTGAGE,
+            anchor_period=seed_periods_today[0],
         )
-        db.session.add(acct)
-        db.session.flush()
-        acct.current_anchor_period_id = seed_periods_today[0].id
-
-        params = LoanParams(
-            account_id=acct.id,
-            original_principal=Decimal("250000.00"),
-            current_principal=Decimal("200000.00"),
-            term_months=360,
-            origination_date=date(2023, 1, 1),
-            payment_day=1,
-        )
-        db.session.add(params)
-        db.session.flush()
-        insert_origination_event(params)
-        insert_origination_rate(params, Decimal("0.06500"))
-        db.session.commit()
 
         resp = auth_client.get("/savings")
         assert resp.status_code == 200
@@ -170,32 +149,14 @@ class TestDashboardGrouping:
 
     def test_dashboard_auto_loan_shows_payment(self, auth_client, seed_user, db, seed_periods_today):
         """Auto loan card shows monthly payment."""
-        auto_type = db.session.query(AccountType).filter_by(name="Auto Loan").one()
-        acct = account_service.create_account(
-            account_service.AccountSpec(
-                user_id=seed_user["user"].id,
-                account_type_id=auto_type.id,
-                name="Car Payment",
-                anchor_balance=Decimal("20000.00"),
-            ),
+        create_loan_account(
+            seed_user, db.session, name="Car Payment",
+            principal=Decimal("25000.00"), rate=Decimal("0.05000"), term=60,
+            anchor_balance=Decimal("20000.00"),
+            origination_date=date(2024, 6, 1), payment_day=15,
+            account_type=AcctTypeEnum.AUTO_LOAN,
+            anchor_period=seed_periods_today[0],
         )
-        db.session.add(acct)
-        db.session.flush()
-        acct.current_anchor_period_id = seed_periods_today[0].id
-
-        params = LoanParams(
-            account_id=acct.id,
-            original_principal=Decimal("25000.00"),
-            current_principal=Decimal("20000.00"),
-            term_months=60,
-            origination_date=date(2024, 6, 1),
-            payment_day=15,
-        )
-        db.session.add(params)
-        db.session.flush()
-        insert_origination_event(params)
-        insert_origination_rate(params, Decimal("0.05000"))
-        db.session.commit()
 
         resp = auth_client.get("/savings")
         assert resp.status_code == 200
@@ -204,32 +165,14 @@ class TestDashboardGrouping:
 
     def test_dashboard_liability_category(self, auth_client, seed_user, db, seed_periods_today):
         """Liabilities grouped under Liability header."""
-        mortgage_type = db.session.query(AccountType).filter_by(name="Mortgage").one()
-        acct = account_service.create_account(
-            account_service.AccountSpec(
-                user_id=seed_user["user"].id,
-                account_type_id=mortgage_type.id,
-                name="My Mortgage",
-                anchor_balance=Decimal("150000.00"),
-            ),
+        create_loan_account(
+            seed_user, db.session, name="My Mortgage",
+            principal=Decimal("200000.00"), rate=Decimal("0.06000"), term=360,
+            anchor_balance=Decimal("150000.00"),
+            origination_date=date(2022, 1, 1), payment_day=1,
+            account_type=AcctTypeEnum.MORTGAGE,
+            anchor_period=seed_periods_today[0],
         )
-        db.session.add(acct)
-        db.session.flush()
-        acct.current_anchor_period_id = seed_periods_today[0].id
-
-        params = LoanParams(
-            account_id=acct.id,
-            original_principal=Decimal("200000.00"),
-            current_principal=Decimal("150000.00"),
-            term_months=360,
-            origination_date=date(2022, 1, 1),
-            payment_day=1,
-        )
-        db.session.add(params)
-        db.session.flush()
-        insert_origination_event(params)
-        insert_origination_rate(params, Decimal("0.06000"))
-        db.session.commit()
 
         resp = auth_client.get("/savings")
         assert resp.status_code == 200
@@ -431,36 +374,33 @@ class TestAccountHardDelete:
             assert reloaded is not None
             assert reloaded.is_active is False
 
-    def test_hard_delete_account_with_params(
+    def test_hard_delete_configured_loan_is_archived_not_deleted(
         self, app, auth_client, seed_user, db, seed_periods_today,
     ):
-        """C-5A.5-24: Account with LoanParams but no history is permanently deleted with params."""
-        with app.app_context():
-            mortgage_type = db.session.query(AccountType).filter_by(name="Mortgage").one()
-            acct = account_service.create_account(
-                account_service.AccountSpec(
-                    user_id=seed_user["user"].id,
-                    account_type_id=mortgage_type.id,
-                    name="Test Mortgage",
-                    anchor_balance=Decimal("200000.00"),
-                ),
-            )
-            db.session.add(acct)
-            db.session.flush()
+        """C-5A.5-24: a CONFIGURED loan is archived, never hard-deleted (Guard 5).
 
-            params = LoanParams(
-                account_id=acct.id,
-                original_principal=Decimal("250000.00"),
-                current_principal=Decimal("200000.00"),
-                term_months=360,
-                origination_date=date(2023, 1, 1),
-                payment_day=1,
+        Configuring a loan opens its genesis posting ledger in the same
+        transaction as the ``LoanParams`` insert (``loan.create_params``), so a
+        configured loan ALWAYS carries ledger postings -- and Guard 5
+        (``archive_helpers.account_has_ledger_postings``) archives any account that
+        does.  A configured loan is therefore not hard-deletable in production, and
+        this test previously asserted the opposite: it passed only because its
+        fixture never opened the ledger, a state production cannot reach.
+
+        The flash assertion is deliberately DISCRIMINATING.  The old one --
+        ``b"permanently deleted" in resp.data`` -- passes on the ARCHIVE message
+        too, because that message reads "...cannot be permanently deleted. It has
+        been archived instead."  It was a vacuous assertion: it could not have
+        failed either way.
+        """
+        with app.app_context():
+            acct = create_loan_account(
+                seed_user, db.session, name="Test Mortgage",
+                principal=Decimal("250000.00"), rate=Decimal("0.06500"),
+                term=360, origination_date=date(2023, 1, 1), payment_day=1,
+                account_type=AcctTypeEnum.MORTGAGE,
             )
-            db.session.add(params)
-            db.session.flush()
-            insert_origination_event(params)
-            insert_origination_rate(params, Decimal("0.06500"))
-            db.session.commit()
+            params = loan_params_for(db.session, acct.id)
 
             acct_id = acct.id
             params_id = params.id
@@ -470,10 +410,14 @@ class TestAccountHardDelete:
                 follow_redirects=True,
             )
             assert resp.status_code == 200
-            assert b"permanently deleted" in resp.data
+            assert b"archived instead" in resp.data
+            assert b"cannot be permanently deleted" in resp.data
 
-            assert db.session.get(Account, acct_id) is None
-            assert db.session.get(LoanParams, params_id) is None
+            # Archived, not deleted: the account and its params both survive.
+            reloaded = db.session.get(Account, acct_id)
+            assert reloaded is not None
+            assert reloaded.is_active is False
+            assert db.session.get(LoanParams, params_id) is not None
 
     def test_hard_delete_blocked_by_transfer_templates(
         self, app, auth_client, seed_user, db,

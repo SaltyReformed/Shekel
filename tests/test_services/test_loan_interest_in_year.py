@@ -1,0 +1,382 @@
+"""C3c: balance_at.loan_interest_in_year -- interest PAID in a year, one producer.
+
+Plan step **C3c** (``docs/audits/balance_architecture/README.md``).  Direct unit
+coverage of the balance seam's ONE loan-interest producer, which replaced the
+ledger-reader-plus-schedule HYBRID that lived in ``tax_report_service``
+(``_compute_mortgage_interest`` / ``_loan_year_interest``, both deleted).  The LIVE
+Schedule-A wiring and hand-computed value stay in ``test_tax_report_service.py``
+(``TestScheduleAMortgageInterest``); these pin the producer's INTERNALS the live
+value test alone does not reach:
+
+* the SETTLED (past) interest is the FOLD's actual per-payment figure -- correct
+  for an off-schedule payment where the schedule replay is not -- attributed to
+  each payment's DISPLAY-timezone civil paid YEAR (the L9 tax basis, which diverges
+  from the balance ledger's UTC clock across the New Year);
+* the PROJECTED (future) interest is folded from the loan's forward payment PLAN
+  (step C6c), the SAME plan the projected BALANCE folds -- an early-settled
+  installment counts once because the plan excludes its slot BY CONSTRUCTION (the
+  C3c schedule-slot merge is gone; the de-dup lives in ``loan_plan``);
+* the figure comes from the loan's SOURCE events, so it answers even for a loan the
+  posting cache cannot value (no genesis opening posting) -- closing B-6, where the
+  old hybrid fell back to the schedule and reported the wrong number.
+
+Relocated from the retired ``test_tax_mortgage_interest.py`` (which tested the
+deleted hybrid); the value assertions are hand-computed, never the producer as its
+own oracle (plan N-7).
+"""
+
+from datetime import date, datetime, timezone
+from decimal import Decimal
+
+from app.extensions import db
+from app.services import balance_at
+from app.services.balance_at import _kernel as net_worth_kernel
+from app.services.balance_at._plan import loan_plan
+from app.services.loan_ledger import split_payment_cash
+from app.services.balance_at import BalanceContext
+from tests._test_helpers import (
+    clear_loan_ledger,
+    create_loan_with_trueup,
+    create_settled_transfer,
+    freeze_today,
+    posted_loan_balance_at,
+    SPLIT_LOAN,
+)
+
+ZERO = Decimal("0.00")
+
+
+def _paid_utc(year, month, day):
+    """Return a noon-UTC settle instant, so its civil date is unambiguous."""
+    return datetime(year, month, day, 12, 0, tzinfo=timezone.utc)
+
+
+def _split_loan(seed_user):
+    """Create a bare SPLIT_LOAN (origination + true-up), no payments yet."""
+    (orig_principal, orig_date, rate, anchor_balance,
+     anchor_date, _p1, _p2, _p3) = SPLIT_LOAN
+    return create_loan_with_trueup(
+        seed_user, db.session, origination_principal=orig_principal,
+        anchor_balance=anchor_balance, anchor_date=anchor_date, rate=rate,
+        origination_date=orig_date,
+    )
+
+
+def _plan_projected_interest(loan, ctx, year, *, exclude_slots=frozenset()):
+    """Independently fold the loan's PLAN records to its projected interest in *year*.
+
+    A test-side parallel of the producer's projected half (step C6c): it seeds from
+    the SAME ``projection_seed`` the balance folds, walks the loan's
+    :func:`~app.services.balance_at._plan.loan_plan` records in due order, and sums
+    each payment's interest (``split_payment_cash``, the ONE split) by its EFFECTIVE
+    year, dropping any due-month slot in *exclude_slots* (the settled-slot merge) --
+    WITHOUT calling ``plan_interest_in_year``.  So the producer's WIRING (the right
+    seed, the right plan, the right year key, the merge, the two halves summed) is
+    checked here, while the arithmetic VALUE is pinned by hand in
+    ``test_loan_plan_forward_oracle`` (never the producer as its own oracle, N-7).
+    """
+    seed = net_worth_kernel.generate_debt_schedules(
+        [loan], ctx,
+    )[loan.id].projection_seed
+    balance = seed
+    total = ZERO
+    for payment in sorted(
+        loan_plan(loan, ctx), key=lambda p: (p.due_date, p.effective_date),
+    ):
+        parts = split_payment_cash(
+            payment.cash, balance, payment.annual_rate, payment.escrow,
+        )
+        balance = parts.balance_after
+        slot = (payment.due_date.year, payment.due_date.month)
+        if payment.effective_date.year == year and slot not in exclude_slots:
+            total += parts.interest
+    return total
+
+
+class TestLoanInterestInYearValue:
+    """The figure is the FOLD's actual interest, on the paid-date (display) basis."""
+
+    def test_current_year_is_fold_actual_plus_projected(
+        self, app, db, seed_user, seed_periods, monkeypatch,
+    ):
+        """Off-schedule confirmed history (fold-actual) + the year's projection.
+
+        Trued to $100,000 @ 6% on 2026-01-10, then a $2,000 (extra) and a $1,000
+        payment, both PAID mid-2026 and both begun by the frozen 2026-04-01:
+
+          P1 ($2,000, due 02-01): interest round(100000 * 0.005) = 500.00.
+          P2 ($1,000, due 03-01): interest round(98500 * 0.005) = 492.50 -- on the
+            REAL balance the extra payment left, NOT the schedule replay's ~99,900.
+
+        Fold-actual 2026 interest = 992.50, which the schedule replay does not
+        reproduce.  The producer is that fold-actual PLUS the year's PROJECTED plan
+        interest, both halves non-zero.
+        """
+        with app.app_context():
+            freeze_today(monkeypatch, date(2026, 4, 1))
+            _, _, _, _, _, p1, p2, _ = SPLIT_LOAN
+            loan = _split_loan(seed_user)
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], loan,
+                seed_periods[p1], amount=Decimal("2000.00"),
+                paid_at=_paid_utc(2026, 2, 15),
+            )
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], loan,
+                seed_periods[p2], amount=Decimal("1000.00"),
+                paid_at=_paid_utc(2026, 3, 15),
+            )
+            db.session.commit()
+            ctx = BalanceContext.build(seed_user["user"].id)
+
+            # The settled half, hand-computed (P1 500.00 + P2 492.50).
+            fold_actual = Decimal("992.50")
+
+            # P1/P2 are settled and out of the forward plan; the remaining 2026
+            # installments (Apr onward) are ESTIMATED, folded from the confirmed
+            # present -- a genuinely non-zero projected half.
+            projected = _plan_projected_interest(loan, ctx, 2026)
+            assert projected > ZERO  # genuine hybrid, not a vacuous zero
+
+            result = balance_at.loan_interest_in_year(loan, ctx, 2026)
+            assert result == fold_actual + projected
+
+    def test_interest_deducts_in_the_year_it_was_paid(
+        self, app, db, seed_user, seed_periods, monkeypatch,
+    ):
+        """A 2026-scheduled payment PAID in 2025 deducts in 2025 (pure fold).
+
+        Mortgage interest deducts in the year PAID.  A period-``P1`` payment
+        (scheduled 2026-02-01) settled 2025-12-20 attributes its 500.00 interest to
+        2025 -- a year with NO projected payments (the plan is all 2026+), so the
+        figure is PURE fold and the projection is structurally zero.  A
+        payment-DATE basis would report 0.00 for 2025 (the negative control).
+        """
+        with app.app_context():
+            freeze_today(monkeypatch, date(2026, 6, 1))
+            _, _, _, _, _, p1, _p2, _p3 = SPLIT_LOAN
+            loan = _split_loan(seed_user)
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], loan,
+                seed_periods[p1], amount=Decimal("1000.00"),
+                paid_at=_paid_utc(2025, 12, 20),
+            )
+            db.session.commit()
+            ctx = BalanceContext.build(seed_user["user"].id)
+
+            # 2025 carries no projected plan payment, so the figure is pure fold.
+            assert _plan_projected_interest(loan, ctx, 2025) == ZERO
+            assert balance_at.loan_interest_in_year(
+                loan, ctx, 2025,
+            ) == Decimal("500.00")
+
+    def test_new_years_eve_evening_settle_deducts_in_the_display_year(
+        self, app, db, seed_user, seed_periods, monkeypatch,
+    ):
+        """THE L9 CASE: 8:05 PM EST Dec 31 deducts in the OLD (display) year.
+
+        A payment settled 2025-12-31 20:05 Eastern is stored 2026-01-01 01:05 UTC,
+        so the balance ledger's UTC clock (and the fold's visible date) is already
+        2026.  The tax figure follows the user's WALL clock (L9): the 500.00
+        interest deducts in 2025.  2025 has NO schedule rows, so the figure is pure
+        fold -- and a UTC-basis attribution (the fold's balance clock) would report
+        0.00 here, which is exactly the defect that made interest-in-year a
+        dedicated display-clock function rather than the fold's UTC-keyed
+        cum-interest.
+        """
+        with app.app_context():
+            freeze_today(monkeypatch, date(2026, 6, 1))
+            _, _, _, _, _, p1, _p2, _p3 = SPLIT_LOAN
+            loan = _split_loan(seed_user)
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], loan,
+                seed_periods[p1], amount=Decimal("1000.00"),
+                paid_at=datetime(2026, 1, 1, 1, 5, tzinfo=timezone.utc),
+            )
+            db.session.commit()
+            ctx = BalanceContext.build(seed_user["user"].id)
+
+            assert balance_at.loan_interest_in_year(
+                loan, ctx, 2025,
+            ) == Decimal("500.00")
+
+
+class TestLoanInterestInYearMerge:
+    """One record per installment: an early-settled slot is not counted twice."""
+
+    def test_early_settled_slot_counted_exactly_once(
+        self, app, db, seed_user, seed_periods, monkeypatch,
+    ):
+        """An early-settled payment's interest counts ONCE -- in the settled half.
+
+        A payment settled BEFORE its pay period begins is in the FOLD (its actual
+        interest, at its paid date), and the forward PLAN excludes its installment
+        slot BY CONSTRUCTION -- ``loan_plan``'s ESTIMATED tier skips a slot already
+        covered by a seed-settled payment (the de-dup, proven at the plan level in
+        ``test_loan_plan_assembly``).  So the C3c schedule-slot merge this class
+        once tested has no work left to do here: no projected record re-counts the
+        early-settled installment.
+
+        Frozen 2026-02-10: P1 (due 02-01, begun) and P3 (due 04-01, EARLY) both
+        settle.  Fold interest = P1 500.00 (100000 * 0.005) + P3 497.50
+        (round(99500 * 0.005)) = 997.50, both paid 2026.  The April slot P3
+        satisfies must appear in NEITHER the plan nor the projected half -- if it
+        did, it would double-count P3's installment (the +$489.97 the retired merge
+        subtracted by hand).
+        """
+        with app.app_context():
+            freeze_today(monkeypatch, date(2026, 2, 10))
+            _, _, _, _, _, p1, _p2, p3 = SPLIT_LOAN
+            loan = _split_loan(seed_user)
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], loan,
+                seed_periods[p1], amount=Decimal("1000.00"),
+                paid_at=_paid_utc(2026, 2, 5),
+            )
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], loan,
+                seed_periods[p3], amount=Decimal("1000.00"),
+                paid_at=_paid_utc(2026, 2, 10),
+            )
+            db.session.commit()
+            # Premise: P3's period has not begun by the frozen today (early settle).
+            assert seed_periods[p3].start_date > date(2026, 2, 10)
+            ctx = BalanceContext.build(seed_user["user"].id)
+
+            # P3 satisfies the April installment early, so its 497.50 is in the
+            # SETTLED half (paid Feb 2026); the settled half is hand-computed.
+            assert balance_at.loan_interest_paid_in_year(
+                loan, ctx, 2026,
+            ) == Decimal("997.50")
+
+            # The plan de-dups the early-settled April slot OUT, while its
+            # neighbours are genuinely present -- so the exclusion is real, not a
+            # vacuously empty plan.
+            plan_slots = {
+                (payment.due_date.year, payment.due_date.month)
+                for payment in loan_plan(loan, ctx)
+            }
+            assert (2026, 4) not in plan_slots      # P3's slot, de-duped
+            assert (2026, 3) in plan_slots          # its uncovered neighbours ARE
+            assert (2026, 5) in plan_slots          # planned
+
+            # So the whole 2026 figure counts April ONCE: the settled fold (incl.
+            # P3) plus a projected half that carries no April record.
+            projected = _plan_projected_interest(loan, ctx, 2026)
+            assert projected > ZERO                 # non-vacuous
+            result = balance_at.loan_interest_in_year(loan, ctx, 2026)
+            assert result == Decimal("997.50") + projected
+
+    def test_evening_settle_utc_rollover_counted_exactly_once(
+        self, app, db, seed_user, seed_periods, monkeypatch,
+    ):
+        """A payment settled evening-Eastern (UTC next-day) is not double-counted.
+
+        The two-clock trap the walk-merge closes.  A loan payment settled in the
+        evening of a UTC-behind zone has a ``paid_at`` that rolls into the NEXT UTC
+        day, so its ``payment_visible_on`` (UTC civil date) is tomorrow -- outside
+        ``confirmed_shadows_through(as_of)``, which the plan's ESTIMATED de-dup keys
+        on -- yet for TAX it was paid TODAY (display), so the settled half counts it.
+        Without a merge against the WALK the plan would re-synthesize its installment
+        and the deduction would double.
+
+        Frozen display today 2026-01-31 (EST, UTC-5).  A period-``p2`` payment (due
+        2026-03-01) is settled EARLY at ``2026-02-01 02:00 UTC`` = ``2026-01-31 21:00
+        EST``: display-paid 2026-01-31 (year 2026, in the settled half at 500.00),
+        but UTC-visible 2026-02-01 > as_of -- so ``loan_plan`` still synthesizes a
+        March ESTIMATED record.  The producer must exclude that March slot.
+        """
+        with app.app_context():
+            freeze_today(monkeypatch, date(2026, 1, 31))
+            _, _, _, _, _, _p1, p2, _p3 = SPLIT_LOAN
+            loan = _split_loan(seed_user)
+            # p2's pay period starts AFTER as_of (a genuine early settle), so the
+            # seed excludes this payment too -- isolating the interest double-count
+            # from any balance-seed effect.
+            assert seed_periods[p2].start_date > date(2026, 1, 31)
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], loan,
+                seed_periods[p2], amount=Decimal("1000.00"),
+                paid_at=datetime(2026, 2, 1, 2, 0, tzinfo=timezone.utc),
+            )
+            db.session.commit()
+            ctx = BalanceContext.build(seed_user["user"].id)
+
+            # The payment is display-paid in 2026 (its interest is 500.00 on the
+            # $100,000 trued balance), so the settled half counts it.
+            assert balance_at.loan_interest_paid_in_year(
+                loan, ctx, 2026,
+            ) == Decimal("500.00")
+
+            # It is UTC-invisible by as_of, so the plan STILL synthesizes March --
+            # the gap the walk-merge must close.
+            march = (2026, 3)
+            plan_slots = {
+                (payment.due_date.year, payment.due_date.month)
+                for payment in loan_plan(loan, ctx)
+            }
+            assert march in plan_slots
+
+            # The un-merged projection double-counts March; the merged one drops it.
+            # The gap is exactly the March ESTIMATED record's interest -- a material
+            # amount, ~a full installment's worth (roughly $495 on the ~$100k
+            # balance), i.e. a real deduction error, not a rounding cent.
+            naive = _plan_projected_interest(loan, ctx, 2026)
+            merged = _plan_projected_interest(
+                loan, ctx, 2026, exclude_slots=frozenset({march}),
+            )
+            assert naive > merged                   # March IS in the projection
+            assert naive - merged > Decimal("400.00")  # material double-count
+
+            # The producer counts March ONCE: settled + the MERGED projection, never
+            # settled + the naive (double-counting) projection.
+            result = balance_at.loan_interest_in_year(loan, ctx, 2026)
+            assert result == Decimal("500.00") + merged
+            assert result < Decimal("500.00") + naive   # the walk-merge fired
+
+
+class TestLoanInterestAnswersFromTheFold:
+    """B-6: the figure comes from source events, not the posting cache."""
+
+    def test_cleared_ledger_still_answers_from_the_fold(
+        self, app, db, seed_user, seed_periods, monkeypatch,
+    ):
+        """No genesis opening posting -> the FOLD answers, where the old hybrid did not.
+
+        The old hybrid asked the posting reader, which returns ``None`` for a loan
+        with no opening posting, and then fell back to the schedule -- reporting
+        0.00 for a 2025 payment (no 2025 rows) that genuinely paid 500.00 of
+        interest.  The producer folds the loan's SOURCE events, so a cleared posting
+        cache does not change the answer.  This is B-6 closed: the interest figure
+        and the balance both come from the total fold.
+        """
+        with app.app_context():
+            freeze_today(monkeypatch, date(2026, 6, 1))
+            scenario_id = seed_user["scenario"].id
+            _, _, _, _, _, p1, _p2, _p3 = SPLIT_LOAN
+            loan = _split_loan(seed_user)
+            create_settled_transfer(
+                seed_user, db.session, seed_user["account"], loan,
+                seed_periods[p1], amount=Decimal("1000.00"),
+                paid_at=_paid_utc(2025, 12, 20),
+            )
+            db.session.commit()
+
+            ctx = BalanceContext.build(seed_user["user"].id)
+            before = balance_at.loan_interest_in_year(loan, ctx, 2025)
+            assert before == Decimal("500.00")
+
+            # Break the posting cache: with no opening posting the sum-of-postings
+            # balance reader declines (None), which is what makes this test's teeth
+            # real -- the postings genuinely no longer answer for this loan.
+            clear_loan_ledger(loan.id)
+            db.session.commit()
+            assert posted_loan_balance_at(
+                loan.id, scenario_id, date(2025, 12, 31),
+            ) is None
+
+            # The fold-based producer is unchanged: it never read the postings.
+            ctx_after = BalanceContext.build(seed_user["user"].id)
+            assert balance_at.loan_interest_in_year(
+                loan, ctx_after, 2025,
+            ) == Decimal("500.00")

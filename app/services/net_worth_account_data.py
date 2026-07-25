@@ -2,12 +2,16 @@
 Shekel Budget App -- Net-Worth Account-Data Adapter.
 
 The shared bridge between the :mod:`app.services.balance_at` seam's
-per-account balance maps and the net-worth sum: it pairs each account's
-dense period map with its asset/liability flag, producing the one
-``{account_id, balances, is_liability}`` shape BOTH net-worth consumers --
-the savings cockpit (``savings_dashboard_service._net_worth``) and the
-year-end summary (``year_end_summary_service._net_worth``) -- feed to
-:func:`app.services.net_worth_kernel.sum_net_worth_at_period`.
+per-account balance maps and the net-worth reduction: it pairs each
+account's dense period map with its asset/liability flag, producing the one
+``{account_id, balances, is_liability}`` shape the savings cockpit's
+net-worth producer (``savings_dashboard_service._net_worth``) reduces over.
+It was shared with the year-end summary until that package was deleted
+(plan step F2), which is why it lives in its own module rather than inside
+the cockpit's net-worth producer.  It still has two importers --
+``_net_worth`` (both names) and ``_projections`` (the classifier alone, which
+is what tags the account data the Horizon band selects on) -- so inlining it
+would break the second.
 
 Lives in its own module, between the consumers and the engine cluster, for
 two reasons:
@@ -36,10 +40,10 @@ def is_liability_account(account) -> bool:
     on: it compares the account type's integer ``category_id`` against the
     cached LIABILITY category id (IDs for logic, never a ``.name`` string).
     An account with no ``account_type`` (degenerate / partially loaded) is
-    treated as a non-liability asset.  Both net-worth consumers -- the
-    savings cockpit and the year-end summary -- classify through this one
-    home, so an account can never count as an asset on one surface and a
-    liability on another.
+    treated as a non-liability asset.  Every net-worth surface classifies
+    through this one home -- the cockpit's today figures, its trend, and its
+    Horizon band -- so an account can never count as an asset on one surface
+    and a liability on another.
 
     Args:
         account: The :class:`~app.models.account.Account` to classify.
@@ -60,10 +64,9 @@ def to_net_worth_account_data(
 ) -> list[dict]:
     """Pair each account's seam balance map with its liability flag.
 
-    The shared net-worth-account-data adapter both net-worth consumers
-    feed to :func:`app.services.net_worth_kernel.sum_net_worth_at_period`:
-    the savings cockpit's ``build_account_net_worth_maps`` and the year-end
-    summary's ``_build_account_data``.  It takes ``balance_maps`` as INPUT
+    The net-worth-account-data adapter the savings cockpit's
+    ``build_account_net_worth_maps`` feeds to its per-period reduction
+    (``_sum_composition_at_period``).  It takes ``balance_maps`` as INPUT
     -- the consumer calls :func:`app.services.balance_at.build_maps` and
     passes the result here -- so this module stays independent of the seam
     (see the module docstring).  Accounts whose map is absent (no anchor
@@ -77,9 +80,11 @@ def to_net_worth_account_data(
 
     Returns:
         A list of ``{account_id, balances, is_liability}`` dicts, one per
-        account that has a map.  ``account_id`` lets the savings cockpit's
-        sparkline producer reuse the maps; the net-worth reducers ignore it
-        (the year-end section reads only ``balances`` / ``is_liability``).
+        account that has a map.  All three keys are read downstream:
+        ``balances`` and ``is_liability`` by the per-period net-worth
+        reduction, and ``account_id`` both by the sparkline producer (to
+        reuse the maps) and by that same reduction (to look up the account's
+        composition band).
     """
     result: list[dict] = []
     for account in accounts:
