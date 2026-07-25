@@ -54,7 +54,9 @@ from app.services.balance_at._plan import (
     plan_payoff_date,
     plan_required_extra,
 )
-from app.services.loan_resolution import contractual_schedule_from_origination
+from app.services.balance_at._resolution import (
+    contractual_schedule_from_origination,
+)
 from app.services.balance_at import BalanceContext
 from app.utils.dates import add_months
 from tests._test_helpers import (

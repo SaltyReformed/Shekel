@@ -28,7 +28,6 @@ from shekel_checkers import (
     _LOAN_LEDGER_DEFINING_MODULES,
     _LOAN_LEDGER_READER_MODULES,
     _LOAN_LEDGER_READER_PRODUCERS,
-    _LOAN_RESOLVER_DEFINING_MODULES,
     _LOAN_RESOLVER_ENGINE_MODULES,
     _STATUS_SEAM_MODULES,
     _is_public_export_surface,
@@ -1019,7 +1018,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
             "    class Inner:\n"
             "        def balance_right_now(self, account):\n"
             "            return None\n",
-            module_name="app.services.loan_resolution",
+            module_name="app.services.loan_resolver._state",
         )
         node = module.body[0].body[0].body[0]
         with self.assertAddsMessages(
@@ -1046,7 +1045,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
             "if os.environ.get('X'):\n"
             "    def balance_right_now(account):\n"
             "        return None\n",
-            module_name="app.services.loan_resolution",
+            module_name="app.services.loan_resolver._state",
         )
         node = module.body[1].body[0]
         with self.assertAddsMessages(
@@ -1056,31 +1055,6 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
                 args=("balance_right_now",),
                 line=3, col_offset=4,
                 end_line=3, end_col_offset=25,
-            ),
-        ):
-            self.checker.visit_functiondef(node)
-
-    def test_flags_unclassified_public_function_in_loan_resolution(self) -> None:
-        """A NEW public producer in ``loan_resolution`` is flagged at its DEFINITION.
-
-        The 2c hole: the arc fenced the three resolver FUNCTIONS as a call surface
-        and then did not add their defining modules to the completeness registry --
-        the same fail-open shape W9909 exists to close, reintroduced by the very
-        commit that added the surface. Measured before the fix: a new public
-        ``loan_balance_right_now()`` in this module rated 10.00/10.
-        """
-        node = self._function_def(
-            "def loan_balance_right_now(account_id, scenario_id, as_of):\n"
-            "    return None\n",
-            "app.services.loan_resolution",
-        )
-        with self.assertAddsMessages(
-            MessageTest(
-                "shekel-unclassified-fenced-export",
-                node=node,
-                args=("loan_balance_right_now",),
-                line=1, col_offset=0,
-                end_line=1, end_col_offset=26,
             ),
         ):
             self.checker.visit_functiondef(node)
@@ -1096,7 +1070,6 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
           ``loan_posting_service``, the walk and the posting readers)
         * ``_CASH_LEDGER_MODULES`` (``cash_ledger``, D1a then D1c)
         * ``_KIND_CLASSIFIER_MODULES`` (``account_projection``, D1b)
-        * ``_LOAN_RESOLVER_DEFINING_MODULES`` (``loan_resolution``)
         * ``_LOAN_RESOLVER_ENGINE_MODULES`` (``loan_resolver``, D3 -- B-12's
           "wholly unfenced tier", closed)
         * ``_LOAN_PAYMENT_SEAM_MODULES`` (``loan_payment_service``, D3's
@@ -1125,7 +1098,6 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
             "app.services.loan_ledger",
             "app.services.loan_posting_service",
             "app.services.loan_payment_service",
-            "app.services.loan_resolution",
             "app.services.loan_resolver",
             "app.services.balance_at._context",
         ):
@@ -1214,7 +1186,6 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
         """
         expected = (
             _LOAN_LEDGER_DEFINING_MODULES
-            | _LOAN_RESOLVER_DEFINING_MODULES
             | _LOAN_RESOLVER_ENGINE_MODULES
             | _LOAN_PAYMENT_SEAM_MODULES
             | _SEAM_PRIVATE_CONTEXT_MODULES

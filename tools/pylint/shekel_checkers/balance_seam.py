@@ -100,10 +100,12 @@ _LOAN_LEDGER_READER_MODULES = frozenset({
 # ``LoanState.current_balance`` -- the balance-at-today that made a resolver
 # bundle a leak -- is DELETED, so ``resolve_loan_bundle`` / ``resolve_loan_seeded``
 # hand back schedule detail of the same sanctioned class ``debt_schedule_rows``
-# already exposes, and ``BalanceContext.resolved_loan`` / ``loan_walk`` hand back
-# nothing a consumer cannot already reach through public leaf names
-# (``walk_loan_ledger`` is a ruled NON-producer: FACTS, not a balance).  A
-# consumer that wants a loan's balance still has exactly one way to get it --
+# already exposes.  Plan step E1d-a then moved that whole read INSIDE the seam
+# as the private ``balance_at._resolution``, re-exported nowhere, so W9910 is the
+# only gate it needs and its completeness scope deleted with it; the context memo
+# went with it, leaving ``BalanceContext.loan_walk``, which hands back the leaf's
+# public FACTS (``walk_loan_ledger`` is a ruled NON-producer).  A consumer that
+# wants a loan's balance still has exactly one way to get it --
 # ``balance_at.balance_at`` -- but by construction now, not by list.
 
 # Every fenced CALL surface: ``(guarded names, modules allowed to reach them)``.
@@ -171,15 +173,6 @@ _SEAM_PRIVATE_CONTEXT_MODULES = frozenset({
 _LOAN_LEDGER_DEFINING_MODULES = frozenset({
     "app.services.loan_ledger",
     "app.services.loan_posting_service",
-})
-# The loan-RESOLVER defining module (the db-facing seeding wrappers).  Its CALL
-# fence died at D3 (the bundle carries no balance since D2a), but the
-# completeness scope STAYS: it is a public module holding the schedule composer
-# and every loan ingredient, outside W9910's protection.  Proven need: a new
-# public ``loan_balance_right_now()`` added here rated 10.00/10, and
-# ``contractual_schedule_from_origination`` sat here public and unclassified.
-_LOAN_RESOLVER_DEFINING_MODULES = frozenset({
-    "app.services.loan_resolution",
 })
 # The loan-payment view module (plan step D3, from its adversarial review):
 # the ONE module the reader allowlist above admits beyond the defining
@@ -403,34 +396,6 @@ _FENCED_MODULE_RULINGS = {
             "resync_user_loan_postings",
         }),
     ),
-    # The loan-resolver SEEDING layer (:data:`_LOAN_RESOLVER_DEFINING_MODULES`).
-    # Its call fence died at D3 -- the bundle carries no balance since D2a --
-    # so every public name here is a ruled non-producer.
-    "app.services.loan_resolution": (frozenset(), frozenset({
-        # The whole-loan db-facing read: ONE load + resolve, returning a
-        # ``ResolvedLoan`` of params / anchor facts / payment context / state.
-        # No balance on it anywhere since D2a (the state carries the committed
-        # SCHEDULE -- sanctioned display rows, the ``debt_schedule_rows``
-        # class -- plus payment / rate / life-of-loan interest); the read
-        # pass's memo (``BalanceContext.resolved_loan``) is the one production
-        # caller, and a new direct caller pays a redundant resolution, not a
-        # balance leak.
-        "resolve_loan_bundle",
-        # The injection helper the bundle routes through: threads the
-        # confirmed view + standing extra into the pure resolver.  Same
-        # no-balance bundle as above.
-        "resolve_loan_seeded",
-        # PURE contractual rows from the loan's IMMUTABLE params (its origination
-        # principal / term / rate feed), for the property chart's pre-tracking
-        # back-projection.  It reads no ledger, takes no scenario, and answers no
-        # "what is owed at T" -- it says what the origination TERMS imply, which
-        # is why it is the one legitimate ``confirmed_view=None`` composer call in
-        # the codebase.  The rows it returns carry ``remaining_balance``, but they
-        # are reachable only through the seam's ``secured_loan_series``, which is
-        # the sanctioned rows-to-a-consumer path (the same ruling
-        # ``debt_schedule_rows`` carries).
-        "contractual_schedule_from_origination",
-    })),
     # The read pass's context (:data:`_SEAM_PRIVATE_CONTEXT_MODULES`) -- the
     # ONE seam-private ruling D3 keeps, because ``BalanceContext`` is publicly
     # re-exported and W9910 cannot see a method on an object a consumer holds.
@@ -447,13 +412,14 @@ _FENCED_MODULE_RULINGS = {
         # The fail-loud no-baseline guard.  It raises or returns None; it
         # answers nothing about an account.
         "require_scenario",
-        # The read pass's two memo handles, un-FENCED at D3 and ruled
-        # NON-producers on the D2a ground: ``resolved_loan`` hands a bundle
-        # carrying NO balance (schedule rows are the sanctioned
-        # ``debt_schedule_rows`` display class), and ``loan_walk`` hands the
-        # leaf's public FACTS (``walk_loan_ledger``'s own ruling).  The
-        # forward PLAN and PAYOFF are pass-through data caches, not methods.
-        "resolved_loan",
+        # The read pass's ONE remaining memo handle, un-FENCED at D3 and ruled
+        # a NON-producer: ``loan_walk`` hands the leaf's public FACTS
+        # (``walk_loan_ledger``'s own ruling), and the fold that would turn
+        # them into money is seam-private (plan step D-fold).  The RESOLUTION,
+        # PLAN, and PAYOFF are pass-through data caches, not methods: their
+        # derivations live in the seam modules above this one (plan steps
+        # D-ctx-b / E1d-a), which is where a public balance producer would have
+        # to be born to be reachable, and W9910 owns that.
         "loan_walk",
     })),
     # The loan-payment view module (:data:`_LOAN_PAYMENT_SEAM_MODULES`): the
@@ -641,9 +607,9 @@ class ShekelBalanceSeamChecker(BaseChecker):
             "(findings N-28 / N-31). This check inverts the default for the "
             "PUBLIC balance-ingredient packages the package-privacy gate W9910 "
             "cannot protect (the loan_ledger and loan_posting_service "
-            "packages, the cash_ledger leaf, the loan_resolver tier and its "
-            "loan_resolution seeding module, and the account_projection "
-            "classifier): every public top-level function or public method "
+            "packages, the cash_ledger leaf, the pure loan_resolver tier, and "
+            "the account_projection classifier): every public top-level "
+            "function or public method "
             "there must be explicitly classified as a producer or a "
             "non-producer, so an unclassified one fails AT ITS DEFINITION "
             "rather than silently becoming a hole a consumer can reach "

@@ -33,11 +33,12 @@ from app.extensions import db
 from app.models.loan_payment_settings import LoanPaymentSettings
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.transfer_template import TransferTemplate
-from app.services import balance_at, loan_loaders, loan_payment_service, loan_posting_service, loan_resolution, loan_resolver
+from app.services import balance_at, loan_loaders, loan_payment_service, loan_posting_service, loan_resolver
 from app.services.balance_at import _kernel as net_worth_kernel
 from app.utils.dates import add_months
 from app.utils.money import round_money
 from app.services.balance_at import BalanceContext
+from app.services.balance_at._resolution import resolved_loan
 from tests._test_helpers import (
     create_loan_account,
     freeze_today,
@@ -703,9 +704,10 @@ def test_standing_extra_payoff_consistent_across_surfaces(
         )
 
         # Summary seam: every summary surface resolves a debt account through
-        # the one memoized bundle (resolve_loan_bundle).
-        resolved = loan_resolution.resolve_loan_bundle(
-            account.id, scenario_id, today,
+        # the seam's ONE memoized whole-loan read (``balance_at._resolution.resolved_loan``).
+        resolved = resolved_loan(
+            account,
+            BalanceContext.build(seed_user["user"].id, as_of=today),
         )
         assert resolved is not None
         state = resolved.state

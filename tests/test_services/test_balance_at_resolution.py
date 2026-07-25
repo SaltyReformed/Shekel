@@ -1,4 +1,4 @@
-"""Tests for ``app.services.loan_resolution`` (the resolver-seeding layer).
+"""Tests for ``app.services.balance_at._resolution`` (the whole-loan read).
 
 Covers :func:`contractual_schedule_from_origination` -- the pure from-origination
 contractual amortization the property equity chart's (a) contractual
@@ -10,7 +10,9 @@ from datetime import date
 from decimal import Decimal
 
 from app.services.loan_loaders import load_loan_params, load_rate_changes
-from app.services.loan_resolution import contractual_schedule_from_origination
+from app.services.balance_at._resolution import (
+    contractual_schedule_from_origination,
+)
 from tests._test_helpers import (
     create_loan_account,
     insert_tracking_start_event,

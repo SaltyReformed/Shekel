@@ -26,6 +26,7 @@ from ._context import BalanceContext
 
 from ._inputs import ZERO
 from ._positions import positions
+from ._resolution import resolved_loan
 
 
 def _spliced_owed_series(
@@ -189,7 +190,7 @@ def liability_owed_at_dates(
         for account in liabilities:
             if classify_account(account) is not AccountProjectionKind.AMORTIZING:
                 continue
-            if ctx.resolved_loan(account) is None:
+            if resolved_loan(account, ctx) is None:
                 # No LoanParams: no forward model.  Omit it here so the flat-hold
                 # branch below carries it at its current owed magnitude -- the same
                 # no-forward-model rule the batch producer skipped it under.

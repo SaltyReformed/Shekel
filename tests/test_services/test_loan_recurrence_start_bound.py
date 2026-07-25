@@ -32,11 +32,13 @@ from app.services import (
     balance_at,
     loan_loaders,
     loan_recurrence_sync,
-    loan_resolution,
     rate_period_engine,
     transfer_recurrence,
 )
 from app.services.balance_at import BalanceContext
+from app.services.balance_at._resolution import (
+    contractual_schedule_from_origination,
+)
 from tests._test_helpers import (
     create_account_of_type,
     create_loan_account,
@@ -126,7 +128,7 @@ class TestFirstInstallmentDate:
                 anchor_period=seed_periods[0],
             )
             params = loan_loaders.load_loan_params(acct.id)
-            rows = loan_resolution.contractual_schedule_from_origination(
+            rows = contractual_schedule_from_origination(
                 params, loan_loaders.load_rate_changes(acct.id),
             )
             assert rows[0].payment_date == rate_period_engine.first_installment_date(

@@ -25,7 +25,9 @@ from app.models.ref import AccountType, Status
 from app.routes.loan._helpers import accelerated_overlay, build_band_chart
 from app.services.balance_at import BalanceContext
 from app.services.loan_loaders import load_loan_params, load_rate_changes
-from app.services.loan_resolution import contractual_schedule_from_origination
+from app.services.balance_at._resolution import (
+    contractual_schedule_from_origination,
+)
 from app.services.transfer_service import TransferSpec, create_transfer
 from app.utils.dates import add_months
 from app.services import (

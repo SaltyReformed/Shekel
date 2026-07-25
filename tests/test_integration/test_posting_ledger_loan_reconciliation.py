@@ -142,13 +142,14 @@ from app.enums import (
     TxnTypeEnum,
 )
 from app.extensions import db as _db
+from app.models.account import Account
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.ledger_account import LedgerAccount
 from app.models.loan_features import RateHistory
 from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
-from app.services import anchor_service, balance_at, loan_ledger, loan_loaders, loan_payment_service, loan_posting_service, loan_resolution, loan_resolver, pay_period_service, posting_service, transfer_service
+from app.services import anchor_service, balance_at, loan_ledger, loan_loaders, loan_payment_service, loan_posting_service, loan_resolver, pay_period_service, posting_service, transfer_service
 from app.services.loan_resolver._periods import _replay_from_anchor
 from app.utils.money import round_money
 from app.services.balance_at import _kernel as net_worth_kernel
@@ -157,6 +158,7 @@ from app.services.rate_period_engine import monthly_due_date
 from app.utils.balance_predicates import settled_status_ids
 from app.utils.money import accrue_monthly_interest
 from app.services.balance_at import BalanceContext
+from app.services.balance_at._resolution import resolved_loan
 from tests._test_helpers import (
     create_account_of_type,
     create_loan_account,
@@ -234,6 +236,34 @@ def _make_loan(
         origination_date=_ORIGINATION_DATE, name=name,
         escrow_annual=escrow_annual, payment_day=payment_day,
     )
+
+
+def _resolved_at(loan_account_id, scenario_id, as_of):
+    """Resolve ONE loan through the seam, at an explicit scenario and as-of.
+
+    The suite's whole-loan read.  It goes through the seam's public entry
+    (:func:`app.services.balance_at._resolution.resolved_loan`, where the db-facing
+    resolution has lived since plan step E1d-a) rather than reaching into the
+    private module behind it, and it pins the scenario EXPLICITLY -- several
+    tests here resolve a loan under a named scenario (a what-if) or at a frozen
+    as-of, which ``BalanceContext.build`` would not reproduce (it looks the
+    user's BASELINE up for itself).
+
+    Args:
+        loan_account_id: The loan account to resolve.
+        scenario_id: The scenario to scope the payment history to.
+        as_of: The date to resolve the loan AT.
+
+    Returns:
+        The :class:`~app.services.balance_at._resolution.ResolvedLoan`, or ``None`` when the
+        account is not a configured loan.
+    """
+    loan = _db.session.get(Account, loan_account_id)
+    return resolved_loan(loan, BalanceContext(
+        user_id=loan.user_id,
+        scenario=_db.session.get(Scenario, scenario_id),
+        as_of=as_of,
+    ))
 
 
 def _settle(
@@ -736,7 +766,7 @@ class TestParallelRunAgainstResolver:
             loan = _make_loan(seed_user)
             # The resolver's scheduled monthly P&I; paying exactly it is
             # on-schedule (the loan carries no escrow, so cash == P&I).
-            scheduled_pi = loan_resolution.resolve_loan_bundle(
+            scheduled_pi = _resolved_at(
                 loan.id, scenario_id, _AS_OF,
             ).state.monthly_payment
 
@@ -775,7 +805,7 @@ class TestParallelRunAgainstResolver:
         with app.app_context():
             scenario_id = seed_user["scenario"].id
             loan = _make_tracking_start_loan(seed_user)
-            scheduled_pi = loan_resolution.resolve_loan_bundle(
+            scheduled_pi = _resolved_at(
                 loan.id, scenario_id, _AS_OF,
             ).state.monthly_payment
 
@@ -806,7 +836,7 @@ class TestParallelRunAgainstResolver:
         with app.app_context():
             scenario_id = seed_user["scenario"].id
             loan = _make_loan(seed_user)
-            scheduled_pi = loan_resolution.resolve_loan_bundle(
+            scheduled_pi = _resolved_at(
                 loan.id, scenario_id, _AS_OF,
             ).state.monthly_payment
 
@@ -1300,7 +1330,7 @@ class TestBackfillEqualsGoForward:
         with app.app_context():
             scenario_id = seed_user["scenario"].id
             loan = _make_loan(seed_user)
-            scheduled_pi = loan_resolution.resolve_loan_bundle(
+            scheduled_pi = _resolved_at(
                 loan.id, scenario_id, _AS_OF,
             ).state.monthly_payment
             _settle(seed_user, loan, seed_periods[_P1], amount=scheduled_pi)
@@ -1491,7 +1521,7 @@ class TestOracleIsNotVacuous:
             loan = _make_loan(seed_user)
             # The honest scheduled P&I, read BEFORE injecting: paying exactly it
             # is on-schedule, so absent the bug ledger == resolver to the penny.
-            scheduled_pi = loan_resolution.resolve_loan_bundle(
+            scheduled_pi = _resolved_at(
                 loan.id, scenario_id, _AS_OF,
             ).state.monthly_payment
 
@@ -1547,9 +1577,10 @@ class TestOracleIsNotVacuous:
 # FILE granularity.  ``loan_payment_service`` is different: :func:`_resolver_balance`
 # runs through its ``load_loan_context`` loader, but the module ALSO holds a read-
 # switch function that reads the ledger by design (``confirmed_loan_view``; the
-# seeding wrappers ``resolve_loan_seeded`` / ``resolve_loan_bundle`` moved to
-# ``loan_resolution``, which reads the ledger only THROUGH ``confirmed_loan_view`` and
-# so imports no ledger token itself -- it needs no fencing here).  A file-granularity
+# seeding wrappers ``resolve_loan_seeded`` / ``resolve_loan_bundle`` moved into the
+# balance seam as ``balance_at._resolution``, which reads the ledger only THROUGH
+# ``confirmed_loan_view`` -- and the whole seam is already a ledger token here, so
+# it needs no fencing of its own).  A file-granularity
 # fence would flag that legitimate read, so that mixed module is fenced at FUNCTION
 # granularity instead -- every function except the read-switch allowlist must stay
 # ledger-free (2026-07-02 follow-up review M-1: without this, wiring the ledger into
@@ -1823,7 +1854,8 @@ class TestResolverIsLedgerFree:
         assert "def get_payment_history" in feeding
         assert "def prepare_payments_for_engine" in feeding
         # The read-switch reader (permitted to read the ledger) is held out; the
-        # seeding wrappers moved to ``loan_resolution`` (see the module comment).
+        # seeding wrappers moved into ``balance_at._resolution`` (see the
+        # module comment).
         assert "def confirmed_loan_view" not in feeding
         assert "def resolve_loan_seeded" not in inspect.getsource(
             loan_payment_service
@@ -2000,7 +2032,7 @@ class TestReaderParallelRunAgainstResolver:
         with app.app_context():
             scenario_id = seed_user["scenario"].id
             loan = _make_loan(seed_user)
-            scheduled_pi = loan_resolution.resolve_loan_bundle(
+            scheduled_pi = _resolved_at(
                 loan.id, scenario_id, _AS_OF,
             ).state.monthly_payment
 
@@ -2043,7 +2075,7 @@ class TestReaderParallelRunAgainstResolver:
         with app.app_context():
             scenario_id = seed_user["scenario"].id
             loan = _make_loan(seed_user)
-            scheduled_pi = loan_resolution.resolve_loan_bundle(
+            scheduled_pi = _resolved_at(
                 loan.id, scenario_id, _AS_OF,
             ).state.monthly_payment
 
@@ -2107,7 +2139,7 @@ class TestReaderParallelRunAgainstResolver:
             freeze_today(monkeypatch, frozen)
             scenario_id = seed_user["scenario"].id
             loan = _make_loan(seed_user)
-            monthly_pi = loan_resolution.resolve_loan_bundle(
+            monthly_pi = _resolved_at(
                 loan.id, scenario_id, frozen,
             ).state.monthly_payment
 
@@ -2169,7 +2201,7 @@ class TestReaderParallelRunAgainstResolver:
             short_loan = _make_loan(seed_user, name="Short Loan")
             # Identical params -> identical scheduled P&I (rate-period level
             # payment, balance-independent), so one figure governs both deltas.
-            monthly_pi = loan_resolution.resolve_loan_bundle(
+            monthly_pi = _resolved_at(
                 extra_loan.id, scenario_id, _AS_OF,
             ).state.monthly_payment
 
@@ -2298,7 +2330,7 @@ class TestReaderParallelRunAgainstResolver:
         with app.app_context():
             loan, ctx, checking, periods = _seed_boundary_loan(bare_user)
             scenario_id = ctx["scenario"].id
-            scheduled_pi = loan_resolution.resolve_loan_bundle(
+            scheduled_pi = _resolved_at(
                 loan.id, scenario_id, _AS_OF,
             ).state.monthly_payment
 
@@ -2355,7 +2387,7 @@ class TestReaderParallelRunAgainstResolver:
             db.session.commit()
 
             loan = _make_loan(seed_user)
-            scheduled_pi = loan_resolution.resolve_loan_bundle(
+            scheduled_pi = _resolved_at(
                 loan.id, baseline.id, _AS_OF,
             ).state.monthly_payment
             # Baseline: one on-schedule payment.  What-if: two (a second period).
@@ -2434,7 +2466,7 @@ class TestReaderParallelRunAgainstResolver:
             scenario_id = seed_user["scenario"].id
             loan = _make_loan(seed_user, name="Collision Loan")
             params = loan_loaders.load_loan_params(loan.id)
-            scheduled_pi = loan_resolution.resolve_loan_bundle(
+            scheduled_pi = _resolved_at(
                 loan.id, scenario_id, _AS_OF,
             ).state.monthly_payment
 
@@ -2541,7 +2573,7 @@ class TestReadSwitchProductionPath:
             short_loan = _make_loan(seed_user, name="Short Prod Loan")
             # Identical params -> one scheduled P&I (balance-independent) governs
             # both deltas; reading it does not perturb the balance being tested.
-            monthly_pi = loan_resolution.resolve_loan_bundle(
+            monthly_pi = _resolved_at(
                 extra_loan.id, scenario_id, _AS_OF,
             ).state.monthly_payment
 
@@ -2603,7 +2635,7 @@ class TestReadSwitchProductionPath:
             )
             db.session.commit()
 
-            resolved = loan_resolution.resolve_loan_bundle(
+            resolved = _resolved_at(
                 loan.id, scenario_id, _AS_OF,
             )
             assert resolved is not None, "configured loan must resolve"
@@ -2652,7 +2684,7 @@ class TestReadSwitchProductionPath:
         with app.app_context():
             scenario_id = seed_user["scenario"].id
             loan = _make_loan(seed_user)
-            scheduled_pi = loan_resolution.resolve_loan_bundle(
+            scheduled_pi = _resolved_at(
                 loan.id, scenario_id, _AS_OF,
             ).state.monthly_payment
 

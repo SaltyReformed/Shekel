@@ -67,6 +67,7 @@ from app.services.savings_dashboard_service._data import _load_account_params
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.money import round_money
 from app.services.balance_at import BalanceContext
+from app.services.balance_at._resolution import resolved_loan
 from tests._test_helpers import (
     add_txn,
     create_account_of_type,
@@ -2673,7 +2674,7 @@ class TestLoanNotYetOriginated:
             periods = seed_periods
             acct = self._upcoming_mortgage(seed_user, db.session, periods)
             bctx = BalanceContext.build(seed_user["user"].id)
-            resolved = bctx.resolved_loan(acct)
+            resolved = resolved_loan(acct, bctx)
 
             assert balance_at.balance_at(acct, bctx, bctx.as_of) == self.ZERO
             # The schedule is intact: 360 contractual rows from the first payment.
@@ -2747,7 +2748,7 @@ class TestLoanNotYetOriginated:
             db.session.commit()
 
             bctx = BalanceContext.build(seed_user["user"].id)
-            resolved = bctx.resolved_loan(acct)
+            resolved = resolved_loan(acct, bctx)
             # The two clauses that would otherwise conspire.
             assert any(p.is_confirmed for p in resolved.context.payments)
             assert balance_at.balance_at(acct, bctx, bctx.as_of) == self.ZERO
@@ -2878,7 +2879,7 @@ class TestUpcomingLoanDoesNotCorruptTheSurfaces:
             def _ad(acct):
                 figures = balance_at.loan_figures(acct, bctx)
                 return {
-                    "loan_params": bctx.resolved_loan(acct).params,
+                    "loan_params": resolved_loan(acct, bctx).params,
                     "current_balance": balance_at.balance_at(
                         acct, bctx, bctx.as_of),
                     "is_paid_off": figures.is_paid_off,

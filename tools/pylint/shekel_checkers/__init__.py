@@ -45,7 +45,7 @@ Rules implemented:
   fail-closed classification of new public exports in the PUBLIC
   balance-ingredient packages W9910 cannot protect (``loan_ledger``,
   ``loan_posting_service``, ``cash_ledger``, ``loan_resolver``,
-  ``loan_resolution``, ``loan_payment_service``, ``account_projection``, plus
+  ``loan_payment_service``, ``account_projection``, plus
   the seam-private ``balance_at._context`` whose publicly re-exported
   ``BalanceContext`` W9910 cannot see methods on). Flags a PUBLIC top-level
   function or public method there classified as NEITHER a producer nor a
@@ -120,7 +120,6 @@ from .balance_seam import (
     _LOAN_LEDGER_READER_MODULES,
     _LOAN_LEDGER_READER_PRODUCERS,
     _LOAN_PAYMENT_SEAM_MODULES,
-    _LOAN_RESOLVER_DEFINING_MODULES,
     _LOAN_RESOLVER_ENGINE_MODULES,
     _SEAM_PRIVATE_CONTEXT_MODULES,
     ShekelBalanceSeamChecker,
@@ -157,7 +156,6 @@ __all__ = [
     "_LOAN_LEDGER_READER_MODULES",
     "_LOAN_LEDGER_READER_PRODUCERS",
     "_LOAN_PAYMENT_SEAM_MODULES",
-    "_LOAN_RESOLVER_DEFINING_MODULES",
     "_LOAN_RESOLVER_ENGINE_MODULES",
     "_SEAM_PRIVATE_CONTEXT_MODULES",
     "_is_public_export_surface",

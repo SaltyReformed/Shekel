@@ -7,9 +7,10 @@ payment preparation utilities (escrow subtraction, biweekly
 redistribution), a unified data-loading function (load_loan_context)
 shared by all consumers of amortization schedules, and the read-switch
 ledger-view builder (confirmed_loan_view).  The resolver-seeding wrappers that
-read that view -- resolve_loan_seeded / resolve_loan_bundle -- live in
-app.services.loan_resolution (they compose these loaders with the pure
-resolver); this module does not import that one, so there is no cycle.
+read that view -- resolve_loan_seeded / resolve_loan_bundle -- live inside the
+balance seam, in app.services.balance_at._resolution (they compose these loaders
+with the pure resolver); that module imports THIS one, and this one imports
+nothing from the seam, so there is no cycle.
 
 Shadow income transactions represent payments received by a debt
 account via transfers.  When a user transfers money from checking to

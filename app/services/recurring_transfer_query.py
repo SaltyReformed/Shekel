@@ -80,9 +80,9 @@ def loan_standing_extra_for_account(account_id: int) -> Decimal:
 
     The account-scoped form of :func:`loan_standing_extra` for callers that hold
     only ``account_id`` -- the resolver bundle
-    (:func:`app.services.loan_resolution.resolve_loan_bundle`), which loads it
+    (:func:`app.services.balance_at._resolution.resolved_loan`), which loads it
     once and threads it into every summary-surface resolve (and onto
-    :attr:`~app.services.loan_resolution.ResolvedLoan.extra_principal`) so the
+    :attr:`~app.services.balance_at._resolution.ResolvedLoan.extra_principal`) so the
     seam cannot drift back to the contractual (extra-free) trajectory.  Derives
     the owning
     user from the account (one PK lookup) then reads the active recurring

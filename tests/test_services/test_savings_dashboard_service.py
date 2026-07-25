@@ -4374,17 +4374,17 @@ class TestOneResolutionPerLoanPerReadPass:
         # Pylint: import-outside-toplevel -- the file-wide deferred-import
         # convention for test-local symbols.
         from app.services.balance_at import (  # pylint: disable=import-outside-toplevel
-            _context as resolution_context,
+            _resolution as resolution_module,
         )
 
         calls = []
-        real = resolution_context.resolve_loan_bundle
+        real = resolution_module.resolve_loan_bundle
 
         def _spy(account_id, scenario_id, as_of):
             calls.append(account_id)
             return real(account_id, scenario_id, as_of)
 
-        monkeypatch.setattr(resolution_context, "resolve_loan_bundle", _spy)
+        monkeypatch.setattr(resolution_module, "resolve_loan_bundle", _spy)
         return calls
 
     def test_dashboard_data_resolves_each_loan_once(

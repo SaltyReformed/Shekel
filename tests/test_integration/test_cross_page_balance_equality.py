@@ -73,13 +73,12 @@ from app.services import (
     dashboard_service,
     home_equity_service,
     investment_dashboard_service,
-    loan_payment_service,
-    loan_resolution,
     savings_dashboard_service,
 )
 from app.services.balance_at import _kernel as net_worth_kernel
 from app.services.balance_at import _cash_engine as balance_resolver
 from app.services.balance_at import BalanceContext
+from app.services.balance_at._resolution import resolved_loan
 
 
 # ── Parameter matrix (cases 1..5 of the plan's Commit 11 spec) ─────
@@ -860,11 +859,9 @@ def _loan_schedule_table_value(ctx):
     the card's seam-folded balance (an empty table shows no history), keeping
     the reader total for the on-schedule kind test too.
     """
-    resolved = loan_resolution.resolve_loan_bundle(
-        ctx["account_id"], ctx["scenario_id"], date.today(),
-    )
+    resolved = resolved_loan(ctx["account"], _bctx(ctx))
     assert resolved is not None, (
-        f"resolve_loan_bundle returned None for loan "
+        f"resolved_loan returned None for loan "
         f"account_id={ctx['account_id']}"
     )
     confirmed_rows = [
@@ -1169,9 +1166,7 @@ class TestLoanCrossPageEquality:
             # nothing has settled since -- the ledger-derived rows make the
             # walk read the REAL balance, equal to today's card, and NOT the
             # replay's scheduled figure.
-            resolved = loan_resolution.resolve_loan_bundle(
-                ctx["account_id"], ctx["scenario_id"], date.today(),
-            )
+            resolved = resolved_loan(ctx["account"], _bctx(ctx))
             confirmed_rows = [
                 row for row in resolved.state.schedule if row.is_confirmed
             ]

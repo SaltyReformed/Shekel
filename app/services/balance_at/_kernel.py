@@ -46,11 +46,11 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
-from app.services.loan_resolution import ResolvedLoan
 from app.utils.balance_predicates import account_period_scope_clause
 
 from ._context import BalanceContext
 from ._fold import fold_from_walk
+from ._resolution import ResolvedLoan, resolved_loan
 from . import _calculator, _cash_engine, _investment
 
 # The anchor-balance fallback for an account whose ``current_anchor_balance``
@@ -110,7 +110,7 @@ class DebtSchedule:
     """Everything the FORWARD projection needs to value one loan at any date.
 
     The outputs of ONE resolution
-    (:meth:`~app.services.balance_at.BalanceContext.resolved_loan`), bundled so
+    (:func:`~app.services.balance_at._resolution.resolved_loan`), bundled so
     the schedule, its seed, and the loan's origination cannot come from
     different places and drift.
 
@@ -144,7 +144,7 @@ def generate_debt_schedules(
     """Return each debt account's :class:`DebtSchedule` from the pass's resolutions.
 
     Projects the read pass's memoized loan resolutions
-    (:meth:`~app.services.balance_at.BalanceContext.resolved_loan`) into the narrow
+    (:func:`~app.services.balance_at._resolution.resolved_loan`) into the narrow
     ``(schedule, projection_seed, owed_from)`` bundle the balance dispatcher
     needs.
     Same resolver output the loan dashboard and the /savings debt card consume,
@@ -172,7 +172,7 @@ def generate_debt_schedules(
     """
     schedules: dict[int, DebtSchedule] = {}
     for account in debt_accounts:
-        resolved = ctx.resolved_loan(account)
+        resolved = resolved_loan(account, ctx)
         if resolved is None:
             continue
         origination = resolved.params.origination_date
@@ -220,7 +220,7 @@ def _projection_seed(
     has no call site to recur at.
 
     Args:
-        resolved: The pass's :class:`~app.services.loan_resolution.ResolvedLoan`.
+        resolved: The pass's :class:`~app.services.balance_at._resolution.ResolvedLoan`.
         account: The loan account, for the pass's memoized walk.
         ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
             (its ``as_of`` is the resolver's NOW; its walk memo serves the fold).

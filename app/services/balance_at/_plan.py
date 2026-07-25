@@ -13,7 +13,7 @@ future balance is a fold over the payments it is going to make, in two tiers:
 * **ESTIMATED** -- for every FUTURE contractual installment slot no projected
   record covers (a loan with no recurring transfer, or the tail beyond the
   materialized ~2-year pay-period window), the contractual P&I synthesized from
-  :func:`app.services.loan_resolution.contractual_schedule_from_origination` (the
+  :func:`app.services.balance_at._resolution.contractual_schedule_from_origination` (the
   producer already shared with the property-equity back-projection) -- its
   installment DATE and P&I, never its ``remaining_balance``, which this re-folds.
 
@@ -49,12 +49,15 @@ from app.services.loan_ledger import (
 )
 from app.services.loan_loaders import loan_payment_due_date
 from app.services.loan_payment_service import live_loan_transfer_amounts
-from app.services.loan_resolution import contractual_schedule_from_origination
 from app.services.rate_period_engine import period_for_date
 from app.utils.dates import add_months
 
 from ._context import BalanceContext, _memoize_once, require_scenario
 from ._fold import sample_cumulative
+from ._resolution import (
+    contractual_schedule_from_origination,
+    resolved_loan,
+)
 
 _ZERO_MONEY = Decimal("0.00")
 _ONE_DAY = timedelta(days=1)
@@ -150,7 +153,7 @@ class _ForwardInputs:
         escrow_lines: The loan's escrow lines with their full version history.
         payment_day: The loan's contractual due day (the due-date fallback).
         extra_principal: The loan's standing monthly overpayment
-            (:attr:`~app.services.loan_resolution.ResolvedLoan.extra_principal`),
+            (:attr:`~app.services.balance_at._resolution.ResolvedLoan.extra_principal`),
             added to each ESTIMATED installment's cash so the fold folds the SAME
             extra past the materialized-shadow horizon that the resolver's
             committed schedule applies for the whole term (finding N-15).  The
@@ -223,7 +226,7 @@ def _estimated_from_contract(
     """Build the ESTIMATED tier: contractual installments no payment covers.
 
     Walks the pure contractual schedule
-    (:func:`app.services.loan_resolution.contractual_schedule_from_origination`)
+    (:func:`app.services.balance_at._resolution.contractual_schedule_from_origination`)
     and synthesizes a :class:`PlannedPayment` for every FUTURE installment
     (``payment_date >= as_of``) whose ``(year, month)`` slot no payment already
     covers.  A strictly-PAST installment (``payment_date < as_of``) is NEVER
@@ -338,7 +341,7 @@ def loan_plan(account: Account, ctx: BalanceContext) -> list[PlannedPayment]:
             first).
     """
     require_scenario(ctx)
-    resolved = ctx.resolved_loan(account)
+    resolved = resolved_loan(account, ctx)
     if resolved is None:
         return []
     params = resolved.params

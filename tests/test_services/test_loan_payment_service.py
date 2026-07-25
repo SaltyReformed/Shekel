@@ -31,7 +31,7 @@ from app.services.loan_payment_service import (
     load_loan_params,
     prepare_payments_for_engine,
 )
-from app.services.loan_resolution import resolve_loan_seeded
+from app.services.balance_at._resolution import resolve_loan_seeded
 from app.services.transfer_service import TransferSpec, create_transfer
 from app.services import account_service, loan_resolver
 from app.services.rate_period_engine import monthly_due_date

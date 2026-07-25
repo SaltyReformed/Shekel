@@ -27,7 +27,7 @@ mid-life-imported loan has no payment record before its tracking-start assertion
 so the fold holds the origination principal FLAT across those months (a balance
 does not move without a recorded event).  That flat plateau is not what the loan
 owed while it amortized unseen, so those months instead carry the CONTRACTUAL
-back-projection (:func:`~app.services.loan_resolution.contractual_schedule_from_origination`,
+back-projection (:func:`._resolution.contractual_schedule_from_origination`,
 rendered as the visually-distinct ``estimated`` tier) -- a prediction that fills a
 gap in the record, never overwriting one.  The honest step where the estimate meets
 the recorded opening is kept, not smoothed.
@@ -68,16 +68,17 @@ from decimal import Decimal
 
 from app.models.account import Account
 from app.services.loan_loaders import load_rate_changes
-from app.services.loan_resolution import (
-    ResolvedLoan,
-    contractual_schedule_from_origination,
-)
 from app.utils.dates import add_months, months_between
 
 from ._context import BalanceContext
 from ._loan_figures import LoanFigures, loan_figures
 from ._plan import memoized_plan
 from ._positions import positions, window_sample_date
+from ._resolution import (
+    ResolvedLoan,
+    contractual_schedule_from_origination,
+    resolved_loan,
+)
 
 # ``debt_tier`` values: the per-month confidence of the summed debt line, so the
 # renderer can style the pre-tracking contractual estimate apart from recorded
@@ -151,7 +152,7 @@ def _back_projection_by_month(
     no payment record and the fold holds the origination principal flat across
     them.  This supplies the honest contractual estimate for those months instead
     -- the
-    :func:`~app.services.loan_resolution.contractual_schedule_from_origination`
+    :func:`~app.services.balance_at._resolution.contractual_schedule_from_origination`
     balance (amortized from the origination terms on the SAME monthly grid the
     resolved schedule uses), clipped to the months strictly before the tracking
     start and keyed by calendar month.
@@ -167,7 +168,7 @@ def _back_projection_by_month(
       because ``tracking_start`` was ``None`` (finding FU-8, closed here).
 
     Args:
-        resolved: The loan's :class:`~app.services.loan_resolution.ResolvedLoan`.
+        resolved: The loan's :class:`~app.services.balance_at._resolution.ResolvedLoan`.
 
     Returns:
         ``{(year, month): contractual balance}`` for the pre-tracking months, or
@@ -297,7 +298,7 @@ def _loan_month_balances(
 
     Args:
         loan: The secured loan :class:`~app.models.account.Account`.
-        resolved: Its :class:`~app.services.loan_resolution.ResolvedLoan` from the
+        resolved: Its :class:`~app.services.balance_at._resolution.ResolvedLoan` from the
             read pass's one memoized resolution.
         figures: Its seam :class:`~app.services.balance_at.LoanFigures`, resolved
             once by the caller and threaded in so the span's end
@@ -376,7 +377,7 @@ def secured_loan_series(
         figures = loan_figures(loan, ctx)
         if figures is None:
             continue                       # not a configured loan: no debt leg
-        resolved = ctx.resolved_loan(loan)
+        resolved = resolved_loan(loan, ctx)
         series.append(SecuredLoanSeries(
             account_id=loan.id,
             month_balances=_loan_month_balances(loan, resolved, figures, ctx),

@@ -23,7 +23,9 @@ from app.services.balance_at._plan import (
     loan_plan,
     memoized_plan,
 )
-from app.services.loan_resolution import contractual_schedule_from_origination
+from app.services.balance_at._resolution import (
+    contractual_schedule_from_origination,
+)
 from app.services.balance_at import BalanceContext
 from app.services.balance_at._context import _memoize_once
 from tests._test_helpers import (

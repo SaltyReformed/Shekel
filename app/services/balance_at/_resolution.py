@@ -1,21 +1,37 @@
-"""Loan resolution: the db-facing wrappers that seed the pure resolver.
+"""Balance-at-T seam -- the db-facing WHOLE-LOAN read that seeds the resolver.
 
-The read switch's seeding layer.  The pure :mod:`app.services.loan_resolver`
-takes plain data and returns a :class:`~app.services.loan_resolver.LoanState`; the
-two db-facing wrappers here are the entry points every SUMMARY surface (net
-worth, year-end, /savings tile, debt-strategy, home equity, the loan route card,
-loan recurrence-sync) resolves a loan account through.  They load the loan's
-genesis-ledger confirmed view AND its standing overpayment, then delegate to the
-pure resolver -- so no summary surface can drift on HOW a loan is resolved, and
-none can silently fall back to the contractual (extra-free) trajectory.
+Plan step **E1d-a** (``docs/audits/balance_architecture/README.md``).  The pure
+:mod:`app.services.loan_resolver` takes plain data and returns a
+:class:`~app.services.loan_resolver.LoanState`; this module is the db-facing entry
+every surface (net worth, /savings tile, debt-strategy, home equity, the loan
+route card, the equity chart) resolves a loan account through.  It loads the
+loan's inputs ONCE, threads in the genesis-ledger confirmed view and the loan's
+standing overpayment, and delegates -- so no surface can drift on HOW a loan is
+resolved, and none can silently fall back to the contractual (extra-free)
+trajectory.
 
-Kept OUT of :mod:`app.services.loan_payment_service` deliberately: that module
-owns the payment/escrow loaders and the read-switch view builder
-(``confirmed_loan_view`` / ``load_loan_context``), and it sits at its size
-ceiling; the resolver-seeding wrappers are a distinct concern (they compose the
-loaders + the pure resolver), so they live here and import what they need.  This
-module imports FROM ``loan_payment_service``; ``loan_payment_service`` does not
-import back, so there is no cycle.
+**Why it lives INSIDE the seam** (plan step E1d-a; developer ruling 2026-07-24).
+It was the public module ``app.services.loan_resolution``, one hop outside the
+balance seam, kept honest by a hand-written W9909 completeness ruling -- the
+Phase-D shape the arc has been deleting everywhere else.  Two reasons closed it:
+
+* Its ONE production caller was the read pass's context memo, i.e. the seam.  A
+  module with a single in-package caller is a private of that package.
+* Plan step E1d makes the confirmed seed a FOLD of the loan's events -- a
+  balance-at-T, produced in the seam.  Phase D's invariant is that every balance
+  producer is private to ``balance_at`` (enforced by W9910), so the composer that
+  consumes that seed belongs on the same side of the boundary as the seed.
+
+Moving it in DELETES its fence entry rather than shrinking it: the
+``app.services.loan_resolution`` W9909 scope is gone, and W9910 now protects the
+whole chain structurally, name-independently.
+
+**The read pass's memo lives here, not on the context** (plan step D-ctx-b's
+rule, applied): the seam owns the derivation, the context owns the storage.
+:func:`resolved_loan` fills the pass's public
+:attr:`~app.services.balance_at.BalanceContext.loans` cache through the shared
+store-once primitive, exactly as
+:func:`~app.services.balance_at._plan.memoized_plan` fills ``plans``.
 
 It also hosts one PURE (no-I/O) producer, :func:`contractual_schedule_from_origination`:
 the property equity chart's from-origination contractual schedule, which seeds the
@@ -23,12 +39,16 @@ same resolver composer with a synthesized origination anchor instead of a confir
 view.  It lives here beside :func:`resolve_loan_bundle` because it too composes the
 loaders' anchor synthesis with the pure resolver; the caller supplies its one loaded
 input (the rate-change feed), so the function itself stays I/O-free.
+
+Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes; all money is
+:class:`~decimal.Decimal`.
 """
 
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
+from app.models.account import Account
 from app.models.loan_params import LoanParams
 from app.services import loan_resolver
 from app.services.amortization_engine import AmortizationRow, RateChangeRecord
@@ -45,6 +65,8 @@ from app.services.loan_payment_service import (
 from app.services.recurring_transfer_query import (
     loan_standing_extra_for_account,
 )
+
+from ._context import BalanceContext, _memoize_once
 
 
 @dataclass(frozen=True)
@@ -98,6 +120,58 @@ class ResolvedLoan:
     context: LoanContext
     state: loan_resolver.LoanState
     extra_principal: Decimal
+
+
+def resolved_loan(
+    account: Account, ctx: BalanceContext,
+) -> ResolvedLoan | None:
+    """Return *account*'s resolution for this read pass, resolving it at most once.
+
+    The seam's ONE funnel for a whole-loan read: it fills the read pass's per-loan
+    resolution cache (:attr:`~app.services.balance_at.BalanceContext.loans`) from
+    :func:`resolve_loan_bundle` through the shared store-once primitive
+    (``_context._memoize_once``), so a loan is loaded and resolved at most once per
+    pass however many surfaces ask.  Every seam consumer that wants a loan's
+    schedule, payment, rate, payment feed, or standing extra goes through here, so
+    the loan tile's figures, the net-worth hero, the liability band, and the debt
+    card read ONE resolution -- identical BY CONSTRUCTION rather than by the luck
+    of four producers agreeing.
+
+    Before that memo existed, a single ``compute_dashboard_data`` call ran the
+    resolver ELEVEN times for two loans (measured 2026-07-13), and the redundancy
+    was not merely waste: one of the eleven resolved through a producer that could
+    not read the genesis ledger, and the ten that agreed made the eleventh
+    invisible.
+
+    A ``None`` result (the account has no :class:`~app.models.loan_params.LoanParams`
+    -- it is not a configured loan) is memoized TOO, so a non-loan account asked
+    repeatedly does not re-issue its params query each time.  That is why the
+    store-once primitive tests MEMBERSHIP rather than truthiness.
+
+    **It is a seam function, not a context method** (plan step E1d-a, applying
+    D-ctx-b's rule).  It was ``BalanceContext.resolved_loan``, which put a public
+    method on an object every route legitimately holds -- the one surface W9910
+    cannot see, since the gate reads imports and never attribute access (finding
+    H1 of plan step D3's adversarial review, which is why ``_context`` carries the
+    seam's last W9909 completeness ruling).  Moving the derivation here shrinks
+    that surface: the context now stores, and the seam derives.
+
+    Args:
+        account: The account to resolve.  Must belong to ``ctx.user_id`` (the
+            caller owns the ownership check -- the loaders trust it).
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`,
+            whose ``scenario`` scopes the payment history and whose ``as_of`` is
+            the date the loan is RESOLVED at.
+
+    Returns:
+        The pass's memoized :class:`ResolvedLoan`, or ``None`` when *account* is
+        not a configured loan.
+    """
+    return _memoize_once(
+        ctx.loans,
+        account.id,
+        lambda: resolve_loan_bundle(account.id, ctx.scenario_id, ctx.as_of),
+    )
 
 
 def resolve_loan_seeded(

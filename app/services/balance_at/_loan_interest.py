@@ -75,6 +75,7 @@ from ._context import BalanceContext
 from . import _kernel
 from ._inputs import _require_scenario
 from ._plan import memoized_plan, plan_interest_in_year
+from ._resolution import resolved_loan
 
 _ZERO_MONEY = Decimal("0.00")
 
@@ -264,7 +265,7 @@ def loan_interest_in_year(
         return _ZERO_MONEY
 
     walk = ctx.loan_walk(account)
-    payment_day = ctx.resolved_loan(account).params.payment_day
+    payment_day = resolved_loan(account, ctx).params.payment_day
     settled_interest = _settled_sum_in_year(
         walk, year, lambda split: split.interest,
     )

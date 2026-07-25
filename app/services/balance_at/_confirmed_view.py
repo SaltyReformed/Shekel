@@ -32,9 +32,9 @@ walk cannot see (finding N-11, forbidden at source by BG) -- are demonstrated th
 not hidden.
 
 **ADDITIVE and unwired (plan step E1c).**  Only the oracle reads
-:func:`confirmed_view`; step E1d threads it through
-:meth:`~app.services.balance_at.BalanceContext.resolved_loan` into
-:func:`~app.services.loan_resolution.resolve_loan_bundle` and points the three
+:func:`confirmed_view`; step E1d-b threads it through the seam's
+:func:`~app.services.balance_at._resolution.resolved_loan` into
+:func:`~app.services.balance_at._resolution.resolve_loan_bundle` and points the
 loan-route call sites at it, then the posting readers delete.
 
 Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes; all money is

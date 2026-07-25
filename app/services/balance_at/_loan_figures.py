@@ -38,7 +38,6 @@ from datetime import date
 from decimal import Decimal
 
 from app.models.account import Account
-from app.services.loan_resolution import ResolvedLoan
 from ._context import BalanceContext
 from ._fold import fold_from_walk
 
@@ -46,6 +45,7 @@ from ._fold import fold_from_walk
 # :func:`loan_figures`).  ``_positions`` does not import this module, so the
 # seam's internal graph stays a DAG.
 from ._positions import memoized_payoff
+from ._resolution import ResolvedLoan, resolved_loan
 
 ZERO_MONEY = Decimal("0.00")
 
@@ -99,7 +99,7 @@ class LoanTerms:
             /debt-strategy to caption its projection as rate-assumption-bound (the
             strategy holds the CURRENT rate fixed and does not re-apply future ARM
             adjustments).  It is here so that consumer no longer needs the whole
-            ``ResolvedLoan`` -- it reached for ``ctx.resolved_loan(account).params``
+            ``ResolvedLoan`` -- it reached for ``resolved_loan(account, ctx).params``
             to read this ONE boolean, and a route holding a ``ResolvedLoan`` is a
             route one attribute read away from an unfenced loan balance.
     """
@@ -195,7 +195,7 @@ def loan_terms(
 
     The scenario-INDEPENDENT read (plan step C8e): payment, rate, originated, ARM,
     all off the read pass's ONE memoized resolution
-    (:meth:`~app.services.balance_at.BalanceContext.resolved_loan`).  It
+    (:func:`~app.services.balance_at._resolution.resolved_loan`).  It
     needs no baseline scenario and derives no balance, so the loan's non-balance
     WRITE surfaces -- the escrow editor, the rate-history swap, the recurring
     payment's amount -- take this rather than the scenario-scoped
@@ -218,7 +218,7 @@ def loan_terms(
         The :class:`LoanTerms`, or ``None`` when *account* is not a configured
         loan.
     """
-    resolved = ctx.resolved_loan(account)
+    resolved = resolved_loan(account, ctx)
     if resolved is None:
         return None
     return _terms_from(resolved, ctx.as_of)
@@ -233,7 +233,7 @@ def _terms_from(resolved: ResolvedLoan, as_of: date) -> LoanTerms:
 
     Args:
         resolved: The loan's
-            :class:`~app.services.loan_resolution.ResolvedLoan`.
+            :class:`~app.services.balance_at._resolution.ResolvedLoan`.
         as_of: The read pass's as-of.
 
     Returns:
@@ -253,7 +253,7 @@ def loan_figures(
     """Return *account*'s scenario-scoped loan figures, or ``None`` if not a loan.
 
     Reads the read pass's ONE memoized resolution
-    (:meth:`~app.services.balance_at.BalanceContext.resolved_loan`), so
+    (:func:`~app.services.balance_at._resolution.resolved_loan`), so
     these figures and the balance the same consumer reads from
     :func:`~app.services.balance_at.balance_at` come from the SAME resolution --
     identical by construction, not by two producers agreeing.  The payoff is the
@@ -286,7 +286,7 @@ def loan_figures(
         ValueError: When *account* IS a configured loan and ``ctx`` has no
             baseline scenario (the payoff derivation's ``require_scenario``).
     """
-    resolved = ctx.resolved_loan(account)
+    resolved = resolved_loan(account, ctx)
     if resolved is None:
         return None
     return LoanFigures(
@@ -307,7 +307,7 @@ def _is_originated(resolved: ResolvedLoan, as_of: date) -> bool:
 
     Args:
         resolved: The loan's
-            :class:`~app.services.loan_resolution.ResolvedLoan`.
+            :class:`~app.services.balance_at._resolution.ResolvedLoan`.
         as_of: The read pass's as-of.
 
     Returns:
@@ -344,7 +344,7 @@ def _is_retired(
 
     Args:
         resolved: The loan's
-            :class:`~app.services.loan_resolution.ResolvedLoan`.
+            :class:`~app.services.balance_at._resolution.ResolvedLoan`.
         account: The loan account, for the pass's memoized walk.
         ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
             (its ``as_of`` is what the origination and the fold are tested
@@ -390,7 +390,7 @@ def _is_paid_off(
 
     Args:
         resolved: The loan's
-            :class:`~app.services.loan_resolution.ResolvedLoan`.
+            :class:`~app.services.balance_at._resolution.ResolvedLoan`.
         account: The loan account, threaded to :func:`_is_retired`'s fold.
         ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
 

@@ -244,7 +244,7 @@ def resolve_loan(
             ``loan_payment_settings``; ``Decimal("0.00")`` when none), applied
             to every forward month of the committed schedule so the payoff date,
             total interest, and forward balances reflect the real plan (step 8).
-            The summary read path (``loan_resolution.resolve_loan_bundle``) loads
+            The summary read path (``balance_at._resolution.resolved_loan``) loads
             it centrally via
             :func:`recurring_transfer_query.loan_standing_extra_for_account` and
             threads it into ``resolve_loan_seeded``; a direct caller (e.g. the

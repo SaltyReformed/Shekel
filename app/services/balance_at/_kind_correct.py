@@ -34,6 +34,7 @@ from ._context import BalanceContext
 from . import _cash_engine, _investment
 from ._inputs import _account_balance_map, _assemble_inputs, _require_scenario
 from ._positions import positions
+from ._resolution import resolved_loan
 
 
 def balance_map(
@@ -261,8 +262,8 @@ def balance_at(
         # over its own transaction rows.  positions() fails loud for such an
         # account, so the degrade is decided HERE on the resolver's fact, exactly
         # the routing amortizing_balance_at did internally before the cutover
-        # (``ctx.resolved_loan is None`` iff generate_debt_schedules would skip it).
-        if ctx.resolved_loan(account) is None:
+        # (``resolved_loan(...) is None`` iff generate_debt_schedules would skip it).
+        if resolved_loan(account, ctx) is None:
             return _cash_engine.balance_as_of_date(
                 account, ctx.scenario.id, as_of,
             )

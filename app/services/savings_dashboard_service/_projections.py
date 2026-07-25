@@ -7,7 +7,7 @@ non-loan account's balance over time comes from the single
 appreciating-property accounts each dispatch per kind inside it); a loan tile
 reads its rich figures -- current balance, monthly payment, rate, payoff --
 off the read pass's ONE
-:class:`~app.services.loan_resolution.ResolvedLoan`, and shows no projected
+:class:`~app.services.balance_at._resolution.ResolvedLoan`, and shows no projected
 horizons.
 
 This module no longer imports the resolver or the clock.  It used to load a

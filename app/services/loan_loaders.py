@@ -188,7 +188,7 @@ def synthesize_origination_anchor(params: LoanParams) -> LoanAnchorFact:
     stays the loan's ONE definition of the origination anchor, reused there and by
     the callers that need JUST it -- the contractual back-projection that fills a
     tracking-start loan's pre-tracking months
-    (:func:`app.services.loan_resolution.contractual_schedule_from_origination`)
+    (:func:`app.services.balance_at._resolution.contractual_schedule_from_origination`)
     seeds from origination alone, without the loan's true-up assertions.
 
     The synthesized origination carries :data:`_ORIGINATION_CREATED_AT` (the
@@ -310,7 +310,7 @@ def load_loan_params(account_id: int) -> LoanParams | None:
 
     The one-line "is this a configured loan, and if so what are its terms"
     lookup shared by every loan consumer
-    (:func:`app.services.loan_resolution.resolve_loan_bundle`, the loan
+    (:func:`app.services.balance_at._resolution.resolved_loan`, the loan
     PITI resolver, and the fold's
     :func:`app.services.loan_ledger.compute_loan_payment_splits`), so
     none of them re-spells the same query and a future change to how a loan's

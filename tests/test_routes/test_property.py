@@ -28,7 +28,7 @@ from app.services import (
 )
 from app.services.balance_at._plan import memoized_plan
 from app.services.loan_loaders import load_loan_params, load_rate_changes
-from app.services.loan_resolution import (
+from app.services.balance_at._resolution import (
     contractual_schedule_from_origination,
     resolve_loan_bundle,
 )
@@ -883,7 +883,7 @@ class TestPropertyEquityChartProducer:
         months carry the ``estimated`` tier and EXACTLY the
         ``contractual_schedule_from_origination`` balances (re-derived here to
         pin the chart's month-mapping and tiering -- the amortization math itself
-        is pinned by ``test_loan_resolution.py``, not this test); the resolved
+        is pinned by ``test_balance_at_resolution.py``, not this test); the resolved
         region that follows -- no settled payments -- is ``projected``; and the
         tracking-start seam (the contractual balance the month before tracking vs
         the recorded opening) is shown honestly, on adjacent axis months, never
@@ -928,7 +928,7 @@ class TestPropertyEquityChartProducer:
             # Re-derive the expected pre-tracking rows from the same contractual
             # producer the seam feeds in, clipped to the months before tracking
             # begins.  This pins the chart's month-mapping and tiering of those
-            # rows (not the amortization math -- that is test_loan_resolution.py).
+            # rows (not the amortization math -- that is test_balance_at_resolution.py).
             oracle_pre = [
                 row for row in contractual_schedule_from_origination(
                     params, load_rate_changes(loan.id),
@@ -1192,18 +1192,18 @@ class TestPropertyDetailChartContext:
         # Pylint: import-outside-toplevel -- the file-wide deferred-import
         # convention for test-local symbols.
         from app.services.balance_at import (  # pylint: disable=import-outside-toplevel
-            _context as resolution_context,
+            _resolution as resolution_module,
         )
 
         calls = []
-        real_resolve = resolution_context.resolve_loan_bundle
+        real_resolve = resolution_module.resolve_loan_bundle
 
         def _spy(account_id, scenario_id, as_of):
             calls.append(account_id)
             return real_resolve(account_id, scenario_id, as_of)
 
         monkeypatch.setattr(
-            resolution_context, "resolve_loan_bundle", _spy,
+            resolution_module, "resolve_loan_bundle", _spy,
         )
         response = auth_client.get(f"/accounts/{prop_id}/property")
         assert response.status_code == 200

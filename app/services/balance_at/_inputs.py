@@ -104,7 +104,7 @@ def _assemble_inputs(
     drifting -- but it used to mean N seam calls in one request did N LOAN
     RESOLUTIONS.  The context now owns the resolutions, so re-assembling is
     cheap: the second and later assemblies in a pass re-slice the same memoized
-    :class:`~app.services.loan_resolution.ResolvedLoan` instead of replaying the
+    :class:`~app.services.balance_at._resolution.ResolvedLoan` instead of replaying the
     amortization.  Statelessness is preserved; only the waste is gone.
 
     Args:
