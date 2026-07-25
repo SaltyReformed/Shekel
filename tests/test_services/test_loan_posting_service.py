@@ -69,6 +69,7 @@ from tests._test_helpers import (
     insert_trueup_event,
     ledger_accounts_for_account,
     ledger_net,
+    linked_net_by_date,
     loan_correction_entries,
     loan_income_shadow,
     settle_instant_on,
@@ -2924,24 +2925,12 @@ class TestPrePeriodAnchor:
 def _linked_net_by_date(ledger_id, scenario_id):
     """Return ``{entry_date: net}`` over one ledger's postings in a scenario.
 
-    A test-local mirror of the grouped read the checked-projection assert
-    performs, kept independent of the production helper so the test still has
-    teeth if the helper's query drifts.
+    Delegates to the shared :func:`tests._test_helpers.linked_net_by_date` -- an
+    INDEPENDENT re-implementation of the grouped read the checked-projection assert
+    performs (production groups via ``_visible_nets``), kept independent of the
+    production query so this suite still has teeth if that query drifts.
     """
-    rows = (
-        _db.session.query(
-            JournalEntry.entry_date,
-            _db.func.sum(Posting.amount),
-        )
-        .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
-        .filter(
-            Posting.ledger_account_id == ledger_id,
-            JournalEntry.scenario_id == scenario_id,
-        )
-        .group_by(JournalEntry.entry_date)
-        .all()
-    )
-    return dict(rows)
+    return linked_net_by_date(_db.session, ledger_id, scenario_id)
 
 
 def _source_entry_count(transfer_id, shadow_id):

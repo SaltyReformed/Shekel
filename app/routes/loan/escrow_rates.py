@@ -355,6 +355,34 @@ def _render_escrow_list(account, params):
     )
 
 
+def _commit_escrow_change(account):
+    """Re-derive the loan's postings, then commit the escrow mutation (E1b).
+
+    The shared write-commit tail EVERY escrow route ends on: funnel the loan
+    through the posting sync chokepoint
+    (:func:`app.services.loan_posting_service.sync_loan_postings_all_scenarios`)
+    so the linked ledger re-derives as a CHECKED projection of the loan's facts --
+    and the E1a per-visible-date assert runs -- and THEN commit, so the escrow
+    mutation and any posting corrections land in one transaction.
+
+    Under the forward-only guard (:func:`_reject_effective_date`, spec Sec. 4.2)
+    an escrow change can never move an already-settled payment's split, so this
+    sync is an idempotent no-op that at most heals a stale posting rather than
+    writing a correction.  It runs on EVERY escrow write regardless -- the
+    display-only rename and the escrow-per-date-preserving merge included -- so
+    escrow is not the one loan-write door that leaves the postings unre-derived
+    (finding N-3): "every loan write leaves ``sum(postings) == fold(events)``" has
+    no exception to remember.
+
+    Args:
+        account: The loan :class:`~app.models.account.Account` whose postings to
+            re-derive before committing (the escrow mutation is already staged in
+            the session; the sync's queries autoflush it into the walk).
+    """
+    loan_posting_service.sync_loan_postings_all_scenarios(account.id)
+    db.session.commit()
+
+
 @loan_bp.route("/accounts/<int:account_id>/loan/escrow", methods=["POST"])
 @login_required
 @require_owner
@@ -399,7 +427,7 @@ def add_escrow(account_id):
         annual_amount=data["annual_amount"],
         inflation_rate=data.get("inflation_rate"),
     ))
-    db.session.commit()
+    _commit_escrow_change(account)
 
     logger.info("Added escrow line '%s' to loan %d", data["name"], account.id)
     return _render_escrow_list(account, params)
@@ -435,7 +463,7 @@ def delete_escrow(account_id, line_id):
         return guard_error, 400
 
     _tombstone_line_today(line)
-    db.session.commit()
+    _commit_escrow_change(account)
     logger.info("Removed escrow line %d from loan %d", line_id, account.id)
     return _render_escrow_list(account, params)
 
@@ -504,7 +532,7 @@ def add_escrow_version(account_id, line_id):
     )
     if collision is not None:
         return collision, 400
-    db.session.commit()
+    _commit_escrow_change(account)
     logger.info(
         "Scheduled escrow change on line %d (loan %d) effective %s",
         line_id, account.id, effective_date.isoformat(),
@@ -590,7 +618,7 @@ def edit_escrow_version(account_id, version_id):
     version.effective_date = new_date
     version.annual_amount = data["annual_amount"]
     version.inflation_rate = data.get("inflation_rate")
-    db.session.commit()
+    _commit_escrow_change(account)
     logger.info(
         "Edited escrow version %d (loan %d) -> %s effective %s",
         version_id, account.id, data["annual_amount"], new_date.isoformat(),
@@ -651,7 +679,7 @@ def delete_escrow_version(account_id, version_id):
     )
     if remaining == 0:
         db.session.delete(line)
-    db.session.commit()
+    _commit_escrow_change(account)
     logger.info("Deleted scheduled escrow version %d from loan %d", version_id, account.id)
     return _render_escrow_list(account, params)
 
@@ -688,7 +716,7 @@ def rename_escrow_line(account_id, line_id):
         return "An escrow component with that name already exists.", 400
 
     line.name = data["name"]
-    db.session.commit()
+    _commit_escrow_change(account)
     logger.info(
         "Renamed escrow line %d (loan %d) to '%s'", line_id, account.id, data["name"],
     )
@@ -739,9 +767,11 @@ def merge_escrow_line(account_id, line_id):
     user's line).  The merge is allowed only when it preserves the escrow resolved
     on every date (:func:`~app.services.escrow_calculator.plan_escrow_line_merge`),
     so it can neither move a settled split nor drop a concurrent charge; it is
-    rejected otherwise with an actionable message.  No posting reconcile is needed
-    because escrow-per-date is unchanged and the split stores the escrow amount,
-    not a line id (see the planner).
+    rejected otherwise with an actionable message.  A merge moves no split (escrow
+    per date is byte-identical, and the split stores the escrow amount, never a line
+    id), so the shared posting sync (:func:`_commit_escrow_change`, E1b) re-derives
+    to the same ledger -- an idempotent no-op -- and runs only for the one uniform
+    invariant every escrow write shares, not because a merge could move a posting.
     """
     account, params, _account_type = _load_loan_account(account_id)
     if account is None:
@@ -765,7 +795,7 @@ def merge_escrow_line(account_id, line_id):
         version.line = target
     db.session.flush()
     db.session.delete(source)
-    db.session.commit()
+    _commit_escrow_change(account)
     logger.info(
         "Merged escrow line %d into %d (loan %d)", source.id, target.id, account.id,
     )

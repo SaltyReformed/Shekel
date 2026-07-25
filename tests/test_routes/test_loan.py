@@ -17,6 +17,7 @@ from app import ref_cache
 from app.enums import AcctTypeEnum, StatusEnum
 from app.models.account import Account
 from app.models.escrow_line import EscrowComponentVersion, EscrowLine
+from app.models.journal_entry import JournalEntry
 from app.models.loan_params import LoanParams
 from app.models.loan_features import RateHistory
 from app.extensions import db as _db
@@ -44,6 +45,8 @@ from tests._test_helpers import (
     freeze_today,
     insert_tracking_start_event,
     insert_trueup_event,
+    linked_ledger_account,
+    linked_net_by_date,
     loan_params_for,
     select_option_values,
     settle_instant_on,
@@ -1029,12 +1032,13 @@ class TestEscrow:
     ):
         """A settled payment's posted split survives merging its escrow line.
 
-        The safety proof that merge needs no posting reconcile: a payment settled in
-        period 0 (2026-01-02, before the 2026-03-01 boundary) posts a split whose
-        escrow leg is "Old Tax" $6,000/yr = $500.00/mo.  After merging "Old Tax" into
-        "New Tax" -- which the route does NOT reconcile -- the posted principal /
-        interest / escrow are byte-identical, and a later reconcile re-derives the
-        SAME split from the merged line (escrow-per-date is preserved).
+        The proof that a merge moves no settled split even though it now reconciles
+        like every escrow write (E1b): a payment settled in period 0 (2026-01-02,
+        before the 2026-03-01 boundary) posts a split whose escrow leg is "Old Tax"
+        $6,000/yr = $500.00/mo.  Merging "Old Tax" into "New Tax" preserves
+        escrow-per-date, so the sync the route now runs re-derives the SAME
+        principal / interest / escrow -- byte-identical, the E1a assert passing --
+        and a later reconcile re-derives it again.
         """
         from app.services.loan_posting_service import (  # pylint: disable=import-outside-toplevel
             backfill_all_loan_postings,
@@ -1062,7 +1066,8 @@ class TestEscrow:
         )
         assert resp.status_code == 200
 
-        # The posted split is byte-identical -- the merge ran no reconcile ...
+        # The posted split is byte-identical -- the merge's E1b reconcile
+        # re-derives the SAME split, escrow-per-date being preserved ...
         after = confirmed_loan_payment_history(acct.id, scenario_id, date.today())
         assert after[0].escrow == before[0].escrow
         assert after[0].principal == before[0].principal
@@ -1697,6 +1702,262 @@ class TestEscrow:
         assert escrow_calculator.escrow_monthly_as_of(
             lines, date(2026, 3, 27),
         ) == Decimal("300.00")
+
+
+# ── Escrow Posting-Sync Tests (E1b) ──────────────────────────────────
+
+
+def _make_sync_loan(seed_user, db_session):
+    """Create a $100,000 / 6% mortgage originated 2023-06-01 (clean arithmetic).
+
+    Interest on a payment folded against the origination principal is
+    100000 * 0.06 / 12 = 500.00 exactly, so a $1,000 payment splits 500 interest /
+    500 principal with no rounding -- the shape the E1b sync tests fold against.
+    """
+    return create_loan_account(
+        seed_user, db_session, name="Sync Mortgage",
+        principal=Decimal("100000.00"), rate=Decimal("0.06000"), term=360,
+        origination_date=date(2023, 6, 1), payment_day=1,
+        account_type=AcctTypeEnum.MORTGAGE,
+    )
+
+
+# Each escrow WRITE route, as a (precondition + POST) callable returning the
+# response.  Every escrow effective date is strictly AFTER the settled payment's
+# 2026-01-16 pay-period start (the forward-only boundary), so no case moves the
+# settled split -- the only ledger change the sync makes is to HEAL the forged
+# cash entry, proving the route ran the sync regardless of its escrow op.
+
+
+def _write_add_escrow(client, db_session, loan):
+    """add_escrow: POST a brand-new line, its opening version future-dated."""
+    return client.post(
+        f"/accounts/{loan.id}/loan/escrow",
+        data={"name": "Property Tax", "annual_amount": "4800.00",
+              "effective_date": "2026-04-01"},
+    )
+
+
+def _write_delete_escrow(client, db_session, loan):
+    """delete_escrow: tombstone a post-boundary line as of today."""
+    line = add_escrow_line(
+        db_session, loan.id, "Old Tax", Decimal("6000.00"),
+        effective_date=date(2026, 2, 1),
+    ).line
+    db_session.commit()
+    return client.post(f"/accounts/{loan.id}/loan/escrow/{line.id}/delete")
+
+
+def _write_add_version(client, db_session, loan):
+    """add_escrow_version: schedule a future change on an existing line."""
+    line = add_escrow_line(
+        db_session, loan.id, "Tax", Decimal("6000.00"),
+        effective_date=date(2026, 2, 1),
+    ).line
+    db_session.commit()
+    return client.post(
+        f"/accounts/{loan.id}/loan/escrow/{line.id}/version",
+        data={"annual_amount": "7200.00", "effective_date": "2026-05-01"},
+    )
+
+
+def _write_edit_version(client, db_session, loan):
+    """edit_escrow_version: edit a future (post-boundary) version's amount."""
+    version = add_escrow_line(
+        db_session, loan.id, "Tax", Decimal("6000.00"),
+        effective_date=date(2026, 4, 1),
+    )
+    db_session.commit()
+    return client.post(
+        f"/accounts/{loan.id}/loan/escrow/version/{version.id}/edit",
+        data={"annual_amount": "7200.00"},
+    )
+
+
+def _write_delete_version(client, db_session, loan):
+    """delete_escrow_version: delete a future scheduled version."""
+    version = add_escrow_line(
+        db_session, loan.id, "Tax", Decimal("6000.00"),
+        effective_date=date(2026, 5, 1),
+    )
+    db_session.commit()
+    return client.post(
+        f"/accounts/{loan.id}/loan/escrow/version/{version.id}/delete",
+    )
+
+
+def _write_rename(client, db_session, loan):
+    """rename_escrow_line: rename a line in place (display-only)."""
+    line = add_escrow_line(
+        db_session, loan.id, "Tax", Decimal("6000.00"),
+        effective_date=date(2026, 2, 1),
+    ).line
+    db_session.commit()
+    return client.post(
+        f"/accounts/{loan.id}/loan/escrow/{line.id}/rename",
+        data={"name": "Property Tax"},
+    )
+
+
+def _write_merge(client, db_session, loan):
+    """merge_escrow_line: fold a removed predecessor into the active line."""
+    boundary = date(2026, 3, 1)
+    old = add_escrow_line(
+        db_session, loan.id, "Old Tax", Decimal("6000.00"),
+        effective_date=date(2026, 2, 1),
+    ).line
+    db_session.add(EscrowComponentVersion(
+        line_id=old.id, effective_date=boundary,
+        annual_amount=Decimal("0.00"), is_removed=True,
+    ))
+    add_escrow_line(
+        db_session, loan.id, "New Tax", Decimal("7200.00"),
+        effective_date=boundary,
+    )
+    db_session.commit()
+    new = (
+        db_session.query(EscrowLine)
+        .filter_by(account_id=loan.id, name="New Tax").one()
+    )
+    return client.post(
+        f"/accounts/{loan.id}/loan/escrow/{new.id}/merge",
+        data={"source_line_id": old.id},
+    )
+
+
+_ESCROW_WRITES = [
+    ("add_escrow", _write_add_escrow),
+    ("delete_escrow", _write_delete_escrow),
+    ("add_escrow_version", _write_add_version),
+    ("edit_escrow_version", _write_edit_version),
+    ("delete_escrow_version", _write_delete_version),
+    ("rename_escrow_line", _write_rename),
+    ("merge_escrow_line", _write_merge),
+]
+
+
+class TestEscrowPostingSync:
+    """Every escrow write reconciles the loan's posting ledger (E1b, finding N-3).
+
+    Before E1b the seven escrow write routes committed without funnelling the loan
+    through the posting sync chokepoint -- escrow was the one loan-write door that
+    left the postings unre-derived, protected only by the forward-only guard.  Now
+    each route ends on ``_commit_escrow_change``, which runs
+    ``sync_loan_postings_all_scenarios`` before committing, so the linked ledger
+    re-derives as a checked projection (the E1a assert runs) after every escrow
+    write.  These tests prove the wiring end-to-end -- a stale posting self-heals
+    through EACH of the seven routes (the firing control) -- and that a clean escrow
+    write on the normal path moves no money (the sync is a benign no-op under the
+    guard).
+    """
+
+    @pytest.mark.parametrize(
+        "escrow_write",
+        [write for _label, write in _ESCROW_WRITES],
+        ids=[label for label, _write in _ESCROW_WRITES],
+    )
+    def test_escrow_write_reconciles_a_stale_posting(
+        self, escrow_write, auth_client, seed_user, db, seed_periods,
+    ):
+        """Each escrow write route re-derives a stale-dated loan posting (E1b).
+
+        The firing control (verification standard 7.3).  A $1,000 payment settles
+        2026-01-20 against the folded $100,000 balance: interest
+        100000 * 0.06 / 12 = 500.00, principal 500.00, so the linked ledger nets
+        cash +1000.00 - correction 500.00 = +500.00 on 01-20.  Its cash entry is
+        then forged onto 2026-01-05 (the pre-E1a cross-date residue the dev-clone
+        sweep found), leaving +1000.00 on 01-05 and only the -500.00 correction on
+        01-20.  Performing the escrow write must run the loan sync, whose lineage
+        pass re-dates the cash entry back: 01-05 nets to 0.00 and 01-20 back to
+        +500.00.  Without E1b the escrow route never syncs and the forgery survives,
+        so this fails.  Every escrow effective date is after the 01-16 boundary, so
+        the escrow op moves no settled split -- the heal is purely the sync's,
+        proving each of the seven routes reaches it.
+        """
+        loan = _make_sync_loan(seed_user, db.session)
+        scenario_id = seed_user["scenario"].id
+        xfer = create_settled_transfer(
+            seed_user, db.session, seed_user["account"], loan, seed_periods[1],
+            amount=Decimal("1000.00"), paid_at=settle_instant_on(date(2026, 1, 20)),
+        )
+        db.session.commit()
+        linked_id = linked_ledger_account(db.session, loan.id).id
+        assert linked_net_by_date(db.session, linked_id, scenario_id)[
+            date(2026, 1, 20)
+        ] == Decimal("500.00")
+
+        # Forge the pre-E1a cross-date residue: the settled payment's cash entry
+        # carries a WRONG date.  Raw SQL bypasses the append-only ORM listener,
+        # exactly as the legacy writes that predate it did (the test runs as the
+        # table owner).
+        cash_entry_id = (
+            db.session.query(JournalEntry.id)
+            .filter(
+                JournalEntry.transfer_id == xfer.id,
+                JournalEntry.scenario_id == scenario_id,
+            )
+            .scalar()
+        )
+        db.session.execute(
+            sa.text(
+                "UPDATE budget.journal_entries SET entry_date = :day "
+                "WHERE id = :entry_id"
+            ),
+            {"day": date(2026, 1, 5), "entry_id": cash_entry_id},
+        )
+        db.session.commit()
+        assert linked_net_by_date(db.session, linked_id, scenario_id)[
+            date(2026, 1, 5)
+        ] == Decimal("1000.00")
+
+        resp = escrow_write(auth_client, db.session, loan)
+        assert resp.status_code == 200
+
+        # The escrow write ran the loan sync: the forged entry is re-dated back.
+        by_date = linked_net_by_date(db.session, linked_id, scenario_id)
+        assert by_date.get(date(2026, 1, 5), Decimal("0.00")) == Decimal("0.00")
+        assert by_date[date(2026, 1, 20)] == Decimal("500.00")
+
+    def test_a_clean_escrow_write_moves_no_money(
+        self, auth_client, seed_user, db, seed_periods,
+    ):
+        """A guard-passing escrow write on a clean loan leaves the ledger unmoved (E1b).
+
+        The baseline-unmoved / no-spurious-fire control: the sync E1b runs on every
+        escrow write, but under the forward-only guard an escrow change never moves a
+        settled split, so on a loan whose postings already project its facts the sync
+        is an idempotent no-op.  A $1,000 payment settles 2026-01-20 (interest 500.00,
+        principal 500.00, net +500.00 on 01-20); adding a future-dated escrow line
+        then returns 200 (the E1a assert did not fire on a 500), writes the line, and
+        leaves the linked ledger byte-identical per date.  This proves the write is
+        SAFE, not that the sync ran -- the sibling firing control proves the sync
+        runs; here a skipped sync would look identical, and that is the point (a
+        clean escrow write must move no money either way).
+        """
+        loan = _make_sync_loan(seed_user, db.session)
+        scenario_id = seed_user["scenario"].id
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], loan, seed_periods[1],
+            amount=Decimal("1000.00"), paid_at=settle_instant_on(date(2026, 1, 20)),
+        )
+        db.session.commit()
+        linked_id = linked_ledger_account(db.session, loan.id).id
+        nets_before = linked_net_by_date(db.session, linked_id, scenario_id)
+        assert nets_before[date(2026, 1, 20)] == Decimal("500.00")
+
+        resp = auth_client.post(
+            f"/accounts/{loan.id}/loan/escrow",
+            data={"name": "Property Tax", "annual_amount": "4800.00",
+                  "effective_date": "2026-04-01"},
+        )
+        assert resp.status_code == 200
+        # The mutation itself worked: the escrow line was written.
+        assert (
+            db.session.query(EscrowLine)
+            .filter_by(account_id=loan.id, name="Property Tax").count() == 1
+        )
+        # No money moved: the linked ledger is byte-identical per date.
+        assert linked_net_by_date(db.session, linked_id, scenario_id) == nets_before
 
 
 # ── Rate History Tests ───────────────────────────────────────────────
