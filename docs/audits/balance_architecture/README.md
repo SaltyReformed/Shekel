@@ -10,9 +10,14 @@ written for this arc.
 R-A..R-E, Section 4); **Phase D is COMPLETE** (D2 ruled, D2a + D3 shipped -- the name fences are
 structurally unnecessary and deleted to the E1-mortal residue) and **the E1 arc is CLOSED**
 (E1a-E1e shipped; W9906 no longer exists, and the only balance gates left are W9909's fail-closed
-classification and W9910's name-independent package privacy). **NEXT: F3, the prod ship** --
-its two outstanding gates are the PROD-data lineage sweep (E1a) and the C2 real-clone
-history-window live-render; then the X phase. Phases A and B complete (**A1** `f11382a0`, **A2** `c96c62be`,
+classification and W9910's name-independent package privacy). **F3's two ship gates are CLOSED on
+real production data (2026-07-25, see F3)** -- the E1a lineage sweep found zero rows of every class
+it names, and the C2 history-window live-render reproduces the receipt with today UNMOVED on both
+loans; the whole deploy sequence was REHEARSED on a fresh prod clone (migrations + both backfills
+behind E1a's assert) and passes, idempotently, moving no user-visible figure. **C2b** (the N-34
+re-key: the split's rate and escrow key on the DUE date) SHIPPED `c2d43332` ahead of the ship on
+the developer's ruling 2026-07-25, so prod's genesis ledger is rewritten ONCE. **NEXT: F3, the prod
+ship**; then the X phase. Phases A and B complete (**A1** `f11382a0`, **A2** `c96c62be`,
 **A3** `4e46a0a8`, N-9 `44cbd028`, **B0** `d1586254`, **B1** `e227de08`, **BG**
 `dba91dc0`, **B2** `8f070386`). **Phase C: C1** (`18fd3a04`, a loan's origination is its
 ledger opening), **C2** (`eb5de4ac`, the ONE CLOCK: an event counts from the day it
@@ -245,8 +250,8 @@ reconciliation suite's function-granularity fence collapses to a file fence; the
 and all nine shapes plus the 13 moved row pins are re-anchored HAND-COMPUTED).  Dev clone
 BYTE-IDENTICAL across both.  E1d-b also found **N-34** -- the split's rate/escrow still key on the
 pay-period start, not the due date, contradicting D5 and C2's shipped claim -- recorded, gated with
-a control that flips on the fix, and NOT fixed here (it moves recorded balances).**  With E1e
-shipped, **Phase E's E1 arc is CLOSED**; E2 stays a recorded option.
+a control that flips on the fix, and NOT fixed there (it moves recorded balances); **it is fixed at
+C2b.**  With E1e shipped, **Phase E's E1 arc is CLOSED**; E2 stays a recorded option.
 
 ---
 
@@ -546,8 +551,9 @@ what is written here is decided in the commit itself, not in a new document.
 - [x] **C2** `fix(loan): one clock -- an event happens on the date it happened` -- **SHIPPED
   `eb5de4ac`.** R-A (settled-date visibility; NULL-`paid_at` falls back to
   period-start).  **"due-date split keying" is CORRECTED OUT of this line (2026-07-25, measured at
-  E1d-b): only ORDERING moved to the due date.  The split's RATE and ESCROW still key on the
-  pay-period START -- see N-34, which carries the measurement and the gate.** **The one clock IS the posting's `entry_date`:** readers bound by
+  E1d-b): only ORDERING moved to the due date.  The split's RATE and ESCROW still keyed on the
+  pay-period START -- see N-34, which carries the measurement; **C2b below is where the claim
+  becomes true.** **The one clock IS the posting's `entry_date`:** readers bound by
   `entry_date <= as_of`, the fold reproduces it via one shared `to_utc_civil_date` the writer
   also calls -- fold == reader by construction. Deletes `_asof.py`; moves
   `confirmed_loan_balance_map` to period-END keying; the fold is now calendar-INDEPENDENT
@@ -556,6 +562,42 @@ what is written here is decided in the commit itself, not in a new document.
   `confirmed_loan_view`'s stays for B-1). History repositions in bounded windows, today unchanged;
   signed off via B2 + full suite (7,446 green, pylint 10.00) + adversarial review. Recorded, out
   of scope: **N-13**.
+- [x] **C2b** `fix(loan): the split's rate and escrow key on the installment, not the pay period`
+  -- **SHIPPED `c2d43332` (2026-07-25).**  Finding N-34's fix, sequenced AHEAD of the F3 prod ship
+  (developer ruling 2026-07-25).  Ships out of numeric order, and the number is the point: C2
+  recorded "due-date split keying" as shipped when only ORDERING had moved.  (Not to be confused
+  with the ARCHIVED fail-loud arc's own "C2b" in the Section 2 table -- different arc, different
+  numbering; this is the only C2b in the balance arc's step list.)  **Why now, measured:** on PROD data the only rate/escrow
+  versions are dated 2018-12-01 / 2023-02-14 / 2023-12-01 and NONE falls inside any payment's
+  period-start-to-due-date window, so the re-key is a provable no-op on real data today -- while
+  after the next mid-window escrow or rate edit (a shape the dev clone already carries) the same
+  fix would move recorded balances, the posted ledger, and the Schedule-A figure.  Shipping it
+  before F3 also means the deploy rewrites prod's genesis ledger ONCE, not twice.  Full suite 7504,
+  pylint 10.00 on all three trees, 146 checker tests.
+  **The scope is SIX sites, not the two the finding named, and re-tracing that is the step.**  The
+  finding cited `_split.split_one_payment` (rate) and `_walk._replay_events` (escrow); the trace
+  adds the PLANNED forward tier (`balance_at._plan._planned_from_shadows`, rate AND escrow), the
+  live-cash derivation (`loan_payment_service._shadow_live_amount`, feeding BOTH the projected
+  display override and the settle-time freeze), the resolver's escrow subtraction
+  (`prepare_payments_for_engine`), and the escrow forward-only GUARD.  The live-cash site is not
+  optional: the derive-mode cash a payment CARRIES is built from escrow and the split BACKS THAT
+  OUT, so re-keying one end alone would silently move the difference into PRINCIPAL -- the
+  cash==split invariant (escrow spec Sec. 1) forces them to move together.
+  **The guard is the step's other half, and it is a real hole the re-key would otherwise open:**
+  the boundary was the latest settled payment's PAY-PERIOD START, so once the split reads the due
+  date an escrow version effective between the two would silently re-split a settled payment.
+  `latest_settled_payment_period_start` is DELETED for `latest_settled_payment_due_date`, built on
+  the SAME `_settled_payment_due_dates` derivation the tracking-start guard reads -- so the guard,
+  the walk, and the tax figure now share one statement of a payment's date instead of two.
+  **NOT moved, deliberately: `rate_period_engine._replay_from_anchor`'s rate lookup (N-36)** -- it
+  consumes REDISTRIBUTED records whose `due_date` may be an invented collision-shifted date, so
+  coupling its balance to that date trades one defect for another; its rows and balance are
+  discarded whenever a `confirmed_view` is supplied, which is every production read since E1d-b.
+  Verification: six sites, six firing controls, each shown to fire by reverting its site (two of
+  them added after the adversarial review measured that `_plan` and `prepare_payments_for_engine`
+  could be reverted with the whole suite green).  On a fresh PROD clone the full deploy sequence
+  passes and every figure is BYTE-IDENTICAL to the pre-fix rehearsal -- balances, every-day
+  history, rows, payoff, tax figures, and the posted per-date nets.
 - **C3 (DECOMPOSED, 2026-07-18)** `the seam's AMORTIZING dispatch is the fold` -- too large as
   one revertable commit and reached into dead year-end code, so it ships C3a -> F2 -> C3c -> C3b,
   each a REFACTOR (baseline unmoved; B-9 preserved until C6). F2 (Phase F) is pulled AHEAD of C3b
@@ -1811,6 +1853,39 @@ zero standing exceptions rather than training the exemption habit it exists to p
   `calculate_balances` git-grep guard went with it (the W9906 fence supersedes it). ~12 stale
   docstring PROVENANCE mentions remain (deferred doc-sweep; not broken code). Net -6.7k lines.
 - [ ] **F3** prod ship: dev -> main PR for the whole arc per the standard pipeline.
+  **Both ship gates are CLOSED on real production data (2026-07-25), and the deploy was
+  REHEARSED rather than reasoned about.**  Method: a read-only `pg_dump` of prod restored into a
+  scratch database on the dev Postgres instance, then the exact deploy sequence
+  (`flask db upgrade` -> `backfill_loan_payment_postings_after_migration` ->
+  `backfill_all_account_anchor_postings_after_migration`, the two hooks `entrypoint.sh` runs on
+  every container start), with E1a's checked-projection assert live.  Results:
+  * **The E1a lineage / N-11 sweep (gate 1): ZERO rows of every class it names.**  No raw
+    transaction typed onto a loan, no transfer OUT of one, no linked-ledger entry with a NULL
+    `transfer_id` (the hard-deleted residue the heal cannot re-sync), and zero C9a purge candidates
+    (the purge migration prints `purged: 0` and warns about nothing).  Every settled payment has
+    exactly ONE transfer-source cash entry, dated at its `paid_at` civil date (or its period start
+    where `paid_at` is NULL) -- none of the cross-date residue the dev clone carried.
+  * **The deploy PASSES, and it is idempotent.**  The assert did not fire; a second run wrote
+    nothing (221 entries, same max id).  It DOES rewrite the Mortgage's genesis ledger, exactly as
+    C1 designs: `2018-12-01` goes from a posted-and-reversed net `0.00` to the real
+    `-202,000.00` opening, and the `2026-03-31` tracking-start stops being the opening and becomes
+    a `+23,624.57` reset correction (same total, honest composition).  **No user-visible figure
+    moves** -- balances, every-day history, rows, payoff dates, tax figures and paid-YTD chips are
+    identical before and after.  The Van Loan's ledger does not change at all.
+  * **The C2 history-window live-render (gate 2) reproduces the receipt.**  Rebuilding each loan's
+    daily history under the pre-C2 visibility rule and diffing against the shipped one clock, on
+    every day of both domains: **today is UNMOVED** (Mortgage `$177,277.97`, Van Loan `$15,205.63`,
+    fold == pre-C2 == seam), and history repositions in bounded windows -- Mortgage 32 days in 3
+    windows (max 14d), Van Loan 22 days in 3 windows (max 9d).  Every window is one event's date
+    shift, and the archived receipt's one worry is GONE: its first Mortgage window was a
+    `$178,375.43` FALSE ZERO, and with C1 shipped that window now reads the origination principal
+    held flat (delta `$23,896.59` = `202,000.00 - 178,103.41`), the plateau C1 promised.  This is
+    what made C1-before-C2 a correctness gate rather than a preference, confirmed on real data.
+  * Also verified: the dev clone has DRIFTED from prod (it carries an escrow line merge/rename
+    effective 2026-07-06, a `paid_at` edit re-periodizing one Mortgage payment, and is missing the
+    Van Loan's July payment).  Its live-verifies remain valid as before/after REGRESSION checks --
+    which is how the arc used them -- but they are not prod-shape checks, which is why these two
+    gates had to run on a fresh clone.  The escrow change ruling R-A cites exists only there.
 
 ## 6. The findings ledger
 
@@ -1881,8 +1956,9 @@ archive names so old references resolve here.
 | N-31 (D1c) | **Relocating a module INTO the seam silently un-scopes it for W9909 -- N-28's rule, reached from the opposite direction.** `balance_at` is deliberately NOT on the W9909 registry ("its public functions ARE the seam entries every consumer is supposed to call"), so the moment an engine module becomes `balance_at/_kernel.py` and its ruling deletes, a new public producer born there is unclassified AND unfenced (its name is not in `_BALANCE_PRODUCERS`). Measured on this tree, both halves: a public `probe_balance_map_at` added to `balance_at/_positions.py` rated **10.00/10**, and an `app/routes/probe_consumer.py` importing it privately and rendering it rated **10.00/10** under the full CI `--fail-on` set (exit 0). Stock `import-private-name` does not cover the import form either (N-26). So the engine-cluster rulings must TRAVEL with their modules at D1d and delete at D3, once D-gate has made the boundary structural -- the same "only the TIGHTENING is safe" split D1b reached from the other side (the W9906 allowlist collapse is the tightening; the W9909 deletion is the loosening) | a balance producer inside the seam, and a route rendering it, with every gate green | **closed (`6e3a6c79`)** -- travel done at D1d (`229a7889` / `34bf0446`); D3 deleted the five engine rulings now that D-gate makes the boundary structural.  ONE traveled ruling deliberately SURVIVES: `_context`'s, because `BalanceContext` is publicly re-exported and a public METHOD on it is reachable with W9910 blind (measured at D3's review, probe re-fenced) -- the finding's rule, applied once more at the boundary structure cannot reach | D1d (travel); D3 (deletion; `_context` kept) |
 | N-32 (D1d) | **A lazy in-function import survived for months on a FALSE cycle rationale.** `net_worth_kernel.build_account_balance_map` imported `net_worth_investment`'s two growth builders lazily inside its INVESTMENT / APPRECIATING branches, each `# pylint: disable=import-outside-toplevel` claiming it "breaks the `net_worth_kernel -> net_worth_investment` cycle." There was no cycle: `net_worth_investment` imports nothing back (its OWN module docstring said "imports NOTHING back... carries no cycle"), so the two docstrings contradicted each other and the disable guarded nothing. Pre-D1d it was inert (both modules outside the seam); the move made it a `disable-rationale` honesty problem -- a lazy import with no honest reason to be lazy. The stock `import-private-name` checker that might have flagged the cross-package reach does not exist in this pylint version (N-26 territory), so nothing caught it. Fixed at D1d commit 2: once siblings in the package, promoted to a top-level `from . import _investment` and the dead disables deleted; behavior-preserving (same functions, byte-identical args), cycle verified absent (pylint `cyclic-import` clean, all import orders clean, dev-clone investment / property balances unmoved) | a dead disable + two contradictory docstrings, gate-green | **closed (`34bf0446`)** | D1d |
 | N-33 (D-gate) | **13 cross-package private-NAME imports -- the measured residual OUTSIDE D-gate's ruled scope.** The zero-exception scan for D-gate (AST over `app/` + `scripts/` + `shekel_checkers/`, confirmed by the shipped checker) found ZERO private-module crossings but 13 private NAMES imported across a package boundary from PUBLIC modules -- all one shape: `app/routes/accounts/{anchor,crud,detail,types}.py` and `app/routes/loan/params.py` import `_anchor_schema` / `_create_schema` / `_validate_update_account` / `_account_type_is_visible` / `_visible_account_types` / `_appreciation_params_schema` / `_interest_params_schema` / `_crosses_posting_boundary` / `_owned_account_type` / `_type_create_schema` / `_type_update_schema` / `_validate_account_type_boundary_edit` / `_validate_collateral_link` from `app.utils.account_validation`. The names lie about their visibility: routes ARE their consumers, so they are cross-package API. The honest fix is a RENAME to public (not a checker extension carrying an allowlist); once renamed, extending W9910 to private NAMES (owner = the defining module's package) would be a zero-exception tightening -- every other private-name import in the tree is intra-package (the `_helpers` convention). Not a live defect: a guard-scope observation | -- | recorded, deferred | D3-adjacent (rename, then optionally tighten W9910) |
-| N-34 (E1d-b) | **The split's RATE and ESCROW still key on the payment's PAY-PERIOD START, not its DUE date -- ruling D5/R-A says the due date, and C2's line claimed it shipped.** ORDERING did move to the due date (`loan_ledger.merge_anchor_and_payment_events`) and VISIBILITY to the settled date, but `_split.split_one_payment:233` resolves the rate period on `shadow.pay_period.start_date` and `_walk._replay_events:160` resolves escrow the same way.  A pay period starts up to ~2 weeks BEFORE the installment it pays, so a rate or escrow version effective inside that window governs the wrong side of the boundary.  **Measured** (E1d-b probe, SPLIT_LOAN): a 12% rate effective 2026-01-25 -- strictly between period 1's 2026-01-16 start and its 2026-02-01 due date -- does NOT govern that payment; it splits at 6% (interest $500.00, principal $500.00, balance $99,500.00) where due-date keying gives 12% (interest $1,000.00, principal $0.00, balance held at $100,000.00).  The split is the single source for FIVE surfaces, so the error propagates to all of them: the owed balance, the posted ledger's `loan_interest` leg and derived principal (`_payments.py:213-226`) and hence the payment-history table, the Schedule-A tax interest (`balance_at._loan_interest:270`), and the paid-YTD chips.  **E1a's checked-projection assert CANNOT catch it** -- both sides derive from the same walk, so it stays self-consistent while wrong. D5 measured it as moving nothing on the real loans (their period-start-to-due-date windows contain no version change) and said "gate it anyway"; **that gate now exists** (`test_confirmed_view.py::TestSplitRateKeysOnThePayPeriodStart`), pinned as-is rather than fixed because correcting it MOVES recorded balances, the posted ledger, and the tax figure -- its own migration-bearing step | $500.00 interest on ONE payment (measured); unbounded in the rate delta | **recorded, gated, NOT fixed** -- the control flips when the split is re-keyed | own step (D5's "gate it anyway", now overdue) |
+| N-34 (E1d-b) | **The split's RATE and ESCROW still key on the payment's PAY-PERIOD START, not its DUE date -- ruling D5/R-A says the due date, and C2's line claimed it shipped.** ORDERING did move to the due date (`loan_ledger.merge_anchor_and_payment_events`) and VISIBILITY to the settled date, but `_split.split_one_payment:233` resolves the rate period on `shadow.pay_period.start_date` and `_walk._replay_events:160` resolves escrow the same way.  A pay period starts up to ~2 weeks BEFORE the installment it pays, so a rate or escrow version effective inside that window governs the wrong side of the boundary.  **Measured** (E1d-b probe, SPLIT_LOAN): a 12% rate effective 2026-01-25 -- strictly between period 1's 2026-01-16 start and its 2026-02-01 due date -- does NOT govern that payment; it splits at 6% (interest $500.00, principal $500.00, balance $99,500.00) where due-date keying gives 12% (interest $1,000.00, principal $0.00, balance held at $100,000.00).  The split is the single source for FIVE surfaces, so the error propagates to all of them: the owed balance, the posted ledger's `loan_interest` leg and derived principal (`_payments.py:213-226`) and hence the payment-history table, the Schedule-A tax interest (`balance_at._loan_interest:270`), and the paid-YTD chips.  **E1a's checked-projection assert CANNOT catch it** -- both sides derive from the same walk, so it stays self-consistent while wrong. D5 measured it as moving nothing on the real loans (their period-start-to-due-date windows contain no version change) and said "gate it anyway"; that gate existed as a pinned-defect control, and C2b flipped it into the fix's pin (`test_confirmed_view.py::TestSplitInputsKeyOnTheDueDate`).  **Its scope was WIDER than this row: six sites, not two** -- the PLANNED forward tier and the live-cash derivation key the same way, and the cash==split invariant (the cash CARRIES the escrow the split BACKS OUT) forces them to move together; the escrow forward-only guard's boundary moved with them, because a period-start boundary becomes too permissive the moment the split reads the due date | $500.00 interest on ONE payment (measured); unbounded in the rate delta | **closed (`c2d43332`)** -- and on PROD data the re-key moves NOTHING (no rate/escrow version falls inside any payment's window; the deploy rehearsal is byte-identical with and without it), which is why it was ruled ahead of the F3 ship rather than after | C2b |
 | N-35 (E1e) | **The statement tier `app.services.ledger_report_service` is not W9909-scoped, so a public balance-at-T born there is unguarded.** E1e's rationale for deleting W9906 whole rests on "no public single-account balance-at-T producer exists outside the seam" -- true, and the claim was NARROWED to that wording in review, because `compute_balance_sheet(user_id, as_of)` does fold every posted source attributed on or before a date into per-account cumulative positions. It is the ruled exception (a whole-chart statement whose sections articulate only because the trial balance ties; pulling ONE line out to answer "what is this account worth on date T" is the named misuse), and it never sat on W9906's producer list, so the deletion cedes nothing. The GAP is the completeness half: the package holds every ingredient of a posted balance-at-T -- `dated_account_nets`, the chart load, the class-id sectioning -- OUTSIDE W9910's protection, exactly the shape that put `cash_ledger`, `loan_ledger`, `loan_resolver` and `account_projection` on the registry. **Measured on this tree:** a public `account_balance_on(user_id, ledger_account_id, as_of)` folding `dated_account_nets` inside the package rates **10.00/10** under the full `--fail-on` set. Scoping it is its own step because every public name in the package must then be classified (2 report entries + 7 attribution names) | a balance-at-T on a screen outside the seam, every gate green (same class as N-28 / N-31) | **recorded, NOT fixed** -- the false absolute claim was corrected in-commit (checker header, the `loan_posting_service` ruling, the package's own docstring); the scope entry is deferred | own step |
+| N-36 (C2b) | **The resolver's money-blind replay keys its rate on the PAY-PERIOD START, where the genesis walk now keys on the DUE date -- one question, two rules, deliberately.**  C2b re-keyed every split input onto contract time (ruling D5), but `rate_period_engine._replay_from_anchor` (`:893`) was left on `payment.period_start`.  The reason is measured, not a preference: it consumes payments that have been through `loan_payment_service._redistribute_to_distinct_months`, which INVENTS a due date for a payment colliding on an already-allocated schedule month, so keying its rate on that date would let a schedule-alignment artifact move a replayed balance -- trading N-34's defect for a subtler one.  Containment, verified: the replay's rows and balance are DISCARDED whenever a ``confirmed_view`` is supplied (`_build_forward_inputs` keeps only `next_pay_date` / `remaining_months_as_of`), which is every production read since E1d-b, so the two keys can differ only on the unseeded what-if path and never inside one rendered figure.  The honest fix is to carry a payment's REAL installment alongside the redistributed one so the replay can key on the fact rather than the artifact -- which is a schedule-alignment change, not a split change | none measured (the divergent surface is discarded on every production read) | **recorded, deliberate, NOT fixed** -- stated at the site in `rate_period_engine`, so it cannot be rediscovered as an accident | own step (with the schedule-alignment rework) |
 | N-14 (C6b) | **`contractual_schedule_from_origination` is computed twice per pass on the property page** -- once inside the (now-memoized) `ctx.loan_plan` and once in the equity chart's `_back_projection_by_month` (both call it for the same loan). Deferred (developer ruling): pure-CPU (no query), only 2x, property-page only, and a full dedup via a fourth context memo must FIRST prove the two call sites' rate-change inputs are identical (`load_rate_changes(id)` vs `resolved.context.rate_changes`) -- a correctness check better done in its own focused change | -- | recorded, deferred | own commit (or Phase D) |
 
 ## 7. Verification standard (what "done" means for every step)
