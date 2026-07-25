@@ -55,9 +55,10 @@ from app.services.account_projection import (
 )
 from app.services.posting_reads import _ledger_account_for
 from app.services.scenario_resolver import get_baseline_scenario
+from app.utils.dates import utc_day_start_instant, utc_instant
 
 from ._anchors import reconcile_account_anchor_corrections
-from ._walk import _as_utc_instant, _period_start_instant, walk_account_ledger
+from ._walk import walk_account_ledger
 
 logger = logging.getLogger(__name__)
 
@@ -196,7 +197,7 @@ def _latest_anchor_instant(account_id: int) -> datetime | None:
     account's :class:`~app.models.account.AccountAnchorHistory` rows -- the
     assertion instant of the row ``cash_ledger.resolve_anchor`` resolves
     -- normalized through the walk's UTC convention
-    (:func:`._walk._as_utc_instant`).  One indexed lookup
+    (:func:`app.utils.dates.utc_instant`).  One indexed lookup
     (``idx_anchor_history_account`` covers ``(account_id, created_at)``).
 
     Args:
@@ -213,7 +214,7 @@ def _latest_anchor_instant(account_id: int) -> datetime | None:
     )
     if value is None:
         return None
-    return _as_utc_instant(value)
+    return utc_instant(value)
 
 
 def self_heal_anchor_corrections(
@@ -264,7 +265,7 @@ def self_heal_anchor_corrections(
     if not delta_entries:
         return
     earliest = min(
-        _period_start_instant(entry.entry_date) for entry in delta_entries
+        utc_day_start_instant(entry.entry_date) for entry in delta_entries
     )
     for account_id in sorted(set(account_ids)):
         latest = _latest_anchor_instant(account_id)

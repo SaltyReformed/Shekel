@@ -9,7 +9,7 @@ only, so they import cleanly into any service or test without the app
 stack.
 """
 import calendar
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timezone
 from zoneinfo import ZoneInfo
 
 # Single source of truth for the timezone the UI presents instants in.
@@ -186,6 +186,68 @@ def to_utc_civil_date(paid_at: datetime | None, fallback: date) -> date:
     if paid_at is None:
         return fallback
     return utc_civil_date(paid_at)
+
+
+def utc_instant(instant: datetime) -> datetime:
+    """Return *instant* as an aware-UTC ``datetime``.
+
+    The INSTANT-level counterpart of :func:`utc_civil_date`, sharing its
+    convention: an aware value converts to UTC, a naive value is assumed UTC
+    (every ``timestamptz`` in this app is stored UTC).  Normalizing every
+    attribution and assertion instant through this one helper is what makes an
+    instant-vs-instant ``<=`` comparison well-defined -- Python refuses to
+    compare a naive datetime with an aware one, so a single un-normalized value
+    is a ``TypeError`` at read time rather than a wrong answer.
+
+    **Why the balance ledgers need instants and not just civil dates.**  The
+    anchor partition asks "was this settle already inside the balance the user
+    asserted?", and the answer turns on ORDER WITHIN A DAY: measured on
+    production 2026-07-25, the Checking anchor was asserted at 12:57:08 UTC and
+    two expenses settled at 13:07:11 and 13:07:18 -- the same UTC civil day, ten
+    minutes later.  A date-keyed comparison calls them absorbed and drops their
+    $108.15 of confirmed cash effect; this instant-keyed one rides them on top of
+    the assertion, which is what actually happened.  The civil DATE each event
+    then counts FROM is a
+    different question, answered by :func:`utc_civil_date` /
+    :func:`to_utc_civil_date`.
+
+    Args:
+        instant: A stored ``paid_at`` / ``created_at`` / ``asserted_at``
+            instant.  Naive values are assumed UTC.
+
+    Returns:
+        The aware-UTC equivalent of *instant*.
+    """
+    if instant.tzinfo is None:
+        return instant.replace(tzinfo=timezone.utc)
+    return instant.astimezone(timezone.utc)
+
+
+def utc_day_start_instant(day: date) -> datetime:
+    """Return the earliest instant of the UTC civil day *day* (midnight UTC).
+
+    The attribution fallback for a source with no recorded ``paid_at`` -- a
+    historical settle predating the ``paid_at`` sync, or ledger residue
+    attributed by its entry's period -- and the instant analogue of the
+    ``COALESCE(paid_at, start_date)`` rule the civil-date helpers apply
+    (:func:`to_utc_civil_date`).  Pairing the two means a NULL-``paid_at`` row
+    lands on the same civil day in both the instant partition and the date
+    sampling, instead of on two different ones.
+
+    **Named for what it computes, not for one caller's argument.**  It was
+    ``account_posting_service._walk._period_start_instant``, but of its three call
+    sites (``cash_ledger.attribution_instant``, the posting walk's residue
+    bucket, and ``account_posting_service._sync``) the last passes a journal
+    entry's ``entry_date``, not a pay-period ``start_date`` -- so the old name
+    misdescribed the rule where it was used.
+
+    Args:
+        day: Any civil date to take the opening instant of.
+
+    Returns:
+        The aware-UTC midnight instant of *day*.
+    """
+    return datetime.combine(day, time.min, tzinfo=timezone.utc)
 
 
 def add_months(start: date, months: int) -> date:

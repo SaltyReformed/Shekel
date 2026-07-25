@@ -52,13 +52,14 @@ from app.services._posting_reconcile import (
     posted_correction_legs,
 )
 from app.services._posting_write import _utc_civil_date
+from app.services.cash_ledger import CashAnchorFact
 from app.services.posting_reads import _ledger_account_for
 
-from ._walk import AccountAnchorCorrection, AccountAnchorFact
+from ._walk import AccountAnchorCorrection
 
 
 def _account_correction_kinds(
-    fact: AccountAnchorFact,
+    fact: CashAnchorFact,
 ) -> tuple[PostingSourceEnum, PostingKindEnum]:
     """Return the (journal source kind, posting leg kind) for an anchor's correction.
 
@@ -68,11 +69,13 @@ def _account_correction_kinds(
     kind ``trueup``).  The leg kinds are the same ``opening`` / ``trueup``
     pair the loan corrections use (REUSED by design -- the journal SOURCE
     distinguishes account from loan corrections).  Keyed off the fact's
-    ``is_opening`` flag, which :func:`._walk._anchor_facts` derives from the
+    ``is_opening`` flag, which :func:`app.services.cash_ledger.cash_anchor_facts`
+    derives from the
     ``(created_at, id)`` order.
 
     Args:
-        fact: The :class:`._walk.AccountAnchorFact` whose correction kinds
+        fact: The :class:`~app.services.cash_ledger.CashAnchorFact` whose
+            correction kinds
             to resolve.
 
     Returns:

@@ -266,6 +266,12 @@ _FENCED_MODULE_RULINGS = {
         # ruling -- structure retiring a fence entry, which is Phase D's point.
         "live_amount_overrides",
         "income_amount",
+        # The SETTLED per-row rule (plan step X-a), moved here from
+        # ``posting_service._signed_cash_leg`` so the ledger WRITER and the cash
+        # WALK value one row the same way by construction.  A non-producer for
+        # exactly the reason its projected siblings above are: an amount per
+        # TRANSACTION is not a balance per ACCOUNT.
+        "settled_cash_leg",
         # ``_flows`` -- what a SET of rows sums to: what MOVED during a period,
         # not what is HELD at a date.  A peer reduction over the same rows a
         # balance folds, not a step toward one.  ``sum_projected`` is the shared
@@ -275,6 +281,38 @@ _FENCED_MODULE_RULINGS = {
         "sum_projected",
         "period_subtotal",
         "period_subtotals",
+        # ``_events`` (plan step X-a) -- the cash EVENT STREAM, the exact
+        # counterpart of the ``loan_ledger`` non-producer rulings below and
+        # non-producers for the same reason: each answers "what happened, and
+        # when", never "what is held at time T".  ``attribution_instant`` is the
+        # ONE statement of when a settled source's cash moved (a chronology rule
+        # returning a ``datetime``); ``cash_anchor_facts`` and
+        # ``settled_cash_facts`` are LOADERS returning stored assertions and
+        # per-row signed effects; ``merge_anchor_and_cash_events`` orders those
+        # two fact kinds against each other and returns them unchanged.
+        # ``visible_on`` is a public METHOD on ``CashSourceFact`` (W9909 sees
+        # public methods of public classes, which is the surface D3's review
+        # found W9910 structurally blind to): it returns the civil DAY one fact
+        # counts from -- a date, not a figure.
+        "attribution_instant",
+        "cash_anchor_facts",
+        "merge_anchor_and_cash_events",
+        "settled_cash_facts",
+        "visible_on",
+        # ``_walk`` (plan step X-a) -- the running-balance REPLAY and the
+        # visible-day re-key of its events.  Ruled NON-producers on exactly the
+        # grounds ``loan_ledger``'s twins below are, and the ruling is only
+        # honest because the same structure holds: the walk returns per-source
+        # and per-assertion FACTS in instant order, ``dated_deltas`` returns what
+        # each event contributed and when, and the PREFIX-SUM that turns either
+        # into "what is held at time T" is seam-private.  If that sampling ever
+        # moved into this package these two would become producers -- which is
+        # the same thing as saying they belong inside ``balance_at``, since this
+        # package's producer set is empty and stays empty.  Both sides take the
+        # walk: the seam's read pass folds it, and the posting writer projects it
+        # into corrections at plan step X-d.
+        "dated_deltas",
+        "walk_cash_ledger",
     })),
     # The account-KIND classifier -- why it is scoped is recorded once, at
     # :data:`_KIND_CLASSIFIER_MODULES`.  Its ``find_period_containing_date``

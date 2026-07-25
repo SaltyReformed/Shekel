@@ -6,7 +6,10 @@ a single row, these answer "how much of this hits the checking balance right
 now?" -- the cash analog of :mod:`app.services.loan_ledger._split`, which
 answers the same question for one loan payment (principal / interest / escrow).
 
-Two rule families live here, and they compose in one direction:
+Three rule families live here, split by the question they answer.
+
+What a row is worth while it is still PROJECTED -- a reservation, money not yet
+gone -- is two of them, composing in one direction:
 
   * :func:`live_amount_overrides` PRODUCES the ``{transaction_id: Decimal}``
     map of what rows are worth right now when their stored amount is a stale
@@ -15,6 +18,16 @@ Two rule families live here, and they compose in one direction:
     the shared :func:`_override_for` lookup), falling back to the stored figure
     -- and, for an expense carrying entries, to the entries-aware reservation
     formula :func:`_entry_checking_impact`.
+
+What a row is worth once it has SETTLED -- money that really moved -- is the
+third, and it is deliberately none of the above:
+
+  * :func:`settled_cash_leg` is ``effective_amount - Sigma(credit entries)``,
+    signed by transaction type.  Neither read-time adjustment above can reach a
+    settled row (both filter to ``is_projected``), and a reservation would be
+    meaningless for cash already gone.  It arrived here at plan step X-a from
+    ``posting_service``, so the ledger WRITER and the cash WALK price one row
+    through the same function.
 
 **Why they are one module (plan step D1c).**  They were split across two:
 ``live_amount_overrides`` sat in the cash event sources while the four rules
@@ -34,7 +47,8 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from app.utils.balance_predicates import is_projected
+from app.models.transaction import Transaction
+from app.utils.balance_predicates import is_balance_contributing, is_projected
 
 
 def _override_for(txn, amount_overrides):
@@ -267,6 +281,90 @@ def _entry_aware_amount(txn, as_of=None):
     # bucketing rule and the reservation formula live once, in
     # ``_entry_checking_impact`` (E-27).
     return _entry_checking_impact(entries, txn.estimated_amount)
+
+
+def _credit_entry_sum(txn: Transaction) -> Decimal:
+    """Return the sum of a transaction's credit (credit-card) entry amounts.
+
+    The ``Sigma(credit entry amounts)`` term of the confirmed-cash-effect
+    formula: an envelope's credit purchases are excluded from the checking
+    outflow because each posts its own CC Payback when that payback settles
+    (``credit_workflow``), so counting them here would double-count against the
+    payback.  A plain transaction has no entries, so this is ``Decimal("0")``
+    and the effect collapses to ``effective_amount``.
+
+    Args:
+        txn: The transaction whose credit entries to sum.
+
+    Returns:
+        The sum of ``amount`` over the transaction's ``is_credit`` entries, as a
+        ``Decimal`` (``Decimal("0")`` when there are none).
+    """
+    return sum(
+        (entry.amount for entry in txn.entries if entry.is_credit),
+        Decimal("0"),
+    )
+
+
+def settled_cash_leg(txn: Transaction) -> Decimal:
+    """Return the confirmed cash effect of a SETTLED row: what really moved.
+
+    The settled counterpart of the projected valuations beside it, and the ONE
+    statement of that rule: ``effective_amount - Sigma(credit entry amounts)``,
+    signed ``+`` for income (money entering the account) and ``-`` for an
+    expense (money leaving).  The sign follows the transaction TYPE, never the
+    account class, so the leg is correct whether the cash account is an asset
+    (Checking) or a liability (a direct charge on a Credit Card account).
+
+    For a plain transaction the credit sum is zero and the effect collapses to
+    ``+/-effective_amount``.  For an ENVELOPE at settle ``effective_amount``
+    equals the sum of ALL its entries (``compute_actual_from_entries`` sets
+    ``actual_amount`` so), and subtracting the credit entries collapses the
+    result to the DEBIT-only outflow -- with no branch on "is this an envelope".
+
+    **This is why the rule lives HERE (plan step X-a), not in the posting
+    writer.**  It was ``posting_service._signed_cash_leg``, private to the
+    module that WRITES the ledger -- the same inversion plan step B0 corrected on
+    the loan side, where the payment split lived inside the posting package and
+    every other consumer had to reach through its privates for it.  Two
+    consumers need this rule now: the writer, which posts the effect, and the
+    cash WALK (:func:`app.services.cash_ledger.walk_cash_ledger`), which folds
+    it.  A second copy would let the projection and the posted ledger disagree
+    about what a settled row was worth -- measured on production 2026-07-25
+    before this move, a ``effective_amount``-only walk diverged from the posted
+    ledger on 10 of 130 Checking rows and by up to ``$181.58`` on one, because
+    every one of them was an envelope carrying credit-card entries.
+
+    The bulk oracle reader ``posting_reads.settled_transaction_effect`` computes
+    the same sum in SQL and deliberately stays independent: it is the Step-3
+    reconciliation oracle's own window onto the ledger, and an oracle that
+    shared this implementation could not grade it.
+
+    **TOTAL: a non-contributing row is worth exactly zero.**  A soft-deleted or
+    Credit / Cancelled row has an ``effective_amount`` of zero, but its ENTRIES
+    survive on the row -- so without the guard below,
+    ``0 - Sigma(credit)`` negated for an expense returns a FABRICATED INFLOW: a
+    deleted grocery envelope carrying an $80.00 credit purchase valued at
+    ``+$80.00``, money the account never received.  Unreachable through today's
+    two callers (the walk pre-filters with
+    :func:`~app.utils.balance_predicates.balance_contributing_clause`, and the
+    writer resolves a target only on the settle side), which is exactly why it
+    would have waited to be discovered by a third.  A function whose answer is
+    correct only because every caller happens to pre-filter is a contract nobody
+    can see; this one is total instead.
+
+    Args:
+        txn: The transaction whose confirmed cash effect to value.  A
+            non-contributing row (soft-deleted, Credit, or Cancelled) returns
+            ``0.00`` whatever entries it carries.
+
+    Returns:
+        The signed confirmed cash effect as a ``Decimal``.
+    """
+    if not is_balance_contributing(txn):
+        return Decimal("0.00")
+    net = txn.effective_amount - _credit_entry_sum(txn)
+    return net if txn.is_income else -net
 
 
 def income_amount(txn, amount_overrides):
