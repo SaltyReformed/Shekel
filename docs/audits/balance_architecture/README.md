@@ -209,8 +209,10 @@ RULED (2026-07-24, four developer rulings, all as recommended -- see Phase E): E
 projection + N-13's root fix) -> E1b (escrow into the reconcile) -> E1c (the walk-built view,
 additive) -> E1d (the cutover; `confirmed_loan_view` dies) -> E1e (W9906 deletes; the readers go
 package-private).  E1a SHIPPED `545799fb` (B-5's invariant + N-13 closed; the born-settled create
-door closed; the real Mortgage's pre-E1a cross-date residue self-heals).  NEXT: E1b**, then F3
-(the prod ship) and the X phase per Section 5.
+door closed; the real Mortgage's pre-E1a cross-date residue self-heals); E1b SHIPPED `7cbc0271`
+(all seven escrow write routes reconcile through the sync chokepoint; N-3 closed; merge's
+"needs no reconcile" ruling reversed to "reconciles as an idempotent no-op").  NEXT: E1c**, then
+F3 (the prod ship) and the X phase per Section 5.
 
 ---
 
@@ -1614,10 +1616,25 @@ zero standing exceptions rather than training the exemption habit it exists to p
     the unposted born-settled hole; it now pins the ratified contract (a POSTED overpayment's
     actual $500.00 extra renders).  Full suite 7484, pylint 10.00 all three trees, 163 checker
     tests; adversarial review's two High fixed at the root, re-reviewed clean, all Lows applied.
-  - [ ] **E1b** `fix(loan): an escrow write reconciles the ledger like every other loan write` --
-    the seven escrow routes call the sync chokepoint (today only the rate route syncs); the
-    forward-boundary guard STAYS -- it protects the settle-frozen cash semantics (spec Sec. 4.2),
-    not the postings.  Closes N-3.
+  - [x] **E1b** `fix(loan): an escrow write reconciles the ledger like every other loan write` --
+    **SHIPPED `7cbc0271`.**  All seven escrow write routes end on a shared `_commit_escrow_change`
+    tail that runs `sync_loan_postings_all_scenarios` before committing, so escrow is no longer the
+    one loan-write door that leaves the postings unre-derived; the E1a assert now covers escrow
+    writes.  N-3 closed.  The forward-boundary guard STAYS as the settle-frozen-cash protection
+    (spec Sec. 4.2), unchanged; under it the sync is always a no-op, so E1b is defense-in-depth (a
+    guard regression self-heals the postings) + assert coverage + one exception-free invariant.
+    **Developer chose ALL SEVEN** (the uniform invariant) though the trace proved only FIVE can
+    attempt to move a split (spec Sec 4.2's guarded ops): rename is name-only and merge is
+    planner-verified escrow-per-date-preserving, so their sync is a proven no-op -- **merge's prior
+    "needs no reconcile" ruling is REVERSED to "reconciles as an idempotent no-op"** (route +
+    `plan_escrow_line_merge` + `_escrow_unchanged_by_merge` docstrings; `test_merge_preserves_settled_payment_split`
+    now VALIDATES E1b -- the merge reconciles yet the split stays byte-identical).  No eighth escrow
+    write door exists (whole-app grep of every `EscrowLine`/`EscrowComponentVersion` write).  Tests:
+    a parametrized forge-heal firing control across ALL SEVEN routes (each heals a stale-dated cash
+    entry through its POST; verified to FAIL with the sync disabled) + a baseline-unmoved no-op
+    control; shared `linked_net_by_date` test helper extracted (DRY, keeping the service test's
+    independence-from-production).  Full suite 7492, pylint 10.00 all trees; adversarial review clean
+    (no Critical/High/Medium; 3 informational Lows, one applied).
   - [ ] **E1c** `feat(loan): the confirmed view folds from the walk` -- additive seam builder +
     an every-shape equivalence oracle vs the posting-based view (rows byte-equal, balance equal:
     B2's shapes + the biweekly collision, late/early settle, true-ups, tracking-start, payoff
@@ -1716,7 +1733,7 @@ archive names so old references resolve here.
 | cash D4 | Anchor column vs history table: divergence detected, only logged | latent | latent | X4 |
 | N-1 (07-16) | Archived X0 rule would double-count early-settled transactions | 15 real pairs | plan defect, corrected | R-B / X1 |
 | N-2 (07-16) | Settle-time freeze reads the clock (`loan_payment_service.py:762`) | -- | **closed (developer ruling 2026-07-24, E1 decomposition)** -- C7's drift warning surfaces a stale frozen amount (`a3f15aed`); the write-side clock read itself is ACCEPTED-BY-DESIGN: the freeze writes SOURCE cash (the shadow's `actual_amount`) the walk then splits, so it cannot desync the checked projection; the split keys on the DUE date (R-A), and the capture rule IS the ratified D3 cash semantics ("the cash you would pay if you settled now").  No code change | C7 (surfacing); E1 ruling (write-side) |
-| N-3 (07-16) | Escrow writes never trigger a posting sync (guard-only protection) | -- | latent hazard | E1b |
+| N-3 (07-16) | Escrow writes never trigger a posting sync (guard-only protection) | -- | **closed (`7cbc0271`)** -- all seven escrow write routes reconcile through `sync_loan_postings_all_scenarios` before committing, so the E1a checked-projection assert now covers escrow writes; the forward-only guard stays as the settle-frozen-cash protection (not the sole one); a stale posting self-heals through any escrow write (forge-heal firing control, verified to fire) | E1b |
 | N-4 (A1) | Pay-period reset re-anchors EVERY kind, refreshing loan cash-anchor rows (balance-preserving `stage_anchor_true_up` inside the reset's deferred-FK transaction; same-value, not user-supplied) | -- | B-15 residue | C-phase, when loan reads of the column die |
 | N-5 (A1) | Account-create factory writes an origination cash anchor for every kind -- a loan created with a balance seeds the column at birth (entangled with loan onboarding) | -- | B-15 residue | C-phase |
 | N-6 (A2) | `_loan_year_interest`'s `not row.is_confirmed` guard fires on NO live path today: it would only matter when the ledger answers for interest but not for the schedule, and both gate on the same `_has_opening_posting` (`_reader.py:310` vs `:152`), so `_payoff.py:285` has already swapped the replay's redistributed rows for raw-due-dated ledger rows that `settled_due_months` alone excludes. **That unreachability is a cross-module coincidence, not a structural guarantee** -- `confirmed_loan_view` ALSO returns `None` for `as_of > today` (`loan_payment_service.py:529`) where the interest reader has no `as_of` at all, so a caller passing a year-end `as_of` makes this guard the only thing between the Taxes tab and a double-count. Kept, untested: the state is unreachable, so a control would have to hand-build the rows (the anti-pattern B-17 names) | -- | **closed (`99cc2816`)** -- `_loan_year_interest` deleted whole at C3c; the fold-based producer's `not row.is_confirmed` is the always-reachable projected-rows filter (source it only from unconfirmed rows), not a dead guard, so nothing unreachable is kept | C3c |
