@@ -1839,8 +1839,22 @@ zero standing exceptions rather than training the exemption habit it exists to p
 
 ### Phase F -- closeout
 
-- [ ] **F1** FU-1: the Van Loan's known-wrong history (duplicate same-day anchors, a $452.37
-  step with no payment) -- a DATA correction, made only after B2's oracle can validate it.
+- [ ] **F1** FU-1: the Van Loan's known-wrong history -- **RE-SCOPED 2026-07-25, measured on a
+  fresh PROD clone: the duplicate same-day anchors are NOT in production.**  Prod's account 8
+  carries exactly THREE anchors (origination 2023-02-14 `$32,402.45`, user_trueup 2026-05-22
+  `$17,020.47`, user_trueup 2026-06-23 `$15,663.59`), and its audit trail for
+  `budget.loan_anchor_events` is **6 INSERTs, zero UPDATE, zero DELETE** -- the shape was never
+  there, so it was not silently repaired either.  The duplicates live on the DEV CLONE, which has
+  SEVEN anchor rows for that loan including two same-day `tracking_start` rows on 2026-04-11
+  (`$17,020.47` / `$17,134.85`), all created 2026-07-07 21:03-21:06 during arc development.  The
+  finding was measured against that polluted database.  **What DOES remain on prod is one
+  unexplained true-up STEP:** the 2026-06-23 true-up moves the balance `$905.33` beyond what the
+  recorded payment explains (after the 06-22 installment's `$451.55` principal the walk stands at
+  `$16,568.92`; the anchor asserts `$15,663.59`).  That is a user ASSERTION, which the architecture
+  treats as authoritative by design (C1 / D2), not a defect -- the Mortgage's own 2026-05-22 true-up
+  reconciles to the cent (`$177,829.83` == the walk after two payments), so the machinery is not
+  suspect.  Whether the `$905.33` matches the servicer's statement is a question only the operator
+  can answer; it blocks nothing, and the ledger is self-consistent under E1a's assert either way.
 - [x] **F2** `refactor(analytics): delete the dead year-end summary service` -- **SHIPPED
   `3aecceb0`.** The whole `year_end_summary_service` package + its two test files deleted (the route
   302s; `compute_year_end_summary` had no live caller). R-D's two still-live functions
@@ -1917,7 +1931,7 @@ archive names so old references resolve here.
 | B-21 | `TestBrokenLoanFailsLoud` cash fallback asserts `is not None`, not the value | -- | **closed (`c96c62be`)** -- pinned at the $150,000.00 anchor | A2 |
 | B-22 | Dead `insert_origination_event` fixture helper | -- | **closed (`18fd3a04`)** -- helper + its no-op seeds deleted; test loans now match production (origination synthesized, no stored row) | C1 |
 | N-12 (B1) | **The two ledger readers disagree about when an anchor becomes visible.** `confirmed_loan_balance_at` bounds an anchor by `LEAST(entry_date, period.start)` (`_asof.effective_date`); `confirmed_loan_history_rows` bounds its non-payment events by raw `entry_date` (`_reader.py:_classify_linked_nets`). They therefore diverge for any `as_of` in `[period.start, entry_date)` -- two readers of ONE ledger, contradicting each other about one loan. Measured on the real Mortgage: on 2026-03-26..03-30 the scalar says **$178,103.41** and the history rows' last `remaining_balance` says **-$272.02** -- a NEGATIVE liability, the B-5 shape. Contained today, not by design but by two unrelated gates: a user true-up is schema-bound to `anchor_date <= today` (`routes/loan/params.py:244`), and the future-origination case is stopped by N-10's four `origination_date` predicates -- so no surface passes an `as_of` inside the window. One clock retires both bounds | $178,375.43 (the divergence; the rendered figure is a negative liability) | **closed (`eb5de4ac`)** -- the scalar now bounds anchors by `entry_date` (their own civil date), the same rule the history reader already used, so the two agree | C2 (`remaining_balance` itself dies at C6) |
-| FU-1 | Van Loan history known-wrong (duplicate anchors; $452.37 unexplained step) | $897.16 | data defect | F1 |
+| FU-1 | Van Loan history known-wrong (duplicate anchors; $452.37 unexplained step) | $897.16 | **RE-SCOPED (2026-07-25): the duplicate anchors are DEV-CLONE pollution, not production.**  Prod's account 8 has three anchors and an audit trail of 6 INSERTs / 0 UPDATE / 0 DELETE; the dev clone has seven, including two same-day `tracking_start` rows created 2026-07-07 during arc development.  What survives on prod is ONE unexplained true-up step of $905.33 (2026-06-23) -- a user assertion the design treats as authoritative, not a defect.  See F1 | F1 (operator question, not a code fix) |
 | FU-3 | Standing overpayment resolves at today for any as-of | -- | latent | C-phase note |
 | FU-5 | Settled payment into an unoriginated loan vanishes | $1,200 test case; **$3,220.92 phantom cash** on the generator found at C9 | **closed (`2976614b` + `7c021281` generator; `d5a02ad2` guard)** -- the fold erases such a payment ($0.00 principal, the whole cash to a Refund Receivable) while the cash side still debits, so it is now REFUSED at both transfer write doors on the SHARED installment derivation, and the recurrence can no longer generate one (`start_date` bound). The shape's real source was not the hand-made transfer the finding names but the app's own loan-payment setup, which generated 3 of 4 payments pre-origination on a mortgage closing next month; existing rows are purged, settled ones reported | C9a (generator + data); C9b (guard) |
 | FU-8 | Empty schedule admits the whole contractual walk as back-projection | $197,049.32 class | **closed (`821dd0eb`)** -- an empty schedule now draws NO back-projection (`_back_projection_by_month` returns `{}`); the loan's real balance comes from the fold, which answers $0.00 after payoff | C5 |
