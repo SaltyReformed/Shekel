@@ -31,7 +31,7 @@ accrues forward of the assertion, not the period start -- ruling R-L's clock hal
 **X-c2b2** `d3489728` -- **THE cutover, and the only step where money moved** -- **X-c2b2-adj**
 `7de04f0c` (a scenario's first settle opens that scenario's ledger; N-61 + N-62), and **X-c2b3**
 `82557ca9` (the replaced producers delete: 7614 -> 7598 tests, exactly the 16 the four retired
-suites held).
+suites held), and **X-c2c1** `b42dda42` (the reservation's as-of window deletes; see below).
 
 **What the cutover bought, measured on the prod-shape clone and signed off:** Checking today
 `$2,791.78` -> **`$2,824.26`** -- the figure the app's OWN persisted double-entry ledger already
@@ -41,20 +41,35 @@ a week after that account was last anchored, reducing no balance on any screen);
 from 0 to 6 history points; and **both loans and every investment map were unmoved**. Findings
 cash D1, cash D2, cash D3 and B-18 all closed together, because one total fold subsumes all three.
 
-**NEXT: X-c2c, and it is larger than its one-liner reads.** Traced 2026-07-26 (see the step): four
-sub-commits on the developer's ruling, because it carries a money-moving base swap, 4,431 lines of
-test surface that mostly does not test the dying module at all, ruling R-M's window deletion, and
-a ~2,400-line deletion. Its trace also found that the step's own "measured `$0.00` of movement" is
-true and nearly VACUOUS -- all four affected accounts hold ZERO transaction rows, which is finding
-N-69's shape -- and that the window it ships is a COMPENSATOR for a three-producer merge (N-72).
+**X-c2c1 SHIPPED `b42dda42` (2026-07-26)** -- ruling R-M's window deletion. What a cash row is
+WORTH is now a function of the row alone, so `as_of` does exactly ONE job anywhere in the cash
+path: ruling R-G's clamp, which decides WHEN a row lands and never what it is worth. 900 grid
+cells, 12,600 daily points, 75 dated scalars and 19 accounts byte-identical across both databases.
 
-**Then X-g, the last structural step, and it is the from-scratch design.** A modeled asset is an
+**THE COMPENSATOR IS WITHDRAWN: plan step X-c2c3 is CANCELLED and X-g takes its place** (developer
+ruling, 2026-07-26, as recommended). X-c2c3 was to WINDOW the investment / property bases onto the
+fold to keep them out of `_merge_balance_sources`' way -- a fix this document already recorded as a
+COMPENSATOR rather than a fix (**N-72**), which X-g then deletes along with the merge. Three
+measured facts decided it: its benefit is near-vacuous today (all four affected accounts hold ZERO
+transaction rows in both databases, so the swap moves `$0.00` and any producer passes -- its own
+correction (a)); its cost is four hand-built discriminating fixtures plus a `ctx`-threading
+signature change across `_investment`'s three public entries and four callers, every bit of which
+X-g redoes; and it is a MONEY-MOVING cutover, so cancelling it removes an entire cutover with its
+own oracle and sign-off rather than deferring one. Ruling **R-V** below records it.
+
+**NEXT: X-c2c2** (the test migration -- NO production change, so the baseline provably cannot
+move), **then X-g**, **then X-c2c4** (the deletion, which X-g's cutover is what makes possible).
+
+**X-g is the last structural step, and it is the from-scratch design.** A modeled asset is an
 event stream: ACCRUAL becomes the fourth event kind and all five account kinds read ONE sequential
 replay, which deletes the three-source merge, the reverse growth projection, the interest-layering
 pass, and `investment_seed_map`'s reason to exist -- and makes an investment's balance answerable
 at a DATE rather than at a period end. Its target shape is Section 3; its forks are stated as
 UNANSWERED rulings in Section 4, deliberately, because they have not been traced yet and
-pre-answering them would be the guessing rule 3 forbids.
+pre-answering them would be the guessing rule 3 forbids. **The first concrete step toward it is
+TRACING R-R .. R-U and answering them with evidence, not writing code** -- R-R in particular is a
+financial danger with a mechanism (a transfer contribution reaching the replay twice), and the only
+thing preventing it today is the very merge X-g deletes.
 
 ---
 
@@ -83,8 +98,8 @@ ONE total fold and they closed together.
    account's map is the anchor-forward cash base, a forward growth projection, and a REVERSE growth
    projection, picked between by `_merge_balance_sources` (`_investment.py:395-424`); a property
    substitutes a flat anchor carry for the reverse tier. Finding N-43 is a bug in that preference
-   order, and the window plan step X-c2c ships is a compensator for it (N-72). Plan step **X-g**
-   deletes the merge.
+   order. Plan step **X-g** deletes the merge, and since ruling R-V cancelled X-c2c3 nothing ships
+   a compensator for it in the meantime (N-72).
 2. **Three kinds still answer a DATE with a PERIOD.** `_kind_correct.py:195-197` documents it as
    intended: "INTEREST / INVESTMENT / APPRECIATING are period-granular." Measured on the
    prod-shape clone at period 30, the scalar answers the same value on the period's FIRST day as
@@ -119,6 +134,7 @@ ONE total fold and they closed together.
 | The per-period view: one valued row set grouped two ways plus a named remainder | dev | `9b8c9fdd` (X-c1) |
 | **The cash cutover: every cash figure the app renders is one fold, read at three grains** | dev | `d3489728` (X-c2b2) |
 | The replaced cash producers deleted | dev | `82557ca9` (X-c2b3) |
+| **What a cash row is WORTH is a function of the row alone** -- no reservation clock | dev | `b42dda42` (X-c2c1) |
 
 **The loan baseline is still a LIVE regression gate for CASH commits.** Mortgage (account 3)
 **$177,277.97**, Van Loan (account 8) **$15,663.59**. Re-derive both from the seam before and
@@ -254,14 +270,16 @@ The five real sites outside it -- `retirement_projection.py:593`, `retirement_re
 answer "what would this be worth if I changed X", not "what is the balance at T". They keep
 `growth_engine` as the pure math engine, untouched. X-g replaces three call sites and a merge.
 
-**Why not the minimal alternative** (keep the merge and window its base, which is what X-c2c
-ships): it leaves the defect GENERATOR in place. The merge is the cash form of the splice this arc
-exists to delete, N-43 is a bug in its preference order, and a window that keeps one source out of
-the merge's way is a compensator for it -- fix the symptom and the next reader inherits it with no
-record that it is one. X-c2c ships the window anyway because it closes findings cash D1 and cash D3
-for the modeled kinds NOW and because its other three quarters (the test migration and the
-deletions) are what X-g needs done first; that trade is stated in the step, and N-72 records the
-debt.
+**Why not the minimal alternative** (keep the merge and window its base, which is what plan step
+X-c2c3 was to ship): it leaves the defect GENERATOR in place. The merge is the cash form of the
+splice this arc exists to delete, N-43 is a bug in its preference order, and a window that keeps
+one source out of the merge's way is a compensator for it -- fix the symptom and the next reader
+inherits it with no record that it is one. That was written as a stated trade, with N-72 recording
+the debt. **Ruling R-V (2026-07-26) took the alternative off the table instead of paying it**: the
+window's benefit is `$0.00` on today's data, its cost is redone by X-g, and it is a money-moving
+cutover in its own right -- so cancelling it removes a cutover rather than deferring one. The debt
+is not incurred, and cash D1 / cash D3 stay open for the modeled kinds until X-g closes them, which
+on today's data costs nothing measurable and is stated in R-V as the price.
 
 ## 4. Decisions
 
@@ -296,7 +314,7 @@ step that ends that.
 |---|---|---|
 | **R-K** (N-41; answered 2026-07-25) | **The grid's balance row and its subtotal rows become ONE step list grouped two ways, plus a named remainder.**  The plan's "re-prove `balances[p] - balances[p-1] == subtotals[p].net`" is impossible and was measured so: the fold counts money that MOVED, the subtotal counts only rows that are still UNPAID (`_flows.py:128` filters through `is_projected`), so on the real Checking account the identity breaks on **8 of 59 period pairs, worst `$2,505.17`** in the current column -- and every PAST column reads `$0.00` income and `$0.00` expenses while thousands moved.  So the subtotal rows change basis: **Total Income / Total Expenses count EVERY row attributed to the period** -- settled at its confirmed cash leg, still-projected at its entries-aware reservation -- which is budget-vs-actual and fixes the `$0.00` past columns as a side effect.  What the rows still cannot explain gets ONE conditional **Reconciliation** row: money that moved in a different period than its budget column (**19 of 130** settled Checking rows; nets to `$0.00` across history, swings to `+/-$2,007.46` in a period) plus the balance ASSERTIONS (the `anchor_equity` ledger account, **46 postings**, `-$2,906.31` since the opening).  The identity becomes `balance[p] - balance[p-1] == net[p] + reconciliation[p] + increments[p]` for EVERY kind, and it holds BY CONSTRUCTION -- both sides are the same valued row set grouped on two clocks, not two producers a test keeps in step.  Rejected: keeping the subtotals unpaid-only (the reconciliation row becomes a garbage bucket holding all real past activity -- `+$2,082.46` in one measured column -- which is hiding data inside a residual), and shipping no reconciliation row (leaves a visible contradiction, which the developer rules is never acceptable). | X-c1 / X-c2 |
 | **R-L** (answered 2026-07-25) | **Modeled interest begins forward of the account's LATEST balance assertion.**  Everything at or before it is records and assertions -- facts -- so layering modeled accrual across the past would add interest to periods whose balance is already an asserted bank fact, money the assertion already contains.  This is closest to today's behaviour (`_kernel._account_interest_projection` accrues from the anchor PERIOD forward) and consistent with the investment branch, which also models forward from the anchor.  Rejected: accruing forward of TODAY only (drops interest genuinely earned since the last assertion, which can be a month -- the real Empower anchor is 2026-06-23), and keeping the anchor-PERIOD rule (the period starts before the assertion instant, so it models interest across days the assertion already accounts for).  Note the seed also changes: the interest walk is seeded off the `current_anchor_*` CACHE columns today, and reads the fold after the cutover.  **SHARPENED 2026-07-25 (developer ruling, as recommended): the assertion's OWN day accrues** -- the assertion's period accrues over `[assertion civil date .. period end]` inclusive, which is the exact analogue of the day-count convention every other period already uses (`_calculator._layer_interest` passes `end_date + 1 day` so a 14-day period accrues all 14 days the money is held).  Worked on the real Fidelity Savings (`$5,363.56` at 3.29% APY, about `$0.48/day`, asserted 2026-04-06 inside the 03-26..04-08 period): `$1.45` over 3 days, against `$6.77` over 14 today.  Rejected: accruing from the day AFTER the assertion (`$0.97`; a different day-count convention from every other period), and starting at the next period boundary (`$0.00`; silently drops real interest, the same argument this ruling already declined for "forward of today only").  **The two halves are separable and ship apart:** the CLOCK (accrual starts at the latest assertion, seed unchanged) has no fold dependency and ships as X-c2a; the SEED (the fold) ships in the cutover. | X-c2a (clock), X-c2b (seed) |
-| **R-M** (N-39; answered 2026-07-25) | **A future `entry_date` is REFUSED at the write door, and the reservation's `as_of` window then DELETES.**  The fork is closed rather than ruled.  An entry is "an individual purchase recorded against a parent transaction" (`transaction_entry.py:15`) -- something that HAPPENED; a purchase not yet made is what the envelope's remaining budget already models.  Traced: the add form cannot create one (`_transaction_entries.html:179` posts a HIDDEN `entry_date` fixed to today), the edit form can (`:79`, an unbounded `<input type="date">`, and `EntryUpdateSchema.entry_date` carries no bound), and ZERO such rows exist in either database (newest entry anywhere 2026-07-24).  Worked on the live Groceries envelope #2280 (`$780.00` budgeted, 4 credit + 2 debit entries, hold-back `max(780.00 - 226.42 - 493.03, 0.00) = $60.55`): one `$150.00` entry dated 2026-08-05 moves the projected balance **`-$89.45`** as a debit (the `max()` floor takes over: `$150.00` held back) or **`+$60.55`** as a CC entry (`$0.00` held back) -- so it moves money in EITHER direction for a purchase that has not happened.  With the guard in place the window drops nothing: every entry is then dated at or before today, and the only production reader that pins a non-default `as_of` is `tax_report_service.py:373`, which reaches `loan_interest_in_year` and no cash producer -- so the parameter is dead and deletes, which is what ends the shipping divergence (the calendar windows, the grid and the daily ramp do not) rather than picking a winner.  Backdating stays fully allowed and is used (the real 05-21 Groceries row carries entries from 05-18). | X-c0 (guard), X-c2c (deletion) |
+| **R-M** (N-39; answered 2026-07-25) | **A future `entry_date` is REFUSED at the write door, and the reservation's `as_of` window then DELETES.**  The fork is closed rather than ruled.  An entry is "an individual purchase recorded against a parent transaction" (`transaction_entry.py:15`) -- something that HAPPENED; a purchase not yet made is what the envelope's remaining budget already models.  Traced: the add form cannot create one (`_transaction_entries.html:179` posts a HIDDEN `entry_date` fixed to today), the edit form can (`:79`, an unbounded `<input type="date">`, and `EntryUpdateSchema.entry_date` carries no bound), and ZERO such rows exist in either database (newest entry anywhere 2026-07-24).  Worked on the live Groceries envelope #2280 (`$780.00` budgeted, 4 credit + 2 debit entries, hold-back `max(780.00 - 226.42 - 493.03, 0.00) = $60.55`): one `$150.00` entry dated 2026-08-05 moves the projected balance **`-$89.45`** as a debit (the `max()` floor takes over: `$150.00` held back) or **`+$60.55`** as a CC entry (`$0.00` held back) -- so it moves money in EITHER direction for a purchase that has not happened.  With the guard in place the window drops nothing: every entry is then dated at or before today, and the only production reader that pins a non-default `as_of` is `tax_report_service.py:373`, which reaches `loan_interest_in_year` and no cash producer -- so the parameter is dead and deletes, which is what ends the shipping divergence (the calendar windows, the grid and the daily ramp do not) rather than picking a winner.  Backdating stays fully allowed and is used (the real 05-21 Groceries row carries entries from 05-18).  **Both halves are SHIPPED**: the guard at X-c0 `5b3764a7`, the deletion at X-c2c1 `b42dda42`, whose as-built entry records the sharper reason -- a purchase that happened belongs in the reservation whatever date the reader asks from, so the parameter was not merely dead but wrong to keep. | X-c0 `5b3764a7` (guard), X-c2c1 `b42dda42` (deletion) |
 | **R-N** (N-42; answered 2026-07-25) | **The cutover ships FIRST; recording when money actually moved is a follow-up (X-f).**  Measured: `Transaction.paid_at` is stamped `db.func.now()` at the click (`status_seam.py:105`) and no API accepts any other value (`schemas/validation/transactions.py:62` is `dump_only`), while `TransactionEntry.entry_date` is hidden and fixed to today on the only creation door -- so NOTHING in the app records when money moved.  The cost is the reconciliation row's size, not its correctness: `$36,323.99` of gross swing across 51 assertions against a true four-month bookkeeping error of `-$159.73` (the amounts are right; the dates are guesses).  Re-dating the read side alone is rejected because the walk and the posted ledger are currently proven byte-identical, so it would have to drag X-d's writer unification and a resync of four months of posted dates ahead of the read side proving itself.  So X-c ships, the Reconciliation row becomes the INSTRUMENT that measures the date noise, and X-f then shrinks it visibly. | X-c2b, then X-f |
 
 ### Answered (developer ruling, 2026-07-25: X-c2's four forks, all as recommended)
@@ -312,6 +330,12 @@ step that ends that.
 | **R-P** (answered 2026-07-26) | **Every surface that renders the subtotal figures renders ruling R-O's row, on R-O's own non-zero rule.**  R-O placed "Timing & true-ups" in the DESKTOP `<tfoot>` and left the three mobile surfaces that show the same income / expense / net figures unruled -- the "This Period" summary card, the Plan tab recap, and the mobile grid's section headers.  They gain the line under Net Cash Flow, shown only when non-zero, which is the convention the Interest row already follows on both form factors, so the app has ONE conditional-row rule rather than one per width.  Rejected: desktop-only, which leaves the mobile card showing `$3,153.22` of net cash flow against a balance change of `$2,364.54` with the `-$788.68` invisible -- the visible contradiction ruling R-K refused to ship, reintroduced on the form factor the developer uses to mark rows paid; and always-on, which puts a permanently-`$0.00` line on every future period (the ones most viewed) and reflows nothing in exchange. | X-c2b1 (shape), X-c2b2 (figures) |
 | **R-Q** (N-51; answered 2026-07-26) | **The SEAM owns the live override map and the route reads it back; the `amount_overrides` parameter DELETES from all eight signatures.**  The fold builds its own map inside `_cash_plan` (`live_amount_overrides` over the loaded plan), so the parameter that existed to keep two walks on ONE income basis has nothing left to keep in step -- and with it go the STORED-vs-LIVE asymmetry `_kind_correct.balance_map` documents as "load-bearing for callers" and `grid_balance_view`'s `None -> {}` normalization for INTEREST.  `GridBalanceView` carries the map the projection was computed with; the grid route annotates `txn.live_estimated_amount` off THAT map instead of building a second one, so the cells and the balance row are identical BY CONSTRUCTION rather than by the argument finding N-48 currently has to make ("the two maps are provably identical, since both seams filter their candidates through `is_projected` over the same account/scenario row set").  Measured 2026-07-26 on the prod-shape clone: **ZERO of 60 columns differ** between the stored and live bases on any real account (Checking carries 51 live overrides whose stored values already match), so the deletion moves no money today; and the render drops the second ~90 ms build (N-48's `193.5 ms` two-build shape becomes `96.2 ms`).  Rejected: both sides building their own (two ~90 ms builds and two maps identical only by reasoning), and threading the parameter into the fold (keeps alive an argument a caller can get wrong, which Section 8 rules a defect rather than a contract -- a wrong map here ships a wrong balance silently). | X-c2b1 (the view carries it), X-c2b2 (the fold builds it) |
 
+
+### Answered (developer ruling, 2026-07-26: the compensator is withdrawn)
+
+| # | ruling | consumed by |
+|---|---|---|
+| **R-V** (answered 2026-07-26, as recommended) | **Plan step X-c2c3 is CANCELLED; X-g replaces the modeled bases outright, and no compensator ships in the meantime.**  X-c2c3 was to WINDOW `investment_base_balance_map` and `build_appreciation_balance_map` onto the fold so their ruled pre-anchor models survived `_merge_balance_sources`' preference order (N-43).  This document already called that window a COMPENSATOR rather than a fix (**N-72**) and named X-g as what makes it unnecessary; the ruling stops paying for it.  **Three measured grounds.**  (1) Its benefit is near-vacuous on today's data: its own correction (a) measured all four affected accounts holding ZERO transaction rows in BOTH databases, so `balances_for` and the windowed fold are both "the latest assertion carried flat" and any producer passes -- finding N-69's shape, in the step's own words.  (2) Its cost is redone: four hand-built discriminating fixtures with firing controls, plus the `ctx`-for-`scenario` signature change across `_investment`'s three public entries and four callers, all of which X-g rewrites when the base becomes a replay.  (3) **It is a MONEY-MOVING cutover**, so cancelling it removes an entire cutover -- with its own independent oracle, its own every-figure sign-off and its own revert risk -- rather than deferring one; the alternative ran TWO money-moving swaps over the same four accounts to reach one end state.  **The price, stated so it is not discovered later:** findings cash D1 and cash D3 stay OPEN for INTEREST / INVESTMENT / APPRECIATING until X-g ships, alongside N-71 and N-43 which were already going to.  That price is `$0.00` on both databases today and is a property of the DATA, not the design -- it flips the day a contribution is recorded as a transaction and settles, which is the same caveat X-g's own entry already carries.  **Sequence becomes X-c2c2 -> X-g -> X-c2c4**, and X-c2c4's deletion of `_cash_engine` / `_calculator` is unblocked by X-g's cutover exactly as it would have been by X-c2c3's -- both remove the last two callers of `balances_for`.  Rejected: shipping the window anyway (pays for a compensator whose measured benefit is zero and whose artifacts are discarded), and deleting `_cash_engine` early (its two callers are live; the C3b3 prove-the-successor-first precedent). | X-c2c3 (cancelled), X-g, X-c2c4 |
 
 ### OPEN -- X-g's forks (scope traced 2026-07-26; the DESIGN is not, and these are NOT answered)
 
@@ -743,15 +767,22 @@ replaces.
       suites), the PLAIN and degraded-AMORTIZING branches routed off the fold (2), the live income
       override dropped (1), and the entries-aware reduction dropped (4).  Full suite 7598, pylint
       10.00 on all three trees, 146 checker tests, djlint clean.
-  - **X-c2c (DECOMPOSED, 2026-07-26)** `the last cash producer deletes` -- the investment and
-    appreciation bases are WINDOWED to anchor-forward off the fold, so their own ruled pre-anchor
-    semantics survive untouched (N-43); ruling R-M's reservation `as_of` window deletes; and
+  - **X-c2c (DECOMPOSED, 2026-07-26)** `the last cash producer deletes` -- ruling R-M's reservation
+    `as_of` window deletes, the test surface re-points to the leaves that own each rule, and
     `_cash_engine`, `_calculator` and `cash_ledger.load_balance_transactions` delete WHOLE (N-46).
     **Decomposed on the developer's ruling (2026-07-26) after tracing measured its shape**: it
-    carries a money-moving base swap, ruling R-M's behaviour deletion, **4,431 lines of test file
+    carried a money-moving base swap, ruling R-M's behaviour deletion, **4,431 lines of test file
     that mostly does not test the dying module at all**, and a ~2,400-line pure deletion. Mixing
     them makes a test-migration slip read exactly like a base slip, which is the same argument that
     split X-c2b into b1/b2/b3.
+
+    **The base swap is no longer part of it (ruling R-V, 2026-07-26).** X-c2c3 was to WINDOW the
+    investment and appreciation bases to anchor-forward off the fold so their ruled pre-anchor
+    semantics survived untouched (N-43); that window was a COMPENSATOR (N-72) and is CANCELLED, so
+    **X-g replaces those bases and then X-c2c4 deletes**. What remains under this ID is
+    X-c2c1 (shipped), X-c2c2 and X-c2c4. The trace findings below are kept because three of the
+    four corrections are about the DELETION and the test surface, which are unchanged; correction
+    (a)'s vacuity measurement and correction (b)'s dated-SoT ruling are what R-V and X-g consume.
 
     **What the trace VERIFIED.** The windowed fold reproduces `balances_for`'s domain and its
     figures exactly on real data: `old_keys == new_keys` and **ZERO differing (account, period)
@@ -810,23 +841,52 @@ replaces.
     independent `Decimal` oracle for cumulative drift, and `test_cash_fold_parallel.py` has no
     long-horizon drift oracle. Deleting it IS the coverage hole a deletion step must not open.
 
-    - [ ] **X-c2c1** `refactor(cash): the reservation's as-of window deletes` -- ruling R-M's second
-      half, and a behaviour deletion rather than a pure one, so it ships alone and FIRST (nothing
-      else depends on it, and putting it inside the test migration would make a 4,000-line diff
-      carry a figure change). `sum_projected`'s `as_of`, `_expense_amount`'s and
-      `_entry_aware_amount`'s window all go, taking `TestSumProjectedAsOfBound` (5 tests) and
-      `test_cash_fold.py`'s `test_an_entry_dated_after_the_reader_now_does_not_clear_early` -- which
-      names itself "PINNED, NOT ENDORSED -- finding N-39, for plan step X-c to rule on" -- N-39
-      being that a planned envelope's entries-aware RESERVATION had no ruled valuation date and
-      the three shipping producers already disagreed about it, ruled at R-M above -- and says
-      "this test flips if X-c rules the other way." **Re-verified 2026-07-26, independently of the
-      2026-07-25 measurement:** 0 of 74 entries in `shekel_f3_final` and 0 of 47 in `shekel` are
-      dated after today (newest 2026-07-24 / 2026-06-29), and the ONLY production `BalanceContext`
-      with a non-default `as_of` is `tax_report_service.py:373`, whose ctx reaches
-      `loan_interest_in_year` and no cash producer (traced: `:374`, `:402`, `:655`). So the window
-      is a no-op in production and its deletion moves nothing there. The suite is where it bites --
-      `tests/test_services` freezes today to 2026-03-20 while fixtures hand-set later entry dates
-      -- so the firing control is which tests move, and every one must be explained.
+    - [x] **X-c2c1** `refactor(cash): the reservation's as-of window deletes`
+      -- **SHIPPED `b42dda42` (2026-07-26).** Ruling R-M's second half, and a behaviour deletion
+      rather than a pure one, so it shipped alone and FIRST. `sum_projected`'s `as_of`,
+      `_expense_amount`'s and `_entry_aware_amount`'s window all gone.
+      **The payoff is larger than a dead parameter going, and that is what the step is FOR:** what
+      a cash row is WORTH is now a function of the row alone -- the property `settled_cash_leg`
+      beside it already had -- so `as_of` does exactly ONE job anywhere in the cash path, ruling
+      R-G's clamp. It decides WHEN a row lands, never what it is worth.
+      **Premises re-verified independently of the 2026-07-25 measurement, not carried:** 0 of 74
+      entries in `shekel_f3_final` and 0 of 47 in `shekel` are dated after today (newest 2026-07-24
+      / 2026-06-29), and all 24 production `BalanceContext.build` sites were traced -- only
+      `tax_report_service.py:373` pins a non-default `as_of` and it passes the DISPLAY today, whose
+      ctx reaches `loan_interest_in_year` and no cash producer.
+      **Why deleting it is RIGHT and not merely safe** (the argument the step should be read for):
+      ruling R-M answered N-39 at the source because an entry RECORDS a purchase that happened, and
+      a purchase that happened belongs in the reservation whatever date the reader asks from. The
+      window could then fire only on a HISTORICAL read -- whose plan is TODAY's still-Projected
+      rows clamped forward rather than the plan as it stood then, so windowing its entries was a
+      partial as-of purity inside a tier that has none.
+      **Verification.** Real data, both databases, HEAD vs post: **900 grid cells** (balance /
+      income / expense / net / reconciliation / interest), **12,600 daily-series points**, **75
+      dated scalars** and every kind-correct period map across **19 accounts**, all BYTE-IDENTICAL;
+      sampling avoided, the series covering every day of the horizon. Both loans unmoved (Mortgage
+      `$177,277.97`, Van Loan `$15,663.59`). That run is the REGRESSION check, NOT the proof --
+      with `as_of` = today and no entry dated after today, any correct producer passes it, which is
+      N-69's shape stated before it could be mistaken for evidence. **The proof is the firing
+      control: restoring the pre-change production code fails EXACTLY ONE test** -- the repointed
+      N-39 pin -- and leaves the other 69 in the affected suites green.
+      **Two corrections to this step's own text, both as built.** (a) "taking
+      `TestSumProjectedAsOfBound` (5 tests)" was WRONG: three of the five pin properties that
+      SURVIVE the deletion (every loaded entry counts, an override beats the entry formula, the
+      no-entries short-circuit precedes the status read), so deleting the class whole would have
+      opened a coverage hole. Two deleted, three repointed, the class renamed to what it now pins.
+      (b) `test_an_entry_dated_after_the_reader_now_does_not_clear_early` was REPOINTED, not
+      deleted -- it named itself "PINNED, NOT ENDORSED -- finding N-39, for plan step X-c to rule
+      on" and said "this test flips if X-c rules the other way", so under R-M it becomes the
+      NEGATIVE guard for the deletion. Deleting it would have left the step with no firing control
+      at all.
+      Also corrected: `test_daily_balance_series.py`'s docstring stated as a contract that "the
+      fold values a planned row's reservation at the reader's now", which this makes false.
+      **Scoped honestly:** `_flows`' docstring does NOT claim the leaf is clock-free --
+      `live_amount_overrides` can still be built from a wall-clock read one package over
+      (`loan_payment_service.live_loan_transfer_amounts` calls `date.today()` for a derive-mode
+      loan-payment shadow), which is finding **N-40**, unchanged here.
+      Full suite 7592 (7594 at HEAD; the delta is exactly the two deleted tests, confirmed by
+      diffing collected test ids rather than by subtraction). pylint 10.00 on all three trees.
     - [ ] **X-c2c2** `test(cash): the reservation and flow rules move to their own leaf` -- NO
       production change, so the baseline provably cannot move. Per the developer's ruling
       (2026-07-26) the migrated tests split by LEAF SUBMODULE, mirroring the cohesion split D1c
@@ -840,19 +900,27 @@ replaces.
       `_layered` base builder becomes a test-local roll-forward over `sum_projected` -- correct,
       not a mirror, because the production roll-forward is what deletes and `_layer_interest` takes
       any base it is given.
-    - [ ] **X-c2c3** `refactor(balance): the modelled bases read the fold` -- the CUTOVER, and the
-      only sub-step where money can move. `investment_base_balance_map` and
-      `build_appreciation_balance_map` read `_cash_fold.cash_period_balances` over the
-      anchor-forward window, derived ONCE from the dated SoT per correction (b). The window is
-      expressed as WHICH periods the fold is ASKED about, never as a filter over its answer: a
-      post-filter is a compensator, while asking only about anchor-forward periods is the fact, so
-      there is no pre-anchor answer for the merge to prefer. `_investment`'s three public entries
-      take `ctx` in place of `scenario` (trace every caller: `_kernel.build_account_balance_map`,
-      `_kind_correct.investment_seed_map`, `_kind_correct.investment_growth_since_anchor`, and the
-      test aliases). Graded on the four fixture shapes from correction (a), each with a firing
-      control; real data is a REGRESSION check here, not the proof.
+    - [~] **X-c2c3** `refactor(balance): the modelled bases read the fold`
+      -- **CANCELLED 2026-07-26 (developer ruling R-V, as recommended). NOT superseded by a
+      renumbering: the ID is retired in place, per rule 2's append-only discipline, so the ~30
+      citations of it resolve to this cancellation rather than to nothing.** It was to window
+      `investment_base_balance_map` and `build_appreciation_balance_map` onto the fold over the
+      anchor-forward periods, keeping their ruled pre-anchor models out of `_merge_balance_sources`'
+      preference order (N-43). **X-g replaces those bases outright instead**, which is what N-72
+      already said would make this unnecessary; R-V's three measured grounds are in Section 4.
+      Two things it had settled are NOT discarded and carry forward to X-g, because they are facts
+      about the code rather than about the window: **correction (b)'s ruling that the DATED SoT
+      governs** (`resolve_anchor(...).period.id`, not the `current_anchor_period_id` CACHE column
+      `_assemble_investment_projection_inputs` pivots on -- when the two disagree the pivot misses
+      and the whole investment map projects from `ZERO`), and **correction (a)'s four discriminating
+      fixture SHAPES**, which X-g needs for the same reason this step did: real data cannot grade a
+      modeled base when all four accounts hold zero transaction rows.
     - [ ] **X-c2c4** `refactor(balance): the last cash producer deletes` -- pure deletion, no
-      behaviour. `_cash_engine` and `_calculator` WHOLE (with `_detect_stale_anchor` and the
+      behaviour. **RUNS AFTER X-g, not after X-c2c2** (ruling R-V): its precondition is that
+      `_cash_engine.balances_for` has no caller left, and X-g's replay is what takes the last two
+      -- exactly as the cancelled X-c2c3's window would have. Do not attempt it earlier; the
+      C3b3 prove-the-successor-first precedent is the whole reason this is a separate commit.
+      `_cash_engine` and `_calculator` WHOLE (with `_detect_stale_anchor` and the
       `calculate_balances` 2-tuple, deferred here from X-c2b3 because the module deletes and the
       mechanical arity edit would be written and then discarded),
       `cash_ledger.load_balance_transactions` with its W9909 non-producer ruling
@@ -884,15 +952,28 @@ replaces.
   Forks: **R-R .. R-U in Section 4, and they are OPEN** -- scope is traced, design is not.
 
   **Why it exists, in one line:** the modeled kinds are the last place where a balance is three
-  producers spliced by a preference order, which is the shape this whole arc exists to delete. Plan
-  step X-c2c windows the splice's base instead of removing the splice; that window is a
-  COMPENSATOR, recorded as **N-72**, and this step is what makes it unnecessary.
+  producers spliced by a preference order, which is the shape this whole arc exists to delete.
 
-  **It is sequenced AFTER X-c2c, and not for effort.** X-c2c deletes `_cash_engine`, `_calculator`
-  and 4,431 lines of test surface that this step's cutover would otherwise have to reason about,
-  and it closes findings cash D1 and cash D3 for the modeled kinds in the meantime -- currently
-  `$0.00` on real data only because all four affected accounts hold zero transaction rows, which is
-  a property of the DATA and flips the day a contribution is recorded as a transaction and settles.
+  **It is sequenced after X-c2c2 and BEFORE X-c2c4 (ruling R-V, 2026-07-26).** The earlier plan put
+  X-c2c3's window in front of it -- a COMPENSATOR for the very merge this step deletes (**N-72**) --
+  and that step is CANCELLED, so this one replaces the modeled bases directly and X-c2c4's deletion
+  follows it. What this step still WANTS from X-c2c is X-c2c2, the test migration: re-pointing the
+  4,431 lines that reach `cash_ledger` rules and model invariants THROUGH the dying producer is a
+  no-production-change commit, and doing it first is what keeps this step's cutover from having to
+  reason about them. What it INHERITS from the cancelled X-c2c3 is stated at that step: correction
+  (b)'s ruling that the DATED SoT governs the anchor pivot, and correction (a)'s four discriminating
+  fixture shapes.
+
+  **The price of the cancellation, carried here so this step owns it:** findings cash D1 and cash D3
+  stay open for INTEREST / INVESTMENT / APPRECIATING until this ships. That is `$0.00` on real data
+  only because all four affected accounts hold zero transaction rows, which is a property of the
+  DATA and flips the day a contribution is recorded as a transaction and settles.
+
+  **Trace R-R .. R-U FIRST, and answer them with evidence rather than from the shape of the
+  problem** -- that is this step's first concrete action, not writing code. R-R is the financial
+  danger and it has a MECHANISM, not a worry: under one replay a transfer contribution reaches the
+  stream twice, and the only thing preventing that today is `_merge_balance_sources` discarding the
+  base -- the merge this step deletes. Answering it decides what a contribution IS.
 
   **Build it the way the loan fold was built, and the way the cash fold was built** -- the discipline
   the arc has now proved seven times (C3a->C3b, C6a->C6b, C8a->C8d, C9a->C9b, E1c->E1d, X-b->X-c2b2,
@@ -968,7 +1049,7 @@ own write date, per Section 7.6.
 | N-35 (E1e) | **The statement tier `app.services.ledger_report_service` is not W9909-scoped, so a public balance-at-T born there is unguarded.** E1e's rationale for deleting W9906 whole rests on "no public single-account balance-at-T producer exists outside the seam" -- true, and the claim was NARROWED to that wording in review, because `compute_balance_sheet(user_id, as_of)` does fold every posted source attributed on or before a date into per-account cumulative positions. It is the ruled exception (a whole-chart statement whose sections articulate only because the trial balance ties; pulling ONE line out to answer "what is this account worth on date T" is the named misuse), and it never sat on W9906's producer list, so the deletion cedes nothing. The GAP is the completeness half: the package holds every ingredient of a posted balance-at-T -- `dated_account_nets`, the chart load, the class-id sectioning -- OUTSIDE W9910's protection, exactly the shape that put `cash_ledger`, `loan_ledger`, `loan_resolver` and `account_projection` on the registry. **Measured on this tree:** a public `account_balance_on(user_id, ledger_account_id, as_of)` folding `dated_account_nets` inside the package rates **10.00/10** under the full `--fail-on` set. Scoping it is its own step because every public name in the package must then be classified (2 report entries + 7 attribution names) | a balance-at-T on a screen outside the seam, every gate green (the archived N-28 / N-31 class: a public balance producer born in a module W9909 does not scope is unclassified, and the scope is keyed by module identity in BOTH directions -- moving a name out un-scopes it, and moving a module IN un-scopes what it holds) | **recorded, NOT fixed** -- the false absolute claim was corrected in-commit (checker header, the `loan_posting_service` ruling, the package's own docstring); the scope entry is deferred | own step |
 | N-36 (C2b) | **The resolver's money-blind replay keys its rate on the PAY-PERIOD START, where the genesis walk now keys on the DUE date -- one question, two rules, deliberately.**  C2b re-keyed every split input onto contract time (archived ruling D5: the split inputs -- ordering, rate and escrow -- key on the DUE date, so out-of-order or late settlement can never re-split an installment), but `rate_period_engine._replay_from_anchor` (`:893`) was left on `payment.period_start`.  The reason is measured, not a preference: it consumes payments that have been through `loan_payment_service._redistribute_to_distinct_months`, which INVENTS a due date for a payment colliding on an already-allocated schedule month, so keying its rate on that date would let a schedule-alignment artifact move a replayed balance -- trading the archived N-34's defect (the split's rate and escrow keyed on the pay-period START rather than the DUE date, fixed at C2b) for a subtler one.  Containment, verified: the replay's rows and balance are DISCARDED whenever a ``confirmed_view`` is supplied (`_build_forward_inputs` keeps only `next_pay_date` / `remaining_months_as_of`), which is every production read since E1d-b, so the two keys can differ only on the unseeded what-if path and never inside one rendered figure.  The honest fix is to carry a payment's REAL installment alongside the redistributed one so the replay can key on the fact rather than the artifact -- which is a schedule-alignment change, not a split change | none measured (the divergent surface is discarded on every production read) | **recorded, deliberate, NOT fixed** -- stated at the site in `rate_period_engine`, so it cannot be rediscovered as an accident | own step (with the schedule-alignment rework) |
 | N-42 (X-c trace) | **Nothing in the app records WHEN money moved.** `Transaction.paid_at` is stamped `db.func.now()` inside the status seam (`status_seam.py:105`) and the API refuses any other value (`schemas/validation/transactions.py:62` is `dump_only`); the only entry-creation door posts a HIDDEN `entry_date` fixed to today (`_transaction_entries.html:179`). So the balance engine's ACTUAL clock is a data-entry click. Measured on the real Checking account: `paid_at - due_date` is median **2 days**, p75 **6 days**, max **25 days**, and **81 of 130** settled rows were marked in same-minute batches (one batch of 6 spanning due dates 04-09..04-23). The corrections this produces swing `+/-$1,000` a month against a true four-month net of **`-$159.73`** -- the amounts are right and the dates are guesses. Not introduced by the fold (the posted ledger dates cash the same way); made VISIBLE by it, since the Reconciliation row is where the noise lands | `$36,323.99` gross swing vs a `-$159.73` true error; headroom measured at `$4,643.94` from entry-dating alone | **RULED 2026-07-25 (R-N)**: cut over first; X-f records the real dates after X-d | X-f |
-| N-43 (X-c trace) | **The plan's "the investment contributions base reads the fold" would silently rewrite pre-anchor net-worth history.** An investment's pre-anchor periods come from a REVERSE growth projection and a property's from a flat anchor carry, but `_merge_balance_sources` (`_investment.py:403-410`) prefers the base map whenever it has the period -- and the fold, being TOTAL, always does. So pointing the shared base at the fold replaces both ruled models with a raw contribution sum. Measured at the earliest period: Roth `$26,604.63 -> $23,851.08`, Empower `$29,289.22 -> $26,912.56`, Trad IRA `$11,360.85 -> $10,175.49`. The property is unaffected by coincidence, not design -- R-I's back-projection reproduces the flat carry exactly (`$350,000.00`) because the Home carries no transaction rows | **`-$6,315.57`** of net-worth history at one period, with no ruling behind it | corrected in the step: the investment / appreciation bases are WINDOWED to anchor-forward | X-c2 |
+| N-43 (X-c trace) | **The plan's "the investment contributions base reads the fold" would silently rewrite pre-anchor net-worth history.** An investment's pre-anchor periods come from a REVERSE growth projection and a property's from a flat anchor carry, but `_merge_balance_sources` (`_investment.py:403-410`) prefers the base map whenever it has the period -- and the fold, being TOTAL, always does. So pointing the shared base at the fold replaces both ruled models with a raw contribution sum. Measured at the earliest period: Roth `$26,604.63 -> $23,851.08`, Empower `$29,289.22 -> $26,912.56`, Trad IRA `$11,360.85 -> $10,175.49`. The property is unaffected by coincidence, not design -- R-I's back-projection reproduces the flat carry exactly (`$350,000.00`) because the Home carries no transaction rows | **`-$6,315.57`** of net-worth history at one period, with no ruling behind it | **OPEN, and the WINDOW that was to contain it is CANCELLED (ruling R-V, 2026-07-26).** X-c2c3 would have kept the fold out of the merge's way; X-g removes the merge instead, so this defect class stops being representable rather than being contained. Nothing regresses in the meantime -- the bases still read `balances_for`, which is what they read before this finding was written -- and the fork it names is X-g's ruling **R-S**, which is OPEN and must be traced, not assumed | X-g (via R-S) |
 | N-40 (X-b) | **`live_amount_overrides` reads the wall clock, so a fold given an explicit `as_of` is not fully as-of-pure.** `loan_payment_service.live_loan_transfer_amounts` calls `date.today()` (after two early-outs, so only for a derive-mode loan-payment transfer shadow) to resolve the loan's current P&I + escrow. The cash fold takes a pinned `as_of` and threads that map into its PLANNED tier, so a historical read values such a shadow at TODAY's loan state rather than the state at `as_of`. Bounded: the planned tier only contributes to dates after `as_of`, and this is inherited UNCHANGED from all three shipping producers (every one of them builds the same map), so X-b introduces nothing -- but the fold is the first cash producer to carry an explicit as-of at all, which is what makes the impurity visible and worth naming before X-c makes it a rendered number | latent; scoped to derive-mode loan-payment transfer shadows on a historical read | recorded | X-c (or its own commit) |
 | N-45 (X-c1) | **A checker unit test is green only because a DIFFERENT test class in the same file warms astroid's module cache.** `TestShekelPackagePrivacyChecker::test_allows_seam_submodules_importing_each_other` parses `from app.services.balance_at._context import _memoize_once` inside a synthetic `app.services.balance_at._plan` and asserts NO message. The checker's `_names_a_module` resolves the base through astroid, and under pytest's `tools/pylint/tests` rootdir the real `app` package is NOT importable -- so a cold cache raises `AstroidBuildingError`, the checker fail-CLOSES (correctly, by design), and the assertion fires. It passes only because `TestShekelBalanceSeamChecker` runs first in the same file and `astroid.parse(module_name="app.services.balance_at._context")` REGISTERS its synthetic module under that real dotted name, so the later resolve hits the cache. **Reproduced deterministically at HEAD, independent of this step:** the class alone fails 3/3 (both `./scripts/test.sh` and serial `-c /dev/null`), the whole file serially passes 5/5, and the whole file under `pytest.ini`'s `-n 12 --dist=loadgroup` fails ~2/3 depending on which worker gets the class. **The merge gate is NOT at risk** -- CI and pre-commit both run `pytest tools/pylint/tests -c /dev/null -q`, serial and whole-file (`ci.yml:186`, `.pre-commit-config.yaml` `shekel-checker-tests`), and `pytest.ini`'s `testpaths = tests` excludes the directory from the default suite. The honest fix is for the test to stop depending on a cross-class cache side effect (give the synthetic importer a real `path=` so `_importer_file_inside` decides it, as the checker's own file-arm tests already do). Out of scope here: a test-isolation defect in a file this step does not touch | a gate's own suite green by accident; ~2/3 flake under xdist | recorded, deferred | own commit (test isolation) |
 | N-46 (X-c2 trace) | **Two more names belong on X-c2's deletion list, and one of them is dead ALREADY.** AST-scanned over `app/` + `scripts/` + `tests/`: (a) `cash_ledger.period_subtotal` (singular) has **ZERO production callers today** -- `period_subtotals` (plural) is the only one the grid reaches, and the singular adapter survives on 5 test files alone, the dead-code-alive-for-its-own-tests shape C3b4 / D2a / F2 / E1e each deleted; (b) `cash_ledger.load_balance_transactions` has exactly three callers -- `_cash_engine`, `_daily_series` and `_flows.period_subtotals` -- and X-c2 deletes all three, so it goes to ZERO at the cutover. The fold does not use it (`planned_cash_rows` and `settled_cash_facts` both go through `_facts._unwindowed_contributing_rows`, which owns its own query with both eager loads). Neither name was on the step's list; leaving them would keep ~120 lines of production code alive for its own suite | -- | **half closed (`82557ca9`)**: `period_subtotal` deleted at X-c2b3 with its plural sibling, ruling R-K having changed what a subtotal counts.  `load_balance_transactions` SURVIVES -- X-c2b3 deleted two of its three callers and `_cash_engine.balances_for` is the third, so it goes to zero when that producer does | X-c2b3 / X-c2c |
@@ -978,7 +1059,7 @@ own write date, per Section 7.6.
 | N-14 (C6b) | **`contractual_schedule_from_origination` is computed twice per pass on the property page** -- once inside the (now-memoized) `ctx.loan_plan` and once in the equity chart's `_back_projection_by_month` (both call it for the same loan). Deferred (developer ruling): pure-CPU (no query), only 2x, property-page only, and a full dedup via a fourth context memo must FIRST prove the two call sites' rate-change inputs are identical (`load_rate_changes(id)` vs `resolved.context.rate_changes`) -- a correctness check better done in its own focused change | -- | recorded, deferred | own commit (or Phase D) |
 | E2 | **The super-package boundary: the option that would dissolve the last name-keyed gate.** Move the read seam, the write cluster and the shared leaves (`loan_ledger` / `cash_ledger`) under ONE package whose shared internals are private to it, so the W9909 classification registry -- the last name-keyed surface -- dissolves structurally the way the W9906 call allowlist already did. Large reorganization with its own arrow risks (the D0b class, where scoping the step showed it would ADD four fence entries); W9910's per-boundary membership would need extending | -- | **OPEN, recorded, NOT committed to** (developer ruling 2026-07-24). The registry's residue is small, fail-closed and self-attest-pinned, so the reorg must earn its churn on its own merits. Recorded so the option cannot be forgotten. Converted from a Phase E step to a finding at the 2026-07-26 trim, because it is an option and not a commit | own arc, if ever |
 | N-71 (X-c2c trace) | **Three account kinds still answer a DATE with a PERIOD, and it is documented as intended.** `_kind_correct.py:195-197`: "INTEREST / INVESTMENT / APPRECIATING are period-granular: they answer 'what is the balance at the end of the period containing *as_of*?'" So the whole of a period's modeled growth is credited on the period's FIRST day. **Measured 2026-07-26 on the prod-shape clone, period 30 (2027-05-20..06-02): the scalar returns the IDENTICAL value on the first and last day of the period** -- Empower 401(k) `$38,617.11` against `$328.50` of growth in that period, Money Market `$9,090.81` against `$261.24`, Roth IRA `$29,843.76` against `$114.07`. This is finding cash D2's exact shape ('the scalar is period-flat; it contradicts a date-precise read'), closed for PLAIN and AMORTIZING at plan step X-c2b2 and still live for the other three | a whole period's growth on the wrong day: `$328.50` measured, unbounded in principle | **recorded, NOT fixed** -- the fix is structural, not a patch: a period-flat answer is what a period-keyed MAP can give, and a date-precise one needs the event replay | X-g |
-| N-72 (X-c2c trace) | **A modeled asset's balance is three producers merged by a preference order, and X-c2c's window is a COMPENSATOR for it rather than a fix.** `_merge_balance_sources` (`_investment.py:395-424`) picks forward projection, else the cash base, else reverse projection, per period. Finding N-43 is a bug in that preference order -- the fold, being TOTAL, always has the period, so it always wins and silently replaces two RULED pre-anchor models. Two fixes exist: keep the base out of the merge's way (the window), or have no merge (one replay). X-c2c ships the window. Recording it so the next reader does not inherit a band-aid with no note that it is one, which is the whole reason this ledger exists. Also measured here, and NOT introduced by X-c2c: one `/savings` render builds the modeled base **14 times for 4 accounts** (3x per IRA from two general `build_maps` passes plus retirement's own, 1x more from `investment_seed_map`, 2x for the Home) and `/investment` **4 times for one account** -- a pre-existing redundancy whose cause is upstream (consumers not sharing a read pass), which the developer ruled recorded, not fixed, at X-c2c | `-$6,315.57` of net-worth history is what N-43 measured the preference order silently rewriting | **recorded; the compensator ships at X-c2c with this note, and the merge is DELETED at X-g** | X-g |
+| N-72 (X-c2c trace) | **A modeled asset's balance is three producers merged by a preference order; the window that would have compensated for it is CANCELLED and the merge is DELETED instead.** `_merge_balance_sources` (`_investment.py:395-424`) picks forward projection, else the cash base, else reverse projection, per period. Finding N-43 is a bug in that preference order -- the fold, being TOTAL, always has the period, so it always wins and silently replaces two RULED pre-anchor models. Two fixes exist: keep the base out of the merge's way (the window), or have no merge (one replay). **X-c2c3 was to ship the window; ruling R-V (2026-07-26) CANCELLED it and X-g ships the replay instead** -- so this row records a band-aid that was recorded, priced and then NOT paid for, which is the outcome this ledger exists to make possible. Also measured here, and NOT introduced by X-c2c: one `/savings` render builds the modeled base **14 times for 4 accounts** (3x per IRA from two general `build_maps` passes plus retirement's own, 1x more from `investment_seed_map`, 2x for the Home) and `/investment` **4 times for one account** -- a pre-existing redundancy whose cause is upstream (consumers not sharing a read pass), which the developer ruled recorded, not fixed, at X-c2c | `-$6,315.57` of net-worth history is what N-43 measured the preference order silently rewriting | **recorded; NO compensator ships (ruling R-V), and the merge is DELETED at X-g.** The `/savings` and `/investment` redundancy half of this row is UNAFFECTED by R-V and stays open | X-g |
 | X5 | **Anchor `effective_date`: an optional feature, not a step.** An `AccountAnchorHistory` row is dated by its `created_at` -- the instant it was ASSERTED -- so a user cannot enter a balance they read off last month's statement and have it land on last month. Adding an `effective_date` column would separate "when this was true" from "when it was typed", which is what a backdated statement assertion needs. Nothing depends on it: every shipped step and every remaining one (X-c2c .. X-g) works on the assertion instant | -- | **OPEN, optional, NOT committed to.** Converted from a step to a finding at the 2026-07-26 trim, on the same ground as E2: an optional feature nothing sequences against is a recorded option, not a commit -- and as the last numeric ID in a letter-suffixed scheme it read as a step whose position in the order was ambiguous. Its old text also said "NOT a prerequisite for X-a .. X-e", which had gone stale twice over (X-f and X-g did not exist when it was written) | own arc, if ever |
 | N-73 (X-c2c trace) | **Five balance sites guard against a NULL anchor on two `nullable=False` columns.** `Account.current_anchor_balance` and `current_anchor_period_id` are both `nullable=False` (`app/models/account.py:91`, `:100`) with a `current_anchor_balance IS NOT NULL` check constraint (`:55`), and there are **0 NULLs across all 19 account rows in both databases**. Yet `_kernel.build_account_balance_map:506`, `_kernel.base_account_balance_map:339`, `_kernel.interest_projection_for_account:393`, `_kernel.interest_by_period_for_account:438` and `_investment.get_anchor_period_index:125` each branch on `is None`, and two of them return a `None` / empty map that every caller must then handle -- so a state the schema refuses is propagating optionality through the seam's signatures | -- | **recorded, NOT fixed** (out of X-c2c's scope, rule 6). It is not merely dead: X-g removes the anchor PERIOD from the balance paths entirely, at which point four of the five guards have nothing left to test | X-g, then X-e |
 
