@@ -1498,166 +1498,22 @@ class TestBalanceCalculatorRegressionBaseline:
                 "projection -- they are already reflected in the anchor"
             )
 
-    def test_effective_amount_property_behavior(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """Exhaustive verification of Transaction.effective_amount for
-        every status and edge case.
-
-        Originally a Commit #0 regression baseline.  Updated in Commit
-        5A.1 to assert the corrected property logic: all active statuses
-        now prefer actual_amount when populated.
-
-        Property logic (after 5A.1):
-          - is_deleted=True             -> Decimal("0")
-          - status.excludes_from_balance -> Decimal("0")
-          - actual_amount is not None   -> actual_amount
-          - otherwise                   -> estimated_amount
-        """
-        with app.app_context():
-            scenario = seed_user["scenario"]
-            account = seed_user["account"]
-            periods = seed_periods
-
-            # Look up all statuses and types.
-            projected = db.session.query(Status).filter_by(
-                name="Projected",
-            ).one()
-            paid = db.session.query(Status).filter_by(name="Paid").one()
-            received = db.session.query(Status).filter_by(
-                name="Received",
-            ).one()
-            credit = db.session.query(Status).filter_by(name="Credit").one()
-            cancelled = db.session.query(Status).filter_by(
-                name="Cancelled",
-            ).one()
-            expense_type = db.session.query(TransactionType).filter_by(
-                name="Expense",
-            ).one()
-
-            def make_txn(name, status, estimated, actual=None,
-                         is_deleted=False):
-                """Create a transaction with the given parameters."""
-                txn = Transaction(
-                    pay_period_id=periods[0].id,
-                    scenario_id=scenario.id,
-                    account_id=account.id,
-                    status_id=status.id,
-                    name=name,
-                    category_id=seed_user["categories"]["Rent"].id,
-                    transaction_type_id=expense_type.id,
-                    estimated_amount=estimated,
-                    actual_amount=actual,
-                    is_deleted=is_deleted,
-                )
-                db.session.add(txn)
-                return txn
-
-            # --- Projected status cases ---
-
-            # Projected with actual populated: returns actual (5A.1 fix).
-            t1 = make_txn(
-                "Proj+actual", projected,
-                Decimal("100.00"), Decimal("150.00"),
-            )
-
-            # Projected with actual=None: returns estimated (fallback).
-            t2 = make_txn(
-                "Proj+no_actual", projected,
-                Decimal("100.00"), None,
-            )
-
-            # Projected with actual=0: returns 0 (5A.1 fix -- zero is
-            # a valid actual, e.g. a waived fee).
-            t3 = make_txn(
-                "Proj+zero_actual", projected,
-                Decimal("100.00"), Decimal("0"),
-            )
-
-            # --- Settled status cases ---
-
-            # Paid with actual populated: returns actual.
-            t4 = make_txn(
-                "Paid+actual", paid,
-                Decimal("100.00"), Decimal("80.00"),
-            )
-
-            # Paid with actual=None: returns estimated (fallback).
-            t5 = make_txn(
-                "Paid+no_actual", paid,
-                Decimal("100.00"), None,
-            )
-
-            # Received with actual populated: returns actual.
-            t6 = make_txn(
-                "Received+actual", received,
-                Decimal("100.00"), Decimal("120.00"),
-            )
-
-            # --- Excluded status cases ---
-
-            # Credit: returns 0 regardless of amounts.
-            t7 = make_txn(
-                "Credit", credit,
-                Decimal("100.00"), Decimal("150.00"),
-            )
-
-            # Cancelled: returns 0 regardless of amounts.
-            t8 = make_txn(
-                "Cancelled", cancelled,
-                Decimal("100.00"), Decimal("150.00"),
-            )
-
-            # --- Deleted case ---
-
-            # Soft-deleted: returns 0 regardless of status or amounts.
-            t9 = make_txn(
-                "Deleted", projected,
-                Decimal("100.00"), Decimal("150.00"),
-                is_deleted=True,
-            )
-
-            db.session.flush()
-
-            # Projected: prefers actual when populated (5A.1 fix).
-            assert t1.effective_amount == Decimal("150.00"), (
-                "Projected with actual: should return actual_amount"
-            )
-            assert t2.effective_amount == Decimal("100.00"), (
-                "Projected without actual: should fall back to estimated"
-            )
-            # Projected with actual=0: returns 0 (zero is a valid actual).
-            assert t3.effective_amount == Decimal("0"), (
-                "Projected with zero actual: should return 0 (waived fee)"
-            )
-
-            # Settled: returns actual if present, else estimated.
-            assert t4.effective_amount == Decimal("80.00"), (
-                "Paid with actual: should return actual_amount"
-            )
-            assert t5.effective_amount == Decimal("100.00"), (
-                "Paid without actual: should fall back to estimated"
-            )
-            assert t6.effective_amount == Decimal("120.00"), (
-                "Received with actual: should return actual_amount"
-            )
-
-            # Excluded statuses: always 0.
-            assert t7.effective_amount == Decimal("0"), (
-                "Credit: should return 0 (excludes_from_balance)"
-            )
-            assert t8.effective_amount == Decimal("0"), (
-                "Cancelled: should return 0 (excludes_from_balance)"
-            )
-
-            # Deleted: always 0.
-            assert t9.effective_amount == Decimal("0"), (
-                "Deleted: should return 0 regardless of status"
-            )
-
-
 class TestEffectiveAmountFix:
-    """Tests for the 5A.1 effective_amount and balance calculator fix.
+    """The balance walk honours ``effective_amount`` (5A.1).
+
+    **The PROPERTY itself is not graded here any more (plan step X-c2c2c).**
+    Two tests asserted ``Transaction.effective_amount`` directly -- one of them
+    156 lines covering nine cases -- and six of those nine duplicated
+    ``tests/test_models/test_computed_properties.py``'s
+    ``TestTransactionEffectiveAmount``, the property's own home.  The three
+    that did NOT (a Projected row preferring its actual, a Projected row with a
+    ZERO actual, and a soft-deleted row) moved there as tests of their own,
+    each with a firing control; the duplicates deleted rather than moving, so
+    the home does not gain a weaker second copy.
+
+    What stays is the composition: that the WALK reads the property, across
+    periods and status mixes.  It discriminates a ``_calculator`` rule and dies
+    with that module at plan step X-c2c4.
 
     Verifies that the balance calculator correctly uses actual_amount
     (via effective_amount) when populated, falling back to estimated_amount
@@ -1861,41 +1717,6 @@ class TestEffectiveAmountFix:
 
             # 1000.00 - 99.99 = 900.01 (exact Decimal arithmetic).
             assert balances[periods[0].id] == Decimal("900.01")
-
-    def test_effective_amount_projected_actual_zero(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """Projected transaction with actual=Decimal("0.00"): property
-        returns Decimal("0.00"), not the estimated amount.
-
-        Specifically tests the zero-actual path for Projected status.
-        If someone uses truthiness instead of `is not None`, this fails.
-        """
-        with app.app_context():
-            projected = db.session.query(Status).filter_by(
-                name="Projected",
-            ).one()
-            expense_type = db.session.query(TransactionType).filter_by(
-                name="Expense",
-            ).one()
-
-            txn = Transaction(
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=projected.id,
-                name="Zero actual",
-                category_id=seed_user["categories"]["Rent"].id,
-                transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("250.00"),
-                actual_amount=Decimal("0.00"),
-            )
-            db.session.add(txn)
-            db.session.flush()
-
-            assert txn.effective_amount == Decimal("0"), (
-                "Zero actual must return 0, not fall back to estimated"
-            )
 
     def test_balance_multiple_periods_with_mixed_actuals(
         self, app, db, seed_user, seed_periods,
@@ -2103,192 +1924,30 @@ class TestEffectiveAmountFix:
 
 
 class TestTransferInvariantsBalanceRegression:
-    """Regression tests verifying the five transfer invariants hold when
-    transfers are used with the balance calculator.
+    """The balance walk sees both of a transfer's shadows.
+
+    **The INVARIANTS themselves are not re-checked here any more (plan step
+    X-c2c2c).**  Three tests pinned shadow count, matching amounts, and
+    matching statuses / periods at CREATION -- all duplicated, and more weakly,
+    by ``test_transfer_service.py``'s ``TestInvariants``, which is the
+    invariants' own home and checks each one AFTER AN UPDATE as well
+    (``test_shadow_count_is_exactly_two``,
+    ``test_shadow_types_are_one_expense_one_income``,
+    ``test_amounts_always_match_after_update``,
+    ``test_statuses_always_match_after_update``,
+    ``test_periods_always_match_after_update``).  They deleted rather than
+    moving: a second, weaker copy beside the stronger one is not coverage.
+    How a shadow is PRICED in the reduction is pinned by
+    ``test_cash_flows.py``'s ``test_a_transfer_shadow_is_priced_like_any_other_row``.
+
+    What stays is the one test that needs a PRODUCER: that the walk reflects
+    both legs, on both accounts.  It dies with ``_calculator`` at X-c2c4.
 
     These tests create real transfers via transfer_service and then run
     the balance calculator to verify shadow transactions are correctly
     reflected.  This is a cross-cutting concern that Section 5 must
     preserve.
     """
-
-    def test_transfer_creates_exactly_two_shadows(  # pylint: disable=too-many-locals
-        self, app, db, seed_user, seed_periods,
-    ):
-        """Invariant 1: Every transfer has exactly two linked shadow
-        transactions (one expense, one income).
-
-        Verifies the count and types after creating a transfer between
-        checking and a savings account.
-        """
-        from app.models.ref import AccountType  # pylint: disable=import-outside-toplevel
-        from app.services.transfer_service import TransferSpec, create_transfer  # pylint: disable=import-outside-toplevel
-
-        with app.app_context():
-            user = seed_user["user"]
-            account = seed_user["account"]
-            scenario = seed_user["scenario"]
-            periods = seed_periods
-
-            savings_type = db.session.query(AccountType).filter_by(
-                name="Savings"
-            ).one()
-            savings_acct = account_service.create_account(
-                account_service.AccountSpec(
-                    user_id=user.id,
-                    account_type_id=savings_type.id,
-                    name="Invariant Savings",
-                    anchor_balance=Decimal("0.00"),
-                ),
-            )
-            db.session.add(savings_acct)
-            db.session.flush()
-            savings_acct.current_anchor_period_id = periods[0].id
-            db.session.commit()
-
-            transfer = create_transfer(
-                TransferSpec(
-                    user_id=user.id,
-                    from_account_id=account.id,
-                    to_account_id=savings_acct.id,
-                    pay_period_id=periods[1].id,
-                    scenario_id=scenario.id,
-                    amount=Decimal("200.00"),
-                    status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-                    category_id=seed_user["categories"]["Rent"].id,
-                ),
-            )
-            db.session.commit()
-
-            # Query shadow transactions.
-            shadows = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=transfer.id, is_deleted=False)
-                .all()
-            )
-            assert len(shadows) == 2
-
-            types = {s.transaction_type.name for s in shadows}
-            assert types == {"Expense", "Income"}
-
-    def test_shadow_amounts_match_transfer(  # pylint: disable=too-many-locals
-        self, app, db, seed_user, seed_periods,
-    ):
-        """Invariant 3: Shadow transaction amounts equal the parent
-        transfer's amount.
-        """
-        from app.models.ref import AccountType  # pylint: disable=import-outside-toplevel
-        from app.services.transfer_service import TransferSpec, create_transfer  # pylint: disable=import-outside-toplevel
-
-        with app.app_context():
-            user = seed_user["user"]
-            account = seed_user["account"]
-            scenario = seed_user["scenario"]
-            periods = seed_periods
-
-            savings_type = db.session.query(AccountType).filter_by(
-                name="Savings"
-            ).one()
-            savings_acct = account_service.create_account(
-                account_service.AccountSpec(
-                    user_id=user.id,
-                    account_type_id=savings_type.id,
-                    name="Amount Test Savings",
-                    anchor_balance=Decimal("0.00"),
-                ),
-            )
-            db.session.add(savings_acct)
-            db.session.flush()
-            savings_acct.current_anchor_period_id = periods[0].id
-            db.session.commit()
-
-            transfer_amount = Decimal("350.00")
-            transfer = create_transfer(
-                TransferSpec(
-                    user_id=user.id,
-                    from_account_id=account.id,
-                    to_account_id=savings_acct.id,
-                    pay_period_id=periods[1].id,
-                    scenario_id=scenario.id,
-                    amount=transfer_amount,
-                    status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-                    category_id=seed_user["categories"]["Rent"].id,
-                ),
-            )
-            db.session.commit()
-
-            shadows = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=transfer.id, is_deleted=False)
-                .all()
-            )
-            for shadow in shadows:
-                assert shadow.estimated_amount == transfer_amount, (
-                    f"Shadow {shadow.id} estimated_amount "
-                    f"{shadow.estimated_amount} != transfer {transfer_amount}"
-                )
-
-    def test_shadow_statuses_and_periods_match_transfer(  # pylint: disable=too-many-locals
-        self, app, db, seed_user, seed_periods,
-    ):
-        """Invariants 4 & 5: Shadow statuses and periods always equal
-        the parent transfer's.
-        """
-        from app.models.ref import AccountType  # pylint: disable=import-outside-toplevel
-        from app.services.transfer_service import TransferSpec, create_transfer  # pylint: disable=import-outside-toplevel
-
-        with app.app_context():
-            user = seed_user["user"]
-            account = seed_user["account"]
-            scenario = seed_user["scenario"]
-            periods = seed_periods
-
-            savings_type = db.session.query(AccountType).filter_by(
-                name="Savings"
-            ).one()
-            savings_acct = account_service.create_account(
-                account_service.AccountSpec(
-                    user_id=user.id,
-                    account_type_id=savings_type.id,
-                    name="Status Period Savings",
-                    anchor_balance=Decimal("0.00"),
-                ),
-            )
-            db.session.add(savings_acct)
-            db.session.flush()
-            savings_acct.current_anchor_period_id = periods[0].id
-            db.session.commit()
-
-            projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
-            transfer = create_transfer(
-                TransferSpec(
-                    user_id=user.id,
-                    from_account_id=account.id,
-                    to_account_id=savings_acct.id,
-                    pay_period_id=periods[2].id,
-                    scenario_id=scenario.id,
-                    amount=Decimal("100.00"),
-                    status_id=projected_id,
-                    category_id=seed_user["categories"]["Rent"].id,
-                ),
-            )
-            db.session.commit()
-
-            shadows = (
-                db.session.query(Transaction)
-                .filter_by(transfer_id=transfer.id, is_deleted=False)
-                .all()
-            )
-            for shadow in shadows:
-                assert shadow.status_id == transfer.status_id, (
-                    f"Shadow {shadow.id} status_id {shadow.status_id} "
-                    f"!= transfer status_id {transfer.status_id}"
-                )
-                assert shadow.pay_period_id == transfer.pay_period_id, (
-                    f"Shadow {shadow.id} pay_period_id "
-                    f"{shadow.pay_period_id} != transfer "
-                    f"pay_period_id {transfer.pay_period_id}"
-                )
 
     def test_balance_calculator_reflects_transfer_shadows(  # pylint: disable=too-many-locals
         self, app, db, seed_user, seed_periods,

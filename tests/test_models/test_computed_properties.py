@@ -13,7 +13,6 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from app.extensions import db
-from app.models.category import Category
 from app.models.pay_period import PayPeriod
 from app.models.ref import Status, TransactionType
 from app.models.transaction import Transaction
@@ -59,6 +58,68 @@ class TestTransactionEffectiveAmount:
         with app.app_context():
             txn = self._make_txn(seed_user, seed_periods, "Projected", Decimal("150.00"))
             assert txn.effective_amount == Decimal("150.00")
+
+    # ── Three cases that arrived at plan step X-c2c2c ────────────────
+    #
+    # They were asserted inside ``test_balance_calculator.py``, through the
+    # balance walk, by two tests whose other six cases duplicated the ones
+    # above.  The duplicates deleted; these three had no home here and are
+    # the whole of what that move preserved.  The property is the MODEL's, so
+    # it is graded against the model.
+
+    def test_projected_with_actual_prefers_the_actual(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A PROJECTED row with an actual returns the actual (5A.1).
+
+        The pairing the class was missing: it pinned Projected WITHOUT an
+        actual and Paid WITH one, so nothing here said that a projected row
+        prefers its actual too.  It does, and it must -- the grid lets a user
+        correct an amount before marking the row paid, and until 5A.1 the
+        projection ignored that correction.
+        """
+        with app.app_context():
+            txn = self._make_txn(
+                seed_user, seed_periods, "Projected",
+                Decimal("100.00"), actual=Decimal("150.00"),
+            )
+            assert txn.effective_amount == Decimal("150.00")
+
+    def test_projected_with_zero_actual_returns_zero(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A PROJECTED row with ``actual_amount`` of zero is worth zero.
+
+        Zero is a VALUE, not "missing" (E-12): a waived fee corrected to
+        ``0.00`` must reduce the projection by nothing, not fall back to the
+        ``100.00`` estimate.  ``test_done_with_zero_actual`` pins the settled
+        half of this; the projected half was unpinned.
+        """
+        with app.app_context():
+            txn = self._make_txn(
+                seed_user, seed_periods, "Projected",
+                Decimal("100.00"), actual=Decimal("0.00"),
+            )
+            assert txn.effective_amount == Decimal("0")
+
+    def test_a_soft_deleted_row_is_worth_zero_whatever_its_status(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """``is_deleted`` zeroes the row regardless of status or amounts.
+
+        The last of the property's four branches, and the only one no test
+        here covered: a soft-deleted row is worth nothing even when its status
+        is active and its actual is populated.
+        """
+        with app.app_context():
+            txn = self._make_txn(
+                seed_user, seed_periods, "Projected",
+                Decimal("100.00"), actual=Decimal("75.00"),
+            )
+            txn.is_deleted = True
+            db.session.flush()
+
+            assert txn.effective_amount == Decimal("0")
 
     def test_done_with_actual_returns_actual(self, app, db, seed_user, seed_periods):
         """Done transaction with actual_amount returns actual_amount."""
@@ -199,7 +260,6 @@ class TestTransferEffectiveAmount:
 
     def _make_transfer(self, seed_user, seed_periods, status_name, amount):
         """Helper: create a transfer with given status and amount."""
-        from app.models.account import Account
         from app.models.ref import AccountType
 
         savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
