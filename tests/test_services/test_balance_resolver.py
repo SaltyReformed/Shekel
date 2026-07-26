@@ -85,7 +85,6 @@ from app.services.cash_ledger import (
     load_balance_transactions,
     sum_projected,
 )
-from app.services.cash_ledger._amounts import _entry_aware_amount
 
 
 # ── Fixtures local to this test module ─────────────────────────────
@@ -759,59 +758,6 @@ class TestTheProjectedSumValuesAnExpenseRow:
 
             assert income == Decimal("0.00")
             assert expense == Decimal("50.00")
-
-    def test_live_override_wins_over_the_entry_formula(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """An override short-circuits the entry formula entirely.
-
-        A live-derived amount is what the row is worth now and carries no
-        entries to reduce, so the override is returned verbatim rather than
-        the 50.00 the three-bucket reservation would give -- the ordering the
-        pre-D1c dated leg also had (override checked first).
-        """
-        with app.app_context():
-            txn = self._expense_with_two_cleared_debits(
-                db.session, seed_user, seed_periods[0],
-            )
-            txns = load_balance_transactions(
-                seed_user["account"], seed_user["scenario"].id,
-                [seed_periods[0].id],
-            )
-            overrides = {txn.id: Decimal("123.45")}
-
-            assert sum_projected(txns, overrides)[1] == Decimal("123.45")
-
-    def test_no_entries_short_circuits_before_the_status_read(self):
-        """The guard ORDER is preserved: no entries returns before ``is_projected``.
-
-        ``_entry_aware_amount`` checks ``not entries`` FIRST and that is
-        load-bearing rather than stylistic -- ``is_projected`` reads
-        ``status_id`` through ``ref_cache``, so a non-ORM fake with neither
-        attribute must still return ``effective_amount`` rather than raising.
-        The unified function moved the window BELOW both guards to keep this
-        exact property; a naive merge that windowed first would break it.
-
-        Mutation-verified: swapping the two guards fails this with
-        ``AttributeError: '_Fake' object has no attribute 'status_id'`` --
-        ``is_projected`` reads ``status_id`` BEFORE it consults ``ref_cache``,
-        so that attribute, not the cache, is what the ordering protects.
-
-        Note the DATED path gained this property rather than preserving it: the
-        deleted ``_entry_aware_amount_dated`` checked ``is_projected`` first and
-        so raised on this fake.  Nothing reached it that way in production
-        (``sum_projected`` gates on ``is_projected`` before calling the expense
-        leg at all), so the unification was safe in the direction that matters
-        and strictly more total in the other.  Plan step X-c2c1 then deleted the
-        date parameter, leaving one signature and this one ordering.
-        """
-        class _Fake:  # pylint: disable=too-few-public-methods
-            """A non-ORM stand-in with no ``entries`` and no ``status_id``."""
-
-            effective_amount = Decimal("77.00")
-
-        assert _entry_aware_amount(_Fake()) == Decimal("77.00")
-
 
 # ── Module surface ─────────────────────────────────────────────────
 

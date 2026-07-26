@@ -2178,12 +2178,23 @@ def create_envelope_txn(seed_user, db_session, period, name, estimated):
     return txn
 
 
-def add_entry(db_session, seed_user, txn, amount, entry_date):
-    """Attach one debit :class:`TransactionEntry` of ``amount`` to ``txn``.
+def add_entry(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    db_session, seed_user, txn, amount, entry_date,
+    *, is_credit=False, is_cleared=False, description="purchase",
+):
+    """Attach one :class:`TransactionEntry` of ``amount`` to ``txn``.
 
-    The shared single-debit-entry builder so the stereotyped entry
-    construction is not copied per suite (a duplicate-code finding).
-    Flushes; the caller commits.
+    The shared entry builder so the stereotyped entry construction is not
+    copied per suite (a duplicate-code finding).  Flushes; the caller commits.
+
+    **The three bucket flags are parameters (plan step X-c2c2a).**  It built a
+    DEBIT-only, uncleared entry until the per-row valuation tests moved to
+    ``test_cash_amounts.py``, which needs all three buckets of
+    ``cash_ledger._amounts._entry_checking_impact`` -- cleared debit, uncleared
+    debit, and credit.  Narrowness is why the helper had not displaced the
+    hand-rolled copies it exists to prevent: seven suites still define their own
+    ``_add_entry`` because this one could not express their shape.  Widening it
+    is additive; those suites are not touched here (scope).
 
     Args:
         db_session: The test ``db.session``.
@@ -2191,6 +2202,14 @@ def add_entry(db_session, seed_user, txn, amount, entry_date):
         txn: The parent :class:`~app.models.transaction.Transaction`.
         amount: The entry amount (Decimal).
         entry_date: The entry's ``entry_date``.
+        is_credit: True for a credit-card purchase, which never hits checking
+            directly (it leaves via the CC Payback sibling) and so only
+            REDUCES the reservation.
+        is_cleared: True when the purchase is already reflected in the
+            account's anchor balance, so it is subtracted from the
+            reservation rather than acting as its floor.
+        description: The entry description; the default suits a test that
+            does not assert on it.
     """
     # pylint: disable=import-outside-toplevel  -- same circular-dep
     # avoidance as the loan helpers above.
@@ -2200,8 +2219,10 @@ def add_entry(db_session, seed_user, txn, amount, entry_date):
         transaction_id=txn.id,
         user_id=seed_user["user"].id,
         amount=amount,
-        description="purchase",
+        description=description,
         entry_date=entry_date,
+        is_credit=is_credit,
+        is_cleared=is_cleared,
     ))
     db_session.flush()
 

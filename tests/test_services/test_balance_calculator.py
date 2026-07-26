@@ -2117,7 +2117,6 @@ class TestTransferInvariantsBalanceRegression:
         Verifies the count and types after creating a transfer between
         checking and a savings account.
         """
-        from app.models.account import Account  # pylint: disable=import-outside-toplevel
         from app.models.ref import AccountType  # pylint: disable=import-outside-toplevel
         from app.services.transfer_service import TransferSpec, create_transfer  # pylint: disable=import-outside-toplevel
 
@@ -2174,7 +2173,6 @@ class TestTransferInvariantsBalanceRegression:
         """Invariant 3: Shadow transaction amounts equal the parent
         transfer's amount.
         """
-        from app.models.account import Account  # pylint: disable=import-outside-toplevel
         from app.models.ref import AccountType  # pylint: disable=import-outside-toplevel
         from app.services.transfer_service import TransferSpec, create_transfer  # pylint: disable=import-outside-toplevel
 
@@ -2232,7 +2230,6 @@ class TestTransferInvariantsBalanceRegression:
         """Invariants 4 & 5: Shadow statuses and periods always equal
         the parent transfer's.
         """
-        from app.models.account import Account  # pylint: disable=import-outside-toplevel
         from app.models.ref import AccountType  # pylint: disable=import-outside-toplevel
         from app.services.transfer_service import TransferSpec, create_transfer  # pylint: disable=import-outside-toplevel
 
@@ -2299,7 +2296,6 @@ class TestTransferInvariantsBalanceRegression:
         the savings balance increased by the transfer amount.  This
         confirms no double-counting occurs.
         """
-        from app.models.account import Account  # pylint: disable=import-outside-toplevel
         from app.models.ref import AccountType  # pylint: disable=import-outside-toplevel
         from app.services.transfer_service import TransferSpec, create_transfer  # pylint: disable=import-outside-toplevel
 
@@ -2469,49 +2465,6 @@ class TestIncomeOverridesSeam:
         )
         txn.id = txn_id
         return txn
-
-    def test_override_replaces_income_amount(self):
-        """An income txn whose id is in the map contributes the override.
-
-        Anchor $100.00 + override income $2473.38 = $2573.38; the stored
-        $2000.00 is ignored.
-        """
-        balances, _ = balance_calculator.calculate_balances(
-            anchor_balance=Decimal("100.00"),
-            anchor_period_id=1,
-            periods=[FakePeriod(1)],
-            transactions=[self._income(101, 1, "2000.00")],
-            amount_overrides={101: Decimal("2473.38")},
-        )
-        assert balances[1] == Decimal("2573.38")
-
-    def test_none_overrides_uses_stored_amount(self):
-        """amount_overrides=None -> stored effective_amount (byte-identical).
-
-        Anchor $100.00 + stored income $2000.00 = $2100.00.
-        """
-        balances, _ = balance_calculator.calculate_balances(
-            anchor_balance=Decimal("100.00"),
-            anchor_period_id=1,
-            periods=[FakePeriod(1)],
-            transactions=[self._income(101, 1, "2000.00")],
-        )
-        assert balances[1] == Decimal("2100.00")
-
-    def test_unlisted_txn_falls_back_to_stored(self):
-        """A non-empty map overrides only listed ids; others use stored.
-
-        The map keys id 999 (absent), so income txn 101 uses its stored
-        $2000.00: $100 + $2000 = $2100.00.
-        """
-        balances, _ = balance_calculator.calculate_balances(
-            anchor_balance=Decimal("100.00"),
-            anchor_period_id=1,
-            periods=[FakePeriod(1)],
-            transactions=[self._income(101, 1, "2000.00")],
-            amount_overrides={999: Decimal("5.00")},
-        )
-        assert balances[1] == Decimal("2100.00")
 
     def test_override_applies_in_post_anchor_period(self):
         """The seam also applies in post-anchor periods (the post-anchor sum_projected call).
