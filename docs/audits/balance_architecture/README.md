@@ -50,7 +50,10 @@ the net-worth trend's history gate becomes a stale compensator suppressing 8 per
 Two further findings: the INTEREST branch needed a ruling the plan never named (R-L, accrual
 forward of the latest assertion) and **N-42** -- nothing in the app records WHEN money moved, so the
 ACTUAL clock is a data-entry click (ruled R-N: cut over first, record real dates at X-f).  N-39 is
-CLOSED rather than decided (R-M).  **NEXT: X-c0 -> X-c1 -> X-c2.** Phases A and B complete (**A1** `f11382a0`, **A2** `c96c62be`,
+CLOSED rather than decided (R-M).  **X-c0 SHIPPED `5b3764a7`** -- the guard, plus the latent
+SECOND clock it uncovered (the add form and the grid styling read the server's `date.today()` where
+the guard reads the user's `display_today()`, so a UTC-running process would have posted a date its
+own guard rejects).  **NEXT: X-c1 -> X-c2.** Phases A and B complete (**A1** `f11382a0`, **A2** `c96c62be`,
 **A3** `4e46a0a8`, N-9 `44cbd028`, **B0** `d1586254`, **B1** `e227de08`, **BG**
 `dba91dc0`, **B2** `8f070386`). **Phase C: C1** (`18fd3a04`, a loan's origination is its
 ledger opening), **C2** (`eb5de4ac`, the ONE CLOCK: an event counts from the day it
@@ -2015,11 +2018,20 @@ additive-then-cutover line: a write-door guard that moves nothing, then the peri
 and unwired, then ONE cutover that moves money on every cash surface at once and deletes what it
 replaces.
 
-- [ ] **X-c0** `fix(entries): a purchase is something that happened` -- ruling R-M's guard, and a
-  prerequisite rather than part of the cutover (the C8c / C9a / X-a1 precedent).  Both entry write
-  doors refuse `entry_date > today` on ONE shared derivation; backdating stays allowed.  ADDITIVE:
-  zero rows in either database carry a future date, so no figure moves.  Negative control shows the
-  refusal firing on both doors and NOT firing on a backdated entry.
+- [x] **X-c0** `fix(entries): a purchase is something that happened` -- **SHIPPED `5b3764a7`
+  (2026-07-25).** Ruling R-M's guard, and a prerequisite rather than part of the cutover (the
+  C8c / C9a / X-a1 precedent).  Both entry write doors refuse `entry_date > today` on ONE shared
+  derivation; backdating stays allowed.  ADDITIVE: zero rows in either database carry a future date
+  (newest anywhere 2026-07-24), so no figure moves.  **The step found a latent SECOND clock, and
+  fixing it was the guard's precondition:** `entry_date` is a civil date the user types on their own
+  clock, so the boundary is `display_today()` -- but the add form's hidden default and the grid's
+  past-period styling both used the server's `date.today()`, so a UTC-running process would stamp
+  TOMORROW's date for the evening hours the two frames disagree, and the app would post a value its
+  own guard rejects.  Both now use the display clock and the edit picker gains a matching `max`.
+  Controls each shown to fire: with the guard disabled exactly the 2 service and 2 route refusal
+  tests fail while the 4 permissive tests (today, backdating, backdated correction, partial update)
+  correctly stay GREEN; removing the picker bound fails exactly the bound test.  Full suite 7572,
+  pylint 10.00.
 - [ ] **X-c1** `feat(balance): the cash period view is one row set grouped three ways` -- the
   ADDITIVE producer R-K's identity needs, seam-private and unwired.  Over one account and one period
   list it returns the fold's period-end BALANCES, the budget-clock SUBTOTALS (every attributed row:
