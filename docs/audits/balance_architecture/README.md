@@ -77,8 +77,15 @@ three (**N-47** -- the kind-correct scalar's two branches and the account-detail
 its deletion list is short by two, one of which is dead ALREADY (**N-46**), and the grid runs three
 per-period producer passes where one `cash_period_view` suffices, **338.0 ms -> 96.2 ms** measured
 (**N-48**).  R-O rules the Reconciliation row's label, placement and visibility; R-L is sharpened
-in place (the assertion's own day accrues).  **NEXT: X-c2a** -- the accrual clock, then **X-c2b**,
-the cutover and the only step where money moves. Phases A and B complete (**A1** `f11382a0`, **A2** `c96c62be`,
+in place (the assertion's own day accrues).  **X-c2a SHIPPED `0c89da2f`** -- the accrual clock,
+whose real cost was a FIXTURE finding rather than the rule: the account factory stamps an opening
+assertion with the wall clock while `tests/test_services` freezes today to 2026-03-20, so every
+factory-built HYSA was asserted months after its own last pay period and accrued nothing anywhere
+(19 tests failed on that, not on the change).  Pinning the opening to its anchor period's first day
+keeps every hand-computed interest figure valid UNCHANGED, which is itself the proof the rule moves
+no existing fixture; on prod data the live Money Market is unmoved to the cent and only the
+ARCHIVED Fidelity Savings moves (`$6.77` -> `$1.45` in its first period).  **NEXT: X-c2b** -- the
+cutover, and the only step where money moves. Phases A and B complete (**A1** `f11382a0`, **A2** `c96c62be`,
 **A3** `4e46a0a8`, N-9 `44cbd028`, **B0** `d1586254`, **B1** `e227de08`, **BG**
 `dba91dc0`, **B2** `8f070386`). **Phase C: C1** (`18fd3a04`, a loan's origination is its
 ledger opening), **C2** (`eb5de4ac`, the ONE CLOCK: an event counts from the day it
@@ -2142,15 +2149,37 @@ replaces.
   ATOMIC (ruling R-F's "ONE cutover"), and only the two genuinely uncoupled pieces come out of it:
   ruling R-L's CLOCK half (no fold dependency) ahead, and the investment / appreciation bases
   (measured `$0.00` of movement anchor-forward) behind.
-  - [ ] **X-c2a** `fix(balance): interest accrues forward of the assertion, not the period start`
-    -- ruling R-L's clock half, seeded unchanged off the `current_anchor_*` cache columns, so it
-    moves ONLY the accrual window. `_kernel._account_interest_projection` today accrues from the
-    anchor PERIOD's start, which can be up to 13 days before the balance was asserted; it accrues
-    from the assertion's own civil day forward (R-O's sharpening). Moves both readers of that one
-    walk -- the INTEREST balance map AND `interest_by_period_for_account`, the account-detail
-    "Interest, next 12 mo" chip, which the X-c2 one-liner never named (N-47). Real data: Fidelity
-    Savings' first period `$6.77` -> `$1.45`; the Money Market unmoved (its assertion falls on its
-    anchor period's own start date), which is itself the firing control's problem to solve.
+  - [x] **X-c2a** `fix(balance): interest accrues forward of the assertion, not the period start`
+    -- **SHIPPED `0c89da2f` (2026-07-25).** Ruling R-L's clock half, seeded unchanged off the
+    `current_anchor_*` cache columns, so it moves ONLY the accrual window;
+    `_kernel._account_interest_projection` accrued from the anchor PERIOD's start, up to 13 days
+    before the balance was asserted, and now opens at the LATEST assertion's UTC civil day read
+    through the dated SoT (`resolve_anchor`), with the assertion's OWN day accruing (R-L's
+    sharpening). Moves both readers of that one walk -- the INTEREST balance map AND
+    `interest_by_period_for_account`, the account-detail "Interest, next 12 mo" chip the one-liner
+    never named (N-47).
+    **The rule is ONE expression and needs no branch:** `period_start=max(period.start_date,
+    accrual_start)`, because `calculate_interest` already returns zero for an inverted window -- so
+    a wholly pre-assertion period earns nothing arithmetically rather than through a guard, and
+    keeps its place in BOTH maps carrying its base balance (dropping it would hole a column the
+    caller is projecting).
+    **Real data:** the Money Market is UNMOVED to the cent (`$7.01`/period, `$793.56` total -- its
+    assertion falls on its anchor period's own start day); the only account whose window moves is
+    the ARCHIVED Fidelity Savings, first period `$6.77` -> `$1.45` (14 days -> 3) and `-$5.38` at
+    today, reproducing R-L's own worked figure live. The cockpit renders an archived account's raw
+    anchor column, so the one user-visible surface is that account's detail page.
+    **Its real cost was a fixture finding, the N-8 shape again:** `account_service.create_account`
+    stamps the opening assertion with the WALL CLOCK while `tests/test_services` freezes today to
+    2026-03-20, so every factory-built HYSA was asserted MONTHS after its own last pay period -- a
+    state production cannot reach (a true-up files against `get_current_period`) and one that
+    accrues nothing anywhere. 19 tests failed on THAT, not on the rule. `create_hysa_account` now
+    pins the opening to its anchor period's first day, which keeps every existing hand-computed
+    interest figure valid UNCHANGED (the window is then the full period, exactly what it was
+    before) -- and that unchangedness is itself the proof the rule moves no existing fixture.
+    Two firing controls, each shown to fire precisely: reverting the `max()` fails exactly the 5
+    new tests with all 91 pre-existing green; deriving the window from the anchor period's start
+    in the kernel fails exactly the 3 seam tests. Full suite 7590, pylint 10.00 on all three trees,
+    146 checker tests.
   - [ ] **X-c2b** `refactor(balance): the cash seam reads the fold` -- THE cutover. All three cash
     entries (`cash_balance_map` / `cash_balance_at` / `cash_daily_balance_series`), the kernel's
     PLAIN fall-through, the INTEREST branch's SEED, **and the kind-correct scalar's PLAIN and
