@@ -1,12 +1,19 @@
 # Archive: superseded balance-architecture documents
 
 **Read-only history. Nothing in this folder governs work.** The single live document is
-`../README.md` (the plan of record). Every file here is either a completed as-built record, a
-superseded plan, or an audit whose surviving findings were absorbed into the plan of record's
-findings ledger. Archived 2026-07-16.
+`../README.md` -- which since 2026-07-26 is the CASH plan of record. Every file here is either a
+completed as-built record, a superseded plan, or an audit whose surviving findings were absorbed
+into the plan of record's findings ledger. Archived 2026-07-16, extended 2026-07-26.
+
+**Start here for the loan half:** `loan_arc_as_built_2026-07-26.md`. It is the as-built record of
+Phases A-F -- the whole loan arc, shipped to production in PR #64 -- extracted verbatim from the
+plan of record when that document was trimmed to the work that remains. It also holds the register
+of every finding the arc CLOSED. The loan questions that are still OPEN are NOT there: they stayed
+in the live findings ledger, because unfinished work belongs where work is planned.
 
 | file | what it was | why archived |
 |---|---|---|
+| `loan_arc_as_built_2026-07-26.md` | The LOAN half of the plan of record: its running state narrative, the loan problem and root causes, the loan fold's target shape, rulings D1-D5 / R-A / R-C / R-D / R-E, Phases A-E and F2/F3 as built, and the 75-row closed-findings register | The loan arc is COMPLETE and in production (PR #64, merge `88c79857`, 2026-07-25). Extracted 2026-07-26 so the live document could shrink from 2,713 lines to the cash work that remains. Read it for how a shipped loan behaviour was decided and which commit shipped it; do NOT read it as instructions |
 | `recurring_loan_balance_root_cause.md` | The original 2026-06-26 diagnosis | Superseded by the deeper root cause (partial balance function) |
 | `implementation_plan_level1_balance_seam.md` | Level-1 `balance_at` seam plan | SHIPPED to prod 2026-06-27 (PR #45) |
 | `implementation_plan_kind_correct_grid_interest.md` + `followup_kind_correct_grid_interest.md` | INTEREST-kind grid balance | SHIPPED to prod 2026-06-28 (PR #47) |
