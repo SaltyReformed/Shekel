@@ -6,11 +6,25 @@ chain the ``balance_at`` seam dispatches through.  Promoted out of
 ``year_end_summary_service._balances`` (Loop B Phase 1) when the year-end
 summary and the savings cockpit computed net worth from two copies of the
 same math that could drift; the year-end consumer has since been deleted
-(plan step F2), so what remains here is ONE dispatch (interest calculator /
-investment growth engine / appreciation growth curve / canonical
-entries-aware resolver) plus the investment forward/reverse growth
-sub-chain.  AMORTIZING loans are NOT dispatched here: the seam reads its own
-``positions()``-based map for them (plan step C3b3).
+(plan step F2), so what remains here is ONE dispatch (investment growth engine
+/ appreciation growth curve / the cash fold, with modelled interest layered on
+for an INTEREST account).  AMORTIZING loans are NOT dispatched here: the seam
+reads its own ``positions()``-based map for them (plan step C3b3).
+
+**Every cash branch here is the fold** (plan step X-c2b2): the PLAIN
+fall-through IS
+:func:`app.services.balance_at._cash_fold.cash_period_balances`, and the
+INTEREST branch is that same map with
+:mod:`app.services.balance_at._interest`'s accrual layered on.  So the
+net-worth surfaces and the budget grid read one running total rather than two
+producers that a test keeps in step -- which is what closes findings cash D1
+(settled money counted by no producer), cash D2 (the scalar/daily fork) and
+cash D3 / B-18 (the pre-anchor fabrication) on the net-worth side too.  The
+INVESTMENT and APPRECIATING branches still seed off
+``_cash_engine.balances_for``; windowing them onto the fold is plan step
+X-c2c, deliberately separate because their pre-anchor tiers are ruled models
+(a reverse growth projection, a flat anchor carry) that the fold must not
+silently replace (finding N-43).
 
 The cockpit's forward net-worth trend PROJECTS investment and retirement
 growth forward, so the investment growth sub-chain lives here too (the
@@ -40,27 +54,17 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.interest_params import InterestParams
 from app.models.investment_params import InvestmentParams
-from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
-from app.services.cash_ledger import resolve_anchor
 from app.utils.balance_predicates import account_period_scope_clause
 
 from ._context import BalanceContext
 from ._fold import fold_from_walk
 from ._resolution import ResolvedLoan, resolved_loan
-from . import _calculator, _cash_engine, _investment
-
-# The anchor-balance fallback for an account whose ``current_anchor_balance``
-# is NULL -- unquantized on purpose, so it imposes no exponent on the walk it
-# seeds.  Money RETURNED to a caller is cent-quantized by the producer that
-# computes it.  (It seeded the kernel's net-worth sum too, until that reducer
-# was deleted as dead code -- the live net-worth reduction lives with its
-# consumer in ``savings_dashboard_service._net_worth``.)
-ZERO = Decimal("0")
+from . import _cash_fold, _interest, _investment
 
 
 def load_account_period_transactions(
@@ -288,126 +292,87 @@ def debt_schedule_rows(
 
 def _account_interest_projection(
     account: Account,
-    scenario: Scenario,
+    ctx: "BalanceContext",
     periods: list,
     interest_params: InterestParams,
-    amount_overrides: "dict[int, Decimal] | None" = None,
 ) -> "tuple[OrderedDict[int, Decimal], dict[int, Decimal]]":
-    """Run the interest-layered balance walk for one account.
+    """Fold the account's cash, then layer its modelled accrual on top.
 
-    The single home for the "load this account's transactions and run
-    :func:`~app.services.balance_at._calculator.calculate_balances_with_interest`
-    over them" sequence shared by the interest BALANCE path
+    The single home for the "sample this account's cash fold at every period
+    end and accrue over it" sequence shared by the interest BALANCE path
     (:func:`base_account_balance_map`, which keeps the balances and
     discards the interest) and the interest-EARNED accessor
     (:func:`interest_by_period_for_account`, which keeps the interest and
-    discards the balances).  Folding the two into one helper keeps the
-    transaction-scope query, the anchor-balance coalesce, and the
-    calculator kwargs identical between the balance figure a screen renders
-    and the interest figure the account-detail chip reports -- they cannot
-    drift onto two copies of the same walk (R0801).  That sharing is also why
-    ruling R-L moves BOTH readers at once: the account-detail "Interest, next
-    12 mo" chip is the same walk as the balance (plan finding N-47).
+    discards the balances).  Folding the two into one helper keeps the base
+    and the accrual window identical between the balance figure a screen
+    renders and the interest figure the account-detail chip reports -- they
+    cannot drift onto two copies of the same walk (R0801).  That sharing is
+    also why ruling R-L moved BOTH readers at once (plan finding N-47).
 
-    **Where modelled interest begins (ruling R-L, plan step X-c2a).**  The
-    accrual window opens at the account's LATEST balance assertion -- the UTC
-    civil day of the newest
-    :class:`~app.models.account.AccountAnchorHistory` row, read through the
-    dated source of truth
-    :func:`~app.services.cash_ledger.resolve_anchor` -- not at the anchor
-    PERIOD's start, which precedes it by up to 13 days and modelled interest
-    across days the assertion already contains.  The date is read from the
-    history row rather than derived from ``current_anchor_period_id`` because
-    that column pair is a CACHE of that row and carries no date at all; the
-    SEED still comes from the cache here, and both halves land on the fold
-    together at plan step X-c2b.  Residue while they are split: if the cache
-    and the history row DISAGREE (finding cash D4, latent -- ``resolve_anchor``
-    logs it and does not repair it) the window opens on the SoT's day while
-    the seed carries the cache's balance.  That is the more correct half of a
-    state that is already wrong, and it is the reason the two halves are not
-    left split for long.
-
-    Reading the SoT also puts this branch on the same fail-loud footing as
-    every other cash kind: ``resolve_anchor`` raises for an account with the
-    anchor COLUMNS set and no history row, which the PLAIN path has always
-    been exposed to (``balances_for`` resolves the same way) and which
-    :func:`~app.services.balance_at.balance_at`'s fallback already documents
-    as "the correct loud failure rather than a silently wrong number".
-    Migration ``cfb15e782f86`` and the account factory make the state
-    unreachable; INTEREST was simply the last cash kind not sharing the trap.
-
-    Also note the CLOCK: the assertion's UTC civil day, not its display day.
-    A balance is dated in UTC everywhere in this arc (the cash walk's
-    ``dated_deltas``, the posting writer's ``to_utc_civil_date``); only the
-    TAX figure keys on the display year (plan step C3c).  Interest is a
-    balance concern, so it takes the balance clock -- two clocks inside one
-    figure is where plan step C6c-ii's double-count came from.
+    **The SEED is the fold (ruling R-L's second half, plan step X-c2b2).**  It
+    was the ``current_anchor_balance`` CACHE column carried forward over
+    still-Projected rows only, so the accrual compounded on a balance that had
+    dropped every row settled since the last assertion and fabricated the
+    pre-anchor past.  On the real Money Market the base was ``$2,000.00`` high,
+    and because the grid derives its "Interest" row from the gap between the
+    kind-correct and cash maps, seeding the accrual off the cache while the cash
+    map folded would have rendered that missing money as ``$2,007.01`` of
+    interest EARNED (finding N-49).  Both halves move here, together.
 
     Args:
-        account: The interest-bearing account.  Its ``current_anchor_*``
-            columns seed the walk; the caller is responsible for the
-            no-anchor guard.
-        scenario: The baseline scenario (its id scopes the transaction
-            query, and is forwarded to the anchor resolver).
+        account: The interest-bearing account.  The caller is responsible for
+            the no-anchor guard.
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
+            (its scenario scopes the fold; its ``as_of`` is the reader's NOW,
+            the floor a still-projected row is clamped up to).
         periods: The pay periods to walk (ordered by ``period_index``).
         interest_params: The account's
             :class:`~app.models.interest_params.InterestParams` (APY +
-            compounding frequency) the calculator layers interest from.
-        amount_overrides: Optional ``{transaction_id: Decimal}`` live map,
-            forwarded verbatim to the calculator; ``None`` (the
-            interest-earned path) preserves the stored-amount behavior.
+            compounding frequency) the accrual layers from.
 
     Returns:
-        ``(balances, interest_by_period)`` -- the calculator's two outputs
-        verbatim: the period_id -> Decimal end-balance map (interest
-        layered in) and the period_id -> Decimal interest-earned map.
+        ``(balances, interest_by_period)`` -- the period_id -> Decimal
+        end-balance map (interest layered in) and the period_id -> Decimal
+        interest-earned map.
     """
-    transactions = load_account_period_transactions(
-        account.id, scenario.id, [p.id for p in periods],
-    )
-    anchor_balance = account.current_anchor_balance or ZERO
-    return _calculator.calculate_balances_with_interest(
-        anchor_balance=anchor_balance,
-        anchor_period_id=account.current_anchor_period_id,
-        periods=periods,
-        transactions=transactions,
-        interest_params=interest_params,
-        amount_overrides=amount_overrides,
-        accrual_start=resolve_anchor(account, scenario.id).as_of_date,
+    return _interest.layer_account_interest(
+        account,
+        ctx,
+        periods,
+        _cash_fold.cash_period_balances(
+            account, ctx.scenario.id, ctx.as_of, periods,
+        ),
+        interest_params,
     )
 
 
 def base_account_balance_map(
     account: Account,
-    scenario: Scenario,
+    ctx: "BalanceContext",
     periods: list,
-    *,
-    amount_overrides: "dict[int, Decimal] | None" = None,
 ) -> "OrderedDict[int, Decimal] | None":
     """Compute period_id -> balance for one account WITHOUT dispatch inputs.
 
-    The base path used by the savings-progress section and by
-    :func:`build_account_balance_map`'s fall-through: interest-bearing
-    accounts (HYSA, Money Market, CD, HSA) use the balance calculator with
-    interest accrual; everything else routes through the canonical
-    entries-aware resolver.  It deliberately takes no amortization-schedule
-    or growth-engine inputs -- callers that drive those use
-    :func:`build_account_balance_map`.
+    The base path used by :func:`build_account_balance_map`'s fall-through:
+    interest-bearing accounts (HYSA, Money Market, CD, HSA) fold their cash and
+    layer modelled interest on top; everything else IS its cash fold.  It
+    deliberately takes no amortization-schedule or growth-engine inputs --
+    callers that drive those use :func:`build_account_balance_map`.
+
+    **One income basis, and the caller no longer chooses it** (ruling R-Q, plan
+    step X-c2b2).  The live override map -- recomputed salary income and derived
+    loan debits -- used to be an ARGUMENT threaded down from the seam, and its
+    None-handling differed by kind (the plain path auto-built a live map, the
+    interest path did not), so an interest account left on the default read cash
+    on the LIVE basis against a kind-correct walk on the STORED one.  The fold
+    builds its own map over its own plan, so there is no argument left for a
+    caller to get wrong.  Measured on the prod-shape clone 2026-07-26: the
+    stored and live bases differ on ZERO of 60 columns for every real account.
 
     Args:
         account: The account to project.
-        scenario: The baseline scenario.
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
         periods: All user pay periods.
-        amount_overrides: Optional ``{transaction_id: Decimal}`` live
-            projected-net / loan-derive map (Workstream B), forwarded
-            verbatim to whichever cash producer this account routes to
-            (:func:`~app.services.balance_at._calculator.calculate_balances_with_interest`
-            for the interest path,
-            :func:`~app.services.balance_at._cash_engine.balances_for` for the
-            plain path).  Default ``None`` lets each producer build its own
-            live override map internally, byte-identical to the prior
-            behavior; the ``balance_at`` seam threads the grid's pre-built
-            map through here for grid parity.
 
     Returns:
         OrderedDict mapping period_id to Decimal balance, or None if the
@@ -416,66 +381,93 @@ def base_account_balance_map(
     if account.current_anchor_period_id is None:
         return None
 
-    kind = classify_account(account)
-
-    # Interest-bearing accounts (HYSA, Money Market, CD, HSA).  The
-    # math-layer silent-degrade seam in
-    # ``cash_ledger._amounts._entry_aware_amount`` was closed in Commit 5
-    # (entries lazy-load via the SQLAlchemy descriptor instead of
-    # short-circuiting to ``effective_amount``), so the entries-aware
-    # reduction applies here even without ``selectinload``.
-    if (kind is AccountProjectionKind.INTEREST
-            and hasattr(account, "interest_params")
-            and account.interest_params):
+    # Interest-bearing accounts (HYSA, Money Market, CD, HSA): the cash fold
+    # with the modelled accrual layered on (``_interest``).
+    interest_params = _interest.accrual_params(account)
+    if interest_params is not None:
         balances, _ = _account_interest_projection(
-            account, scenario, periods, account.interest_params,
-            amount_overrides,
+            account, ctx, periods, interest_params,
         )
         return balances
 
-    # Standard checking/savings (and any unmatched types) route through
-    # the canonical entries-aware producer (E-25 / CRIT-01 / F-009 /
-    # R-1: Commit 8).  ``balances_for`` owns the transaction query with
-    # ``selectinload(Transaction.entries)`` and resolves the anchor via
-    # the dated ``AccountAnchorHistory`` SoT, so the net-worth aggregate
-    # cannot disagree with the grid for the same input.
-    return _cash_engine.balances_for(
-        account, scenario.id, periods,
-        amount_overrides=amount_overrides,
-    ).balances
+    # Standard checking/savings (and any unmatched types) ARE their cash fold:
+    # every assertion replayed, every settled row counted from the day it
+    # moved, the still-projected plan clamped forward (plan step X-c2b2).  The
+    # net-worth aggregate therefore reads the same running total the grid does
+    # -- one fold, not two producers that agree by test.
+    return _cash_fold.cash_period_balances(
+        account, ctx.scenario.id, ctx.as_of, periods,
+    )
+
+
+def interest_projection_for_account(
+    account: Account,
+    ctx: "BalanceContext",
+    periods: list,
+    interest_params: InterestParams,
+) -> "tuple[OrderedDict[int, Decimal], dict[int, Decimal]]":
+    """Return an interest account's BALANCES and its earned interest, together.
+
+    The account-detail page renders both -- the balance chart / hero and the
+    "Interest, next 12 mo" chip -- and they must be the same walk or the chip
+    would explain a balance change the page does not show.  Reading them
+    through one call is what makes that structural instead of a claim: the
+    alternative it replaced was ``balance_map`` followed by
+    :func:`interest_by_period_for_account`, each of which discarded the half
+    the other wanted and, since plan step X-c2b2, each of which ran a FULL
+    cash fold -- two walks, two plan loads and two live-override builds (the
+    ~90 ms salary / loan recompute) for one render.
+
+    Args:
+        account: The interest-bearing account.
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
+            (its scenario scopes the fold; its ``as_of`` is the reader's NOW).
+        periods: All user pay periods (the walk domain; the caller filters to
+            the periods it wants).
+        interest_params: The account's
+            :class:`~app.models.interest_params.InterestParams`.
+
+    Returns:
+        ``(balances, interest_by_period)`` -- the interest-accrued end balance
+        per period id and the interest earned in each.  ``(OrderedDict(), {})``
+        when the account has no anchor period.
+    """
+    if account.current_anchor_period_id is None:
+        return OrderedDict(), {}
+    return _account_interest_projection(
+        account, ctx, periods, interest_params,
+    )
 
 
 def interest_by_period_for_account(
     account: Account,
-    scenario: Scenario,
+    ctx: "BalanceContext",
     periods: list,
     interest_params: InterestParams,
 ) -> dict[int, Decimal]:
     """Return period_id -> interest earned for an interest-bearing account.
 
-    The engine-cluster accessor the account-detail page's "Interest, next
-    12 mo" chip (``app.routes.accounts.detail``, its only caller) reads
-    instead of calling
-    :func:`~app.services.balance_at._calculator.calculate_balances_with_interest`
-    directly: interest EARNED is rich projection detail, not a
-    balance-at-T figure, so it is not a ``balance_at`` seam concern, yet
-    the producer that computes it is fenced to the engine cluster.  This
-    accessor keeps that producer call inside the kernel (where it belongs
-    with :func:`base_account_balance_map`, which shares the same
-    :func:`_account_interest_projection` walk) while the consumer sees only
-    the interest map it needs.  (Its original caller was the year-end
-    savings-progress section, deleted at plan step F2.)
+    The seam accessor the account-detail page's "Interest, next 12 mo" chip
+    (``app.routes.accounts.detail``, its only caller) reads instead of reaching
+    the accrual producer directly: interest EARNED is rich projection detail,
+    not a balance-at-T figure, so it is not a ``balance_at`` view -- yet it must
+    be the SAME walk the balance came from.  This accessor keeps that call
+    inside the kernel (beside :func:`base_account_balance_map`, which shares the
+    same :func:`_account_interest_projection`) while the consumer sees only the
+    interest map it needs.
 
-    A None-anchor account earns no projectable interest (the walk produces
-    no balances to layer interest on), returned as the empty map so the
-    caller's windowed sum (``_interest_next_year``, a rolling next-12-months
-    window -- not a calendar year) is ``Decimal("0")`` -- matching the prior
-    inline ``current_anchor_period_id is None -> ZERO`` early-out.
+    A None-anchor account earns no projectable interest, returned as the empty
+    map so a caller's windowed sum is ``Decimal("0")``.
+
+    A caller that ALSO wants the balances reads
+    :func:`interest_projection_for_account` instead -- one walk, both halves.
+    This entry survives for the consumer that genuinely wants the interest
+    alone.
 
     Args:
         account: The interest-bearing account.
-        scenario: The baseline scenario (its id scopes the transaction
-            query).
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
+            (its scenario scopes the fold; its ``as_of`` is the reader's NOW).
         periods: All user pay periods (the walk domain; the caller
             filters to the periods whose interest it wants).
         interest_params: The account's
@@ -488,7 +480,7 @@ def interest_by_period_for_account(
     if account.current_anchor_period_id is None:
         return {}
     _, interest_by_period = _account_interest_projection(
-        account, scenario, periods, interest_params,
+        account, ctx, periods, interest_params,
     )
     return interest_by_period
 
@@ -501,7 +493,6 @@ def build_account_balance_map(  # pylint: disable=too-many-arguments
     investment_params: InvestmentParams | None,
     deductions: list,
     salary_gross_biweekly: Decimal,
-    amount_overrides: "dict[int, Decimal] | None" = None,
 ) -> "OrderedDict[int, Decimal] | None":
     """Compute period_id -> balance for one NON-loan account, dispatching on type.
 
@@ -525,14 +516,13 @@ def build_account_balance_map(  # pylint: disable=too-many-arguments
     the engine gross-biweekly) rather than the savings package's projection
     bundle, so a caller need not construct that value object.
 
-    Pylint: ``too-many-arguments`` (7/5) -- the keyword-only group is this
+    Pylint: ``too-many-arguments`` (6/5) -- the keyword-only group is this
     account's three independent projection inputs (its investment params, its
-    deductions, the engine gross-biweekly) plus the cash-path
-    ``amount_overrides`` passthrough.  They are not a cohesive named concept
-    that would survive as a value object, and re-creating a kernel-specific
-    bundle no other caller shares would be the stamp coupling the standards
-    reject.  Keyword-only keeps the call sites self-documenting (and exempts the
-    positional-count rule).
+    deductions, the engine gross-biweekly).  They are not a cohesive named
+    concept that would survive as a value object, and re-creating a
+    kernel-specific bundle no other caller shares would be the stamp coupling
+    the standards reject.  Keyword-only keeps the call sites self-documenting
+    (and exempts the positional-count rule).
 
     Args:
         account: The account to project.
@@ -550,17 +540,6 @@ def build_account_balance_map(  # pylint: disable=too-many-arguments
             growth engine's contribution feed; adapted internally).
         salary_gross_biweekly: Raise-aware engine gross per pay period
             (the employer-match cap basis).
-        amount_overrides: Optional ``{transaction_id: Decimal}`` live
-            projected-net / loan-derive map (Workstream B).  Threaded ONLY
-            through the base / cash fall-through
-            (:func:`base_account_balance_map`).  The map only ever contains
-            cash-account transaction ids (salary income + loan-transfer
-            shadows); the investment branch's base IS a transaction sum but
-            it independently builds its own live overrides inside
-            ``balances_for``, and the appreciation branch derives from a
-            growth curve -- so forwarding this cash override to any non-cash
-            branch would match no id and is intentionally omitted.  Default
-            ``None`` preserves the prior behavior byte-identical.
 
     Returns:
         OrderedDict mapping period_id to Decimal balance, or None if the
@@ -606,14 +585,9 @@ def build_account_balance_map(  # pylint: disable=too-many-arguments
             account, ctx.scenario, periods,
         )
 
-    # Interest-bearing and plain accounts share the base path, and it is the
-    # only branch that forwards ``amount_overrides``: the override map only
-    # carries cash-account transaction ids, so no non-cash branch above would
-    # match any of them (the investment base builds its own live overrides
-    # inside ``balances_for``).
-    return base_account_balance_map(
-        account, ctx.scenario, periods, amount_overrides=amount_overrides,
-    )
+    # Interest-bearing and plain accounts share the base path: the cash fold,
+    # with the modelled accrual layered on for INTEREST.
+    return base_account_balance_map(account, ctx, periods)
 
 
 def account_balance_map_from_inputs(
@@ -621,8 +595,6 @@ def account_balance_map_from_inputs(
     ctx: "BalanceContext",
     periods: list,
     inputs,
-    *,
-    amount_overrides: "dict[int, Decimal] | None" = None,
 ) -> "OrderedDict[int, Decimal] | None":
     """Unpack a per-set projection bundle for one account and dispatch.
 
@@ -654,9 +626,6 @@ def account_balance_map_from_inputs(
         periods: The pay periods to project over.
         inputs: The per-set projection bundle (see the duck-typed contract
             above).
-        amount_overrides: Optional ``{transaction_id: Decimal}`` live map,
-            forwarded to the kernel's cash path; ``None`` (the net-worth
-            batch) never applies live overrides.
 
     Returns:
         OrderedDict mapping period_id to Decimal balance, or None when the
@@ -667,5 +636,4 @@ def account_balance_map_from_inputs(
         investment_params=inputs.investment_params_map.get(account.id),
         deductions=inputs.deductions_by_account.get(account.id, []),
         salary_gross_biweekly=inputs.salary_gross_biweekly,
-        amount_overrides=amount_overrides,
     )

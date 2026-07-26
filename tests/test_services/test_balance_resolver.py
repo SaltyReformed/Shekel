@@ -105,16 +105,12 @@ def _override_anchor(
             the new anchor is anchored against.
         anchor_balance: The new anchor balance.
     """
-    history = AccountAnchorHistory(
-        account_id=account.id,
-        pay_period_id=pay_period.id,
-        anchor_balance=anchor_balance,
+    from tests._test_helpers import override_anchor  # pylint: disable=import-outside-toplevel
+
+    override_anchor(
+        db_session, account, pay_period, anchor_balance,
         notes="balance_resolver tests: anchor override",
     )
-    db_session.add(history)
-    db_session.flush()
-    account.current_anchor_balance = anchor_balance
-    account.current_anchor_period_id = pay_period.id
     db_session.commit()
 
 
@@ -1866,6 +1862,15 @@ def test_balance_calculator_defines_only_the_balance_walk():
     "what is the balance at T" gets defined here again -- which is what would
     silently re-create the blocker.
 
+    The set is ONE name since plan step X-c2b2: the interest composition
+    ``calculate_balances_with_interest`` was "roll the anchor forward, then
+    layer", and when the base became the cash fold its two halves separated --
+    the layering moved to ``balance_at._interest`` beside the accrual window it
+    needs, and the wrapper had no caller left.  What survives here is the pure
+    carry-forward walk, still feeding ``_cash_engine.balances_for`` for the
+    investment and appreciation bases until plan step X-c2c windows those onto
+    the fold too.
+
     Scope caveat, stated so this is not read as stronger than it is: the
     ``__module__`` filter sees FUNCTIONS and CLASSES defined here, not a
     module-level constant (a bare ``Decimal`` reports ``__module__``
@@ -1882,9 +1887,7 @@ def test_balance_calculator_defines_only_the_balance_walk():
             getattr(balance_calculator, name), "__module__", None,
         ) == "app.services.balance_at._calculator"
     }
-    assert defined_here == {
-        "calculate_balances", "calculate_balances_with_interest",
-    }, (
+    assert defined_here == {"calculate_balances"}, (
         "the calculator defines the balance walk and ONLY that; a "
         "non-producer defined here is what stranded five of them before D1c. "
         f"Unexpected surface: {sorted(defined_here)}"

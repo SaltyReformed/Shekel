@@ -1,28 +1,32 @@
 """Balance-at-T seam -- the GRID kind-aware cash-flow view.
 
-The budget grid is a single-account cash-flow surface (it reads the CASH-FLOW
-view, :mod:`._cash_flow`), but it is NOT always pointed at a cash account
+The budget grid is a single-account cash-flow surface (it reads the cash FOLD,
+:mod:`._cash_fold`), but it is NOT always pointed at a cash account
 (``resolve_grid_account`` falls back to any active account).  For an
 INTEREST-bearing grid account (HYSA / Money Market / CD / HSA) the pure
 transaction running-balance understates the real balance, because it ignores
 the interest the net-worth surfaces already accrue.  This view gives such an
 account the interest-accrued balance AND a per-period interest figure that
 explains the part of the balance change the transactions do not -- so the
-grid's balance row still reconciles with its transaction subtotal row.
+grid's balance row still reconciles with the rows above it.
 
-**ONE per-period column, not four parallel maps** (plan step X-c2b1, ruling
-R-K).  Every figure the grid renders for one pay period -- the projected end
-balance, the income and expense subtotals, the "Timing & true-ups" remainder
-and the interest accrual -- is one :class:`GridColumn`, because they are one
-row set read three ways and the identity binding them is
+**ONE per-period column, from ONE producer pass** (plan steps X-c2b1 / X-c2b2,
+ruling R-K).  Every figure the grid renders for one pay period -- the projected
+end balance, the income and expense subtotals, the "Timing & true-ups"
+remainder and the interest accrual -- is one :class:`GridColumn`, and all but
+the accrual come from a single
+:func:`~app.services.balance_at._cash_fold.cash_period_view`: one walk, one
+plan load, one valuation, grouped on the two clocks the identity binds.
 
     balance[p] - balance[p-1] == net[p] + reconciliation[p] + interest[p]
 
-Carrying them as separate period-keyed dicts is what let the grid compute them
-in three independent producer passes that a test then had to keep in step
-(finding N-48: ``338.0 ms`` of producer work per render, and an invariant
-asserted rather than constructed).  One column makes the identity a property of
-the object the template reads.
+The grid used to compute those figures in three independent producer passes a
+test then had to keep in step (finding N-48), against a subtotal that counted
+only still-UNPAID rows while the balance counted the anchor plus the same rows
+-- an identity that held only because neither side could see a settled row at
+all, and that broke on 8 of 59 real period pairs (worst ``$2,505.17``) the
+moment the balance became a fold (finding N-41).  Reading one row set grouped
+two ways makes the identity a property of the object the template reads.
 
 ONLY INTEREST accrues here.  INTEREST is the one non-cash kind whose balance is
 a transaction SUM (anchor + the account's rows) plus a layered accrual, so a row
@@ -50,34 +54,10 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from app.models.account import Account
-from app.services.account_projection import (
-    AccountProjectionKind,
-    classify_account,
-)
-from app.services.cash_ledger import (
-    live_amount_overrides,
-    load_balance_transactions,
-    period_subtotals,
-)
-from app.utils.money import round_money
 
 from ._context import BalanceContext
-from . import _cash_flow, _kind_correct
+from . import _cash_fold, _interest
 from ._inputs import ZERO, _require_scenario
-
-# The remainder ruling R-K names, while the SHIPPING producers still answer
-# (plan step X-c2b1).  It is ``0.00`` as a measured property of those
-# producers, not as a placeholder: the balance row and the subtotal row both
-# count exactly the still-UNPAID rows of one anchor-seeded walk, through the
-# same ``sum_projected`` engine, so ``balances[p] - balances[p-1] ==
-# subtotals[p].net`` holds to the cent (the E-25 invariant, pinned by
-# ``test_balance_at.py::TestTheRemainderIsZeroUnderTheShippingProducers``).
-# Nothing the two clocks disagree about can reach either side yet, because
-# neither side can see a settled row at all.  Plan step X-c2b2 points this at
-# ``_cash_fold.cash_period_view``'s independently-computed remainder, where the
-# figure stops being zero (measured on the prod-shape clone: ``-$788.68`` in
-# the real Checking account's current column).
-_NO_REMAINDER = Decimal("0.00")
 
 
 @dataclass(frozen=True)
@@ -93,13 +73,17 @@ class GridColumn:
 
     Attributes:
         balance: The projected end balance the surface displays, cent-quantized
-            -- the interest-accrued balance for an INTEREST account, the
-            cash-flow running balance for every other kind.  ``None`` for a
-            period the projection does not reach (pre-anchor), which the grid
-            renders as ``--``.
-        income: The period's projected income subtotal, cent-quantized.
-        expense: The period's projected expense subtotal (a magnitude), so the
-            column reads ``income`` minus ``expense``.
+            -- the interest-accrued balance for an INTEREST account, the folded
+            cash balance for every other kind.  Never ``None``: the fold is
+            TOTAL, so every requested period has one.  (It was optional while
+            the projection carried the anchor forward and omitted every
+            pre-anchor period; on the real Checking account eight columns
+            rendered ``--`` for periods it plainly held money in.)
+        income: The period's income subtotal, cent-quantized -- every row
+            ATTRIBUTED to the period, settled at its confirmed cash leg and
+            still-projected at its live or entries-aware amount (ruling R-K).
+        expense: The same, for expense rows (a magnitude), so the column reads
+            ``income`` minus ``expense``.
         net: ``round_money(income - expense)`` -- rounded ONCE at the boundary
             rather than as the difference of two separately-rounded legs,
             because it is the figure the balance roll-forward has to reconcile
@@ -113,11 +97,30 @@ class GridColumn:
             for a period the accrual map does not cover.
     """
 
-    balance: "Decimal | None"
+    # The four subtotal figures are the cash view's verbatim, so this record
+    # and :class:`~app.services.balance_at._cash_fold.CashPeriodFigures` share
+    # five field declarations.  Composing instead (``GridColumn.cash``) was
+    # REJECTED: it would put TWO balances on the one object the templates read
+    # -- the kind-blind cash balance beside the displayed interest-accrued one
+    # -- which is precisely the "two producers on one screen" shape this arc
+    # exists to end, and a template reaching the wrong one would render a
+    # silently wrong figure.  Inheriting was rejected for the same reason one
+    # level up: a subclass whose ``balance`` means something the parent's does
+    # not is a substitution defect, and the two carry DIFFERENT identities
+    # (``net + reconciliation`` there, ``+ interest`` here).  There is no shared
+    # BEHAVIOUR to extract -- only names -- and the two contracts are free to
+    # diverge (this one is what the grid renders; that one is what the fold
+    # produces).
+    # Pylint: ``duplicate-code`` -- incidental field-name overlap with
+    # ``_cash_fold.CashPeriodFigures``; one-sided disable so the producer's own
+    # declaration stays un-disabled.
+    # pylint: disable=duplicate-code
+    balance: Decimal
     income: Decimal
     expense: Decimal
     net: Decimal
     reconciliation: Decimal
+    # pylint: enable=duplicate-code
     interest: "Decimal | None"
 
 
@@ -174,16 +177,9 @@ class GridBalanceView:
     Attributes:
         columns: ``OrderedDict`` period_id -> :class:`GridColumn`, in the order
             the caller's *periods* were given.  EVERY requested period is
-            present; a period the projection cannot reach carries
-            ``balance=None`` with its real subtotals beside it, which is why
-            this is one map rather than a balance map that omits periods and a
-            subtotal map that does not.
-        stale_anchor_warning: The cash producer's stale-anchor flag (a
-            data-quality signal about settled post-anchor activity).  Always
-            taken from the cash walk -- it is interest-independent, so the
-            interest path never has to recompute it.  Deletes at plan step
-            X-c2b2, where the fold counts those rows and the warning has
-            nothing left to warn about.
+            present, with a real balance beside its real subtotals -- which is
+            why this is one map rather than a balance map that omitted periods
+            and a subtotal map that did not.
         amount_overrides: The live ``{transaction_id: Decimal}`` map this
             projection was computed with (recomputed salary income and derived
             loan debits).  Carried so the grid's CELLS render from the same map
@@ -192,7 +188,6 @@ class GridBalanceView:
     """
 
     columns: "OrderedDict[int, GridColumn]"
-    stale_anchor_warning: bool
     amount_overrides: "dict[int, Decimal]"
 
     def row_flags(self, periods: list) -> GridRowFlags:
@@ -219,100 +214,22 @@ class GridBalanceView:
         )
 
 
-def _accruing_balances(
-    kc_balances: "OrderedDict[int, Decimal]",
-    cash_balances: "OrderedDict[int, Decimal]",
-) -> "tuple[OrderedDict[int, Decimal], dict[int, Decimal]]":
-    """Return an INTEREST account's displayed balances and per-period accrual.
-
-    Displays the rounded interest-accrued balance per period and a per-period
-    accrual (interest) equal to the PREMIUM over the no-interest cash basis,
-    deltaed period to period::
-
-        premium[p]   = round_money(interest_accrued[p]) - cash_basis[p]
-        increment[p] = premium[p] - premium[previous present period]
-
-    with the premium taken as ``0`` before the first present period (no accrual
-    before the anchor).  Because the cash basis equals the grid's transaction
-    subtotal roll-forward to the cent (the E-25 invariant ``cash[p] - cash[q]
-    == subtotals[p].net``), this makes the displayed rows reconcile exactly::
-
-        balance[p] - balance[q]
-          == (round_money(kc[p]) - round_money(kc[q]))
-          == (cash[p] - cash[q]) + increment[p]
-          == subtotals[p].net + increment[p].
-
-    **The subtraction is transitional, and it is what plan step X-c2b2
-    deletes** (finding N-52).  The accrual is a DIFFERENCE of two
-    independently-computed balance maps only because the cash basis and the
-    interest-accrued balance come from two separate walks today; once both
-    derive from ONE fold, the increment is the accrual map ``_layer_interest``
-    already returns and this function goes with the divergence branch below.
-
-    Iterates the cash producer's period set (anchor-forward).  For INTEREST
-    the interest-accrued and cash maps cover the SAME anchor-forward periods
-    (one transaction walk, with vs without layered interest), so the only case
-    where a cash period is missing from ``kc_balances`` is the rare
-    anchor-cache divergence handled in the loop.
-
-    Args:
-        kc_balances: The interest-accrued balance map from
-            :func:`~app.services.balance_at.balance_map`.  Covers the same
-            anchor-forward periods as the cash producer, except a possible
-            leading anchor-cache-divergence prefix (cash periods the interest
-            map lacks), which the loop handles.
-        cash_balances: The cent-quantized cash-flow balances (the premium
-            baseline).
-
-    Returns:
-        ``(balances, accrual)`` -- the displayed balance per period and the
-        interest earned in it, both keyed by period id.
-    """
-    balances: "OrderedDict[int, Decimal]" = OrderedDict()
-    accrual: "dict[int, Decimal]" = {}
-    prev_premium = ZERO
-    # ``cash_balances`` is already cent-quantized by ``balances_for`` and
-    # ordered anchor-forward; iterating it (not ``kc_balances``) is what drops
-    # an investment's pre-anchor reverse-projection.
-    for period_id, cash_balance in cash_balances.items():
-        kc_balance = kc_balances.get(period_id)
-        if kc_balance is None:
-            # Reachable only under anchor-cache divergence: resolve_anchor's
-            # dated-SoT anchor is earlier than the cache anchor the kernel
-            # interest path seeds from (the logged EVT_ANCHOR_CACHE_RECONCILED
-            # state), so the cash map carries a leading PREFIX of periods the
-            # kind-correct map lacks.  Show the cash balance there with no
-            # accrual, and hold the premium baseline at ZERO so the first real
-            # kind-correct period's increment is measured from a clean baseline
-            # regardless of where the gap falls (never an interest-inflated
-            # wrong number).
-            balances[period_id] = cash_balance
-            accrual[period_id] = ZERO
-            prev_premium = ZERO
-            continue
-        rounded_kc = round_money(kc_balance)
-        balances[period_id] = rounded_kc
-        premium = rounded_kc - cash_balance
-        accrual[period_id] = premium - prev_premium
-        prev_premium = premium
-    return balances, accrual
-
-
 def _assemble_columns(
     periods: list,
     balances: "OrderedDict[int, Decimal]",
-    subtotals: dict,
+    figures: "OrderedDict[int, _cash_fold.CashPeriodFigures]",
     accrual: "dict[int, Decimal]",
 ) -> "OrderedDict[int, GridColumn]":
     """Combine the per-period figures into one :class:`GridColumn` each.
 
     Args:
         periods: The pay periods to report, in display order.
-        balances: The displayed balance per period; a period absent from it is
-            one the projection does not reach (pre-anchor) and reports
-            ``balance=None``.
-        subtotals: The period-keyed subtotal records (``.income`` / ``.expense``
-            / ``.net``).  Total over *periods*.
+        balances: The DISPLAYED balance per period -- the fold's, or the fold
+            with interest layered on.  Total over *periods*, so a missing key is
+            a defect rather than a blank column; it is indexed, not ``.get``.
+        figures: The period view's :class:`~app.services.balance_at._cash_fold.CashPeriodFigures`
+            per period (the budget-clock subtotals and ruling R-K's remainder).
+            Total over *periods*.
         accrual: The per-period interest, empty for an account that models
             none.
 
@@ -322,13 +239,13 @@ def _assemble_columns(
     """
     columns: "OrderedDict[int, GridColumn]" = OrderedDict()
     for period in periods:
-        subtotal = subtotals[period.id]
+        column = figures[period.id]
         columns[period.id] = GridColumn(
-            balance=balances.get(period.id),
-            income=subtotal.income,
-            expense=subtotal.expense,
-            net=subtotal.net,
-            reconciliation=_NO_REMAINDER,
+            balance=balances[period.id],
+            income=column.income,
+            expense=column.expense,
+            net=column.net,
+            reconciliation=column.reconciliation,
             interest=accrual.get(period.id),
         )
     return columns
@@ -339,47 +256,51 @@ def grid_balance_view(
 ) -> GridBalanceView:
     """Return the kind-aware cash-flow-surface view for *account*.
 
-    The single entry the budget grid reads to project one account's column set,
-    dispatching on the account's kind:
+    The single entry the budget grid reads to project one account's column set.
+    ONE :func:`~app.services.balance_at._cash_fold.cash_period_view` supplies
+    every figure but the accrual -- the balance, the income and expense
+    subtotals, and ruling R-K's remainder, all from one valued row set grouped
+    two ways -- and an INTEREST account then layers its modelled accrual on top
+    (:func:`app.services.balance_at._interest.layer_account_interest`).  So
 
-    * **INTEREST** -- the interest-accrued balance
-      (:func:`~app.services.balance_at.balance_map`) plus a per-period interest
-      accrual that explains the part of each period's balance change the
-      transactions do not (:func:`_accruing_balances`).
-    * **Every other kind (PLAIN / AMORTIZING / INVESTMENT / APPRECIATING)** --
-      the cash-flow running-balance, identical to
-      :func:`~app.services.balance_at.cash_balance_map`, with no accrual.  Only
-      INTEREST accrues on the grid because only its balance is a transaction sum
-      (so a typed row flows into it); the others are cash- or projection-driven
-      (see the module docstring).
+        balance[p] - balance[p-1] == net[p] + reconciliation[p] + interest[p]
 
-    **ONE income basis, and the caller no longer chooses it** (ruling R-Q).
-    The live override map -- recomputed salary income and derived loan debits --
-    is built HERE, once, over the account's own contributing rows, and threaded
-    into every walk this view runs AND returned on the result so the grid's
-    cells render from the same map its balance row folded.  It used to be the
-    caller's argument, which is how the two walks could land on two bases: the
-    cash walk auto-builds a live map from ``None`` while the interest walk does
-    not, so an INTEREST account left on the default read cash=live against
-    kc=stored and the premium absorbed an income mismatch instead of being pure
-    interest.  With one map built at the one place that runs both walks, that
-    divergence has no argument to arrive through -- an argument a caller can get
-    wrong is a defect, not a contract (plan Section 8).  Measured on the
-    prod-shape clone 2026-07-26: the stored and live bases differ on ZERO of 60
-    columns for every real account, so removing the choice moves nothing.
+    is a property of the construction rather than an invariant a test polices
+    across three independent producer passes (finding N-48).
 
-    The cash walk runs for every kind -- it supplies the stale-anchor flag and,
-    for INTEREST, the premium baseline.  Only an INTEREST grid account
-    additionally runs the kind-correct walk.
+    **Only INTEREST accrues** here, because only its balance is a transaction
+    sum plus a layered rate (so a row typed on the editable grid flows into it
+    and the accrual row still reconciles).  PLAIN carries no accrual (its
+    kind-correct balance IS its cash basis); AMORTIZING, INVESTMENT and
+    APPRECIATING are schedule- or growth-driven, so a typed grid row would not
+    move their modelled balance and no single accrual row could explain the
+    difference -- see the module docstring.
+
+    **The accrual is a producer's answer, not a residual** (plan step X-c2b2,
+    finding N-52).  It used to be the period-to-period delta of the PREMIUM
+    between two independently computed balance maps, which meant any
+    disagreement between those maps rendered as interest EARNED: measured on the
+    real Money Market, folding the cash map while the accrual still seeded off
+    the ``current_anchor_balance`` cache would have shown ``$2,007.01`` of
+    interest in the current column -- the ``$2,000.00`` of settled money the
+    cache never saw, relabelled (finding N-49).  Both halves now come off ONE
+    fold over ONE period list, so the row is the accrual map itself.
+
+    **ONE income basis, and nobody chooses it** (ruling R-Q).  The live override
+    map -- recomputed salary income and derived loan debits -- is built inside
+    the fold over the account's own plan and returned on the result, so the
+    grid's CELLS render from the same map its balance row folded.  It used to be
+    an argument threaded through two walks whose ``None``-handling differed by
+    kind, which is how one account could be valued on two income bases.
 
     Args:
         account: The account to project (the grid account; any kind).
-            ``classify_account`` drives the dispatch.
+            ``classify_account`` drives the accrual dispatch.
         ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
         periods: The pay periods to project over, ordered by ``period_index``
-            (pass the full anchor-forward set so the previous-period premium
-            baseline is available at the window's left edge; every one of them
-            is present in the result).
+            (pass the full set; every one of them is present in the result, and
+            each is valued off its OWN span rather than re-based on the
+            window's left edge).
 
     Returns:
         A :class:`GridBalanceView`.
@@ -389,38 +310,22 @@ def grid_balance_view(
             nullable baseline must guard first.
     """
     _require_scenario(ctx)
-    scenario_id = ctx.scenario.id
-    overrides = live_amount_overrides(
-        account,
-        scenario_id,
-        load_balance_transactions(
-            account, scenario_id, [period.id for period in periods],
-        ),
+    view = _cash_fold.cash_period_view(
+        account, ctx.scenario.id, ctx.as_of, periods,
     )
-    cash_result = _cash_flow.cash_balance_map(
-        account, ctx, periods, amount_overrides=overrides,
+    balances: "OrderedDict[int, Decimal]" = OrderedDict(
+        (period_id, column.balance)
+        for period_id, column in view.columns.items()
     )
-    balances = cash_result.balances
     accrual: "dict[int, Decimal]" = {}
-    if classify_account(account) is AccountProjectionKind.INTEREST:
-        kc_balances = _kind_correct.balance_map(
-            account, ctx, periods, amount_overrides=overrides,
+    interest_params = _interest.accrual_params(account)
+    if interest_params is not None:
+        balances, accrual = _interest.layer_account_interest(
+            account, ctx, periods, balances, interest_params,
         )
-        if kc_balances is not None:
-            balances, accrual = _accruing_balances(
-                kc_balances, cash_result.balances,
-            )
     return GridBalanceView(
-        columns=_assemble_columns(
-            periods,
-            balances,
-            period_subtotals(
-                account, scenario_id, periods, amount_overrides=overrides,
-            ),
-            accrual,
-        ),
-        stale_anchor_warning=cash_result.stale_anchor_warning,
-        amount_overrides=overrides,
+        columns=_assemble_columns(periods, balances, view.columns, accrual),
+        amount_overrides=view.amount_overrides,
     )
 
 
@@ -436,9 +341,6 @@ def empty_grid_view() -> GridBalanceView:
     endpoints each had one.
 
     Returns:
-        A :class:`GridBalanceView` with no columns, no warning, and no
-        overrides.
+        A :class:`GridBalanceView` with no columns and no overrides.
     """
-    return GridBalanceView(
-        columns=OrderedDict(), stale_anchor_warning=False, amount_overrides={},
-    )
+    return GridBalanceView(columns=OrderedDict(), amount_overrides={})

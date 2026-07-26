@@ -28,11 +28,9 @@ there, having been stranded here since before the fence existed (finding N-30).
 """
 
 from collections import OrderedDict
-from datetime import timedelta
 from decimal import Decimal
 
 from app.services.cash_ledger import sum_projected
-from app.services.interest_projection import calculate_interest
 
 
 def _detect_stale_anchor(periods, anchor_period_id, txn_by_period):
@@ -131,151 +129,9 @@ def calculate_balances(anchor_balance, anchor_period_id, periods, transactions,
     return balances, stale_anchor_warning
 
 
-def calculate_balances_with_interest(  # pylint: disable=too-many-arguments,too-many-positional-arguments
-    anchor_balance, anchor_period_id, periods, transactions,
-    interest_params=None, amount_overrides=None, *, accrual_start,
-):
-    """Same as calculate_balances but also returns interest earned per period.
-
-    When interest_params is provided (an object with .apy and
-    .compounding_frequency_id), interest is projected for each period and
-    added to the running balance.
-
-    Args:
-        anchor_balance:    Decimal -- the real balance at the anchor period.
-        anchor_period_id:  int -- the pay_period.id of the anchor.
-        periods:           List of PayPeriod objects, ordered by period_index.
-        transactions:      List of Transaction objects (including shadow transactions).
-        interest_params:   Object with .apy (Decimal) and .compounding_frequency_id (int).
-        amount_overrides:  Optional ``{transaction_id: Decimal}`` map (the live
-                           projected-net seam, Workstream B), forwarded verbatim
-                           to :func:`calculate_balances`.  Default None
-                           preserves the prior behavior byte-identical.
-        accrual_start:     ``datetime.date`` -- the first day modelled interest
-                           may accrue on (ruling R-L; see
-                           :func:`_layer_interest`).  Required and undefaulted
-                           on purpose: the only value a default could carry is
-                           "each period's own start", which is precisely the
-                           rule this parameter exists to retire, so a caller
-                           that forgot it would silently get the old answer.
-
-    Returns:
-        (balances, interest_by_period) where:
-            balances: OrderedDict mapping period_id -> Decimal end balance
-            interest_by_period: dict mapping period_id -> Decimal interest earned
-
-    Pylint: ``too-many-arguments`` (7/5) / ``too-many-positional-arguments``
-    (6/5) -- these are independent balance-projection inputs, not a
-    cohesive entity: this is the sibling :func:`calculate_balances`'s five-arg
-    signature plus ``interest_params`` and ``accrual_start``, forwarding five of
-    them verbatim, so a param object would force the same bundle onto the clean
-    sibling (and its many callers) or split two near-identical signatures.
-    Bundling would be stamp coupling, mirroring the ``projection_inputs`` /
-    ``growth_engine`` documented disables.
-    """
-    # First compute base balances without interest.
-    base_balances, _ = calculate_balances(
-        anchor_balance, anchor_period_id, periods, transactions,
-        amount_overrides=amount_overrides,
-    )
-
-    if not interest_params or not hasattr(interest_params, "apy"):
-        return base_balances, {}
-
-    return _layer_interest(
-        base_balances, periods, interest_params, accrual_start,
-    )
-
-
-def _layer_interest(base_balances, periods, interest_params, accrual_start):
-    """Layer per-period interest on top of pre-computed base balances.
-
-    Re-walks the periods in order, compounding interest forward: each
-    period's interest is computed on its base balance plus the interest
-    accrued in prior periods, then folded into the running balance.
-
-    **A period accrues only over the days it holds the ASSERTED balance**
-    (ruling R-L, plan step X-c2a): the accrual window is
-    ``[max(period.start_date, accrual_start) .. period.end_date]``, so a
-    period entirely after the assertion accrues in full, the assertion's own
-    period accrues from the day it was asserted, and a period that ended
-    before the assertion accrues nothing.  Everything at or before that
-    assertion is a bank FACT the user typed in, and modelling interest across
-    those days adds money the assertion already contains.  Before this rule
-    accrual began at the anchor PERIOD's start, which can be up to 13 days
-    early: measured on the real Fidelity Savings (``$5,363.56`` at 3.29% APY,
-    asserted 2026-04-06 inside the 03-26..04-08 period), ``$6.77`` over 14 days
-    where the honest window earns ``$1.45`` over 3.
-
-    That one ``max`` is the whole rule and it needs no branch:
-    :func:`~app.services.interest_projection.calculate_interest` returns zero
-    for an inverted window (``period_start >= period_end``), so a period ending
-    before *accrual_start* falls out arithmetically rather than through a guard
-    a later reader could mistake for a special case.  Such a period keeps its
-    place in BOTH returned maps, carrying its base balance and a zero accrual
-    -- dropping it would put a hole in a column the caller is projecting.
-
-    Args:
-        base_balances: OrderedDict period_id -> Decimal end balance, the
-            no-interest balances from :func:`calculate_balances`.
-        periods: List of PayPeriod objects, ordered by period_index.
-        interest_params: Object with .apy (Decimal) and
-            .compounding_frequency_id (int).
-        accrual_start: ``datetime.date`` -- the first day interest may accrue
-            on, the UTC civil day of the account's LATEST balance assertion
-            (the caller reads it off the dated ``AccountAnchorHistory`` source
-            of truth).  It is NOT assumed to fall inside any particular
-            period: the ``max`` above is total over every relationship between
-            it and a period's span.
-
-    Returns:
-        (balances, interest_by_period) where balances is an OrderedDict
-        period_id -> Decimal end balance with interest layered in, and
-        interest_by_period maps period_id -> Decimal interest earned.
-    """
-    apy = interest_params.apy  # Already Decimal from Numeric(7,5) column.
-    compounding_id = interest_params.compounding_frequency_id
-
-    # Re-walk periods, layering interest on top of the base balances.
-    balances = OrderedDict()
-    interest_by_period = {}
-    running_balance = None
-    interest_cumulative = Decimal("0.00")
-
-    for period in periods:
-        if period.id not in base_balances:
-            continue
-
-        base_bal = base_balances[period.id]
-        # Add cumulative interest from prior periods.
-        running_balance = base_bal + interest_cumulative
-
-        # Calculate interest for this period.  Pay periods carry an
-        # INCLUSIVE end_date (a 14-calendar-day period runs
-        # start .. start + 13), but calculate_interest treats period_end as
-        # the EXCLUSIVE right boundary of a half-open [start, end) window
-        # (its (period_end - period_start).days convention, verified by its
-        # unit tests).  Pass end_date + 1 day -- the true exclusive boundary,
-        # equal to the next period's start_date -- so the money accrues over
-        # all 14 calendar days it is held, not 13.  Counting only 13 days
-        # understated a HYSA's yield by ~1 day in 14 (~7%), the interest-path
-        # twin of the growth_engine day-count defect.
-        #
-        # The left boundary is the LATER of the period's start and the
-        # account's latest assertion (ruling R-L): a day at or before that
-        # assertion is a bank fact, not a day to model.  An entirely
-        # pre-assertion period inverts the window and earns zero without a
-        # branch (see the docstring).
-        interest = calculate_interest(
-            balance=running_balance,
-            apy=apy,
-            compounding_frequency_id=compounding_id,
-            period_start=max(period.start_date, accrual_start),
-            period_end=period.end_date + timedelta(days=1),
-        )
-        interest_cumulative += interest
-        running_balance += interest
-        interest_by_period[period.id] = interest
-        balances[period.id] = running_balance
-
-    return balances, interest_by_period
+# The interest-layering half of this module MOVED to
+# ``app.services.balance_at._interest`` at plan step X-c2b2, with the base it
+# layered over: an INTEREST account's balance is now the cash FOLD plus a
+# modelled accrual, so "compute a base then layer" stopped being one function
+# whose base this module owned.  ``calculate_balances_with_interest`` went with
+# it -- its whole body was that composition and it had no caller left.

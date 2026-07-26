@@ -31,18 +31,14 @@ from app.utils.money import round_money
 
 from ._context import BalanceContext
 
-from . import _cash_engine, _investment
+from . import _cash_fold, _investment
 from ._inputs import _account_balance_map, _assemble_inputs, _require_scenario
 from ._positions import positions
 from ._resolution import resolved_loan
 
 
 def balance_map(
-    account: Account,
-    ctx: BalanceContext,
-    periods: list,
-    *,
-    amount_overrides: "dict[int, Decimal] | None" = None,
+    account: Account, ctx: BalanceContext, periods: list,
 ) -> "OrderedDict[int, Decimal] | None":
     """Return one account's period_id -> balance map across *periods*.
 
@@ -54,29 +50,13 @@ def balance_map(
     code path :func:`build_maps` runs per account, so single- and batch-assembly
     cannot drift.
 
-    ``amount_overrides`` is forwarded through the kind dispatch only on the
-    cash sub-path of a plain / interest account (loan, investment, and
-    appreciation derive from schedules / growth curves and ignore it -- the
-    map only carries cash-account transaction ids).  Its None-handling is NOT
-    uniform across kinds, and that asymmetry is load-bearing for callers:
-
-    * **PLAIN** routes to
-      :func:`~app.services.balance_at._cash_engine.balances_for`, which AUTO-BUILDS a
-      live projected-net map when ``amount_overrides`` is None -- so omitting
-      it yields LIVE income.
-    * **INTEREST** routes to
-      :func:`~app.services.balance_at._calculator.calculate_balances_with_interest`,
-      which does NOT auto-build -- so omitting it yields STORED income (the
-      stored ``estimated_amount``), not live.
-
-    A caller that needs live income on an interest account must therefore pass
-    an explicit live map.  That is exactly what
-    :func:`~app.services.balance_at.grid_balance_view` does: it threads one map
-    to both its cash and kind-correct walks so an interest grid account's
-    accrual stays pure and its balance row reconciles with the grid's
-    live-income subtotal row.  The investment base independently builds its own
-    live overrides inside ``balances_for``, so it is live regardless.  The
-    passthrough is parity-tested in ``tests/test_services/test_balance_at.py``.
+    **There is ONE income basis and the caller does not choose it** (ruling R-Q,
+    plan step X-c2b2).  This entry used to take an ``amount_overrides`` map
+    whose None-handling differed by kind -- the plain path auto-built a LIVE map
+    while the interest path fell back to the STORED ``estimated_amount`` -- so
+    two walks of one account could land on two income bases and the difference
+    surfaced as interest.  The cash fold builds its own map over its own plan,
+    so the argument has nothing left to keep in step and is gone.
 
     Args:
         account: The account to project.  Its ``user_id`` scopes the
@@ -87,14 +67,6 @@ def balance_map(
             now, and it memoizes each loan's resolution for the pass).
         periods: The pay periods to project over, ordered by
             ``period_index``.
-        amount_overrides: Optional ``{transaction_id: Decimal}`` live
-            projected-net / loan-derive map, forwarded to the cash sub-path of
-            a plain / interest account.  None-handling differs by kind (see
-            the note above): the PLAIN path (``balances_for``) auto-builds a
-            live map from None, but the INTEREST path
-            (``calculate_balances_with_interest``) does NOT and uses the
-            stored amounts -- so pass an explicit live map to put an interest
-            account on live income (``grid_balance_view`` does this).
 
     Returns:
         The OrderedDict period_id -> Decimal balance, or ``None`` when the
@@ -110,9 +82,7 @@ def balance_map(
     # a deep AttributeError (or a silent $0 net worth) into a clear failure.
     _require_scenario(ctx)
     inputs = _assemble_inputs([account], ctx)
-    return _account_balance_map(
-        account, ctx, periods, inputs, amount_overrides,
-    )
+    return _account_balance_map(account, ctx, periods, inputs)
 
 
 def build_maps(
@@ -130,9 +100,6 @@ def build_maps(
     per-account dense-map build the savings cockpit's
     ``build_account_net_worth_maps`` performs today, internalised behind the
     seam so the assembly lives in one place.
-
-    The net-worth batch path never applies live amount overrides, so each
-    per-account dispatch passes ``amount_overrides=None``.
 
     Accounts whose map is ``None`` (no anchor period) are omitted from the
     result, matching the net-worth section's ``balances is None`` skip.
@@ -156,13 +123,37 @@ def build_maps(
     inputs = _assemble_inputs(accounts, ctx)
     result: "dict[int, OrderedDict[int, Decimal]]" = {}
     for account in accounts:
-        balances = _account_balance_map(
-            account, ctx, periods, inputs, None,
-        )
+        balances = _account_balance_map(account, ctx, periods, inputs)
         if balances is None:
             continue
         result[account.id] = balances
     return result
+
+
+def _cash_scalar(
+    account: Account, ctx: BalanceContext, as_of: date,
+) -> Decimal:
+    """Return the account's folded cash balance at one date.
+
+    The kind-correct scalar's cash arm, reached by its PLAIN branch and by its
+    degraded-AMORTIZING branch (an amortizing account with no ``LoanParams``,
+    which has no schedule to fold and is valued over its own transaction rows).
+    Both took the same producer before the cutover and both take the same fold
+    after; naming it once is what keeps them from drifting apart, since they are
+    the same question asked about two kinds (plan finding N-47).
+
+    Args:
+        account: The account to value; its kind is not consulted here.
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
+            (its scenario scopes the fold; its ``as_of`` is the reader's NOW).
+        as_of: The VALUATION date.
+
+    Returns:
+        The cent-quantized ``Decimal`` balance at *as_of*.
+    """
+    return _cash_fold.fold_cash_balances(
+        account, ctx.scenario.id, ctx.as_of, [as_of],
+    )[as_of]
 
 
 def balance_at(
@@ -173,11 +164,12 @@ def balance_at(
     The scalar-at-a-date producer, dispatched by
     :func:`~app.services.account_projection.classify_account`:
 
-    * **PLAIN (checking / plain savings)** -> the date-precise
-      :func:`~app.services.balance_at._cash_engine.balance_as_of_date`, which owns
-      its own period loading and intra-period entry-date precision.  PLAIN is
-      the only kind whose KIND-CORRECT balance IS its transaction balance, so
-      the scalar can answer it date-precisely.
+    * **PLAIN (checking / plain savings)** -> the date-precise cash FOLD
+      (:func:`app.services.balance_at._cash_fold.fold_cash_balances`), which is
+      the SAME call :func:`~app.services.balance_at.cash_balance_at` makes --
+      deliberately, because for a plain account the kind-correct balance IS the
+      cash-flow balance, so /savings and the dashboard cannot answer one date
+      two ways (plan finding N-47).
     * **AMORTIZING (loan)** -> :func:`~app.services.balance_at.positions`: the event
       FOLD over the loan's SOURCE facts for a date at or before the resolver's now
       (the only complete record of the past -- it books the true-ups that never
@@ -205,17 +197,17 @@ def balance_at(
     *as_of*?"  This matches how each kind is actually stored.
 
     Out-of-range / no-map behavior (INTEREST / INVESTMENT / APPRECIATING):
-    when *as_of*
-    falls before the user's entire pay-period horizon (no period contains or
-    precedes it) or the account has no projectable map, the seam returns the
-    canonical anchor balance from
+    when *as_of* falls BEFORE the user's entire pay-period horizon (no period
+    contains or precedes it -- ``find_period_containing_date`` falls back to
+    the latest period that ENDED earlier, so a date after the horizon reads
+    that period's balance rather than this fallback) or the account has no
+    projectable map, the seam returns the canonical anchor balance from
     :func:`~app.services.cash_ledger.resolve_anchor`, rounded to cents.
-    This mirrors :func:`~app.services.balance_at._cash_engine.balance_as_of_date`'s
-    pre-anchor convention (a date the projection cannot reach returns the
-    anchor balance), so every kind answers an unreachable date the same way.
-    A genuinely corrupt account with no anchor history makes
-    ``resolve_anchor`` raise, which is the correct loud failure rather than
-    a silently wrong number.
+    A genuinely corrupt account with no anchor history makes ``resolve_anchor``
+    raise, which is the correct loud failure rather than a silently wrong
+    number.  The PLAIN and loan branches above need no such fallback: both are
+    TOTAL folds that answer any date, including one before the user's first pay
+    period.
 
     **Two dates, deliberately distinct.**  ``ctx.as_of`` is the resolver's NOW --
     the moment a loan is RESOLVED at, deciding what is confirmed and what it
@@ -244,29 +236,24 @@ def balance_at(
     kind = classify_account(account)
 
     # PLAIN is the only kind whose kind-correct balance IS its transaction
-    # balance, so it alone takes the date-precise cash producer.  INTEREST is
+    # balance, so it alone takes the date-precise cash fold.  INTEREST is
     # NOT here: its kind-correct balance accrues interest, so it falls through
     # to the period-granular ``balance_map`` path below -- keeping the scalar
     # consistent with the map for an HYSA (the no-interest transaction balance
     # is ``cash_balance_at``'s job, not this kind-correct scalar's).
     if kind is AccountProjectionKind.PLAIN:
-        return _cash_engine.balance_as_of_date(
-            account, ctx.scenario.id, as_of,
-        )
+        return _cash_scalar(account, ctx, as_of)
 
     if kind is AccountProjectionKind.AMORTIZING:
         # A configured loan reads the ONE total producer positions(): the FOLD over
         # source events for a past date, the schedule projection after (step C3b).
         # An AMORTIZING account with no LoanParams -- a Mortgage typed but never
-        # filled in -- has no schedule to fold, so it degrades to the cash producer
+        # filled in -- has no schedule to fold, so it degrades to the cash fold
         # over its own transaction rows.  positions() fails loud for such an
-        # account, so the degrade is decided HERE on the resolver's fact, exactly
-        # the routing amortizing_balance_at did internally before the cutover
+        # account, so the degrade is decided HERE on the resolver's fact
         # (``resolved_loan(...) is None`` iff generate_debt_schedules would skip it).
         if resolved_loan(account, ctx) is None:
-            return _cash_engine.balance_as_of_date(
-                account, ctx.scenario.id, as_of,
-            )
+            return _cash_scalar(account, ctx, as_of)
         return positions(account, ctx, [as_of])[as_of]
 
     # INTEREST / INVESTMENT / APPRECIATING: locate the period containing as_of

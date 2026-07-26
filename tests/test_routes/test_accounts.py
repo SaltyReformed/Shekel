@@ -3077,16 +3077,12 @@ def _override_account_anchor(db_session, account, pay_period, anchor_balance):
     later moves to a shared fixture remain a refactor rather than a
     contract change.
     """
-    history = AccountAnchorHistory(
-        account_id=account.id,
-        pay_period_id=pay_period.id,
-        anchor_balance=anchor_balance,
+    from tests._test_helpers import override_anchor  # pylint: disable=import-outside-toplevel
+
+    override_anchor(
+        db_session, account, pay_period, anchor_balance,
         notes="C7 symptom #5 test: anchor override",
     )
-    db_session.add(history)
-    db_session.flush()
-    account.current_anchor_balance = anchor_balance
-    account.current_anchor_period_id = pay_period.id
     db_session.commit()
 
 
@@ -3746,10 +3742,13 @@ class TestCashDetailContext:
         """chart_json parses to the labeled float series with an int current_index.
 
         The series is every period that has a projected balance, in
-        ``period_index`` order.  The current period is period 0 (start
-        today) -- the FIRST period with a balance -- so ``current_index``
-        is 0, and the chart's first balance is the hero figure ($5,000.00)
-        at the ``float`` serialization boundary.
+        ``period_index`` order -- which since plan step X-c2b2 is EVERY period
+        the user has, because the fold answers a pre-anchor period with the
+        balance in force then instead of omitting it (finding cash D3).  The
+        chart therefore opens on the ``seed_user`` bootstrap period that
+        precedes this fixture's own range, carrying the account's opening
+        $5,000.00 back-projected flat (ruling R-I), and ``current_index`` is
+        the current period's position in that full list rather than 0.
         """
         # Pylint: import-outside-toplevel -- deferred import is the file-wide
         # test convention.
@@ -3767,8 +3766,17 @@ class TestCashDetailContext:
             assert all(isinstance(v, float) for v in chart["balance"])
             assert isinstance(chart["current_index"], int)
             assert 0 <= chart["current_index"] < n
-            # Current period is the first period with a balance.
-            assert chart["current_index"] == 0
+            # The current period's position in the user's FULL period list --
+            # one past the bootstrap period the chart now also draws.
+            all_periods = pay_period_service.get_all_periods(
+                seed_user["user"].id,
+            )
+            assert n == len(all_periods)
+            assert chart["current_index"] == [
+                p.id for p in all_periods
+            ].index(_periods[0].id) == 1
+            # Every period before the anchor holds the opening flat (R-I), so
+            # the series opens on the hero figure either way.
             assert chart["balance"][0] == 5000.0
 
     def test_anchor_as_of_is_event_date_not_period_start(
@@ -3904,8 +3912,11 @@ class TestCashDetailContext:
                 account_id=acct.id,
             ).one()
             current = pay_period_service.get_current_period(seed_user["user"].id)
+            # pylint: disable=import-outside-toplevel
+            from app.services.balance_at import BalanceContext
             ibp = net_worth_kernel.interest_by_period_for_account(
-                acct, seed_user["scenario"], periods, params,
+                acct, BalanceContext.build(seed_user["user"].id), periods,
+                params,
             )
             lo = current.period_index + 1
             hi = current.period_index + 26  # 26 biweekly periods = 1 year.

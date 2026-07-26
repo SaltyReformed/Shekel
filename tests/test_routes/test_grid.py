@@ -297,36 +297,37 @@ class TestBalanceRow:
             assert b"Projected End Balance" in resp.data
             assert b"Total Expenses" not in resp.data
 
-    def test_balance_row_oob_stale_anchor_banner_when_condition_holds(
+    def test_a_settled_post_anchor_row_raises_the_balance_not_a_banner(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """A settled post-anchor txn makes the response carry the OOB banner.
+        """The stale-anchor banner is GONE, and the row it warned about counts.
 
-        The anchor sits at periods[0]; a Paid (settled) expense in a
-        later period (periods[2]) is the stale-anchor condition. The
-        balance-row response must surface the banner out-of-band -- the
-        ``#stale-anchor-warning`` wrapper with ``hx-swap-oob="true"`` and
-        the warning alert inside -- so a desktop mark-done that creates
-        the condition shows the banner without the old full page reload.
+        The anchor sits at periods[0]; a Paid (settled) $1,200.00 expense in a
+        later period used to be the "stale anchor" condition -- the balance
+        row's response carried a warning banner out-of-band saying the
+        projection might be wrong, because that row contributed nothing to it
+        and only a re-anchor could fix the figure.
+
+        Since plan step X-c2b2 the balance is a fold that counts the row from
+        the day its money moved, so there is nothing left to warn about: the
+        banner, its flag and its detector are deleted, and the balance itself
+        moves.  Hand-computed: $1,000.00 anchor - $1,200.00 = -$200.00 from
+        that period on.
+
+        The row's ``paid_at`` is stamped at the settle (the wall clock), which
+        is after every seeded period here, so the balance drops in the LAST
+        column rather than in the row's own -- which is why the assertion reads
+        the final period and why finding N-42 (nothing records when money
+        moved) is the follow-up plan step X-f exists for.
         """
         with app.app_context():
-            from app.models.ref import TransactionType  # pylint: disable=import-outside-toplevel
-            paid = db.session.query(Status).filter_by(name="Paid").one()
-            expense_type = (
-                db.session.query(TransactionType).filter_by(name="Expense").one()
+            from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
+                create_settled_cash_transaction,
             )
-            # periods[0] is the anchor; periods[2] is post-anchor.
-            post_anchor = seed_periods_today[2]
-            db.session.add(Transaction(
-                pay_period_id=post_anchor.id,
-                scenario_id=seed_user["scenario"].id,
-                account_id=seed_user["account"].id,
-                status_id=paid.id,
-                name="Paid Rent",
-                category_id=seed_user["categories"]["Rent"].id,
-                transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("1200.00"),
-            ))
+            create_settled_cash_transaction(
+                seed_user, db.session, seed_periods_today[2],
+                Decimal("1200.00"), name="Paid Rent",
+            )
             db.session.commit()
 
             resp = auth_client.get(
@@ -335,54 +336,37 @@ class TestBalanceRow:
             )
             assert resp.status_code == 200
             html = resp.data.decode()
-            # OOB wrapper present and carrying the alert.
-            assert 'id="stale-anchor-warning"' in html
-            assert 'hx-swap-oob="true"' in html
-            assert "alert-warning" in html
-            assert "marked as done in periods after your anchor" in html
-            # Still dismissible.
-            assert 'data-bs-dismiss="alert"' in html
-
-    def test_balance_row_oob_stale_anchor_wrapper_empty_when_no_condition(
-        self, app, auth_client, seed_user, seed_periods_today,
-    ):
-        """No settled post-anchor txn -> the OOB wrapper is empty (no alert).
-
-        The wrapper still ships (so a later refresh can fill or clear it),
-        but with no stale-anchor condition it carries no alert -- a
-        desktop refresh must not flash a spurious warning.
-        """
-        with app.app_context():
-            resp = auth_client.get(
-                f"/grid/balance-row?periods=6&offset=0"
-                f"&account_id={seed_user['account'].id}"
-            )
-            assert resp.status_code == 200
-            html = resp.data.decode()
-            # Wrapper ships for the OOB swap, but holds no alert.
-            assert 'id="stale-anchor-warning"' in html
-            assert 'hx-swap-oob="true"' in html
-            assert "alert-warning" not in html
+            # The banner and every trace of its wiring are gone.
+            assert 'id="stale-anchor-warning"' not in html
             assert "marked as done in periods after your anchor" not in html
+            assert "<template>" not in html
+            # And the settled row is IN the balance.
+            balances = balance_at.cash_balance_map(
+                seed_user["account"],
+                BalanceContext.build(seed_user["user"].id),
+                seed_periods_today,
+            )
+            assert balances[seed_periods_today[-1].id] == Decimal("-200.00")
 
-    def test_balance_row_oob_banner_is_template_encapsulated(
+    def test_the_balance_row_response_opens_on_the_tfoot(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """The OOB banner ships inside a <template> that closes before <tfoot>.
+        """The partial's FIRST top-level element is the ``<tfoot>``.
 
-        Load-bearing parser-safety shape: htmx parses every partial
-        inside a <template> wrapper, and per the HTML5 tree-construction
-        spec a BARE non-table element preceding the <tfoot> flips the
-        parser into the "in body" insertion mode, where the following
-        tfoot/tr/td start tags are silently dropped.  The balance row
-        then swaps in as loose unstyled text ("unformatted list") and,
-        because the replacement carries no hx-trigger, its balanceChanged
-        self-refresh dies for the rest of the session -- the
-        projected-end-balance freeze regression introduced by ca47a1d.
-        Encapsulating the banner in <template> keeps the <tfoot> the
-        first top-level element (parses intact) while htmx's nested-
-        template OOB scan still swaps the banner.  Presence checks alone
-        cannot catch this; the ORDER is the contract.
+        Load-bearing parser-safety shape, inherited from the deleted banner:
+        htmx parses every partial inside a ``<template>`` wrapper, and per the
+        HTML5 tree-construction spec a BARE non-table element preceding the
+        ``<tfoot>`` flips the parser into the "in body" insertion mode, where
+        the following tfoot/tr/td start tags are silently DROPPED.  The balance
+        row then swaps in as loose unstyled text and, because the replacement
+        carries no ``hx-trigger``, its ``balanceChanged`` self-refresh dies for
+        the rest of the session (the projected-end-balance freeze regression
+        introduced by ca47a1d).
+
+        The banner that forced the old ``<template>`` encapsulation is gone, so
+        the shape is simply "nothing precedes the tfoot" -- which is what this
+        asserts, because a future partial that reintroduced a leading element
+        would revive the same regression.
         """
         with app.app_context():
             resp = auth_client.get(
@@ -391,13 +375,7 @@ class TestBalanceRow:
             )
             assert resp.status_code == 200
             html = resp.data.decode()
-            template_open = html.index("<template>")
-            banner = html.index('id="stale-anchor-warning"')
-            template_close = html.index("</template>")
-            tfoot = html.index("<tfoot")
-            # banner inside the template; template fully closed before
-            # the tfoot opens.
-            assert template_open < banner < template_close < tfoot
+            assert html.lstrip().startswith("<tfoot")
 
     def test_grid_periods_large_value(
         self, app, auth_client, seed_user, seed_periods, monkeypatch,
@@ -3757,8 +3735,22 @@ class TestTransactionNameRows:
                 f"&account_id={account.id}"
             )
             assert resp.status_code == 200
-            assert b"$4,850" in resp.data
-            assert b"$4,550" in resp.data
+            # Hand-computed under the fold (plan step X-c2b2): the true-up
+            # asserts $5,000.00, then the paycheck (+$2,000.00) and the
+            # electric bill (-$500.00) SETTLE after that assertion and are
+            # counted from the day they moved, and the carried-forward $150.00
+            # rent is still projected so ruling R-G lands it tomorrow -- inside
+            # the current period.  5000 + 2000 - 500 - 150 = $6,350.00, then
+            # the next period's $300.00 grocery envelope = $6,050.00.
+            #
+            # This assertion was $4,850 / $4,550 before the cutover, and the
+            # difference IS the reported bug: the projection excluded every
+            # row settled after the anchor, so marking the paycheck received
+            # deleted $2,000.00 from the balance the user had just trued up
+            # (finding cash D1).  The workflow this test walks -- true up, then
+            # mark things paid -- is exactly the one that lost it.
+            assert b"$6,350" in resp.data
+            assert b"$6,050" in resp.data
 
     def test_grid_row_ordering_is_deterministic(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -4715,51 +4707,60 @@ class TestGridPeriodSubtotalCanonical:
         ``balance_calculator.calculate_balances``) would therefore drift
         silently.  This static lock closes that gap.
 
-        Updated for Level-1 Commit 8: the grid now reads balances through
-        the balance-at seam's CASH-FLOW entry
-        (``balance_at.cash_balance_map``), which delegates to the
-        canonical entries-aware ``balance_resolver.balances_for``.  The
-        cash-flow entry -- not the kind-correct ``balance_map`` -- is
-        required: the grid account may be interest-bearing, and accruing
-        interest into the balance row while the subtotal row stays
-        transaction-based would break the
-        ``balances[p] - balances[p-1] == subtotals[p].net`` invariant
-        (``TestSubtotalReconciliation`` locks that separately).
+        Updated for plan step X-c2b2: the grid reads EVERY per-period figure
+        -- the balance, the subtotals and ruling R-K's remainder -- through
+        one ``balance_at.grid_balance_view`` call.  That entry is the
+        kind-aware wrapper over the cash FOLD; it is what layers an INTEREST
+        account's accrual on as its own row, so the balance change on screen
+        stays explained by the rows above it.
 
-        Two assertions:
-          1. ``balance_at.cash_balance_map`` must appear in
-             ``app/routes/grid.py`` (positive: the Commit-8 seam wiring
-             is intact and it is the cash-flow entry, not a direct
-             producer call or the kind-correct ``balance_map``).
+        **The positive assertion looks for the CALL, not the name.**  It
+        matched ``balance_at.cash_balance_map`` until this step, and by then
+        the route had not called that entry since X-c2b1 -- the string
+        survived only in a docstring, so the guard was passing on prose while
+        the wiring it claimed to lock had moved.  Matching ``.grid_balance_view(``
+        with its open paren is what makes it a call site again.
+
+        Three assertions:
+          1. ``balance_at.grid_balance_view(`` must appear in
+             ``app/routes/grid.py`` (positive: the seam wiring is intact).
           2. ``balance_calculator.calculate_balances(`` (the bare
              entries-blind producer) must NOT appear -- the entries-
              aware reduction in ``_entry_aware_amount`` is the F-009 /
              CRIT-01 fix; the bare producer would re-open the silent-
-             degrade seam.  ``calculate_balances_with_interest`` is a
-             distinct symbol and would not match this anti-pattern.
+             degrade seam.
+          3. ``balance_at.balance_map(`` (the KIND-CORRECT map) must NOT
+             appear: the grid account may be interest-bearing, and reading
+             the accrued balance without the accrual row beside it is the
+             shape ruling R-K refuses.
 
         Complements ``test_grid_inline_subtotal_loop_removed`` above:
         that guard catches an inline ``sum(... effective_amount ...)``
-        accumulator; this guard catches a swap to the entries-blind
-        canonical-named function.
+        accumulator; this guard catches a swap to a producer.
         """
         from pathlib import Path  # pylint: disable=import-outside-toplevel
 
         grid_source = Path("app/routes/grid.py").read_text(encoding="utf-8")
-        assert "balance_at.cash_balance_map" in grid_source, (
-            "app/routes/grid.py no longer calls "
-            "``balance_at.cash_balance_map`` -- regression on the "
-            "Level-1 Commit 8 balance-at seam contract.  Route the grid "
-            "balance computation through the seam's cash-flow entry "
-            "instead of a hand-rolled loop, a direct producer call, or "
-            "the kind-correct ``balance_map`` (which would accrue "
-            "interest into the balance row)."
+        assert "balance_at.grid_balance_view(" in grid_source, (
+            "app/routes/grid.py no longer CALLS "
+            "``balance_at.grid_balance_view`` -- regression on the "
+            "balance-at seam contract.  Route every per-period grid figure "
+            "through the seam's one kind-aware view instead of a "
+            "hand-rolled loop, a direct producer call, or the kind-correct "
+            "``balance_map`` (which would accrue interest into the balance "
+            "row with no row to explain it)."
         )
         assert "balance_calculator.calculate_balances(" not in grid_source, (
             "app/routes/grid.py imports the bare entries-blind "
             "``balance_calculator.calculate_balances`` -- this bypasses "
             "the entries-aware reduction (F-009 / CRIT-01 fix).  Use "
-            "``balance_at.cash_balance_map`` instead."
+            "``balance_at.grid_balance_view`` instead."
+        )
+        assert "balance_at.balance_map(" not in grid_source, (
+            "app/routes/grid.py calls the KIND-CORRECT ``balance_map`` -- "
+            "an interest account's accrued balance would then reach the "
+            "balance row without the 'Interest' row that explains it "
+            "(ruling R-K).  ``grid_balance_view`` owns that dispatch."
         )
 
     def test_obligations_has_no_period_subtotal_loop(self):
@@ -7072,8 +7073,6 @@ class TestTimingAndTrueUpsRow:
                 num_periods=2,
                 start_offset=0,
                 low_balance_threshold=500,
-                stale_anchor_warning=False,
-                oob=False,
             )
 
     def test_desktop_footer_renders_the_row_above_the_balance(self, app):
@@ -7127,8 +7126,7 @@ class TestTimingAndTrueUpsRow:
                         interest=False, reconciliation=True,
                     ),
                     account=None, num_periods=2, start_offset=0,
-                    low_balance_threshold=500, stale_anchor_warning=False,
-                    oob=False,
+                    low_balance_threshold=500,
                 )
 
         row = html[html.index("reconciliation-row"):]

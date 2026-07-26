@@ -130,10 +130,7 @@ def compute_pulse_section(user_id: int) -> dict | None:
     # amortize a loan, or compound an investment, diverging from the grid
     # that deliberately keeps the SAME account on the cash-flow view, and
     # inflating the "lowest point ahead" so a real future dip below zero
-    # could be hidden).  The cash map carries the running balance forward
-    # from the anchor period, so the period list MUST include the anchor
-    # period (a forward-only slice that excludes it yields an empty map --
-    # the engine has no seed).  The chart slices the current-period-forward
+    # could be hidden).  The chart slices the current-period-forward
     # tail to 13 points and the trough scans the whole forward tail.  The
     # trough horizon is the entire forward run -- the retired
     # negative-projection alert's full multi-year reach, but DELIBERATELY
@@ -141,14 +138,14 @@ def compute_pulse_section(user_id: int) -> dict | None:
     # today``): the chart's first plotted point is the current period's end
     # balance, so the labeled "lowest point ahead" must be able to coincide
     # with it rather than understating the worst visible dip.
-    # ``cash_balance_map`` resolves the anchor through the dated history SoT
-    # (reconciling the ``current_anchor_period_id`` cache-divergence edge the
-    # kind-correct map would have degraded to an empty chart), so its
-    # ``balances`` is always a populated map; the chart / trough / peak keep
-    # their existing missing-key skips for any period the resolver omits.
+    # ``cash_balance_map`` is a TOTAL fold (plan step X-c2b2): every requested
+    # period is in the result, replayed from the account's own assertions, so
+    # the chart / trough / peak missing-key skips below have nothing left to
+    # skip.  They stay because the forward slice is the caller's, not the
+    # producer's.
     end_balances = balance_at.cash_balance_map(
         account, balance_ctx, all_periods,
-    ).balances
+    )
     forward_periods = [
         p for p in all_periods
         if p.period_index >= current_period.period_index
@@ -170,7 +167,16 @@ def compute_pulse_section(user_id: int) -> dict | None:
     due_soon = _pulse_due_soon(unpaid_rows, current_period)
 
     return {
-        "hero": _pulse_hero(account, balance_ctx, current_period, settings),
+        # ``current_period`` came from ``get_current_period``, so it is a
+        # member of the ``all_periods`` the map was built over, and the fold is
+        # total over the periods it is given -- the key is present by
+        # construction.  Indexed rather than ``.get``-with-a-default on
+        # purpose: a default here would render SOME number for a hero whose
+        # own period the projection did not cover, which is the silent-wrong
+        # shape this arc exists to end.
+        "hero": _pulse_hero(
+            account, end_balances[current_period.id], current_period, settings,
+        ),
         "chart": _pulse_chart(forward_periods, end_balances, settings),
         "trough": _pulse_trough(
             forward_periods, end_balances, current_period,
@@ -189,23 +195,34 @@ def compute_pulse_section(user_id: int) -> dict | None:
 
 def _pulse_hero(
     account: Account,
-    balance_ctx: BalanceContext,
+    balance: Decimal,
     current_period: PayPeriod,
     settings: UserSettings | None,
 ) -> dict:
-    """Build the pulse hero block: the as-of-today balance and its captions.
+    """Build the pulse hero block: the period-END balance and its captions.
 
-    The headline ``balance`` is the as-of-today projected cash-flow
-    balance from the ``balance_at`` seam's cash-flow scalar
-    (``balance_at.cash_balance_at``) -- the exact figure
-    ``dashboard_service.compute_balance_section`` shows (it reads the same
-    cash-flow scalar) -- so the hero, the chart's first point, and the
-    balance card all agree.  The cash-flow view (NOT the kind-correct
-    ``balance_at`` scalar, which would accrue interest / amortize / compound)
-    is deliberate: the account is ``resolve_grid_account``'s any-kind pick,
-    and the chart the hero must agree with reads ``cash_balance_map`` for the
-    same reason.  Net pay is retired (data-value pass); only the
-    next-paycheck DATE survives.
+    The headline ``balance`` is the CURRENT PERIOD'S projected end balance,
+    read straight off the ``cash_balance_map`` the chart is built from -- so
+    the hero IS the chart's first point rather than a second producer call
+    that has to agree with it.
+
+    **It reads the period end, and the template is why** (plan step X-c2b2).
+    ``_pulse.html`` labels this figure "End of this period" and captions it
+    "projected through <period end>".  It used to be the as-of-TODAY scalar,
+    which was legitimate only because that scalar was period-FLAT: it summed
+    the whole period's still-projected rows whatever their dates, so "today"
+    and "period end" were the same number.  The fold makes the scalar
+    date-precise (finding cash D2), so a bill due later this period is no
+    longer in today's balance -- and reading it here would have put the
+    balance TODAY under a label promising the balance at the period's END,
+    differing by the whole unpaid remainder of the period.  The figure follows
+    the label.
+
+    The cash-flow view (NOT the kind-correct map, which would accrue interest
+    / amortize / compound) is deliberate: the account is
+    ``resolve_grid_account``'s any-kind pick, and the chart the hero must
+    agree with reads ``cash_balance_map`` for the same reason.  Net pay is
+    retired (data-value pass); only the next-paycheck DATE survives.
 
     ``is_stale`` is ``True`` when the anchor has never been set OR its
     last update is strictly older than ``settings.anchor_staleness_days``
@@ -215,8 +232,8 @@ def _pulse_hero(
     Args:
         account: The resolved dashboard account (``resolve_grid_account``'s
             pick; may be any kind).
-        balance_ctx: The read pass's
-            :class:`~app.services.balance_at.BalanceContext`.
+        balance: The current period's projected end balance, off the same
+            ``cash_balance_map`` the chart plots.
         current_period: The period containing today.
         settings: The user's settings, or ``None``.
 
@@ -225,9 +242,6 @@ def _pulse_hero(
         ``period_end_date``, ``account_name``, ``account_id``,
         ``last_updated_date``, ``is_stale``, ``next_paycheck_date``.
     """
-    balance = balance_at.cash_balance_at(
-        account, balance_ctx, balance_ctx.as_of,
-    )
     # One fetch of the raw anchor instant, two truncations: staleness
     # counts days in the UTC frame (storage convention, unchanged), the
     # caption shows the day in the user's display timezone so a late-
@@ -290,9 +304,9 @@ def _pulse_chart(
     Up to 13 points -- the current period plus the next 12 (fewer when
     fewer periods exist) -- each ``{end_date, balance}`` from the
     anchor-forward end-balance map.  The first point coincides with the
-    hero by construction (same producer family, reservation semantics):
-    with no entries dated after today the as-of-today balance equals the
-    current period's projected end balance.  ``low_balance_threshold`` is
+    hero by construction: both are the current period's entry in the SAME
+    folded period map (plan step X-c2b2), so the chart's first point IS the
+    hero rather than a second producer that has to agree with it.  ``low_balance_threshold`` is
     the user's setting as a ``Decimal`` (the column is a NOT NULL
     whole-dollar integer, so it always carries a value when a settings
     row exists) or ``None`` only when the user has no settings row at
@@ -302,7 +316,7 @@ def _pulse_chart(
         forward_periods: Periods from the current one forward, ordered by
             ``period_index``.
         end_balances: The ``period_id -> Decimal`` end-balance map from
-            ``balances_for``.
+            the seam's folded ``cash_balance_map``.
         settings: The user's settings, or ``None`` when the user has no
             settings row.
 
@@ -341,7 +355,7 @@ def _pulse_trough(
         forward_periods: Periods from the current one forward, ordered by
             ``period_index``.
         end_balances: The ``period_id -> Decimal`` end-balance map from
-            ``balances_for``.
+            the seam's folded ``cash_balance_map``.
         current_period: The period containing today (the offset origin).
 
     Returns:
@@ -372,7 +386,7 @@ def _pulse_peak(
         forward_periods: Periods from the current one forward, ordered by
             ``period_index``.
         end_balances: The ``period_id -> Decimal`` end-balance map from
-            ``balances_for``.
+            the seam's folded ``cash_balance_map``.
         current_period: The period containing today (the offset origin).
 
     Returns:
@@ -411,7 +425,7 @@ def _pulse_extremum(
         forward_periods: Periods from the current one forward, ordered by
             ``period_index``.
         end_balances: The ``period_id -> Decimal`` end-balance map from
-            ``balances_for``.
+            the seam's folded ``cash_balance_map``.
         current_period: The period containing today (the offset origin).
         find_max: ``True`` to return the maximum end balance (the peak),
             ``False`` to return the minimum (the trough).

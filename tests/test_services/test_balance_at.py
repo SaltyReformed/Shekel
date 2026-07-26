@@ -354,8 +354,8 @@ class TestInterestBeginsAtTheLatestAssertion:
     ):
         """The LATEST assertion opens the window, not the opening one.
 
-        The account opens in period 0 and the user trues it up in period 2
-        (through the production ``stage_anchor_true_up`` path, so the
+        The account opens in period 0 at $6,000.00 and the user trues it up in
+        period 2 (through the production ``stage_anchor_true_up`` path, so the
         ``current_anchor_*`` cache and the history row agree exactly as they
         do in production).  Periods 0 and 1 then precede the newest assertion
         entirely and accrue nothing; period 2 accrues from the true-up day.
@@ -385,10 +385,12 @@ class TestInterestBeginsAtTheLatestAssertion:
 
             balances = balance_at.balance_map(hysa, bctx, periods)
 
-            # Pre-assertion periods are absent: the walk starts at the CACHE's
-            # anchor period, which the true-up moved to period 2.
-            assert periods[0].id not in balances
-            assert periods[1].id not in balances
+            # Pre-assertion periods are PRESENT and accrue nothing: the fold
+            # back-projects the opening over the records it contains (ruling
+            # R-I), so they carry the $6,000.00 the account demonstrably held,
+            # and the R-L window earns zero across days the true-up covers.
+            assert balances[periods[0].id] == Decimal("6000.00")
+            assert balances[periods[1].id] == Decimal("6000.00")
             assert balances[periods[2].id] == Decimal("10009.59")
 
     def test_the_interest_chip_reads_the_same_window(
@@ -418,7 +420,7 @@ class TestInterestBeginsAtTheLatestAssertion:
             )
 
             chip = balance_at.interest_by_period_for_account(
-                hysa, scenario, periods, params,
+                hysa, bctx, periods, params,
             )
             balances = balance_at.balance_map(hysa, bctx, periods)
 
@@ -1196,45 +1198,118 @@ class TestBalanceAt:
             assert seam > Decimal("400000.00")
 
 
-class TestAmountOverridesPassthrough:
-    """``balance_map`` threads amount_overrides to the cash producer."""
+class TestTheSeamOwnsTheIncomeBasis:
+    """Ruling R-Q: the live override map is the seam's, not the caller's.
 
-    def test_passthrough_matches_balances_for(
+    ``balance_map`` and ``cash_balance_map`` used to take an
+    ``amount_overrides`` argument, and its ``None``-handling differed by kind:
+    the plain path auto-built a LIVE map while the interest path fell back to
+    the STORED ``estimated_amount``.  One account could therefore be valued on
+    two income bases in one render, and the difference surfaced on the grid as
+    interest.  The fold builds its own map over its own plan, so the argument
+    is gone and these tests pin what replaced it -- live income, without being
+    asked for.
+    """
+
+    def test_a_stale_stored_amount_is_priced_live_without_being_asked(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """balance_map(..., amount_overrides=OV) == balances_for(..., OV).balances.
+        """A salary row's stale estimate never reaches the balance.
 
-        A constructed override on a projected income transaction must flow
-        through the seam to the cash producer unchanged, and it must
-        actually change the projection (proving the threading is real, not a
-        silent no-op): the $100 stored bonus becomes $9,999.
+        The stored ``estimated_amount`` is $1.00 against a $104,000 profile
+        whose live net is $4,000.00 (104000 / 26, hand-computed).  Both the
+        kind-correct map and the cash-flow map must carry the LIVE figure with
+        no argument passed: $1,000 anchor + $4,000 = $5,000.00 at period 5.
         """
+        # pylint: disable=import-outside-toplevel
+        from tests.test_services.test_income_service import (
+            _create_profile,
+            _make_salary_template,
+            _make_txn,
+        )
+
         with app.app_context():
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             account = seed_user["account"]
-            bonus = add_txn(
-                db.session, seed_user, periods[5], "Bonus", "100.00",
-                is_income=True,
+            profile = _create_profile(user_id, scenario.id)
+            template = _make_salary_template(seed_user, profile)
+            db.session.commit()
+            txn = _make_txn(
+                seed_user, periods[5], template=template,
+                estimated_amount="1.00",
             )
             db.session.commit()
-            overrides = {bonus.id: Decimal("9999.00")}
 
-            seam = balance_at.balance_map(
-                account, bctx, periods, amount_overrides=overrides,
+            assert txn.estimated_amount == Decimal("1.00")
+            assert balance_at.balance_map(
+                account, bctx, periods,
+            )[periods[5].id] == Decimal("5000.00")
+            assert balance_at.cash_balance_map(
+                account, bctx, periods,
+            )[periods[5].id] == Decimal("5000.00")
+
+    def test_an_interest_account_is_on_the_same_live_basis_as_a_plain_one(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """The kind that used to read STORED income reads LIVE income too.
+
+        This is the asymmetry ruling R-Q deleted.  An HYSA's salary row carries
+        the same stale $1.00 estimate; its balance must be built on the same
+        $4,000.00 live net a plain account gets, so the grid's premium over the
+        cash basis is pure interest rather than an income mismatch.
+        """
+        # pylint: disable=import-outside-toplevel
+        from tests.test_services.test_income_service import (
+            _create_profile,
+            _make_salary_template,
+        )
+
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
+            periods = pay_period_service.get_all_periods(user_id)
+            hysa = _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
+            profile = _create_profile(user_id, scenario.id)
+            template = _make_salary_template(seed_user, profile)
+            db.session.commit()
+            db.session.add(Transaction(
+                account_id=hysa.id,
+                template_id=template.id,
+                pay_period_id=periods[5].id,
+                scenario_id=scenario.id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="HYSA paycheck",
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
+                estimated_amount=Decimal("1.00"),
+            ))
+            db.session.commit()
+
+            kind_correct = balance_at.balance_map(hysa, bctx, periods)
+            cash = balance_at.cash_balance_map(hysa, bctx, periods)
+            # The live $4,000.00 lands in the CASH basis...
+            assert cash[periods[5].id] - cash[periods[4].id] == Decimal(
+                "4000.00",
             )
-            expected = balance_resolver.balances_for(
-                account, scenario.id, periods, amount_overrides=overrides,
-            ).balances
-            assert seam == expected
-
-            # The override changed the projection: $1,000 anchor + $9,999
-            # bonus = $10,999 at period 5, vs $1,000 + $100 = $1,100 without.
-            no_override = balance_at.balance_map(account, bctx, periods)
-            assert no_override[periods[5].id] == Decimal("1100.00")
-            assert seam[periods[5].id] == Decimal("10999.00")
+            # ...and the kind-correct balance is that basis plus interest.
+            # The FIRST period's accrual is hand-derivable and pins the rate
+            # and the 14-day count exactly:
+            #   Q(5000 * ((1 + 0.05/365) ** 14 - 1)) = 9.60
+            # (a 13-day window -- the day-count regression this catches --
+            # gives 8.91).
+            assert (
+                kind_correct[periods[0].id] - cash[periods[0].id]
+            ) == Decimal("9.60")
+            # By period 5 the compounded premium is $65.54, nowhere near the
+            # ~$3,999 an income-basis mismatch would have produced.  The
+            # compounding itself is graded hand-computed in
+            # ``test_interest_accrual.py``; this is its regression pin.
+            assert (
+                kind_correct[periods[5].id] - cash[periods[5].id]
+            ) == Decimal("65.54")
 
 
 class TestMultiLoanIsolation:
@@ -1521,17 +1596,26 @@ class TestBalanceAtDegrade:
             assert seam == Decimal("10000.00")  # the 401k's anchor balance
 
 
-class TestAmountOverridesScope:
-    """amount_overrides reaches the interest path but never the non-cash kinds."""
+class TestNonCashKindsAreNotTransactionSums:
+    """A live cash override cannot reach a loan / investment / property map.
 
-    def test_ignored_on_loan_investment_property(
+    The override map only ever carries cash-account transaction ids.  It used
+    to be a parameter the seam had to be careful not to forward to the
+    schedule- and growth-driven kinds; since ruling R-Q there is no parameter,
+    and this pins the property that made the old care unnecessary: those maps
+    do not read the account's transaction rows at all, so a row typed on one
+    moves nothing.
+    """
+
+    def test_a_typed_income_row_moves_no_loan_investment_or_property_map(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """A bogus override changes nothing for loan / investment / property.
+        """The same map before and after adding an income row to each kind.
 
-        Only the cash path forwards amount_overrides; the loan / investment /
-        appreciation branches never pass it to any producer, so the same map
-        results with or without the override.
+        (A loan REFUSES such a row at the write door since plan step BG /
+        ruling R-E; this inserts one directly to prove the READ side ignores it
+        too, which is what makes the write guard a belt rather than the only
+        thing standing between a schedule and a transaction sum.)
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -1542,70 +1626,57 @@ class TestAmountOverridesScope:
                 db, seed_user, periods[0], Decimal("240000.00"),
                 date(2024, 1, 1),
             )
-            inv = make_investment_account(seed_user, db.session, periods[2], Decimal("10000.00"))
+            inv = make_investment_account(
+                seed_user, db.session, periods[2], Decimal("10000.00"),
+            )
             prop = make_appreciating_account(
                 seed_user, db.session, periods[2], Decimal("400000.00"),
                 Decimal("0.03000"),
             )
-            overrides = {999999: Decimal("99999.00")}
+            before = {
+                acct.id: balance_at.balance_map(acct, bctx, periods)
+                for acct in (mortgage, inv, prop)
+            }
+            for acct in (mortgage, inv, prop):
+                db.session.add(Transaction(
+                    account_id=acct.id,
+                    pay_period_id=periods[5].id,
+                    scenario_id=scenario.id,
+                    status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                    name="typed row",
+                    transaction_type_id=ref_cache.txn_type_id(
+                        TxnTypeEnum.INCOME,
+                    ),
+                    estimated_amount=Decimal("9999.00"),
+                ))
+            db.session.commit()
+
             for acct in (mortgage, inv, prop):
                 assert balance_at.balance_map(
-                    acct, bctx, periods, amount_overrides=overrides,
-                ) == balance_at.balance_map(acct, bctx, periods)
+                    acct, bctx, periods,
+                ) == before[acct.id], f"{acct.name} moved on a typed row"
 
-    def test_interest_path_override_changes_balance(
+
+class TestCashPreAnchorPeriodsAreAnswered:
+    """The headline cash contract, REVERSED at plan step X-c2b2.
+
+    Cash balances used to be materialized roll-forwards from the anchor, so a
+    period before it had no balance at all -- absent, not zero.  That is
+    finding cash D3 / B-18: on production the period map omitted eight past
+    columns while the scalar fabricated today's balance for the same dates.
+    The fold replays every assertion, so a pre-anchor period reads the balance
+    in force then and EVERY requested period is present.
+    """
+
+    def test_an_interest_account_answers_its_pre_anchor_periods(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """An override on an HYSA income txn changes the interest-path balance.
+        """An HYSA anchored mid-window carries a balance in every period.
 
-        The kernel diff threads amount_overrides through
-        ``calculate_balances_with_interest``, so an override on an income
-        transaction belonging to the HYSA must raise that period's balance --
-        previously only the PLAIN path was covered.
-        """
-        with app.app_context():
-            user_id = seed_user["user"].id
-            scenario = get_baseline_scenario(user_id)
-            bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
-            hysa = _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
-            income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-            txn = Transaction(
-                account_id=hysa.id,
-                pay_period_id=periods[5].id,
-                scenario_id=scenario.id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-                name="HYSA Bonus",
-                transaction_type_id=income_type_id,
-                estimated_amount=Decimal("100.00"),
-            )
-            db.session.add(txn)
-            db.session.commit()
-            overrides = {txn.id: Decimal("9999.00")}
-
-            with_ov = balance_at.balance_map(
-                hysa, bctx, periods, amount_overrides=overrides,
-            )
-            without_ov = balance_at.balance_map(hysa, bctx, periods)
-            # The override ($9,999) replaces the stored $100 -> ~$9,899 higher.
-            assert with_ov[periods[5].id] > without_ov[periods[5].id]
-            assert (
-                with_ov[periods[5].id] - without_ov[periods[5].id]
-                > Decimal("9000.00")
-            )
-
-
-class TestCashPreAnchorOmission:
-    """The headline cash contract: pre-anchor periods are omitted."""
-
-    def test_interest_account_omits_pre_anchor_periods(
-        self, app, db, seed_user, seed_periods_today,
-    ):
-        """An HYSA anchored mid-window omits pre-anchor periods from its map.
-
-        Cash balances are materialized roll-forwards from the anchor; periods
-        before the anchor have no balance (they are absent, not zero), and the
-        anchor period onward are present.  The seam == the kernel.
+        The account is anchored at period 2 with $5,000.00 and has no rows, so
+        ruling R-I's back-projection holds that assertion flat backwards:
+        periods 0 and 1 read $5,000.00 -- the balance it demonstrably held --
+        rather than being absent.  The seam == the kernel.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -1622,9 +1693,10 @@ class TestCashPreAnchorOmission:
                 salary_gross_biweekly=gross,
             )
             assert seam is not None
-            assert periods[0].id not in seam
-            assert periods[1].id not in seam
+            assert seam[periods[0].id] == Decimal("5000.00")
+            assert seam[periods[1].id] == Decimal("5000.00")
             assert periods[2].id in seam  # the anchor period is present
+            assert len(seam) == len(periods)
             assert seam == expected
 
 
@@ -1679,21 +1751,23 @@ class TestCashFlowView:
     kind-correct ``balance_map`` / ``balance_at``: they must show the
     account's pure transaction running-balance regardless of its kind, so
     the projected balance reconciles with the surface's own transaction
-    rows.  These tests prove (1) the cash entries reproduce the canonical
-    producers verbatim -- including the ``stale_anchor_warning`` flag the
-    grid banner reads -- and (2) they do NOT dispatch by kind: an INTEREST
-    account's cash map omits the interest the kind-correct map accrues,
-    which is the whole reason these entries exist (Level-1 Commit 8).
+    rows.  These tests prove (1) the three entries are ONE fold read at three
+    grains, so a map column, the scalar at that column's end date and the
+    daily series' last day of it cannot disagree, and (2) they do NOT dispatch
+    by kind: an INTEREST account's cash map omits the interest the
+    kind-correct map accrues, which is the whole reason these entries exist
+    (Level-1 Commit 8).
     """
 
-    def test_cash_balance_map_equals_balances_for(
+    def test_cash_balance_map_is_the_scalar_at_every_period_end(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """cash_balance_map returns the producer's BalanceResult verbatim.
+        """Each column equals the scalar read at that column's end date.
 
-        Both the balances map and the stale-anchor flag must match
-        ``balance_resolver.balances_for`` for the same account / scenario /
-        periods -- the cash entry is a thin fence-compliant pass-through.
+        The map and the scalar were separate producers until plan step X-c2b2
+        and had to be kept in step; they are one running total sampled at two
+        grains now, so this holds by construction -- and stating it is what
+        would catch a future reader that re-introduced a second walk.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -1703,11 +1777,11 @@ class TestCashFlowView:
             account = seed_user["account"]
 
             seam = balance_at.cash_balance_map(account, bctx, periods)
-            expected = balance_resolver.balances_for(
-                account, scenario.id, periods,
-            )
-            assert seam.balances == expected.balances
-            assert seam.stale_anchor_warning == expected.stale_anchor_warning
+            assert len(seam) == len(periods)  # the loop is not vacuous
+            for period in periods:
+                assert seam[period.id] == balance_at.cash_balance_at(
+                    account, bctx, period.end_date,
+                ), f"map and scalar disagree at period {period.id}"
 
     def test_cash_map_omits_interest_unlike_kind_correct_map(
         self, app, db, seed_user, seed_periods_today,
@@ -1715,12 +1789,11 @@ class TestCashFlowView:
         """For an HYSA, the cash map is the no-interest running balance.
 
         ``cash_balance_map`` must NOT accrue interest (it is the cash-flow
-        view): its values equal the entries-aware ``balances_for`` and stay
-        flat at the $5,000 anchor (no transactions), strictly below the
-        kind-correct ``balance_map`` which routes the HYSA through
-        ``calculate_balances_with_interest``.  This is the divergence the
-        cash entry fences: a HYSA grid account whose balance row accrued
-        interest would break the grid's balance-vs-subtotal invariant.
+        view): its values stay flat at the $5,000 anchor (no transactions),
+        strictly below the kind-correct ``balance_map``, which layers the
+        modelled accrual on that same fold.  This is the divergence the cash
+        entry exists for: a HYSA grid account whose balance row accrued
+        interest would leave a change the rows on screen cannot explain.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -1731,30 +1804,31 @@ class TestCashFlowView:
 
             cash = balance_at.cash_balance_map(hysa, bctx, periods)
             kind_correct = balance_at.balance_map(hysa, bctx, periods)
-            plain = balance_resolver.balances_for(
-                hysa, scenario.id, periods,
-            ).balances
 
-            # Cash view == the no-interest producer, exactly.
-            assert cash.balances == plain
             # No transactions + no interest -> flat at the anchor.
-            assert cash.balances[periods[-1].id] == Decimal("5000.00")
+            assert set(cash.values()) == {Decimal("5000.00")}
             # The kind-correct view accrues interest strictly above it.
-            assert kind_correct[periods[-1].id] > cash.balances[periods[-1].id]
+            assert kind_correct[periods[-1].id] > cash[periods[-1].id]
 
-    def test_cash_balance_map_passes_stale_anchor_warning(
+    def test_a_settled_post_anchor_row_is_counted_not_flagged(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """A settled post-anchor txn surfaces stale_anchor_warning via the seam.
+        """The stale-anchor banner's whole subject is now just counted.
 
-        The grid reads this flag for its stale-anchor banner.  The seed
-        account is anchored at ``periods[0]``; a RECEIVED (is_settled)
-        income row in a later period sets the flag, and cash_balance_map
-        must carry it through identically to ``balances_for``.
+        The grid used to render a warning when a settled row existed in a
+        post-anchor period: those rows contributed nothing to the projection,
+        so the balance might be wrong and only the user could fix it by
+        re-anchoring (they did, 52 times in 119 days on the real account).
+        The fold counts the row, so there is nothing left to warn about and
+        plan step X-c2b2 deleted the flag, its banner and its detector.
+
+        The seed account is anchored at ``periods[0]``; a RECEIVED income row
+        of $500.00 in period 3 must RAISE the balance from period 3 on --
+        $1,000 anchor + $500 = $1,500.00 -- while periods before it are
+        unmoved.
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             account = seed_user["account"]
@@ -1765,70 +1839,41 @@ class TestCashFlowView:
             db.session.commit()
 
             seam = balance_at.cash_balance_map(account, bctx, periods)
-            expected = balance_resolver.balances_for(
-                account, scenario.id, periods,
-            )
-            assert seam.stale_anchor_warning is True
-            assert seam.stale_anchor_warning == expected.stale_anchor_warning
+            assert seam[periods[2].id] == Decimal("1000.00")
+            assert seam[periods[3].id] == Decimal("1500.00")
+            assert seam[periods[-1].id] == Decimal("1500.00")
+            assert not hasattr(seam, "stale_anchor_warning")
 
-    def test_cash_balance_map_threads_amount_overrides(
+    def test_cash_balance_at_is_the_daily_series_on_that_day(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """cash_balance_map forwards amount_overrides to the producer (grid parity).
+        """The scalar equals the daily series' value for the same day.
 
-        The grid threads its pre-built live projected-income map through the
-        cash entry; the override must reach ``balances_for`` and move the
-        number ($1,000 anchor + a $9,999 override on the period-5 bonus).
+        The third grain of the same fold.  These were two producers that
+        measured $15.96 apart on the real Checking account the day before the
+        cutover (finding cash D2); one is a sampling of the other now.
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            scenario = get_baseline_scenario(user_id)
-            bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
-            account = seed_user["account"]
-            bonus = add_txn(
-                db.session, seed_user, periods[5], "Bonus", "100.00",
-                is_income=True,
-            )
-            db.session.commit()
-            overrides = {bonus.id: Decimal("9999.00")}
-
-            seam = balance_at.cash_balance_map(
-                account, bctx, periods, amount_overrides=overrides,
-            )
-            expected = balance_resolver.balances_for(
-                account, scenario.id, periods, amount_overrides=overrides,
-            )
-            assert seam.balances == expected.balances
-            # $1,000 anchor + $9,999 override (not the stored $100) = $10,999.
-            assert seam.balances[periods[5].id] == Decimal("10999.00")
-
-    def test_cash_balance_at_equals_balance_as_of_date(
-        self, app, db, seed_user, seed_periods_today,
-    ):
-        """cash_balance_at delegates to balance_as_of_date verbatim."""
-        with app.app_context():
-            user_id = seed_user["user"].id
-            scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             account = seed_user["account"]
             as_of = periods[5].start_date
 
-            seam = balance_at.cash_balance_at(account, bctx, as_of)
-            expected = balance_resolver.balance_as_of_date(
-                account, scenario.id, as_of,
+            series = balance_at.cash_daily_balance_series(
+                account, bctx, as_of, as_of,
             )
-            assert seam == expected
+            assert balance_at.cash_balance_at(
+                account, bctx, as_of,
+            ) == series[as_of]
 
     def test_cash_balance_at_is_no_interest_for_hysa(
         self, app, db, seed_user, seed_periods_today,
     ):
         """cash_balance_at is the no-interest scalar even for an HYSA.
 
-        Mirrors the map case: the scalar cash view equals
-        ``balance_as_of_date`` (which never layers interest) and stays flat
-        at the anchor for a transaction-free HYSA -- the calendar's
+        Mirrors the map case: the scalar cash view never layers interest and
+        stays flat at the anchor for a transaction-free HYSA -- the calendar's
         month-end figure must be this cash-flow balance, not an
         interest-accrued one.
         """
@@ -1841,11 +1886,44 @@ class TestCashFlowView:
             as_of = periods[-1].end_date
 
             cash = balance_at.cash_balance_at(hysa, bctx, as_of)
-            assert cash == balance_resolver.balance_as_of_date(
-                hysa, scenario.id, as_of,
-            )
-            # No transactions, no interest -> flat at the anchor.
+            # No transactions, no interest -> flat at the anchor, strictly
+            # below the kind-correct scalar which layers the accrual.
             assert cash == Decimal("5000.00")
+            assert balance_at.balance_at(hysa, bctx, as_of) > cash
+
+    def test_a_datetime_is_refused_where_a_civil_date_is_required(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A ``datetime`` fails loud at the seam, not three layers down.
+
+        ``datetime`` SUBCLASSES ``date``, so an ``isinstance`` guard accepts
+        one -- it reads like a type check and is not one.  The fold's step
+        boundaries are civil dates, so a ``datetime`` that got past would die
+        inside ``bisect_right`` with a comparison error naming neither the
+        entry nor the argument.  Both dated entries refuse it by exact type,
+        and the message names the argument.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            bctx = BalanceContext.build(user_id)
+            account = seed_user["account"]
+            instant = datetime(2026, 3, 20, 12, tzinfo=timezone.utc)
+
+            with pytest.raises(TypeError, match="as_of"):
+                balance_at.cash_balance_at(account, bctx, instant)
+            with pytest.raises(TypeError, match="first_day"):
+                balance_at.cash_daily_balance_series(
+                    account, bctx, instant, date(2026, 3, 21),
+                )
+            with pytest.raises(TypeError, match="last_day"):
+                balance_at.cash_daily_balance_series(
+                    account, bctx, date(2026, 3, 20), instant,
+                )
+            # ...and a plain date is accepted, so the guard is not blanket.
+            assert isinstance(
+                balance_at.cash_balance_at(account, bctx, date(2026, 3, 20)),
+                Decimal,
+            )
 
     def test_cash_entries_raise_on_none_scenario(
         self, app, db, seed_user, seed_periods_today,
@@ -1863,34 +1941,158 @@ class TestCashFlowView:
                 balance_at.cash_balance_at(account, _no_baseline(user_id), as_of)
 
 
-class TestInterestDetailRerouteParity:
-    """The interest_detail reroute preserves the prior producer's numbers.
+class TestASettledRowMovesEveryCashAnswerTogether:
+    """The shape the cutover exists for, on every entry that must agree.
 
-    interest_detail is the one materially-changed path in Commit 8: it
-    swapped a single SoT-anchored
-    ``balance_calculator.calculate_balances_with_interest`` call for
-    ``balance_at.balance_map`` (the kernel's interest path, cache-anchored)
-    plus ``net_worth_kernel.interest_by_period_for_account``.  In the normal
-    case (the anchor cache equals the dated ``AccountAnchorHistory`` SoT --
-    what every factory-built account has) the two paths MUST produce
-    identical period balances AND identical per-period interest.  This pins
-    that behavior-preservation with a real, non-flat projection, so a future
-    drift between the kernel interest path and the route's old contract is
-    caught (the cross-page oracle has no interest-bearing surface).
+    A row SETTLED after the account's latest assertion is finding cash D1: the
+    retired producers counted it nowhere, so the money left the bank and stayed
+    on the screen.  Both tests below seed exactly that shape, because it is the
+    only one on which the retired producers and the fold give different answers
+    -- an account with no settled post-anchor activity cannot tell them apart,
+    which is why the rest of this suite's fixtures could not.
     """
 
-    def test_seam_path_equals_old_producer_path(
+    def test_the_kind_correct_scalar_and_the_cash_scalar_are_one_call(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """balance_map + interest accessor == the old calculate_balances_with_interest.
+        """For PLAIN, ``balance_at`` and ``cash_balance_at`` are the same fold.
+
+        A plain account's kind-correct balance IS its cash-flow balance, so the
+        two scalars must be one call (plan finding N-47): /savings reads the
+        first and the dashboard reads the second, and a shape where they differ
+        is one where those two pages contradict each other.
+
+        Hand-computed: $1,000.00 anchor, one $250.00 expense settled after it,
+        so both read $750.00.  On the retired date-precise producer the settled
+        row contributed nothing and both would read $1,000.00 -- which is why
+        this needs a settled row to have teeth at all.
+        """
+        # pylint: disable=import-outside-toplevel
+        from tests._test_helpers import create_settled_cash_transaction
+
+        with app.app_context():
+            user_id = seed_user["user"].id
+            bctx = BalanceContext.build(user_id)
+            periods = pay_period_service.get_all_periods(user_id)
+            account = seed_user["account"]
+            create_settled_cash_transaction(
+                seed_user, db.session, periods[4], Decimal("250.00"),
+                name="settled after the anchor",
+                # The instant is PASSED, not left to the status seam: it stamps
+                # ``paid_at`` from the DATABASE clock, which ``freeze_today``
+                # (Python-level) does not patch -- so an unpinned settle lands
+                # months after the frozen read and outside every seeded period.
+                paid_at=settle_instant_on(
+                    periods[4].start_date + timedelta(days=1),
+                ),
+            )
+            db.session.commit()
+
+            kind_correct = balance_at.balance_at(account, bctx, bctx.as_of)
+            cash = balance_at.cash_balance_at(account, bctx, bctx.as_of)
+
+            assert kind_correct == cash == Decimal("750.00")
+
+    def test_the_grids_interest_row_is_not_the_settled_row_in_disguise(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """An INTEREST account's accrual stays interest-sized (finding N-49).
+
+        The grid derives its "Interest" row from what the modelled accrual adds
+        to the cash basis.  If the accrual's SEED lagged the cash map -- if it
+        still walked forward from the ``current_anchor_balance`` cache while
+        the cash map folded -- the row would absorb every settled row the cache
+        never saw and label it earnings.  Measured on the real Money Market
+        before the cutover: ``$2,007.01`` of "interest" in one column, which is
+        the ``$2,000.00`` that had actually left the account.
+
+        Hand-computed: a 5% HYSA anchored at $50,000.00 with a $2,000.00
+        expense settled after that assertion.  The cash basis drops to
+        $48,000.00, the displayed balance follows it, and the whole horizon's
+        accrual stays a few hundred dollars of real interest -- never the
+        $2,000.00 gap.
+        """
+        # pylint: disable=import-outside-toplevel
+        from tests._test_helpers import create_settled_cash_transaction
+
+        with app.app_context():
+            user_id = seed_user["user"].id
+            bctx = BalanceContext.build(user_id)
+            periods = pay_period_service.get_all_periods(user_id)
+            hysa = _make_hysa(db, seed_user, periods[0], Decimal("50000.00"))
+            create_settled_cash_transaction(
+                seed_user, db.session, periods[4], Decimal("2000.00"),
+                account=hysa, name="settled after the anchor",
+                # Pinned for the reason the sibling test above documents.
+                paid_at=settle_instant_on(
+                    periods[4].start_date + timedelta(days=1),
+                ),
+            )
+            db.session.commit()
+
+            view = balance_at.grid_balance_view(hysa, bctx, periods)
+            cash = balance_at.cash_balance_map(hysa, bctx, periods)
+            current = pay_period_service.get_current_period(user_id)
+
+            # The settled row IS in the cash basis...
+            assert cash[current.id] == Decimal("48000.00")
+            # ...and in the displayed balance, which is that basis plus the
+            # accrual -- never the basis the cache would have carried.
+            column = view.columns[current.id]
+            assert column.balance - cash[current.id] == sum(
+                other.interest for pid, other in view.columns.items()
+                if pid in cash and other.interest is not None
+                and list(cash).index(pid) <= list(cash).index(current.id)
+            )
+            # The accrual is interest, not the missing $2,000.00 -- and it is
+            # pinned to the cent rather than to a band, because a band wide
+            # enough to hold ten periods of compounding is also wide enough to
+            # hold a day-count regression.  The first period is hand-derived:
+            #   Q(50000 * ((1 + 0.05/365) ** 14 - 1)) = 95.98
+            # (a 13-day window gives 89.11), and the ten-period total
+            # compounds from there, stepping down when the $2,000.00 settles.
+            assert view.columns[periods[0].id].interest == Decimal("95.98")
+            total_accrual = sum(
+                col.interest for col in view.columns.values()
+                if col.interest is not None
+            )
+            assert total_accrual == Decimal("944.94")
+            _assert_grid_view_reconciles(view)
+
+
+class TestTheInterestChipAndTheBalanceAreOneWalk:
+    """The account-detail page's two seam calls report ONE projection.
+
+    The cash detail page reads ``balance_map`` for an interest account's
+    balances and ``interest_by_period_for_account`` for the "Interest, next
+    12 mo" chip.  They are separate entries because interest EARNED is not a
+    balance-at-T -- but they must be the same walk, or the page would show an
+    accrual that does not explain its own balance change.  Since plan step
+    X-c2b2 both go through ``_kernel._account_interest_projection``, so the
+    property is structural; asserting it is what would catch a reader that
+    gave one of them a second base.
+
+    (This class replaces a parity check against
+    ``calculate_balances_with_interest``, the composition X-c2b2 retired when
+    the accrual's base became the cash fold.  Parity with a deleted producer
+    cannot be asserted; the invariant it was standing in for can.)
+    """
+
+    def test_the_chip_explains_the_balance_change_exactly(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """balance[p] - balance[p-1] == cash[p] - cash[p-1] + interest[p].
 
         Seeds an HYSA (5% APY) anchored at ``periods[0]`` with a $1,000
-        deposit at ``periods[3]`` so the running balance moves and interest
-        accrues on it.  The NEW route path (``balance_map`` for balances,
-        ``interest_by_period_for_account`` for interest) must equal the OLD
-        route path (one ``calculate_balances_with_interest`` call seeded from
-        the dated-SoT anchor over the account's transactions), proving the
-        SoT->cache anchor switch and the two-call split changed no number.
+        deposit at ``periods[6]`` so the running balance moves and interest
+        accrues on it.  Every period's interest-accrued change must decompose
+        into the cash change plus that period's chip figure, to the cent.
+
+        The deposit is dated FORWARD of the read's as-of (``seed_periods_today``
+        places today in period 4) so it lands in its own column: ruling R-G
+        clamps a still-projected row whose date has passed up to ``as_of + 1``,
+        which would put it in the current period and make the non-vacuity
+        assertion below measure the wrong column.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -1898,14 +2100,13 @@ class TestInterestDetailRerouteParity:
             bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("8000.00"))
-            income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
             db.session.add(Transaction(
                 account_id=hysa.id,
-                pay_period_id=periods[3].id,
+                pay_period_id=periods[6].id,
                 scenario_id=scenario.id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="Deposit",
-                transaction_type_id=income_type_id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
                 estimated_amount=Decimal("1000.00"),
             ))
             db.session.commit()
@@ -1915,82 +2116,57 @@ class TestInterestDetailRerouteParity:
                 .one()
             )
 
-            # OLD interest_detail path: the dated-SoT anchor over the
-            # account's transactions, scoped exactly as the (now deleted)
-            # ``_load_account_transactions`` helper scoped them.
-            anchor = cash_ledger.resolve_anchor(hysa, scenario.id)
-            old_txns = (
-                db.session.query(Transaction)
-                .filter(
-                    Transaction.account_id == hysa.id,
-                    Transaction.pay_period_id.in_([p.id for p in periods]),
-                    Transaction.scenario_id == scenario.id,
-                    Transaction.is_deleted.is_(False),
-                )
-                .all()
-            )
-            old_balances, old_interest = (
-                balance_calculator.calculate_balances_with_interest(
-                    anchor_balance=anchor.balance,
-                    anchor_period_id=anchor.period.id,
-                    periods=periods,
-                    transactions=old_txns,
-                    interest_params=params,
-                    # The same accrual window the kernel derives (ruling
-                    # R-L): modelled interest begins at the account's
-                    # latest assertion.  The two paths must agree on the
-                    # INPUT for the equivalence to mean anything -- passing
-                    # a different one here would compare two producers with
-                    # two clocks and call the difference parity.
-                    accrual_start=anchor.as_of_date,
-                )
+            accrued = balance_at.balance_map(hysa, bctx, periods)
+            cash = balance_at.cash_balance_map(hysa, bctx, periods)
+            interest = net_worth_kernel.interest_by_period_for_account(
+                hysa, bctx, periods, params,
             )
 
-            # NEW interest_detail path: the seam + the kernel interest accessor.
-            new_balances = balance_at.balance_map(hysa, bctx, periods)
-            new_interest = net_worth_kernel.interest_by_period_for_account(
-                hysa, scenario, periods, params,
-            )
+            assert len(periods) > 1  # the loop is not vacuous
+            for previous, period in zip(periods, periods[1:]):
+                assert (
+                    accrued[period.id] - accrued[previous.id]
+                    == (cash[period.id] - cash[previous.id])
+                    + interest[period.id]
+                ), f"period {period.id} does not decompose"
 
-            assert new_balances == old_balances
-            assert new_interest == old_interest
             # The projection is real, not flat: interest accrued and the
-            # deposit raised the balance, so the equivalence is non-trivial.
-            assert any(v > Decimal("0.00") for v in new_interest.values())
-            # $8,000 anchor + $1,000 deposit + accrued interest.
-            assert new_balances[periods[-1].id] > Decimal("9000.00")
+            # deposit raised the balance, so the identity is non-trivial.
+            assert any(v > Decimal("0.00") for v in interest.values())
+            assert cash[periods[6].id] - cash[periods[5].id] == Decimal(
+                "1000.00",
+            )
 
 
-def _projected_columns(view):
-    """Return the view's columns that carry a balance, in order.
+def _all_columns(view):
+    """Return the view's columns in order, as ``(period_id, column)`` pairs.
 
-    A period the projection does not reach (pre-anchor) is present in
-    ``view.columns`` with ``balance is None`` -- it carries real subtotals but
-    no balance to roll forward, so the identity below has nothing to assert
-    about it.
+    EVERY requested period carries a balance since plan step X-c2b2 -- the fold
+    is total -- so there is nothing to filter out.  It used to skip periods the
+    projection could not reach (``balance is None``, the pre-anchor columns the
+    retired producer omitted), which is exactly the omission finding cash D3
+    names; keeping a name for "the columns that have a balance" would now be a
+    name for "all of them".
     """
-    return [
-        (pid, column) for pid, column in view.columns.items()
-        if column.balance is not None
-    ]
+    return list(view.columns.items())
 
 
 def _assert_grid_view_reconciles(view):
     """Assert the view's rows reconcile to the cent, off the view alone.
 
-    For every adjacent pair of projected periods the displayed balance delta
-    must equal the column's own net plus its remainder plus its accrual --
-    ruling R-K's identity
+    For every adjacent pair of periods the displayed balance delta must equal
+    the column's own net plus its remainder plus its accrual -- ruling R-K's
+    identity
     ``balance[p] - balance[p-1] == net[p] + reconciliation[p] + interest[p]``.
 
     It reads ONE GridColumn per period rather than re-running the subtotal
-    producer beside the balance producer, which is the point of plan step
-    X-c2b1: the identity is a property of the row set, so an oracle that
-    re-derived one side from a second producer would be testing that the two
-    producers agree rather than that the row set is coherent.
+    producer beside the balance producer, which is the point of plan steps
+    X-c2b1 / X-c2b2: the identity is a property of the row set, so an oracle
+    that re-derived one side from a second producer would be testing that the
+    two producers agree rather than that the row set is coherent.
     """
-    items = _projected_columns(view)
-    assert len(items) >= 2, "need >= 2 projected periods to reconcile a delta"
+    items = _all_columns(view)
+    assert len(items) >= 2, "need >= 2 periods to reconcile a delta"
     for (_prev_id, prev), (pid, column) in zip(items, items[1:]):
         accrual = (
             column.interest if column.interest is not None
@@ -2022,9 +2198,8 @@ class TestGridBalanceView:
             cash = balance_at.cash_balance_map(account, bctx, periods)
 
             assert {
-                pid: column.balance for pid, column in _projected_columns(view)
-            } == dict(cash.balances)
-            assert view.stale_anchor_warning == cash.stale_anchor_warning
+                pid: column.balance for pid, column in _all_columns(view)
+            } == dict(cash)
             # No accrual row for a plain cash account.
             assert all(
                 column.interest is None for column in view.columns.values()
@@ -2054,8 +2229,8 @@ class TestGridBalanceView:
             cash = balance_at.cash_balance_map(mortgage, bctx, periods)
 
             assert {
-                pid: column.balance for pid, column in _projected_columns(view)
-            } == dict(cash.balances)
+                pid: column.balance for pid, column in _all_columns(view)
+            } == dict(cash)
             assert all(
                 column.interest is None for column in view.columns.values()
             )
@@ -2080,7 +2255,7 @@ class TestGridBalanceView:
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("8000.00"))
             db.session.add(Transaction(
                 account_id=hysa.id,
-                pay_period_id=periods[3].id,
+                pay_period_id=periods[6].id,
                 scenario_id=scenario.id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="Deposit",
@@ -2095,13 +2270,13 @@ class TestGridBalanceView:
 
             # Displayed balances are the rounded kind-correct (interest-accrued)
             # map, strictly above the no-interest cash balance by the horizon.
-            projected = dict(_projected_columns(view))
-            assert set(projected) == set(cash.balances)
+            projected = dict(_all_columns(view))
+            assert set(projected) == set(cash)
             for pid, column in projected.items():
                 assert column.balance == round_money(kc[pid])
             assert (
                 projected[periods[-1].id].balance
-                > cash.balances[periods[-1].id]
+                > cash[periods[-1].id]
             )
 
             # The rows reconcile to the cent off the view's own columns.
@@ -2115,14 +2290,14 @@ class TestGridBalanceView:
                 .filter_by(account_id=hysa.id).one()
             )
             kernel_interest = net_worth_kernel.interest_by_period_for_account(
-                hysa, scenario, periods, params,
+                hysa, bctx, periods, params,
             )
             total_accrual = sum(
-                column.interest for _pid, column in _projected_columns(view)
+                column.interest for _pid, column in _all_columns(view)
             )
             assert total_accrual == (
                 projected[periods[-1].id].balance
-                - cash.balances[periods[-1].id]
+                - cash[periods[-1].id]
             )
             assert abs(total_accrual - sum(kernel_interest.values())) <= Decimal("0.02")
             assert total_accrual > Decimal("0.00")
@@ -2152,8 +2327,8 @@ class TestGridBalanceView:
             cash = balance_at.cash_balance_map(inv, bctx, periods)
 
             assert {
-                pid: column.balance for pid, column in _projected_columns(view)
-            } == dict(cash.balances)
+                pid: column.balance for pid, column in _all_columns(view)
+            } == dict(cash)
             assert all(
                 column.interest is None for column in view.columns.values()
             )
@@ -2187,8 +2362,8 @@ class TestGridBalanceView:
             cash = balance_at.cash_balance_map(prop, bctx, periods)
 
             assert {
-                pid: column.balance for pid, column in _projected_columns(view)
-            } == dict(cash.balances)
+                pid: column.balance for pid, column in _all_columns(view)
+            } == dict(cash)
             assert all(
                 column.interest is None for column in view.columns.values()
             )
@@ -2208,65 +2383,61 @@ class TestGridBalanceView:
                     seed_user["account"], _no_baseline(user_id), periods,
                 )
 
-    def test_accruing_kc_none_degrades_to_cash(
-        self, app, db, seed_user, seed_periods_today, monkeypatch,
+    def test_an_interest_account_with_no_params_models_no_accrual(
+        self, app, db, seed_user, seed_periods_today,
     ):
-        """An accruing account whose kind-correct map is None degrades to cash.
+        """An INTEREST account with no params row shows cash, no accrual row.
 
-        ``balance_map`` documents a ``None`` return for an account with no
-        anchor period.  The NOT NULL anchor columns make that unreachable for
-        a real account, so the seam's fall-through is guarded behavior, not a
-        live path; it is exercised here by forcing the ``None`` return.
-        ``grid_balance_view`` must then return the cash-flow view with no
-        accrual row, never raise.
+        A HYSA whose ``InterestParams`` is missing models no rate, so inventing
+        one would put interest on screen the account has never earned.  The
+        view must show the folded cash balance with ``interest=None`` in every
+        column, never raise -- the degenerate arm of
+        ``_interest.accrual_params``.
+
+        (This replaces a test that forced ``balance_map`` to return ``None``
+        and asserted the grid degraded to cash.  ``grid_balance_view`` does not
+        call ``balance_map`` any more -- it folds once and layers -- so the
+        branch that test drove no longer exists; the params-less account is the
+        reachable state that still exercises the same "no accrual" outcome.)
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
+            db.session.query(InterestParams).filter_by(
+                account_id=hysa.id,
+            ).delete()
+            db.session.commit()
+            db.session.refresh(hysa)
 
             cash = balance_at.cash_balance_map(hysa, bctx, periods)
-            # Force the documented (NOT-NULL-unreachable) None return.  Patch the
-            # DEFINING module (``_kind_correct``), not the package re-export:
-            # ``grid_balance_view`` looks the producer up through its owning
-            # module, so that is where the substitution has to land.
-            monkeypatch.setattr(
-                balance_at._kind_correct, "balance_map", lambda *a, **k: None,
-            )
             view = balance_at.grid_balance_view(hysa, bctx, periods)
 
             assert {
-                pid: column.balance for pid, column in _projected_columns(view)
-            } == dict(cash.balances)
+                pid: column.balance for pid, column in _all_columns(view)
+            } == dict(cash)
             assert all(
                 column.interest is None for column in view.columns.values()
             )
 
-    def test_interest_increment_pure_when_live_differs_from_stored(
+    def test_the_accrual_is_pure_interest_on_one_income_basis(
         self, app, db, seed_user, seed_periods_today, monkeypatch,
     ):
-        """INTEREST accrual stays pure interest when live income != stored (M1).
+        """The accrual stays pure interest when live income != stored (M1).
 
         Regression guard for the income-basis trap ruling R-Q closes at the
-        root: the cash walk auto-builds a LIVE income map while the kc walk
-        (``calculate_balances_with_interest``) does not, so if the two were
-        ever left to pick their own basis the premium would absorb the income
-        recompute instead of being pure interest.  The seam now builds ONE map
-        and threads it into both walks, so the divergence has no argument to
-        arrive through.
+        root.  The cash walk auto-built a LIVE income map while the
+        kind-correct walk used the STORED amounts, so an interest account left
+        on the defaults had its premium absorb the income recompute instead of
+        being pure interest.  There is ONE walk now and it builds ONE map, so
+        the divergence has no argument to arrive through -- and this pins the
+        consequence.
 
         Forces live ($1,500) != stored ($1,000) on a real income transaction
-        and asserts that BOTH walks landed on the live basis: the displayed
-        balances equal the LIVE kind-correct map (not the stored one, which
-        this shape proves is a different number), and the accrual telescopes
-        to the premium over the LIVE cash basis.
-
-        (Only INTEREST is exercised: investment / property contributions are
-        not live-recomputed -- the live seam covers salary income and
-        loan-transfer shadows -- so live == stored there and the trap cannot
-        arise.)
+        in a FUTURE period (so ruling R-G lands it in its own column) and
+        asserts the accrual telescopes exactly to the premium over the cash
+        basis, with the $500 income delta nowhere in it.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -2276,7 +2447,7 @@ class TestGridBalanceView:
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
             income_txn = Transaction(
                 account_id=hysa.id,
-                pay_period_id=periods[3].id,
+                pay_period_id=periods[6].id,
                 scenario_id=scenario.id,
                 status_id=ref_cache.status_id(StatusEnum.PROJECTED),
                 name="Paycheck deposit",
@@ -2287,8 +2458,7 @@ class TestGridBalanceView:
             db.session.commit()
 
             # Force live != stored: the live seam revalues this income at
-            # $1,500 (vs the $1,000 stored).  Both the cash walk and the kc
-            # walk must end up on ONE basis or the premium is polluted.
+            # $1,500 (vs the $1,000 stored).
             live = {income_txn.id: Decimal("1500.00")}
             monkeypatch.setattr(
                 income_service, "live_projected_net",
@@ -2296,50 +2466,48 @@ class TestGridBalanceView:
             )
 
             view = balance_at.grid_balance_view(hysa, bctx, periods)
-            kc_live = balance_at.balance_map(
-                hysa, bctx, periods, amount_overrides=live,
-            )
-            kc_stored = balance_at.balance_map(
-                hysa, bctx, periods, amount_overrides={},
-            )
-            cash_live = balance_at.cash_balance_map(
-                hysa, bctx, periods, amount_overrides=live,
-            )
+            cash = balance_at.cash_balance_map(hysa, bctx, periods)
             last = periods[-1].id
 
-            # The shape has teeth only if the two bases genuinely differ.
-            assert kc_live[last] - kc_stored[last] > Decimal("400.00")
+            # The shape has teeth only if the live basis genuinely lands: the
+            # cash column carries the $1,500, not the stored $1,000.
+            assert cash[periods[6].id] - cash[periods[5].id] == Decimal(
+                "1500.00",
+            )
 
-            # BOTH walks are on the live basis: the displayed balance is the
-            # live kind-correct figure, and the premium over the live cash
-            # basis is exactly the accrual.  On the stored basis it would be
-            # the $500 income delta plus interest instead.
-            projected = dict(_projected_columns(view))
-            assert projected[last].balance == round_money(kc_live[last])
+            # The accrual telescopes to the premium over that SAME basis, and
+            # the first period's figure is hand-derived so the pin is on the
+            # rate and the day count, not on a band a regression could sit in:
+            #   Q(5000 * ((1 + 0.05/365) ** 14 - 1)) = 9.60
+            # On the STORED basis the premium would carry the $500 income
+            # delta as well, which is the divergence ruling R-Q deleted.
+            projected = dict(_all_columns(view))
+            assert view.columns[periods[0].id].interest == Decimal("9.60")
             total_accrual = sum(
-                column.interest for _pid, column in _projected_columns(view)
+                column.interest for _pid, column in _all_columns(view)
             )
-            assert total_accrual == (
-                projected[last].balance - cash_live.balances[last]
+            assert total_accrual == projected[last].balance - cash[last]
+            assert total_accrual < Decimal("500.00"), (
+                "the accrual absorbed the income delta instead of being "
+                "interest"
             )
-            assert total_accrual > Decimal("0.00")
-            assert total_accrual < Decimal("400.00")
 
 
 def _column(
-    *, balance=None, income="0.00", expense="0.00", net="0.00",
+    *, balance="0.00", income="0.00", expense="0.00", net="0.00",
     reconciliation="0.00", interest=None,
 ):
     """Build one hand-specified :class:`GridColumn` for the flag tests.
 
-    The visibility rule is pure logic over a column's values, so it is graded
-    on hand-built columns rather than on a seeded account: a producer-built
-    column cannot currently carry a non-zero remainder at all (see
-    :class:`TestTheRemainderIsZeroUnderTheShippingProducers`), so a data-driven
-    oracle could only ever exercise the false branch.
+    The visibility rule is pure logic over a column's values and says nothing
+    about where they came from, so it is graded on hand-built columns: a
+    data-driven oracle would have to seed a shape for each of the rule's arms
+    and would still only assert the rule through whatever those shapes happen
+    to produce.  ``TestTheRemainderIsWhatTheRowsCannotExplain`` grades the
+    producer-built remainder itself.
     """
     return balance_at.GridColumn(
-        balance=None if balance is None else Decimal(balance),
+        balance=Decimal(balance),
         income=Decimal(income),
         expense=Decimal(expense),
         net=Decimal(net),
@@ -2363,9 +2531,7 @@ class TestGridRowFlags:
     def _view(columns):
         """Wrap *columns* in a view (the flags read nothing else)."""
         return balance_at.GridBalanceView(
-            columns=OrderedDict(columns),
-            stale_anchor_warning=False,
-            amount_overrides={},
+            columns=OrderedDict(columns), amount_overrides={},
         )
 
     @staticmethod
@@ -2472,24 +2638,35 @@ class TestTheViewOwnsTheLiveOverrideMap:
             assert view.columns[periods[1].id].income == Decimal("1500.00")
 
 
-class TestTheRemainderIsZeroUnderTheShippingProducers:
-    """The remainder really is ``0.00`` today -- the E-25 invariant, measured.
+class TestTheRemainderIsWhatTheRowsCannotExplain:
+    """Ruling R-K's remainder, measured on producer-built columns.
 
-    ``_grid._NO_REMAINDER`` is the value ruling R-K's row carries until plan
-    step X-c2b2 points it at the fold's independently-computed remainder, and
-    it is a claim about the SHIPPING producers rather than a placeholder: the
-    balance row and the subtotal row both count exactly the still-unpaid rows
-    of one anchor-seeded walk, through the same ``sum_projected`` engine, so
-    nothing the two clocks disagree about can reach either side.  If that ever
-    stopped holding the constant would be a lie and the grid would render a
-    contradiction with no row to explain it, so it is asserted rather than
-    assumed.
+    This class asserted the opposite until plan step X-c2b2: the remainder was
+    a constant ``0.00``, and that was a true claim about the SHIPPING
+    producers rather than a placeholder, because the balance row and the
+    subtotal row both counted exactly the still-unpaid rows of one
+    anchor-seeded walk.  Neither could see a settled row at all, so neither
+    clock had anything to disagree about -- and every past column read ``$0.00``
+    income and ``$0.00`` expenses while thousands of dollars moved through it
+    (finding N-41).
+
+    Now the subtotals count EVERY row attributed to the period and the balance
+    counts money that MOVED, so the remainder carries what the two clocks
+    disagree about.  What is asserted here is the pair of properties that makes
+    it trustworthy: it is ``0.00`` exactly when nothing needs explaining, and
+    it is the exact size of the disagreement when something does.
     """
 
-    def test_every_column_reports_a_zero_remainder(
+    def test_a_period_where_everything_lands_in_its_own_column_has_no_remainder(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """No column carries a remainder, so ruling R-O hides the row."""
+        """Still-projected rows landing in their own columns explain themselves.
+
+        A projected income and a projected expense, both in FUTURE periods so
+        ruling R-G's clamp leaves them where they were budgeted: the budget
+        clock and the cash clock agree on every column, so the remainder is
+        ``0.00`` throughout and ruling R-O hides the row.
+        """
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
@@ -2500,55 +2677,77 @@ class TestTheRemainderIsZeroUnderTheShippingProducers:
             view = balance_at.grid_balance_view(account, bctx, periods)
 
             assert view.columns
+            moved = [
+                pid for pid, column in view.columns.items()
+                if column.net != Decimal("0.00")
+            ]
+            assert moved, "the fixture must move money or this proves nothing"
             assert all(
                 column.reconciliation == Decimal("0.00")
                 for column in view.columns.values()
             )
             assert view.row_flags(periods).reconciliation is False
+            _assert_grid_view_reconciles(view)
 
-    def test_the_balance_delta_is_exactly_the_net(
+    def test_a_row_that_settled_in_another_column_is_exactly_the_remainder(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """``balance[p] - balance[p-1] == net[p]``, with nothing left over.
+        """Budgeted here, paid there: both columns carry the timing difference.
 
-        The reason the remainder is zero, asserted directly: on a PLAIN
-        account with no accrual the whole balance change is the subtotal net,
-        so a non-zero remainder would have to come from somewhere neither
-        producer can see.
+        A ``$300.00`` expense budgeted to period 1 but settled inside period 3.
+        Hand-computed: period 1 counts it on the BUDGET clock, so its net is
+        ``-$300.00`` while no money moved there -- remainder ``+$300.00``.
+        Period 3 counts nothing on the budget clock while ``-$300.00`` moved
+        through it -- remainder ``-$300.00``.  The two net to zero across the
+        window, which is why the row is called "Timing & true-ups" and not a
+        correction.
         """
+        # pylint: disable=import-outside-toplevel
+        from tests._test_helpers import create_settled_cash_transaction
+
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             account = seed_user["account"]
-            _seed_grid_activity(db, seed_user, periods)
+            create_settled_cash_transaction(
+                seed_user, db.session, periods[1], Decimal("300.00"),
+                paid_at=settle_instant_on(periods[3].start_date),
+                name="paid two columns late",
+            )
+            db.session.commit()
 
             view = balance_at.grid_balance_view(account, bctx, periods)
-            items = _projected_columns(view)
-            assert len(items) >= 2
-            moved = [
-                pid for pid, column in items if column.net != Decimal("0.00")
-            ]
-            assert moved, "the fixture must move money or this proves nothing"
-            for (_prev_id, prev), (pid, column) in zip(items, items[1:]):
-                assert column.balance - prev.balance == column.net, (
-                    f"period {pid}: balance delta "
-                    f"{column.balance - prev.balance} != net {column.net}"
-                )
+
+            assert view.columns[periods[1].id].net == Decimal("-300.00")
+            assert view.columns[periods[1].id].reconciliation == Decimal(
+                "300.00",
+            )
+            assert view.columns[periods[3].id].net == Decimal("0.00")
+            assert view.columns[periods[3].id].reconciliation == Decimal(
+                "-300.00",
+            )
+            assert view.row_flags(periods).reconciliation is True
+            _assert_grid_view_reconciles(view)
 
 
 def _seed_grid_activity(db, seed_user, periods):
     """Add one projected income and one projected expense to the grid account.
 
-    Gives the remainder something to be non-zero ABOUT: an all-empty account
+    Gives the columns something to be non-zero ABOUT: an all-empty account
     reports zeros for every figure, so the identity would hold vacuously and
     the assertions above would prove nothing.
+
+    Both rows are dated FORWARD of the read's as-of (``seed_periods_today``
+    places today in period 4), so ruling R-G's clamp leaves them in the columns
+    they were budgeted to.  A past-dated still-projected row would land at
+    ``as_of + 1`` instead -- correct, and the subject of the sibling test.
     """
     scenario = get_baseline_scenario(seed_user["user"].id)
     account = seed_user["account"]
     db.session.add(Transaction(
         account_id=account.id,
-        pay_period_id=periods[1].id,
+        pay_period_id=periods[6].id,
         scenario_id=scenario.id,
         status_id=ref_cache.status_id(StatusEnum.PROJECTED),
         name="Paycheck",
@@ -2557,7 +2756,7 @@ def _seed_grid_activity(db, seed_user, periods):
     ))
     db.session.add(Transaction(
         account_id=account.id,
-        pay_period_id=periods[2].id,
+        pay_period_id=periods[7].id,
         scenario_id=scenario.id,
         status_id=ref_cache.status_id(StatusEnum.PROJECTED),
         name="Rent",

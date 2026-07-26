@@ -215,10 +215,11 @@ def balance_section():
     -- the ``#balance-display`` fragment the editor replaced -- shaped on
     the pulse hero (``balance`` + ``account_id`` drive the control).
 
-    Uses the narrow ``compute_balance_section`` producer (the as-of-today
-    balance only, NOT the full pulse projection walk): the figure is the
-    same ``balance_as_of_date`` the hero shows, so the reverted control
-    agrees with the main pulse region.  Non-HTMX requests redirect to the
+    Uses the narrow ``compute_balance_section`` producer (one folded
+    balance, NOT the full pulse projection walk): the figure is the current
+    period's projected END balance -- the same date the hero reads off its
+    period map, and the one the fragment's own label promises -- so the
+    reverted control agrees with the main pulse region.  Non-HTMX requests redirect to the
     dashboard page.
     """
     if not request.headers.get("HX-Request"):

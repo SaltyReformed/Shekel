@@ -476,20 +476,31 @@ class TestPaydayWorkflowRegression:
           4. Mark $500 expense as done
           5. Mark $300 expense as credit (payback in future period)
 
-        Hand-calculated balances after all steps:
+        Hand-calculated balances after all steps (the FOLD, plan step X-c2b2):
 
-          Current period (anchor = $5,000):
-            sum_projected counts only projected items:
-              received income ($2,000) -- excluded (settled)
-              done expense ($500) -- excluded (settled)
-              credit expense ($300) -- excluded (credit)
-              carried-forward expense ($150) -- counted
-            balance = $5,000 + $0 - $150 = $4,850
+          Current period (assertion = $5,000 at the true-up instant):
+              received income ($2,000) -- SETTLED after the assertion, counted
+                                          from the day its money moved
+              done expense ($500) -- SETTLED after the assertion, counted
+              credit expense ($300) -- excluded (a credit purchase leaves via
+                                       its CC Payback sibling, never checking)
+              carried-forward expense ($150) -- still projected, so ruling R-G
+                                       lands it at as_of + 1, inside this period
+            balance = 5,000 + 2,000 - 500 - 150 = $6,350
 
           Future period:
-            sum_projected counts only projected items:
-              CC payback ($300) -- counted
-            balance = $4,850 + $0 - $300 = $4,550
+              CC payback ($300) -- still projected, counted
+            balance = 6,350 - 300 = $6,050
+
+        **This was $4,850 / $4,550 before the cutover, and the difference is
+        the reported bug this whole phase exists to close.**  The retired
+        projection excluded every SETTLED row on the reasoning that the anchor
+        already reflected them -- but the anchor here was asserted in step 1,
+        BEFORE the paycheck was marked received in step 2, so it reflected
+        neither.  $2,500 of real money left the projection at the moment the
+        user recorded it, and the only way back was to re-anchor again (52
+        times in 119 days on the real account).  This test walks precisely that
+        workflow, which is why its numbers move most.
         """
         with app.app_context():
             projected = (
@@ -637,5 +648,5 @@ class TestPaydayWorkflowRegression:
             assert resp.status_code == 200
 
             # See hand calculation in docstring above.
-            assert b"$4,850" in resp.data
-            assert b"$4,550" in resp.data
+            assert b"$6,350" in resp.data
+            assert b"$6,050" in resp.data

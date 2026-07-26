@@ -56,8 +56,17 @@ _EARLY_AS_OF = date(2026, 1, 20)
 
 
 def _view(account, scenario, periods, as_of=_EARLY_AS_OF):
-    """Return the period view keyed by period id."""
-    return cash_period_view(account, scenario.id, as_of, list(periods))
+    """Return the view's per-period COLUMNS, keyed by period id.
+
+    The producer returns a :class:`CashPeriodView` -- the columns plus the live
+    override map the projection was valued through (ruling R-Q, wired at plan
+    step X-c2b2, so the grid's cells and its balance row cannot be priced off
+    two different maps).  These tests grade the columns, so the helper unwraps
+    them; ``TestTheViewCarriesTheBasisItWasValuedOn`` grades the map.
+    """
+    return cash_period_view(
+        account, scenario.id, as_of, list(periods),
+    ).columns
 
 
 def _identity_holds(account, scenario, periods, as_of=_EARLY_AS_OF):
@@ -627,3 +636,72 @@ class TestTheIdentityHoldsOnEveryPeriod:
         rows = _identity_holds(account, scenario, window)
         assert len(rows) == 1  # the loop is not vacuous
         assert rows[0][1] == rows[0][2] == Decimal("-180.00")
+
+
+class TestTheViewCarriesTheBasisItWasValuedOn:
+    """Ruling R-Q: the live override map rides on the RESULT, not the caller.
+
+    The grid renders each row's amount beside the balance those same rows fold
+    into.  Before plan step X-c2b2 the route built its own live map and the
+    seam built another, and the two were "provably identical" only by an
+    argument about their candidate sets (finding N-51) -- so the view returns
+    the map it actually valued the plan through and the route reads it back.
+    """
+
+    def test_the_view_returns_the_live_map_it_valued_the_plan_through(
+        self, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """A stale salary estimate is priced LIVE, and the map says so.
+
+        A salary-linked Projected income row carries a deliberately stale
+        ``estimated_amount`` of ``$1.00`` against a ``$104,000`` profile whose
+        live net is ``$4,000.00`` (104000 / 26, hand-computed -- the same
+        figure ``test_income_service`` pins for this setup).  The view must
+        report BOTH the live figure in its income subtotal AND the map entry
+        that produced it, so a consumer rendering the row and a consumer
+        reading the balance cannot disagree about what the row is worth.
+        """
+        # pylint: disable=import-outside-toplevel
+        from tests.test_services.test_income_service import (
+            _create_profile,
+            _make_salary_template,
+            _make_txn,
+        )
+
+        account, scenario = seed_user["account"], seed_user["scenario"]
+        restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
+        profile = _create_profile(seed_user["user"].id, scenario.id)
+        template = _make_salary_template(seed_user, profile)
+        db.session.commit()
+        period = seed_periods[5]
+        txn = _make_txn(
+            seed_user, period, template=template, estimated_amount="1.00",
+        )
+        db.session.commit()
+
+        view = cash_period_view(
+            account, scenario.id, _EARLY_AS_OF, list(seed_periods),
+        )
+
+        assert view.amount_overrides == {txn.id: Decimal("4000.00")}
+        # The subtotal is the LIVE figure, not the stored $1.00 -- so the map
+        # on the result is the one the column was actually computed with.
+        assert view.columns[period.id].income == Decimal("4000.00")
+
+    def test_an_account_with_no_plan_carries_an_empty_map(
+        self, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """No still-projected rows means no overrides -- ``{}``, never ``None``.
+
+        The grid reads ``view.amount_overrides.get(...)`` per row, so an
+        account with nothing planned must still hand back a mapping.
+        """
+        account, scenario = seed_user["account"], seed_user["scenario"]
+        restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
+        db.session.commit()
+
+        view = cash_period_view(
+            account, scenario.id, _EARLY_AS_OF, list(seed_periods),
+        )
+
+        assert view.amount_overrides == {}

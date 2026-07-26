@@ -1103,24 +1103,35 @@ class TestPulseDueSoonStations:
 
 
 class TestHeroChartIdentity:
-    """The hero balance coincides with the chart's first point.
+    """The hero balance IS the chart's first point, and the revert agrees.
 
-    With NO entries dated after today, the as-of-today balance (hero)
-    equals the current period's projected end balance (chart[0]) by
-    reservation semantics -- the data-value pass's locked identity that
-    Loop A's mockup data violated.
+    Both read the current period's entry in the SAME folded period map since
+    plan step X-c2b2, so their equality is structural rather than a
+    coincidence of reservation semantics -- which is why the assertion that
+    still earns its keep is the one against
+    ``dashboard_service.compute_balance_section``: the anchor-editor's revert
+    fragment renders the same ``#balance-display`` control from a SEPARATE
+    producer call, and that is the pair that can still drift.
+
+    (Before the cutover the hero was the as-of-TODAY scalar and the chart's
+    first point the period-END balance.  They coincided only because that
+    scalar was period-FLAT -- it summed the whole period's projected rows
+    whatever their dates -- so the identity this class was written for was
+    finding cash D2 holding the two together.  The template labels the figure
+    "End of this period"; the fold made the scalar date-precise, so the hero
+    moved to the date its own label promises.)
     """
 
     def test_hero_equals_first_chart_point_no_post_dated_entries(
         self, app, seed_user, seed_periods, db,
     ):
-        """Hero balance == chart points[0].balance with no post-dated entries.
+        """Hero balance == chart points[0].balance, and == the revert fragment.
 
         Seed account anchored $1,000.00.  Add a $300.00 projected expense
         and a $1,200.00 projected income in the current period, plus a
-        tracked envelope with an entry dated BEFORE today.  No entry is
-        dated after today, so the as-of-today reservation reduction sees
-        the whole current period and the two figures coincide.
+        tracked envelope with an entry dated BEFORE today.  The hero and the
+        chart's first point are one map entry; the revert fragment reaches
+        the same date through its own producer call, so all three must agree.
         """
         with app.app_context():
             current = seed_periods[_CURRENT_IDX]
@@ -1152,6 +1163,13 @@ class TestHeroChartIdentity:
             hero_balance = result["hero"]["balance"]
             first_point = result["chart"]["points"][0]["balance"]
             assert hero_balance == first_point
+            # The anchor-editor's revert fragment renders this same control
+            # from its own producer call -- the pair that can still drift.
+            # pylint: disable=import-outside-toplevel
+            from app.services import dashboard_service
+            assert dashboard_service.compute_balance_section(
+                seed_user["user"].id,
+            )["hero"]["balance"] == hero_balance
             # And the first chart point is the current period's end date.
             assert (
                 result["chart"]["points"][0]["end_date"]
@@ -1205,9 +1223,7 @@ class TestPulseCashFlowViewForAnyKindGridAccount:
             scenario = seed_user["scenario"]
             bctx = BalanceContext.build(seed_user["user"].id)
             current = seed_periods[_CURRENT_IDX]
-            cash = balance_at.cash_balance_map(
-                hysa, bctx, seed_periods,
-            ).balances
+            cash = balance_at.cash_balance_map(hysa, bctx, seed_periods)
             accrued = balance_at.balance_map(hysa, bctx, seed_periods)
 
             # The cash truth is hand-computable: anchor carried flat, no rows,

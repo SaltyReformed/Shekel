@@ -200,7 +200,7 @@ def positions(
             f"positions() requires a configured loan; account {account.id} "
             f"({account.name!r}) has no LoanParams. The seam's AMORTIZING "
             f"dispatch degrades a non-loan account to the cash producer "
-            f"(balance_as_of_date) before reaching here."
+            f"(the cash fold) before reaching here."
         )
     # A date is PAST (reads the fold) iff the loan has originated by the NOW and
     # the date is at or before it; every other date -- future, or any date of a

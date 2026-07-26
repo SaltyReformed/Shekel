@@ -2313,13 +2313,12 @@ class TestDTIRaiseAware:
 def _override_anchor(db_session, account, pay_period, anchor_balance):
     """Replace ``account``'s current anchor with the given balance + period.
 
-    Mirrors the helper used in test_balance_resolver.py: appends a fresh
-    :class:`AccountAnchorHistory` row (latest-wins by ``created_at``)
-    and updates the cache columns so the resolver's cache-reconciliation
-    path does NOT fire (cache and history agree).  Required because the
-    ``seed_user`` factory writes an origination anchor of $1,000 against
-    the seed_periods anchor period; tests reproducing symptom #1 need
-    $614.29 on a chosen period.
+    Thin wrapper over the shared :func:`tests._test_helpers.override_anchor`
+    (which stamps the assertion inside its own period -- see its docstring for
+    why that instant is load-bearing) plus this suite's commit boundary.
+    Required because the ``seed_user`` factory writes an origination anchor of
+    $1,000 against the seed_periods anchor period; tests reproducing symptom #1
+    need $614.29 on a chosen period.
 
     Args:
         db_session: SQLAlchemy session bound to the test database.
@@ -2329,18 +2328,12 @@ def _override_anchor(db_session, account, pay_period, anchor_balance):
             new anchor is anchored against.
         anchor_balance: The new anchor balance as a Decimal.
     """
-    from app.models.account import AccountAnchorHistory  # pylint: disable=import-outside-toplevel
+    from tests._test_helpers import override_anchor  # pylint: disable=import-outside-toplevel
 
-    history = AccountAnchorHistory(
-        account_id=account.id,
-        pay_period_id=pay_period.id,
-        anchor_balance=anchor_balance,
+    override_anchor(
+        db_session, account, pay_period, anchor_balance,
         notes="C6 symptom-#1 test: anchor override",
     )
-    db_session.add(history)
-    db_session.flush()
-    account.current_anchor_balance = anchor_balance
-    account.current_anchor_period_id = pay_period.id
     db_session.commit()
 
 
@@ -3163,14 +3156,19 @@ class TestBuildTrendPeriods:
         """
         return []
 
-    def test_tail_reaches_back_to_cash_anchor(self):
-        """History reaches back to the cash account's anchor period.
+    def test_history_reaches_back_past_the_cash_anchor(self):
+        """A cash account's anchor no longer bounds the history (N-44).
 
         Periods 0..9, today at index 5, one PLAIN account anchored at
-        index 2, no loans.  The honest start is the anchor (index 2); the
-        cap (5 - 6 = -1) does not bind, so the window is indices 2..9 (8
-        points) and ``current_index`` is the count below 5 -> indices
-        2, 3, 4 = 3.
+        index 2, no loans.  Its balance is a fold over its own assertions, so
+        it is real at every period and constrains nothing: the honest start is
+        0 and only the ``_TREND_HISTORY_PERIODS`` cap (5 - 6 = -1, which does
+        not bind here) limits the tail.  Window indices 0..9, ``current_index``
+        the count below 5 -> 0, 1, 2, 3, 4 = 5.
+
+        Before plan step X-c2b2 the projection omitted every pre-anchor period,
+        so this same shape gated at index 2 and drew 3 history points; the two
+        periods it refused are exactly the ones the fold now answers.
         """
         # pylint: disable=import-outside-toplevel
         from app.services.account_projection import AccountProjectionKind
@@ -3184,16 +3182,19 @@ class TestBuildTrendPeriods:
             accounts, periods, periods[5], {},
         )
 
-        assert [p.period_index for p in window] == [2, 3, 4, 5, 6, 7, 8, 9]
-        assert current_index == 3
-        assert honest_start == 2
+        assert [p.period_index for p in window] == [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+        assert current_index == 5
+        assert honest_start == 0
 
-    def test_no_history_when_cash_anchor_is_current(self):
-        """A cash account anchored at the current period yields no tail.
+    def test_a_cash_anchor_in_the_current_period_still_draws_history(self):
+        """A cash account trued up TODAY still has a real past (N-44).
 
-        PLAIN anchored at index 5, today at index 5: the honest start is 5,
-        so the window is forward-only (indices 5..9) and ``current_index``
-        0.  This is the common case for an actively-trued-up cockpit.
+        PLAIN anchored at index 5, today at index 5 -- the shape both real
+        production cash accounts are in, and the one the retired cash gate hurt
+        most: it equalled the current index, so ``/savings`` drew ZERO history
+        points on an account with four months of recorded activity.  The fold
+        replays every assertion, so the window is the full
+        ``_TREND_HISTORY_PERIODS`` tail.
         """
         # pylint: disable=import-outside-toplevel
         from app.services.account_projection import AccountProjectionKind
@@ -3207,16 +3208,19 @@ class TestBuildTrendPeriods:
             accounts, periods, periods[5], {},
         )
 
-        assert [p.period_index for p in window] == [5, 6, 7, 8, 9]
-        assert current_index == 0
-        assert honest_start == 5
+        assert [p.period_index for p in window] == [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+        assert current_index == 5
+        assert honest_start == 0
 
     def test_tail_capped_at_history_cap(self):
-        """The history tail is capped even when the cash anchor is older.
+        """The history tail is capped by ``_TREND_HISTORY_PERIODS``.
 
         PLAIN anchored at index 0, today at index 9, periods 0..12.  The
         honest start (0) loses to the cap (9 - 6 = 3), so the tail is
-        indices 3..8 (6 points) and ``current_index`` is 6.
+        indices 3..8 (6 points) and ``current_index`` is 6.  With cash no
+        longer gating, the cap is what bounds the tail for a loan-free user
+        -- so this is also the test that would fail if the fold's history
+        were allowed to run all the way back.
         """
         # pylint: disable=import-outside-toplevel
         from app.services.account_projection import AccountProjectionKind
@@ -3247,16 +3251,13 @@ class TestBuildTrendPeriods:
 
         assert build_trend_periods(accounts, periods, None, {}) == ([], 0, 0)
 
-    def test_only_cash_kinds_gate_the_history_start(self):
-        """An INVESTMENT's recent anchor does not shorten the history.
+    def test_an_investment_anchor_does_not_gate_the_history_start(self):
+        """Neither an INVESTMENT's anchor nor a cash one shortens the history.
 
-        Only PLAIN / INTEREST accounts gate the honest start by anchor
-        (their dense map omits pre-anchor periods).  A PLAIN account is
-        anchored at index 1 and an INVESTMENT at index 4, today at index 5.
-        The honest start is the PLAIN anchor (1), NOT the later investment
-        anchor (4): an investment is defined pre-anchor (reverse-projected),
-        so it must not constrain the window.  Window indices 1..9,
-        ``current_index`` 4.
+        A PLAIN account is anchored at index 1 and an INVESTMENT at index 4,
+        today at index 5.  Neither gates: an investment is defined pre-anchor
+        (reverse-projected) and cash is a fold over its own assertions, so the
+        honest start is 0 and the window runs 0..9.
         """
         # pylint: disable=import-outside-toplevel
         from app.services.account_projection import AccountProjectionKind
@@ -3269,19 +3270,21 @@ class TestBuildTrendPeriods:
             self._account(AccountProjectionKind.INVESTMENT, 4),
         ]
 
-        window, current_index, _ = build_trend_periods(
+        window, current_index, honest_start = build_trend_periods(
             accounts, periods, periods[5], {},
         )
 
-        assert window[0].period_index == 1
-        assert current_index == 4
+        assert window[0].period_index == 0
+        assert current_index == 5
+        assert honest_start == 0
 
-    def test_latest_cash_anchor_wins(self):
-        """With two cash accounts the LATEST anchor bounds the history.
+    def test_two_cash_anchors_neither_bounds_the_history(self):
+        """Two cash accounts, two different anchors, neither gates (N-44).
 
-        PLAIN at index 1 and PLAIN at index 3, today at index 5: the honest
-        start is the later anchor (3) so no period misses a cash balance.
-        Window indices 3..9, ``current_index`` 2 (indices 3, 4).
+        PLAIN at index 1 and PLAIN at index 3, today at index 5.  The retired
+        rule took the LATER anchor (3) so that no period could miss a cash
+        balance; the fold gives BOTH accounts a real balance at every period,
+        so there is nothing to miss and the window runs 0..9.
         """
         # pylint: disable=import-outside-toplevel
         from app.services.account_projection import AccountProjectionKind
@@ -3294,12 +3297,43 @@ class TestBuildTrendPeriods:
             self._account(AccountProjectionKind.PLAIN, 3),
         ]
 
-        window, current_index, _ = build_trend_periods(
+        window, current_index, honest_start = build_trend_periods(
             accounts, periods, periods[5], {},
         )
 
-        assert window[0].period_index == 3
-        assert current_index == 2
+        assert window[0].period_index == 0
+        assert current_index == 5
+        assert honest_start == 0
+
+    def test_a_modelled_only_set_still_draws_no_history(self):
+        """An investment / property-only set draws NO backward run.
+
+        Nothing in the set has a RECORDED past: an investment's pre-anchor
+        values are a reverse growth projection and a property's are a flat
+        anchor carry, so a backward run would be modelled figures presented as
+        actual history.  The no-history default therefore survives the cash
+        arm's removal -- and this is the test that fails if a cash account is
+        dropped from the gate loop entirely instead of participating in it
+        unconstrained, because a LOAN-FREE cash user would then land here too.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.services.account_projection import AccountProjectionKind
+        from app.services.savings_dashboard_service._net_worth import (
+            build_trend_periods,
+        )
+        periods = [self._period(i) for i in range(10)]
+        accounts = [
+            self._account(AccountProjectionKind.INVESTMENT, 1),
+            self._account(AccountProjectionKind.APPRECIATING, 2),
+        ]
+
+        window, current_index, honest_start = build_trend_periods(
+            accounts, periods, periods[5], {},
+        )
+
+        assert [p.period_index for p in window] == [5, 6, 7, 8, 9]
+        assert current_index == 0
+        assert honest_start == 5
 
     def test_loan_schedule_start_gates_history(self):
         """A loan's today-forward schedule gates the history past the cash.
@@ -3307,11 +3341,12 @@ class TestBuildTrendPeriods:
         A PLAIN account is anchored at index 1, but an AMORTIZING loan's
         schedule first pays in period 5 (today at index 7).  Pre-schedule
         periods report the loan's current balance held flat (today's balance,
-        not its real past), so the loan gates the honest start at index 5 --
-        LATER than the cash anchor (1).  Window
-        indices 5..9, ``current_index`` 2 (indices 5, 6).  Without the loan
-        gate the honest start would be the cash anchor (1) and
-        ``current_index`` would be 6, so this pins the loan gate.
+        not its real past), so the loan gates the honest start at index 5.
+        Window indices 5..9, ``current_index`` 2 (indices 5, 6).  Without the
+        loan gate the honest start would be 0 (cash constrains nothing since
+        plan step X-c2b2), the cap would bind at 7 - 6 = 1 and
+        ``current_index`` would be 6 -- so this pins the loan gate, which is
+        the ONLY arm left.
         """
         # pylint: disable=import-outside-toplevel
         from app.services.account_projection import AccountProjectionKind
@@ -3339,10 +3374,10 @@ class TestBuildTrendPeriods:
         An empty schedule means the loan sits at its current balance at every
         period (a paid-off / fully-resolved loan), which IS its real balance,
         so it is honest throughout and must not gate.  PLAIN anchored at
-        index 1, an
-        AMORTIZING loan with an empty schedule, today at index 7: the honest
-        start stays the cash anchor (1), window indices 1..9,
-        ``current_index`` 6.
+        index 1, an AMORTIZING loan with an empty schedule, today at index 7:
+        nothing gates, so the honest start is 0 and the
+        ``_TREND_HISTORY_PERIODS`` cap bounds the tail at 7 - 6 = 1.  Window
+        indices 1..9, ``current_index`` 6.
         """
         # pylint: disable=import-outside-toplevel
         from app.services.account_projection import AccountProjectionKind
@@ -3360,7 +3395,7 @@ class TestBuildTrendPeriods:
             accounts, periods, periods[7], debt_schedules,
         )
 
-        assert honest_start == 1
+        assert honest_start == 0
         assert current_index == 6
         assert window[0].period_index == 1
 

@@ -26,14 +26,16 @@ branch.**  Every date is answered off a single running total
   :func:`app.services.balance_at._plan.fold_forward`.  See :func:`_cash_plan`
   and :func:`_planned_day_nets`.
 
-**Two readers of that ONE row set** (plan step X-c1, ruling R-K).
+**Three readers of that ONE row set** (plan steps X-c1 / X-c2b2, ruling R-K).
 :func:`fold_cash_balances` samples the running total at a list of dates -- the
-balance.  :func:`cash_period_view` samples it at each pay period's end AND
-groups the very same rows a second way, by the period each was BUDGETED to, so
-the grid's balance row and its subtotal rows reconcile by construction with a
-named remainder for what neither clock alone can explain.  The assembly is
-shared rather than duplicated: one walk, one plan load, one valuation, whichever
-reader is asking.
+balance a scalar or a daily series asks for.  :func:`cash_period_balances`
+samples it at each pay period's end -- the per-period map.
+:func:`cash_period_view` samples the same period ends AND groups the very same
+rows a second way, by the period each was BUDGETED to, so the grid's balance row
+and its subtotal rows reconcile by construction with a named remainder for what
+neither clock alone can explain.  The assembly is shared rather than duplicated
+(:func:`_assemble`): one walk, one plan load, one valuation, whichever reader is
+asking.
 
 Keeping it to one sample is not economy, it is the correctness property: a fold
 assembled from a past producer spliced to a future producer needs a rule for the
@@ -73,10 +75,15 @@ the SOURCE -- ``resolve_grid_account`` since plan step A1 and
 ``resolve_analytics_account`` since X-a1 -- not a refusal in here, which would
 reintroduce exactly the partiality above.
 
-**ADDITIVE and unwired.**  Nothing in production calls either entry yet; their
-only callers are their oracles (``tests/test_services/test_cash_fold.py``,
-``test_cash_period_view.py``).  The cutover is plan step X-c2, and it is the step
-where money moves.
+**WIRED since plan step X-c2b2.**  Every cash figure the app renders is one of
+these three readings: the seam's three cash-flow entries
+(:mod:`app.services.balance_at._cash_flow`), the kernel's PLAIN fall-through and
+INTEREST seed (:mod:`app.services.balance_at._kernel`), the kind-correct
+scalar's PLAIN and degraded-AMORTIZING branches
+(:mod:`app.services.balance_at._kind_correct`), and the grid's whole column set
+(:mod:`app.services.balance_at._grid`).  That is the cutover: the settled drop,
+the scalar/daily fork and the pre-anchor fabrication close together, because one
+total fold subsumes all three.
 
 Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes; all money is
 :class:`~decimal.Decimal`.
@@ -112,25 +119,39 @@ _ZERO_MONEY = Decimal("0.00")
 _ONE_DAY = timedelta(days=1)
 
 
-def fold_cash_balances(
-    account: Account,
-    scenario_id: int,
-    as_of: date,
-    dates: list[date],
-) -> dict[date, Decimal]:
-    """Return the account's folded cash balance at each of *dates*.
+@dataclass(frozen=True)
+class _AssembledFold:
+    """One account's whole running total, plus the facts it was built from.
 
-    The cash counterpart of
-    :func:`app.services.balance_at._fold.fold_loan_balances`, and the producer
-    plan step X-c points all three cash seam entries at.  ONE walk of the
-    account's facts plus ONE load of its plan, sampled at every requested date --
-    so N dates cost one pass, not N.
+    The output of :func:`_assemble`, and the reason the three readers below are
+    readings of ONE valued row set rather than three producers a test keeps in
+    step (ruling R-K).  It carries the sampling inputs (:attr:`seed` /
+    :attr:`steps`) AND the groupings the period view regroups the same rows by
+    (:attr:`walk` / :attr:`plan` / :attr:`day_nets`), so no reader re-loads or
+    re-values anything a sibling reader already has.
 
-    **Two dates, and they are not the same date** (the contract the seam's
-    context documents): *as_of* is the reader's NOW -- what decides that a plan
-    cannot already have happened -- while each of *dates* is a VALUATION date,
-    which may be long before it (a historical read) or long after (a projection).
-    Passing ``as_of`` as a valuation date is ordinary, not special.
+    Attributes:
+        seed: The balance before every step (ruling R-I's back-projection).
+        steps: The dated deltas, ASCENDING by date -- the ACTUAL tier, the
+            opening's compensator, and the PLANNED tier merged into one list.
+        walk: The account's :class:`~app.services.cash_ledger.CashLedgerWalk`
+            (the settled facts and the assertion corrections).
+        plan: The account's :class:`_CashPlan` (its still-Projected rows, the
+            day each lands on, and the live override map).
+        day_nets: The PLANNED tier's per-day nets.
+    """
+
+    seed: Decimal
+    steps: "list[tuple[date, Decimal]]"
+    walk: CashLedgerWalk
+    plan: _CashPlan
+    day_nets: "dict[date, Decimal]"
+
+
+def _assemble(
+    account: Account, scenario_id: int, as_of: date,
+) -> _AssembledFold:
+    """Walk the account's facts and load its plan -- ONCE, for every reader.
 
     Args:
         account: The account to value.  Its ``id`` scopes the walk and the plan,
@@ -142,6 +163,47 @@ def fold_cash_balances(
         as_of: The reader's NOW -- the floor a still-Projected row's effective
             date is clamped up to (ruling R-G), and the date its entries-aware
             reservation is valued at.
+
+    Returns:
+        The :class:`_AssembledFold`.
+    """
+    walk = walk_cash_ledger(account.id, scenario_id)
+    plan = _cash_plan(account, scenario_id, as_of)
+    day_nets = _planned_day_nets(plan, as_of)
+    seed, steps = _running_steps(walk, day_nets)
+    return _AssembledFold(
+        seed=seed, steps=steps, walk=walk, plan=plan, day_nets=day_nets,
+    )
+
+
+def fold_cash_balances(
+    account: Account,
+    scenario_id: int,
+    as_of: date,
+    dates: list[date],
+) -> dict[date, Decimal]:
+    """Return the account's folded cash balance at each of *dates*.
+
+    The cash counterpart of
+    :func:`app.services.balance_at._fold.fold_loan_balances`, and the producer
+    the seam's cash-flow SCALAR and DAILY SERIES read (plan step X-c2b2).  ONE
+    walk of the account's facts plus ONE load of its plan, sampled at every
+    requested date -- so N dates cost one pass, not N, which is what lets the
+    daily series be a sampling of the period map's own running total rather than
+    a second producer that drifts from it (finding cash D2: ``$15.96`` apart on
+    the real Checking account the day before the cutover, ``$246.36`` at the
+    worst day of the current period).
+
+    **Two dates, and they are not the same date** (the contract the seam's
+    context documents): *as_of* is the reader's NOW -- what decides that a plan
+    cannot already have happened -- while each of *dates* is a VALUATION date,
+    which may be long before it (a historical read) or long after (a projection).
+    Passing ``as_of`` as a valuation date is ordinary, not special.
+
+    Args:
+        account: The account to value (see :func:`_assemble`).
+        scenario_id: The budget scenario whose rows to fold.
+        as_of: The reader's NOW (ruling R-G's clamp floor).
         dates: The dates to value the account at, in any order.  Duplicates
             collapse.
 
@@ -149,10 +211,64 @@ def fold_cash_balances(
         ``{date: balance}`` -- one cent-quantized ``Decimal`` per distinct
         requested date.  ``{}`` for an empty *dates*.
     """
-    walk = walk_cash_ledger(account.id, scenario_id)
-    plan = _cash_plan(account, scenario_id, as_of)
-    seed, steps = _running_steps(walk, _planned_day_nets(plan, as_of))
-    return sample_cumulative(seed, steps, dates)
+    folded = _assemble(account, scenario_id, as_of)
+    return sample_cumulative(folded.seed, folded.steps, dates)
+
+
+def cash_period_balances(
+    account: Account,
+    scenario_id: int,
+    as_of: date,
+    periods: "list[PayPeriod]",
+) -> "OrderedDict[int, Decimal]":
+    """Return the account's folded balance at each period's END, by period id.
+
+    The per-period map (plan step X-c2b2): the seam's ``cash_balance_map``, the
+    kernel's PLAIN fall-through, and the INTEREST accrual's SEED all read it, so
+    a period column, the scalar sampled at that column's end date, and the daily
+    series' last day of it are one running total read at three grains.
+
+    **TOTAL over the periods it is given**, which is the cutover's whole point:
+    the shipping producer carried the anchor forward and OMITTED every
+    pre-anchor period, so a past column rendered blank while the account plainly
+    held money (finding cash D3 / B-18 -- on the real Checking account, eight
+    blank columns).  Every assertion is replayed here, so a past period reads the
+    balance in force THEN.
+
+    Args:
+        account: The account to value (see :func:`_assemble`).
+        scenario_id: The budget scenario whose rows to fold.
+        as_of: The reader's NOW (ruling R-G's clamp floor).
+        periods: The pay periods to value, in the caller's display order.  They
+            need not be contiguous and need not start at the account's anchor.
+
+    Returns:
+        ``OrderedDict`` period id -> cent-quantized ``Decimal``, in the order
+        *periods* was given.  EVERY input period is present.
+    """
+    return _period_balances(
+        _assemble(account, scenario_id, as_of), periods,
+    )
+
+
+def _period_balances(
+    folded: _AssembledFold, periods: "list[PayPeriod]",
+) -> "OrderedDict[int, Decimal]":
+    """Sample an assembled fold at each period's ``end_date``, keyed by period id.
+
+    Args:
+        folded: The account's :class:`_AssembledFold`.
+        periods: The pay periods to value, in the caller's display order.
+
+    Returns:
+        ``OrderedDict`` period id -> cent-quantized ``Decimal``.
+    """
+    sampled = sample_cumulative(
+        folded.seed, folded.steps, [period.end_date for period in periods],
+    )
+    return OrderedDict(
+        (period.id, sampled[period.end_date]) for period in periods
+    )
 
 
 def _actual_steps(
@@ -445,12 +561,37 @@ class CashPeriodFigures:
     reconciliation: Decimal
 
 
+@dataclass(frozen=True)
+class CashPeriodView:
+    """A whole account's cash columns, and the income basis they were valued on.
+
+    The output of :func:`cash_period_view`.  The override map rides on the
+    result rather than being the caller's ARGUMENT (ruling R-Q): it is what the
+    projection was actually computed with, so a consumer that renders the
+    individual rows beside the columns -- the budget grid -- prices each row off
+    the same map its balance row folded, BY CONSTRUCTION.  Passing it in was the
+    only way for the two to disagree, and an argument a caller can get wrong is a
+    defect rather than a contract (plan Section 8).
+
+    Attributes:
+        columns: ``OrderedDict`` period id -> :class:`CashPeriodFigures`, in the
+            order the caller's *periods* were given.  Every input period is
+            present.
+        amount_overrides: The live ``{transaction_id: Decimal}`` map the
+            still-Projected rows were valued through -- recomputed salary income
+            and derived loan debits.  ``{}`` for an account with no plan.
+    """
+
+    columns: "OrderedDict[int, CashPeriodFigures]"
+    amount_overrides: "dict[int, Decimal]"
+
+
 def cash_period_view(
     account: Account,
     scenario_id: int,
     as_of: date,
     periods: "list[PayPeriod]",
-) -> "OrderedDict[int, CashPeriodFigures]":
+) -> CashPeriodView:
     """Return the account's cash column for each of *periods* -- ruling R-K.
 
     ONE valued row set, grouped on TWO clocks, plus the assertion steps.  The
@@ -506,24 +647,22 @@ def cash_period_view(
             window rather than a re-based projection.
 
     Returns:
-        ``OrderedDict`` period id -> :class:`CashPeriodFigures`, in the order
-        *periods* was given.  Every input period is present (a period with no
-        rows and no assertions reports zeros against its folded balance).
+        The :class:`CashPeriodView`: one :class:`CashPeriodFigures` per input
+        period (a period with no rows and no assertions reports zeros against
+        its folded balance), plus the live override map the projection was
+        computed with.
     """
-    walk = walk_cash_ledger(account.id, scenario_id)
-    plan = _cash_plan(account, scenario_id, as_of)
-    day_nets = _planned_day_nets(plan, as_of)
-    seed, steps = _running_steps(walk, day_nets)
+    folded = _assemble(account, scenario_id, as_of)
     spans = _PeriodSpans.of(periods)
-    balances = sample_cumulative(
-        seed, steps, [period.end_date for period in periods],
-    )
-    return _assemble_figures(
-        periods,
-        balances,
-        _budget_legs(walk, plan, spans, as_of),
-        _cash_sums(walk, day_nets, spans),
-        _assertion_sums(walk, spans),
+    return CashPeriodView(
+        columns=_assemble_figures(
+            periods,
+            _period_balances(folded, periods),
+            _budget_legs(folded.walk, folded.plan, spans, as_of),
+            _cash_sums(folded.walk, folded.day_nets, spans),
+            _assertion_sums(folded.walk, spans),
+        ),
+        amount_overrides=folded.plan.overrides,
     )
 
 
@@ -729,7 +868,7 @@ def _assertion_sums(
 
 def _assemble_figures(
     periods: "list[PayPeriod]",
-    balances: "dict[date, Decimal]",
+    balances: "OrderedDict[int, Decimal]",
     legs: "dict[int, tuple[Decimal, Decimal]]",
     moved: "dict[int, Decimal]",
     asserted: "dict[int, Decimal]",
@@ -753,7 +892,8 @@ def _assemble_figures(
 
     Args:
         periods: The pay periods to report, in display order.
-        balances: The fold sampled at every period ``end_date``.
+        balances: The fold sampled at every period ``end_date``, keyed by
+            period id (:func:`_period_balances`).
         legs: The budget-clock ``(income, expense)`` per period.
         moved: The cash-clock net per period.
         asserted: The assertion corrections per period.
@@ -766,7 +906,7 @@ def _assemble_figures(
         income, expense = legs[period.id]
         net = income - expense
         figures[period.id] = CashPeriodFigures(
-            balance=balances[period.end_date],
+            balance=balances[period.id],
             income=round_money(income),
             expense=round_money(expense),
             net=round_money(net),

@@ -110,10 +110,11 @@ class _GridContext(NamedTuple):
         current_period: The user's current pay period (the natural
             leftmost column when ``start_offset == 0``).
         periods: The visible period slice (length ``num_periods``).
-        all_periods: All periods from anchor forward; the balance-at
-            seam's cash-flow entry
-            :func:`app.services.balance_at.cash_balance_map` walks this
-            list to project balances.
+        all_periods: ALL of the user's pay periods; the balance-at seam's
+            grid view folds this list into one column per period.  Not
+            anchor-forward: the fold answers a pre-anchor period with the
+            balance in force then (plan step X-c2b2), and each period is
+            valued off its own span.
     """
 
     user_id: int
@@ -182,8 +183,8 @@ def _resolve_grid_context(user_id, request_args, settings):
         start_offset=start_offset,
         current_period=current_period,
         periods=periods,
-        # All periods from anchor forward -- the canonical balance
-        # producer walks this list to project per-period end balances.
+        # ALL of the user's periods -- the fold answers every one of them,
+        # and each render window is a slice of this domain.
         all_periods=pay_period_service.get_all_periods(user_id),
     )
 
@@ -260,8 +261,12 @@ def _build_grid_view(account, balance_ctx, all_periods):
             edge case.
         balance_ctx: The read pass's
             :class:`~app.services.balance_at.BalanceContext`.
-        all_periods: Every pay period from the anchor forward (the projection
-            domain; each render window is a slice of it).
+        all_periods: Every one of the user's pay periods (the projection
+            domain; each render window is a slice of it).  The fold answers
+            all of them -- there is no anchor-forward restriction to respect
+            since plan step X-c2b2 -- and each is valued off its OWN span, so
+            passing the full set is what makes a window a window rather than a
+            re-based projection.
 
     Returns:
         ``(grid_view, anchor_balance)`` -- the
@@ -561,7 +566,6 @@ def index():
         today=display_today(),
         all_periods=ctx.all_periods,
         low_balance_threshold=_resolve_low_balance_threshold(),
-        stale_anchor_warning=grid_view.stale_anchor_warning,
         entry_sums=row_data.entry_sums,
         entry_lists=row_data.entry_lists,
         matched_by_row_period=row_data.matched_by_row_period,
@@ -728,13 +732,6 @@ def balance_row():
     this endpoint has nothing to render -- returning 204 leaves the
     existing DOM untouched and avoids the ``AttributeError`` that
     dereferencing the missing scenario would have raised (F-099).
-
-    The stale-anchor warning banner is swapped out-of-band on every
-    refresh: the balance row already computes
-    ``balance_result.stale_anchor_warning``, so the response carries the
-    ``#stale-anchor-warning`` wrapper (with the alert inside only when
-    the condition holds) so a desktop mark-done that creates the
-    condition surfaces the banner without the old full page reload.
     """
     window = _resolve_partial_window(current_user.id)
     if window is None:
@@ -742,13 +739,13 @@ def balance_row():
 
     all_periods = pay_period_service.get_all_periods(current_user.id)
 
-    # The whole column set + the stale-anchor flag via the balance-at seam's
-    # kind-aware grid view, which owns the live override map and the per-kind
-    # dispatch.  For an INTEREST grid account this yields the interest-accrued
-    # balance and the "Interest" row; every other kind gets the cash-flow
-    # running-balance with no accrual.  Asking the seam for the whole
-    # anchor-forward set and reading the window's flags off it is what keeps
-    # this refresh and the full-page render one projection.
+    # The whole column set via the balance-at seam's kind-aware grid view,
+    # which owns the live override map and the per-kind dispatch.  For an
+    # INTEREST grid account this yields the interest-accrued balance and the
+    # "Interest" row; every other kind gets the folded cash balance with no
+    # accrual.  Asking the seam for the whole period set and reading the
+    # window's flags off it is what keeps this refresh and the full-page
+    # render one projection.
     view, _anchor = _build_grid_view(
         window.account, window.balance_ctx, all_periods,
     )
@@ -762,8 +759,6 @@ def balance_row():
         num_periods=window.num_periods,
         start_offset=window.start_offset,
         low_balance_threshold=_resolve_low_balance_threshold(),
-        stale_anchor_warning=view.stale_anchor_warning,
-        oob=True,
     )
 
 

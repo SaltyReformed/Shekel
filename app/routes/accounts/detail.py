@@ -269,15 +269,20 @@ def _cash_projection(
     if is_interest:
         if scenario is not None:
             anchor = cash_ledger.resolve_anchor(account, scenario.id)
-            balances = balance_at.balance_map(
-                account, balance_ctx, all_periods,
-            ) or {}
-            interest_by_period = balance_at.interest_by_period_for_account(
-                account, scenario, all_periods, params,
+            # ONE walk for both figures.  Asking the seam twice (the balance
+            # map, then the interest map) folded the account's whole cash
+            # event stream twice per render once the accrual's base became
+            # that fold -- and the two halves are one projection, so the page
+            # would also have had two chances to disagree with itself.
+            balances, interest_by_period = (
+                balance_at.interest_projection_for_account(
+                    account, balance_ctx, all_periods, params,
+                )
             )
     elif scenario is not None and all_periods:
-        result = balance_at.cash_balance_map(account, balance_ctx, all_periods)
-        balances = result.balances
+        balances = balance_at.cash_balance_map(
+            account, balance_ctx, all_periods,
+        )
         anchor = cash_ledger.resolve_anchor(account, scenario.id)
     return balances, interest_by_period, anchor
 

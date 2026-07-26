@@ -1,34 +1,33 @@
-"""X-b: the fold parallel-run against all three shipping cash producers.
+"""X-b / X-c2b2: the three cash seam entries ARE the fold, on every day.
 
-Plan step X-b (``docs/audits/balance_architecture/README.md``).  Runs
-``balance_at._cash_fold.fold_cash_balances`` against the three producers plan
-step X-c will replace -- ``cash_balance_map``, ``cash_balance_at`` and
-``cash_daily_balance_series`` -- on **EVERY DAY** of each shape's domain.
+Plan steps X-b and X-c2b2 (``docs/audits/balance_architecture/README.md``).
+Runs ``balance_at._cash_fold.fold_cash_balances`` against the three seam entries
+-- ``cash_balance_map``, ``cash_balance_at`` and ``cash_daily_balance_series`` --
+on **EVERY DAY** of each shape's domain.
 
-**Equality is NOT the pass condition here, and saying so is part of the step.**
-The shipping producers carry the live findings this whole phase exists to close,
-so on the shapes that trigger one the fold MUST differ; a file that demanded
-equality everywhere would be demanding the defects.  What is asserted instead is
-sharper:
+**This file changed sides at the cutover, and the fixtures did not.**  At plan
+step X-b the three entries were separate producers carrying the live findings
+this phase exists to close, so equality was NOT the pass condition: on a shape
+that triggered a finding the fold had to DIFFER, in hand-computed dollars, and
+:class:`TestEveryFindingIsClosedAtTheSeam` asserted the size of each gap.  Plan
+step X-c2b2 pointed all three at the fold, so those same shapes and those same
+figures now assert the CLOSED state -- the seam answering what only the fold used
+to.  Each test names the figure the retired producer returned beside the one the
+seam returns now, which is the moved-figure record in executable form: revert
+the cutover and the old number comes back, and the test says so.
 
-* on a shape that triggers NO finding, the fold agrees with all three on every
-  day of the domain (:class:`TestACleanShapeAgreesOnEveryDay`) -- so the fold is
-  not a differently-wrong producer that happens to be right on the broken cases;
-* on a shape that triggers one, the divergence is EXACTLY the finding, in
-  hand-computed dollars and on named days
-  (:class:`TestEveryDivergenceIsANamedFinding`) -- so an unexplained divergence
-  fails rather than being absorbed into a tolerance.
+* :class:`TestACleanShapeAgreesOnEveryDay` -- on a shape that triggers no
+  finding, all three entries and the fold agree on every day of the domain.
+  Since the cutover this is structural rather than a coincidence, and it is
+  still worth pinning: it is what proves a scalar, a period map and a daily
+  series are ONE running total read at three grains rather than three producers
+  that happen to line up.
+* :class:`TestEveryFindingIsClosedAtTheSeam` -- on a shape that triggers a
+  finding, the seam answers the fold's figure, on named days and to the cent.
 
 **Sampling is forbidden.**  A 14-day sample once scored perfect while wrong by
 $178,103.41 on 22% of days (plan Section 7.2), so each comparison walks every
 day of its range and guards the loop so a vacuous domain cannot pass.
-
-Note the shape of the three counterparties, which is itself finding cash D2: the
-scalar is PERIOD-FLAT (it adds the target period's whole projected net for every
-day inside that period) while the daily series RAMPS.  They cannot both agree
-with a daily fold, so the clean-shape assertions below compare the fold to the
-scalar and the map at period ENDS -- where all three are defined to coincide --
-and to the daily series on every day.
 """
 
 from datetime import date, timedelta
@@ -153,16 +152,17 @@ class TestACleanShapeAgreesOnEveryDay:
     def test_it_matches_the_period_map_everywhere_the_map_answers(
         self, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """Every period the map carries a balance for.
+        """Every period, since the map is TOTAL over the periods it is given.
 
-        The map is keyed by period and omits pre-anchor periods entirely; the
-        anchor here is the first period, so it answers for all ten.
+        The map is keyed by period.  It used to omit pre-anchor periods
+        entirely; since plan step X-c2b2 every requested period is present, and
+        the anchor here is the first period anyway, so it answers for all ten.
         """
         account = seed_user["account"]
         as_of = _clean_shape(db.session, seed_user, seed_periods)
         ctx = _context(seed_user, as_of)
 
-        mapped = balance_at.cash_balance_map(account, ctx, seed_periods).balances
+        mapped = balance_at.cash_balance_map(account, ctx, seed_periods)
         assert len(mapped) == 10  # the loop is not vacuous
         assert len(set(mapped.values())) == 4, "the shape does not move"
 
@@ -176,23 +176,29 @@ class TestACleanShapeAgreesOnEveryDay:
             )
 
 
-class TestEveryDivergenceIsANamedFinding:
-    """Where the fold differs, the difference IS the finding, to the cent."""
+class TestEveryFindingIsClosedAtTheSeam:
+    """Each shape that used to break a producer now reads the fold, to the cent.
+
+    Every fixture and every hand-computed figure here is the one plan step X-b
+    measured the DIVERGENCE with.  What moved is the assertion: the seam now
+    answers the fold's number instead of the defective one, and each docstring
+    records both so the cutover's effect is legible from the test alone.
+    """
 
     def test_cash_d1_the_settled_row_the_producers_count_nowhere(
         self, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """A settle attributed after the assertion: $2,000.00, invisible.
+        """A settle attributed after the assertion is counted (cash D1 closed).
 
-        The developer's reported bug, run against the producers that lose it.
-        Assertion $5,644.27 on 2026-03-01; a $2,000.00 expense settles
-        2026-04-01, a month later.
+        The developer's reported bug.  Assertion $5,644.27 on 2026-03-01; a
+        $2,000.00 expense settles 2026-04-01, a month later.
 
-        Hand-computed: the fold reads $3,644.27 from 04-01 while all three
-        producers read $5,644.27 -- the anchor, unmoved, because a settled row
-        contributes zero to the projection and the anchor predates it.  The
-        $2,000.00 gap is finding cash D1, and it is asserted as an exact figure
-        rather than as "they differ".
+        Hand-computed: every entry reads $3,644.27 from 04-01.  Before the
+        cutover all three answered $5,644.27 -- the anchor, unmoved, because a
+        settled row contributed zero to the projection and the anchor predated
+        it -- so the $2,000.00 the account had actually spent was counted by NO
+        producer.  On production that class was $53,880.81 gross across 130 rows
+        in 45 assertion gaps.
         """
         account = seed_user["account"]
         as_of = date(2026, 4, 5)
@@ -215,29 +221,32 @@ class TestEveryDivergenceIsANamedFinding:
             account, ctx, days[0], days[-1],
         )
         for day in days:
+            # $5,644.27 - $2,000.00: the settled row, counted from the day its
+            # money moved.  The retired producers all answered $5,644.27 here.
             assert folded[day] == Decimal("3644.27")
-            assert series[day] == Decimal("5644.27")
+            assert series[day] == Decimal("3644.27")
             assert balance_at.cash_balance_at(
                 account, ctx, day,
-            ) == Decimal("5644.27")
-            assert series[day] - folded[day] == Decimal("2000.00")
+            ) == Decimal("3644.27")
 
-        mapped = balance_at.cash_balance_map(account, ctx, seed_periods).balances
-        assert mapped[seed_periods[6].id] == Decimal("5644.27")
+        mapped = balance_at.cash_balance_map(account, ctx, seed_periods)
+        assert mapped[seed_periods[6].id] == Decimal("3644.27")
         assert folded[seed_periods[6].end_date] == Decimal("3644.27")
 
-    def test_cash_d2_the_scalar_is_period_flat_and_the_fold_is_not(
+    def test_cash_d2_the_scalar_steps_on_the_day_the_money_moves(
         self, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """The scalar answers a whole period's net on that period's first day.
+        """The scalar is date-precise, not period-flat (cash D2 closed).
 
         A $1,200.00 bill due 2026-04-08, inside period 6 (2026-03-27 .. 04-09).
 
-        Hand-computed: the fold holds $1,000.00 until 04-07 and steps to
-        -$200.00 on 04-08, while the scalar answers -$200.00 for EVERY day of
-        the period including 03-27 -- twelve days before the money moves.  The
-        daily series agrees with the fold, which is the contradiction cash D2
-        names: two shipping producers, one question, different answers.
+        Hand-computed: the scalar holds $1,000.00 until 04-07 and steps to
+        -$200.00 on 04-08, exactly as the daily series does.  Before the cutover
+        it answered -$200.00 for EVERY day of the period including 03-27 --
+        twelve days before the money moves -- while the daily series ramped, so
+        two shipping producers gave one question two answers ($15.96 apart on
+        the real Checking account, $246.36 at the worst day of its current
+        period).  They are one fold read at two grains now.
         """
         account = seed_user["account"]
         as_of = date(2026, 3, 27)
@@ -262,25 +271,27 @@ class TestEveryDivergenceIsANamedFinding:
             )
             assert folded[day] == expected, f"fold wrong on {day}"
             assert series[day] == expected, f"daily series wrong on {day}"
-            # ...and the scalar is flat at the period-END value all fourteen days.
+            # ...and the scalar steps with them rather than answering the
+            # period-END value on all fourteen days.
             assert balance_at.cash_balance_at(
                 account, ctx, day,
-            ) == Decimal("-200.00")
+            ) == expected, f"scalar wrong on {day}"
 
-    def test_cash_d3_a_past_date_is_fabricated_or_omitted(
+    def test_cash_d3_a_past_date_reads_the_assertion_in_force_then(
         self, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """Before the latest assertion the scalar answers TODAY's balance.
+        """A past date is replayed, not fabricated or omitted (cash D3 closed).
 
         Two assertions: $1,000.00 opening (2026-01-01) and $5,644.27
-        (2026-03-01).  Read at 2026-02-01, a date the account demonstrably held
-        $1,000.00 at.
+        (2026-03-01).  Read across January and February, dates the account
+        demonstrably held $1,000.00 at.
 
-        Hand-computed: the fold answers $1,000.00 -- the assertion in force
-        then.  The scalar answers $5,644.27, a balance the account did not hold
-        until a month later, and the period map omits the pre-anchor periods
-        entirely (its anchor is period 4, so periods 0-3 carry no key at all).
-        Two producers, two different wrong answers, which is the finding.
+        Hand-computed: every entry answers $1,000.00 -- the assertion in force
+        then.  Before the cutover the scalar answered $5,644.27, a balance the
+        account did not hold until a month later (on production it fabricated
+        $2,932.41 for 2026-06-03), and the period map omitted the pre-anchor
+        periods entirely -- two producers, two different wrong answers.  Every
+        assertion is replayed now, so a past column carries a real balance.
         """
         account = seed_user["account"]
         as_of = date(2026, 4, 5)
@@ -297,13 +308,16 @@ class TestEveryDivergenceIsANamedFinding:
         folded = _folded(seed_user, account, as_of, days)
         for day in days:
             assert folded[day] == Decimal("1000.00"), f"fold wrong on {day}"
+            # The retired scalar answered $5,644.27 on every one of these days.
             assert balance_at.cash_balance_at(
                 account, ctx, day,
-            ) == Decimal("5644.27")
+            ) == Decimal("1000.00"), f"scalar wrong on {day}"
 
-        mapped = balance_at.cash_balance_map(account, ctx, seed_periods).balances
+        # The retired map omitted these four periods entirely; every requested
+        # period is present now, carrying the balance in force then.
+        mapped = balance_at.cash_balance_map(account, ctx, seed_periods)
         for period in seed_periods[:4]:
-            assert period.id not in mapped
+            assert mapped[period.id] == Decimal("1000.00")
             assert folded[period.end_date] == Decimal("1000.00")
 
     def test_ruling_r_g_the_overdue_bill_the_producers_keep_in_the_past(
@@ -313,14 +327,15 @@ class TestEveryDivergenceIsANamedFinding:
 
         A $50.00 bill due 2026-03-29, read at ``as_of = 2026-04-02``.
 
-        Hand-computed: the fold clamps it to 04-03, so 04-02 reads $1,000.00 and
-        04-03 reads $950.00.  The daily series lands it on 03-29, so it reads
-        $950.00 from 03-29 -- five days before the fold does.  Both reach
-        $950.00 by the period end, so this divergence is confined to the window
+        Hand-computed: the clamp lands it on 04-03, so 04-02 reads $1,000.00 and
+        04-03 reads $950.00 -- on the fold AND on the daily series, which used
+        to land it on its stale 03-29 due date, five days early.  Both reach
+        $950.00 by the period end, so the divergence was confined to the window
         between the stale due date and ``as_of + 1``; what makes the ruling
         load-bearing is not that window but what happens at the NEXT re-anchor,
         which under the rejected alternative would absorb the bill and delete it
-        from the projection entirely.
+        from the projection entirely (one re-anchor every 2.3 days on the real
+        Checking account).
         """
         account = seed_user["account"]
         as_of = date(2026, 4, 2)
@@ -344,7 +359,7 @@ class TestEveryDivergenceIsANamedFinding:
                 else Decimal("950.00")
             ), f"fold wrong on {day}"
             assert series[day] == (
-                Decimal("1000.00") if day < date(2026, 3, 29)
+                Decimal("1000.00") if day < date(2026, 4, 3)
                 else Decimal("950.00")
             ), f"daily series wrong on {day}"
         assert folded[seed_periods[6].end_date] == series[

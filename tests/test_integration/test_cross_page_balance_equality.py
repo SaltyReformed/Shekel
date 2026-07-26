@@ -206,19 +206,19 @@ def _bctx(ctx):
 def _grid_value(ctx):
     """Read the grid surface's balance for the anchor period.
 
-    The grid route renders ``balance_result.balances[period.id]`` per
-    visible-period cell, where ``balance_result`` now comes from the seam's
-    cash-flow entry ``balance_at.cash_balance_map`` (Level-1 Commit 8).
+    The grid route renders one balance per visible-period cell, off the seam's
+    cash-flow entry ``balance_at.cash_balance_map`` (Level-1 Commit 8; the
+    fold since plan step X-c2b2).
     Reading through that SAME seam entry -- not the raw ``balances_for``
     producer beneath it -- keeps this surface reader on the production path,
     so a regression in the seam's cash view (not just the producer) is caught
     here, and the reader is no longer a byte-identical twin of the
     ``balances_for`` calls in the per-kind locks.
     """
-    result = balance_at.cash_balance_map(
+    balances = balance_at.cash_balance_map(
         ctx["account"], _bctx(ctx), ctx["all_periods"],
     )
-    return result.balances[ctx["anchor_period"].id]
+    return balances[ctx["anchor_period"].id]
 
 
 def _dashboard_value(ctx):

@@ -16,19 +16,31 @@ Two levels, one rule:
     pay period, loading the rows itself and rounding ``net`` once at the
     boundary.
 
-The two questions -- flow and stock -- are bound by one invariant, and keeping
-it is this module's whole point:
+The two questions -- flow and stock -- are bound by an invariant, and keeping
+one row-valuation engine is how it is kept.  The invariant itself MOVED at
+plan step X-c2b2 (ruling R-K): it used to be
 
     balances[p] - balances[p-1] == period_subtotals(...)[p].net
 
-It holds by construction because both sides reduce the SAME rows through the
-SAME engine (:func:`sum_projected` below, which
-:func:`app.services.balance_at._calculator.calculate_balances` also calls) with the
-same entries-aware expense reduction and the same live override map, and
-because ``net`` is rounded ONCE at the boundary
+which held only because both sides counted exactly the still-UNPAID rows of
+one anchor-seeded walk -- neither could see a settled row at all, so every
+past column read ``$0.00`` while thousands of dollars moved through it
+(finding N-41).  The subtotals now count EVERY row attributed to a period and
+the balance counts money that MOVED, so the identity gained a named remainder
+and lives with the producer that computes both sides from one row set:
+:class:`app.services.balance_at._cash_fold.CashPeriodFigures`.
+
+What survives here is the half that made the old identity hold and still makes
+the new one hold: :func:`sum_projected` is the ONE per-row valuation both
+groupings reduce through -- the same entries-aware expense reduction, the same
+live override map -- and ``net`` is rounded ONCE at the boundary
 (``round_money(income - expense)``) rather than as the difference of two
 separately-rounded legs.  Two producers that agreed only by coincidence is
 what F-002 Pair C / F-004 were, and E-25 restored.
+
+``period_subtotal`` / ``period_subtotals`` / :class:`PeriodSubtotal` have had
+no production consumer since plan step X-c2b1 (the grid reads the seam's
+per-period view) and are deleted at X-c2b3; ``sum_projected`` stays.
 
 **Why the engine lives HERE (plan step D1c).**  ``sum_projected`` sat inside
 ``balance_calculator`` -- a PRODUCER module -- and was called from outside the

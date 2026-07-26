@@ -60,14 +60,18 @@ def compute_balance_section(user_id: int) -> dict:
     ``revert=dashboard`` here).  It re-renders ``_pulse_balance.html``, the
     ``#balance-display`` control the editor replaced, so it returns a
     dict shaped like the pulse hero: a ``hero`` sub-dict carrying the
-    as-of-today ``balance`` and the ``account_id`` the control needs.
+    current period's projected END ``balance`` and the ``account_id`` the
+    control needs.
 
-    The ``balance`` is the canonical as-of-today projected cash-flow
-    balance from the ``balance_at`` seam's cash-flow scalar
-    (``balance_at.cash_balance_at``, which delegates to
-    ``balance_resolver.balance_as_of_date`` for EVERY account kind) -- the
-    exact figure the pulse hero shows -- so the reverted fragment and the
-    main pulse region agree to the cent.  This surface reads the CASH-FLOW
+    The ``balance`` is the seam's cash-flow scalar read at the CURRENT
+    PERIOD'S ``end_date`` -- the exact figure the pulse hero shows (which
+    reads the same date off its period map), so the reverted fragment and the
+    main pulse region agree to the cent, and both match the label
+    ``_pulse_balance.html`` renders them under ("End of this period").  It
+    used to read the scalar at TODAY, which was the same number only because
+    that scalar was period-FLAT; the fold makes it date-precise (plan step
+    X-c2b2, finding cash D2), so the date has to be stated.  This surface
+    reads the CASH-FLOW
     view (the pure transaction running balance), not the kind-correct
     ``balance_at`` scalar: the dashboard account is ``resolve_grid_account``'s
     pick, which may be ANY kind (a user can point the dashboard at an HYSA,
@@ -91,7 +95,7 @@ def compute_balance_section(user_id: int) -> dict:
 
     if current_period is not None:
         balance = balance_at.cash_balance_at(
-            account, balance_ctx, balance_ctx.as_of,
+            account, balance_ctx, current_period.end_date,
         )
     else:
         balance = account.current_anchor_balance or _ZERO

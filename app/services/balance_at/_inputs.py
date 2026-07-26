@@ -186,7 +186,6 @@ def _account_balance_map(
     ctx: BalanceContext,
     periods: list,
     inputs: _AssembledInputs,
-    amount_overrides: dict[int, Decimal] | None,
 ) -> OrderedDict[int, Decimal] | None:
     """Dispatch ONE account's per-period balance map.
 
@@ -209,16 +208,18 @@ def _account_balance_map(
       ladder (cash / interest / investment / appreciation).  The seam does not
       re-implement that ladder.
 
+    It no longer takes a live override map (ruling R-Q, plan step X-c2b2): the
+    cash fold builds its own over its own plan, so there is no basis left for a
+    caller to choose -- and the asymmetry that made the choice load-bearing (the
+    plain path auto-built a live map from ``None`` while the interest path used
+    stored amounts) is gone with it.
+
     Args:
         account: The account to project.
         ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
         periods: The pay periods to project over (the output domain).
         inputs: The :class:`_AssembledInputs` bundle for the account's set.  Its
             ``debt_schedules`` membership gates the loan arm.
-        amount_overrides: Optional ``{transaction_id: Decimal}`` live map,
-            forwarded to the kernel's cash path; ``None`` for the net-worth
-            batch path, which never applies live overrides.  The loan arm never
-            reads it (a loan's balance is not a transaction sum).
 
     Returns:
         The OrderedDict period_id -> Decimal balance, or ``None`` when the
@@ -240,7 +241,7 @@ def _account_balance_map(
             return None
         return positions_period_map(account, ctx, periods)
     return _kernel.account_balance_map_from_inputs(
-        account, ctx, periods, inputs, amount_overrides=amount_overrides,
+        account, ctx, periods, inputs,
     )
 
 

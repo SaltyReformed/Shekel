@@ -24,42 +24,22 @@
    reads the flag; it never decides visibility itself, because the same rule
    governs four different windows.
 
-   The stale-anchor warning banner is kept current via an out-of-band
-   swap of the #stale-anchor-warning wrapper -- emitted ONLY on the
-   HTMX response (oob=true), never on the initial page-load include
-   (grid.html already renders the wrapper there; an OOB swap on the
-   include would have no target to swap into).  This is how a desktop
-   mark-done that creates the stale-anchor condition surfaces the banner
-   without the old full page reload.
-
-   PARSER CONSTRAINT (load-bearing): the OOB <div> below MUST stay
-   encapsulated in a <template> element.  htmx parses every partial
-   response inside a <template> wrapper; per the HTML5 tree-construction
-   spec a bare non-table element at the top level flips the parser from
-   the "in template" to the "in body" insertion mode, where the
-   following <tfoot>/<tr>/<td> start tags are silently DROPPED -- the
-   balance row swaps in as loose unstyled text and, because the
-   replacement carries no hx-trigger, the refresh cycle dies until the
-   next full page load.  htmx's swap pipeline scans nested <template>
-   elements for hx-swap-oob content and removes the wrapper, so the
-   encapsulated banner still swaps out-of-band while the <tfoot> stays
-   the first top-level element and parses intact.  Do not "simplify"
-   the wrapper away; tests/test_routes/test_grid.py pins this shape.
+   The stale-anchor warning banner this partial used to swap out-of-band is
+   GONE (plan step X-c2b2), and with it this template's whole ``oob`` branch --
+   including the <template> wrapper the HTML5 parser needed so the banner
+   <div> could not flip the insertion mode and silently drop the <tfoot>.  The
+   banner warned that settled rows existed after the anchor and the projection
+   might therefore be wrong; the balance is now a fold that counts those rows
+   from the day they moved, so there is nothing left to warn about and nothing
+   left to swap.
 
    Expected context: periods, columns, row_flags, account, num_periods,
-   start_offset, low_balance_threshold, stale_anchor_warning, oob.
+   start_offset, low_balance_threshold.
      columns   -- dict[period_id -> GridColumn]; a period absent from it
-                  (pre-anchor) renders "--" for the balance and blanks for
-                  the explanatory rows.
+                  (only the user-with-no-accounts empty view) renders "--" for
+                  the balance and blanks for the explanatory rows.
      row_flags -- GridRowFlags for THIS window (.interest / .reconciliation).
 #}
-{% if oob %}
-<template>
-  <div id="stale-anchor-warning" hx-swap-oob="true">
-    {% include "grid/_stale_anchor_warning.html" %}
-  </div>
-</template>
-{% endif %}
 <tfoot id="grid-summary"
        hx-get="{{ url_for('grid.balance_row', periods=num_periods|default(periods|length), offset=start_offset|default(0), account_id=account.id) if account else url_for('grid.balance_row', periods=num_periods|default(periods|length), offset=start_offset|default(0)) }}"
        hx-trigger="balanceChanged from:body"

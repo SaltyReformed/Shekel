@@ -40,7 +40,7 @@ import pathlib
 import statistics
 import time
 from contextlib import contextmanager
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from urllib.parse import urlparse, urlunparse
 
@@ -601,6 +601,7 @@ from tests._test_helpers import (
     make_appreciating_account,
     make_investment_account,
     posted_loan_balance_at,
+    restamp_opening_assertion,
 )
 
 
@@ -1012,6 +1013,32 @@ def seed_user(app, db):
     }
 
 
+def _pin_opening_to(db, account, anchor_period):
+    """Pin ``account``'s OPENING assertion to *anchor_period*'s first day.
+
+    The cross-page fixtures keep the ``seed_user`` bootstrap period and then
+    append their own anchor override, so unlike the ``seed_periods*`` fixtures
+    they never reach :func:`_drop_seed_user_bootstrap`'s re-stamp.  Without
+    this the opening keeps ``create_account``'s WALL-CLOCK instant, which falls
+    INSIDE the fixture's anchor month and therefore AFTER the override the
+    fixture writes at that month's start -- so the cash walk replays the
+    $1,000.00 origination LAST and it silently supersedes the balance the
+    fixture just asserted.  (The shipping producers never saw it: they read the
+    newest row and ignored its date.)
+
+    Args:
+        db: The SQLAlchemy ``db`` fixture.
+        account: The account whose opening to pin.
+        anchor_period: The period the fixture is about to anchor against.
+    """
+    restamp_opening_assertion(
+        db.session, account,
+        datetime.combine(
+            anchor_period.start_date, time.min, tzinfo=timezone.utc,
+        ),
+    )
+
+
 def _drop_seed_user_bootstrap(db, seed_user, account, new_anchor_period):
     """Replace ``seed_user``'s bootstrap pay period with the supplied new
     anchor and renumber the user's remaining periods to start at 0.
@@ -1056,9 +1083,22 @@ def _drop_seed_user_bootstrap(db, seed_user, account, new_anchor_period):
     # survive the cascade-delete (the rows would otherwise be wiped
     # by the AccountAnchorHistory.pay_period_id CASCADE FK).
     from app.models.account import AccountAnchorHistory  # pylint: disable=import-outside-toplevel
+    # The row's INSTANT moves with its period, not just its FK.  The account
+    # factory stamps the opening with the WALL CLOCK, while the suites freeze
+    # today inside their own seeded range -- so an unrestamped opening sorts
+    # AFTER every controlled assertion a test writes, which silently inverts
+    # which row the cash fold treats as the opening (ruling R-I books the
+    # FIRST assertion into its seed and keeps every later one as a reset).
+    # Pinning it to the new anchor period's first day is the production shape:
+    # an account opened on day one of the period it is anchored to.
     db.session.query(AccountAnchorHistory).filter_by(
         account_id=account.id, pay_period_id=bootstrap_id,
-    ).update({"pay_period_id": new_anchor_period.id})
+    ).update({
+        "pay_period_id": new_anchor_period.id,
+        "created_at": datetime.combine(
+            new_anchor_period.start_date, time.min, tzinfo=timezone.utc,
+        ),
+    })
     db.session.flush()
     # Step 2: delete the bootstrap row.
     db.session.query(PayPeriod).filter_by(id=bootstrap_id).delete()
@@ -1297,18 +1337,15 @@ def _neutralize_seed_checking(db, seed_user, anchor_period):
     # imported at conftest top (every fixture builds accounts via the
     # canonical factory); load it lazily, as seed_cross_page_account does.
     # pylint: disable=import-outside-toplevel
-    from app.models.account import Account, AccountAnchorHistory
+    from app.models.account import Account
+    from tests._test_helpers import override_anchor
 
     account = db.session.get(Account, seed_user["account"].id)
-    db.session.add(AccountAnchorHistory(
-        account_id=account.id,
-        pay_period_id=anchor_period.id,
-        anchor_balance=Decimal("0.00"),
+    _pin_opening_to(db, account, anchor_period)
+    override_anchor(
+        db.session, account, anchor_period, Decimal("0.00"),
         notes="per-kind cross-page fixture: neutralize seed checking to $0",
-    ))
-    account.current_anchor_balance = Decimal("0.00")
-    account.current_anchor_period_id = anchor_period.id
-    db.session.flush()
+    )
 
 
 @pytest.fixture()
@@ -1373,8 +1410,9 @@ def seed_cross_page_account(app, db, seed_user):
         booleans as the entries-aware reduction's discriminants.
     """
     # pylint: disable=import-outside-toplevel
-    from app.models.account import Account, AccountAnchorHistory
+    from app.models.account import Account
     from app.models.transaction_entry import TransactionEntry
+    from tests._test_helpers import override_anchor
 
     def _build(
         anchor_balance: Decimal,
@@ -1415,16 +1453,11 @@ def seed_cross_page_account(app, db, seed_user):
         # instance whose attribute assignments are guaranteed to
         # mark the row dirty for the next flush.
         account = db.session.get(Account, seed_user["account"].id)
-        history = AccountAnchorHistory(
-            account_id=account.id,
-            pay_period_id=anchor_period.id,
-            anchor_balance=anchor_balance,
+        _pin_opening_to(db, account, anchor_period)
+        override_anchor(
+            db.session, account, anchor_period, anchor_balance,
             notes="seed_cross_page_account: HIGH-01 lock anchor override",
         )
-        db.session.add(history)
-        account.current_anchor_balance = anchor_balance
-        account.current_anchor_period_id = anchor_period.id
-        db.session.flush()
 
         # Single Projected envelope expense in the anchor period.
         # ``is_envelope=True`` is what makes the entries-aware

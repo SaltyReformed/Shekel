@@ -9,10 +9,17 @@ data point; every new surface re-invented that boundary and shipped a bug
 at least once.  This package owns all four per-kind boundary rules in ONE
 place, documented and tested together (the documented-once contract):
 
-* **PLAIN / INTEREST (cash)** -- pre-anchor periods are OMITTED.  Cash
-  balances are materialized transaction sums carried forward from the
-  anchor period; flat-carrying them backward would fabricate balances the
-  account never had.
+* **PLAIN / INTEREST (cash)** -- a FOLD over the account's event stream
+  (assertions + settled rows + the still-projected plan), so every period is
+  answered: a past one reads the balance in force THEN, replayed from the
+  assertions, and a period before the account's FIRST assertion reads that
+  assertion back-projected over the records it already contains (ruling R-I).
+  Pre-anchor periods used to be OMITTED, on the reasoning that a cash balance
+  is a transaction sum carried forward from the anchor and flat-carrying it
+  backward would fabricate balances the account never had -- true of the
+  carry, but it left every past column blank while the scalar answered the
+  same dates with TODAY's balance (finding cash D3 / B-18, closed at plan step
+  X-c2b2).
 * **AMORTIZING (loan)** -- ONE total producer, :func:`positions` (plan C3):
   the FOLD of the loan's recorded events (anchors + settled payments -- the
   complete record of the past, true-ups above all) for a date at or before the
@@ -55,9 +62,11 @@ duplication this work exists to kill.
   single-account cash-flow surfaces (grid, dashboard pulse, calendar, cash
   detail) need, where the balance must reconcile with the on-screen transaction
   rows, and where the account is NOT guaranteed cash
-  (``resolve_grid_account`` can point at any kind, so accruing interest into the
-  grid balance row while its subtotal stays transaction-based would break
-  ``balances[p] - balances[p-1] == subtotals[p].net``).  See :mod:`._cash_flow`,
+  (``resolve_grid_account`` can point at any kind, so accruing interest into
+  the grid balance row without a row to explain it would leave a balance
+  change the screen cannot account for -- ruling R-K's
+  ``balance[p] - balance[p-1] == net[p] + reconciliation[p] + interest[p]``).
+  See :mod:`._cash_flow`,
   and :mod:`._grid` for the kind-aware :func:`grid_balance_view` that layers an
   INTEREST account's accrual back on for the grid.
 * The LIABILITY entry (:func:`liability_owed_at_dates`) answers every debt's
@@ -103,7 +112,12 @@ submodules**, so the fence is one package boundary: the CASH chain
 (``_cash_engine`` = ``balances_for`` / ``balance_as_of_date``, ``_calculator`` =
 the pure carry-forward walk, ``_daily_series`` = the per-day distribution) and
 the NET-WORTH chain (``_kernel`` = the per-kind balance dispatch, ``_investment``
-= the growth / appreciation sub-chain).  **Plan step D-ctx then moved the read
+= the growth / appreciation sub-chain, ``_interest`` = the modelled accrual
+an INTEREST account layers on its folded cash).  **Plan step X-c2b2 then made
+the cash FOLD (``_cash_fold``) the one cash producer every view reads**, so
+``_cash_engine`` / ``_calculator`` / ``_daily_series`` survive only for the
+investment and appreciation bases, which X-c2c windows onto the fold too.
+**Plan step D-ctx then moved the read
 pass's resolution CONTEXT in too** (``_context`` = ``BalanceContext`` /
 ``require_scenario``, re-exported below as the seam's public read-pass handle):
 it sits at the internal DAG's FLOOR, importing only the outer loan leaves it
@@ -120,16 +134,16 @@ completeness scope DELETE rather than shrink or travel.  ``_kernel``'s ``debt_sc
 seam entries the out-of-cluster consumers (the account-detail route, the savings
 orchestrator) read.  ``property_equity_chart`` and ``home_equity_service`` import
 FROM here, not the other way round.  Inside the package the direction is
-``_grid -> {_cash_flow, _kind_correct} -> _inputs``,
-``{_cash_flow, _kind_correct} -> _cash_engine -> _calculator``,
-``_cash_flow -> _daily_series -> _cash_engine``,
-``{_inputs, _positions, _loan_interest} -> _kernel -> {_calculator, _cash_engine,
-_investment}``, ``_kind_correct -> _investment -> _cash_engine``,
+``_grid -> {_cash_fold, _interest, _inputs}``,
+``{_cash_flow, _kind_correct} -> _cash_fold -> _fold``,
+``{_inputs, _positions, _loan_interest} -> _kernel -> {_cash_fold, _interest,
+_investment}``, ``_kind_correct -> _investment -> _cash_engine ->
+_calculator``, ``_daily_series -> _cash_engine``,
 ``_liability -> _inputs``, ``_secured_debt -> {_loan_figures, _positions,
 _inputs}``, and ``_loan_figures -> _positions -> _plan`` (the figures' payoff is
-the fold to zero, plan step C8d) -- a DAG with ``_calculator`` / ``_cash_engine``
-/ ``_investment`` at the producer floor, so no module imports a sibling that
-imports it back.  Every loan producer also imports ``_resolution`` for the read
+the fold to zero, plan step C8d) -- a DAG with ``_fold`` / ``_calculator`` /
+``_interest`` / ``_investment`` at the producer floor, so no module imports a
+sibling that imports it back.  Every loan producer also imports ``_resolution`` for the read
 pass's ONE whole-loan read; ``_resolution`` imports only ``_context`` among its
 siblings, plus ``_confirmed_view`` for the confirmed seed it threads into every
 resolution (plan step E1d-b); ``_confirmed_view`` imports ``_context`` and
@@ -166,7 +180,6 @@ from ._grid import (
     GridBalanceView,
     GridColumn,
     GridRowFlags,
-    _accruing_balances,
     empty_grid_view,
     grid_balance_view,
 )
@@ -180,6 +193,7 @@ from ._inputs import (
 from ._kernel import (
     debt_schedule_rows,
     interest_by_period_for_account,
+    interest_projection_for_account,
 )
 from ._kind_correct import (
     balance_at,
@@ -236,7 +250,6 @@ __all__ = [
     "TIER_PROJECTED",
     "_AssembledInputs",
     "_account_balance_map",
-    "_accruing_balances",
     "_assemble_inputs",
     "_require_scenario",
     "balance_at",
@@ -250,6 +263,7 @@ __all__ = [
     "empty_grid_view",
     "grid_balance_view",
     "interest_by_period_for_account",
+    "interest_projection_for_account",
     "investment_growth_since_anchor",
     "investment_seed_map",
     "liability_owed_at_dates",

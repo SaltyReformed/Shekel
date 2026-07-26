@@ -2270,6 +2270,72 @@ def add_anchor_history(db_session, account, period, balance, days_ago=0):
     return entry
 
 
+def override_anchor(db_session, account, period, balance, *, notes, at=None):
+    """Replace ``account``'s current anchor with ``balance`` on ``period``.
+
+    Appends an :class:`AccountAnchorHistory` row (the dated source of truth)
+    AND syncs the ``current_anchor_*`` cache columns, so the resolver's
+    cache-reconciliation log does not fire.  The shared form of the
+    ``_override_anchor`` helper five suites had each written for themselves --
+    a duplicate-code cluster that mattered once the fold made the row's INSTANT
+    load-bearing, because a fix applied to one copy would have left the other
+    four asserting against a state production cannot reach.
+
+    **The instant defaults to the period's first day**, and that default is the
+    point (plan step X-c2b2, the N-8 / X-c2a fixture shape a third time).
+    ``AccountAnchorHistory.created_at`` server-defaults to the WALL CLOCK,
+    while ``tests/test_services`` freezes today to 2026-03-20 -- so a row
+    written by a helper that did not stamp it was asserted MONTHS after its own
+    pay period, a state production cannot reach (a true-up files against
+    ``get_current_period``).  The shipping producers never noticed: they read
+    the LATEST row and ignored its date.  The fold replays every assertion on
+    the day it was made, so such a row lands past the end of the window and no
+    period ever sees the balance the test asserted.  Pinning it to the period's
+    own start makes the fixture deterministic, clock-independent, and shaped
+    like a true-up filed on day one of its period -- which keeps every
+    hand-computed figure in the suites valid unchanged.
+
+    A test that needs a MID-period assertion (the shape ruling R-L and the
+    walk's instant partition exist for) passes ``at`` explicitly.
+
+    Args:
+        db_session: The test ``db.session``.
+        account: The :class:`~app.models.account.Account` to re-anchor.
+        period: The :class:`~app.models.pay_period.PayPeriod` the new anchor is
+            recorded against; its ``start_date`` is the default instant.
+        balance: The new anchor balance (Decimal -- construct from a string).
+        notes: The row's ``notes`` text, so a failing suite can tell which
+            fixture wrote the assertion it is looking at.
+        at: Optional aware-UTC instant to stamp the row with, overriding the
+            period-start default.
+
+    Returns:
+        The created :class:`AccountAnchorHistory` row (flushed, not committed
+        -- the caller owns the transaction boundary).
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from datetime import datetime, time, timezone
+    from app.models.account import AccountAnchorHistory
+
+    history = AccountAnchorHistory(
+        account_id=account.id,
+        pay_period_id=period.id,
+        anchor_balance=balance,
+        notes=notes,
+        created_at=at if at is not None else datetime.combine(
+            period.start_date, time.min, tzinfo=timezone.utc,
+        ),
+    )
+    db_session.add(history)
+    db_session.flush()
+    account.current_anchor_balance = balance
+    account.current_anchor_period_id = period.id
+    db_session.flush()
+    return history
+
+
 def restamp_opening_assertion(db_session, account, at):
     """Pin the factory-written OPENING assertion's instant to ``at``.
 

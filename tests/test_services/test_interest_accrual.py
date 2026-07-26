@@ -1,14 +1,24 @@
 """
-Tests for calculate_balances_with_interest() in balance_calculator.
+Tests for the modelled interest accrual (``balance_at._interest``).
 
-Validates that HYSA interest projections layer correctly on top of
-the existing balance roll-forward logic.
+Validates that HYSA interest projections layer correctly on top of a
+pre-computed base balance map.
+
+**Where these figures came from, and why they did not move.**  The accrual
+used to be reached through ``_calculator.calculate_balances_with_interest``,
+whose whole body was "roll the anchor forward over the still-projected rows,
+then layer".  Plan step X-c2b2 replaced the base half with the cash FOLD and
+moved the layering half here, so what this suite grades is now
+``_interest._layer_interest`` over a base the caller supplies -- and every
+hand-computed compounding figure below is UNCHANGED, which is the proof the
+move preserved the arithmetic.  :func:`_layered` builds the base with the
+same roll-forward the retired composition used, so each test still states its
+inputs as an anchor plus transactions.
 
 **Every call passes ``accrual_start=periods[0].start_date``**, the day the
 producer opens its accrual window on (ruling R-L, plan step X-c2a): the
 account's balance was asserted at the first period's start, so every period
-below accrues in full and the hand-computed figures are the same ones this
-suite has always pinned.  ``TestAccrualBeginsAtTheAssertion`` at the bottom
+below accrues in full.  ``TestAccrualBeginsAtTheAssertion`` at the bottom
 is where the window is moved off that day and the arithmetic is re-derived
 for the narrowed one -- the two halves are separate on purpose, so a
 regression in the window cannot hide inside a compounding assertion.
@@ -21,10 +31,45 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from app import ref_cache
 from app.enums import CompoundingFrequencyEnum, StatusEnum
-from app.services.balance_at._calculator import (
-    calculate_balances,
-    calculate_balances_with_interest,
-)
+from app.services.balance_at._calculator import calculate_balances
+from app.services.balance_at._interest import _layer_interest
+
+
+def _layered(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    anchor_balance, anchor_period_id, periods, transactions,
+    interest_params=None, *, accrual_start,
+):
+    """Roll the anchor forward over *transactions*, then layer the accrual.
+
+    The two halves the retired ``calculate_balances_with_interest`` composed,
+    stated here as a test INPUT builder rather than as production code: the
+    base is now the cash fold (a database read this pure-stub suite has no
+    account for), while the accrual rule under test takes whatever base it is
+    given.  Building the base with ``calculate_balances`` keeps every
+    hand-computed figure in this file expressed in the terms it was derived
+    in -- an anchor plus a transaction list.
+
+    Args:
+        anchor_balance: The balance at the anchor period.
+        anchor_period_id: The anchor period's id.
+        periods: The Period stubs, ordered by index.
+        transactions: The transaction stubs.
+        interest_params: The APY / compounding stub, or ``None`` / an object
+            without ``apy`` for the no-interest case.
+        accrual_start: The first day interest may accrue on (ruling R-L).
+
+    Returns:
+        ``(balances, interest_by_period)`` -- the accrual layered over the
+        rolled-forward base, or ``(base, {})`` when no interest is modelled.
+    """
+    base_balances, _ = calculate_balances(
+        anchor_balance, anchor_period_id, periods, transactions,
+    )
+    if not interest_params or not hasattr(interest_params, "apy"):
+        return base_balances, {}
+    return _layer_interest(
+        base_balances, periods, interest_params, accrual_start,
+    )
 
 
 def _freq_id(member):
@@ -119,7 +164,7 @@ def _shadow_income(pay_period_id, amount, status_name="Projected"):
 
 
 class TestHysaBalanceWithInterest:
-    """Tests for calculate_balances_with_interest()."""
+    """Tests for _layered()."""
 
     def test_hysa_balance_includes_interest(self):
         """Exact balance and interest with HYSA daily compounding.
@@ -136,7 +181,7 @@ class TestHysaBalanceWithInterest:
             compounding_frequency_id=_freq_id(CompoundingFrequencyEnum.DAILY),
         )
 
-        balances, interest = calculate_balances_with_interest(
+        balances, interest = _layered(
             anchor_balance=Decimal("10000.00"),
             anchor_period_id=1,
             periods=periods,
@@ -194,7 +239,7 @@ class TestHysaBalanceWithInterest:
             compounding_frequency_id=_freq_id(CompoundingFrequencyEnum.DAILY),
         )
 
-        balances, interest = calculate_balances_with_interest(
+        balances, interest = _layered(
             anchor_balance=Decimal("10000.00"),
             anchor_period_id=1,
             periods=periods,
@@ -254,7 +299,7 @@ class TestHysaBalanceWithInterest:
             ),
         ]
 
-        balances, interest = calculate_balances_with_interest(
+        balances, interest = _layered(
             anchor_balance=Decimal("10000.00"),
             anchor_period_id=1,
             periods=periods,
@@ -301,7 +346,7 @@ class TestHysaBalanceWithInterest:
             transactions=[],
         )
 
-        hysa_balances, interest = calculate_balances_with_interest(
+        hysa_balances, interest = _layered(
             anchor_balance=Decimal("10000.00"),
             anchor_period_id=1,
             periods=periods,
@@ -325,7 +370,7 @@ class TestHysaBalanceWithInterest:
             transactions=[],
         )
 
-        hysa_balances, interest = calculate_balances_with_interest(
+        hysa_balances, interest = _layered(
             anchor_balance=Decimal("10000.00"),
             anchor_period_id=1,
             periods=periods,
@@ -354,7 +399,7 @@ class TestHysaBalanceWithInterest:
             compounding_frequency_id=_freq_id(CompoundingFrequencyEnum.DAILY),
         )
 
-        balances, interest = calculate_balances_with_interest(
+        balances, interest = _layered(
             anchor_balance=Decimal("10000.00"),
             anchor_period_id=1,
             periods=periods,
@@ -457,7 +502,7 @@ class TestHysaBalanceWithInterest:
 
         # --- Call the service under test ---
         balances, interest_result = (
-            calculate_balances_with_interest(
+            _layered(
                 anchor_balance=base_bal,
                 anchor_period_id=1,
                 periods=periods,
@@ -545,7 +590,7 @@ class TestHysaBalanceWithInterest:
 
         # --- Call service under test ---
         balances, interest_result = (
-            calculate_balances_with_interest(
+            _layered(
                 anchor_balance=Decimal("10000.00"),
                 anchor_period_id=1,
                 periods=periods,
@@ -640,7 +685,7 @@ class TestHysaBalanceWithInterest:
 
         # --- Call service under test ---
         balances, interest_result = (
-            calculate_balances_with_interest(
+            _layered(
                 anchor_balance=Decimal("10000.00"),
                 anchor_period_id=1,
                 periods=periods,
@@ -697,7 +742,7 @@ class TestHysaBalanceWithInterest:
             compounding_frequency_id=-1,
         )
 
-        balances, interest = calculate_balances_with_interest(
+        balances, interest = _layered(
             anchor_balance=Decimal("10000.00"),
             anchor_period_id=1,
             periods=periods,
@@ -760,7 +805,7 @@ class TestHysaBalanceWithInterest:
 
         # --- Call service under test ---
         balances, interest_result = (
-            calculate_balances_with_interest(
+            _layered(
                 anchor_balance=Decimal("50000.00"),
                 anchor_period_id=1,
                 periods=periods,
@@ -860,7 +905,7 @@ class TestHysaBalanceWithInterest:
 
         # --- Call service under test ---
         balances, interest_result = (
-            calculate_balances_with_interest(
+            _layered(
                 anchor_balance=Decimal("0.00"),
                 anchor_period_id=1,
                 periods=periods,
@@ -970,7 +1015,7 @@ class TestHysaBalanceWithInterest:
 
         # --- Call service under test ---
         balances, interest_result = (
-            calculate_balances_with_interest(
+            _layered(
                 anchor_balance=Decimal("10000.00"),
                 anchor_period_id=1,
                 periods=periods,
@@ -1033,7 +1078,7 @@ class TestAccrualBeginsAtTheAssertion:
             compounding_frequency_id=_freq_id(CompoundingFrequencyEnum.DAILY),
         )
 
-        balances, interest = calculate_balances_with_interest(
+        balances, interest = _layered(
             anchor_balance=Decimal("10000.00"),
             anchor_period_id=1,
             periods=periods,
@@ -1071,7 +1116,7 @@ class TestAccrualBeginsAtTheAssertion:
             compounding_frequency_id=_freq_id(CompoundingFrequencyEnum.DAILY),
         )
 
-        balances, interest = calculate_balances_with_interest(
+        balances, interest = _layered(
             anchor_balance=Decimal("10000.00"),
             anchor_period_id=1,
             periods=periods,

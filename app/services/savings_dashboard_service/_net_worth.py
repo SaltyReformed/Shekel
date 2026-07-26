@@ -114,12 +114,12 @@ def build_account_net_worth_maps(
     not a balance concern), so this consumer adds ``is_liability`` itself.
 
     The seam builds each map over ALL periods (never a forward sub-window):
-    the entries-aware resolver behind the plain / investment paths must
-    include the anchor period to seed its running balance
-    (``balance_resolver.balances_for`` -- "Must include the anchor
-    period"), so a forward-only period list would starve a pre-anchor or
-    current-period account of its seed.  The forward consumers read the
-    periods they want back out of the dense map by id.
+    the INVESTMENT and APPRECIATING paths still seed off the anchor-forward
+    producer (``_cash_engine.balances_for`` -- "Must include the anchor
+    period"), so a forward-only period list would starve them of their seed.
+    The cash and interest paths are TOTAL folds since plan step X-c2b2 and no
+    longer need it; passing the dense domain stays the one rule because the
+    forward consumers read the periods they want back out by id anyway.
 
     Returns the same ``{account_id, balances, is_liability}`` shape
     :func:`compute_net_worth_series` (via
@@ -207,25 +207,25 @@ def _sum_composition_at_period(
 # rather than a full-history axis.
 _TREND_HISTORY_PERIODS = 6
 
-# Account kinds whose dense balance map OMITS pre-anchor periods, so they
-# constrain how far back the trend's history can honestly reach.  PLAIN
-# (checking / savings) and INTEREST (HYSA / Money Market / CD / HSA) both
-# carry the running balance forward from the anchor period only
-# (``balance_resolver.balances_for`` /
-# ``balance_calculator.calculate_balances_with_interest`` -- "Must include
-# the anchor period ... pre-anchor periods ... absent from the result"), so
-# a period before such an account's anchor has NO balance for it and it
-# would silently contribute zero to the net-worth sum (cash dropping out of
-# the past).  AMORTIZING loans constrain the window separately (their
-# resolver schedule is today-forward, so pre-schedule periods report the
-# current balance held flat -- today's balance, not the loan's real past --
-# see :func:`_loan_schedule_start_index`).  INVESTMENT
-# (reverse growth projection) and APPRECIATING (flat-carry) are defined at
-# every period, so they never constrain it.
-_CASH_GATING_KINDS = frozenset({
+# Account kinds whose past balances are RECORDED rather than modelled.  Since
+# plan step X-c2b2 a cash account's balance is a fold over its own assertions,
+# so it is real at every period and CONSTRAINS the history window nowhere
+# (finding N-44) -- but its presence is still what makes a backward run actual
+# at all, which is why it participates in the gate with the no-constraint
+# index below instead of being skipped.  INVESTMENT (reverse growth
+# projection) and APPRECIATING (flat anchor carry) are MODELLED before their
+# anchor, so a set holding only those has no actual history to draw and falls
+# through to the no-history default.
+_RECORDED_HISTORY_KINDS = frozenset({
     AccountProjectionKind.PLAIN,
     AccountProjectionKind.INTEREST,
 })
+
+# The gate index an account contributes when it constrains nothing: the
+# earliest period there could be.  ``max`` over the gating indices then leaves
+# the window to whatever genuinely does constrain it (a loan's schedule) or to
+# the ``_TREND_HISTORY_PERIODS`` cap.
+_UNCONSTRAINED_INDEX = 0
 
 
 def _loan_schedule_start_index(
@@ -283,11 +283,8 @@ def _honest_history_start_index(
     """Earliest period_index whose net worth is real for every account.
 
     The trend's leading "actual" segment must not show an account's balance
-    as a fallback value in the past.  Two kinds carry such fallbacks:
+    as a fallback value in the past.  ONE kind still carries such a fallback:
 
-    - CASH (PLAIN / INTEREST, the kinds in :data:`_CASH_GATING_KINDS`): no
-      balance before the anchor period -- the account would contribute zero
-      (cash dropping out of the past).  Gates at its anchor index.
     - AMORTIZING loans: the resolver schedule is today-forward, so periods
       before it report the loan's CURRENT balance held flat -- today's
       balance, not its real past balance.  Gates at its schedule-start index
@@ -296,6 +293,30 @@ def _honest_history_start_index(
     INVESTMENT (reverse-projected) and APPRECIATING (flat-carried) accounts
     are defined at every period by the seam's own modeling, so they do not
     constrain the window.
+
+    **Cash no longer CONSTRAINS the window (plan step X-c2b2, finding N-44).**
+    PLAIN and INTEREST accounts used to gate at their anchor period, because
+    the projection carried the running balance forward from the anchor and a
+    pre-anchor period had NO balance for them -- so cash silently dropped out
+    of the past and the trend refused to draw it.  That gate was a compensator
+    for finding cash D3, and the fold closes it: every assertion is replayed,
+    so a past period reads the balance the account really held then.  Keeping
+    it would have made it a compensator for nothing that suppressed real
+    history -- measured on the prod-shape clone 2026-07-26, both real cash
+    accounts are anchored in the CURRENT period, so the cash arm equalled the
+    current index and ``/savings`` drew ZERO history points; without it the
+    loan arm gates at index 1 and the trend draws 6 (the
+    :data:`_TREND_HISTORY_PERIODS` cap).  It was still load-bearing at HEAD --
+    at those same indexes neither cash account had any balance at all, so
+    deleting it one commit early would have drawn six history points
+    understated by about ``$6,460``.
+
+    A cash account still PARTICIPATES, at :data:`_UNCONSTRAINED_INDEX`, and
+    that is load-bearing rather than decorative: dropping it from the loop
+    entirely would put a LOAN-FREE user into the no-history default below and
+    take away the very history this change exists to restore.  What the
+    default protects is a set whose past is wholly MODELLED -- investments and
+    property only -- and cash is exactly the thing that makes it not so.
 
     Returns the maximum gating index -- the earliest period at or after
     which every cash account has a real balance AND every loan is within
@@ -306,10 +327,9 @@ def _honest_history_start_index(
 
     Args:
         accounts: The user's active accounts (each with ``account_type``
-            eager-loaded for :func:`classify_account`, an ``id``, and a
-            ``current_anchor_period_id``).
-        all_periods: All of the user's pay periods (maps an anchor period
-            id to its index).
+            eager-loaded for :func:`classify_account` and an ``id``).
+        all_periods: All of the user's pay periods (the loan gate maps a
+            first-payment date to its period index).
         current_period: The period containing today (the upper clamp).
         debt_schedules: account_id -> the loan's amortization ROW list
             (from :func:`app.services.balance_at.debt_schedule_rows`), for the
@@ -322,15 +342,11 @@ def _honest_history_start_index(
         The earliest honest history ``period_index`` (``0`` ..
         ``current_period.period_index``).
     """
-    index_by_pid = {p.id: p.period_index for p in all_periods}
     gating_indices: list[int] = []
     for account in accounts:
         kind = classify_account(account)
-        if kind in _CASH_GATING_KINDS:
-            if account.current_anchor_period_id in index_by_pid:
-                gating_indices.append(
-                    index_by_pid[account.current_anchor_period_id]
-                )
+        if kind in _RECORDED_HISTORY_KINDS:
+            gating_indices.append(_UNCONSTRAINED_INDEX)
         elif kind is AccountProjectionKind.AMORTIZING:
             loan_start = _loan_schedule_start_index(
                 all_periods, debt_schedules.get(account.id),
@@ -359,13 +375,10 @@ def build_trend_periods(
     The tail spans the up-to-:data:`_TREND_HISTORY_PERIODS` periods
     immediately before the current period, but never earlier than
     :func:`_honest_history_start_index` -- so at every history point every
-    cash account has a real balance (none drops silently to zero) AND every
     loan is within its schedule (none shows today's balance carried flat
-    backward through its real past).  Because a loan's schedule is
-    today-forward, any
-    user with an amortizing loan has an empty tail (forward-only); the tail
-    shows only for loan-free users whose cash was trued up in the past (e.g.
-    renters), the case the honest tail genuinely serves.
+    backward through its real past).  Cash no longer constrains it at all
+    (finding N-44): the fold replays every assertion, so a past period reads
+    the balance each cash account really held then.
 
     ALL forward periods are included (not a fixed forward slice): the client
     selects the 6 / 13 / 26 / All forward horizon from the full series, so
