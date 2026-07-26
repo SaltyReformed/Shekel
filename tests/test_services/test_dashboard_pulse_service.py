@@ -122,11 +122,22 @@ class TestPulseHero:
             assert hero["period_end_date"] == seed_periods[_CURRENT_IDX].end_date
             assert hero["period_end_date"] == date(2026, 3, 26)
 
-    def test_hero_balance_is_as_of_today(self, app, seed_user, seed_periods, db):
-        """Hero balance equals balance_resolver.balance_as_of_date(today).
+    def test_hero_balance_is_the_current_periods_end(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """Hero balance is the current period's END, which is what it says.
 
-        With the seed account anchored at $1,000.00 and no transactions,
-        the as-of-today projected balance is exactly the anchor: $1,000.00.
+        ``_pulse.html`` labels ``#balance-display`` "End of this period", so the
+        figure is the hero's own period map at the current period -- and thus IS
+        the chart's first point rather than a second producer beside it.  It read
+        the as-of-TODAY scalar until plan step X-c2b2 (finding N-60): that was
+        legitimate only while the scalar was period-FLAT, and the fold made it
+        date-precise, so the two now differ by the whole unpaid remainder of the
+        current period.
+
+        With the seed account anchored at $1,000.00 and no transactions the two
+        coincide at exactly the anchor, $1,000.00 -- which is why this fixture
+        could not have caught the divergence and the label is what settles it.
         """
         with app.app_context():
             result = dashboard_pulse_service.compute_pulse_section(

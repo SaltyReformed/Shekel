@@ -60,7 +60,6 @@ from app.services import (
     pay_period_service,
 )
 from app.services.balance_at import _investment as net_worth_investment, _kernel as net_worth_kernel
-from app.services.balance_at import _calculator as balance_calculator, _cash_engine as balance_resolver
 from app.services.projection_inputs import (
     load_active_deductions_for_accounts,
     load_investment_params_for_accounts,
@@ -263,11 +262,13 @@ class TestBalanceMapCash:
     ):
         """An INTEREST (HYSA) map equals the kernel's interest path.
 
-        The HYSA routes through
-        :func:`balance_calculator.calculate_balances_with_interest` inside
-        the kernel; the seam must reproduce that, and the interest accrual
-        means the closing balance sits above the flat anchor (proving the
-        interest branch -- not the plain resolver -- ran).
+        The HYSA routes through the kernel's interest path -- the cash FOLD
+        with :mod:`app.services.balance_at._interest`'s accrual layered on
+        (plan step X-c2b2, which moved that layering out of the retired
+        ``calculate_balances_with_interest`` and beside the accrual window it
+        needs).  The seam must reproduce it, and the accrual means the closing
+        balance sits above the flat anchor (proving the interest branch -- not
+        the plain fall-through -- ran).
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -1033,23 +1034,45 @@ class TestBuildMaps:
 class TestBalanceAt:
     """``balance_at`` dispatches to the correct date-granular producer."""
 
-    def test_cash_equals_balance_as_of_date(
+    def test_cash_equals_the_cash_flow_scalar(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """For cash, balance_at delegates to balance_as_of_date verbatim."""
+        """For a PLAIN account the kind-correct scalar IS the cash-flow scalar.
+
+        Finding N-47's coupling, asserted: ``balance_at``'s PLAIN branch and
+        ``cash_balance_at`` reach the same ``_cash_fold`` call, so /savings (the
+        kind-correct scalar) and the dashboard (the cash-flow one) cannot answer
+        one date two ways.  This was pinned against ``balance_as_of_date`` until
+        plan step X-c2b3 deleted it; the property is unchanged and the reference
+        is now the SEAM entry a screen actually reads, which is what makes the
+        test fire if either branch is re-routed rather than only if the retired
+        producer was.
+
+        **The $250.00 row is what gives the equality teeth.**  Without a row the
+        account holds only its $1,000.00 assertion, so ANY producer that returns
+        the anchor satisfies both sides and the test passes for the wrong
+        reason -- measured: replacing the PLAIN branch with a bare
+        ``resolve_anchor`` read left it green.  With a row the two figures are
+        the anchor MINUS a reservation the anchor read cannot know about, so the
+        equality can only hold if both branches folded.
+        """
         with app.app_context():
             user_id = seed_user["user"].id
-            scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             account = seed_user["account"]
             as_of = periods[5].start_date  # inside a known period
+            add_txn(
+                db.session, seed_user, periods[4], "Rent", "250.00",
+            )
+            db.session.commit()
 
             seam = balance_at.balance_at(account, bctx, as_of)
-            expected = balance_resolver.balance_as_of_date(
-                account, scenario.id, as_of,
-            )
+            expected = balance_at.cash_balance_at(account, bctx, as_of)
             assert seam == expected
+            # Non-vacuity: $1,000.00 anchor less the $250.00 still-projected
+            # row, so neither side is the bare anchor.
+            assert seam == Decimal("750.00")
 
     def test_interest_accrues_equals_period_map_not_cash(
         self, app, db, seed_user, seed_periods_today,
@@ -1061,16 +1084,22 @@ class TestBalanceAt:
         ``periods[2]`` with no transactions, then value it at ``periods[6]``
         (4 periods of accrual later).  ``balance_at`` reads the
         period-granular ``balance_map`` value at the containing period --
-        strictly above the flat $5,000.00 cash carry that
-        ``balance_as_of_date`` (and ``cash_balance_at``) return for the same
-        date.  Asserting that divergence is what locks the scalar onto the
-        accruing path: were INTEREST routed back to the cash producer (the
-        pre-fix behavior), ``balance_at`` would equal the cash value and this
-        test fails.
+        strictly above the flat $5,000.00 cash carry ``cash_balance_at``
+        returns for the same date.  Asserting that divergence is what locks the
+        scalar onto the accruing path: were INTEREST routed back to the cash
+        producer (the pre-fix behavior), ``balance_at`` would equal the cash
+        value and this test fails.
+
+        The cash reference was ``balance_as_of_date`` until plan step X-c2b3
+        deleted it, and the $5,000.00 is unchanged by the swap for a reason
+        worth stating: the HYSA holds ONE asserted balance and no transaction
+        rows at all, so the fold has exactly the assertion to replay and the
+        retired anchor-carry had exactly the same anchor to carry.  The two
+        bases only diverge where money has settled or a second assertion
+        exists, and this fixture has neither.
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[2], Decimal("5000.00"))
@@ -1081,12 +1110,10 @@ class TestBalanceAt:
             # Kind-correct scalar == kind-correct map at the containing period.
             assert seam == full_map[periods[6].id]
             # And it ACCRUES: strictly above the flat no-interest cash carry
-            # (anchor $5,000.00 with no rows) the cash producer returns for the
-            # same date -- the Fork-B lock that the scalar is not on the cash
-            # path for INTEREST.
-            cash = balance_resolver.balance_as_of_date(
-                hysa, scenario.id, as_of,
-            )
+            # (anchor $5,000.00 with no rows) the cash-flow scalar returns for
+            # the same date -- the Fork-B lock that the scalar is not on the
+            # cash path for INTEREST.
+            cash = balance_at.cash_balance_at(hysa, bctx, as_of)
             assert cash == Decimal("5000.00")
             assert seam > cash
 
@@ -1543,15 +1570,22 @@ class TestBalanceAtDegrade:
     def test_loan_without_schedule_degrades_to_cash_producer(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """An amortizing account with no LoanParams degrades to balance_as_of_date.
+        """An amortizing account with no LoanParams degrades to the cash fold.
 
-        ``generate_debt_schedules`` returns no entry (no LoanParams / anchor
-        events), so balance_at falls back to the cash producer over the
-        loan's own rows -- the documented degrade.
+        ``resolved_loan`` returns None (no LoanParams / anchor events), so
+        ``balance_at`` falls back to the cash fold over the loan's own rows --
+        the documented degrade, and the second of the two branches finding N-47
+        moved onto the fold at plan step X-c2b2.  Referenced against the SEAM
+        entry since plan step X-c2b3 deleted ``balance_as_of_date``.
+
+        **The $300.00 row is what gives the equality teeth**, for the reason
+        ``test_cash_equals_the_cash_flow_scalar`` records: an account holding
+        only its opening assertion is answered identically by any producer that
+        reads the anchor, so the degrade could be re-routed anywhere and this
+        would stay green.
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             mortgage_type = (
@@ -1563,14 +1597,19 @@ class TestBalanceAtDegrade:
                 anchor_period_id=periods[0].id,
             ))
             db.session.add(acct)
+            add_txn(
+                db.session, seed_user, periods[4], "Payment", "300.00",
+                account=acct,
+            )
             db.session.commit()
             as_of = periods[5].start_date
 
             seam = balance_at.balance_at(acct, bctx, as_of)
-            expected = balance_resolver.balance_as_of_date(
-                acct, scenario.id, as_of,
-            )
+            expected = balance_at.cash_balance_at(acct, bctx, as_of)
             assert seam == expected
+            # Non-vacuity: $5,000.00 opening less the $300.00 still-projected
+            # row, so neither side is the bare anchor.
+            assert seam == Decimal("4700.00")
 
     def test_before_horizon_returns_anchor_balance(
         self, app, db, seed_user, seed_periods_today,
@@ -1578,8 +1617,12 @@ class TestBalanceAtDegrade:
         """An as_of before the whole period horizon returns the canonical anchor.
 
         For an investment whose date precedes every period, no containing
-        period exists, so balance_at returns the resolver anchor balance
-        (rounded) -- mirroring balance_as_of_date's pre-anchor convention.
+        period exists, so balance_at returns the resolved anchor balance
+        (rounded).  Note this is the KIND-CORRECT scalar's own fall-through,
+        not the cash view's: the fold answers a pre-assertion date by
+        back-projecting the first assertion over the records it already
+        contains (ruling R-I), which is a different and deliberately separate
+        rule.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -1842,7 +1885,6 @@ class TestCashFlowView:
             assert seam[periods[2].id] == Decimal("1000.00")
             assert seam[periods[3].id] == Decimal("1500.00")
             assert seam[periods[-1].id] == Decimal("1500.00")
-            assert not hasattr(seam, "stale_anchor_warning")
 
     def test_cash_balance_at_is_the_daily_series_on_that_day(
         self, app, db, seed_user, seed_periods_today,

@@ -35,7 +35,6 @@ from app.services import (
     pay_schedule_service,
     period_population,
 )
-from app.services.balance_at import _cash_engine as balance_resolver
 from scripts.integrity_check import (
     check_balance_anomalies,
     check_referential_integrity,
@@ -44,6 +43,7 @@ from tests._test_helpers import (
     assert_pay_period_invariants,
     freeze_today,
     make_expense_template,
+    seam_cash_balance_at,
 )
 
 
@@ -284,7 +284,7 @@ class TestTopUpDeficitPath:
             db.session.commit()
 
             # Retained window before the top-up: 1000 - 2*1200 at index 2.
-            retained = balance_resolver.balance_as_of_date(
+            retained = seam_cash_balance_at(
                 account, scen, periods[1].end_date,
             )
             assert retained == Decimal("-1400.00")
@@ -296,11 +296,11 @@ class TestTopUpDeficitPath:
 
             # New window: the projection continues to 1000 - 5*1200.
             new_last = pay_period_service.get_all_periods(user_id)[-1]  # idx 5
-            assert balance_resolver.balance_as_of_date(
+            assert seam_cash_balance_at(
                 account, scen, new_last.end_date,
             ) == Decimal("-5000.00")
             # Retained window untouched.
-            assert balance_resolver.balance_as_of_date(
+            assert seam_cash_balance_at(
                 account, scen, periods[1].end_date,
             ) == retained
 

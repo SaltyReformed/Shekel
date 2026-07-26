@@ -19,7 +19,8 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 import pytest
 
-from app.services import calendar_service
+from app.services import balance_at, calendar_service
+from app.services.balance_at import BalanceContext
 from app.services.balance_at import _context as resolution_context
 from app.services.calendar_service import (
     CalendarAccountNotResolvableError,
@@ -27,7 +28,6 @@ from app.services.calendar_service import (
     _detect_third_paycheck_months,
     _is_infrequent,
 )
-from app.services.cash_ledger import period_subtotal
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -646,9 +646,9 @@ class TestMonthEndBalance:
         pay period whose ``end_date <= last_day_of_month`` and
         returned that period's end balance, missing the contribution
         of the period that straddles the month boundary.
-        Post-Commit-9 the month-end balance flows through
-        ``balance_as_of_date``, which projects through the period
-        CONTAINING the target date.
+        Post-Commit-9 the month-end balance flows through the seam's
+        ``balance_at.cash_balance_at``, which values the target DATE itself
+        (the cash fold sampled there) rather than a period boundary near it.
 
         seed_periods:
           Period 7: Apr 10 -- Apr 23
@@ -1159,23 +1159,44 @@ class TestBalanceContributingPredicate:
             names = sorted(e.name for e in result.day_entries[5])
             assert names == ["Projected Bill", "Settled Bill"]
 
-    def test_c10_3_grid_period_subtotal_projected_only(
+    def test_c10_3_grid_period_subtotal_excludes_cancelled_and_credit(
         self, app, seed_user, seed_periods, db,
     ):
-        """F-3 / W-065 C10-3: grid period subtotal stays Projected-only.
+        """F-3 / W-065 C10-3: Cancelled and Credit never reach the grid column.
 
         Same fixture as C10-2 (Projected $500 + Settled $200 +
-        Cancelled $100 + Credit $50 on Jan 5).  The grid period
-        subtotal is sourced from
-        ``cash_ledger.period_subtotal``, whose ``sum_projected``
-        helper gates on ``is_projected(txn)`` -- so only the
-        Projected $500 expense contributes; Settled, Cancelled, and
-        Credit are all excluded.  Hand arithmetic: 500.00.
+        Cancelled $100 + Credit $50 on Jan 5).
 
-        The two surfaces intentionally diverge: calendar day total
-        for the same day is 700.00 (C10-2), grid period subtotal
-        for the same period is 500.00 (this test).  This divergence
-        is the locked Choice-2 design from the follow-up plan.
+        **Ruling R-K changed what a subtotal COUNTS, and this test's figure
+        moved with it** (plan step X-c2b2; the read moved to the shipped
+        ``GridColumn`` when plan step X-c2b3 deleted
+        ``cash_ledger.period_subtotal``).  The retired subtotal was
+        Projected-ONLY -- it gated every row through ``is_projected``, so a row
+        that had actually been PAID contributed nothing and a past column read
+        ``$0.00`` while thousands of dollars moved through it (finding N-41).
+        The grid column now counts every row attributed to the period: a settled
+        row at its confirmed cash leg, a projected row at its entries-aware
+        reservation.
+
+        Hand arithmetic on the new basis:
+
+            Projected $500, no entries -> reservation      500.00
+            Settled $200 (actual 200.00), no credit entries
+              -> settled_cash_leg = 200.00 - 0             200.00
+            Cancelled $100 -> neither projected nor settled  0.00
+            Credit $50     -> neither projected nor settled  0.00
+                                                          -------
+            expense                                        700.00
+
+        So the exclusion this test locks is the CANCELLED / CREDIT pair, which
+        R-K did not touch: they are excluded from the projected half by
+        ``is_projected`` and from the settled half by the settled-status
+        narrowing in SQL.  The old "locked Choice-2 divergence" between the
+        calendar day total (700.00, C10-2) and this column is gone -- both count
+        the settled row now.  That agreement is this FIXTURE's, not a general
+        identity: every row here sits in one period on one day, while the
+        calendar places a chip on its budget attribution date and steps its
+        balance on the day the money moved (finding N-58).
         """
         with app.app_context():
             p0 = seed_periods[0]
@@ -1201,15 +1222,15 @@ class TestBalanceContributingPredicate:
             )
             db.session.commit()
 
-            sub = period_subtotal(
+            column = balance_at.grid_balance_view(
                 seed_user["account"],
-                seed_user["scenario"].id,
-                p0,
-            )
-            # Projected-only: 500.00.  Diverges intentionally from
-            # the calendar day total of 700.00 in C10-2.
-            assert sub.expense == Decimal("500.00")
-            assert sub.income == Decimal("0.00")
+                BalanceContext.build(seed_user["user"].id),
+                [p0],
+            ).columns[p0.id]
+            # 500.00 reservation + 200.00 confirmed cash leg; the Cancelled
+            # $100 and the Credit $50 contribute nothing to either half.
+            assert column.expense == Decimal("700.00")
+            assert column.income == Decimal("0.00")
 
     def test_c10_4_regression_lock_predicate_drop_visible(
         self, app, seed_user, seed_periods, db, monkeypatch,

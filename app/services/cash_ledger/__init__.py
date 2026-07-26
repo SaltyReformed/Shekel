@@ -25,14 +25,14 @@ facts at a date is the seam's, exactly as plan step D-fold split the loan pair.
 **The walk (plan step X-a, ruling R-H).**  :mod:`._events` and :mod:`._walk`
 build the account's ONE event stream -- every balance ASSERTION plus every
 SETTLED row -- and replay it into per-assertion corrections, partitioned by
-INSTANT so an assertion covers exactly the settles that preceded it.  Two
-consumers will take it: the seam's read fold (step X-b) and, at step X-d, the
-posting writer, replacing the postings-sourced
-:func:`app.services.account_posting_service.walk_account_ledger`.  Until then the
-two coexist deliberately and this one has no consumer at all -- it is additive,
-so no balance can move because of it.  Still-Projected rows are NOT in the walk:
-their effective date depends on the reader's as-of (ruling R-G), so they are the
-seam fold's tier.
+INSTANT so an assertion covers exactly the settles that preceded it.  The seam's
+read fold TAKES it, and since plan step X-c2b2 every cash figure on every screen
+is that fold sampled at a date.  The second consumer is still to come: at step
+X-d the posting WRITER reads this walk too, replacing the postings-sourced
+:func:`app.services.account_posting_service.walk_account_ledger`, which is what
+makes a stale posting a detectable cache inconsistency rather than a second
+opinion.  Still-Projected rows are NOT in the walk: their effective date depends
+on the reader's as-of (ruling R-G), so they are the seam fold's tier.
 
 **Why a package (plan step D1c).**  These names were spread across three flat
 modules -- ``cash_events``, ``period_flows``, and five functions stranded inside
@@ -80,12 +80,7 @@ from ._facts import (
     planned_cash_rows,
     resolve_anchor,
 )
-from ._flows import (
-    PeriodSubtotal,
-    period_subtotal,
-    period_subtotals,
-    sum_projected,
-)
+from ._flows import sum_projected
 from ._walk import (
     CashAnchorCorrection,
     CashLedgerWalk,
@@ -99,7 +94,6 @@ __all__ = [
     "CashAnchorFact",
     "CashLedgerWalk",
     "CashSourceFact",
-    "PeriodSubtotal",
     "attribution_instant",
     "cash_anchor_facts",
     "dated_deltas",
@@ -107,8 +101,6 @@ __all__ = [
     "live_amount_overrides",
     "load_balance_transactions",
     "merge_anchor_and_cash_events",
-    "period_subtotal",
-    "period_subtotals",
     "planned_cash_rows",
     "resolve_anchor",
     "settled_cash_facts",

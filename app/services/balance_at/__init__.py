@@ -109,14 +109,20 @@ over, the LOAN leaves it composes the loan shapes from (``loan_resolver`` /
 ``amortization_engine``), and the models -- never a consumer package.  **Plan
 step D1d moved ALL of the balance PRODUCERS INSIDE this package as private
 submodules**, so the fence is one package boundary: the CASH chain
-(``_cash_engine`` = ``balances_for`` / ``balance_as_of_date``, ``_calculator`` =
-the pure carry-forward walk, ``_daily_series`` = the per-day distribution) and
-the NET-WORTH chain (``_kernel`` = the per-kind balance dispatch, ``_investment``
-= the growth / appreciation sub-chain, ``_interest`` = the modelled accrual
-an INTEREST account layers on its folded cash).  **Plan step X-c2b2 then made
-the cash FOLD (``_cash_fold``) the one cash producer every view reads**, so
-``_cash_engine`` / ``_calculator`` / ``_daily_series`` survive only for the
-investment and appreciation bases, which X-c2c windows onto the fold too.
+(``_cash_engine`` = the anchor-forward roll-up, ``_calculator`` = the pure
+carry-forward walk it delegates to) and the NET-WORTH chain (``_kernel`` = the
+per-kind balance dispatch, ``_investment`` = the growth / appreciation
+sub-chain, ``_interest`` = the modelled accrual an INTEREST account layers on
+its folded cash).  **Plan step X-c2b2 then made the cash FOLD (``_cash_fold``)
+the one cash producer every view reads**, so ``_cash_engine`` / ``_calculator``
+survive only for the investment and appreciation bases, which X-c2c windows onto
+the fold too.  **Plan step X-c2b3 then DELETED what the cutover replaced**: the
+per-day producer ``_daily_series`` whole (the calendar's running-balance line is
+the fold sampled at every day of its range), ``_cash_engine``'s date-precise
+scalar ``balance_as_of_date`` with its prefix walk, and that module's
+``BalanceResult`` wrapper -- whose ``stale_anchor_warning`` field the fold makes
+unrepresentable, a settled row after the last assertion now MOVING the balance
+rather than warning that it might not have (findings cash D1 / D2, N-50).
 **Plan step D-ctx then moved the read
 pass's resolution CONTEXT in too** (``_context`` = ``BalanceContext`` /
 ``require_scenario``, re-exported below as the seam's public read-pass handle):
@@ -138,7 +144,7 @@ FROM here, not the other way round.  Inside the package the direction is
 ``{_cash_flow, _kind_correct} -> _cash_fold -> _fold``,
 ``{_inputs, _positions, _loan_interest} -> _kernel -> {_cash_fold, _interest,
 _investment}``, ``_kind_correct -> _investment -> _cash_engine ->
-_calculator``, ``_daily_series -> _cash_engine``,
+_calculator``,
 ``_liability -> _inputs``, ``_secured_debt -> {_loan_figures, _positions,
 _inputs}``, and ``_loan_figures -> _positions -> _plan`` (the figures' payoff is
 the fold to zero, plan step C8d) -- a DAG with ``_fold`` / ``_calculator`` /
@@ -233,9 +239,11 @@ from ._secured_debt import (
 # module -> package split.  The underscore-prefixed names are
 # internal-but-tested (``tests/test_services/test_balance_at.py`` reaches
 # ``balance_at._assemble_inputs`` / ``._AssembledInputs`` /
-# ``._account_balance_map`` / ``._accruing_balances`` to pin the assembly and
-# accrual contracts directly); they are listed here so the re-export is
-# explicit rather than an unused import.
+# ``._account_balance_map`` to pin the assembly contract directly); they are
+# listed here so the re-export is explicit rather than an unused import.
+# ``._accruing_balances`` was a fourth until plan step X-c2b2 deleted it: the
+# grid's Interest row IS the accrual map ``_interest`` returns, not the
+# difference of two independently-computed balance maps (finding N-52).
 __all__ = [
     "ZERO",
     "BalanceContext",

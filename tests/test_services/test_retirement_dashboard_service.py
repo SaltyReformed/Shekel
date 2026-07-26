@@ -493,11 +493,13 @@ class TestRetirementProjectionEntryAware:
             )
             db.session.commit()
 
-            # Canonical producer value (the contract Commit 8 locks).
+            # The anchor-forward base a retirement account's growth curve
+            # seeds off (the contract Commit 8 locks; still this producer
+            # until plan step X-c2c windows it onto the fold).
             producer = balance_resolver.balances_for(
                 acct, scenario.id, seed_periods_today,
             )
-            assert producer.balances[current_period.id] == Decimal("49545.71")
+            assert producer[current_period.id] == Decimal("49545.71")
 
             result = retirement_dashboard_service.compute_gap_data(user.id)
             projections = result["retirement_account_projections"]
@@ -508,9 +510,7 @@ class TestRetirementProjectionEntryAware:
             #                      = 50000 - 454.29 = 49,545.71.
             # Pre-Commit-8 this was 49,500.00.
             assert target["current_balance"] == Decimal("49545.71")
-            assert target["current_balance"] == producer.balances[
-                current_period.id
-            ]
+            assert target["current_balance"] == producer[current_period.id]
 
 
 class TestRetirementAnchorInPastModeledHeadlineCashSeed:

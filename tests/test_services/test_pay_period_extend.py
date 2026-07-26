@@ -27,7 +27,6 @@ from app.services import (
     pay_schedule_service,
     period_population,
 )
-from app.services.balance_at import _cash_engine as balance_resolver
 from scripts.integrity_check import (
     check_balance_anomalies,
     check_referential_integrity,
@@ -35,6 +34,7 @@ from scripts.integrity_check import (
 from tests._test_helpers import (
     assert_pay_period_invariants,
     create_savings_account,
+    seam_cash_balance_at,
     make_expense_template,
     make_transfer_template,
 )
@@ -281,10 +281,10 @@ class TestExtendPayPeriods:
             db.session.commit()
 
             # Pre-extend: 1000 - N*1200 at index N's end.
-            assert balance_resolver.balance_as_of_date(
+            assert seam_cash_balance_at(
                 account, scen, periods[3].end_date,  # index 4
             ) == Decimal("-3800.00")  # 1000 - 4*1200
-            retained = balance_resolver.balance_as_of_date(
+            retained = seam_cash_balance_at(
                 account, scen, periods[1].end_date,  # index 2
             )
             assert retained == Decimal("-1400.00")  # 1000 - 2*1200
@@ -296,11 +296,11 @@ class TestExtendPayPeriods:
             db.session.commit()
 
             # New window: the projection continues. Index 6 -> 1000 - 6*1200.
-            assert balance_resolver.balance_as_of_date(
+            assert seam_cash_balance_at(
                 account, scen, new_periods[-1].end_date,  # index 6
             ) == Decimal("-6200.00")  # 1000 - 6*1200
             # Retained window is untouched by the append.
-            assert balance_resolver.balance_as_of_date(
+            assert seam_cash_balance_at(
                 account, scen, periods[1].end_date,
             ) == retained
 

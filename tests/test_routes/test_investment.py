@@ -1954,12 +1954,15 @@ class TestInvestmentEntryAwareRouting:
             )
             db.session.commit()
 
-            # Canonical producer value: 50,000 - max(500 - 45.71 - 0, 0)
-            #                         = 50,000 - 454.29 = 49,545.71.
+            # The anchor-forward base an investment's growth curve seeds
+            # off (``_investment.investment_base_balance_map``, which is
+            # still this producer until plan step X-c2c windows it onto the
+            # fold): 50,000 - max(500 - 45.71 - 0, 0)
+            #       = 50,000 - 454.29 = 49,545.71.
             producer = balance_resolver.balances_for(
                 acct, scenario.id, seed_periods_today,
             )
-            assert producer.balances[current_period.id] == Decimal("49545.71")
+            assert producer[current_period.id] == Decimal("49545.71")
 
             resp = auth_client.get(f"/accounts/{acct.id}/investment")
             assert resp.status_code == 200

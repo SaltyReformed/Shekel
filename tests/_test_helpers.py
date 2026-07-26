@@ -1739,6 +1739,59 @@ def seam_confirmed_view(loan_account_id, scenario_id, as_of):
     ))
 
 
+def seam_cash_balance_at(account, scenario_id, as_of):
+    """Return what the SEAM says an account's cash balance is on a date.
+
+    :func:`app.services.balance_at.cash_balance_at` -- the cash FOLD sampled at
+    one date, and since plan step X-c2b2 the figure every cash-flow surface
+    renders.  Shared by the five pay-period CRUD suites, which need a balance
+    PROBE rather than a balance test: what they assert is that extending,
+    truncating, regenerating, resetting or topping up a schedule leaves the
+    projection marching correctly, and the balance is how they read that.
+
+    They probed ``_cash_engine.balance_as_of_date`` until plan step X-c2b3
+    deleted it.  Routing them here rather than at a replacement producer is the
+    point: a schedule-mutation suite should read the figure a SCREEN shows, so a
+    mutation that corrupts the projection fails these tests instead of passing
+    them against a producer no screen reads.
+
+    **The reader's NOW and the valuation date are DIFFERENT dates here, and
+    conflating them would silently zero every probe.**  ``cash_balance_at``
+    takes both: ``ctx.as_of`` is the reader's now -- the floor a still-projected
+    row's landing day is clamped UP to, because a plan cannot already have
+    happened (ruling R-G) -- while the trailing argument is the date being
+    valued.  Passing the valuation date as both would clamp every projected row
+    to ``valuation + 1`` and answer with the assertions alone.  So the now comes
+    from :meth:`BalanceContext.build`, which is the app's own default
+    (``date.today()`` inside ``balance_at._context``) and therefore the date a
+    ``freeze_today`` suite has patched -- a helper-local ``date.today()`` would
+    read the WALL clock instead, which is the N-65 / N-8 trap.
+
+    ``scenario_id`` is load-bearing rather than decorative: the context resolves
+    the BASELINE, so a caller probing any other scenario is refused here instead
+    of being answered about a scenario it did not write to.
+
+    Args:
+        account: The cash account to value (session-attached).
+        scenario_id: The scenario the caller wrote its rows under.  Must be the
+            user's baseline, which is what every current caller uses.
+        as_of: The calendar date to value at, a civil ``date``.
+
+    Returns:
+        The cent-quantized ``Decimal`` cash-flow balance at *as_of*.
+    """
+    # Pylint: import-outside-toplevel -- helper-local, matching this module's
+    # convention of importing app symbols inside the helper that needs them.
+    from app.services import balance_at  # pylint: disable=import-outside-toplevel
+
+    ctx = balance_at.BalanceContext.build(account.user_id)
+    assert ctx.scenario_id == scenario_id, (
+        f"seam_cash_balance_at probes the BASELINE scenario "
+        f"({ctx.scenario_id}), but was asked for {scenario_id}"
+    )
+    return balance_at.cash_balance_at(account, ctx, as_of)
+
+
 def create_transfer(
     seed_user, db_session, from_account, to_account, period,
     amount=Decimal("100.00"), *, due_date=None, name=None, scenario=None,

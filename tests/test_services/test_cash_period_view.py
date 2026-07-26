@@ -115,9 +115,13 @@ class TestTheSubtotalsCountEveryAttributedRow:
         its own column and nobody re-anchored, so the remainder is ``$0.00`` and
         the balance is ``1000 + 500 - 200 - 75 = $1,225.00``.
 
-        The shipping producer answers ``$0.00`` income and ``$75.00`` expenses
-        for the same column -- the two settled rows are invisible to it -- which
-        is the defect R-K's basis change exists to end.
+        The RETIRED producer answered ``$0.00`` income and ``$75.00`` expenses
+        for the same column -- the two settled rows were invisible to it -- which
+        is the defect R-K's basis change exists to end.  Those two figures were
+        asserted here against ``cash_ledger.period_subtotals`` until plan step
+        X-c2b3 deleted it; the old basis is now recorded rather than executed,
+        which is the cost of deleting an incumbent and the reason the deletion
+        came AFTER the cutover proved the successor (the C3b3 / E1e precedent).
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
@@ -139,11 +143,20 @@ class TestTheSubtotalsCountEveryAttributedRow:
         assert figures.reconciliation == Decimal("0.00")
         assert figures.balance == Decimal("1225.00")
 
-        old = cash_ledger.period_subtotals(
-            account, scenario.id, list(seed_periods),
-        )[seed_periods[2].id]
-        assert old.income == Decimal("0.00")
-        assert old.expense == Decimal("75.00")
+        # Non-vacuity, now that the old basis is gone as an executable
+        # reference: the settled row is what makes this column differ from what
+        # an unpaid-only reduction could ever report, so assert it is PRESENT in
+        # the figures rather than merely that the figures are self-consistent.
+        # The retired subtotal WAS ``sum_projected`` over the same loader's
+        # rows, so composing the two reproduces its answer exactly -- $75.00 --
+        # and the column exceeds it by the settled $200.00.
+        _, unpaid_only_expense = cash_ledger.sum_projected(
+            cash_ledger.load_balance_transactions(
+                account, scenario.id, [seed_periods[2].id],
+            ),
+        )
+        assert unpaid_only_expense == Decimal("75.00")
+        assert figures.expense - unpaid_only_expense == Decimal("200.00")
 
     def test_a_settled_envelope_counts_its_confirmed_cash_leg(
         self, db, seed_user, seed_periods,

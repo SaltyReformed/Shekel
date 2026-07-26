@@ -42,7 +42,6 @@ from app.services import (
     posting_service,
     transfer_service,
 )
-from app.services.balance_at import _cash_engine as balance_resolver
 from app.services.pay_period_admin import PeriodLockReason
 from scripts.integrity_check import (
     check_balance_anomalies,
@@ -55,6 +54,7 @@ from tests._test_helpers import (
     make_every_period_rule,
     make_expense_template,
     make_transfer_template,
+    seam_cash_balance_at,
 )
 
 
@@ -254,7 +254,7 @@ class TestTruncateHappyPath:
             )
             db.session.commit()
 
-            before = balance_resolver.balance_as_of_date(
+            before = seam_cash_balance_at(
                 account, scen, periods[2].end_date,  # index 3
             )
             assert before == Decimal("-2600.00")  # 1000 - 3*1200
@@ -265,7 +265,7 @@ class TestTruncateHappyPath:
             db.session.commit()
             assert deleted == 3
 
-            after = balance_resolver.balance_as_of_date(
+            after = seam_cash_balance_at(
                 account, scen, periods[2].end_date,
             )
             assert after == before  # retained window untouched

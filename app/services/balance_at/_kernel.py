@@ -30,11 +30,15 @@ The cockpit's forward net-worth trend PROJECTS investment and retirement
 growth forward, so the investment growth sub-chain lives here too (the
 SCOPE B move locked 2026-06-24), not just the plain balance dispatch.
 
-Boundary discipline (``CLAUDE.md``: "services are isolated from Flask"):
-this module imports no Flask symbol and performs no database writes.  It
-reads through the same ORM session the callers already opened.  All money
-is :class:`~decimal.Decimal`; ``float`` belongs only at a route's Chart.js
-serialization boundary, never here.
+Boundary discipline (``CLAUDE.md``: "services are isolated from Flask"): this
+module imports no Flask symbol and performs no database writes.  Since plan
+step X-c2b3 it issues no QUERY either -- every row it dispatches over is loaded
+by the leaf or the fold below it.  Its own
+``load_account_period_transactions`` deleted there: it was the interest
+accrual's transaction feed, and once ruling R-L's accrual layered over the cash
+FOLD rather than walking rows itself, nothing called it (finding N-53).  All
+money is :class:`~decimal.Decimal`; ``float`` belongs only at a route's
+Chart.js serialization boundary, never here.
 
 The public producers take loose, per-account parameters (the single
 account's :class:`~app.models.investment_params.InvestmentParams`, its
@@ -50,64 +54,18 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from app.extensions import db
 from app.models.account import Account
 from app.models.interest_params import InterestParams
 from app.models.investment_params import InvestmentParams
-from app.models.transaction import Transaction
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
-from app.utils.balance_predicates import account_period_scope_clause
 
 from ._context import BalanceContext
 from ._fold import fold_from_walk
 from ._resolution import ResolvedLoan, resolved_loan
 from . import _cash_fold, _interest, _investment
-
-
-def load_account_period_transactions(
-    account_id: int,
-    scenario_id: int,
-    period_ids: list[int],
-) -> list[Transaction]:
-    """Return one account's non-deleted scenario transactions over periods.
-
-    The account/scenario/period transaction query behind the
-    interest-layered walk (:func:`_account_interest_projection`, its only
-    caller today).  It selects EVERY non-deleted row for the account in the
-    period span -- unlike
-    :func:`~app.services.cash_ledger.load_balance_transactions`, which
-    additionally drops Credit / Cancelled rows -- because the interest
-    accrual downstream applies its own status logic and needs the full row
-    set.  ``Transaction.status`` is ``lazy="joined"`` on the model, so a
-    consumer reads ``txn.status.is_settled`` off these rows without an N+1
-    and without an explicit eager-load.
-
-    It was shared with the year-end summary's interest and settled-net
-    helpers until plan step F2 deleted that package, which is why it is a
-    named function rather than an inline query.
-
-    Args:
-        account_id: The account whose transactions to load.
-        scenario_id: The scenario the balance is projected under.
-        period_ids: Pay period ids the projection covers.  An empty list
-            yields an empty result without issuing an ``IN ()`` query.
-
-    Returns:
-        ``list[Transaction]`` -- every non-deleted row for the account in
-        the period span under the scenario.
-    """
-    if not period_ids:
-        return []
-    return (
-        db.session.query(Transaction)
-        .filter(
-            account_period_scope_clause(account_id, scenario_id, period_ids),
-        )
-        .all()
-    )
 
 
 @dataclass(frozen=True)

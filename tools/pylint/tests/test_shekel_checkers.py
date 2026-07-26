@@ -517,8 +517,10 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
     Every screen must obtain an account's balance through
     ``app.services.balance_at``, and that is now STRUCTURAL, not name-keyed:
     plan step D1d moved every producer inside the seam as a private submodule
-    (``_cash_engine`` / ``_calculator`` / ``_daily_series`` / ``_kernel`` /
-    ``_investment``), W9910 forbids reaching one from outside the package in
+    (``_cash_fold`` / ``_cash_engine`` / ``_calculator`` / ``_kernel`` /
+    ``_investment``; ``_daily_series`` was one until plan step X-c2b3 deleted it,
+    the calendar's per-day line being the fold sampled at every day),
+    W9910 forbids reaching one from outside the package in
     every import spelling, and plan step E1e DELETED the last public producer
     outside the seam (the two genesis posting readers) rather than fencing it.
     So the call-fence tests are gone with the call fence -- the W9910 suite owns

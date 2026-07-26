@@ -9,7 +9,7 @@ they cannot drift:
 * :func:`build_investment_balance_map` -- the modeled balance an
   investment account DISPLAYS: the anchor compounded forward at the assumed
   return (plus contributions), reverse-projected before the anchor, spliced
-  over the canonical cash basis.  The kernel's
+  over the anchor-forward cash basis.  The kernel's
   :func:`~app.services.balance_at._kernel.build_account_balance_map` dispatches
   here for INVESTMENT accounts.
 * :func:`investment_growth_since_anchor` -- the growth-vs-contributed
@@ -68,11 +68,22 @@ def investment_base_balance_map(
 
     The transaction-sum balance an investment account holds from its anchor
     plus contributions, with NO modeled growth layered on -- the seed a forward
-    growth projection compounds from.  It is the canonical entries-aware
+    growth projection compounds from.  It is the anchor-forward entries-aware
     producer's map verbatim
-    (:func:`~app.services.balance_at._cash_engine.balances_for`), so it agrees
-    penny-for-penny with the figure the grid and every cash surface render for
-    the same rows.
+    (:func:`~app.services.balance_at._cash_engine.balances_for`).
+
+    **That producer is no longer what the cash surfaces read** (plan step
+    X-c2b2): they read the FOLD, which replays every assertion and counts
+    settled money from the day it moved, so this seed and a rendered cash
+    balance for the same rows can differ by whatever has settled since the
+    account was last asserted.  The gap is deliberate for exactly one more
+    step: the growth projection compounds BACKWARD through pre-anchor periods
+    (:func:`build_investment_balance_map`), a ruled model the fold's own
+    pre-anchor answer must not silently replace, so windowing this base onto
+    the fold is plan step X-c2c (finding N-43).  What IS measured today is the
+    other direction: plan step X-c2b2 left the three real IRAs and the Home
+    unmoved on every column precisely BECAUSE they still seed here, which is
+    what makes this the last cash producer rather than a second opinion.
 
     Shared by every investment growth projection so none re-derives the seed:
     :func:`build_investment_balance_map` (which forward/reverse-projects growth
@@ -95,7 +106,7 @@ def investment_base_balance_map(
     Returns:
         The ``OrderedDict`` period_id -> Decimal cash-basis balance.
     """
-    return _cash_engine.balances_for(account, scenario.id, periods).balances
+    return _cash_engine.balances_for(account, scenario.id, periods)
 
 
 def get_anchor_period_index(
@@ -210,10 +221,12 @@ def _assemble_investment_projection_inputs(  # pylint: disable=too-many-argument
     (which forward + reverse-projects to build the displayed map) and
     :func:`investment_growth_since_anchor` (which reads the forward rows to
     decompose growth vs contributions), so the two read ONE set of inputs and
-    cannot drift.  ``base_balances`` comes from the canonical entries-aware
+    cannot drift.  ``base_balances`` comes from the anchor-forward entries-aware
     producer (E-25 / CRIT-01 / F-009 / R-1: Commit 8) via the shared seed
-    accessor, so the growth projection compounds from the SAME cash basis the
-    grid renders and the year-end savings-progress projection seeds off.
+    accessor :func:`investment_base_balance_map`, so the growth projection and
+    the year-end savings-progress projection compound from ONE cash basis.  That
+    basis is NOT the one the grid renders any more -- see the seed accessor for
+    why the gap is deliberate until plan step X-c2c.
 
     Returns an :class:`_InvestmentProjectionInputs` whose ``pre_anchor`` and
     ``post_anchor`` are both empty in the no-projection case; ``base_balances``
@@ -387,14 +400,14 @@ def _merge_balance_sources(
 ) -> "OrderedDict[int, Decimal]":
     """Merge the three balance sources into one period-ordered map.
 
-    For each period, prefers the forward projection, then the canonical base
-    balance, then the reverse projection.  Periods absent from all three
-    sources are omitted.
+    For each period, prefers the forward projection, then the base balance,
+    then the reverse projection.  Periods absent from all three sources are
+    omitted.
 
     Args:
         periods: All user pay periods (defines output order).
         proj_by_pid: Forward post-anchor balances by period_id.
-        base_balances: Canonical anchor/base balances by period_id.
+        base_balances: Anchor-forward base balances by period_id.
         rev_by_pid: Reverse pre-anchor balances by period_id.
 
     Returns:
@@ -418,8 +431,8 @@ def build_appreciation_balance_map(
 ) -> "OrderedDict[int, Decimal]":
     """Build period_id -> balance for an appreciating physical asset.
 
-    The user-set market value (the canonical entries-aware resolver's flat
-    anchor carry) is the base; post-anchor periods compound forward at the
+    The user-set market value (the anchor-forward producer's flat anchor
+    carry) is the base; post-anchor periods compound forward at the
     annual appreciation rate via the growth engine with no contributions.
     Pre-anchor periods are NOT back-cast: a manually-asserted point-in-time
     market value has no historical basis to compound backward from (unlike an
@@ -444,7 +457,7 @@ def build_appreciation_balance_map(
     """
     base_balances = _cash_engine.balances_for(
         account, scenario.id, periods,
-    ).balances
+    )
 
     anchor_idx = get_anchor_period_index(account, periods)
     if anchor_idx is None:
@@ -492,8 +505,8 @@ def build_investment_balance_map(  # pylint: disable=too-many-arguments,too-many
 
     - **Pre-anchor periods**: reverse growth engine projection backward from
       the anchor balance.
-    - **Anchor period**: canonical entries-aware producer (anchor + remaining
-      transactions).
+    - **Anchor period**: the anchor-forward entries-aware producer (anchor +
+      remaining transactions).
     - **Post-anchor periods**: forward growth engine projection from the
       anchor balance.
 

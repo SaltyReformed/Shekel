@@ -50,7 +50,6 @@ from app.services import (
     pay_schedule_service,
     posting_service,
 )
-from app.services.balance_at import _cash_engine as balance_resolver
 from scripts.integrity_check import (
     check_balance_anomalies,
     check_referential_integrity,
@@ -63,6 +62,7 @@ from tests._test_helpers import (
     freeze_today,
     make_expense_template,
     make_transfer_template,
+    seam_cash_balance_at,
 )
 
 
@@ -240,9 +240,9 @@ class TestResetHappyPath:
 
         Anchor $1000 at the new index 0 (the period containing today); a
         $1200 every-period expense repopulates all six new periods,
-        including the anchor period itself.  ``balance_as_of_date`` adds
-        the anchor period's own net to the anchor balance, so the end
-        balance at the close of index ``n`` is ``1000 - (n + 1) * 1200``.
+        including the anchor period itself.  A balance read at the CLOSE of a
+        period counts that period's own net, so the end balance at the close of
+        index ``n`` is ``1000 - (n + 1) * 1200``.
         """
         account = seed_user["account"]
         scen = seed_user["scenario"].id
@@ -259,11 +259,11 @@ class TestResetHappyPath:
             db.session.commit()
 
             # End of the anchor period (index 0): 1000 - 1*1200.
-            assert balance_resolver.balance_as_of_date(
+            assert seam_cash_balance_at(
                 account, scen, new_periods[0].end_date,
             ) == Decimal("-200.00")
             # End of index 5: 1000 - 6*1200.
-            assert balance_resolver.balance_as_of_date(
+            assert seam_cash_balance_at(
                 account, scen, new_periods[5].end_date,
             ) == Decimal("-6200.00")
 

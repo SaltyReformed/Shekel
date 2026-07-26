@@ -1,13 +1,23 @@
 """
 Shekel Budget App -- Daily end-of-day cash-flow balance series tests.
 
-Pins the calendar's flagship running-balance producer
-(:mod:`app.services.balance_at._daily_series`, exposed via the seam as
-``balance_at.cash_daily_balance_series``).  The load-bearing property is the
+Pins the calendar's flagship running-balance figure, the seam entry
+``balance_at.cash_daily_balance_series``.  The load-bearing property is the
 reconciliation invariant: the day-textured running balance STEPS on each
-day's projected flow yet lands exactly on the period-flat seam scalar at
-every pay-period end, so the calendar's day cells and flow-strip line agree
-with each other AND with the grid.
+day's projected flow yet lands exactly on the seam scalar at every
+pay-period end, so the calendar's day cells and flow-strip line agree with
+each other AND with the grid.
+
+**That invariant is now STRUCTURAL, and this suite is what remains of the
+producer that had to keep it true.**  Until plan step X-c2b2 the series was its
+own producer (``balance_at._daily_series``, distributing a period's
+still-Projected rows over their attribution days) beside a period-FLAT scalar,
+and the two measured ``$15.96`` apart on the real Checking account (finding cash
+D2).  All three grains are now ONE fold sampled at a day, at a date, and at
+every date, so the identity is a property of reading one running total rather
+than a claim two producers maintain -- and plan step X-c2b3 deleted the producer
+this file was named for.  What these tests still buy is the SAMPLING: that every
+day of the range is a key, in order, with the right value on it.
 
 Scenario (``seed_periods``: biweekly from 2026-01-02, anchor = period 0 at
 $1000.00):

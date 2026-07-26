@@ -36,7 +36,6 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.services import (
     balance_at,
-    cash_ledger,
     income_service,
     pay_period_service,
     paycheck_calculator,
@@ -305,13 +304,19 @@ class TestLiveIncomeThroughBalanceResolver:
         self, app, db, seed_user, seed_periods,
     ):
         """A projected salary income row with a stale $1.00 stored amount
-        contributes its LIVE net to both ``period_subtotal`` and
-        ``balances_for`` -- never the stale stored value.
+        contributes its LIVE net to the grid's income row AND to the
+        anchor-forward walk -- never the stale stored value.
 
         $104,000 profile, no deductions, no tax configs seeded -> net =
         gross = 104000/26 = $4,000.00.  The transaction is stored at $1.00
         (simulating a cache invalidated by a profile/code change with no
-        regeneration); both balance surfaces must show $4,000.00.
+        regeneration); both surfaces must show $4,000.00.
+
+        The income row was read through ``cash_ledger.period_subtotal`` until
+        plan step X-c2b3 deleted it; it is now the shipped
+        ``GridColumn.income``, which is what the grid footer renders.  The
+        $4,000.00 is unchanged because the live override map is the same rule on
+        both bases -- which is the property this test exists to pin.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -341,13 +346,13 @@ class TestLiveIncomeThroughBalanceResolver:
             assert expected_net == Decimal("4000.00")
             assert expected_net != Decimal("1.00")
 
-            # period_subtotal income line reflects the live net.
-            subtotal = cash_ledger.period_subtotal(
-                account, scenario.id, period,
-            )
-            assert subtotal.income == expected_net, (
-                f"period_subtotal.income should be live {expected_net}, "
-                f"got {subtotal.income} (stale stored was 1.00)"
+            # The grid's income row reflects the live net.
+            column = balance_at.grid_balance_view(
+                account, bctx, periods,
+            ).columns[period.id]
+            assert column.income == expected_net, (
+                f"GridColumn.income should be live {expected_net}, "
+                f"got {column.income} (stale stored was 1.00)"
             )
 
             # balances_for: the income period's balance moves by the live net.
@@ -355,10 +360,10 @@ class TestLiveIncomeThroughBalanceResolver:
                 account, scenario.id, periods,
             )
             idx = next(i for i, p in enumerate(periods) if p.id == period.id)
-            prior = result.balances[periods[idx - 1].id]
-            assert result.balances[period.id] - prior == expected_net, (
+            prior = result[periods[idx - 1].id]
+            assert result[period.id] - prior == expected_net, (
                 "balances_for income-period delta should be the live net "
-                f"{expected_net}, got {result.balances[period.id] - prior}"
+                f"{expected_net}, got {result[period.id] - prior}"
             )
 
     def test_overridden_income_row_keeps_user_value(
@@ -367,8 +372,10 @@ class TestLiveIncomeThroughBalanceResolver:
         """A user-overridden salary income row is NOT recomputed.
 
         ``is_override=True`` means the user deliberately set the amount;
-        the resolver must respect it (the producer excludes it), so the
-        subtotal reflects the stored $1234.56, not the live net.
+        the resolver must respect it (the producer excludes it), so the grid's
+        income row reflects the stored $1234.56, not the live net.  Read through
+        ``GridColumn.income`` since plan step X-c2b3 deleted
+        ``cash_ledger.period_subtotal``.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -386,12 +393,12 @@ class TestLiveIncomeThroughBalanceResolver:
             )
             db.session.commit()
 
-            subtotal = cash_ledger.period_subtotal(
-                account, scenario.id, period,
-            )
-            assert subtotal.income == Decimal("1234.56"), (
+            column = balance_at.grid_balance_view(
+                account, bctx, [period],
+            ).columns[period.id]
+            assert column.income == Decimal("1234.56"), (
                 "An overridden income row must keep the user's amount, "
-                f"got {subtotal.income}"
+                f"got {column.income}"
             )
 
 

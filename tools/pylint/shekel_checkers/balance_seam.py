@@ -111,16 +111,18 @@ from pylint.checkers import BaseChecker
 # a measured GAP rather than a ruling (finding N-35: a public balance-at-T born
 # there rates 10.00/10 with every gate silent) -- closing it is its own step,
 # because every public name in that package must then be classified.
-# Classes are not scoped either -- the historical misses were functions, and a
-# dataclass (``DebtSchedule`` / ``BalanceResult``) is data the seam passes
-# around, not an answer to "what is the balance at T".
+# Classes themselves are not scoped -- the historical misses were functions, and
+# a dataclass (``AnchorPoint`` / ``CashLedgerWalk``) is data the seam folds over,
+# not an answer to "what is the balance at T".  Their public METHODS ARE scoped
+# (see :func:`_is_public_export_surface`), which is why ``visible_on`` and
+# ``delta`` carry rulings below.
 #
 # The non-producer rulings are keyed BY MODULE, not pooled into one flat set.
 # A pooled set would let a name ruled harmless in one module silently exempt a
-# same-named function later added to another (``period_subtotal``,
-# ``income_amount``, ``resolve_anchor`` are all generic enough to collide) --
-# which is the same fail-open shape, one level down.  Each module owns its own
-# ruling.
+# same-named function later added to another (``dated_deltas``,
+# ``income_amount``, ``resolve_anchor`` are all generic enough to collide -- the
+# first is in fact ruled TWICE below, once per ledger leaf) -- which is the same
+# fail-open shape, one level down.  Each module owns its own ruling.
 # The five SEAM-PRIVATE ENGINE rulings are GONE (plan step D3).  They existed
 # only as N-31's "travel": a name-keyed fence could not see a producer born
 # inside the seam, so each moved module kept a classification entry UNTIL the
@@ -181,7 +183,9 @@ _LOAN_RESOLVER_ENGINE_MODULES = frozenset({
 # review proved that conflating them opens the exact hole W9909 exists to
 # close.  Measured: a new
 # public ``running_balance_map`` folded from ``resolve_anchor`` +
-# ``period_subtotals`` + ``round_money`` -- not one fenced name among them --
+# ``period_subtotals`` + ``round_money`` (that reduction has since been deleted
+# at plan step X-c2b3; ``sum_projected`` is the surviving one, and the probe
+# reassembles from it unchanged) -- not one fenced name among them --
 # rated 10.00/10, AND so did a route consuming it.  A real balance-at-T on a
 # screen outside the seam with every gate silent, which is the third instance of
 # the miss this checker's header calls "a design defect in the FENCE, not a
@@ -282,15 +286,18 @@ _FENCED_MODULE_RULINGS = {
         # exactly the reason its projected siblings above are: an amount per
         # TRANSACTION is not a balance per ACCOUNT.
         "settled_cash_leg",
-        # ``_flows`` -- what a SET of rows sums to: what MOVED during a period,
-        # not what is HELD at a date.  A peer reduction over the same rows a
-        # balance folds, not a step toward one.  ``sum_projected`` is the shared
-        # engine the balance walk and the per-period subtotals both call, which
-        # is what makes ``balances[p] - balances[p-1] == subtotals[p].net`` hold
-        # by construction rather than by coincidence.
+        # ``_flows`` -- what a SET of rows sums to: what MOVED, not what is HELD
+        # at a date.  A peer reduction over the same rows a balance folds, not a
+        # step toward one.  ``sum_projected`` is the shared engine BOTH cash
+        # bases reduce through -- the seam's fold and the retiring anchor-forward
+        # walk -- which is what keeps one entries-aware expense rule and one
+        # live-override basis across them.  Its per-period ``period_subtotal`` /
+        # ``period_subtotals`` siblings carried this same ruling until plan step
+        # X-c2b3 deleted them: ruling R-K changed what a subtotal COUNTS, so the
+        # seam-private ``_cash_fold.cash_period_view`` is their successor, and
+        # two rulings went with the two names (the reverse-staleness meta-test
+        # would otherwise flag them).
         "sum_projected",
-        "period_subtotal",
-        "period_subtotals",
         # ``_events`` (plan step X-a) -- the cash EVENT STREAM, the exact
         # counterpart of the ``loan_ledger`` non-producer rulings below and
         # non-producers for the same reason: each answers "what happened, and

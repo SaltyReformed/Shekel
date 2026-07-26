@@ -16,8 +16,9 @@ configuration with a Projected envelope expense carrying any
 combination of cleared / uncleared / credit entries, every balance-
 rendering surface MUST return the identical Decimal:
 
-  1. Grid                    -- ``GET /grid`` + canonical producer
-                                ``balance_resolver.balances_for``.
+  1. Grid                    -- ``GET /grid`` + the seam's cash-flow entry
+                                ``balance_at.cash_balance_map`` (the FOLD since
+                                plan step X-c2b2).
   2. /savings                 -- ``savings_dashboard_service`` +
                                 ``GET /savings``.
   3. /accounts cash detail    -- the balance ``GET /accounts/<id>/details``
@@ -41,18 +42,19 @@ by a same-period credit), and uncleared-floor (the
 ``max(estimated - cleared_debit - sum_credit, uncleared_debit)``
 floor that no cleared/credit drift can squeeze below).
 
-The subtotal-reconciliation assertion (test
-``test_subtotal_reconciles_on_all_pages``) closes Q-10 / E-25's
-same-formula invariant: ``balance[anchor] - balance[anchor - 1] ==
-period_subtotal(anchor).net`` to the penny.  When this fails the
-grid's subtotal row and balance row have re-grown the F-002 Pair C /
-F-004 same-page divergence (the inline ``sum(... effective_amount
-...)`` loop the pre-Commit-10 grid had).
+The subtotal-reconciliation assertion
+(:class:`TestSubtotalReconciliation`) closes Q-10 / E-25's same-formula
+invariant on ruling R-K's basis: for one ``GridColumn`` per period,
+``balance[p] - balance[p-1] == net[p] + reconciliation[p]`` to the penny, with
+the remainder pinned per case as the fixture's own true-up.  When this fails the
+grid's subtotal rows and balance row have re-grown the F-002 Pair C / F-004
+same-page divergence (the inline ``sum(... effective_amount ...)`` loop the
+pre-Commit-10 grid had).
 
 The seam-injection negative-control test
 ``test_invariant_fails_if_seam_reintroduced`` proves the lock is
 load-bearing, not a coincidence: monkey-patching one consumer to
-bypass ``balance_resolver`` and report ``effective_amount`` directly
+bypass the balance-at seam and report ``effective_amount`` directly
 makes the cross-page equality assertion fail, which is the failure
 mode the developer needs to see in CI before a regression ships.
 
@@ -69,20 +71,26 @@ import pytest
 from app.services import (
     balance_at,
     calendar_service,
-    cash_ledger,
     dashboard_service,
     home_equity_service,
     investment_dashboard_service,
     savings_dashboard_service,
 )
 from app.services.balance_at import _kernel as net_worth_kernel
-from app.services.balance_at import _cash_engine as balance_resolver
 from app.services.balance_at import BalanceContext
 from app.services.balance_at._resolution import resolved_loan
 
 
 # ── Parameter matrix (cases 1..5 of the plan's Commit 11 spec) ─────
 
+
+# The ``seed_user`` factory's origination anchor for the checking account
+# (``conftest`` creates it with ``anchor_balance=Decimal("1000.00")``).
+# ``seed_cross_page_account`` leaves that assertion in place and APPENDS the
+# case's own, so the difference between the two is a true-up that lands in the
+# anchor period -- which ruling R-K's Reconciliation row carries and
+# ``TestSubtotalReconciliation`` pins per case.
+_FACTORY_ORIGINATION_BALANCE = Decimal("1000.00")
 
 # Each case is a dict so pytest's ``ids=`` parametrize hook can label
 # tests by the case's stable short name.  Every Decimal here is built
@@ -209,11 +217,9 @@ def _grid_value(ctx):
     The grid route renders one balance per visible-period cell, off the seam's
     cash-flow entry ``balance_at.cash_balance_map`` (Level-1 Commit 8; the
     fold since plan step X-c2b2).
-    Reading through that SAME seam entry -- not the raw ``balances_for``
-    producer beneath it -- keeps this surface reader on the production path,
-    so a regression in the seam's cash view (not just the producer) is caught
-    here, and the reader is no longer a byte-identical twin of the
-    ``balances_for`` calls in the per-kind locks.
+    Reading through that SAME seam entry -- not a producer beneath it -- keeps
+    this surface reader on the production path, so a regression in the seam's
+    cash view is caught here.
     """
     balances = balance_at.cash_balance_map(
         ctx["account"], _bctx(ctx), ctx["all_periods"],
@@ -227,10 +233,13 @@ def _dashboard_value(ctx):
     After the Terminal Road rebuild the dashboard's headline balance is
     the pulse hero, served by ``compute_balance_section`` (the narrow
     producer the anchor-edit revert fragment also renders); its
-    ``hero["balance"]`` is the same ``balance_as_of_date`` figure the
-    page's ``_pulse_balance.html`` renders verbatim.  The fixture pins
-    today inside the anchor period, so this as-of-today balance equals the
-    resolver's anchor-period balance.
+    ``hero["balance"]`` is the figure the page's ``_pulse_balance.html``
+    renders verbatim.  Since plan step X-c2b2 it is the hero's own period map at
+    the CURRENT period -- so it IS the chart's first point rather than a second
+    producer that has to agree with it (finding N-60: the label promises the
+    period's END, and the fold made the as-of-today scalar diverge from it by
+    the unpaid remainder of the period).  The fixture pins today inside the
+    anchor period, so this equals the anchor-period balance.
     """
     data = dashboard_service.compute_balance_section(ctx["user_id"])
     return data["hero"]["balance"]
@@ -295,8 +304,10 @@ def _accounts_checking_value(ctx):
 def _calendar_value(ctx):
     """Read the calendar surface's ``projected_end_balance`` for the anchor month.
 
-    The calendar service projects via :func:`balance_resolver.balance_as_of_date`
-    at the calendar month-end.  The fixture makes
+    The calendar service projects via the seam's
+    :func:`app.services.balance_at.cash_balance_at` at the calendar month-end --
+    the same fold read at one date (``balance_as_of_date``, the producer it
+    called before plan step X-c2b2, is deleted).  The fixture makes
     ``anchor_period.end_date`` the last day of its calendar month, so
     the C9-3 boundary invariant guarantees the calendar's
     ``projected_end_balance`` equals the resolver's anchor-period
@@ -470,17 +481,26 @@ class TestCrossPageBalanceEquality:
 
 
 class TestSubtotalReconciliation:
-    """Period subtotal net equals balance delta on every parameter case.
+    """The grid column's rows reconcile to its balance on every parameter case.
 
-    E-25 / Q-10 / F-002 Pair C: the same entries-aware formula drives
-    both the per-period subtotal and the balance carry-forward, so the
-    period-to-period balance delta must equal the subtotal's ``net`` to
+    E-25 / Q-10 / F-002 Pair C: ONE valued row set drives both the per-period
+    subtotal rows and the balance row, so the period-to-period balance delta
+    must equal the column's net plus ruling R-K's remainder plus the accrual, to
     the penny.  Before Commit 10 the grid's inline ``sum(...
     effective_amount ...)`` subtotal loop violated this whenever a
     Projected envelope expense carried cleared entries -- the subtotal
     row reported $500 while the balance row reflected the entries-aware
     $454.29 reduction.  This test fires the moment a future edit
     re-grows that divergence.
+
+    **Read off ONE ``GridBalanceView`` since plan step X-c2b3.**  It differenced
+    ``_cash_engine.balances_for`` against ``cash_ledger.period_subtotal``, and
+    both deleted -- the balance replaced by the fold at X-c2b2, the subtotal by
+    ``cash_period_view``, which is R-K's basis and carries the remainder term the
+    old two-producer form had no name for.  The identity's SHAPE therefore
+    changed with it: what a subtotal counts is no longer "the unpaid rows" but
+    "every row attributed here", and what the balance counts is money that
+    MOVED, so the two reconcile through a named remainder rather than exactly.
     """
 
     @pytest.mark.parametrize(
@@ -492,30 +512,35 @@ class TestSubtotalReconciliation:
         seed_cross_page_account,
         case,
     ):
-        """C11-5: ``balance[anchor] - balance[anchor - 1] == subtotal[anchor].net``.
+        """C11-5: ``balance[p] - balance[p-1] == net[p] + reconciliation[p]``.
 
-        For each case, compute the resolver's balances for the period
-        list, compute the canonical period subtotal for the anchor
-        period, and assert the delta equals the subtotal net.  Pre-
-        anchor balance for an asset checking account with no income
-        before the anchor is the anchor balance itself (the resolver
-        does not project backward; balances_for only emits the anchor
-        period and forward, but the test uses the resolver's
-        per-period helper directly to ensure parity).
+        For each case, read ONE grid view over the whole period list and
+        reconcile the anchor period's column against its predecessor's, then the
+        post-anchor period's against the anchor's.
 
-        Because the resolver does not emit pre-anchor periods, the
-        delta is computed against the anchor period and the period
-        immediately AFTER it (post-anchor): both are projected, the
-        post-anchor period carries forward the anchor period balance
-        with no transactions added, so the delta is zero and the
-        post-anchor period subtotal net must also be zero.  This is
-        the no-transaction reconciliation step.
+        The post-anchor period carries NO transactions of its own, so its net is
+        exactly zero and its balance equals the anchor period's -- the
+        no-transaction reconciliation step, and the case that would catch a
+        remainder quietly absorbing a mis-grouped row.
 
-        Additionally, the in-anchor-period reconciliation
-        ``anchor_balance - balance[anchor] == subtotal[anchor].net``
-        is asserted: the anchor is the seed value, and the producer's
-        post-projection result minus that seed must equal the period's
-        net activity by definition.
+        **The anchor period's remainder is the fixture's own TRUE-UP, and
+        pinning its exact value is what keeps the identity from being
+        untestable.**  ``seed_cross_page_account`` leaves the ``seed_user``
+        factory's ``$1,000.00`` origination assertion in place and appends a
+        SECOND one at the case's ``anchor_balance`` (latest-wins, E-19), both
+        landing in the anchor period.  The opening books nothing in its own
+        period, so the re-assertion's correction --
+        ``anchor_balance - $1,000.00`` -- is money that moved through the column
+        with no row to explain it: exactly what ruling R-K's Reconciliation row
+        exists to show, here on five different anchor balances.  Asserting it as
+        a computed figure rather than letting it fall out of the identity is
+        Section 7.2's rule: a remainder read as a residual makes the identity
+        arithmetically true, and would silently absorb a mis-grouped row.
+
+        The POST-anchor period carries neither an assertion nor a row, so its
+        remainder and its net are both exactly zero -- the case that would catch
+        a remainder leaking forward.  A PLAIN account accrues nothing, asserted
+        on both columns.
         """
         with app.app_context():
             ctx = seed_cross_page_account(
@@ -524,62 +549,85 @@ class TestSubtotalReconciliation:
                 entries=case["entries"],
             )
 
-            balance_result = balance_resolver.balances_for(
-                ctx["account"], ctx["scenario_id"], ctx["all_periods"],
-            )
-            subtotal = cash_ledger.period_subtotal(
-                ctx["account"], ctx["scenario_id"], ctx["anchor_period"],
-            )
+            columns = balance_at.grid_balance_view(
+                ctx["account"], _bctx(ctx), ctx["all_periods"],
+            ).columns
 
-            anchor_balance = case["anchor_balance"]
-            projected_balance = balance_result.balances[ctx["anchor_period"].id]
-
-            # The anchor seed minus the producer's projected balance
-            # equals the net activity that period (income - expense).
-            # For a Projected expense with no income the activity is
-            # ``-period_subtotal.net``: subtotal.net = income - expense
-            # is negative when expense > 0, and balance moves DOWN by
-            # ``expense`` from the seed.  Therefore:
-            #     anchor - balance == expense - income == -net
-            #     balance - anchor == net.
-            anchor_to_balance_delta = projected_balance - anchor_balance
-            assert anchor_to_balance_delta == subtotal.net, (
-                f"case {case['id']!r}: anchor-to-anchor-balance delta "
-                f"{anchor_to_balance_delta!r} != period_subtotal.net "
-                f"{subtotal.net!r}.  The producer's balance and subtotal "
-                f"disagree on the entries-aware formula -- the F-002 "
-                f"Pair C / F-004 same-page divergence has re-grown."
-            )
-
-            # Post-anchor carry-forward: the next period has zero
-            # transactions of its own, so its subtotal net is zero
-            # and its projected balance equals the anchor period
-            # balance.
-            anchor_idx_in_list = next(
+            anchor_idx = next(
                 i for i, p in enumerate(ctx["all_periods"])
                 if p.id == ctx["anchor_period"].id
             )
-            assert anchor_idx_in_list + 1 < len(ctx["all_periods"]), (
+            assert anchor_idx > 0, (
+                "fixture invariant: the anchor period must have a predecessor "
+                "to difference against"
+            )
+            assert anchor_idx + 1 < len(ctx["all_periods"]), (
                 "fixture invariant: anchor period must not be the last "
                 "period in the projected window"
             )
-            next_period = ctx["all_periods"][anchor_idx_in_list + 1]
-            next_balance = balance_result.balances[next_period.id]
-            next_subtotal = cash_ledger.period_subtotal(
-                ctx["account"], ctx["scenario_id"], next_period,
+            prior_period = ctx["all_periods"][anchor_idx - 1]
+            next_period = ctx["all_periods"][anchor_idx + 1]
+
+            anchor_column = columns[ctx["anchor_period"].id]
+            next_column = columns[next_period.id]
+
+            # The anchor column's remainder IS the fixture's re-assertion: the
+            # factory's $1,000.00 origination corrected to the case's anchor.
+            expected_trueup = (
+                case["anchor_balance"] - _FACTORY_ORIGINATION_BALANCE
             )
-            forward_delta = next_balance - projected_balance
-            assert forward_delta == next_subtotal.net, (
+            assert anchor_column.reconciliation == expected_trueup, (
+                f"case {case['id']!r}: anchor column remainder "
+                f"{anchor_column.reconciliation!r} != the fixture's true-up "
+                f"{expected_trueup!r} "
+                f"({case['anchor_balance']!r} asserted over the factory's "
+                f"{_FACTORY_ORIGINATION_BALANCE!r} origination).  R-K's "
+                f"Reconciliation row exists to carry exactly this."
+            )
+            # The post-anchor period has neither an assertion nor a row, so
+            # nothing can leak into its remainder.
+            assert next_column.reconciliation == Decimal("0.00"), (
+                f"case {case['id']!r}: post-anchor column has a "
+                f"{next_column.reconciliation!r} remainder, but no assertion "
+                f"and no row is attributed to it"
+            )
+            for label, column in (
+                ("anchor", anchor_column), ("next", next_column),
+            ):
+                assert column.interest is None, (
+                    f"case {case['id']!r}: {label} column carries an accrual "
+                    f"({column.interest!r}) on a PLAIN account"
+                )
+
+            anchor_delta = (
+                anchor_column.balance - columns[prior_period.id].balance
+            )
+            assert anchor_delta == (
+                anchor_column.net + anchor_column.reconciliation
+            ), (
+                f"case {case['id']!r}: anchor-period balance delta "
+                f"{anchor_delta!r} != net {anchor_column.net!r} + "
+                f"reconciliation {anchor_column.reconciliation!r}.  The "
+                f"balance row and the subtotal rows disagree on the "
+                f"entries-aware formula -- the F-002 Pair C / F-004 same-page "
+                f"divergence has re-grown."
+            )
+
+            forward_delta = next_column.balance - anchor_column.balance
+            assert forward_delta == (
+                next_column.net + next_column.reconciliation
+            ), (
                 f"case {case['id']!r}: post-anchor balance delta "
-                f"{forward_delta!r} != next-period subtotal.net "
-                f"{next_subtotal.net!r} -- carry-forward broken"
+                f"{forward_delta!r} != net {next_column.net!r} + "
+                f"reconciliation {next_column.reconciliation!r} "
+                f"-- carry-forward broken"
             )
             # And with no transactions in the post-anchor period the
             # net is exactly zero, locking the empty-period case.
-            assert next_subtotal.net == Decimal("0.00"), (
+            assert next_column.net == Decimal("0.00"), (
                 f"case {case['id']!r}: post-anchor period has no "
-                f"transactions but period_subtotal.net = "
-                f"{next_subtotal.net!r}; expected 0.00"
+                f"transactions but its net is {next_column.net!r}; "
+                f"expected 0.00"
             )
 
 
@@ -590,7 +638,7 @@ class TestSeamInjectionLock:
     """The cross-page lock catches a real seam re-introduction.
 
     HIGH-01's value comes from the lock bites when a consumer
-    bypasses ``balance_resolver``.  This test PROVES the lock is real
+    bypasses the balance-at seam.  This test PROVES the lock is real
     -- it monkey-patches one consumer to short-circuit to a divergent
     Decimal and asserts that
     :class:`TestCrossPageBalanceEquality.test_all_surfaces_equal`'s

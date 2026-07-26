@@ -1237,9 +1237,9 @@ def _build_cross_page_calendar_periods(db, user):
 
     Monthly (not biweekly) periods are deliberate: the anchor period's
     ``end_date`` IS a calendar month-end, so the C9-3 boundary invariant of
-    :func:`balance_resolver.balance_as_of_date` makes the calendar surface's
-    projected month-end balance equal the resolver's anchor-period balance
-    for the same data.  The anchor being the month containing today also
+    the seam's :func:`app.services.balance_at.cash_balance_at` makes the
+    calendar surface's projected month-end balance equal the anchor-period
+    balance for the same data.  The anchor being the month containing today also
     lets ``pay_period_service.get_current_period`` land on it with no
     date-mock plumbing.
 
@@ -1367,9 +1367,9 @@ def seed_cross_page_account(app, db, seed_user):
         ``[today.year - 1, today.year + 1]``.  Monthly (not biweekly)
         periods are chosen deliberately so the anchor period's
         ``end_date`` IS a calendar month-end -- the C9-3 boundary
-        invariant of :func:`balance_resolver.balance_as_of_date` then
-        guarantees the calendar surface's projected month-end balance
-        equals the resolver's anchor-period balance for the same data.
+        invariant of the seam's :func:`app.services.balance_at.cash_balance_at`
+        then guarantees the calendar surface's projected month-end balance
+        equals the anchor-period balance for the same data.
         Without that alignment a mid-period month-end would silently make
         the calendar surface look like a divergence even when the
         underlying math agrees, defeating the cross-page lock.

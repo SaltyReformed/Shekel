@@ -21,7 +21,7 @@ from app.models.account import Account
 from app.models.ref import AccountType, FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.models.savings_goal import SavingsGoal
-from app.services import savings_dashboard_service, pay_period_service
+from app.services import balance_at, savings_dashboard_service, pay_period_service
 from app.services import account_service
 from app.services.balance_at import BalanceContext
 
@@ -2438,13 +2438,17 @@ class TestCanonicalProducerRouting:
           checking_impact = max(500.00 - 45.71 - 0, 0) = 454.29
           anchor_period_balance = 614.29 + 0 - 454.29 = 160.00
 
-        Both the grid (already routed through ``balances_for`` in
-        Commit 5) and the savings dashboard (routed in Commit 6) MUST
-        return Decimal("160.00").  Pre-Commit-6, /savings returned
-        Decimal("114.29") via the silent-degrade seam.
-        """
-        from app.services.balance_at import _cash_engine as balance_resolver  # pylint: disable=import-outside-toplevel
+        Both the grid and the savings dashboard MUST return
+        Decimal("160.00") -- one seam entry, ``balance_at.cash_balance_map``,
+        read twice.  Pre-Commit-6, /savings returned Decimal("114.29") via the
+        silent-degrade seam.
 
+        The $160.00 survives the basis change at plan step X-c2b2 for a reason
+        this fixture makes plain: the account holds ONE asserted balance and the
+        only row is still PROJECTED, so the fold has the same assertion to
+        replay and the same entries-aware reservation to hold back.  The two
+        bases diverge only where money has SETTLED, and nothing here has.
+        """
         with app.app_context():
             # Current period == anchor period: seed_periods_today
             # places today in period 4 of a 10-period biweekly window.
@@ -2476,16 +2480,20 @@ class TestCanonicalProducerRouting:
                 )
             db.session.commit()
 
-            # Grid value: balance_resolver.balances_for is the canonical
-            # producer the grid routes through post-Commit-5.  Replaying
-            # it here is equivalent to "what does the grid show" without
-            # a route round-trip.
-            grid_result = balance_resolver.balances_for(
+            # Grid value: ``balance_at.cash_balance_map`` is the seam entry the
+            # grid's balance row reads, so replaying it here is "what does the
+            # grid show" without a route round-trip.  It was
+            # ``_cash_engine.balances_for`` until plan step X-c2b2 pointed every
+            # cash surface at the FOLD -- which left this replay comparing
+            # /savings against a producer the grid no longer calls, a guard that
+            # had stopped guarding (the N-63 shape).  Corrected here rather than
+            # left as prose, because the whole point of the test is that the two
+            # surfaces read ONE producer.
+            grid_current_balance = balance_at.cash_balance_map(
                 seed_user["account"],
-                seed_user["scenario"].id,
+                BalanceContext.build(seed_user["user"].id),
                 seed_periods_today,
-            )
-            grid_current_balance = grid_result.balances[current_period.id]
+            )[current_period.id]
 
             # F-009 / CRIT-01: 614.29 - max(500 - 45.71 - 0, 0)
             #                = 614.29 - 454.29 = 160.00.

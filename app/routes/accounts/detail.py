@@ -20,14 +20,17 @@ served here -- they keep their own screens
 :func:`cash_detail` so external bookmarks and the not-yet-updated cockpit
 ``detail_endpoint`` macro still resolve.
 
-Balance production is unchanged from the two pre-merge routes (the audit's
-finding is a PRESENTATION rebuild, not a data change).  :func:`cash_detail`
-routes every balance through the balance-at seam (Level-1 Commit 8):
+Balance production routes every figure through the balance-at seam
+(Level-1 Commit 8).  The Fable 5 merge was a PRESENTATION rebuild and moved no
+producer; plan step X-c2b2 then moved BOTH branches onto the cash fold, so what
+the page shows changed there and not here:
 
-* interest-bearing accounts via the kind-correct ``balance_at.balance_map``
-  (interest-accrued balance) plus the kernel's
-  ``interest_by_period_for_account`` accessor for the earned-interest
-  figure, and
+* interest-bearing accounts via ``balance_at.interest_projection_for_account``,
+  which returns the interest-accrued balances AND the per-period earned
+  interest from ONE cash fold (plan step X-c2b2: the page read the
+  kind-correct ``balance_map`` and the earned-interest accessor separately
+  until the accrual's base became that fold, at which point the pair folded
+  the same account TWICE per render -- finding N-64), and
 * plain cash accounts via the cash-flow entry
   ``balance_at.cash_balance_map``.
 
@@ -242,13 +245,12 @@ def _cash_projection(
 ) -> "tuple[dict[int, Decimal], dict[int, Decimal], AnchorPoint | None]":
     """Produce the per-period balances (and interest) for a cash account.
 
-    The single balance-production site, preserving the two pre-merge
-    routes' producer paths verbatim (Level-1 Commit 8):
+    The single balance-production site (Level-1 Commit 8), on the cash FOLD
+    for both branches since plan step X-c2b2:
 
-    * interest-bearing accounts read the KIND-CORRECT
-      ``balance_at.balance_map`` (interest-accrued balances) plus the
-      kernel's ``interest_by_period_for_account`` accessor for the
-      per-period earned interest, and
+    * interest-bearing accounts read
+      ``balance_at.interest_projection_for_account`` -- the interest-accrued
+      balances AND the per-period earned interest, from ONE fold (N-64), and
     * plain cash accounts read the cash-flow ``balance_at.cash_balance_map``
       (pure transaction running-balance).
 
@@ -344,13 +346,11 @@ def _cash_detail_context(account: Account) -> dict:
     and chart from the same producers or a band refresh could disagree
     with the page render.
 
-    Balance production is preserved verbatim from the two pre-merge
-    routes: interest accounts read the kind-correct
-    ``balance_at.balance_map`` plus the kernel's
-    ``interest_by_period_for_account`` accessor; plain cash accounts
-    read the cash-flow ``balance_at.cash_balance_map``.  Both seam
-    entries delegate to the canonical entries-aware producers (Level-1
-    Commit 8), so this module calls no balance producer directly.  The
+    Balance production: interest accounts read
+    ``balance_at.interest_projection_for_account`` (both halves of ONE fold);
+    plain cash accounts read the cash-flow ``balance_at.cash_balance_map``.
+    Both seam entries are the cash FOLD sampled at period ends (plan step
+    X-c2b2), so this module calls no balance producer directly.  The
     anchor is resolved via the dated ``AccountAnchorHistory`` SoT (E-19,
     Commit 4) for the hero caption and the current-period fallback; the
     ``scenario is None`` / ``no pay periods`` empty-state guards are

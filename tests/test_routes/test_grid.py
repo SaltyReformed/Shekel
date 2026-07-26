@@ -22,7 +22,6 @@ from app.services.auth_service import hash_password
 from app.services import (
     account_service,
     balance_at,
-    cash_ledger,
     income_service,
     pay_period_service,
     posting_service,
@@ -4413,13 +4412,13 @@ class TestGridSubtotalsRegressionBaseline:
     """Regression baseline: per-period subtotal reflects actual_amount.
 
     Pre-Commit-10 the grid subtotal was an inline ``sum(...
-    effective_amount ...)`` loop in ``app/routes/grid.py``.  Commit 10
-    routes the subtotal through ``cash_ledger.period_subtotal``,
-    which uses ``effective_amount`` for income and the entries-aware
-    reduction for expenses; for income with no entries the
-    ``effective_amount`` rule is unchanged, so this 5A.1-era regression
-    baseline continues to hold (Projected income with
-    ``actual_amount`` populated still reports the actual on screen).
+    effective_amount ...)`` loop in ``app/routes/grid.py``.  The subtotal now
+    comes off the seam's ``GridColumn`` (plan steps X-c2b1 / X-c2b2), which
+    uses ``effective_amount`` for income and the entries-aware reduction for
+    expenses; for income with no entries the ``effective_amount`` rule is
+    unchanged, so this 5A.1-era regression baseline continues to hold
+    (Projected income with ``actual_amount`` populated still reports the
+    actual on screen).
     """
 
     def test_subtotals_reflect_actual_for_projected(
@@ -4432,9 +4431,9 @@ class TestGridSubtotalsRegressionBaseline:
         (subtotal showed estimated).  Updated in Commit 5A.1 to assert
         the corrected behavior: effective_amount now returns actual when
         populated, so the grid subtotal automatically shows 400.
-        Commit 10 routes the subtotal through
-        ``cash_ledger.period_subtotal`` whose income leg still uses
-        ``effective_amount``, so the assertion is unchanged.
+        The subtotal now comes off the seam's ``GridColumn`` (plan steps
+        X-c2b1 / X-c2b2), whose income leg still uses ``effective_amount``, so
+        the assertion is unchanged.
         """
         with app.app_context():
             scenario = seed_user["scenario"]
@@ -4486,18 +4485,20 @@ class TestGridSubtotalsRegressionBaseline:
 
 
 class TestGridPeriodSubtotalCanonical:
-    """Commit 10: per-period subtotals routed through ``period_subtotal``.
+    """Commit 10: per-period subtotals routed through ONE shared reduction.
 
     Pre-Commit-10 the grid's per-period subtotal was an inline
     ``sum(... effective_amount ...)`` loop in ``app/routes/grid.py``
     that did NOT apply the entries-aware reduction.  F-002 Pair C /
     F-004 (Q-10) flagged this as a same-page divergence: the subtotal
     row and the balance row consumed the same in-memory transactions
-    but with different expense formulas.  Commit 10 collapses the
-    grid subtotal onto ``cash_ledger.period_subtotal``, so a
-    Projected envelope expense with cleared entries now reports the
-    same entries-aware impact on both rows; ``balance[p] -
-    balance[p-1] == subtotal[p].net`` by construction.
+    but with different expense formulas.  Commit 10 collapsed the grid subtotal
+    onto one shared reduction; plan steps X-c2b1 / X-c2b2 went further and made
+    the balance row and the subtotal rows ONE ``GridColumn`` per period off ONE
+    valued row set, so a Projected envelope expense with cleared entries reports
+    the same entries-aware impact on both rows and
+    ``balance[p] - balance[p-1] == net[p] + reconciliation[p] + interest[p]``
+    holds by construction rather than by two producers agreeing.
     """
 
     def test_grid_subtotal_entry_aware_for_projected_expense(
@@ -4579,28 +4580,52 @@ class TestGridPeriodSubtotalCanonical:
     def test_grid_subtotal_reconciles_balance_delta(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """``balance[p] - balance[p-1] == subtotal[p].net`` exactly.
+        """``balance[p] - balance[p-1] == net + reconciliation + interest``.
 
-        Same-formula invariant E-25 / Q-10 resolution: the canonical
-        producer drives both the subtotal row and the balance carry-
-        forward, so the period-to-period balance delta must equal the
-        subtotal's ``net`` to the penny.  The previous inline loop
-        violated this whenever a Projected envelope expense carried
-        cleared entries (the subtotal showed the raw estimate, the
-        balance row showed the entry-aware impact).
+        Same-formula invariant E-25 / Q-10, on ruling R-K's basis: ONE valued
+        row set supplies the grid's balance row and its subtotal rows, so the
+        period-to-period balance delta must equal the column's own net plus the
+        remainder no row can explain plus the accrual, to the penny.  The
+        inline loop this replaced violated it whenever a Projected envelope
+        expense carried cleared entries (the subtotal showed the raw estimate,
+        the balance row showed the entry-aware impact).
+
+        Read off ONE ``GridBalanceView`` since plan step X-c2b3, which is what
+        makes the identity a property of the row set rather than an agreement
+        between two producers: it was ``balances_for`` differenced against
+        ``cash_ledger.period_subtotal``, and both deleted -- the first replaced
+        by the fold at X-c2b2, the second by ``cash_period_view``, whose
+        remainder term is the one R-K added.
 
         Setup: anchor $1000 at periods[0]; one Projected $300.00
-        envelope expense in periods[5] with two cleared debits
-        summing $250.00.
+        envelope expense in the CURRENT period with two cleared debits
+        summing $250.00, dated that period's start.
 
         Hand arithmetic:
-          period5_impact = max(300.00 - 250.00 - 0, 0) = 50.00.
-          balance[periods[5]] = balance[periods[4]] - 50.00.
-          subtotal[periods[5]].net = 0 - 50.00 = -50.00.
-          balance[periods[5]] - balance[periods[4]] = -50.00 == net.
+          impact = max(300.00 - 250.00 - 0, 0) = 50.00.
+          columns[current].expense = 50.00, .income = 0.00, .net = -50.00.
+          Nothing has SETTLED and nobody re-anchored, so the remainder is
+          0.00 and a PLAIN account carries no accrual:
+          balance[current] - balance[current - 1] = -50.00 == net.
+
+        **The rows were in ``periods[5]`` -- a FUTURE period -- until plan step
+        X-c2b3, and moving them to the current one is a fixture correction, not
+        a convenience.**  The entries were dated that future period's start, and
+        the retired ``period_subtotal`` counted every loaded entry whatever its
+        date, so the reduction applied and the test read ``$50.00``.  The fold
+        values the reservation at the READER'S NOW (``sum_projected``'s
+        entry-date window): an entry dated after today cannot have cleared the
+        bank, so a future-dated purchase reserves nothing yet and the same
+        fixture reads ``$300.00``.  Both halves of that are the shipped rule --
+        ruling R-M / plan step X-c0 now REFUSES a future ``entry_date`` at both
+        write doors, so the state this fixture built directly through the ORM is
+        one production cannot reach, and the sibling test above (which renders
+        the figure through ``GET /grid``) always dated its entries on the
+        current period's start for the same reason.  Dating the purchase inside
+        the period being spent is the production shape: a partially-spent
+        envelope in the period you are in.
         """
         from app.models.transaction_entry import TransactionEntry
-        from app.services.balance_at import _cash_engine as balance_resolver
 
         with app.app_context():
             projected = db.session.query(Status).filter_by(
@@ -4610,7 +4635,19 @@ class TestGridPeriodSubtotalCanonical:
                 name="Expense",
             ).one()
             periods = seed_periods_today
-            target_period = periods[5]
+            target_period = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            assert target_period is not None, (
+                "seed_periods_today must produce a current period"
+            )
+            target_index = next(
+                i for i, p in enumerate(periods) if p.id == target_period.id
+            )
+            assert target_index > 0, (
+                "fixture invariant: the current period must have a predecessor "
+                "to difference against"
+            )
 
             txn = Transaction(
                 pay_period_id=target_period.id,
@@ -4641,32 +4678,33 @@ class TestGridPeriodSubtotalCanonical:
             resp = auth_client.get("/grid")
             assert resp.status_code == 200
 
-            # Resolver-level reconciliation: the grid route and the
-            # producers consume the same fixture, so their outputs are
-            # the ground truth the rendered HTML reflects.
-            balance_result = balance_resolver.balances_for(
+            # Seam-level reconciliation off ONE view: the grid route reads the
+            # same ``grid_balance_view`` for its balance row and its subtotal
+            # rows, so these columns ARE the ground truth the rendered HTML
+            # reflects rather than a second producer that has to agree with it.
+            columns = balance_at.grid_balance_view(
                 seed_user["account"],
-                seed_user["scenario"].id,
+                BalanceContext.build(seed_user["user"].id),
                 periods,
-            )
-            sub = cash_ledger.period_subtotal(
-                seed_user["account"],
-                seed_user["scenario"].id,
-                target_period,
-            )
+            ).columns
+            column = columns[target_period.id]
+            prior_period = periods[target_index - 1]
+            delta = column.balance - columns[prior_period.id].balance
 
-            prior_period = periods[4]
-            delta = (
-                balance_result.balances[target_period.id]
-                - balance_result.balances[prior_period.id]
-            )
             # 0 - max(300 - 100 - 150, 0) = -50.00.
-            assert sub.expense == Decimal("50.00"), (
-                f"expected $50.00 entry-aware expense, got {sub.expense!r}"
+            assert column.expense == Decimal("50.00"), (
+                f"expected $50.00 entry-aware expense, got {column.expense!r}"
             )
-            assert sub.net == Decimal("-50.00")
-            assert delta == sub.net, (
-                f"balance delta {delta!r} must equal subtotal net {sub.net!r}"
+            assert column.net == Decimal("-50.00")
+            # Nothing settled and nobody re-anchored, so the remainder is zero
+            # and a PLAIN account carries no accrual: asserting both is what
+            # keeps the identity below from passing on a remainder that quietly
+            # absorbed a mis-grouped row (Section 7.2's forbidden residual).
+            assert column.reconciliation == Decimal("0.00")
+            assert column.interest is None
+            assert delta == column.net + column.reconciliation, (
+                f"balance delta {delta!r} must equal net {column.net!r} + "
+                f"reconciliation {column.reconciliation!r}"
             )
 
     def test_grid_inline_subtotal_loop_removed(self):
@@ -4688,8 +4726,8 @@ class TestGridPeriodSubtotalCanonical:
         offenders = pattern.findall(grid_source)
         assert not offenders, (
             "app/routes/grid.py contains an inline subtotal loop "
-            f"({offenders!r}); route through "
-            "cash_ledger.period_subtotal instead (F-002 Pair C, "
+            f"({offenders!r}); read the seam's "
+            "balance_at.grid_balance_view instead (F-002 Pair C, "
             "F-004 same-page regression)"
         )
 

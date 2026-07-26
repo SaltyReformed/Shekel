@@ -1,9 +1,35 @@
 """
 Shekel Budget App -- Balance Resolver Producer Tests (Commit 5 / E-25)
 
-Tests for the canonical entries-aware balance producer
-``app.services.balance_at._cash_engine.balances_for`` and the matching
-single-period subtotal ``period_subtotal``.
+Tests for the entries-aware anchor-forward balance producer
+``app.services.balance_at._cash_engine.balances_for``, the one cash producer
+outside the fold, kept until plan step X-c2c windows the investment and
+appreciation bases onto the fold too.
+
+**Three suites left with their subjects at plan step X-c2b3**, and what each
+was pinning is now pinned against the seam instead:
+
+  * ``TestBalanceAsOfDate`` (9 tests) went with ``balance_as_of_date``.  Its
+    contract was "the projection runs through the period CONTAINING the date,
+    not the last period that ended before it" -- a correction to a period-FLAT
+    producer.  The fold is date-precise by construction (a day's balance is the
+    running total through that day), so the property has no shape left to
+    assert; what replaces it is ``tests/test_services/test_cash_fold.py``'s
+    ``TestThePlannedTier`` (which day each row lands on) and
+    ``TestEveryAssertionIsReplayed`` (a past date reads its own assertion), plus
+    ``test_cash_fold_parallel.py``, which walks EVERY day of each shape and
+    pins the scalar, the map and the daily series as one running total.
+  * ``TestPeriodSubtotal`` / ``TestPeriodSubtotalsBatch`` (5 tests) went with
+    ``cash_ledger.period_subtotal`` / ``period_subtotals``.  They pinned
+    ``balances[p] - balances[p-1] == subtotal[p].net``; ruling R-K's successor
+    identity ``balance[p] - balance[p-1] == net + reconciliation (+ interest)``
+    is pinned on the shipped basis by ``test_cash_period_view.py``'s
+    ``TestTheIdentityHoldsOnEveryPeriod`` and, as RENDERED ``GridColumn`` rows,
+    by ``test_balance_at.py``'s ``_assert_grid_view_reconciles`` (four call
+    sites, including ``TestTheRemainderIsWhatTheRowsCannotExplain``).
+  * ``TestBalanceResultContract`` (2 tests) went with ``BalanceResult``, whose
+    second field was the stale-anchor flag the fold makes unrepresentable
+    (finding N-50).
 
 CRIT-01 / F-009 / symptom #1: pre-Commit-5, the same Projected
 envelope expense yielded $160 on the grid (which eager-loaded
@@ -41,39 +67,22 @@ Test IDs match the remediation plan's Commit 5 specification (C5-1
 through C5-10).
 """
 
+from collections import OrderedDict
 from datetime import date as _date
 from decimal import Decimal
 from pathlib import Path
 
-import pytest
-from sqlalchemy import event
 from sqlalchemy.orm import selectinload
 
-from app.enums import StatusEnum, TxnTypeEnum
-from app.extensions import db
-from app.models.account import AccountAnchorHistory
 from app.models.ref import Status, TransactionType
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.services import cash_ledger
 from app.services.balance_at import _calculator as balance_calculator, _cash_engine as balance_resolver
-from app.services.balance_at._cash_engine import (
-    BalanceResult,
-    balance_as_of_date,
-    balances_for,
-)
-# The per-period FLOW sums moved out of this producer at plan step D1a (they
-# answer what MOVED, not what is HELD) and into the ``cash_ledger`` leaf at
-# D1c.  Their tests still live here because they share this module's
-# ``_make_projected_expense`` / ``_add_entry`` fixtures with the balance tests;
-# relocating them to a ``test_cash_ledger.py`` means promoting those two into
-# ``tests/_test_helpers``, which is its own commit.
+from app.services.balance_at._cash_engine import balances_for
 from app.services.cash_ledger import (
-    PeriodSubtotal,
     load_balance_transactions,
-    period_subtotal,
-    period_subtotals,
     sum_projected,
 )
 from app.services.cash_ledger._amounts import _entry_aware_amount
@@ -267,10 +276,14 @@ class TestBalancesForEntriesAware:
                 seed_periods,
             )
 
-            assert isinstance(result, BalanceResult)
+            # The producer returns the period map itself since plan step
+            # X-c2b3: its ``BalanceResult`` wrapper existed to carry the
+            # stale-anchor flag beside the map, and the fold made staleness
+            # unrepresentable (finding N-50).
+            assert isinstance(result, OrderedDict)
             # 614.29 - max(500.00 - 45.71 - 0, 0) = 614.29 - 454.29 = 160.00.
             # Pre-Commit-5 this returned 114.29; F-009 / CRIT-01.
-            assert result.balances[anchor_period.id] == Decimal("160.00")
+            assert result[anchor_period.id] == Decimal("160.00")
 
     # ── C5-2 -----------------------------------------------------------
 
@@ -347,8 +360,8 @@ class TestBalancesForEntriesAware:
 
             # Byte-identical: 614.29 - 454.29 = 160.00 both ways.
             assert (
-                result_with_preload.balances[anchor_period.id]
-                == result_no_preload.balances[anchor_period.id]
+                result_with_preload[anchor_period.id]
+                == result_no_preload[anchor_period.id]
                 == Decimal("160.00")
             )
 
@@ -396,7 +409,7 @@ class TestBalancesForEntriesAware:
 
             # 614.29 - 500.00 = 114.29 (entries-aware reduces to
             # effective_amount with no entries to subtract).
-            assert result.balances[anchor_period.id] == Decimal("114.29")
+            assert result[anchor_period.id] == Decimal("114.29")
 
     # ── C5-4 -----------------------------------------------------------
 
@@ -443,7 +456,7 @@ class TestBalancesForEntriesAware:
             )
 
             # max(500 - 0 - 500, 0) = 0; 1000.00 - 0 = 1000.00.
-            assert result.balances[anchor_period.id] == Decimal("1000.00")
+            assert result[anchor_period.id] == Decimal("1000.00")
 
     # ── C5-5 -----------------------------------------------------------
 
@@ -488,7 +501,7 @@ class TestBalancesForEntriesAware:
             )
 
             # max(500 - 0 - 0, 600) = 600; 1000 - 600 = 400.
-            assert result.balances[anchor_period.id] == Decimal("400.00")
+            assert result[anchor_period.id] == Decimal("400.00")
 
     # ── C5-8 -----------------------------------------------------------
 
@@ -617,7 +630,7 @@ class TestBalancesForEntriesAware:
             )
 
             # Only the $100 Projected contributes; 1000 - 100 = 900.
-            assert result.balances[anchor_period.id] == Decimal("900.00")
+            assert result[anchor_period.id] == Decimal("900.00")
 
     # ── C5-10 ----------------------------------------------------------
 
@@ -676,390 +689,7 @@ class TestBalancesForEntriesAware:
             )
 
             # 0.00 + 100.00 - 0.00 = 100.00; zero anchor honored.
-            assert result.balances[anchor_period.id] == Decimal("100.00")
-
-
-# ── BalanceResult / PeriodSubtotal contract ─────────────────────────
-
-
-class TestBalanceResultContract:
-    """The producer's return type contracts."""
-
-    def test_balance_result_is_frozen(self):
-        """BalanceResult is immutable -- writes raise FrozenInstanceError.
-
-        Frozen dataclasses are the project's chosen shape for
-        canonical-producer return values: a consumer cannot mutate
-        the producer's output and have that mutation silently affect
-        a sibling consumer.
-        """
-        from dataclasses import (  # pylint: disable=import-outside-toplevel
-            FrozenInstanceError,
-        )
-        from collections import OrderedDict  # pylint: disable=import-outside-toplevel
-        result = BalanceResult(
-            balances=OrderedDict(),
-            stale_anchor_warning=False,
-        )
-        with pytest.raises(FrozenInstanceError):
-            result.stale_anchor_warning = True  # type: ignore[misc]
-
-    def test_period_subtotal_is_frozen(self):
-        """PeriodSubtotal is immutable -- writes raise FrozenInstanceError."""
-        from dataclasses import (  # pylint: disable=import-outside-toplevel
-            FrozenInstanceError,
-        )
-        sub = PeriodSubtotal(
-            income=Decimal("0.00"),
-            expense=Decimal("0.00"),
-            net=Decimal("0.00"),
-        )
-        with pytest.raises(FrozenInstanceError):
-            sub.income = Decimal("999.00")  # type: ignore[misc]
-
-
-# ── period_subtotal correctness ────────────────────────────────────
-
-
-class TestPeriodSubtotal:
-    """The single-period entries-aware subtotal."""
-
-    def test_period_subtotal_entry_aware(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """``period_subtotal`` applies the entries-aware reduction.
-
-        Setup: Projected envelope expense est=500.00 on anchor
-        period; cleared debits 20 + 15.71 + 10 = 45.71.
-
-        Hand arithmetic (mirrors C5-1):
-          income = 0
-          expense = max(500.00 - 45.71 - 0, 0) = 454.29
-          net = 0 - 454.29 = -454.29
-        """
-        with app.app_context():
-            anchor_period = seed_periods[0]
-            txn = _make_projected_expense(
-                db.session,
-                seed_user=seed_user,
-                pay_period=anchor_period,
-                estimated=Decimal("500.00"),
-            )
-            for amt in (Decimal("20.00"), Decimal("15.71"), Decimal("10.00")):
-                _add_entry(
-                    db.session,
-                    txn=txn,
-                    user_id=seed_user["user"].id,
-                    amount=amt,
-                    is_cleared=True,
-                    is_credit=False,
-                )
-            db.session.commit()
-
-            sub = period_subtotal(
-                seed_user["account"],
-                seed_user["scenario"].id,
-                anchor_period,
-            )
-
-            assert isinstance(sub, PeriodSubtotal)
-            assert sub.income == Decimal("0.00")
-            # 500 - 45.71 - 0 = 454.29; uncleared floor is 0, so 454.29 wins.
-            assert sub.expense == Decimal("454.29")
-            assert sub.net == Decimal("-454.29")
-
-    def test_period_subtotal_reconciles_balance_delta(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """``period_subtotal.net == balances[p] - balances[p-1]``.
-
-        The same-formula invariant E-25 locks: the subtotal is the
-        same entries-aware sum the balance carry-forward uses, so the
-        period-to-period balance delta must equal the subtotal's net.
-
-        Setup: Projected $300.00 expense on seed_periods[1] (the
-        first post-anchor period).  Anchor is the seed_user default
-        $1000 on seed_periods[0].
-
-        Hand arithmetic:
-          anchor_period_balance = 1000.00 (no projected items on it).
-          period1_expense = 300.00 (no entries -> effective_amount).
-          period1_balance = 1000.00 + 0 - 300.00 = 700.00.
-          subtotal[period1].net = 0 - 300.00 = -300.00.
-          balance_delta = 700.00 - 1000.00 = -300.00.
-        """
-        with app.app_context():
-            anchor_period = seed_periods[0]
-            next_period = seed_periods[1]
-            _make_projected_expense(
-                db.session,
-                seed_user=seed_user,
-                pay_period=next_period,
-                estimated=Decimal("300.00"),
-            )
-            db.session.commit()
-
-            result = balances_for(
-                seed_user["account"],
-                seed_user["scenario"].id,
-                seed_periods,
-            )
-            sub = period_subtotal(
-                seed_user["account"],
-                seed_user["scenario"].id,
-                next_period,
-            )
-
-            anchor_bal = result.balances[anchor_period.id]
-            next_bal = result.balances[next_period.id]
-            # 700.00 - 1000.00 = -300.00 == sub.net.
-            assert next_bal - anchor_bal == sub.net == Decimal("-300.00")
-
-    def test_period_subtotal_net_combined_rounding_reconciles_subcent_leg(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """#62: ``net`` reconciles with the balance delta under a sub-cent leg.
-
-        ``net`` is ``round_money(income - expense)`` (ONE combined
-        rounding), not ``round_money(income) - round_money(expense)``.
-        Only the combined form reconciles with the balance roll-forward,
-        which rounds the *cumulative* balance once per snapshot: for a
-        cent-quantized entering balance B,
-        ``round_money(B + delta) - B == round_money(delta) == net``.
-
-        Every stored/override leg is cent-quantized in production, so the
-        per-leg-vs-combined divergence is unreachable today.  The live
-        override seam carries its value verbatim into the sum
-        (``cash_ledger.income_amount`` / ``_expense_amount``), so
-        it is the only way to inject a sub-cent leg; this test does so
-        directly to lock the rounding discipline against a regression to
-        per-leg rounding.
-
-        Setup: the anchor period (``seed_periods[0]``) keeps the
-        ``seed_user`` default $1000 balance (no projected items).  On the
-        first post-anchor period a Projected income txn and a Projected
-        expense txn are given the sub-cent live overrides $100.005 and
-        $50.004.
-
-        Hand arithmetic:
-          income leg = 100.005, expense leg = 50.004 (overrides, verbatim)
-          running    = 1000.00 + 100.005 - 50.004 = 1050.001
-          next_bal   = round_money(1050.001) = 1050.00
-          balance_delta = 1050.00 - 1000.00 = 50.00
-          net (combined) = round_money(100.005 - 50.004)
-                         = round_money(50.001) = 50.00  == balance_delta
-          per-leg net    = round_money(100.005) - round_money(50.004)
-                         = 100.01 - 50.00 = 50.01 != 50.00  (the reverted bug)
-        """
-        with app.app_context():
-            account = seed_user["account"]
-            scenario_id = seed_user["scenario"].id
-            anchor_period = seed_periods[0]
-            next_period = seed_periods[1]
-            projected = (
-                db.session.query(Status).filter_by(name="Projected").one()
-            )
-            income_type = (
-                db.session.query(TransactionType).filter_by(name="Income").one()
-            )
-            expense_type = (
-                db.session.query(TransactionType).filter_by(name="Expense").one()
-            )
-            income_txn = Transaction(
-                pay_period_id=next_period.id,
-                scenario_id=scenario_id,
-                account_id=account.id,
-                status_id=projected.id,
-                name="Paycheck",
-                transaction_type_id=income_type.id,
-                estimated_amount=Decimal("100.00"),
-            )
-            expense_txn = Transaction(
-                pay_period_id=next_period.id,
-                scenario_id=scenario_id,
-                account_id=account.id,
-                status_id=projected.id,
-                name="Rent",
-                transaction_type_id=expense_type.id,
-                estimated_amount=Decimal("50.00"),
-            )
-            db.session.add_all([income_txn, expense_txn])
-            db.session.commit()
-
-            # Sub-cent live overrides flow verbatim into the sum, so they
-            # are the only way to feed a sub-cent leg through the producer.
-            overrides = {
-                income_txn.id: Decimal("100.005"),
-                expense_txn.id: Decimal("50.004"),
-            }
-
-            result = balances_for(
-                account, scenario_id, seed_periods,
-                amount_overrides=overrides,
-            )
-            sub = period_subtotal(
-                account, scenario_id, next_period,
-                amount_overrides=overrides,
-            )
-
-            anchor_bal = result.balances[anchor_period.id]
-            next_bal = result.balances[next_period.id]
-            assert anchor_bal == Decimal("1000.00")
-            assert next_bal == Decimal("1050.00")
-            # The E-25 reconciliation holds for the sub-cent leg ONLY
-            # because net is the combined-rounded delta; per-leg rounding
-            # (the reverted bug) makes sub.net 50.01 and breaks this.
-            assert next_bal - anchor_bal == sub.net == Decimal("50.00")
-            # The display legs are each rounded to cents (a no-op in
-            # production); here the income leg shows the sub-cent round-up,
-            # so income - expense (50.01) deliberately differs from the
-            # balance-reconciling net (50.00) by a cent.
-            assert sub.income == Decimal("100.01")
-            assert sub.expense == Decimal("50.00")
-
-
-# ── period_subtotals batch (DH-#36) ────────────────────────────────
-
-
-class TestPeriodSubtotalsBatch:
-    """The batch ``period_subtotals`` -- one query for the whole window.
-
-    DH-#36: the grid footer looped the single-period ``period_subtotal``
-    once per visible column, an N+1 (one transactions SELECT per period)
-    over a set the page had already loaded.  ``period_subtotals`` issues
-    a single load and groups it by ``pay_period_id``.  These tests pin
-    (a) the batch is byte-identical to the per-period calls -- so the
-    E-25 balance-delta invariant the single-period tests lock carries
-    over -- and (b) it issues exactly one transactions query.
-    """
-
-    def test_period_subtotals_matches_single_per_period(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """Each ``period_subtotals[p]`` equals ``period_subtotal(p)``.
-
-        Pins that grouping a single load by ``pay_period_id`` reproduces
-        the single-period filter exactly, including an empty period that
-        must map to a zero subtotal (not be absent).
-
-        Setup:
-          - period 0: $300 envelope expense with a $45.71 cleared entry
-            -> entries-aware expense max(300 - 45.71, 0) = 254.29.
-          - period 1: $150 expense (no entries -> effective_amount).
-          - period 2: nothing (the empty-period -> zero subtotal case).
-          - period 3: $80 expense.
-        seed_user seeds no salary/loan, so the live override map is
-        empty for both the batch (one build) and the single calls (per
-        build) -- isolating this comparison to the grouping itself.
-        """
-        with app.app_context():
-            account = seed_user["account"]
-            scenario_id = seed_user["scenario"].id
-
-            txn0 = _make_projected_expense(
-                db.session, seed_user=seed_user,
-                pay_period=seed_periods[0], estimated=Decimal("300.00"),
-            )
-            _add_entry(
-                db.session, txn=txn0, user_id=seed_user["user"].id,
-                amount=Decimal("45.71"), is_cleared=True,
-            )
-            _make_projected_expense(
-                db.session, seed_user=seed_user,
-                pay_period=seed_periods[1], estimated=Decimal("150.00"),
-                name="Gas",
-            )
-            _make_projected_expense(
-                db.session, seed_user=seed_user,
-                pay_period=seed_periods[3], estimated=Decimal("80.00"),
-                name="Misc",
-            )
-            db.session.commit()
-
-            batch = period_subtotals(account, scenario_id, seed_periods)
-
-            # Every input period is a key, including the empty period 2.
-            assert set(batch) == {p.id for p in seed_periods}
-            for period in seed_periods:
-                single = period_subtotal(account, scenario_id, period)
-                assert batch[period.id] == single, (
-                    f"period_index {period.period_index}: batch "
-                    f"{batch[period.id]} != single {single}"
-                )
-
-            # Spot-check the entries-aware reduction survived grouping.
-            # period 0: max(300.00 - 45.71, 0) = 254.29.
-            assert batch[seed_periods[0].id].expense == Decimal("254.29")
-            assert batch[seed_periods[1].id].expense == Decimal("150.00")
-            # period 2 has no transactions -> zero subtotal (present key).
-            assert batch[seed_periods[2].id] == PeriodSubtotal(
-                income=Decimal("0.00"),
-                expense=Decimal("0.00"),
-                net=Decimal("0.00"),
-            )
-
-    def test_period_subtotals_issues_one_transaction_query(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """The batch loads transactions ONCE for the whole window (no N+1).
-
-        Revert-proof: a per-period ``period_subtotal`` loop over these
-        10 periods would issue 10 transactions SELECTs (one per period,
-        each returning that period's rows -- including the empty ones).
-        ``period_subtotals`` groups a single load instead, so exactly
-        one statement hits the ``transactions`` table.
-
-        ``amount_overrides={}`` is passed so the count isolates the
-        transaction load: a ``None`` would additionally run the live
-        override seam (``income_service`` / ``loan_payment_service``),
-        whose queries are not what this guard measures.
-        """
-        with app.app_context():
-            account = seed_user["account"]
-            scenario_id = seed_user["scenario"].id
-            # Spread rows across non-adjacent periods so grouping is real
-            # and the empty periods between them are genuinely empty.
-            for idx, name in ((0, "Groceries"), (2, "Gas"), (5, "Misc")):
-                _make_projected_expense(
-                    db.session, seed_user=seed_user,
-                    pay_period=seed_periods[idx],
-                    estimated=Decimal("100.00"), name=name,
-                )
-            db.session.commit()
-
-            statements: list[str] = []
-
-            def _capture(conn, cursor, statement, parameters,
-                         context, executemany):
-                statements.append(statement)
-
-            engine = db.session.get_bind()
-            event.listen(engine, "before_cursor_execute", _capture)
-            try:
-                result = period_subtotals(
-                    account, scenario_id, seed_periods,
-                    amount_overrides={},
-                )
-            finally:
-                event.remove(engine, "before_cursor_execute", _capture)
-
-            # The entries selectinload references ``transaction_entries``
-            # (a distinct table), not ``transactions``, so it is excluded.
-            txn_selects = [
-                s for s in statements
-                if "transactions" in s.lower()
-                and "transaction_entries" not in s.lower()
-            ]
-            assert len(txn_selects) == 1, (
-                f"Expected exactly one transactions SELECT for "
-                f"{len(seed_periods)} periods, got {len(txn_selects)}: "
-                f"{txn_selects}"
-            )
-            # Sanity: all periods present; the three seeded periods nonzero.
-            assert len(result) == len(seed_periods)
-            assert result[seed_periods[0].id].expense == Decimal("100.00")
-            assert result[seed_periods[2].id].expense == Decimal("100.00")
-            assert result[seed_periods[5].id].expense == Decimal("100.00")
+            assert result[anchor_period.id] == Decimal("100.00")
 
 
 # ── One projected sum, one optional bound (plan step D1c) ──────────
@@ -1079,9 +709,12 @@ class TestSumProjectedAsOfBound:
     They are now ONE rule with an optional date bound.  These tests pin the
     equivalence in both directions, because a DRY refactor of a predicate can
     move money: ``as_of=None`` must reproduce the unwindowed answer exactly,
-    and a bound must still cut.  The E-27 suite below (C9-1..C9-6) is the other
-    half of the proof -- it grades the DATED path end-to-end through
-    ``balance_as_of_date`` on hand-computed figures, unchanged by D1c.
+    and a bound must still cut.  The E-27 suite that graded the DATED path
+    end-to-end (C9-1..C9-6) went with ``balance_as_of_date`` at plan step
+    X-c2b3; the dated path is now the fold's own plan tier, graded on
+    hand-computed figures in ``test_cash_fold.py``'s ``TestThePlannedTier``
+    (``test_an_entry_dated_after_the_reader_now_does_not_clear_early`` is this
+    bound's end-to-end half).
     """
 
     @staticmethod
@@ -1231,562 +864,26 @@ class TestSumProjectedAsOfBound:
         assert _entry_aware_amount(_Fake(), _date(2026, 1, 10)) == Decimal("77.00")
 
 
-# ── balance_as_of_date (E-27, Commit 9) ────────────────────────────
-
-
-class TestBalanceAsOfDate:
-    """Producer for "balance as of date D" (E-27, HIGH-02 / W-277).
-
-    Locks the contract that replaces the deleted
-    ``calendar_service._compute_month_end_balance``:
-
-      * the projection runs through the period containing ``as_of``
-        (not the days-stale "last period ending on or before"
-        period the pre-Commit-9 calendar selected);
-      * entries dated AFTER ``as_of`` are excluded from the
-        entries-aware reduction inside the as-of period (a purchase
-        that has not happened yet cannot clear the bank as of that
-        date and must not reduce the reservation);
-      * at a period boundary the result equals the canonical
-        ``balances_for`` value for that period (cross-check that
-        ``balance_as_of_date`` is a strict generalization, not a
-        divergent calculation).
-    """
-
-    # ── C9-1 -----------------------------------------------------------
-
-    def test_calendar_month_end_true_date(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """C9-1: month-end mid-period uses true date, not last-period-end.
-
-        ``seed_periods`` runs biweekly from 2026-01-02; period 1 is
-        Jan 16 -- Jan 29 (ends BEFORE Jan 31), period 2 is Jan 30 --
-        Feb 12 (contains Jan 31).  The pre-Commit-9 calendar selected
-        period 1 (the "last period whose end_date <= last_day of
-        month") and returned the projected end balance of THAT
-        period, missing period 2's contribution.  ``balance_as_of_date``
-        must return the projection through period 2, the period
-        actually containing Jan 31.
-
-        Setup:
-          - anchor 1000.00 on seed_periods[0] (the ``seed_user``
-            factory default; no override needed).
-          - period 0 (anchor): +2000 income, -500 expense.
-          - period 1: +2000 income, -500 expense.
-          - period 2 (contains Jan 31): +2000 income, -500 expense.
-
-        Hand arithmetic (E-25 carry-forward, no entries -> formula
-        collapses to effective_amount):
-          period_0_end = 1000 + 2000 - 500 = 2500
-          period_1_end = 2500 + 2000 - 500 = 4000
-          period_2_end = 4000 + 2000 - 500 = 5500
-
-        ``balance_as_of_date(2026-01-31)`` -> 5500.00 (period 2 end).
-        The pre-Commit-9 path would have stopped at period_1_end
-        (4000.00) -- a $1500 stale shortfall (HIGH-02 / W-277).
-        """
-        with app.app_context():
-            account = seed_user["account"]
-            scenario_id = seed_user["scenario"].id
-            p0, p1, p2 = seed_periods[0], seed_periods[1], seed_periods[2]
-            # Sanity-check the period layout the assertion relies on:
-            # period 1 ends BEFORE Jan 31 and period 2 contains it.
-            assert p1.end_date == _date(2026, 1, 29)
-            assert p2.start_date == _date(2026, 1, 30)
-            assert p2.end_date == _date(2026, 2, 12)
-
-            projected = (
-                db.session.query(Status).filter_by(name="Projected").one()
-            )
-            income_type = (
-                db.session.query(TransactionType).filter_by(name="Income").one()
-            )
-            expense_type = (
-                db.session.query(TransactionType).filter_by(name="Expense").one()
-            )
-            for period in (p0, p1, p2):
-                db.session.add(Transaction(
-                    pay_period_id=period.id,
-                    scenario_id=scenario_id,
-                    account_id=account.id,
-                    status_id=projected.id,
-                    name="Paycheck",
-                    transaction_type_id=income_type.id,
-                    estimated_amount=Decimal("2000.00"),
-                ))
-                db.session.add(Transaction(
-                    pay_period_id=period.id,
-                    scenario_id=scenario_id,
-                    account_id=account.id,
-                    status_id=projected.id,
-                    name="Rent",
-                    transaction_type_id=expense_type.id,
-                    estimated_amount=Decimal("500.00"),
-                ))
-            db.session.commit()
-
-            result = balance_as_of_date(
-                account, scenario_id, _date(2026, 1, 31),
-            )
-            # Period 0: 1000 + 2000 - 500 = 2500
-            # Period 1: 2500 + 2000 - 500 = 4000
-            # Period 2: 4000 + 2000 - 500 = 5500  <-- Jan 31 falls here
-            assert result == Decimal("5500.00")
-
-    # ── #74 build-once -------------------------------------------------
-
-    def test_live_overrides_built_once_across_prefix_and_target(
-        self, app, db, seed_user, seed_periods, monkeypatch,
-    ):
-        """#74: the live override map is built once per call, not per span.
-
-        ``balance_as_of_date`` rolls a prior balance forward over the
-        prefix span ``[anchor .. target-1]`` and then sums the target
-        period.  Before the build-once refactor it called
-        ``live_amount_overrides`` -- which re-runs the live paycheck / loan
-        recompute -- separately for each span, twice per call.  This pins
-        that it now runs exactly once (over the union of both spans), so a
-        future edit cannot silently reintroduce the redundant second
-        recompute.
-
-        Reuses the C9-1 layout: Jan 31 falls in period 2, so the prefix
-        span ``[period 0, period 1]`` is non-empty and the target is
-        period 2 -- the exact shape that triggered the second build (when
-        ``target == anchor`` the prefix is empty and the old code built
-        only once, so that case would not distinguish the fix).  Proven to
-        fail (call count 2) against the pre-refactor double-build.
-        """
-        with app.app_context():
-            account = seed_user["account"]
-            scenario_id = seed_user["scenario"].id
-            p0, p1, p2 = seed_periods[0], seed_periods[1], seed_periods[2]
-            projected = (
-                db.session.query(Status).filter_by(name="Projected").one()
-            )
-            income_type = (
-                db.session.query(TransactionType).filter_by(name="Income").one()
-            )
-            expense_type = (
-                db.session.query(TransactionType).filter_by(name="Expense").one()
-            )
-            for period in (p0, p1, p2):
-                db.session.add(Transaction(
-                    pay_period_id=period.id,
-                    scenario_id=scenario_id,
-                    account_id=account.id,
-                    status_id=projected.id,
-                    name="Paycheck",
-                    transaction_type_id=income_type.id,
-                    estimated_amount=Decimal("2000.00"),
-                ))
-                db.session.add(Transaction(
-                    pay_period_id=period.id,
-                    scenario_id=scenario_id,
-                    account_id=account.id,
-                    status_id=projected.id,
-                    name="Rent",
-                    transaction_type_id=expense_type.id,
-                    estimated_amount=Decimal("500.00"),
-                ))
-            db.session.commit()
-
-            # Count live_amount_overrides invocations while delegating to
-            # the real implementation so the projected value is unchanged.
-            real_builder = cash_ledger.live_amount_overrides
-            call_count = {"n": 0}
-
-            def _counting_builder(*args, **kwargs):
-                call_count["n"] += 1
-                return real_builder(*args, **kwargs)
-
-            monkeypatch.setattr(
-                balance_resolver, "live_amount_overrides", _counting_builder,
-            )
-
-            result = balance_as_of_date(
-                account, scenario_id, _date(2026, 1, 31),
-            )
-
-            # Same projection as C9-1 (the wrapper only counts, it does
-            # not alter the result): 1000 -> 2500 -> 4000 -> 5500.
-            assert result == Decimal("5500.00")
-            # The whole point of #74: one build over the prefix+target
-            # union, not one per span.
-            assert call_count["n"] == 1
-
-    # ── C9-2 -----------------------------------------------------------
-
-    def test_calendar_entry_aware(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """C9-2: entries cleared before ``as_of`` reduce the reservation.
-
-        Setup:
-          - anchor 1000.00 on seed_periods[0].
-          - period 0 has one Projected envelope expense est=500.00
-            with three CLEARED debit entries totalling 462.34, all
-            dated 2026-01-08 (well before any conceivable month-end
-            ``as_of``).
-          - no other transactions.
-
-        Hand arithmetic (E-25 entry-aware reduction, same algebra as
-        the F-009 worked example with the symptom-tuple numbers):
-          cleared_debit = 200.00 + 162.34 + 100.00 = 462.34
-          uncleared_debit = 0
-          sum_credit = 0
-          checking_impact = max(500.00 - 462.34 - 0, 0) = 37.66
-          period_0_end_at_jan31 = 1000.00 - 37.66 = 962.34
-
-        Pre-Commit-9 the calendar would have used the non-entries-
-        aware path (no ``selectinload``) and returned
-        1000.00 - 500.00 = 500.00 -- the F-009 silent-degrade on the
-        calendar surface.  HIGH-02 / W-277.
-        """
-        with app.app_context():
-            account = seed_user["account"]
-            scenario_id = seed_user["scenario"].id
-            anchor_period = seed_periods[0]
-            # Anchor period ends Jan 15; Jan 31 is in a LATER period,
-            # but no transactions live there so the projection carries
-            # the anchor-period balance forward unchanged.  Asserting
-            # on Jan 31 also gives the test the same calendar-flavor
-            # as C9-1 above.
-            txn = _make_projected_expense(
-                db.session,
-                seed_user=seed_user,
-                pay_period=anchor_period,
-                estimated=Decimal("500.00"),
-            )
-            for amt in (
-                Decimal("200.00"), Decimal("162.34"), Decimal("100.00"),
-            ):
-                _add_entry(
-                    db.session,
-                    txn=txn,
-                    user_id=seed_user["user"].id,
-                    amount=amt,
-                    is_cleared=True,
-                    entry_date=_date(2026, 1, 8),
-                )
-            db.session.commit()
-
-            result = balance_as_of_date(
-                account, scenario_id, _date(2026, 1, 31),
-            )
-            # 1000.00 - max(500.00 - 462.34, 0) = 1000.00 - 37.66 = 962.34.
-            assert result == Decimal("962.34")
-
-    # ── C9-3 -----------------------------------------------------------
-
-    def test_calendar_equals_resolver_at_period_boundary(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """C9-3: at period.end_date, balance_as_of_date == balances_for.
-
-        When ``as_of`` lands exactly on the end_date of a pay period
-        and no entries are dated strictly after that date, the
-        entry-date cut is a no-op and the two producers must agree
-        -- ``balance_as_of_date`` is a strict generalization of
-        ``balances_for`` at the boundary.
-
-        Setup:
-          - anchor 1000.00 on seed_periods[0].
-          - one Projected envelope expense est=500.00 on period 0
-            with two cleared debits totalling 300.00, both dated
-            Jan 5 (before the period boundary).
-          - period 0 ends Jan 15.
-
-        Hand arithmetic:
-          cleared_debit = 200.00 + 100.00 = 300.00
-          impact = max(500.00 - 300.00, 0) = 200.00
-          period_0_end = 1000.00 - 200.00 = 800.00
-
-        Both producers must return 800.00 for as_of = period 0's
-        end_date (Jan 15) and balances_for(...).balances[p0.id].
-        """
-        with app.app_context():
-            account = seed_user["account"]
-            scenario_id = seed_user["scenario"].id
-            anchor_period = seed_periods[0]
-            assert anchor_period.end_date == _date(2026, 1, 15)
-
-            txn = _make_projected_expense(
-                db.session,
-                seed_user=seed_user,
-                pay_period=anchor_period,
-                estimated=Decimal("500.00"),
-            )
-            for amt in (Decimal("200.00"), Decimal("100.00")):
-                _add_entry(
-                    db.session,
-                    txn=txn,
-                    user_id=seed_user["user"].id,
-                    amount=amt,
-                    is_cleared=True,
-                    entry_date=_date(2026, 1, 5),
-                )
-            db.session.commit()
-
-            as_of = anchor_period.end_date
-            via_as_of = balance_as_of_date(account, scenario_id, as_of)
-
-            via_resolver = balances_for(
-                account, scenario_id, [anchor_period],
-            ).balances[anchor_period.id]
-
-            # 1000.00 - max(500.00 - 300.00, 0) = 1000.00 - 200.00 = 800.00.
-            assert via_as_of == Decimal("800.00")
-            assert via_as_of == via_resolver
-
-    # ── C9-4 -----------------------------------------------------------
-
-    def test_calendar_entry_after_date_excluded(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """C9-4: an entry dated AFTER ``as_of`` is NOT yet reflected.
-
-        Setup:
-          - anchor 1000.00 on seed_periods[0].
-          - one Projected envelope expense est=500.00 on period 0
-            with two cleared debits, dated as follows:
-              200.00 cleared on Jan 5 (before as_of)
-              250.00 cleared on Jan 20 (AFTER as_of)
-          - ``as_of`` = Jan 10.
-
-        Hand arithmetic with the entry-date cut (entry_date <= Jan 10):
-          cleared_debit (in-window) = 200.00
-          uncleared_debit = 0
-          sum_credit = 0
-          impact = max(500.00 - 200.00, 0) = 300.00
-          balance_at_jan_10 = 1000.00 - 300.00 = 700.00
-
-        WITHOUT the entry-date cut (the wrong behavior the producer
-        must not exhibit) cleared_debit would be 450.00 and the
-        balance would be 1000.00 - 50.00 = 950.00.  The strict
-        inequality between 700.00 (correct) and 950.00 (no-cut)
-        proves the date filter is exercised.
-        """
-        with app.app_context():
-            account = seed_user["account"]
-            scenario_id = seed_user["scenario"].id
-            anchor_period = seed_periods[0]
-
-            txn = _make_projected_expense(
-                db.session,
-                seed_user=seed_user,
-                pay_period=anchor_period,
-                estimated=Decimal("500.00"),
-            )
-            _add_entry(
-                db.session,
-                txn=txn,
-                user_id=seed_user["user"].id,
-                amount=Decimal("200.00"),
-                is_cleared=True,
-                entry_date=_date(2026, 1, 5),
-            )
-            _add_entry(
-                db.session,
-                txn=txn,
-                user_id=seed_user["user"].id,
-                amount=Decimal("250.00"),
-                is_cleared=True,
-                entry_date=_date(2026, 1, 20),
-            )
-            db.session.commit()
-
-            result = balance_as_of_date(
-                account, scenario_id, _date(2026, 1, 10),
-            )
-            # cleared_debit (entry_date <= Jan 10) = 200.00.
-            # impact = max(500.00 - 200.00, 0) = 300.00.
-            # 1000.00 - 300.00 = 700.00.
-            assert result == Decimal("700.00")
-
-    # ── C9-5 -----------------------------------------------------------
-
-    def test_calendar_entry_on_as_of_date_included(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """C9-5: an entry dated EXACTLY on ``as_of`` IS reflected.
-
-        Pins the inclusive boundary of the entry-date window
-        (``entry_date <= as_of``): a purchase dated the same day as the
-        as-of cutoff HAS happened as of that date and must contribute.
-
-        Setup:
-          - anchor 1000.00 on seed_periods[0].
-          - one Projected envelope expense est=500.00 on period 0
-            with two cleared debits, dated as follows:
-              200.00 cleared on Jan 10 (EXACTLY ``as_of``)
-              250.00 cleared on Jan 20 (after ``as_of``)
-          - ``as_of`` = Jan 10.
-
-        Hand arithmetic with the inclusive cut (entry_date <= Jan 10):
-          cleared_debit (in-window) = 200.00  (the Jan 10 entry counts)
-          uncleared_debit = 0
-          sum_credit = 0
-          impact = max(500.00 - 200.00, 0) = 300.00
-          balance_at_jan_10 = 1000.00 - 300.00 = 700.00
-
-        If the boundary were EXCLUSIVE (the wrong ``entry_date < as_of``)
-        the Jan 10 entry would drop out, cleared_debit would be 0, and
-        the balance would be 1000.00 - 500.00 = 500.00.  The strict
-        difference between 700.00 (correct, inclusive) and 500.00
-        (exclusive) proves the boundary is inclusive.
-        """
-        with app.app_context():
-            account = seed_user["account"]
-            scenario_id = seed_user["scenario"].id
-            anchor_period = seed_periods[0]
-
-            txn = _make_projected_expense(
-                db.session,
-                seed_user=seed_user,
-                pay_period=anchor_period,
-                estimated=Decimal("500.00"),
-            )
-            _add_entry(
-                db.session,
-                txn=txn,
-                user_id=seed_user["user"].id,
-                amount=Decimal("200.00"),
-                is_cleared=True,
-                entry_date=_date(2026, 1, 10),
-            )
-            _add_entry(
-                db.session,
-                txn=txn,
-                user_id=seed_user["user"].id,
-                amount=Decimal("250.00"),
-                is_cleared=True,
-                entry_date=_date(2026, 1, 20),
-            )
-            db.session.commit()
-
-            result = balance_as_of_date(
-                account, scenario_id, _date(2026, 1, 10),
-            )
-            # cleared_debit (entry_date <= Jan 10) = 200.00 (Jan 10 counts).
-            # impact = max(500.00 - 200.00, 0) = 300.00.
-            # 1000.00 - 300.00 = 700.00.
-            assert result == Decimal("700.00")
-
-    # ── C9-6 -----------------------------------------------------------
-
-    def test_calendar_all_entries_after_as_of_falls_back(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """C9-6: a txn whose every entry is after ``as_of`` reserves the full estimate.
-
-        Pins the empty-window short-circuit: when entries EXIST but all
-        are dated strictly after ``as_of``, none has cleared the bank
-        yet, so the full estimated reservation is still pending and the
-        producer falls back to ``effective_amount`` (= estimated for an
-        unfilled Projected expense) -- matching the engine helper's
-        empty-entries branch.
-
-        Setup:
-          - anchor 1000.00 on seed_periods[0].
-          - one Projected envelope expense est=500.00 on period 0
-            with a single cleared debit of 200.00 dated Jan 20
-            (strictly after ``as_of``).
-          - ``as_of`` = Jan 10.
-
-        Hand arithmetic:
-          windowed entries (entry_date <= Jan 10) = []  -> short-circuit
-          impact = effective_amount = estimated = 500.00
-          balance_at_jan_10 = 1000.00 - 500.00 = 500.00
-
-        Without the date cut the Jan 20 debit would reduce the
-        reservation to max(500.00 - 200.00, 0) = 300.00 and yield
-        700.00, so 500.00 vs 700.00 proves the empty-window fallback
-        fires.
-        """
-        with app.app_context():
-            account = seed_user["account"]
-            scenario_id = seed_user["scenario"].id
-            anchor_period = seed_periods[0]
-
-            txn = _make_projected_expense(
-                db.session,
-                seed_user=seed_user,
-                pay_period=anchor_period,
-                estimated=Decimal("500.00"),
-            )
-            _add_entry(
-                db.session,
-                txn=txn,
-                user_id=seed_user["user"].id,
-                amount=Decimal("200.00"),
-                is_cleared=True,
-                entry_date=_date(2026, 1, 20),
-            )
-            db.session.commit()
-
-            result = balance_as_of_date(
-                account, scenario_id, _date(2026, 1, 10),
-            )
-            # No entry dated <= Jan 10 -> empty window -> effective_amount.
-            # effective_amount for an unfilled Projected expense = 500.00.
-            # 1000.00 - 500.00 = 500.00.
-            assert result == Decimal("500.00")
-
-    # ── as_of before anchor -------------------------------------------
-
-    def test_as_of_before_anchor_returns_anchor_balance(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """``as_of`` strictly before the anchor period returns the anchor.
-
-        The producer does not project BACKWARD from the anchor
-        (E-19 / E-27 convention).  Requesting a balance before the
-        anchor period returns the anchor balance verbatim
-        (rounded to cents).  ``seed_periods[0]`` starts 2026-01-02;
-        Dec 1 2025 is before any period.
-        """
-        with app.app_context():
-            account = seed_user["account"]
-            scenario_id = seed_user["scenario"].id
-            # The seed_user anchor is 1000.00 on seed_periods[0].
-            result = balance_as_of_date(
-                account, scenario_id, _date(2025, 12, 1),
-            )
-            assert result == Decimal("1000.00")
-
-    # ── Bad input ----------------------------------------------------
-
-    def test_rejects_non_date_as_of(
-        self, app, seed_user, seed_periods,
-    ):
-        """Passing a non-date raises ``TypeError`` (Decimal discipline).
-
-        ``as_of`` is compared against ``PayPeriod.start_date`` (a
-        ``Date``) and a ``datetime`` would silently truncate the
-        time portion.  The producer fails loud at the boundary.
-        """
-        with app.app_context():
-            with pytest.raises(TypeError):
-                balance_as_of_date(
-                    seed_user["account"],
-                    seed_user["scenario"].id,
-                    "2026-01-31",  # str -- not a date
-                )
-
-
 # ── Module surface ─────────────────────────────────────────────────
 
 
 def test_balance_resolver_exports_only_the_producers():
-    """The module's public surface is the two balance producers, and ONLY those.
+    """The module's public surface is ONE balance producer, and ONLY that.
 
     Pins plan step D1a's split, in both directions.  ``balance_resolver`` is
-    the cash BALANCE producer; the facts it folds over and the per-period FLOW
-    sums live in the ``cash_ledger`` leaf, because only a balance producer
+    the cash BALANCE producer; the facts it folds over and the per-row FLOW
+    sum live in the ``cash_ledger`` leaf, because only a balance producer
     belongs inside the ``balance_at`` seam at D1d -- a name that answers no
     balance-at-T question would otherwise have to be re-exported through the
     seam's public surface to keep its consumers working.
+
+    The set is ONE name since plan step X-c2b3, and this assertion is where the
+    module's shrinking is visible: ``balance_as_of_date`` (the date-precise
+    scalar) and ``BalanceResult`` (the wrapper carrying the stale-anchor flag
+    beside the map) both deleted with the surfaces that read them -- the seam
+    reads the fold at a date, and the fold makes staleness unrepresentable.
+    What is left is the anchor-forward roll-up the investment and appreciation
+    bases seed off until plan step X-c2c.
 
     The "only" is enforced as a SET EQUALITY over what the module DEFINES, and
     that is the load-bearing half.  An earlier version of this test asserted
@@ -1819,9 +916,9 @@ def test_balance_resolver_exports_only_the_producers():
             getattr(balance_resolver, name), "__module__", None,
         ) == "app.services.balance_at._cash_engine"
     }
-    assert defined_here == {"balances_for", "balance_as_of_date", "BalanceResult"}, (
-        "the cash engine defines the cash balance producers and ONLY those; "
-        f"unexpected surface: {sorted(defined_here)}"
+    assert defined_here == {"balances_for"}, (
+        "the cash engine defines the anchor-forward balance producer and ONLY "
+        f"that; unexpected surface: {sorted(defined_here)}"
     )
 
     owners = {
@@ -1833,11 +930,11 @@ def test_balance_resolver_exports_only_the_producers():
         # ``loan_ledger._split``).
         "live_amount_overrides": "_amounts",
         "income_amount": "_amounts",
-        # What a SET of rows SUMS TO (plan steps D1a + D1c).
+        # What a SET of rows SUMS TO (plan steps D1a + D1c).  ``sum_projected``
+        # is the only name left here: its per-period ``period_subtotal`` /
+        # ``period_subtotals`` / ``PeriodSubtotal`` siblings deleted at plan
+        # step X-c2b3, ruling R-K having changed what a subtotal COUNTS.
         "sum_projected": "_flows",
-        "period_subtotal": "_flows",
-        "period_subtotals": "_flows",
-        "PeriodSubtotal": "_flows",
     }
     for moved, submodule in owners.items():
         assert getattr(cash_ledger, moved).__module__ == (
