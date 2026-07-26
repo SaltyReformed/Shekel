@@ -2042,6 +2042,14 @@ replaces.
   (timing, true-up, clamp) plus a real-data run over every account and period; the identity is
   asserted with its components computed INDEPENDENTLY, never as a residual proving itself
   (Section 7.2).
+  Two design points settled while tracing, so the step does not re-derive them: (a) the identity is
+  stated per period as `balance(p.end) - balance(p.start - 1 day) == net[p] + reconciliation[p]`,
+  NOT as a delta between adjacent periods -- the boundary form covers the FIRST period too, where
+  there is no predecessor to subtract, and it costs nothing because the fold takes a date LIST; and
+  (b) `CashSourceFact` carries no `pay_period_id`, so the budget-clock grouping cannot be built from
+  the walk as it stands -- the leaf gains that one field (the loader already joins `pay_period`),
+  the same one-field fact enrichment plan step E1c made when the loan split had to carry its
+  `due_date`.
 - [ ] **X-c2** `refactor(balance): the cash seam reads the fold` -- the CUTOVER, and the only step
   where money moves. All three cash entries (`cash_balance_map` / `cash_balance_at` /
   `cash_daily_balance_series`) plus the kernel's PLAIN branch, the INTEREST branch on ruling R-L
