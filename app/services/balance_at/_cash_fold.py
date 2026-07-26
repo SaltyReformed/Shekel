@@ -1,16 +1,18 @@
 """Balance-at-T seam -- the CASH fold: a walk of facts sampled into a balance.
 
-Plan step **X-b** (``docs/audits/balance_architecture/README.md``).  "A cash
-account is an event stream" (Section 3), and this module is the half that turns
-that stream into money: the :mod:`app.services.cash_ledger` leaf owns the WALK
-(the facts), this owns the FOLD (the balance).  The same split plan step D-fold
-made on the loan side, for the same reason -- *a fold is a balance; a walk is a
-fact* -- and the same placement: because the prefix-sum lives HERE, a consumer
-legitimately holding a :class:`~app.services.cash_ledger.CashLedgerWalk` (the
-posting writer at plan step X-d) cannot reach a balance from a public leaf name.
+Plan steps **X-b** and **X-c1** (``docs/audits/balance_architecture/README.md``).
+"A cash account is an event stream" (Section 3), and this module is the half that
+turns that stream into money: the :mod:`app.services.cash_ledger` leaf owns the
+WALK (the facts), this owns the FOLD (the balance).  The same split plan step
+D-fold made on the loan side, for the same reason -- *a fold is a balance; a walk
+is a fact* -- and the same placement: because the prefix-sum lives HERE, a
+consumer legitimately holding a
+:class:`~app.services.cash_ledger.CashLedgerWalk` (the posting writer at plan
+step X-d) cannot reach a balance from a public leaf name.
 
 **Three tiers, ONE :func:`~app.services.balance_at._fold.sample_cumulative`, no
-branch.**  Every date is answered off a single running total assembled from:
+branch.**  Every date is answered off a single running total
+(:func:`_running_steps`) assembled from:
 
 * the **SEED** -- the account's first assertion back-projected over the records
   it already contains (ruling R-I).  See :func:`_actual_steps`.
@@ -21,8 +23,17 @@ branch.**  Every date is answered off a single running total assembled from:
 * the **PLANNED** steps -- the still-Projected rows, each landing at
   ``max(its attribution date, as_of + 1 day)`` (ruling R-G: "a plan cannot have
   already happened").  The cash twin of
-  :func:`app.services.balance_at._plan.fold_forward`.  See
-  :func:`_planned_steps`.
+  :func:`app.services.balance_at._plan.fold_forward`.  See :func:`_cash_plan`
+  and :func:`_planned_day_nets`.
+
+**Two readers of that ONE row set** (plan step X-c1, ruling R-K).
+:func:`fold_cash_balances` samples the running total at a list of dates -- the
+balance.  :func:`cash_period_view` samples it at each pay period's end AND
+groups the very same rows a second way, by the period each was BUDGETED to, so
+the grid's balance row and its subtotal rows reconcile by construction with a
+named remainder for what neither clock alone can explain.  The assembly is
+shared rather than duplicated: one walk, one plan load, one valuation, whichever
+reader is asking.
 
 Keeping it to one sample is not economy, it is the correctness property: a fold
 assembled from a past producer spliced to a future producer needs a rule for the
@@ -62,19 +73,23 @@ the SOURCE -- ``resolve_grid_account`` since plan step A1 and
 ``resolve_analytics_account`` since X-a1 -- not a refusal in here, which would
 reintroduce exactly the partiality above.
 
-**ADDITIVE and unwired at X-b.**  Nothing in production calls this yet; its only
-caller is its oracle (``tests/test_services/test_cash_fold.py``).  The cutover is
-plan step X-c, and it is the step where money moves.
+**ADDITIVE and unwired.**  Nothing in production calls either entry yet; their
+only callers are their oracles (``tests/test_services/test_cash_fold.py``,
+``test_cash_period_view.py``).  The cutover is plan step X-c2, and it is the step
+where money moves.
 
 Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes; all money is
 :class:`~decimal.Decimal`.
 """
 
-from collections import defaultdict
+from bisect import bisect_right
+from collections import OrderedDict, defaultdict
+from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
 
 from app.models.account import Account
+from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.services.cash_ledger import (
     CashLedgerWalk,
@@ -84,7 +99,8 @@ from app.services.cash_ledger import (
     sum_projected,
     walk_cash_ledger,
 )
-from app.utils.dates import attribution_date, utc_civil_date
+from app.utils.dates import attribution_date
+from app.utils.money import round_money
 
 from ._fold import sample_cumulative
 
@@ -133,9 +149,9 @@ def fold_cash_balances(
         ``{date: balance}`` -- one cent-quantized ``Decimal`` per distinct
         requested date.  ``{}`` for an empty *dates*.
     """
-    seed, steps = _actual_steps(walk_cash_ledger(account.id, scenario_id))
-    steps.extend(_planned_steps(account, scenario_id, as_of))
-    steps.sort(key=lambda step: step[0])
+    walk = walk_cash_ledger(account.id, scenario_id)
+    plan = _cash_plan(account, scenario_id, as_of)
+    seed, steps = _running_steps(walk, _planned_day_nets(plan, as_of))
     return sample_cumulative(seed, steps, dates)
 
 
@@ -179,15 +195,17 @@ def _actual_steps(
       total>`` -- byte-identical to the walk, which is the half R-I does not
       touch.
 
-    That cancellation depends on ``dated_deltas`` emitting the opening at
-    ``utc_civil_date(asserted_at)`` valued at ``anchor_balance - balance_before``,
-    which this function re-derives (``dated_deltas`` returns bare tuples, so the
-    opening's own step cannot be identified in its output).  It is a
-    re-derivation, so it is PINNED rather than trusted:
+    That cancellation depends on ``dated_deltas`` emitting the opening at exactly
+    the day and amount the compensator books.  It no longer RE-DERIVES either
+    (plan step X-c1): both read the correction's own
+    :attr:`~app.services.cash_ledger.CashAnchorCorrection.visible_on` /
+    :attr:`~app.services.cash_ledger.CashAnchorCorrection.delta`, so the pair is
+    stated once on the record and the leaf's list is a merge of the same pair.
+    The pin stays, because "one statement" is a property of today's code rather
+    than of the contract:
     ``TestTheOpeningMovesIntoTheSeed.test_at_and_after_the_opening_it_equals_the_zero_seeded_walk``
     asserts the at-and-after region equals a zero-seeded sample of the same
-    steps, and fails the moment the leaf's emission and this compensator stop
-    agreeing.  Measured: seeding at zero while keeping the compensator -- the
+    steps.  Measured: seeding at zero while keeping the compensator -- the
     half-applied form -- fails 27 of this step's 29 tests, that pin among them.
 
     Args:
@@ -212,21 +230,73 @@ def _actual_steps(
         return _ZERO_MONEY, steps
 
     opening = walk.anchor_corrections[0]
-    correction = opening.anchor.anchor_balance - opening.balance_before
-    steps.append(
-        (utc_civil_date(opening.anchor.asserted_at), -correction),
-    )
-    return correction, steps
+    steps.append((opening.visible_on, -opening.delta))
+    return opening.delta, steps
 
 
-def _planned_steps(
+def _running_steps(
+    walk: CashLedgerWalk, day_nets: "dict[date, Decimal]",
+) -> "tuple[Decimal, list[tuple[date, Decimal]]]":
+    """Return the ``(seed, steps)`` a whole cash account folds from.
+
+    The ONE assembly, and the reason both readers in this module are readings of
+    ONE valued row set rather than two producers a test keeps in step (ruling
+    R-K): :func:`fold_cash_balances` samples these steps for a balance, and
+    :func:`cash_period_view` samples them for its balance row while grouping the
+    SAME facts on the budget clock beside it.
+
+    Args:
+        walk: The account's :class:`~app.services.cash_ledger.CashLedgerWalk`.
+        day_nets: The PLANNED tier's per-day nets
+            (:func:`_planned_day_nets`), merged in as later steps on the same
+            running total -- never spliced on as a second producer's series.
+
+    Returns:
+        ``(seed, steps)`` with *steps* ASCENDING by date, which is what
+        :func:`~app.services.balance_at._fold.sample_cumulative` requires.
+    """
+    seed, steps = _actual_steps(walk)
+    steps.extend(day_nets.items())
+    steps.sort(key=lambda step: step[0])
+    return seed, steps
+
+
+@dataclass(frozen=True)
+class _CashPlan:
+    """The account's still-Projected rows, loaded and dated once.
+
+    The PLANNED tier's inputs, shared by the two readers in this module so a
+    plan is loaded (and its live override map built) ONCE per call whichever
+    reader is asking.  Splitting the LOAD from the reduction is what lets the
+    period view group the same rows on the budget clock without a second query
+    -- redundant derivation being where a divergence hides (the lesson the read
+    pass's context was built on).
+
+    Attributes:
+        rows: Every still-Projected balance-contributing row for the account in
+            the scenario, unwindowed (:func:`~app.services.cash_ledger.planned_cash_rows`).
+        by_day: The same rows keyed by the day each LANDS on (ruling R-G's
+            clamp) -- the cash clock.  Empty when the account has no plan.
+        overrides: The live ``{transaction_id: Decimal}`` map, built ONCE over
+            the whole plan and threaded into every reduction (the established
+            build-once-and-thread pattern): each seam picks its own candidates
+            and both filter to ``is_projected``, so a map built over the plan
+            alone is identical on every key that can matter.
+    """
+
+    rows: "list[Transaction]"
+    by_day: "dict[date, list[Transaction]]"
+    overrides: "dict[int, Decimal]"
+
+
+def _cash_plan(
     account: Account, scenario_id: int, as_of: date,
-) -> "list[tuple[date, Decimal]]":
-    """Return the ``(day, net)`` steps the account's still-Projected rows contribute.
+) -> _CashPlan:
+    """Load the account's plan and key each row onto the day it lands on.
 
-    The PLANNED tier, and the reason it lives in this READER rather than in the
-    clock-free leaf: a plan's effective date is a function of *as_of* (ruling
-    R-G), exactly as the loan plan's is (plan step C6a).
+    The PLANNED tier's load, and the reason it lives in this READER rather than
+    in the clock-free leaf: a plan's effective date is a function of *as_of*
+    (ruling R-G), exactly as the loan plan's is (plan step C6a).
 
     **Where a planned row lands.**  Its nominal day is the shared
     :func:`~app.utils.dates.attribution_date` -- its ``due_date``, falling back to
@@ -239,46 +309,27 @@ def _planned_steps(
     (one re-anchor every 2.3 days on Checking) silently deletes nearly every
     unpaid past-due bill within days of its being entered.
 
-    **What a planned row is WORTH is not re-implemented here.**  Each day's group
-    is reduced by the shared
-    :func:`~app.services.cash_ledger.sum_projected` -- the same engine the
-    shipping period walk and the grid's subtotal row both call, carrying the
-    entries-aware reservation for an envelope expense and the live override for a
-    salary paycheck or a derived loan debit.  Reducing per GROUP rather than per
-    ROW is what keeps that one rule intact: ``sum_projected`` is additive over
-    disjoint groups, so the days of a period sum to the period's net exactly.
-
-    The reservation is valued at *as_of* (``sum_projected``'s entry-date window),
-    so an entry dated AFTER the reader's now cannot reduce the reservation early.
-    That is R-G's own principle applied one level down -- a purchase that has not
-    happened cannot have cleared the bank -- and it is a deliberate choice between
-    the two the shipping producers already make (the scalar windows, the grid and
-    the daily ramp do not).  It moves no money on today's real data: measured
-    2026-07-25, ZERO entries on projected rows are dated after today in either
-    database.  Recorded as finding N-39 for plan step X-c to rule on before the
-    cutover makes it visible.
-
-    The live override map is built ONCE over the whole plan and threaded into
-    every group (the established build-once-and-thread pattern): each seam picks
-    its own candidates and both filter to ``is_projected``, so a map built over
-    the plan alone is identical on every key that can matter.
+    **The load is separate from the reduction, and that is plan step X-c1's
+    doing.**  The rows are kept, not just their per-day totals, because the
+    period view reduces the SAME rows a second way -- by the budget column they
+    were attributed to -- and re-loading them for that would be two answers to
+    "what is in this account's plan" a day apart from each other.
 
     Args:
-        account: The account whose plan to fold (its ``user_id`` scopes the live
+        account: The account whose plan to load (its ``user_id`` scopes the live
             salary override).
         scenario_id: The budget scenario the rows live in.
-        as_of: The reader's NOW.
+        as_of: The reader's NOW -- the floor ruling R-G clamps a landing day up
+            to.
 
     Returns:
-        ``[(day, net), ...]`` in arbitrary order -- one step per day carrying at
-        least one planned row, valued as signed income-minus-expense.  ``[]`` for
-        an account with no plan.
+        The account's :class:`_CashPlan`; its ``rows`` and ``by_day`` are empty
+        for an account with no plan.
     """
     rows = planned_cash_rows(account.id, scenario_id)
     if not rows:
-        return []
+        return _CashPlan(rows=[], by_day={}, overrides={})
 
-    amount_overrides = live_amount_overrides(account, scenario_id, rows)
     not_before = as_of + _ONE_DAY
     by_day: "dict[date, list[Transaction]]" = defaultdict(list)
     for txn in rows:
@@ -287,9 +338,440 @@ def _planned_steps(
             txn.due_date, period.start_date, period.end_date,
         )
         by_day[max(nominal, not_before)].append(txn)
+    return _CashPlan(
+        rows=rows,
+        by_day=dict(by_day),
+        overrides=live_amount_overrides(account, scenario_id, rows),
+    )
 
-    steps: "list[tuple[date, Decimal]]" = []
-    for day, txns in by_day.items():
-        income, expense = sum_projected(txns, amount_overrides, as_of=as_of)
-        steps.append((day, income - expense))
-    return steps
+
+def _planned_day_nets(
+    plan: _CashPlan, as_of: date,
+) -> "dict[date, Decimal]":
+    """Return ``{day: net}`` for the plan -- what each landing day is WORTH.
+
+    The PLANNED tier's reduction, split from its load (:func:`_cash_plan`) so the
+    two readers in this module share one valuation.
+
+    **What a planned row is WORTH is not re-implemented here.**  Each day's group
+    is reduced by the shared
+    :func:`~app.services.cash_ledger.sum_projected` -- the same engine the
+    shipping period walk and the grid's subtotal row both call, carrying the
+    entries-aware reservation for an envelope expense and the live override for a
+    salary paycheck or a derived loan debit.  Reducing per GROUP rather than per
+    ROW is what keeps that one rule intact: ``sum_projected`` is additive over
+    disjoint groups, so the days of a period sum to the period's net exactly --
+    which is also why :func:`_budget_legs` may reduce the same rows grouped by
+    pay period and get an answer that reconciles with this one to the cent.
+
+    The reservation is valued at *as_of* (``sum_projected``'s entry-date window),
+    so an entry dated AFTER the reader's now cannot reduce the reservation early.
+    That is R-G's own principle applied one level down -- a purchase that has not
+    happened cannot have cleared the bank -- and it is a deliberate choice between
+    the two the shipping producers already make (the scalar windows, the grid and
+    the daily ramp do not).  It moves no money on today's real data: measured
+    2026-07-25, ZERO entries on projected rows are dated after today in either
+    database.  Recorded as finding N-39 and CLOSED by ruling R-M: plan step X-c0
+    refuses a future ``entry_date`` at both write doors, after which the window
+    can drop nothing and X-c2 deletes it.
+
+    Args:
+        plan: The account's :class:`_CashPlan`.
+        as_of: The reader's NOW -- the date the reservation is valued at.
+
+    Returns:
+        ``{day: net}`` -- one entry per day carrying at least one planned row,
+        valued as signed income-minus-expense.  ``{}`` for an account with no
+        plan.
+    """
+    nets: "dict[date, Decimal]" = {}
+    for day, txns in plan.by_day.items():
+        income, expense = sum_projected(txns, plan.overrides, as_of=as_of)
+        nets[day] = income - expense
+    return nets
+
+
+@dataclass(frozen=True)
+class CashPeriodFigures:
+    """One pay period's cash column: the balance, the subtotals, the remainder.
+
+    The per-period output of :func:`cash_period_view`, and the three grid rows
+    ruling R-K makes ONE row set grouped two ways.  For every period and every
+    account kind, in terms of :attr:`balance` below::
+
+        balance(p.end) - balance(p.start - 1 day) == net + reconciliation
+
+    (the boundary form, so the FIRST period is covered too -- it has no
+    predecessor column to subtract).  That identity is a property of the
+    construction, not a coincidence: :attr:`net` sums the rows attributed to the
+    period on the BUDGET clock, :attr:`reconciliation` is what the same rows and
+    the same assertions contribute on the CASH clock MINUS that budget sum, and
+    the balances are the fold of those very steps.  Verified on the prod-shape
+    clone 2026-07-25 over 360 (account, period) pairs -- 6 non-loan accounts x
+    60 periods -- with zero breaks.
+
+    An INTEREST account's modelled accrual is NOT in :attr:`balance` (this is
+    the kind-blind CASH-FLOW view), so a grid layering it back on adds R-K's
+    third term and reads
+    ``balance[p] - balance[p-1] == net[p] + reconciliation[p] + increments[p]``.
+
+    Attributes:
+        balance: The fold's balance at the period's ``end_date``, cent-quantized
+            -- assertions replayed, settled cash counted from the day it moved,
+            and the still-projected plan clamped forward (ruling R-G).
+        income: Every row ATTRIBUTED to this period whose type is income --
+            settled at its confirmed cash leg, still-projected at its live or
+            entries-aware amount.  A magnitude, cent-quantized.
+        expense: The same, for expense rows.  A magnitude (positive), so the
+            column reads ``income`` minus ``expense``.
+        net: ``round_money(income - expense)`` -- rounded ONCE at the boundary
+            rather than as the difference of two separately-rounded legs, the
+            same discipline :class:`~app.services.cash_ledger.PeriodSubtotal`
+            keeps and for the same reason: it is the figure the balance
+            roll-forward has to reconcile with.
+        reconciliation: What the two subtotal rows cannot explain about the
+            balance change: money BUDGETED here that moved in another period (or
+            has not moved yet), money that MOVED here but is budgeted elsewhere,
+            and the balance ASSERTIONS the user made inside the period.  Zero for
+            a period where every row settled in its own column and nobody
+            re-anchored -- which is every FUTURE period, so the row is
+            conditional on screen.
+    """
+
+    balance: Decimal
+    income: Decimal
+    expense: Decimal
+    net: Decimal
+    reconciliation: Decimal
+
+
+def cash_period_view(
+    account: Account,
+    scenario_id: int,
+    as_of: date,
+    periods: "list[PayPeriod]",
+) -> "OrderedDict[int, CashPeriodFigures]":
+    """Return the account's cash column for each of *periods* -- ruling R-K.
+
+    ONE valued row set, grouped on TWO clocks, plus the assertion steps.  The
+    same walk and the same plan :func:`fold_cash_balances` folds are grouped here
+    a second way -- by the pay period each row was BUDGETED to -- so the grid's
+    balance row and its subtotal rows stop being two producers that a test has to
+    keep in step and become two readings of one set.
+
+    **Why the subtotals had to change basis, measured.**  Today's subtotal counts
+    only rows that are still UNPAID (``cash_ledger.sum_projected`` filters through
+    ``is_projected``), while a balance folded from the facts counts money that
+    MOVED.  On the real Checking account that identity breaks on 8 of 59 period
+    pairs -- worst ``$2,505.17`` -- and every past column reads ``$0.00`` income
+    and ``$0.00`` expenses while thousands of dollars moved through it
+    (finding N-41).  So :attr:`~CashPeriodFigures.income` /
+    :attr:`~CashPeriodFigures.expense` count EVERY row attributed to the period,
+    which is budget-vs-actual and fixes the ``$0.00`` past columns as a side
+    effect.  Verified on the prod-shape clone 2026-07-25: the eight past columns
+    go from ``$0.00`` to real figures, the current column from ``-$140.63`` to
+    ``$3,153.22``, and every FUTURE column is unchanged to the cent (nothing has
+    settled there, so the two bases coincide).
+
+    **What the remainder holds, and why it is one row.**  Three things the
+    subtotal rows structurally cannot say: a row that settled outside its own pay
+    period (19 of the real account's 130 settled rows; nets to ``$0.00`` across
+    history and swings to ``-$2,007.46`` inside one period), a still-projected row
+    ruling R-G clamped forward out of its column, and the balance ASSERTIONS (51
+    after the opening on the real account, ``-$2,906.31`` net).  Rejected at the
+    ruling: leaving the subtotals unpaid-only, which turns this row into a garbage
+    bucket holding all real past activity, and shipping no remainder row at all,
+    which leaves a visible contradiction on the screen.
+
+    **The OPENING assertion is not in it** (ruling R-I): the fold moves that one
+    correction into its seed -- back-projecting the first assertion over the
+    records it already contains -- so it moves no balance inside any period and
+    must not appear in a period's remainder either.
+
+    Kind-blind, exactly as the fold is (ruling R-J): this is the CASH-FLOW view,
+    whose balance has to reconcile with the transaction rows rendered beside it.
+    An INTEREST account's accrual is layered on ABOVE this by the grid view,
+    which is the ``+ increments[p]`` term of R-K's identity.
+
+    Args:
+        account: The account to project.  Must be attached to ``db.session``;
+            its kind is not consulted.
+        scenario_id: The budget scenario whose rows to group.
+        as_of: The reader's NOW (ruling R-G's clamp floor and the reservation's
+            valuation date) -- NOT a valuation date; each period is valued at its
+            own ``end_date``.
+        periods: The pay periods to report, in the caller's display order.  They
+            need not be contiguous and need not start at the account's anchor:
+            each period's figures are read off its OWN span, so a window is a
+            window rather than a re-based projection.
+
+    Returns:
+        ``OrderedDict`` period id -> :class:`CashPeriodFigures`, in the order
+        *periods* was given.  Every input period is present (a period with no
+        rows and no assertions reports zeros against its folded balance).
+    """
+    walk = walk_cash_ledger(account.id, scenario_id)
+    plan = _cash_plan(account, scenario_id, as_of)
+    day_nets = _planned_day_nets(plan, as_of)
+    seed, steps = _running_steps(walk, day_nets)
+    spans = _PeriodSpans.of(periods)
+    balances = sample_cumulative(
+        seed, steps, [period.end_date for period in periods],
+    )
+    return _assemble_figures(
+        periods,
+        balances,
+        _budget_legs(walk, plan, spans, as_of),
+        _cash_sums(walk, day_nets, spans),
+        _assertion_sums(walk, spans),
+    )
+
+
+@dataclass(frozen=True)
+class _PeriodSpans:
+    """The reported periods, indexed for "which column does this day fall in".
+
+    The CASH clock's grouping key.  A day is answered by the period whose
+    ``[start_date, end_date]`` span CONTAINS it, and by nothing otherwise -- no
+    nearest-period fallback, deliberately.  The seam's
+    :func:`~app.services.loan_ledger.find_period_containing_date` does fall back
+    to the latest period that ENDED before the target, which is right for the
+    question it answers (an anchor correction needs a home period, and
+    ``journal_entries.pay_period_id`` is NOT NULL) and wrong for this one: the
+    identity this index serves reads a period's balance change as the steps
+    inside its own span, so a step in a gap or past the horizon belongs to NO
+    column and must not be pulled into the previous one.
+
+    Pay periods do not overlap -- the generator rejects a batch whose earliest
+    start falls on or before the latest existing ``end_date``, because two
+    periods covering one day also make ``get_current_period`` nondeterministic --
+    so the latest period STARTING on or before a day is the only candidate that
+    can contain it, and one bisect answers.
+
+    Attributes:
+        starts: The periods' ``start_date`` values, ascending -- the bisect key.
+        periods: The same periods in that ascending order.
+    """
+
+    starts: "list[date]"
+    periods: "list[PayPeriod]"
+
+    @classmethod
+    def of(cls, periods: "list[PayPeriod]") -> "_PeriodSpans":
+        """Index *periods* by start date (the caller's order is not assumed).
+
+        Args:
+            periods: The pay periods to report, in any order.
+
+        Returns:
+            The :class:`_PeriodSpans` index.
+        """
+        ordered = sorted(periods, key=lambda period: period.start_date)
+        return cls(
+            starts=[period.start_date for period in ordered], periods=ordered,
+        )
+
+    def containing(self, day: date) -> "int | None":
+        """Return the id of the period whose span contains *day*, else ``None``.
+
+        Args:
+            day: The calendar day to place.
+
+        Returns:
+            The containing period's id, or ``None`` when *day* falls in a gap,
+            before the first reported period, or after the last one's end.
+        """
+        index = bisect_right(self.starts, day) - 1
+        if index < 0:
+            return None
+        period = self.periods[index]
+        return period.id if day <= period.end_date else None
+
+    def zeroed(self) -> "dict[int, Decimal]":
+        """Return a ``{period_id: 0.00}`` accumulator over every reported period.
+
+        Returns:
+            One zero per reported period, so a component's dict is TOTAL over
+            the window and a period with nothing in it reads ``0.00`` rather
+            than being missing.
+        """
+        return {period.id: _ZERO_MONEY for period in self.periods}
+
+
+def _budget_legs(
+    walk: CashLedgerWalk,
+    plan: _CashPlan,
+    spans: _PeriodSpans,
+    as_of: date,
+) -> "dict[int, tuple[Decimal, Decimal]]":
+    """Return ``{period_id: (income, expense)}`` on the BUDGET clock.
+
+    Every row ATTRIBUTED to a reported period, whatever day its money moved:
+    settled rows at the confirmed cash leg the walk already valued them at, and
+    still-projected rows at the shared ``sum_projected`` reduction -- the same
+    engine :func:`_planned_day_nets` reduces the same rows through on the other
+    clock, which is why the two groupings reconcile to the cent.
+
+    The income / expense split follows the transaction TYPE
+    (:attr:`~app.services.cash_ledger.CashSourceFact.is_income`), never the sign
+    of the row's value, and the difference is observable: a settled expense whose
+    ``actual_amount`` was corrected BELOW its credit-card entries has a POSITIVE
+    cash leg (it nets money back into checking) and still belongs on the expense
+    row, as a negative expense.  An expense that came back is not income.  The
+    net and the balance agree either way, which is exactly why the shape is
+    pinned -- it is the only one that can tell the two rules apart, and without
+    it this classification would be an untested claim
+    (``test_cash_period_view.py``:
+    ``test_a_row_counts_on_its_TYPE_row_even_when_its_cash_leg_inverts``).
+
+    Args:
+        walk: The account's walk -- its settled facts carry both clocks.
+        plan: The account's :class:`_CashPlan`.
+        spans: The reported periods.
+        as_of: The reader's NOW, forwarded to the shared reduction.
+
+    Returns:
+        ``{period_id: (income, expense)}`` -- both magnitudes, UNROUNDED (the
+        caller rounds once at the boundary), and total over the window.
+    """
+    income = spans.zeroed()
+    expense = spans.zeroed()
+    for fact in walk.source_facts:
+        if fact.pay_period_id not in income:
+            continue
+        if fact.is_income:
+            income[fact.pay_period_id] += fact.delta
+        else:
+            # A settled expense's leg is NEGATIVE (money left), and the expense
+            # row on screen is a magnitude.
+            expense[fact.pay_period_id] -= fact.delta
+    by_period: "dict[int, list[Transaction]]" = defaultdict(list)
+    for txn in plan.rows:
+        if txn.pay_period_id in income:
+            by_period[txn.pay_period_id].append(txn)
+    for period_id, txns in by_period.items():
+        projected_income, projected_expense = sum_projected(
+            txns, plan.overrides, as_of=as_of,
+        )
+        income[period_id] += projected_income
+        expense[period_id] += projected_expense
+    return {
+        period_id: (income[period_id], expense[period_id])
+        for period_id in income
+    }
+
+
+def _cash_sums(
+    walk: CashLedgerWalk,
+    day_nets: "dict[date, Decimal]",
+    spans: _PeriodSpans,
+) -> "dict[int, Decimal]":
+    """Return ``{period_id: net}`` on the CASH clock -- what MOVED in the period.
+
+    The same rows :func:`_budget_legs` groups by budget column, grouped instead
+    by the day each one's money moves: a settled row on the civil day its
+    attribution instant fell on, a planned row on the day ruling R-G lands it.
+    Assertions are NOT here -- they are :func:`_assertion_sums`, because an
+    assertion is not a row.
+
+    Args:
+        walk: The account's walk.
+        day_nets: The plan's per-day nets (:func:`_planned_day_nets`).
+        spans: The reported periods.
+
+    Returns:
+        ``{period_id: net}`` -- signed, UNROUNDED, total over the window.
+    """
+    moved = spans.zeroed()
+    for fact in walk.source_facts:
+        period_id = spans.containing(fact.visible_on)
+        if period_id is not None:
+            moved[period_id] += fact.delta
+    for day, net in day_nets.items():
+        period_id = spans.containing(day)
+        if period_id is not None:
+            moved[period_id] += net
+    return moved
+
+
+def _assertion_sums(
+    walk: CashLedgerWalk, spans: _PeriodSpans,
+) -> "dict[int, Decimal]":
+    """Return ``{period_id: correction}`` -- what the user's true-ups booked.
+
+    Every assertion correction EXCEPT the opening's, on the civil day it was
+    asserted.  The opening is excluded because ruling R-I moves it into the
+    fold's seed (:func:`_actual_steps`), where it back-projects over the records
+    it already contains rather than stepping the balance on its own day; counting
+    it here would put a jump in a column the balance never took.
+
+    The slice is the exact COMPLEMENT of :func:`_actual_steps`' ``[0]``, and
+    that is why it is a slice rather than a second ``is_opening`` test: two
+    independent predicates could come to disagree about which correction the
+    seed swallowed, while ``[0]`` and ``[1:]`` partition the list by
+    construction.
+
+    Args:
+        walk: The account's walk.  Its ``anchor_corrections`` are chronological
+            and the FIRST is the opening (the leaf's own contract).
+        spans: The reported periods.
+
+    Returns:
+        ``{period_id: correction}`` -- signed, UNROUNDED, total over the window.
+    """
+    asserted = spans.zeroed()
+    for correction in walk.anchor_corrections[1:]:
+        period_id = spans.containing(correction.visible_on)
+        if period_id is not None:
+            asserted[period_id] += correction.delta
+    return asserted
+
+
+def _assemble_figures(
+    periods: "list[PayPeriod]",
+    balances: "dict[date, Decimal]",
+    legs: "dict[int, tuple[Decimal, Decimal]]",
+    moved: "dict[int, Decimal]",
+    asserted: "dict[int, Decimal]",
+) -> "OrderedDict[int, CashPeriodFigures]":
+    """Combine the three groupings into one :class:`CashPeriodFigures` per period.
+
+    The remainder is computed HERE and directly -- ``what moved in the column``
+    minus ``what was budgeted to it``, plus the assertions -- rather than as the
+    leftover of the fold's balance change.  That distinction is the step's whole
+    verification standard: a remainder defined as ``balance_delta - net`` makes
+    the identity arithmetically true and therefore untestable, and it would
+    silently ABSORB a row the budget grouping got wrong.  Computed from the row
+    set, the identity is a claim the fold can falsify (Section 7.2).
+
+    Rounding is once at the boundary, on the same discipline
+    :class:`~app.services.cash_ledger.PeriodSubtotal` keeps: every leg reaching
+    this point is already cent-quantized (stored ``Numeric(12,2)`` columns, and
+    both live-override seams return ``round_money``), so the rounding is a no-op
+    on real data and the identity holds on the DISPLAYED figures, not merely on
+    the raw ones.
+
+    Args:
+        periods: The pay periods to report, in display order.
+        balances: The fold sampled at every period ``end_date``.
+        legs: The budget-clock ``(income, expense)`` per period.
+        moved: The cash-clock net per period.
+        asserted: The assertion corrections per period.
+
+    Returns:
+        ``OrderedDict`` period id -> :class:`CashPeriodFigures`.
+    """
+    figures: "OrderedDict[int, CashPeriodFigures]" = OrderedDict()
+    for period in periods:
+        income, expense = legs[period.id]
+        net = income - expense
+        figures[period.id] = CashPeriodFigures(
+            balance=balances[period.end_date],
+            income=round_money(income),
+            expense=round_money(expense),
+            net=round_money(net),
+            reconciliation=round_money(
+                moved[period.id] - net + asserted[period.id],
+            ),
+        )
+    return figures

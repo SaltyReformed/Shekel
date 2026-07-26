@@ -300,12 +300,19 @@ _FENCED_MODULE_RULINGS = {
         # ``settled_cash_facts`` are LOADERS returning stored assertions and
         # per-row signed effects; ``merge_anchor_and_cash_events`` orders those
         # two fact kinds against each other and returns them unchanged.
-        # ``visible_on`` is a public METHOD on ``CashSourceFact`` (W9909 sees
-        # public methods of public classes, which is the surface D3's review
-        # found W9910 structurally blind to): it returns the civil DAY one fact
-        # counts from -- a date, not a figure.
+        # ``visible_on`` is a public METHOD on ``CashSourceFact`` and, since plan
+        # step X-c1, on ``CashAnchorCorrection`` too (W9909 sees public methods
+        # of public classes, which is the surface D3's review found W9910
+        # structurally blind to): it returns the civil DAY one fact counts from
+        # -- a date, not a figure.  ``delta`` beside it is the correction that
+        # ONE assertion booked (``anchor_balance - balance_before``), the
+        # assertion twin of ``CashSourceFact.delta``: what one event contributed,
+        # never what the account holds.  Both are per-EVENT, and a per-event
+        # figure is not a balance per ACCOUNT -- the same ground the
+        # ``settled_cash_leg`` / ``split_*`` rulings stand on.
         "attribution_instant",
         "cash_anchor_facts",
+        "delta",
         "merge_anchor_and_cash_events",
         "settled_cash_facts",
         "visible_on",

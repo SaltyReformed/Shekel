@@ -109,6 +109,42 @@ class CashAnchorCorrection:
     anchor: CashAnchorFact
     balance_before: Decimal
 
+    @property
+    def visible_on(self) -> date:
+        """Return the civil day this correction COUNTS from -- its UTC day.
+
+        The assertion twin of :attr:`~._events.CashSourceFact.visible_on`, and
+        the same rule: one attribution instant, and the day falls out of it.
+
+        Returns:
+            The UTC calendar date of the assertion instant.
+        """
+        return utc_civil_date(self.anchor.asserted_at)
+
+    @property
+    def delta(self) -> Decimal:
+        """Return the jump this assertion's RESET booked over the records.
+
+        ``anchor_balance - balance_before``: what the user's declaration moved
+        the running balance by, on top of what the recorded facts alone had
+        produced.  ``0.00`` for the healthy steady state (an account whose every
+        movement is recorded needs no correction).
+
+        **Stated here so it is stated ONCE.**  Three readers need this pair --
+        :func:`dated_deltas` below, the fold's R-I seed
+        (``balance_at._cash_fold._actual_steps``), and the period view's
+        assertion component (``balance_at._cash_fold.cash_period_view``, plan
+        step X-c1) -- and until X-c1 the fold RE-DERIVED it, which its own
+        docstring had to pin with a test.  A property on the record retires that
+        re-derivation, exactly as :class:`~._events.CashSourceFact` already
+        carries its own ``visible_on`` / ``delta``.
+
+        Returns:
+            The signed correction as a ``Decimal``, in the same LEDGER-NATIVE
+            sign as the asserted balance.
+        """
+        return self.anchor.anchor_balance - self.balance_before
+
 
 @dataclass(frozen=True)
 class CashLedgerWalk:
@@ -209,12 +245,17 @@ def dated_deltas(walk: CashLedgerWalk) -> list[tuple[date, Decimal]]:
 
     The bridge from the walk (events ordered by the INSTANT they happened) to the
     civil day each event COUNTS FROM -- the cash twin of
-    :func:`app.services.loan_ledger.dated_deltas`, and the ONE statement of that
-    clock.  Each event contributes the amount it moved the running balance by:
+    :func:`app.services.loan_ledger.dated_deltas`.  It MERGES the two per-event
+    statements of that clock rather than restating either: each fact and each
+    correction carries its own ``visible_on`` / ``delta``, so a reader that needs
+    the two kinds apart (the fold's R-I seed, the period view's assertion
+    component) reads the same pair this list is built from.  Each event
+    contributes the amount it moved the running balance by:
 
-    * an assertion: ``anchor_balance - balance_before`` -- the jump its reset
-      booked;
-    * a settled source: its signed ``delta`` -- the cash that moved.
+    * an assertion: :attr:`CashAnchorCorrection.delta`
+      (``anchor_balance - balance_before``) -- the jump its reset booked;
+    * a settled source: its signed :attr:`~._events.CashSourceFact.delta` -- the
+      cash that moved.
 
     **These are the amounts the posting writer books onto the account's LINKED
     ledger, in the same sign -- NOT their negatives.**  The loan twin says
@@ -282,11 +323,7 @@ def dated_deltas(walk: CashLedgerWalk) -> list[tuple[date, Decimal]]:
     tagged: list[tuple[date, int, Decimal]] = [
         (fact.visible_on, 0, fact.delta) for fact in walk.source_facts
     ] + [
-        (
-            utc_civil_date(correction.anchor.asserted_at),
-            1,
-            correction.anchor.anchor_balance - correction.balance_before,
-        )
+        (correction.visible_on, 1, correction.delta)
         for correction in walk.anchor_corrections
     ]
     tagged.sort(key=lambda step: (step[0], step[1]))

@@ -133,13 +133,31 @@ class CashAnchorFact:
 
 @dataclass(frozen=True)
 class CashSourceFact:
-    """One settled transaction's signed effect on the account, and when.
+    """One settled transaction's signed effect on the account, when, and whose column.
 
     The ACTUAL half of the event stream: cash that really moved.  Its delta is
     the SHARED :func:`app.services.cash_ledger.settled_cash_leg` -- the same
     ``effective_amount - Sigma(credit entries)`` the posting writer books -- so
     for an ORDINARY transaction the walk and the posted ledger value one row
     identically by construction, not by two rules that happen to agree.
+
+    **It carries TWO clocks, and the second one is not decoration** (plan step
+    X-c1).  :attr:`occurred_at` is the CASH clock -- when the money moved, which
+    is what a balance is folded on -- while :attr:`pay_period_id` is the BUDGET
+    clock, the column the row was budgeted in.  They are the same period for 111
+    of the real Checking account's 130 settled rows and different for 19
+    (measured on the prod-shape clone 2026-07-25), and that difference IS the
+    grid's Reconciliation row: a row settled outside its own pay period moves the
+    balance in one column while its income / expense subtotal sits in another.
+    Carrying both here is what lets ONE valued row set be grouped on either
+    clock, rather than a second load answering the second question (ruling R-K).
+    :attr:`is_income` is the leg the budget clock sorts the row into, and it is
+    the row's TYPE rather than the sign of :attr:`delta` because the two can
+    disagree: a settled expense whose ``actual_amount`` was corrected below its
+    credit-card entries has a POSITIVE cash leg and is still an expense (one that
+    came back), while :func:`app.services.cash_ledger.settled_cash_leg` derives
+    that sign FROM the type in the first place -- reading it back off the sign is
+    inverting a lossy function.
 
     **The scope of that "by construction" is ordinary transactions, and stating
     the exception is part of the claim.**  A TRANSFER shadow is posted by
@@ -173,6 +191,13 @@ class CashSourceFact:
     Attributes:
         transaction_id: The source row's id (identity for the walk's output and
             for the posting writer's attribution at plan step X-d).
+        pay_period_id: The BUDGET clock -- the ``budget.pay_periods`` row the
+            transaction is attributed to (NOT NULL on the column).  Never used
+            to date the event; the cash clock is :attr:`occurred_at` alone.
+        is_income: Whether the source row is an INCOME transaction (its
+            ``transaction_type_id``), so a budget-clock reduction can split the
+            income and expense legs by type rather than by the sign of
+            :attr:`delta`.
         occurred_at: The attribution instant (:func:`attribution_instant`) --
             what the anchor partition compares against.
         delta: The signed confirmed cash effect
@@ -182,6 +207,8 @@ class CashSourceFact:
     """
 
     transaction_id: int
+    pay_period_id: int
+    is_income: bool
     occurred_at: datetime
     delta: Decimal
 
@@ -250,7 +277,11 @@ def settled_cash_facts(
     """Return an account's SETTLED transaction rows as dated facts.
 
     The ACTUAL events the walk folds: every balance-contributing row for the
-    account in the scenario whose status is settled, valued and dated once.
+    account in the scenario whose status is settled, valued and dated once --
+    and carrying the budget column it was attributed to, so the ONE valued row
+    set can be grouped on either clock (see :class:`CashSourceFact`).  Both
+    extra fields are free: the shared loader already joins ``pay_period``, and
+    the transaction TYPE is a column on the row it already holds.
 
     **It loads its own rows and takes no period window, deliberately.**  An
     argument a caller can get wrong is a defect, not a contract (plan Section 8):
@@ -298,6 +329,8 @@ def settled_cash_facts(
     facts = [
         CashSourceFact(
             transaction_id=txn.id,
+            pay_period_id=txn.pay_period_id,
+            is_income=txn.is_income,
             occurred_at=attribution_instant(
                 txn.paid_at, txn.pay_period.start_date,
             ),
