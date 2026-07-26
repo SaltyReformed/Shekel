@@ -59,7 +59,7 @@ from app.utils.balance_predicates import is_projected
 from ._amounts import _expense_amount, income_amount
 
 
-def sum_projected(transactions, amount_overrides=None, *, as_of=None):
+def sum_projected(transactions, amount_overrides=None):
     """Sum projected (unsettled) income and expenses for one pay period.
 
     Part of this module's public surface (no leading underscore): both cash
@@ -93,32 +93,31 @@ def sum_projected(transactions, amount_overrides=None, *, as_of=None):
     entries and honors a live override, falling back to effective_amount
     otherwise.
 
-    **The as-of window is a parameter here too (plan step D1c).**
-    ``balance_resolver`` carried a private ``_sum_period_as_of`` whose own
-    docstring said it "mirrors ``sum_projected``" and differed in exactly one
-    expression -- the expense valuation.  Two loops applying the same
-    Projected gate to the same rows, kept in step by hand, is the
-    agreeing-by-coincidence shape the balance arc exists to end; the date cut
-    is DATA, so it belongs in a parameter rather than in a second copy.  It is
-    a date rather than an injected valuation function deliberately: an
-    argument a caller can get wrong is a defect, not a contract, and a wrong
-    function here would silently ship a wrong balance.
+    **It takes no date (plan step X-c2c1).**  D1c had unified two loops --
+    ``balance_resolver``'s private ``_sum_period_as_of``, whose own docstring
+    said it "mirrors ``sum_projected``" and differed in exactly one expression
+    -- into one reduction with an optional ``as_of`` bounding ENTRY inclusion
+    inside the expense leg (E-27 / HIGH-02).  Ruling R-M then closed the fork
+    that bound existed for at the SOURCE (plan step X-c0 refuses a future
+    ``entry_date`` at both write doors), so it provably dropped nothing and
+    deleted; the rationale is stated once, at
+    :func:`~app.services.cash_ledger._amounts._entry_aware_amount`.  What a row
+    is WORTH is now a function of the row, so ruling R-G's clamp in the seam's
+    fold is the only place a cash balance consults a date.
+
+    Scoped honestly, because "no clock" would be a stronger claim than the code
+    supports: the *override map* this reduction is HANDED can still be built
+    from a wall-clock read one package over
+    (``loan_payment_service.live_loan_transfer_amounts`` calls ``date.today()``
+    for a derive-mode loan-payment shadow -- finding **N-40**, recorded and
+    unchanged here).  This function reads no clock; its inputs are not yet
+    guaranteed to have been built without one.
 
     Args:
         transactions: Transaction objects for a single pay period.
         amount_overrides: Optional ``{transaction_id: Decimal}`` live
             projected-net map (Workstream B); None preserves the
             stored-amount behavior byte-identical.
-        as_of: Optional calendar date bounding ENTRY inclusion inside the
-            expense reduction (E-27 / HIGH-02), forwarded verbatim to
-            :func:`~app.services.cash_ledger._amounts._expense_amount`.
-            ``None`` (the default) counts every loaded entry, which is what
-            a period-boundary balance walk wants; a date is what the fold's
-            plan tier passes so a purchase dated after it does not reduce the
-            reservation early.  Transactions themselves are NEVER filtered by
-            it -- the date-sensitivity lives in the per-entry reduction, not
-            in row inclusion.  Income carries no entries, so the bound is a
-            no-op on that leg either way.
 
     Returns:
         (total_income, total_expenses) as a Decimal tuple.
@@ -133,6 +132,6 @@ def sum_projected(transactions, amount_overrides=None, *, as_of=None):
         if txn.is_income:
             income += income_amount(txn, amount_overrides)
         elif txn.is_expense:
-            expenses += _expense_amount(txn, amount_overrides, as_of)
+            expenses += _expense_amount(txn, amount_overrides)
 
     return income, expenses

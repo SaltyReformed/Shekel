@@ -76,18 +76,18 @@ def _entry_checking_impact(entries, estimated_amount):
     """Three-bucket checking reservation for a sequence of debit/credit entries.
 
     The core of the entry-aware reduction, with exactly ONE caller:
-    :func:`_entry_aware_amount` below, which owns both the as-of window and the
-    empty-entries short-circuit.
+    :func:`_entry_aware_amount` below, which owns the empty-entries
+    short-circuit.
 
     **It is private, and D1c is what made that the honest answer.**  It was
     public for one documented reason -- ``balance_resolver`` held a second copy
     of the reduction (``_entry_aware_amount_dated``) and reached in here for the
     shared bucketing so the two paths "could not drift between the two balance
-    paths".  D1c deleted that copy: the window is a parameter now, so there is
-    no second path to keep in step, and a public name justified by a caller that
-    no longer exists is the stale-rationale shape finding N-30 is about.  Being
-    private also retires its W9909 ruling -- structure doing what a fence entry
-    was doing, which is the whole point of Phase D.
+    paths".  D1c deleted that copy, so there is no second path to keep in step,
+    and a public name justified by a caller that no longer exists is the
+    stale-rationale shape finding N-30 is about.  Being private also retires its
+    W9909 ruling -- structure doing what a fence entry was doing, which is the
+    whole point of Phase D.
 
     Partitions the supplied entries into three buckets and returns the portion
     of the budget still held back against checking:
@@ -107,15 +107,15 @@ def _entry_checking_impact(entries, estimated_amount):
     transaction), so it only reduces the reservation.
 
     This function sees whatever entry set it is handed and applies the
-    bucketing to all of it.  Windowing by ``as_of`` and short-circuiting an
-    empty set both belong to the caller, and there is now exactly one, so those
-    two decisions are made once rather than kept in step across two paths.
+    bucketing to all of it.  Short-circuiting an empty set belongs to the
+    caller, and there is exactly one, so that decision is made once rather than
+    kept in step across two paths.
 
     Args:
         entries: An iterable of entry rows, each exposing ``amount``
             (Decimal), ``is_credit`` (bool), and ``is_cleared`` (bool).
-            The caller is responsible for any date/window filtering and
-            for short-circuiting an empty sequence before calling.
+            The caller is responsible for short-circuiting an empty
+            sequence before calling.
         estimated_amount: Decimal -- the transaction's budgeted amount,
             the reservation ceiling before debits and credits reduce it.
 
@@ -140,7 +140,7 @@ def _entry_checking_impact(entries, estimated_amount):
     )
 
 
-def _entry_aware_amount(txn, as_of=None):
+def _entry_aware_amount(txn):
     """Compute the checking-balance impact for a single expense transaction.
 
     For projected expenses with entries (loaded eagerly or
@@ -214,30 +214,34 @@ def _entry_aware_amount(txn, as_of=None):
     yielding two different values for two different consumers based
     purely on whether their query happened to ``selectinload``.
 
-    **The as-of window is a PARAMETER, not a second function (plan step
-    D1c).**  ``balance_resolver`` carried a near-identical
-    ``_entry_aware_amount_dated`` whose docstring said "the formula is
-    otherwise identical to the engine helper" -- two copies of the
-    checking-reservation rule, kept in step by hand, which is the
-    agreeing-by-coincidence shape this arc exists to kill (and which
-    ``duplicate-code`` reported the moment both copies called the same
-    ``income_amount``).  One rule with an optional bound cannot drift, and
-    it makes the choice VISIBLE at the call site: a caller now passes a
-    date or does not, rather than having to remember which of two helpers
-    the calendar surfaces need.
+    **There is no as-of window, and the reason is what an ENTRY is (plan step
+    X-c2c1, ruling R-M).**  This carried an optional date bound (E-27 / HIGH-02
+    / W-277) that dropped entries dated after the reader's now, so a purchase
+    that had not happened could not clear the reservation early.  Ruling R-M
+    answered that at the SOURCE instead: an entry RECORDS a purchase that
+    happened, so plan step X-c0 refuses ``entry_date > display_today()`` at both
+    write doors (:func:`app.services.entry_service._reject_future_entry_date`)
+    -- and a purchase that happened belongs in the reservation whatever date the
+    reader is asking from.  What a row is WORTH is a function of the row, as
+    :func:`settled_cash_leg` beside it already is; the reader's clock decides
+    WHEN the row lands (ruling R-G's clamp, in the seam's fold), never what it
+    is worth.
+
+    Two measured facts, so the deletion is not read as merely tidy.  It moves
+    nothing: no stored entry is dated after any reader's now -- the write guard
+    bounds every row at ``display_today()``, which is never after the UTC
+    ``date.today()`` a :class:`~app.services.balance_at.BalanceContext` pins by
+    default, and zero rows in either database carry a future date (0 of 74 and 0
+    of 47, re-verified 2026-07-26).  And the only read it could ever have
+    changed is a HISTORICAL one, whose plan is TODAY's still-Projected rows
+    clamped forward rather than the plan as it stood then -- so windowing their
+    entries was a partial as-of purity inside a tier that has none.
 
     Args:
         txn: A Transaction object.  The ``entries`` relationship may
             be eager-loaded (canonical producer), unloaded
             (transitional caller; lazy-loads on demand), or absent
             (test fake).
-        as_of: Optional calendar date bounding entry inclusion (E-27 /
-            HIGH-02 / W-277).  ``None`` (the default) counts every loaded
-            entry.  With a date, entries dated AFTER it are excluded: a
-            purchase that has not happened yet cannot have cleared the
-            bank as of that date, and counting it would reduce the
-            reservation prematurely and ship a wrong balance for a
-            calendar month-end.
 
     Returns:
         Decimal -- the amount this transaction contributes to checking
@@ -266,16 +270,6 @@ def _entry_aware_amount(txn, as_of=None):
     # resolver.
     if not is_projected(txn):
         return txn.effective_amount
-
-    if as_of is not None:
-        entries = [entry for entry in entries if entry.entry_date <= as_of]
-        if not entries:
-            # No purchase has occurred yet as of ``as_of``; the full
-            # estimated reservation is still pending.  ``effective_amount``
-            # collapses to estimated for an unfilled Projected expense
-            # (actual_amount is unset until it settles), so this matches
-            # the unwindowed empty-entries branch above.
-            return txn.effective_amount
 
     # Partition the entries and hold back the unreconciled budget.  The
     # bucketing rule and the reservation formula live once, in
@@ -400,7 +394,7 @@ def income_amount(txn, amount_overrides):
     return txn.effective_amount if override is None else override
 
 
-def _expense_amount(txn, amount_overrides, as_of=None):
+def _expense_amount(txn, amount_overrides):
     """Return the expense contribution for ``txn``, honoring a live override.
 
     The expense-leg analogue of :func:`income_amount`.  When the
@@ -414,24 +408,20 @@ def _expense_amount(txn, amount_overrides, as_of=None):
     from the map) returns the entry-aware amount unchanged, so non-loan
     expenses and the pre-seam behavior are byte-identical.
 
-    An override WINS over the as-of window, exactly as it wins over the
-    entry formula: a live-derived amount is what the row is worth now, and
-    it carries no entries to window.
+    An override WINS over the entry formula: a live-derived amount is what
+    the row is worth now, and it carries no entries to reduce.
 
     Args:
         txn: An expense Transaction.
         amount_overrides: Optional ``{transaction_id: Decimal}`` map, or
             None.
-        as_of: Optional calendar date bounding entry inclusion, forwarded
-            verbatim to :func:`_entry_aware_amount`; ``None`` counts every
-            loaded entry.
 
     Returns:
         Decimal -- the override amount when present, else
         :func:`_entry_aware_amount`.
     """
     override = _override_for(txn, amount_overrides)
-    return _entry_aware_amount(txn, as_of) if override is None else override
+    return _entry_aware_amount(txn) if override is None else override
 
 
 def live_amount_overrides(account, scenario_id, transactions):

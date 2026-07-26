@@ -280,13 +280,14 @@ class TestDailySeriesEdges:
 
         **The purchase is dated BEFORE the suite's frozen today (2026-03-20)
         because a purchase that has not happened cannot have cleared the bank**
-        (ruling R-M / finding N-39, wired at plan step X-c2b2): the fold values
-        a planned row's reservation at the reader's now, so an entry dated
-        after it is excluded and the row holds back its full estimate.  Plan
-        step X-c0 refuses a future ``entry_date`` at both write doors, so the
-        state this fixture used to seed -- an entry dated ahead of today -- is
-        no longer reachable through the app.  Backdating stays allowed and is
-        what this fixture uses.
+        (ruling R-M / finding N-39): plan step X-c0 refuses a future
+        ``entry_date`` at both write doors, so the state this fixture used to
+        seed -- an entry dated ahead of today -- is no longer reachable through
+        the app.  The fixture is realistic for that reason and no longer for the
+        reader's: plan step X-c2c1 deleted the reservation's entry window once
+        the write door made it unable to drop anything, so this row's
+        reservation would be the same $200 at any ``as_of``.  Backdating stays
+        allowed and is what this fixture uses.
         """
         with app.app_context():
             txn = _add_txn(

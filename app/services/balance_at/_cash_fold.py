@@ -160,16 +160,17 @@ def _assemble(
         scenario_id: The budget scenario whose rows to fold.  Assertions are
             per-ACCOUNT and replay in every scenario; only the transaction rows
             are scenario-scoped.
-        as_of: The reader's NOW -- the floor a still-Projected row's effective
-            date is clamped up to (ruling R-G), and the date its entries-aware
-            reservation is valued at.
+        as_of: The reader's NOW, and since plan step X-c2c1 deleted the
+            reservation's entry window it does exactly ONE job: it is the floor
+            a still-Projected row's effective date is clamped up to (ruling
+            R-G).  It decides WHEN a row lands, never what it is worth.
 
     Returns:
         The :class:`_AssembledFold`.
     """
     walk = walk_cash_ledger(account.id, scenario_id)
     plan = _cash_plan(account, scenario_id, as_of)
-    day_nets = _planned_day_nets(plan, as_of)
+    day_nets = _planned_day_nets(plan)
     seed, steps = _running_steps(walk, day_nets)
     return _AssembledFold(
         seed=seed, steps=steps, walk=walk, plan=plan, day_nets=day_nets,
@@ -461,9 +462,7 @@ def _cash_plan(
     )
 
 
-def _planned_day_nets(
-    plan: _CashPlan, as_of: date,
-) -> "dict[date, Decimal]":
+def _planned_day_nets(plan: _CashPlan) -> "dict[date, Decimal]":
     """Return ``{day: net}`` for the plan -- what each landing day is WORTH.
 
     The PLANNED tier's reduction, split from its load (:func:`_cash_plan`) so the
@@ -480,20 +479,21 @@ def _planned_day_nets(
     which is also why :func:`_budget_legs` may reduce the same rows grouped by
     pay period and get an answer that reconciles with this one to the cent.
 
-    The reservation is valued at *as_of* (``sum_projected``'s entry-date window),
-    so an entry dated AFTER the reader's now cannot reduce the reservation early.
-    That is R-G's own principle applied one level down -- a purchase that has not
-    happened cannot have cleared the bank -- and it is a deliberate choice between
-    the two the shipping producers already make (the scalar windows, the grid and
-    the daily ramp do not).  It moves no money on today's real data: measured
-    2026-07-25, ZERO entries on projected rows are dated after today in either
-    database.  Recorded as finding N-39 and CLOSED by ruling R-M: plan step X-c0
-    refuses a future ``entry_date`` at both write doors, after which the window
-    can drop nothing and X-c2 deletes it.
+    **The reservation reads no clock, and that is the whole of finding N-39's
+    resolution.**  This reduction once passed *as_of* as ``sum_projected``'s
+    entry-date window, so an entry dated after the reader's now could not reduce
+    the reservation early -- a deliberate pick between the two answers the three
+    shipping producers gave (the scalar windowed, the grid and the daily ramp did
+    not).  Ruling R-M closed the fork at the SOURCE rather than picking a winner:
+    plan step X-c0 refuses ``entry_date > display_today()`` at both write doors,
+    after which the window could drop nothing, and plan step X-c2c1 deleted it.
+    So a planned row's WORTH is now a function of the row alone and *as_of*
+    survives in this module for exactly one job -- ruling R-G's clamp, which
+    :func:`_cash_plan` applied when it keyed these groups by day.
 
     Args:
-        plan: The account's :class:`_CashPlan`.
-        as_of: The reader's NOW -- the date the reservation is valued at.
+        plan: The account's :class:`_CashPlan`, already keyed onto the day each
+            row lands on (ruling R-G's clamp, applied at load).
 
     Returns:
         ``{day: net}`` -- one entry per day carrying at least one planned row,
@@ -502,7 +502,7 @@ def _planned_day_nets(
     """
     nets: "dict[date, Decimal]" = {}
     for day, txns in plan.by_day.items():
-        income, expense = sum_projected(txns, plan.overrides, as_of=as_of)
+        income, expense = sum_projected(txns, plan.overrides)
         nets[day] = income - expense
     return nets
 
@@ -638,9 +638,8 @@ def cash_period_view(
         account: The account to project.  Must be attached to ``db.session``;
             its kind is not consulted.
         scenario_id: The budget scenario whose rows to group.
-        as_of: The reader's NOW (ruling R-G's clamp floor and the reservation's
-            valuation date) -- NOT a valuation date; each period is valued at its
-            own ``end_date``.
+        as_of: The reader's NOW (ruling R-G's clamp floor) -- NOT a valuation
+            date; each period is valued at its own ``end_date``.
         periods: The pay periods to report, in the caller's display order.  They
             need not be contiguous and need not start at the account's anchor:
             each period's figures are read off its OWN span, so a window is a
@@ -658,7 +657,7 @@ def cash_period_view(
         columns=_assemble_figures(
             periods,
             _period_balances(folded, periods),
-            _budget_legs(folded.walk, folded.plan, spans, as_of),
+            _budget_legs(folded.walk, folded.plan, spans),
             _cash_sums(folded.walk, folded.day_nets, spans),
             _assertion_sums(folded.walk, spans),
         ),
@@ -741,7 +740,6 @@ def _budget_legs(
     walk: CashLedgerWalk,
     plan: _CashPlan,
     spans: _PeriodSpans,
-    as_of: date,
 ) -> "dict[int, tuple[Decimal, Decimal]]":
     """Return ``{period_id: (income, expense)}`` on the BUDGET clock.
 
@@ -767,7 +765,6 @@ def _budget_legs(
         walk: The account's walk -- its settled facts carry both clocks.
         plan: The account's :class:`_CashPlan`.
         spans: The reported periods.
-        as_of: The reader's NOW, forwarded to the shared reduction.
 
     Returns:
         ``{period_id: (income, expense)}`` -- both magnitudes, UNROUNDED (the
@@ -789,9 +786,7 @@ def _budget_legs(
         if txn.pay_period_id in income:
             by_period[txn.pay_period_id].append(txn)
     for period_id, txns in by_period.items():
-        projected_income, projected_expense = sum_projected(
-            txns, plan.overrides, as_of=as_of,
-        )
+        projected_income, projected_expense = sum_projected(txns, plan.overrides)
         income[period_id] += projected_income
         expense[period_id] += projected_expense
     return {

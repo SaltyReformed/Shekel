@@ -662,26 +662,32 @@ class TestThePlannedTier:
         assert folded[date(2026, 4, 4)] == Decimal("1000.00")
         assert folded[date(2026, 4, 5)] == Decimal("920.00")
 
-    def test_an_entry_dated_after_the_reader_now_does_not_clear_early(
+    def test_the_reservation_reads_no_clock_whatever_the_readers_as_of(
         self, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """PINNED, NOT ENDORSED -- finding N-39, for plan step X-c to rule on.
+        """RULED (R-M) and pinned: what a row is WORTH is not a function of *as_of*.
 
-        The same envelope, with its cleared $120.00 purchase dated 2026-04-06 --
-        AFTER the reader's ``as_of`` of 2026-04-02.  The fold passes ``as_of``
-        as ``sum_projected``'s entry window, so that purchase does not reduce
-        the reservation: a purchase that has not happened cannot have cleared
-        the bank, which is ruling R-G's own principle one level down.
-        Hand-computed: the row is worth its full $200.00, so the fold reads
-        $800.00 from 04-05.
+        The firing control for plan step X-c2c1's deletion, and the negative
+        twin of the test above.  The SAME envelope and the same $120.00 cleared
+        purchase, moved to 2026-04-06 -- four days AFTER the reader's ``as_of``
+        of 2026-04-02 -- must reduce the reservation identically: the fold reads
+        ``max(200.00 - 120.00 - 0, 0) = 80.00`` and answers the same $920.00 on
+        04-05 that the entry dated 04-01 produces.
 
-        It is a genuine fork and it is NOT ruled: of the three shipping
-        producers the calendar scalar windows entries this way while the grid
-        and the daily ramp do not, and the fold must pick one.  It moves no
-        money on real data -- measured 2026-07-25, ZERO entries on projected
-        rows are dated after today in either database -- so this is latent, and
-        the choice is recorded rather than buried.  This test flips if X-c rules
-        the other way.
+        This was finding N-39, and it was a genuine three-way fork: the retired
+        calendar scalar windowed entries by the reader's now while the grid and
+        the daily ramp did not, so the fold had to pick one.  Ruling R-M closed
+        it at the SOURCE instead of picking -- plan step X-c0 refuses
+        ``entry_date > display_today()`` at both write doors, so no stored entry
+        can be dated after any reader's now and the window provably dropped
+        nothing.  What it could still have done is fire on a HISTORICAL read,
+        whose plan is TODAY's still-Projected rows clamped forward (ruling R-G)
+        rather than the plan as it stood then -- a partial as-of purity inside a
+        tier that has none.
+
+        So ``as_of`` now means exactly ONE thing in this fold, R-G's clamp
+        floor, and this test is what fails if a window is ever re-introduced:
+        restoring it answers $800.00 here.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         _opened_at(account, _instant(2026, 1, 1))
@@ -703,7 +709,7 @@ class TestThePlannedTier:
 
         folded = _fold(account, scenario, [date(2026, 4, 5)],
                        as_of=date(2026, 4, 2))
-        assert folded[date(2026, 4, 5)] == Decimal("800.00")
+        assert folded[date(2026, 4, 5)] == Decimal("920.00")
 
 
 class TestScope:

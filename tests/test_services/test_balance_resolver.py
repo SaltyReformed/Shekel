@@ -692,29 +692,31 @@ class TestBalancesForEntriesAware:
             assert result[anchor_period.id] == Decimal("100.00")
 
 
-# ── One projected sum, one optional bound (plan step D1c) ──────────
+# ── One projected sum, and it reads no clock (D1c, then X-c2c1) ────
 
 
-class TestSumProjectedAsOfBound:
-    """``sum_projected``'s ``as_of`` replaces a duplicated second loop (D1c).
+class TestTheProjectedSumValuesAnExpenseRow:
+    """How ``sum_projected`` prices ONE still-Projected expense, and no date.
 
-    ``balance_resolver`` carried a private ``_sum_period_as_of`` plus a private
-    ``_entry_aware_amount_dated``, whose own docstrings said they "mirror" the
-    engine and were "otherwise identical to the engine helper".  Two copies of
-    the checking-reservation rule, kept in step by hand, is the
+    ``balance_resolver`` once carried a private ``_sum_period_as_of`` plus a
+    private ``_entry_aware_amount_dated``, whose own docstrings said they
+    "mirror" the engine and were "otherwise identical to the engine helper".
+    Two copies of the checking-reservation rule, kept in step by hand, is the
     agreeing-by-coincidence shape this arc exists to end -- and pylint's
     cross-file ``duplicate-code`` reported it the moment D1c made both copies
-    call the same ``income_amount``.
+    call the same ``income_amount``.  D1c unified them into ONE rule carrying
+    an optional ``as_of`` bound over entry inclusion.
 
-    They are now ONE rule with an optional date bound.  These tests pin the
-    equivalence in both directions, because a DRY refactor of a predicate can
-    move money: ``as_of=None`` must reproduce the unwindowed answer exactly,
-    and a bound must still cut.  The E-27 suite that graded the DATED path
-    end-to-end (C9-1..C9-6) went with ``balance_as_of_date`` at plan step
-    X-c2b3; the dated path is now the fold's own plan tier, graded on
-    hand-computed figures in ``test_cash_fold.py``'s ``TestThePlannedTier``
-    (``test_an_entry_dated_after_the_reader_now_does_not_clear_early`` is this
-    bound's end-to-end half).
+    **Plan step X-c2c1 deleted that bound**, so what is left here is the
+    reduction's clock-free half: every loaded entry counts, an override wins
+    over the formula, and the no-entries short-circuit precedes the status
+    read.  Ruling R-M closed the bound's fork at the write door instead (plan
+    step X-c0 refuses ``entry_date > display_today()``), after which it could
+    drop nothing; the two tests that existed only to prove a bound CUTS went
+    with it, and the teeth moved to where a date still exists --
+    ``test_cash_fold.py``'s
+    ``test_the_reservation_reads_no_clock_whatever_the_readers_as_of``, which
+    fails if a window is ever re-introduced.
     """
 
     @staticmethod
@@ -738,8 +740,8 @@ class TestSumProjectedAsOfBound:
         db_session.commit()
         return txn
 
-    def test_no_bound_counts_every_entry(self, app, db, seed_user, seed_periods):
-        """``as_of=None`` reduces over every loaded entry (the period-walk case).
+    def test_every_loaded_entry_counts(self, app, db, seed_user, seed_periods):
+        """The reduction sees every loaded entry, whatever date each carries.
 
         cleared_debit = 200.00 + 250.00 = 450.00; uncleared = 0; credit = 0.
         impact = max(500.00 - 450.00 - 0, 0) = 50.00.
@@ -758,65 +760,15 @@ class TestSumProjectedAsOfBound:
             assert income == Decimal("0.00")
             assert expense == Decimal("50.00")
 
-    def test_bound_after_every_entry_equals_no_bound(
+    def test_live_override_wins_over_the_entry_formula(
         self, app, db, seed_user, seed_periods,
     ):
-        """A bound past the last entry is indistinguishable from no bound.
-
-        The equivalence that makes ONE function safe for both callers: the
-        window is empty of exclusions, so the answer must be the identical
-        50.00 the unwindowed call returns.
-        """
-        with app.app_context():
-            self._expense_with_two_cleared_debits(
-                db.session, seed_user, seed_periods[0],
-            )
-            txns = load_balance_transactions(
-                seed_user["account"], seed_user["scenario"].id,
-                [seed_periods[0].id],
-            )
-
-            unwindowed = sum_projected(txns)
-            windowed = sum_projected(txns, as_of=_date(2026, 1, 31))
-
-            assert windowed == unwindowed
-            assert windowed[1] == Decimal("50.00")
-
-    def test_bound_before_an_entry_excludes_it(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """TEETH: a bound inside the entry span changes the answer.
-
-        With ``as_of`` = Jan 10 only the Jan 5 debit is in window:
-        cleared_debit = 200.00, impact = max(500.00 - 200.00, 0) = 300.00.
-
-        The strict inequality against the unwindowed 50.00 is what proves the
-        bound is actually threaded through ``_expense_amount`` into
-        ``_entry_aware_amount`` -- a parameter that silently went nowhere would
-        return 50.00 here and this assertion would fail.
-        """
-        with app.app_context():
-            self._expense_with_two_cleared_debits(
-                db.session, seed_user, seed_periods[0],
-            )
-            txns = load_balance_transactions(
-                seed_user["account"], seed_user["scenario"].id,
-                [seed_periods[0].id],
-            )
-
-            _, expense = sum_projected(txns, as_of=_date(2026, 1, 10))
-
-            assert expense == Decimal("300.00")
-            assert expense != sum_projected(txns)[1]
-
-    def test_live_override_wins_over_the_bound(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """An override short-circuits the entry formula, windowed or not.
+        """An override short-circuits the entry formula entirely.
 
         A live-derived amount is what the row is worth now and carries no
-        entries to window, so both calls must return the override verbatim --
-        the ordering the pre-D1c dated leg also had (override checked first).
+        entries to reduce, so the override is returned verbatim rather than
+        the 50.00 the three-bucket reservation would give -- the ordering the
+        pre-D1c dated leg also had (override checked first).
         """
         with app.app_context():
             txn = self._expense_with_two_cleared_debits(
@@ -829,9 +781,6 @@ class TestSumProjectedAsOfBound:
             overrides = {txn.id: Decimal("123.45")}
 
             assert sum_projected(txns, overrides)[1] == Decimal("123.45")
-            assert sum_projected(
-                txns, overrides, as_of=_date(2026, 1, 10),
-            )[1] == Decimal("123.45")
 
     def test_no_entries_short_circuits_before_the_status_read(self):
         """The guard ORDER is preserved: no entries returns before ``is_projected``.
@@ -848,12 +797,13 @@ class TestSumProjectedAsOfBound:
         ``is_projected`` reads ``status_id`` BEFORE it consults ``ref_cache``,
         so that attribute, not the cache, is what the ordering protects.
 
-        Note the DATED path gains this property rather than preserving it: the
+        Note the DATED path gained this property rather than preserving it: the
         deleted ``_entry_aware_amount_dated`` checked ``is_projected`` first and
         so raised on this fake.  Nothing reached it that way in production
         (``sum_projected`` gates on ``is_projected`` before calling the expense
-        leg at all), so the unification is safe in the direction that matters
-        and strictly more total in the other.
+        leg at all), so the unification was safe in the direction that matters
+        and strictly more total in the other.  Plan step X-c2c1 then deleted the
+        date parameter, leaving one signature and this one ordering.
         """
         class _Fake:  # pylint: disable=too-few-public-methods
             """A non-ORM stand-in with no ``entries`` and no ``status_id``."""
@@ -861,7 +811,6 @@ class TestSumProjectedAsOfBound:
             effective_amount = Decimal("77.00")
 
         assert _entry_aware_amount(_Fake()) == Decimal("77.00")
-        assert _entry_aware_amount(_Fake(), _date(2026, 1, 10)) == Decimal("77.00")
 
 
 # ── Module surface ─────────────────────────────────────────────────
