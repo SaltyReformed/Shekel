@@ -103,7 +103,7 @@ post-cutover premium equals the cumulative interest to the cent, `$658.26`), **N
 path's own transaction query and `calculate_balances_with_interest` join the deletion list),
 **N-54** (the account-detail interest chip moves `$284.34` -> `$217.75`), and **N-55** (two seam
 docstrings cite an obligations panel that no longer exists).  N-44's own figure is corrected:
-`/savings` draws ZERO history points today and gains **6**, not 8.  **X-c2b1 SHIPPED** -- the grid's three producer passes are ONE per-period view, 360 of 360
+`/savings` draws ZERO history points today and gains **6**, not 8.  **X-c2b1 SHIPPED `9835d2af`** -- the grid's three producer passes are ONE per-period view, 360 of 360
 real-data cells byte-identical HEAD-vs-post, and its own review caught a mobile row-flag scoping
 defect it had introduced (fixed, control fires).  **NEXT: X-c2b2, the cutover.** Phases A and B complete (**A1** `f11382a0`, **A2** `c96c62be`,
 **A3** `4e46a0a8`, N-9 `44cbd028`, **B0** `d1586254`, **B1** `e227de08`, **BG**
@@ -2228,7 +2228,7 @@ replaces.
     E1c->E1d), applied to the RENDER side for the first time, and the test churn partitions with it:
     route tests in b1, answers-that-move in b2, dead producers in b3.
     - [x] **X-c2b1** `refactor(grid): the grid's three producer passes become one view`
-      -- **SHIPPED (see hash below).** The SHAPE, baseline byte-identical.  `GridBalanceView` is now
+      -- **SHIPPED `9835d2af` (2026-07-26).** The SHAPE, baseline byte-identical.  `GridBalanceView` is now
       ONE `GridColumn` per period (balance, income, expense, net, reconciliation, interest) plus
       ruling R-Q's live override map; the grid route drops `_build_grid_subtotals` and
       `_grid_amount_overrides` and all three self-refresh endpoints read the one view; the desktop
