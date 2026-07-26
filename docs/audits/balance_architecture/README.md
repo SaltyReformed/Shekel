@@ -1082,6 +1082,13 @@ replaces.
   the pass condition, because the divergences ARE findings N-71 and N-43's class. Sampling is
   forbidden (a 14-day sample once scored perfect while wrong by `$178,103.41` on 22% of days). Then
   ONE cutover, then the deletion.
+  **The real-data side of that run does not need writing: use
+  `tests/manual/verify_balance_baseline.py`** (Section 7.2), which already captures
+  `investment_seed_map` and `investment_growth_since_anchor` -- the two seam entries this step
+  changes -- precisely so its cutover can be DIFFED rather than argued. It is the regression check;
+  the hand-computed oracle and the firing controls are the proof, and on these four accounts the
+  real-data half is nearly VACUOUS anyway (they hold zero transaction rows, X-c2c3 correction (a)),
+  which is why that step's four discriminating FIXTURE shapes are inherited here.
 
   **Expect it to DECOMPOSE**, on the same evidence its siblings did: the additive replay, the
   cutover, and the deletion are three commits at minimum, and ruling R-R may force the contribution
@@ -1251,6 +1258,17 @@ own write date, per Section 7.6.
 2. **Oracles are exhaustive and independent.** Every day, every shape; never a sample; never two
    producers that share code proving each other. The fold is the reference; optimized readers
    are proven equal to it over GENERATED shapes.
+   **The REAL-DATA half of this has a saved harness:**
+   `tests/manual/verify_balance_baseline.py` (added 2026-07-26, `60dbc117`) dumps every figure the
+   seam can answer about every account in a database -- all five kinds' scalars and period maps,
+   the whole grid view including R-K's remainder and R-Q's override map, cash scalars at five
+   fixed dates, and the day-by-day series over the entire horizon. Run it before and after,
+   `diff` the blobs. Use `git worktree` for the HEAD side, never `git checkout`. It is
+   DETERMINISTIC (verified over three consecutive runs) and it is a REGRESSION check, never a
+   proof: it answers "did anything move", and two figures identical in it can both be wrong
+   (finding N-69). Every figure is read at the seam's default `as_of`, so a step whose change is
+   scoped to a pinned historical as-of moves nothing in it -- X-c2c1 was exactly that, and its
+   firing control, not this, was its proof.
 3. **Every guard gets a negative control** that is shown to fire. A guard whose control does not
    fire is not a guard.
 4. **The fixture matrix must contain the shape the feature exists for** (a paid loan, an
