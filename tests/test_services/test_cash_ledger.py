@@ -8,12 +8,13 @@ at plan step D1a (which split the anchor out of ``balance_resolver`` into the
 module owning the balance fold's INPUT facts), then to this name at D1c, when
 those facts became one submodule of the ``cash_ledger`` package.
 
-The leaf's other two concerns are covered elsewhere rather than here, and
-deliberately so: what one row is WORTH (``_amounts``) and what a set of rows
-SUMS TO (``_flows``) are graded in ``test_balance_resolver.py``, which owns the
-``_make_projected_expense`` / ``_add_entry`` fixtures they need.  Relocating
-those means promoting the two helpers into ``tests/_test_helpers``, which is its
-own commit.
+The leaf's other two concerns now have their own suites, one per submodule --
+what one row is WORTH in ``test_cash_amounts.py`` and what a set of rows SUMS
+TO in ``test_cash_flows.py`` -- which is the relocation this docstring used to
+anticipate as "its own commit".  It happened at plan step X-c2c2, and the
+promotion it named happened with it: ``tests/_test_helpers.add_entry`` gained
+the three bucket flags those tests need, so neither suite carries a private
+entry builder.  This file is the FACTS file, and only that.
 
 The resolver reads the most recent ``AccountAnchorHistory`` row as the
 dated source of truth for E-19; the ``Account.current_anchor_*``

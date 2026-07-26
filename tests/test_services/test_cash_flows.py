@@ -1,0 +1,354 @@
+"""
+Shekel Budget App -- Cash ledger: what a SET of rows SUMS TO.
+
+The Projected-only ``(income, expense)`` reduction of
+:func:`app.services.cash_ledger.sum_projected`, tested against that function
+directly.  Its sibling :mod:`tests.test_services.test_cash_amounts` grades what
+ONE row is worth; this grades which rows are counted at all, and on which leg.
+
+**These tests MOVED here at plan step X-c2c2b**
+(``docs/audits/balance_architecture/README.md``), from
+``test_balance_calculator_entries.py`` (which then had nothing left to hold and
+deleted) and ``test_balance_resolver.py``.  They always tested THIS rule; they
+reached it through ``balance_at._calculator.calculate_balances``, a PRODUCER
+that deletes at plan step X-c2c4, so every assertion read
+``anchor +/- the reduction`` and the anchor arithmetic was scenery.  **Every
+hand-computed figure is preserved verbatim** -- each test states the reduction
+it now asserts and the balance it used to assert, so the two forms can be
+diffed against each other.
+
+Two questions this file does NOT answer, and their homes:
+
+* what one row is WORTH -- ``test_cash_amounts.py``;
+* which STARTING balance the reduction is added to, and whether the anchor
+  period and a post-anchor period both apply it -- that is
+  ``balance_at._calculator``'s roll-forward, graded in
+  ``test_balance_calculator.py`` until that module deletes.
+
+The rule under test: only rows the shared ``is_projected`` predicate admits
+contribute; income counts at :func:`~app.services.cash_ledger.income_amount`
+and expense at the entries-aware reservation, and the split follows the
+transaction TYPE.
+"""
+
+from datetime import date
+from decimal import Decimal
+
+from app.enums import StatusEnum
+from app.models.transaction import Transaction
+from app.services.cash_ledger import sum_projected
+from tests._test_helpers import (
+    add_entry,
+    add_txn,
+    create_envelope_txn,
+    create_savings_account,
+    create_transfer,
+)
+
+
+_ENTRY_DAY = date(2026, 1, 20)
+_ZERO = Decimal("0.00")
+
+
+def _set_status(txn, status_enum):
+    """Move *txn* to *status_enum*, resolving the id through ``ref_cache``.
+
+    Written against the enum rather than a ``Status`` row queried by NAME,
+    which is the project's reference-table rule: ids drive logic, name strings
+    are display only.  The suites this moved from queried
+    ``Status.filter_by(name=...)`` directly.
+    """
+    # pylint: disable=import-outside-toplevel  -- ref_cache needs an app
+    # context, which only exists inside each test.
+    from app import ref_cache
+
+    txn.status_id = ref_cache.status_id(status_enum)
+
+
+def _envelope(db_session, seed_user, period, name, estimated, entries=()):
+    """Build a Projected envelope expense carrying *entries*.
+
+    Args:
+        db_session: The test ``db.session``.
+        seed_user: The ``seed_user`` fixture dict.
+        period: The :class:`~app.models.pay_period.PayPeriod` to place it in.
+        name: The template / transaction name.
+        estimated: The envelope's budgeted amount, as a string.
+        entries: An iterable of ``(amount, is_credit)`` pairs; every entry is
+            uncleared, which is the shape these reduction tests were written
+            on (the cleared flag is ``test_cash_amounts.py``'s subject).
+
+    Returns:
+        The flushed :class:`~app.models.transaction.Transaction`.
+    """
+    txn = create_envelope_txn(
+        seed_user, db_session, period, name, Decimal(estimated),
+    )
+    for amount, is_credit in entries:
+        add_entry(
+            db_session, seed_user, txn, Decimal(amount), _ENTRY_DAY,
+            is_credit=is_credit,
+        )
+    return txn
+
+
+class TestOnlyProjectedRowsContribute:
+    """The status gate, and it is the SHARED predicate, not a local rule.
+
+    ``sum_projected`` filters through
+    :func:`app.utils.balance_predicates.is_projected`, the same definition the
+    plan LOADER narrows on in SQL
+    (:func:`~app.services.cash_ledger.planned_cash_rows`) and the entries-aware
+    reduction re-applies -- so the loader and the reduction cannot disagree
+    about which rows are in the plan.  A row that has settled, been cancelled,
+    or carries the legacy Credit status is money that is no longer a
+    RESERVATION: either it already moved (and the walk counts it) or it never
+    will.
+
+    **Only the SETTLED case has a firing control, and that is stated rather
+    than left to be discovered.**  Measured: deleting the ``is_projected`` gate
+    fails the settled test alone.  A Cancelled or Credit row is
+    OVER-DETERMINED -- ``Transaction.effective_amount`` independently returns
+    ``0`` for a status flagged ``excludes_from_balance``, so the gate and the
+    valuation both zero it and no mutation of one can be seen through the
+    other.  Those two tests pin a real user-visible property (a cancelled bill
+    must not reduce a projected balance) with defence in depth behind it; they
+    are NOT evidence that the gate works, and reading them as such is the N-69
+    mistake.  They were equally over-determined in the suite they moved from.
+    """
+
+    def test_a_settled_row_contributes_nothing(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A settled (DONE) row with entries is excluded: it is no longer a plan.
+
+        Its $450.00 actual has already left the account, so counting it here
+        would double it against the walk that carries it.  Reduction:
+        (0.00, 0.00).  (Was: the balance stayed at the 5000.00 anchor.)
+        """
+        with app.app_context():
+            txn = _envelope(
+                db.session, seed_user, seed_periods[1], "Groceries", "500.00",
+                [("450.00", False)],
+            )
+            _set_status(txn, StatusEnum.DONE)
+            txn.actual_amount = Decimal("450.00")
+            db.session.commit()
+
+            assert sum_projected([txn]) == (_ZERO, _ZERO)
+
+    def test_a_cancelled_row_contributes_nothing(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A Cancelled row with entries is excluded.
+
+        Reduction: (0.00, 0.00).  (Was: the balance stayed at 5000.00.)
+        """
+        with app.app_context():
+            txn = _envelope(
+                db.session, seed_user, seed_periods[1], "Groceries", "500.00",
+                [("200.00", False)],
+            )
+            _set_status(txn, StatusEnum.CANCELLED)
+            db.session.commit()
+
+            assert sum_projected([txn]) == (_ZERO, _ZERO)
+
+    def test_a_credit_status_row_contributes_nothing(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The legacy Credit status is excluded from the reduction.
+
+        An entry-capable row should never reach Credit (OQ-10); this pins the
+        legacy edge rather than endorsing it.  Reduction: (0.00, 0.00).
+        (Was: the balance stayed at 5000.00.)
+        """
+        with app.app_context():
+            txn = _envelope(
+                db.session, seed_user, seed_periods[1], "Groceries", "500.00",
+                [("300.00", True)],
+            )
+            _set_status(txn, StatusEnum.CREDIT)
+            db.session.commit()
+
+            assert sum_projected([txn]) == (_ZERO, _ZERO)
+
+
+class TestTheTwoLegs:
+    """Income counts at its amount; expense counts at its reservation."""
+
+    def test_income_never_takes_the_entry_formula(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """An income row contributes ``effective_amount`` on the INCOME leg.
+
+        The split follows the transaction TYPE, so the entries-aware
+        reservation -- an EXPENSE rule -- cannot price it.  Reduction:
+        (2000.00, 0.00).  (Was: 5000 + 2000 = 7000.)
+
+        **The $500.00 credit entry is what gives this test teeth, and it is
+        the only shape that can.**  The version this moved from asserted the
+        same figure on an income row carrying NO entries, where both valuation
+        rules return ``effective_amount`` and the assertion therefore held
+        whichever one priced it -- finding N-69's shape.  Measured: routing the
+        income leg through ``_expense_amount`` failed nothing until the entry
+        was added.  With it, the expense rule would answer
+        max(2000.00 - 0 - 500.00, 0) = 1500.00 and this fails.
+
+        An income row does not carry entries in production -- no write door
+        creates one -- so this is a synthetic discriminator, exactly as plan
+        step X-c1's ``is_income`` classification needed one.  It pins which
+        RULE prices the row, and the ``0.00`` expense leg beside it pins which
+        LEG the row lands on; those are two different mistakes and this
+        catches both.
+        """
+        with app.app_context():
+            txn = add_txn(
+                db.session, seed_user, seed_periods[1], "Paycheck", "2000.00",
+                is_income=True, category_key="Salary",
+            )
+            add_entry(
+                db.session, seed_user, txn, Decimal("500.00"), _ENTRY_DAY,
+                is_credit=True,
+            )
+            db.session.commit()
+
+            assert sum_projected([txn]) == (Decimal("2000.00"), _ZERO)
+
+    def test_every_loaded_entry_counts(self, app, db, seed_user, seed_periods):
+        """The reduction sees every loaded entry, whatever date each carries.
+
+        est=500 with cleared debits of 200.00 (Jan 5) and 250.00 (Jan 20):
+        cleared_debit = 450.00, uncleared = 0, credit = 0, so
+        max(500.00 - 450.00 - 0, 0) = 50.00.
+
+        The dates span a range on purpose: this test carried an ``as_of``
+        bound until plan step X-c2c1 deleted it (ruling R-M refused a future
+        ``entry_date`` at the write door instead), and what it pins now is
+        that no bound remains.
+        """
+        with app.app_context():
+            txn = create_envelope_txn(
+                seed_user, db.session, seed_periods[1], "Groceries",
+                Decimal("500.00"),
+            )
+            for amount, day in (("200.00", 5), ("250.00", 20)):
+                add_entry(
+                    db.session, seed_user, txn, Decimal(amount),
+                    date(2026, 1, day), is_cleared=True,
+                )
+            db.session.commit()
+
+            assert sum_projected([txn]) == (_ZERO, Decimal("50.00"))
+
+
+class TestTheReductionIsAdditiveOverRows:
+    """Each row is priced by its own rule, and the legs sum independently.
+
+    The property the fold depends on structurally: ``sum_projected`` is
+    additive over disjoint groups, so a period's days sum to the period's net
+    exactly -- which is why ``_cash_fold._planned_day_nets`` may reduce per DAY
+    and ``_budget_legs`` may reduce the SAME rows per pay period and get
+    answers that reconcile to the cent.
+    """
+
+    def test_two_envelopes_each_take_their_own_entries(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Two tracked expenses in one period do not share a reservation.
+
+        Groceries: est=500, uncleared_debit=200, credit=100 ->
+        max(500 - 0 - 100, 200) = 400.
+        Gas: est=80, uncleared_debit=60, credit=0 ->
+        max(80 - 0 - 0, 60) = 80.
+        Reduction: (0.00, 480.00).  (Was: 5000 - 480 = 4520.)
+        """
+        with app.app_context():
+            groceries = _envelope(
+                db.session, seed_user, seed_periods[1], "Groceries", "500.00",
+                [("200.00", False), ("100.00", True)],
+            )
+            gas = _envelope(
+                db.session, seed_user, seed_periods[1], "Gas", "80.00",
+                [("60.00", False)],
+            )
+            db.session.commit()
+
+            assert sum_projected([groceries, gas]) == (
+                _ZERO, Decimal("480.00"),
+            )
+
+    def test_a_row_without_entries_sums_beside_one_with_them(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Tracked expense + plain expense + income, all in one reduction.
+
+        Groceries: est=500, uncleared_debit=300, credit=100 ->
+        max(500 - 0 - 100, 300) = 400.
+        Rent (no template, no entries): 1200.00 at ``effective_amount``.
+        Paycheck: 2000.00 on the income leg.
+        Reduction: (2000.00, 1600.00).
+        (Was: 5000 + 2000 - 400 - 1200 = 5400.)
+        """
+        with app.app_context():
+            groceries = _envelope(
+                db.session, seed_user, seed_periods[1], "Groceries", "500.00",
+                [("300.00", False), ("100.00", True)],
+            )
+            rent = add_txn(
+                db.session, seed_user, seed_periods[1], "Rent", "1200.00",
+                category_key="Rent",
+            )
+            paycheck = add_txn(
+                db.session, seed_user, seed_periods[1], "Paycheck", "2000.00",
+                is_income=True, category_key="Salary",
+            )
+            db.session.commit()
+
+            assert sum_projected([groceries, rent, paycheck]) == (
+                Decimal("2000.00"), Decimal("1600.00"),
+            )
+
+    def test_a_transfer_shadow_is_priced_like_any_other_row(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A transfer's expense shadow takes ``effective_amount``, not a rule.
+
+        The reduction reads no ``transfer_id``: a shadow carries no template
+        and no entries, so it is worth its amount and nothing about it is
+        special here.  Groceries: est=500, uncleared_debit=300, credit=0 ->
+        max(500 - 0 - 0, 300) = 500.  Shadow: 200.00.
+        Reduction: (0.00, 700.00).  (Was: 5000 - 500 - 200 = 4300.)
+
+        The transfer is built through the service rather than by hand, so it
+        carries BOTH shadows (Transfer Invariant 1); the version this test
+        moved from constructed a single expense shadow, a state the invariant
+        forbids.  Only the leaving account's rows are reduced here, so the
+        figure is unchanged.
+        """
+        with app.app_context():
+            groceries = _envelope(
+                db.session, seed_user, seed_periods[1], "Groceries", "500.00",
+                [("300.00", False)],
+            )
+            savings = create_savings_account(
+                seed_user, db.session, "Savings", Decimal("0.00"),
+            )
+            transfer = create_transfer(
+                seed_user, db.session,
+                from_account=seed_user["account"], to_account=savings,
+                period=seed_periods[1], amount=Decimal("200.00"),
+            )
+            db.session.commit()
+            shadow = (
+                db.session.query(Transaction)
+                .filter(
+                    Transaction.transfer_id == transfer.id,
+                    Transaction.account_id == seed_user["account"].id,
+                )
+                .one()
+            )
+
+            assert sum_projected([groceries, shadow]) == (
+                _ZERO, Decimal("700.00"),
+            )

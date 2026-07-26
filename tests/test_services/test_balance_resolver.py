@@ -81,10 +81,6 @@ from app.models.transaction_template import TransactionTemplate
 from app.services import cash_ledger
 from app.services.balance_at import _calculator as balance_calculator, _cash_engine as balance_resolver
 from app.services.balance_at._cash_engine import balances_for
-from app.services.cash_ledger import (
-    load_balance_transactions,
-    sum_projected,
-)
 
 
 # ── Fixtures local to this test module ─────────────────────────────
@@ -692,73 +688,6 @@ class TestBalancesForEntriesAware:
 
 
 # ── One projected sum, and it reads no clock (D1c, then X-c2c1) ────
-
-
-class TestTheProjectedSumValuesAnExpenseRow:
-    """How ``sum_projected`` prices ONE still-Projected expense, and no date.
-
-    ``balance_resolver`` once carried a private ``_sum_period_as_of`` plus a
-    private ``_entry_aware_amount_dated``, whose own docstrings said they
-    "mirror" the engine and were "otherwise identical to the engine helper".
-    Two copies of the checking-reservation rule, kept in step by hand, is the
-    agreeing-by-coincidence shape this arc exists to end -- and pylint's
-    cross-file ``duplicate-code`` reported it the moment D1c made both copies
-    call the same ``income_amount``.  D1c unified them into ONE rule carrying
-    an optional ``as_of`` bound over entry inclusion.
-
-    **Plan step X-c2c1 deleted that bound**, so what is left here is the
-    reduction's clock-free half: every loaded entry counts, an override wins
-    over the formula, and the no-entries short-circuit precedes the status
-    read.  Ruling R-M closed the bound's fork at the write door instead (plan
-    step X-c0 refuses ``entry_date > display_today()``), after which it could
-    drop nothing; the two tests that existed only to prove a bound CUTS went
-    with it, and the teeth moved to where a date still exists --
-    ``test_cash_fold.py``'s
-    ``test_the_reservation_reads_no_clock_whatever_the_readers_as_of``, which
-    fails if a window is ever re-introduced.
-    """
-
-    @staticmethod
-    def _expense_with_two_cleared_debits(db_session, seed_user, period):
-        """Create est=500.00 with 200.00 cleared Jan 5 and 250.00 cleared Jan 20."""
-        txn = _make_projected_expense(
-            db_session,
-            seed_user=seed_user,
-            pay_period=period,
-            estimated=Decimal("500.00"),
-        )
-        for amount, day in ((Decimal("200.00"), 5), (Decimal("250.00"), 20)):
-            _add_entry(
-                db_session,
-                txn=txn,
-                user_id=seed_user["user"].id,
-                amount=amount,
-                is_cleared=True,
-                entry_date=_date(2026, 1, day),
-            )
-        db_session.commit()
-        return txn
-
-    def test_every_loaded_entry_counts(self, app, db, seed_user, seed_periods):
-        """The reduction sees every loaded entry, whatever date each carries.
-
-        cleared_debit = 200.00 + 250.00 = 450.00; uncleared = 0; credit = 0.
-        impact = max(500.00 - 450.00 - 0, 0) = 50.00.
-        """
-        with app.app_context():
-            self._expense_with_two_cleared_debits(
-                db.session, seed_user, seed_periods[0],
-            )
-            txns = load_balance_transactions(
-                seed_user["account"], seed_user["scenario"].id,
-                [seed_periods[0].id],
-            )
-
-            income, expense = sum_projected(txns)
-
-            assert income == Decimal("0.00")
-            assert expense == Decimal("50.00")
-
 # ── Module surface ─────────────────────────────────────────────────
 
 

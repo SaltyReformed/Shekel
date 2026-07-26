@@ -11,7 +11,11 @@ defined in §4.9 of the requirements:
 from datetime import date
 from decimal import Decimal
 
+from sqlalchemy.orm import selectinload
+
 from app.models.transaction import Transaction
+from app.models.transaction_entry import TransactionEntry
+from app.models.transaction_template import TransactionTemplate
 from app.models.ref import Status, TransactionType
 from app.services.balance_at import _calculator as balance_calculator
 from app import ref_cache
@@ -2482,3 +2486,182 @@ class TestIncomeOverridesSeam:
         )
         assert balances[1] == Decimal("0.00")
         assert balances[2] == Decimal("1500.00")
+
+
+class TestTheAnchorArmAppliesTheSharedReduction:
+    """BOTH arms of the roll-forward reduce through ``sum_projected``.
+
+    The property is which BRANCH of :func:`calculate_balances` calls the shared
+    reduction, not what the reduction computes -- so these stayed when the
+    entries-aware tests around them moved to ``test_cash_amounts.py`` and
+    ``test_cash_flows.py`` at plan step X-c2c2 (their own file,
+    ``test_balance_calculator_entries.py``, then had nothing left and deleted).
+
+    They discriminate a ``_calculator`` rule, so they die WITH that module at
+    plan step X-c2c4 rather than before it.  The plan's X-c2c2 text said such
+    tests are deleted at the migration; ruling R-V moved X-c2c4 to after X-g,
+    which would have left a LIVE producer -- ``_cash_engine.balances_for``
+    still feeds the investment and appreciation bases through it -- untested
+    across the arc's largest step, and X-g grades its successor against exactly
+    that producer.  Delete a test with the code it tests, never before it.
+    """
+
+    def test_anchor_period_entry_aware(self, app, db, seed_user, seed_periods):
+        """Entry-aware formula works in the anchor period via sum_projected.
+
+        This verifies that the anchor-period call to sum_projected (not
+        just the post-anchor calls) uses the entry-aware formula for
+        expenses.
+
+        est=500, debit=0, credit=400.
+        max(500 - 400, 0) = max(100, 0) = 100.
+        Anchor: 5000 - 100 = 4900.
+        """
+        with app.app_context():
+            projected = db.session.query(Status).filter_by(name="Projected").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+
+            template = TransactionTemplate(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=expense_type.id,
+                name="Groceries",
+                default_amount=Decimal("500.00"),
+                is_envelope=True,
+            )
+            db.session.add(template)
+            db.session.flush()
+
+            # Transaction in the ANCHOR period (periods[0]).
+            txn = Transaction(
+                template_id=template.id,
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=projected.id,
+                name="Groceries",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("500.00"),
+            )
+            db.session.add(txn)
+            db.session.flush()
+
+            db.session.add(TransactionEntry(
+                transaction_id=txn.id,
+                user_id=seed_user["user"].id,
+                amount=Decimal("400.00"),
+                description="Target CC",
+                entry_date=date(2026, 1, 5),
+                is_credit=True,
+            ))
+            db.session.flush()
+
+            all_txns = (
+                db.session.query(Transaction)
+                .options(selectinload(Transaction.entries))
+                .filter(Transaction.id == txn.id)
+                .all()
+            )
+
+            balances, _ = balance_calculator.calculate_balances(
+                anchor_balance=Decimal("5000.00"),
+                anchor_period_id=seed_periods[0].id,
+                periods=seed_periods,
+                transactions=all_txns,
+            )
+
+            # Anchor period uses sum_projected:
+            # max(500 - 400, 0) = 100; 5000 - 100 = 4900
+            assert balances[seed_periods[0].id] == Decimal("4900.00")
+
+    def test_anchor_period_mixed_debit_and_credit(self, app, db, seed_user, seed_periods):
+        """Anchor period with mixed entries plus income.
+
+        Groceries: est=500, debit=300, credit=100.
+        max(500 - 100, 300) = max(400, 300) = 400.
+
+        Income: est=2000.
+
+        Anchor: 5000 + 2000 - 400 = 6600.
+        """
+        with app.app_context():
+            projected = db.session.query(Status).filter_by(name="Projected").one()
+            expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
+            income_type = db.session.query(TransactionType).filter_by(name="Income").one()
+
+            template = TransactionTemplate(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=expense_type.id,
+                name="Groceries",
+                default_amount=Decimal("500.00"),
+                is_envelope=True,
+            )
+            db.session.add(template)
+            db.session.flush()
+
+            groc = Transaction(
+                template_id=template.id,
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=projected.id,
+                name="Groceries",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("500.00"),
+            )
+            db.session.add(groc)
+            db.session.flush()
+
+            db.session.add(TransactionEntry(
+                transaction_id=groc.id,
+                user_id=seed_user["user"].id,
+                amount=Decimal("300.00"),
+                description="Kroger",
+                entry_date=date(2026, 1, 5),
+                is_credit=False,
+            ))
+            db.session.add(TransactionEntry(
+                transaction_id=groc.id,
+                user_id=seed_user["user"].id,
+                amount=Decimal("100.00"),
+                description="Amazon CC",
+                entry_date=date(2026, 1, 6),
+                is_credit=True,
+            ))
+
+            paycheck = Transaction(
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=projected.id,
+                name="Paycheck",
+                category_id=seed_user["categories"]["Salary"].id,
+                transaction_type_id=income_type.id,
+                estimated_amount=Decimal("2000.00"),
+            )
+            db.session.add(paycheck)
+            db.session.flush()
+
+            all_txns = (
+                db.session.query(Transaction)
+                .options(selectinload(Transaction.entries))
+                .filter(Transaction.id.in_([groc.id, paycheck.id]))
+                .all()
+            )
+
+            balances, _ = balance_calculator.calculate_balances(
+                anchor_balance=Decimal("5000.00"),
+                anchor_period_id=seed_periods[0].id,
+                periods=seed_periods,
+                transactions=all_txns,
+            )
+
+            # Groceries: max(500-100, 300) = 400
+            # Paycheck: 2000
+            # Anchor: 5000 + 2000 - 400 = 6600
+            assert balances[seed_periods[0].id] == Decimal("6600.00")
