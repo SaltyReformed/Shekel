@@ -71,8 +71,6 @@ integer IDs from ``ref_cache``. The status display string is never
 consulted; the C2-8 test asserts this property mechanically against the
 module source.
 """
-from datetime import date
-
 from sqlalchemy import and_
 
 from app import ref_cache
@@ -398,33 +396,3 @@ def balance_contributing_clause():
         Transaction.is_deleted.is_(False),
         Transaction.status_id.notin_(balance_excluded_status_ids()),
     )
-
-
-def attribution_year(due_date: date | None, period_start: date) -> int:
-    """Return the calendar year a dated budget event is attributed to.
-
-    The single definition of the year-end report's calendar-year
-    attribution rule: ``COALESCE(due_date, period_start).year`` -- the
-    explicit due date when present, else the owning pay period's start
-    date.  This is the year-bucket form of the same due-date-wins
-    precedence the calendar and daily-series producers apply to a date
-    range (an undated row falls back to its period), so a boundary-period
-    event -- a December pay period carrying a January due_date -- lands
-    in the same calendar year on every surface that uses it.
-
-    Shared by the year-end spending section (settled expense
-    ``Transaction`` rows) and the transfers section (parent ``Transfer``
-    rows) so the two cannot drift on which year a boundary-period event
-    belongs to (#61): the same event's expense shadow and parent transfer
-    are attributed identically.
-
-    Args:
-        due_date: The event's explicit due date, or None.
-        period_start: The owning pay period's ``start_date`` -- the
-            fallback used when ``due_date`` is None.
-
-    Returns:
-        The calendar year (int) the event is attributed to.
-    """
-    attr_date = due_date if due_date is not None else period_start
-    return attr_date.year
