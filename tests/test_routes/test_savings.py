@@ -32,7 +32,11 @@ from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 
-from tests._test_helpers import create_loan_account, freeze_today
+from tests._test_helpers import (
+    create_hysa_account,
+    create_loan_account,
+    freeze_today,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -1081,32 +1085,23 @@ class TestSavingsDashboardShadowTransactions:
         increase the projected balance.  Without this, HYSA projections
         underestimate the balance by the total of all missed deposits.
         """
-        from app.models.interest_params import InterestParams as IP  # pylint: disable=import-outside-toplevel
         from app.models.category import Category  # pylint: disable=import-outside-toplevel
         from app.models.ref import Status  # pylint: disable=import-outside-toplevel
         from app.services import transfer_service  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
-            # Create HYSA account with known anchor balance.
-            hysa_type = db.session.query(AccountType).filter_by(name="HYSA").one()
-            hysa = account_service.create_account(
-                account_service.AccountSpec(
-                    user_id=seed_user["user"].id,
-                    account_type_id=hysa_type.id,
-                    name="High Yield Savings",
-                    anchor_balance=Decimal("10000.00"),
-                    anchor_period_id=seed_periods[0].id,
-                ),
+            # Create HYSA account with known anchor balance, through the
+            # shared factory rather than an inline account + InterestParams
+            # pair: since plan step X-c2a modelled interest accrues only
+            # forward of the account's latest ASSERTION, and the factory is
+            # where that assertion's instant is pinned to the anchor period
+            # (``account_service.create_account`` stamps it with the wall
+            # clock, which for this suite's 2026-01-02 periods lands months
+            # after the whole projection and would accrue nothing anywhere).
+            hysa = create_hysa_account(
+                seed_user, db.session, seed_periods[0], Decimal("10000.00"),
+                apy=Decimal("0.04500"), name="High Yield Savings",
             )
-            db.session.add(hysa)
-            db.session.flush()
-
-            ip = IP(
-                account_id=hysa.id,
-                apy=Decimal("0.04500"),  # 4.5% stored as decimal
-                compounding_frequency_id=ref_cache.compounding_frequency_id(CompoundingFrequencyEnum.DAILY),
-            )
-            db.session.add(ip)
 
             # Add transfer categories required by transfer_service.
             incoming = Category(

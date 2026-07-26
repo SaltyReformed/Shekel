@@ -46,6 +46,7 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
+from app.services.cash_ledger import resolve_anchor
 from app.utils.balance_predicates import account_period_scope_clause
 
 from ._context import BalanceContext
@@ -304,14 +305,50 @@ def _account_interest_projection(
     transaction-scope query, the anchor-balance coalesce, and the
     calculator kwargs identical between the balance figure a screen renders
     and the interest figure the account-detail chip reports -- they cannot
-    drift onto two copies of the same walk (R0801).
+    drift onto two copies of the same walk (R0801).  That sharing is also why
+    ruling R-L moves BOTH readers at once: the account-detail "Interest, next
+    12 mo" chip is the same walk as the balance (plan finding N-47).
+
+    **Where modelled interest begins (ruling R-L, plan step X-c2a).**  The
+    accrual window opens at the account's LATEST balance assertion -- the UTC
+    civil day of the newest
+    :class:`~app.models.account.AccountAnchorHistory` row, read through the
+    dated source of truth
+    :func:`~app.services.cash_ledger.resolve_anchor` -- not at the anchor
+    PERIOD's start, which precedes it by up to 13 days and modelled interest
+    across days the assertion already contains.  The date is read from the
+    history row rather than derived from ``current_anchor_period_id`` because
+    that column pair is a CACHE of that row and carries no date at all; the
+    SEED still comes from the cache here, and both halves land on the fold
+    together at plan step X-c2b.  Residue while they are split: if the cache
+    and the history row DISAGREE (finding cash D4, latent -- ``resolve_anchor``
+    logs it and does not repair it) the window opens on the SoT's day while
+    the seed carries the cache's balance.  That is the more correct half of a
+    state that is already wrong, and it is the reason the two halves are not
+    left split for long.
+
+    Reading the SoT also puts this branch on the same fail-loud footing as
+    every other cash kind: ``resolve_anchor`` raises for an account with the
+    anchor COLUMNS set and no history row, which the PLAIN path has always
+    been exposed to (``balances_for`` resolves the same way) and which
+    :func:`~app.services.balance_at.balance_at`'s fallback already documents
+    as "the correct loud failure rather than a silently wrong number".
+    Migration ``cfb15e782f86`` and the account factory make the state
+    unreachable; INTEREST was simply the last cash kind not sharing the trap.
+
+    Also note the CLOCK: the assertion's UTC civil day, not its display day.
+    A balance is dated in UTC everywhere in this arc (the cash walk's
+    ``dated_deltas``, the posting writer's ``to_utc_civil_date``); only the
+    TAX figure keys on the display year (plan step C3c).  Interest is a
+    balance concern, so it takes the balance clock -- two clocks inside one
+    figure is where plan step C6c-ii's double-count came from.
 
     Args:
         account: The interest-bearing account.  Its ``current_anchor_*``
             columns seed the walk; the caller is responsible for the
             no-anchor guard.
         scenario: The baseline scenario (its id scopes the transaction
-            query).
+            query, and is forwarded to the anchor resolver).
         periods: The pay periods to walk (ordered by ``period_index``).
         interest_params: The account's
             :class:`~app.models.interest_params.InterestParams` (APY +
@@ -336,6 +373,7 @@ def _account_interest_projection(
         transactions=transactions,
         interest_params=interest_params,
         amount_overrides=amount_overrides,
+        accrual_start=resolve_anchor(account, scenario.id).as_of_date,
     )
 
 

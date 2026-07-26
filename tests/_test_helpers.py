@@ -890,6 +890,22 @@ def create_hysa_account(
     classify INTEREST.  Commits before returning so the account is fully
     resolvable.
 
+    **The opening assertion is stamped at the anchor period's first day**
+    (via :func:`restamp_opening_assertion`).  Since plan step X-c2a, modelled
+    interest accrues only forward of an account's latest balance assertion
+    (ruling R-L), and ``account_service.create_account`` writes that row with
+    the WALL CLOCK.  A suite that freezes ``today`` inside its own
+    seeded period range -- ``tests/test_services`` freezes it to 2026-03-20 --
+    would otherwise build an account asserted months AFTER its own last pay
+    period, a state production cannot reach (a true-up files against
+    ``get_current_period``) and one in which the account accrues nothing
+    anywhere.  Pinning the instant to the period's own start makes the fixture
+    deterministic, reachable (an account opened on day 1 of its period), and
+    clock-independent, and it keeps every hand-computed interest figure in the
+    suites valid: the accrual window is then the full anchor period, exactly
+    what it was before the rule existed.  A test that needs a MID-period
+    assertion (the shape the rule exists for) restamps it itself.
+
     Args:
         seed_user: The ``seed_user`` fixture dict.
         db_session: The test ``db.session``.
@@ -934,6 +950,9 @@ def create_hysa_account(
             CompoundingFrequencyEnum.DAILY,
         ),
     ))
+    restamp_opening_assertion(
+        db_session, account, settle_instant_on(anchor_period.start_date),
+    )
     db_session.commit()
     return account
 
@@ -1651,7 +1670,7 @@ _UNSET_PAID_AT = object()
 
 
 def settle_instant_on(day):
-    """Return a deterministic settle instant on a given civil date (noon UTC).
+    """Return a deterministic event instant on a given civil date (noon UTC).
 
     A test-side helper for pinning a fixture's ``paid_at`` to a specific day
     without a wall-clock read -- pass it to :func:`create_settled_transfer` /
@@ -1662,8 +1681,13 @@ def settle_instant_on(day):
     Noon UTC is the same civil day in the display zone (Eastern), so the tax-year
     (display-tz) attribution lands on that day too.
 
+    It serves an ASSERTION instant too (:func:`restamp_opening_assertion`, which
+    :func:`create_hysa_account` uses to pin an account's opening): a settle and
+    an assertion are both events the balance layer dates by their UTC civil day,
+    so "a deterministic instant on this day" is one primitive, not two.
+
     Args:
-        day: The civil :class:`datetime.date` to settle on.
+        day: The civil :class:`datetime.date` to place the event on.
 
     Returns:
         A timezone-aware :class:`datetime.datetime` at noon UTC on *day*.
@@ -2268,14 +2292,67 @@ def restamp_opening_assertion(db_session, account, at):
     Returns:
         The re-stamped :class:`AccountAnchorHistory` row (flushed).
     """
+    return _restamp_assertion(db_session, account, at, newest=False)
+
+
+def restamp_latest_assertion(db_session, account, at):
+    """Pin the account's NEWEST assertion instant to ``at``.
+
+    The twin of :func:`restamp_opening_assertion` for a true-up written through
+    the production path (``anchor_service.stage_anchor_true_up``, which sets the
+    ``current_anchor_*`` cache AND appends the history row): that row also
+    carries a wall-clock ``created_at``, and since plan step X-c2a modelled
+    interest begins at the LATEST assertion's UTC civil day (ruling R-L), so a
+    suite that needs a controlled accrual window has to pin it.
+
+    It FLUSHES first rather than relying on autoflush: the caller has just
+    staged the true-up in the session, and resolving the row without flushing
+    would silently restamp the previous assertion instead -- a test helper
+    quietly pinning the wrong row is worse than one that fails.
+
+    Args:
+        db_session: The test ``db.session``.
+        account: The :class:`~app.models.account.Account` whose latest
+            assertion to pin.
+        at: The aware-UTC instant to stamp it with.
+
+    Returns:
+        The re-stamped :class:`AccountAnchorHistory` row (flushed).
+    """
+    return _restamp_assertion(db_session, account, at, newest=True)
+
+
+def _restamp_assertion(db_session, account, at, *, newest):
+    """Pin the oldest or newest assertion's instant -- the shared core.
+
+    One query with one ordering flag rather than two near-identical copies:
+    both wrappers answer "which stored assertion am I pinning", and the row
+    they resolve must be selected the same way
+    :func:`~app.services.cash_ledger.resolve_anchor` selects the latest
+    (``created_at`` then ``id``), or a same-instant pair would restamp a
+    different row than the producer reads.
+
+    Args:
+        db_session: The test ``db.session``.
+        account: The :class:`~app.models.account.Account` to pin.
+        at: The aware-UTC instant to stamp with.
+        newest: ``True`` for the latest assertion, ``False`` for the opening.
+
+    Returns:
+        The re-stamped :class:`AccountAnchorHistory` row (flushed).
+    """
     # pylint: disable=import-outside-toplevel  -- same circular-dep
     # avoidance as the loan helpers above.
     from app.models.account import AccountAnchorHistory
 
+    db_session.flush()
+    order = (AccountAnchorHistory.created_at, AccountAnchorHistory.id)
+    if newest:
+        order = tuple(column.desc() for column in order)
     row = (
         db_session.query(AccountAnchorHistory)
         .filter_by(account_id=account.id)
-        .order_by(AccountAnchorHistory.created_at)
+        .order_by(*order)
         .first()
     )
     row.created_at = at

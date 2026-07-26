@@ -3,6 +3,15 @@ Tests for calculate_balances_with_interest() in balance_calculator.
 
 Validates that HYSA interest projections layer correctly on top of
 the existing balance roll-forward logic.
+
+**Every call passes ``accrual_start=periods[0].start_date``**, the day the
+producer opens its accrual window on (ruling R-L, plan step X-c2a): the
+account's balance was asserted at the first period's start, so every period
+below accrues in full and the hand-computed figures are the same ones this
+suite has always pinned.  ``TestAccrualBeginsAtTheAssertion`` at the bottom
+is where the window is moved off that day and the arithmetic is re-derived
+for the narrowed one -- the two halves are separate on purpose, so a
+regression in the window cannot hide inside a compounding assertion.
 """
 
 import calendar
@@ -133,6 +142,7 @@ class TestHysaBalanceWithInterest:
             periods=periods,
             transactions=[],
             interest_params=params,
+            accrual_start=periods[0].start_date,
         )
 
         # Period 1: interest on $10,000 for 14 days at 4.5% daily
@@ -190,6 +200,7 @@ class TestHysaBalanceWithInterest:
             periods=periods,
             transactions=[],
             interest_params=params,
+            accrual_start=periods[0].start_date,
         )
 
         # Period 1: Q(10000.00 * ((1+0.045/365)^14-1)) = 17.27
@@ -249,6 +260,7 @@ class TestHysaBalanceWithInterest:
             periods=periods,
             transactions=txns,
             interest_params=params,
+            accrual_start=periods[0].start_date,
         )
 
         # Period 1: interest on $10,000 for 14 days at 4.5% daily
@@ -295,6 +307,7 @@ class TestHysaBalanceWithInterest:
             periods=periods,
             transactions=[],
             interest_params=params,
+            accrual_start=periods[0].start_date,
         )
 
         for pid in base_balances:
@@ -318,6 +331,7 @@ class TestHysaBalanceWithInterest:
             periods=periods,
             transactions=[],
             interest_params=None,
+            accrual_start=periods[0].start_date,
         )
 
         for pid in base_balances:
@@ -346,6 +360,7 @@ class TestHysaBalanceWithInterest:
             periods=periods,
             transactions=[],
             interest_params=params,
+            accrual_start=periods[0].start_date,
         )
 
         # Should have interest entries for every period in balances.
@@ -448,6 +463,7 @@ class TestHysaBalanceWithInterest:
                 periods=periods,
                 transactions=[],
                 interest_params=params,
+                accrual_start=periods[0].start_date,
             )
         )
 
@@ -535,6 +551,7 @@ class TestHysaBalanceWithInterest:
                 periods=periods,
                 transactions=[],
                 interest_params=params,
+                accrual_start=periods[0].start_date,
             )
         )
 
@@ -629,6 +646,7 @@ class TestHysaBalanceWithInterest:
                 periods=periods,
                 transactions=[],
                 interest_params=params,
+                accrual_start=periods[0].start_date,
             )
         )
 
@@ -685,6 +703,7 @@ class TestHysaBalanceWithInterest:
             periods=periods,
             transactions=[],
             interest_params=params,
+            accrual_start=periods[0].start_date,
         )
 
         for pid in [1, 2, 3]:
@@ -747,6 +766,7 @@ class TestHysaBalanceWithInterest:
                 periods=periods,
                 transactions=[],
                 interest_params=params,
+                accrual_start=periods[0].start_date,
             )
         )
 
@@ -846,6 +866,7 @@ class TestHysaBalanceWithInterest:
                 periods=periods,
                 transactions=txns,
                 interest_params=params,
+                accrual_start=periods[0].start_date,
             )
         )
 
@@ -955,6 +976,7 @@ class TestHysaBalanceWithInterest:
                 periods=periods,
                 transactions=txns,
                 interest_params=params,
+                accrual_start=periods[0].start_date,
             )
         )
 
@@ -977,3 +999,88 @@ class TestHysaBalanceWithInterest:
                 f"expected interest {exp_i}, "
                 f"got {interest_result[period.id]}"
             )
+
+
+class TestAccrualBeginsAtTheAssertion:
+    """Ruling R-L: interest accrues only over days the assertion does not cover.
+
+    Modelled accrual used to begin at the anchor PERIOD's start, which precedes
+    the moment the balance was asserted by up to a full period.  Those days are
+    already inside the number the user typed, so modelling interest across them
+    pays the account twice.  Plan step X-c2a made the window
+    ``[max(period.start_date, accrual_start) .. period.end_date]``; these pin
+    both ends of it with hand-computed values, because "the window narrowed" is
+    only checkable against arithmetic, never against the producer.
+    """
+
+    def test_the_assertion_period_accrues_only_from_the_assertion_day(self):
+        """A mid-period assertion earns the remainder of its own period.
+
+        $10,000 at 4.5% APY, daily compounding, asserted 2026-01-09 inside the
+        2026-01-02..2026-01-15 period.  The window is 2026-01-09 .. 2026-01-16
+        (exclusive) = 7 days, half the period's 14:
+
+            interest = Q(10000 * ((1 + 0.045/365) ** 7 - 1))
+                     = Q(8.633330..) = 8.63
+
+        against 17.27 for the full 14 days -- the figure the same inputs
+        produced before the rule, pinned in
+        ``test_hysa_balance_includes_interest`` above.
+        """
+        periods = _make_periods(2)
+        params = InterestParams(
+            apy=Decimal("0.04500"),
+            compounding_frequency_id=_freq_id(CompoundingFrequencyEnum.DAILY),
+        )
+
+        balances, interest = calculate_balances_with_interest(
+            anchor_balance=Decimal("10000.00"),
+            anchor_period_id=1,
+            periods=periods,
+            transactions=[],
+            interest_params=params,
+            accrual_start=date(2026, 1, 9),
+        )
+
+        assert interest[periods[0].id] == Decimal("8.63")
+        assert balances[periods[0].id] == Decimal("10008.63")
+        # The NEXT period is untouched by the rule -- it starts after the
+        # assertion, so it accrues its full 14 days on the new running
+        # balance: Q(10008.63 * ((1 + 0.045/365) ** 14 - 1)) = Q(17.289020..)
+        assert interest[periods[1].id] == Decimal("17.29")
+        assert balances[periods[1].id] == Decimal("10025.92")
+
+    def test_a_period_ending_before_the_assertion_accrues_nothing(self):
+        """A wholly pre-assertion period keeps its balance and earns zero.
+
+        The balance was asserted 2026-01-20, inside period 2 -- so period 1
+        (2026-01-02..2026-01-15) ended before the account's balance was a
+        known fact and must model no interest at all.  It still appears in
+        BOTH returned maps carrying its base balance: dropping it would put a
+        hole in a column the caller is projecting.
+
+        Period 2 (2026-01-16..2026-01-29) accrues 2026-01-20 .. 2026-01-30
+        (exclusive) = 10 days:
+
+            interest = Q(10000 * ((1 + 0.045/365) ** 10 - 1))
+                     = Q(12.335609..) = 12.34
+        """
+        periods = _make_periods(2)
+        params = InterestParams(
+            apy=Decimal("0.04500"),
+            compounding_frequency_id=_freq_id(CompoundingFrequencyEnum.DAILY),
+        )
+
+        balances, interest = calculate_balances_with_interest(
+            anchor_balance=Decimal("10000.00"),
+            anchor_period_id=1,
+            periods=periods,
+            transactions=[],
+            interest_params=params,
+            accrual_start=date(2026, 1, 20),
+        )
+
+        assert interest[periods[0].id] == Decimal("0.00")
+        assert balances[periods[0].id] == Decimal("10000.00")
+        assert interest[periods[1].id] == Decimal("12.34")
+        assert balances[periods[1].id] == Decimal("10012.34")

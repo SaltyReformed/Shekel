@@ -52,6 +52,7 @@ from app.models.ref import AccountType, CalcMethod, DeductionTiming
 from app.models.transaction import Transaction
 from app.services import (
     account_service,
+    anchor_service,
     balance_at,
     cash_ledger,
     income_service,
@@ -80,6 +81,9 @@ from tests._test_helpers import (
     make_investment_account,
     make_salary_profile,
     posted_loan_balance_at,
+    restamp_latest_assertion,
+    restamp_opening_assertion,
+    settle_instant_on,
 )
 
 
@@ -283,6 +287,146 @@ class TestBalanceMapCash:
             assert seam == expected
             # Interest accrues forward, so the last period exceeds the anchor.
             assert seam[periods[-1].id] > Decimal("5000.00")
+
+
+class TestInterestBeginsAtTheLatestAssertion:
+    """Ruling R-L / plan step X-c2a, through the seam rather than the engine.
+
+    The engine-level arithmetic is pinned in
+    ``test_balance_calculator_hysa.py``; what these pin is the INPUT the
+    kernel derives -- that the accrual window opens at the account's latest
+    balance ASSERTION (its ``AccountAnchorHistory`` row's UTC civil day, read
+    through the dated source of truth) and not at the anchor PERIOD's start,
+    which is the date the code used before and which precedes it by up to a
+    full period.  Both readers of that one walk are covered, because the
+    balance map and the account-detail "Interest, next 12 mo" chip share it
+    (plan finding N-47).
+
+    Every APY here is 5% daily on a 14-day period, so a full period on
+    $10,000 earns ``Q(10000 * ((1 + 0.05/365) ** 14 - 1))`` = ``$19.20`` and
+    the halves below are visibly less than that.
+    """
+
+    @staticmethod
+    def _hysa_asserted_on(db, seed_user, anchor_period, balance, day):
+        """Build an HYSA whose OPENING assertion instant is pinned to *day*."""
+        account = create_hysa_account(
+            seed_user, db.session, anchor_period, balance,
+        )
+        restamp_opening_assertion(
+            db.session, account, settle_instant_on(day),
+        )
+        db.session.commit()
+        return account
+
+    def test_the_anchor_period_accrues_only_from_the_assertion_day(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """An account opened mid-period earns only that period's remainder.
+
+        The anchor period runs 14 days; the balance is asserted on its 8th
+        day, so 7 days of it are already inside the asserted figure and only
+        the last 7 accrue:
+
+            Q(10000 * ((1 + 0.05/365) ** 7 - 1)) = Q(9.5915..) = 9.59
+
+        against ``$19.20`` for the whole period -- which is what this same
+        fixture produced before ruling R-L, and what the firing control
+        (reverting the ``max`` in ``_layer_interest``) restores.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            bctx = BalanceContext.build(user_id)
+            periods = pay_period_service.get_all_periods(user_id)
+            anchor = periods[0]
+            hysa = self._hysa_asserted_on(
+                db, seed_user, anchor, Decimal("10000.00"),
+                anchor.start_date + timedelta(days=7),
+            )
+
+            balances = balance_at.balance_map(hysa, bctx, periods)
+
+            assert balances[anchor.id] == Decimal("10009.59")
+
+    def test_a_later_true_up_moves_the_window_forward(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """The LATEST assertion opens the window, not the opening one.
+
+        The account opens in period 0 and the user trues it up in period 2
+        (through the production ``stage_anchor_true_up`` path, so the
+        ``current_anchor_*`` cache and the history row agree exactly as they
+        do in production).  Periods 0 and 1 then precede the newest assertion
+        entirely and accrue nothing; period 2 accrues from the true-up day.
+
+        Trued up on period 2's 8th day at $10,000:
+
+            Q(10000 * ((1 + 0.05/365) ** 7 - 1)) = 9.59
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            bctx = BalanceContext.build(user_id)
+            periods = pay_period_service.get_all_periods(user_id)
+            hysa = create_hysa_account(
+                seed_user, db.session, periods[0], Decimal("6000.00"),
+            )
+            anchor_service.stage_anchor_true_up(
+                account=hysa,
+                new_balance=Decimal("10000.00"),
+                anchor_period=periods[2],
+                notes="test true-up",
+            )
+            restamp_latest_assertion(
+                db.session, hysa,
+                settle_instant_on(periods[2].start_date + timedelta(days=7)),
+            )
+            db.session.commit()
+
+            balances = balance_at.balance_map(hysa, bctx, periods)
+
+            # Pre-assertion periods are absent: the walk starts at the CACHE's
+            # anchor period, which the true-up moved to period 2.
+            assert periods[0].id not in balances
+            assert periods[1].id not in balances
+            assert balances[periods[2].id] == Decimal("10009.59")
+
+    def test_the_interest_chip_reads_the_same_window(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """The account-detail chip follows the assertion clock too (N-47).
+
+        ``interest_by_period_for_account`` and the balance map are ONE walk,
+        so the "Interest, next 12 mo" figure cannot keep accruing over days
+        the balance map has stopped accruing over.  Same fixture as the first
+        test: the anchor period earns the 7-day figure, not the 14-day one.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
+            periods = pay_period_service.get_all_periods(user_id)
+            anchor = periods[0]
+            hysa = self._hysa_asserted_on(
+                db, seed_user, anchor, Decimal("10000.00"),
+                anchor.start_date + timedelta(days=7),
+            )
+            params = (
+                db.session.query(InterestParams)
+                .filter_by(account_id=hysa.id)
+                .one()
+            )
+
+            chip = balance_at.interest_by_period_for_account(
+                hysa, scenario, periods, params,
+            )
+            balances = balance_at.balance_map(hysa, bctx, periods)
+
+            assert chip[anchor.id] == Decimal("9.59")
+            # And the two agree: the chip's accrual IS the balance's premium
+            # over the flat asserted figure in that first period.
+            assert (
+                balances[anchor.id] - Decimal("10000.00") == chip[anchor.id]
+            )
 
 
 class TestBalanceMapLoan:
@@ -1791,6 +1935,13 @@ class TestInterestDetailRerouteParity:
                     periods=periods,
                     transactions=old_txns,
                     interest_params=params,
+                    # The same accrual window the kernel derives (ruling
+                    # R-L): modelled interest begins at the account's
+                    # latest assertion.  The two paths must agree on the
+                    # INPUT for the equivalence to mean anything -- passing
+                    # a different one here would compare two producers with
+                    # two clocks and call the difference parity.
+                    accrual_start=anchor.as_of_date,
                 )
             )
 
