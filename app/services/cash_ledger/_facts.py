@@ -147,6 +147,16 @@ def resolve_anchor(account: Account, scenario_id: int) -> AnchorPoint:
     Returns:
         :class:`AnchorPoint` -- balance, period, and as-of-date.
 
+    **Ties break on ``id``, the way the WALK breaks them.**  Two assertions
+    can share an instant (a same-second true-up, or any fixture that stamps
+    both), and ``created_at DESC`` alone then returns whichever row the plan
+    happens to yield -- so the resolver could name one row as "latest" while
+    :func:`app.services.cash_ledger.merge_anchor_and_cash_events` (which
+    orders ``(created_at, id)``) replays the other one last.  One question
+    answered two ways by a query-plan artifact, silently swapping which
+    balance is authoritative.  Ordering by ``id`` second makes the two agree
+    by construction.
+
     Raises:
         RuntimeError: When no ``AccountAnchorHistory`` row exists for
             the account.  Unreachable in production after Commit 3;
@@ -156,7 +166,10 @@ def resolve_anchor(account: Account, scenario_id: int) -> AnchorPoint:
     latest: AccountAnchorHistory | None = (
         db.session.query(AccountAnchorHistory)
         .filter_by(account_id=account.id)
-        .order_by(AccountAnchorHistory.created_at.desc())
+        .order_by(
+            AccountAnchorHistory.created_at.desc(),
+            AccountAnchorHistory.id.desc(),
+        )
         .first()
     )
     if latest is None:

@@ -45,6 +45,8 @@ import logging
 from collections.abc import Iterable
 from datetime import datetime
 
+from app import ref_cache
+from app.enums import PostingSourceEnum
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.models.journal_entry import JournalEntry, Posting
@@ -228,27 +230,62 @@ def self_heal_anchor_corrections(
     ``posting_service.sync_transfer_postings`` /
     ``sync_transaction_postings`` (which
     ``reverse_postings_before_delete`` routes through) call this after
-    emitting source delta entries.  A source change attributed at-or-before
-    an account's latest anchor assertion moves that anchor's walked
-    ``ledger_before``, so its posted correction is stale until re-derived;
-    a change attributed after every assertion rides on top and no
-    correction moves.
+    emitting source delta entries.
 
-    **The predicate reads the emitted entries' ``entry_date``s** -- resync
-    an account iff the earliest emitted date's midnight-UTC instant is
-    at-or-before the account's latest assertion instant.  A settle-side
-    entry is dated at the source's CURRENT attribution civil date, and a
-    reversal entry inherits the latest date it reverses (the R2 rule) --
-    the OLD attribution's civil date -- so both sides of every lifecycle
-    delta are covered, including the revert of an early-settled
-    future-period source whose CURRENT attribution (its period start) sits
-    after the anchor while the reversed effect preceded it.  A
-    day-granular midnight comparison over-fires only for same-UTC-day
-    changes, where the resync is an idempotent no-op walk.
+    **What it decides is whether the reconcile can be SKIPPED, and that is
+    the honest way round.**  :func:`sync_account_anchor_postings` is
+    idempotent and reconciles to target, so running it after every emission
+    is always correct and only ever costs a walk; everything below is the
+    proof that a particular walk would write nothing.  Stating it as a skip
+    rather than as a fire is not a style choice -- a fire-predicate that
+    misses a case silently leaves the ledger wrong, which is exactly what
+    happened while this function tested only the first of the two conditions
+    below (see the second one).
+
+    A walk writes nothing when BOTH hold:
+
+    1. **The change rides on top of every assertion.**  A source change
+       attributed at-or-before an account's latest anchor assertion moves
+       that anchor's walked ``ledger_before``, so its posted correction is
+       stale until re-derived; a change attributed after every assertion
+       adds to the ledger without moving any correction.  The test reads the
+       emitted entries' ``entry_date``s -- the earliest emitted date's
+       midnight-UTC instant against the account's latest assertion instant.
+       A settle-side entry is dated at the source's CURRENT attribution
+       civil date, and a reversal entry inherits the latest date it reverses
+       (the R2 rule) -- the OLD attribution's civil date -- so both sides of
+       every lifecycle delta are covered, including the revert of an
+       early-settled future-period source whose CURRENT attribution (its
+       period start) sits after the anchor while the reversed effect
+       preceded it.  A day-granular midnight comparison over-fires only for
+       same-UTC-day changes, where the resync is an idempotent no-op walk.
+    2. **The corrections are already POSTED in this scenario.**  "Riding on
+       top" says a posted correction does not MOVE; it says nothing about
+       one that was never written.  A scenario becomes live for an account
+       the moment an entry first lands on its linked ledger there, and the
+       account-global sync
+       (:func:`sync_account_anchor_postings_all_scenarios`) only visits
+       scenarios that were ALREADY live -- so without this arm the very
+       emission that makes a scenario live is the one that skips minting its
+       opening, and the account's ledger in that scenario reads its activity
+       alone.  Worked: a $1,000.00 account opened in January, a fresh
+       scenario, one $70.00 expense settled in March -> that scenario's
+       linked ledger summed to ``-$70.00`` instead of ``$930.00``, and the
+       trial balance closed only because the missing opening and its equity
+       twin were both absent.  Latent rather than live today: production
+       creates baseline scenarios ONLY (``auth_service`` at registration,
+       ``baseline_service`` at recovery), and the baseline always has its
+       corrections from account-create time -- so this cannot fire until a
+       scenario-clone / what-if feature ships, which is precisely when it
+       would have shipped wrong.
+
+    The two are ordered cheapest-first and short-circuit: the common settle
+    (dated after the anchor, in a scenario that already carries its
+    corrections) pays one indexed EXISTS and no walk.
 
     An account with no anchor history never fires; an amortizing loan
-    passes the instant check (loans carry anchor history rows too) and is
-    then structurally skipped by :func:`sync_account_anchor_postings`.
+    passes the checks (loans carry anchor history rows too) and is then
+    structurally skipped by :func:`sync_account_anchor_postings`.
     Flushes but does not commit (the caller owns the transaction).
 
     Args:
@@ -269,8 +306,65 @@ def self_heal_anchor_corrections(
     )
     for account_id in sorted(set(account_ids)):
         latest = _latest_anchor_instant(account_id)
-        if latest is not None and earliest <= latest:
+        if latest is None:
+            continue
+        if earliest <= latest or not _has_posted_anchor_correction(
+            account_id, scenario_id,
+        ):
             sync_account_anchor_postings(account_id, scenario_id)
+
+
+def _has_posted_anchor_correction(account_id: int, scenario_id: int) -> bool:
+    """Return whether one account carries a posted anchor correction in a scenario.
+
+    The second half of :func:`self_heal_anchor_corrections`' skip
+    precondition: an EXISTS over the account-correction journal entries
+    (``account_opening`` / ``account_trueup``) touching the account's LINKED
+    ledger in *scenario_id*.  The linked ledger is per-account and every
+    anchor correction carries a linked leg, so that join scopes the question
+    exactly -- the same scoping :func:`posted_correction_legs` uses to read
+    the amounts, asked here as a cheaper existence question because the
+    caller only needs to know whether the scenario has been opened at all.
+
+    **A ``$0`` opening legitimately posts NOTHING**, so this reads ``False``
+    for such an account forever and its settles each pay a walk that writes
+    nothing.  That is the correct trade: the alternative is a predicate that
+    distinguishes "no correction because none is due" from "no correction
+    because the scenario is new", and the only thing that knows the
+    difference is the walk itself.
+
+    Args:
+        account_id: The non-loan account to test.
+        scenario_id: The budget scenario to scope to.
+
+    Returns:
+        ``True`` when at least one anchor correction is posted for the
+        account in that scenario; ``False`` when the account has no linked
+        ledger at all (nothing can be posted yet) or none is posted.
+    """
+    linked = _ledger_account_for(account_id)
+    if linked is None:
+        return False
+    correction_sources = [
+        ref_cache.posting_source_id(source)
+        for source in (
+            PostingSourceEnum.ACCOUNT_OPENING,
+            PostingSourceEnum.ACCOUNT_TRUEUP,
+        )
+    ]
+    entry_ids = (
+        db.session.query(Posting.journal_entry_id)
+        .filter(Posting.ledger_account_id == linked.id)
+    )
+    return db.session.query(
+        db.session.query(JournalEntry.id)
+        .filter(
+            JournalEntry.scenario_id == scenario_id,
+            JournalEntry.source_kind_id.in_(correction_sources),
+            JournalEntry.id.in_(entry_ids),
+        )
+        .exists()
+    ).scalar()
 
 
 def _non_loan_accounts_id_query():
