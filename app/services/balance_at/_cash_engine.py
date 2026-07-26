@@ -1,5 +1,5 @@
 """
-Shekel Budget App -- the last anchor-forward cash producer (retiring at X-c2c).
+Shekel Budget App -- the last anchor-forward cash producer (retiring at X-c2c4).
 
 ONE producer now: :func:`balances_for`, the entries-aware anchor-forward
 roll-up (E-25; CRIT-01 / F-009).  Every cash-flow and net-worth surface used to
@@ -8,9 +8,11 @@ read it; since plan step X-c2b2 they read the FOLD
 the investment growth curve and the property appreciation curve compound over
 (:mod:`app.services.balance_at._investment`, its only two callers).  Those two
 carry ruled PRE-ANCHOR models of their own -- a reverse growth projection and a
-flat anchor carry -- which the fold must not silently replace, so windowing them
-onto it is its own step (plan step X-c2c, finding N-43) and this module lives
-until then.
+flat anchor carry -- which the fold must not silently replace (finding N-43), so
+this module lives until plan step **X-g** replaces those bases with the
+modelled-asset replay; **X-c2c4** then deletes it.  It is NOT waiting on a
+window: plan step X-c2c3 was to window these bases anchor-forward and ruling R-V
+cancelled it as a compensator for the merge X-g removes (finding N-72).
 
 **Three names deleted at plan step X-c2b3**, each with the surface that read it:
 
@@ -184,7 +186,7 @@ def balances_for(
     # since plan step X-c2b2 deleted its banner: the fold moves the balance a
     # settled row belongs in rather than warning that the anchor might not
     # cover it.  It is discarded here and deletes with ``_calculator`` at plan
-    # step X-c2c (finding N-50).
+    # step X-c2c4 (finding N-50).
     raw_balances, _ = _calculator.calculate_balances(
         anchor_balance=anchor.balance,
         anchor_period_id=anchor.period.id,

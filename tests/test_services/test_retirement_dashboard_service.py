@@ -495,7 +495,7 @@ class TestRetirementProjectionEntryAware:
 
             # The anchor-forward base a retirement account's growth curve
             # seeds off (the contract Commit 8 locks; still this producer
-            # until plan step X-c2c windows it onto the fold).
+            # until plan step X-g replaces it with the modelled replay).
             producer = balance_resolver.balances_for(
                 acct, scenario.id, seed_periods_today,
             )

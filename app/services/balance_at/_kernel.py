@@ -21,10 +21,12 @@ producers that a test keeps in step -- which is what closes findings cash D1
 (settled money counted by no producer), cash D2 (the scalar/daily fork) and
 cash D3 / B-18 (the pre-anchor fabrication) on the net-worth side too.  The
 INVESTMENT and APPRECIATING branches still seed off
-``_cash_engine.balances_for``; windowing them onto the fold is plan step
-X-c2c, deliberately separate because their pre-anchor tiers are ruled models
-(a reverse growth projection, a flat anchor carry) that the fold must not
-silently replace (finding N-43).
+``_cash_engine.balances_for``.  They are deliberately separate because their
+pre-anchor tiers are ruled models (a reverse growth projection, a flat anchor
+carry) that the fold must not silently replace (finding N-43) -- and plan step
+**X-g** resolves that by replacing all three modelled bases with ONE event
+replay, deleting the merge rather than working around it.  The WINDOW that was
+to precede it (X-c2c3) is cancelled, ruling R-V.
 
 The cockpit's forward net-worth trend PROJECTS investment and retirement
 growth forward, so the investment growth sub-chain lives here too (the

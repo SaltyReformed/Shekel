@@ -115,8 +115,10 @@ per-kind balance dispatch, ``_investment`` = the growth / appreciation
 sub-chain, ``_interest`` = the modelled accrual an INTEREST account layers on
 its folded cash).  **Plan step X-c2b2 then made the cash FOLD (``_cash_fold``)
 the one cash producer every view reads**, so ``_cash_engine`` / ``_calculator``
-survive only for the investment and appreciation bases, which X-c2c windows onto
-the fold too.  **Plan step X-c2b3 then DELETED what the cutover replaced**: the
+survive only for the investment and appreciation bases.  Plan step **X-g**
+replaces those bases with the modelled-asset REPLAY and X-c2c4 then deletes both
+modules; the window that was to stand between (X-c2c3) is CANCELLED, ruling
+R-V.  **Plan step X-c2b3 then DELETED what the cutover replaced**: the
 per-day producer ``_daily_series`` whole (the calendar's running-balance line is
 the fold sampled at every day of its range), ``_cash_engine``'s date-precise
 scalar ``balance_as_of_date`` with its prefix walk, and that module's

@@ -76,11 +76,13 @@ def investment_base_balance_map(
     X-c2b2): they read the FOLD, which replays every assertion and counts
     settled money from the day it moved, so this seed and a rendered cash
     balance for the same rows can differ by whatever has settled since the
-    account was last asserted.  The gap is deliberate for exactly one more
-    step: the growth projection compounds BACKWARD through pre-anchor periods
+    account was last asserted.  The gap is deliberate: the growth projection
+    compounds BACKWARD through pre-anchor periods
     (:func:`build_investment_balance_map`), a ruled model the fold's own
-    pre-anchor answer must not silently replace, so windowing this base onto
-    the fold is plan step X-c2c (finding N-43).  What IS measured today is the
+    pre-anchor answer must not silently replace (finding N-43).  **It closes at
+    plan step X-g, not by WINDOWING this base onto the fold but by deleting the
+    merge that makes the clash possible** -- the window was plan step X-c2c3 and
+    ruling R-V cancelled it as a compensator (finding N-72).  What IS measured today is the
     other direction: plan step X-c2b2 left the three real IRAs and the Home
     unmoved on every column precisely BECAUSE they still seed here, which is
     what makes this the last cash producer rather than a second opinion.
@@ -226,7 +228,7 @@ def _assemble_investment_projection_inputs(  # pylint: disable=too-many-argument
     accessor :func:`investment_base_balance_map`, so the growth projection and
     the year-end savings-progress projection compound from ONE cash basis.  That
     basis is NOT the one the grid renders any more -- see the seed accessor for
-    why the gap is deliberate until plan step X-c2c.
+    why the gap is deliberate until plan step X-g.
 
     Returns an :class:`_InvestmentProjectionInputs` whose ``pre_anchor`` and
     ``post_anchor`` are both empty in the no-projection case; ``base_balances``

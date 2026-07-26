@@ -394,7 +394,13 @@ tracing measured that step too large for one revertable commit: `X-c` became `X-
 `X-c2`, `X-c2` became `X-c2a` / `X-c2b`, `X-c2b` became `X-c2b1` / `b2` / `b3`. So depth is
 decomposition HISTORY, not priority, and `X-c2c1` is simply the first commit of the last piece of
 `X-c`. **Execution order is the order they appear on this page**, never the alphabet -- `X-g` runs
-before `X-d`. **The IDs are append-only** and are NOT renumbered for readability: they are cited
+before `X-d`. **ONE EXCEPTION, and it is the only one: `X-c2c4` sits above `X-g` on this page but
+runs AFTER it** (ruling R-V, 2026-07-26). It stays inside the `X-c2c` block because that is where
+it belongs structurally and the IDs are append-only, so the page is ordered by DECOMPOSITION there
+rather than by execution. The live order from here is **X-g -> X-c2c4 -> X-d -> X-e -> X-f -> E2**;
+both steps say so at their own entries, and the state block at the top of this document is the
+authority if they ever disagree. **The IDs are append-only** and are NOT renumbered for
+readability: they are cited
 164 times across 49 files in `app/` / `tests/` / `tools/` (`X-c2b2` alone 96 times in 33), and
 they are in the commit messages, so a rename would add a second scheme rather than replace the
 first. Considered and declined 2026-07-26.
@@ -1044,15 +1050,18 @@ replaces.
   **Why it exists, in one line:** the modeled kinds are the last place where a balance is three
   producers spliced by a preference order, which is the shape this whole arc exists to delete.
 
-  **It is sequenced after X-c2c2 and BEFORE X-c2c4 (ruling R-V, 2026-07-26).** The earlier plan put
-  X-c2c3's window in front of it -- a COMPENSATOR for the very merge this step deletes (**N-72**) --
-  and that step is CANCELLED, so this one replaces the modeled bases directly and X-c2c4's deletion
-  follows it. What this step still WANTS from X-c2c is X-c2c2, the test migration: re-pointing the
-  4,431 lines that reach `cash_ledger` rules and model invariants THROUGH the dying producer is a
-  no-production-change commit, and doing it first is what keeps this step's cutover from having to
-  reason about them. What it INHERITS from the cancelled X-c2c3 is stated at that step: correction
-  (b)'s ruling that the DATED SoT governs the anchor pivot, and correction (a)'s four discriminating
-  fixture shapes.
+  **It is sequenced after X-c2c2 and BEFORE X-c2c4 (ruling R-V, 2026-07-26), and its prerequisite
+  is now MET.** The earlier plan put X-c2c3's window in front of it -- a COMPENSATOR for the very
+  merge this step deletes (**N-72**) -- and that step is CANCELLED, so this one replaces the
+  modeled bases directly and X-c2c4's deletion follows it. **X-c2c2 SHIPPED 2026-07-26**
+  (`227c2479` / `ed7e220c` / `690fdd5d`), which is what this step wanted from the X-c2c block: the
+  `cash_ledger` rules and model invariants that used to be reached THROUGH the dying producer are
+  now tested against their own homes, so this step's cutover does not have to reason about them.
+  **What is NOT done, and belongs to X-c2c4 rather than here:** `_calculator` is still live and
+  still carries its own tests (the KEEP correction), so this step's parallel run has a fully-pinned
+  incumbent to grade against -- which is the point of that correction. What it INHERITS from the
+  cancelled X-c2c3 is stated at that step: correction (b)'s ruling that the DATED SoT governs the
+  anchor pivot, and correction (a)'s four discriminating fixture shapes.
 
   **The price of the cancellation, carried here so this step owns it:** findings cash D1 and cash D3
   stay open for INTEREST / INVESTMENT / APPRECIATING until this ships. That is `$0.00` on real data
