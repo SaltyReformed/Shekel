@@ -57,8 +57,16 @@ signature change across `_investment`'s three public entries and four callers, e
 X-g redoes; and it is a MONEY-MOVING cutover, so cancelling it removes an entire cutover with its
 own oracle and sign-off rather than deferring one. Ruling **R-V** below records it.
 
-**NEXT: X-c2c2** (the test migration -- NO production change, so the baseline provably cannot
-move), **then X-g**, **then X-c2c4** (the deletion, which X-g's cutover is what makes possible).
+**X-c2c2 SHIPPED (2026-07-26)** in three sub-commits -- `227c2479` / `ed7e220c` / `690fdd5d`. The
+cash leaf's rules are now tested against the leaf: `test_cash_amounts.py` (what ONE row is worth),
+`test_cash_flows.py` (what a SET sums to), `test_cash_ledger.py` the FACTS file.
+`test_balance_calculator_entries.py` deleted whole. No production change in any sub-commit.
+**One correction the developer approved from the trace: the step MIGRATES, it does not DELETE** --
+the `_calculator`-discriminating tests stay until X-c2c4 deletes the module, because R-V moved that
+step past X-g and `_calculator` is live production code until then.
+
+**NEXT: X-g**, then **X-c2c4** (the deletion, which X-g's cutover is what makes possible, and which
+now carries the 52-period drift-oracle PORT as a prerequisite -- see the step).
 
 **E2 IS RATIFIED (developer ruling 2026-07-26) and runs LAST.** The super-package boundary is now a
 committed step in Section 5, not a Section 6 option: the read seam, the write cluster and the
@@ -904,19 +912,63 @@ replaces.
       loan-payment shadow), which is finding **N-40**, unchanged here.
       Full suite 7592 (7594 at HEAD; the delta is exactly the two deleted tests, confirmed by
       diffing collected test ids rather than by subtraction). pylint 10.00 on all three trees.
-    - [ ] **X-c2c2** `test(cash): the reservation and flow rules move to their own leaf` -- NO
-      production change, so the baseline provably cannot move. Per the developer's ruling
-      (2026-07-26) the migrated tests split by LEAF SUBMODULE, mirroring the cohesion split D1c
-      made in the production code: a new `test_cash_amounts.py` (the three-bucket reservation, the
-      cleared-flag matrix, the live override, the `effective_amount` interactions) and
-      `test_cash_flows.py` (the projected sum and its status gates), leaving `test_cash_ledger.py`
-      as the FACTS file -- which is exactly the relocation that file's own docstring already
-      anticipates as "its own commit". Tests discriminating a `_calculator` rule (the anchor
-      arithmetic, the roll-forward, the pre-anchor skip, `_detect_stale_anchor`) are DELETED with a
-      note naming where the property now lives, the X-c2b3 pattern. `test_interest_accrual.py`'s
-      `_layered` base builder becomes a test-local roll-forward over `sum_projected` -- correct,
-      not a mirror, because the production roll-forward is what deletes and `_layer_interest` takes
-      any base it is given.
+    - [x] **X-c2c2** `test(cash): the reservation and flow rules move to their own leaf`
+      -- **SHIPPED in three sub-commits (2026-07-26): X-c2c2a `227c2479`, X-c2c2b `ed7e220c`,
+      X-c2c2c `690fdd5d`.** NO production change in any of them, so the baseline provably cannot
+      move -- and the arithmetic says so per sub-commit, reconciled by DIFFING collected test ids
+      rather than by subtraction: a 23-out / 23-in at a, a 10 / 10 at b, and 5 out / 3 in at c
+      (7592 -> 7590), the only non-zero delta in the step and a DE-DUPLICATION rather than a loss.
+      The split is by LEAF SUBMODULE, mirroring the cohesion split D1c made in production:
+      `test_cash_amounts.py` (what ONE row is worth), `test_cash_flows.py` (what a SET sums to),
+      and `test_cash_ledger.py` left as the FACTS file -- the relocation that file's own docstring
+      anticipated as "its own commit", now done, including the promotion it named
+      (`_test_helpers.add_entry` gained the three bucket flags, so neither new suite carries a
+      private entry builder). `test_balance_calculator_entries.py` deleted whole.
+
+      **The KEEP correction (developer ruling 2026-07-26, on the trace).** This step's text said
+      tests discriminating a `_calculator` rule are DELETED here. **They are NOT; they stay until
+      X-c2c4 deletes the module.** Ruling R-V moved X-c2c4 to after X-g, and `_calculator` is LIVE
+      production code until then -- `_cash_engine.balances_for:188` calls it and `_investment.py:109`
+      / `:458` call that for the modelled bases -- so deleting its tests here would leave a live
+      producer untested across the arc's largest step, and X-g grades its successor against exactly
+      that producer. The rule is the arc's own: **delete a test with the code it tests, never
+      before it** (X-c2b3's "a delta of exactly the 16 the four retired suites held"). Two
+      anchor-arm tests therefore MOVED INTO `test_balance_calculator.py` rather than dying, and 79
+      `calculate_balances(` call sites across 10 files stay put for X-c2c4.
+
+      **Four corrections to this step's own text, all measured.**
+      (a) "`test_balance_calculator_entries.py` (27 tests) is the three-bucket reservation formula"
+      -- it is **18**. Seven are status gates and reductions over a SET (that is `_flows`), and two
+      discriminate which ARM of `_calculator` calls the shared reduction.
+      (b) "`TestEffectiveAmountFix` (8) is `Transaction.effective_amount`" -- **one** of those eight
+      grades the property; seven assert through the walk. What actually graded it was a
+      156-line test in a class the text never named, and **six of its nine cases duplicated**
+      `test_computed_properties.py`'s `TestTransactionEffectiveAmount`. The three that did not (a
+      Projected row preferring its actual, a Projected row with a ZERO actual, a soft-deleted row)
+      moved there as tests of their own; the duplicates deleted rather than moving a weaker second
+      copy beside the stronger one.
+      (c) `TestTransferInvariantsBalanceRegression`'s "three of four touch no producer" understates
+      it: those three DUPLICATE `test_transfer_service.py`'s `TestInvariants`, which is stronger
+      (it re-checks each invariant after an UPDATE). Deleted with a citation.
+      (d) **The 52-period drift oracle is NOT ported here.** The plan put the port in this step
+      because this step deleted the file; under the KEEP correction
+      `test_52_period_penny_accuracy` discriminates `_calculator`'s roll-forward, stays with it, and
+      the port becomes a **prerequisite of X-c2c4**. Porting early would grade a producer against a
+      successor that does not exist yet. `test_interest_accrual.py`'s `_layered` base builder moves
+      with it for the same reason.
+
+      **Two firing controls found real defects in the NEW tests, both the N-69 shape, and both were
+      inherited rather than introduced.** (1) Routing the income leg through `_expense_amount`
+      failed NOTHING: an income row carrying no entries prices identically under either rule, so
+      the test named "income never takes the entry formula" did not test that -- and neither did
+      the version it moved from. It now carries a `$500.00` credit entry, the only shape that can
+      tell the rules apart. (2) Deleting the `is_projected` gate fails the SETTLED test alone; a
+      Cancelled or Credit row is OVER-DETERMINED, because `effective_amount` independently returns
+      `0` for a status flagged `excludes_from_balance`. Those two tests stay (the property is real
+      and user-visible) with the class docstring stating plainly that they are not evidence the
+      gate works.
+      **Twelve firing controls across the three sub-commits, each shown to fire precisely its
+      intended tests.** pylint 10.00 on app/ and every touched test file; tests/ decimal gate clean.
     - [~] **X-c2c3** `refactor(balance): the modelled bases read the fold`
       -- **CANCELLED 2026-07-26 (developer ruling R-V, as recommended). NOT superseded by a
       renumbering: the ID is retired in place, per rule 2's append-only discipline, so the ~30
@@ -937,6 +989,27 @@ replaces.
       `_cash_engine.balances_for` has no caller left, and X-g's replay is what takes the last two
       -- exactly as the cancelled X-c2c3's window would have. Do not attempt it earlier; the
       C3b3 prove-the-successor-first precedent is the whole reason this is a separate commit.
+
+      **It now carries what the KEEP correction deferred into it, and none of this is optional.**
+      (i) The `_calculator`-discriminating tests die HERE, with the module: the anchor arithmetic,
+      the roll-forward, the pre-anchor skip, `_detect_stale_anchor`,
+      `TestTheAnchorArmAppliesTheSharedReduction`, `TestEffectiveAmountFix`'s seven
+      walk-composition tests, and `TestTransferInvariantsBalanceRegression`'s surviving one.
+      (ii) **`test_52_period_penny_accuracy` must be PORTED onto the fold FIRST, not deleted with
+      the rest.** It walks 52 periods of mixed statuses against an independent `Decimal` oracle for
+      cumulative drift, and `test_cash_fold_parallel.py` has NO long-horizon drift oracle -- so
+      deleting it unported is the coverage hole a deletion step must not open. The port needs 52
+      real pay periods and their rows (the fold queries; the original uses `FakeTxn`), and its
+      oracle must stay a test-local running total, never the fold reading itself (Section 7.2).
+      (iii) `test_interest_accrual.py`'s `_layered` base builder becomes a test-local roll-forward
+      over `sum_projected` -- correct rather than a mirror, because the production roll-forward is
+      what deletes and `_layer_interest` takes any base it is given.
+      (iv) **79 `calculate_balances(` call sites across 10 files** re-point or die with the module
+      (`test_audit_fixes.py`, `test_hostile_qa.py`, `test_loan_payment_pipeline.py`,
+      `test_workflows.py`, `test_accounts.py`, `test_transfers.py`, `test_grid.py`,
+      `test_interest_accrual.py`, `test_carry_forward_service.py`, `test_balance_calculator.py`),
+      along with the `calculate_balances` 2-tuple collapse deferred here from X-c2b3 -- read every
+      site, never sed, because a left-behind `balances, _ =` unpacks dict KEYS instead of raising.
       `_cash_engine` and `_calculator` WHOLE (with `_detect_stale_anchor` and the
       `calculate_balances` 2-tuple, deferred here from X-c2b3 because the module deletes and the
       mechanical arity edit would be written and then discarded),
