@@ -52,7 +52,7 @@ duplication this work exists to kill.
 * The CASH-FLOW entries (:func:`cash_balance_map`, :func:`cash_balance_at`,
   :func:`cash_daily_balance_series`) always return the account's pure
   transaction running-balance with NO kind dispatch -- the view the
-  single-account cash-flow surfaces (grid, obligations, calendar, checking
+  single-account cash-flow surfaces (grid, dashboard pulse, calendar, cash
   detail) need, where the balance must reconcile with the on-screen transaction
   rows, and where the account is NOT guaranteed cash
   (``resolve_grid_account`` can point at any kind, so accruing interest into the
@@ -162,7 +162,14 @@ from ._cash_flow import (
 )
 from ._confirmed_view import confirmed_view
 from ._context import BalanceContext, require_scenario
-from ._grid import GridBalanceView, _accruing_grid_view, grid_balance_view
+from ._grid import (
+    GridBalanceView,
+    GridColumn,
+    GridRowFlags,
+    _accruing_balances,
+    empty_grid_view,
+    grid_balance_view,
+)
 from ._inputs import (
     ZERO,
     _account_balance_map,
@@ -212,13 +219,15 @@ from ._secured_debt import (
 # module -> package split.  The underscore-prefixed names are
 # internal-but-tested (``tests/test_services/test_balance_at.py`` reaches
 # ``balance_at._assemble_inputs`` / ``._AssembledInputs`` /
-# ``._account_balance_map`` / ``._accruing_grid_view`` to pin the assembly and
+# ``._account_balance_map`` / ``._accruing_balances`` to pin the assembly and
 # accrual contracts directly); they are listed here so the re-export is
 # explicit rather than an unused import.
 __all__ = [
     "ZERO",
     "BalanceContext",
     "GridBalanceView",
+    "GridColumn",
+    "GridRowFlags",
     "LoanFigures",
     "LoanTerms",
     "SecuredLoanSeries",
@@ -227,7 +236,7 @@ __all__ = [
     "TIER_PROJECTED",
     "_AssembledInputs",
     "_account_balance_map",
-    "_accruing_grid_view",
+    "_accruing_balances",
     "_assemble_inputs",
     "_require_scenario",
     "balance_at",
@@ -238,6 +247,7 @@ __all__ = [
     "cash_daily_balance_series",
     "confirmed_view",
     "debt_schedule_rows",
+    "empty_grid_view",
     "grid_balance_view",
     "interest_by_period_for_account",
     "investment_growth_since_anchor",

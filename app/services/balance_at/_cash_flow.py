@@ -1,7 +1,7 @@
 """Balance-at-T seam -- the CASH-FLOW view (no per-kind dispatch).
 
-The single-account cash-flow surfaces -- the budget grid, the obligations
-panel, the calendar, the checking detail page -- read an account's pure
+The single-account cash-flow surfaces -- the budget grid, the dashboard pulse,
+the analytics calendar, the cash detail page -- read an account's pure
 transaction running-balance, NOT its kind-correct balance (see the package
 docstring's "Two views, one seam").  These three entries are the seam's only
 fence-compliant way to obtain that view: thin pass-throughs to the canonical
@@ -33,9 +33,9 @@ def cash_balance_map(
     pure transaction running-balance (the anchor carried forward by each
     period's Projected, entry-aware net), with NO per-kind dispatch.  This
     is what the single-account cash-flow surfaces show -- the budget grid,
-    the obligations cash-flow panel, and the checking detail page -- where
-    the balance row must reconcile with the account's own transaction rows
-    and subtotal row on the same screen.
+    the dashboard pulse chart, and the cash detail page -- where the balance
+    row must reconcile with the account's own transaction rows and subtotal
+    row on the same screen.
 
     Contrast with :func:`~app.services.balance_at.balance_map`, the
     KIND-CORRECT view: for an interest-bearing (HYSA), loan, investment, or

@@ -82,9 +82,10 @@ def _build_partial_context(transactions: list, period) -> dict:
 
     Returns:
         Dict with the keys the shared partial expects, ready to
-        unpack into ``render_template``.  Notably absent:
-        ``subtotals`` and ``balances`` (companion does not show
-        these per Q-2 (c)); ``all_periods`` / ``start_offset``
+        unpack into ``render_template``.  Notably absent: ``columns``
+        (companion shows no money summary per Q-2 (c), and the partial's
+        ``columns is defined`` guard is what suppresses it);
+        ``all_periods`` / ``start_offset``
         (the partial's jump-to and prev/next are suppressed via
         ``show_period_nav=False``).
     """

@@ -5,6 +5,7 @@ Tests the main budget grid view and transaction CRUD endpoints.
 """
 
 from datetime import date, timedelta
+from types import SimpleNamespace
 from decimal import Decimal
 
 import pytest
@@ -6463,7 +6464,7 @@ class TestMobilePlanTab:
         """Balance color class follows the desktop ``_balance_row.html`` pattern.
 
         Pins the three branches by rendering the partial against
-        controlled ``plan_balances`` values.  No database setup --
+        controlled ``plan_columns`` balances.  No database setup --
         the partial is template logic only for the class assignment.
         """
         from types import SimpleNamespace  # pylint: disable=import-outside-toplevel
@@ -6482,17 +6483,18 @@ class TestMobilePlanTab:
                 id=103, start_date=_date(2026, 6, 29),
                 end_date=_date(2026, 7, 12), period_index=12,
             )
-            plan_balances = {
-                p_neg.id: Decimal("-150.00"),
-                p_low.id: Decimal("250.00"),
-                p_ok.id: Decimal("4200.00"),
-            }
-            plan_subtotals = {
-                p.id: SimpleNamespace(
+            plan_columns = {
+                period.id: balance_at.GridColumn(
+                    balance=balance,
                     income=Decimal("0"), expense=Decimal("0"),
-                    net=Decimal("0"),
+                    net=Decimal("0"), reconciliation=Decimal("0.00"),
+                    interest=None,
                 )
-                for p in (p_neg, p_low, p_ok)
+                for period, balance in (
+                    (p_neg, Decimal("-150.00")),
+                    (p_low, Decimal("250.00")),
+                    (p_ok, Decimal("4200.00")),
+                )
             }
 
             html = self._render_plan_partial(
@@ -6501,8 +6503,10 @@ class TestMobilePlanTab:
                 plan_income_row_keys=[],
                 plan_expense_row_keys=[],
                 plan_matched_by_row_period={},
-                plan_subtotals=plan_subtotals,
-                plan_balances=plan_balances,
+                plan_columns=plan_columns,
+                plan_row_flags=balance_at.GridRowFlags(
+                    interest=False, reconciliation=False,
+                ),
                 low_balance_threshold=500,
             )
 
@@ -6639,14 +6643,19 @@ class TestMobilePlanTab:
                     (rk_exp.category_id, rk_exp.template_id,
                      rk_exp.txn_name, period.id): [txn_exp],
                 },
-                plan_subtotals={
-                    period.id: SimpleNamespace(
+                plan_columns={
+                    period.id: balance_at.GridColumn(
+                        balance=Decimal("3000.00"),
                         income=Decimal("0"),
                         expense=Decimal("1200"),
                         net=Decimal("-1200"),
+                        reconciliation=Decimal("0.00"),
+                        interest=None,
                     ),
                 },
-                plan_balances={period.id: Decimal("3000.00")},
+                plan_row_flags=balance_at.GridRowFlags(
+                    interest=False, reconciliation=False,
+                ),
                 low_balance_threshold=500,
             )
 
@@ -6693,14 +6702,19 @@ class TestMobilePlanTab:
                     (rk_inc.category_id, rk_inc.template_id,
                      rk_inc.txn_name, period.id): [txn_inc],
                 },
-                plan_subtotals={
-                    period.id: SimpleNamespace(
+                plan_columns={
+                    period.id: balance_at.GridColumn(
+                        balance=Decimal("3000.00"),
                         income=Decimal("2500"),
                         expense=Decimal("0"),
                         net=Decimal("2500"),
+                        reconciliation=Decimal("0.00"),
+                        interest=None,
                     ),
                 },
-                plan_balances={period.id: Decimal("3000.00")},
+                plan_row_flags=balance_at.GridRowFlags(
+                    interest=False, reconciliation=False,
+                ),
                 low_balance_threshold=500,
             )
 
@@ -6755,14 +6769,19 @@ class TestMobilePlanTab:
                     (rk.category_id, rk.template_id,
                      rk.txn_name, period.id): [txn_a, txn_b],
                 },
-                plan_subtotals={
-                    period.id: SimpleNamespace(
+                plan_columns={
+                    period.id: balance_at.GridColumn(
+                        balance=Decimal("3000.00"),
                         income=Decimal("0"),
                         expense=Decimal("125"),
                         net=Decimal("-125"),
+                        reconciliation=Decimal("0.00"),
+                        interest=None,
                     ),
                 },
-                plan_balances={period.id: Decimal("3000.00")},
+                plan_row_flags=balance_at.GridRowFlags(
+                    interest=False, reconciliation=False,
+                ),
                 low_balance_threshold=500,
             )
 
@@ -6990,6 +7009,303 @@ class TestMobileJumpToPeriod:
         assert "form.submit()" in src
 
 
+class TestTimingAndTrueUpsRow:
+    """Ruling R-O / R-P: the "Timing & true-ups" row, on every surface.
+
+    The row carries what the Total Income / Total Expenses rows structurally
+    cannot say about the balance change -- money budgeted to one period that
+    moved in another, and the balance assertions made inside it.  Plan step
+    X-c2b2 is where a producer first puts a non-zero figure in it (measured
+    ``-$788.68`` in the real Checking account's current column); until then
+    every column reports ``0.00`` and ruling R-O's rule hides the row, which is
+    exactly why the RENDER is graded here on hand-built columns.  A row whose
+    template nobody ever executed would arrive at the cutover unproven, and the
+    cutover is the commit where money moves.
+
+    ``$0.00`` in every column plus the row hidden is the state the whole grid
+    is in today, so these also pin that the shipped page is unchanged.
+    """
+
+    @staticmethod
+    def _columns(*, reconciliation, periods, interest=None):
+        """Return one GridColumn per period, all carrying *reconciliation*."""
+        return {
+            period.id: balance_at.GridColumn(
+                balance=Decimal("3000.00"),
+                income=Decimal("2400.00"),
+                expense=Decimal("1450.00"),
+                net=Decimal("950.00"),
+                reconciliation=Decimal(reconciliation),
+                interest=None if interest is None else Decimal(interest),
+            )
+            for period in periods
+        }
+
+    @staticmethod
+    def _periods():
+        """Two period stand-ins carrying what the footer template reads."""
+        return [
+            SimpleNamespace(
+                id=101, start_date=date(2026, 6, 1),
+                end_date=date(2026, 6, 14), period_index=10,
+            ),
+            SimpleNamespace(
+                id=102, start_date=date(2026, 6, 15),
+                end_date=date(2026, 6, 28), period_index=11,
+            ),
+        ]
+
+    def _render_footer(self, app, reconciliation, flag):
+        """Render the desktop ``<tfoot>`` with a given remainder + flag."""
+        periods = self._periods()
+        template = app.jinja_env.get_template("grid/_balance_row.html")
+        with app.test_request_context("/"):
+            return template.render(
+                periods=periods,
+                columns=self._columns(
+                    reconciliation=reconciliation, periods=periods,
+                ),
+                row_flags=balance_at.GridRowFlags(
+                    interest=False, reconciliation=flag,
+                ),
+                account=None,
+                num_periods=2,
+                start_offset=0,
+                low_balance_threshold=500,
+                stale_anchor_warning=False,
+                oob=False,
+            )
+
+    def test_desktop_footer_renders_the_row_above_the_balance(self, app):
+        """The row sits in the tfoot ABOVE Projected End Balance (ruling R-O).
+
+        Placement is the ruling, not a preference: the whole "how this balance
+        is reached" chain has to read as one block, so the row the identity
+        binds must be above the balance it explains rather than in the flow
+        tbody two sections up.
+        """
+        with app.app_context():
+            html = self._render_footer(app, "-788.68", True)
+
+        assert "Timing &amp; true-ups" in html
+        assert "reconciliation-row" in html
+        assert "-$789" in html
+        assert html.index("Timing &amp; true-ups") < html.index(
+            "Projected End Balance",
+        )
+
+    def test_desktop_footer_hides_an_all_zero_row(self, app):
+        """An all-zero window renders no row at all -- today's shipped grid."""
+        with app.app_context():
+            html = self._render_footer(app, "0.00", False)
+
+        assert "Timing &amp; true-ups" not in html
+        assert "reconciliation-row" not in html
+        # The rest of the footer is untouched.
+        assert "Projected End Balance" in html
+
+    def test_desktop_footer_shows_zero_in_the_columns_that_carry_none(self, app):
+        """Once the row renders it shows $0 where a column has none.
+
+        The other half of ruling R-O: the row is present for the WHOLE visible
+        window, so a column with nothing to explain reads ``$0`` rather than
+        blank -- blank would read as "not measured".
+        """
+        with app.app_context():
+            periods = self._periods()
+            columns = self._columns(reconciliation="0.00", periods=periods)
+            columns[periods[0].id] = balance_at.GridColumn(
+                balance=Decimal("3000.00"), income=Decimal("2400.00"),
+                expense=Decimal("1450.00"), net=Decimal("950.00"),
+                reconciliation=Decimal("-788.68"), interest=None,
+            )
+            template = app.jinja_env.get_template("grid/_balance_row.html")
+            with app.test_request_context("/"):
+                html = template.render(
+                    periods=periods, columns=columns,
+                    row_flags=balance_at.GridRowFlags(
+                        interest=False, reconciliation=True,
+                    ),
+                    account=None, num_periods=2, start_offset=0,
+                    low_balance_threshold=500, stale_anchor_warning=False,
+                    oob=False,
+                )
+
+        row = html[html.index("reconciliation-row"):]
+        row = row[:row.index("</tr>")]
+        assert "-$789" in row
+        assert "$0" in row
+
+    def test_mobile_this_period_card_renders_the_row(self, app):
+        """Ruling R-P: the mobile summary carries the same line.
+
+        Without it the card shows a Net Cash Flow that does not account for the
+        balance printed beside it -- the visible contradiction ruling R-K
+        refused to ship, on the form factor Mark Paid is used from.
+        """
+        period = self._periods()[0]
+        with app.app_context():
+            template = app.jinja_env.get_template(
+                "grid/_mobile_tp_summary.html",
+            )
+            with app.test_request_context("/"):
+                html = template.render(
+                    period=period,
+                    columns=self._columns(
+                        reconciliation="-788.68", periods=[period],
+                    ),
+                    period_row_flags=balance_at.GridRowFlags(
+                        interest=False, reconciliation=True,
+                    ),
+                    account=None,
+                    oob=False,
+                )
+
+        assert "Timing &amp; true-ups" in html
+        assert "-$789" in html
+        assert html.index("Net Cash Flow") < html.index("Timing &amp; true-ups")
+        assert html.index("Timing &amp; true-ups") < html.index(
+            "Projected Balance",
+        )
+
+    def test_mobile_this_period_card_hides_an_all_zero_row(self, app):
+        """The mobile card follows the SAME rule, not its own."""
+        period = self._periods()[0]
+        with app.app_context():
+            template = app.jinja_env.get_template(
+                "grid/_mobile_tp_summary.html",
+            )
+            with app.test_request_context("/"):
+                html = template.render(
+                    period=period,
+                    columns=self._columns(
+                        reconciliation="0.00", periods=[period],
+                    ),
+                    period_row_flags=balance_at.GridRowFlags(
+                        interest=False, reconciliation=False,
+                    ),
+                    account=None,
+                    oob=False,
+                )
+
+        assert "Timing &amp; true-ups" not in html
+        assert "Net Cash Flow" in html
+
+    def test_plan_recap_renders_the_row(self, app):
+        """Ruling R-P again: the Plan tab recap carries the figure too."""
+        period = self._periods()[0]
+        with app.app_context():
+            template = app.jinja_env.get_template("grid/_mobile_plan.html")
+            with app.test_request_context("/"):
+                html = template.render(
+                    plan_periods=[period],
+                    plan_income_row_keys=[],
+                    plan_expense_row_keys=[],
+                    plan_matched_by_row_period={},
+                    plan_columns=self._columns(
+                        reconciliation="-788.68", periods=[period],
+                    ),
+                    plan_row_flags=balance_at.GridRowFlags(
+                        interest=False, reconciliation=True,
+                    ),
+                    low_balance_threshold=500,
+                )
+
+        assert "Timing" in html
+        assert "-$789" in html
+
+    def test_plan_recap_hides_an_all_zero_row(self, app):
+        """And hides it on the same rule."""
+        period = self._periods()[0]
+        with app.app_context():
+            template = app.jinja_env.get_template("grid/_mobile_plan.html")
+            with app.test_request_context("/"):
+                html = template.render(
+                    plan_periods=[period],
+                    plan_income_row_keys=[],
+                    plan_expense_row_keys=[],
+                    plan_matched_by_row_period={},
+                    plan_columns=self._columns(
+                        reconciliation="0.00", periods=[period],
+                    ),
+                    plan_row_flags=balance_at.GridRowFlags(
+                        interest=False, reconciliation=False,
+                    ),
+                    low_balance_threshold=500,
+                )
+
+        assert "Timing" not in html
+
+    def test_the_mobile_card_reads_its_OWN_period_not_the_grid_window(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The mobile card's conditional bars are scoped to the period it shows.
+
+        Found in X-c2b1's own review: the initial include was handed the
+        DESKTOP window's flags while the card renders ``periods[0]`` alone, so
+        a window carrying a figure in some other column would have turned the
+        card's bar on for a period that has none -- and the
+        ``mobileCardSettled`` refresh, which sees one period and no window,
+        would have turned it back off.  A flicker between two renders of the
+        same card, and with the redundant per-cell guard now gone (the flag
+        alone decides) it would render ``None`` as money.
+
+        Driven from data through the Interest bar, which is the one
+        conditional figure a producer can vary at this step: an HYSA anchored
+        two periods AHEAD of today accrues nothing in the current column, so
+        the default window has accruing columns (the desktop row renders)
+        whose leftmost period has none (the mobile bar must not).  The shape
+        is asserted at the seam first, so the test cannot pass vacuously by
+        failing to construct it.
+        """
+        hysa = create_hysa_account(
+            seed_user, db.session, seed_periods_today[5], Decimal("100000.00"),
+        )
+        with app.app_context():
+            user_id = seed_user["user"].id
+            bctx = BalanceContext.build(user_id)
+            all_periods = pay_period_service.get_all_periods(user_id)
+            current = pay_period_service.get_current_period(user_id)
+            window = [
+                p for p in all_periods
+                if p.period_index >= current.period_index
+            ][:6]
+            view = balance_at.grid_balance_view(hysa, bctx, all_periods)
+            # The shape this test needs: the window accrues, its first
+            # column does not.
+            assert view.row_flags(window).interest is True
+            assert view.row_flags(window[:1]).interest is False
+
+        resp = auth_client.get(f"/grid?account_id={hysa.id}&periods=6")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+
+        # The desktop footer row renders: the window DOES contain accrual.
+        footer = html[html.index('id="grid-summary"'):html.index("</tfoot>")]
+        assert "interest-row" in footer
+
+        # The mobile card renders the leftmost period, which has none.  It is
+        # the last block of the This Period pane, so the Plan pane bounds it.
+        card_start = html.index('id="mobile-tp-summary-')
+        card = html[card_start:html.index('id="mobile-plan"', card_start)]
+        assert "Net Cash Flow" in card, "the card must actually have rendered"
+        assert "interest-row" not in card
+
+    def test_the_shipped_grid_shows_no_row_today(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """End to end: the real page renders no remainder row at this step.
+
+        X-c2b1 is a refactor, so the rendered grid must be unchanged.  The
+        producer cannot yet put a figure in the row (the shipping balance and
+        subtotal producers count the same rows), and the page proves it.
+        """
+        resp = auth_client.get("/grid")
+        assert resp.status_code == 200
+        assert b"reconciliation-row" not in resp.data
+        assert b"Timing" not in resp.data
+
+
 class TestGridInterestAccrual:
     """The grid accrues interest + shows an Interest row for an INTEREST account.
 
@@ -7022,8 +7338,8 @@ class TestGridInterestAccrual:
         current = pay_period_service.get_current_period(user_id)
         # Seam truth the route must render (current is the leftmost visible col).
         view = balance_at.grid_balance_view(hysa, bctx, all_periods)
-        accrued = view.balances[current.id]
-        interest = view.increments[current.id]
+        accrued = view.columns[current.id].balance
+        interest = view.columns[current.id].interest
 
         resp = auth_client.get(f"/grid?account_id={hysa.id}")
         assert resp.status_code == 200
@@ -7053,9 +7369,9 @@ class TestGridInterestAccrual:
         """The balance-row HTMX refresh renders the Interest row for an HYSA.
 
         The self-refresh endpoint must reproduce the full render's accrual row
-        (it threads its own live override map), so a mark-paid that fires
-        ``balanceChanged`` keeps the Interest row and the accrued balance
-        current instead of reverting to the cash-flow view.
+        (it reads the same seam view the full render does), so a mark-paid
+        that fires ``balanceChanged`` keeps the Interest row and the accrued
+        balance current instead of reverting to the cash-flow view.
         """
         hysa = create_hysa_account(
             seed_user, db.session, seed_periods_today[0], Decimal("100000.00"),
@@ -7074,9 +7390,9 @@ class TestGridInterestAccrual:
         """The mobile This-Period summary refresh shows the Interest bar (HYSA).
 
         The self-refreshing mobile summary endpoint must reproduce the
-        interest accrual (it threads its own live override map), so a mobile
-        mark-paid that fires ``mobileCardSettled`` keeps the Interest bar
-        instead of reverting to the cash-flow view.
+        interest accrual (it reads the same seam view the full render does),
+        so a mobile mark-paid that fires ``mobileCardSettled`` keeps the
+        Interest bar instead of reverting to the cash-flow view.
         """
         hysa = create_hysa_account(
             seed_user, db.session, seed_periods_today[0], Decimal("100000.00"),
@@ -7105,16 +7421,17 @@ class TestGridInterestAccrual:
     ):
         """The balance-row refresh uses LIVE income, matching the full render.
 
-        The whole reason the refresh endpoints thread their own live override
-        map (``_grid_amount_overrides``) is that ``grid_balance_view`` falls
-        back to the STORED estimate on a bare ``None`` for the interest path;
-        without threading, a refresh after a mark-paid would revert an
-        interest account's balance to the stored figure while the full page
-        shows the live one -- a flicker.  Forces live ($5,000) != stored
-        ($1,000) on an income transaction and asserts the live-income accrued
-        balance (the seam's value under the same live map) appears in BOTH the
-        full ``/grid`` render AND the ``/grid/balance-row`` refresh.  Under a
-        broken (stored) refresh the live figure would be absent.
+        Ruling R-Q retired the caller's choice: the SEAM builds the live
+        override map, so an interest account cannot be projected on the stored
+        estimate by a caller that forgot to thread one.  Before it,
+        ``grid_balance_view`` fell back to the STORED amount on a bare
+        ``None`` for the interest path, so a refresh after a mark-paid could
+        revert the balance to the stored figure while the full page showed the
+        live one -- a flicker with no argument to fix it at the call site.
+        Forces live ($5,000) != stored ($1,000) on an income transaction and
+        asserts the live-income accrued balance appears in BOTH the full
+        ``/grid`` render AND the ``/grid/balance-row`` refresh, with NO
+        override passed anywhere.
         """
         hysa = create_hysa_account(
             seed_user, db.session, seed_periods_today[0], Decimal("10000.00"),
@@ -7145,12 +7462,10 @@ class TestGridInterestAccrual:
         )
         all_periods = pay_period_service.get_all_periods(user_id)
         current = pay_period_service.get_current_period(user_id)
-        # The seam's accrued balance under the SAME live map the route builds.
-        live_view = balance_at.grid_balance_view(
-            hysa, bctx, all_periods,
-            amount_overrides={income.id: Decimal("5000.00")},
-        )
-        accrued_live = live_view.balances[current.id]
+        # The seam builds the live map itself (ruling R-Q), so no override is
+        # threaded here or by the route -- this IS the live figure.
+        live_view = balance_at.grid_balance_view(hysa, bctx, all_periods)
+        accrued_live = live_view.columns[current.id].balance
         # Sanity: the live $5,000 (not the $1,000 stored) is reflected -- the
         # balance clears the $10,000 anchor + the live deposit.
         assert accrued_live > Decimal("15000.00")

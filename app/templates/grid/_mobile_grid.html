@@ -16,8 +16,9 @@
      income_row_keys   -- list[RowKey] (category_id, template_id, txn_name, group_name, display_name, ...)
      expense_row_keys  -- list[RowKey]
      matched_by_row_period -- dict[(category_id, template_id, txn_name, period_id) -> list[Transaction]]
-     subtotals         -- dict[period_id -> dict("income", "expense", "net")]
-     balances          -- dict[period_id -> Decimal]
+     columns           -- dict[period_id -> GridColumn] (balance, income,
+                          expense, net, reconciliation, interest)
+     row_flags         -- GridRowFlags for the visible window
      low_balance_threshold -- int/Decimal
 #}
 <div class="d-md-none" id="mobile-grid">

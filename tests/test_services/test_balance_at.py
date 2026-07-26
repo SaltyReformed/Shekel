@@ -33,6 +33,7 @@ InvestmentParams (INVESTMENT), and a Property + AssetAppreciationParams
 the past (period 2) or at the current period (period 4).
 """
 
+from collections import OrderedDict
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
@@ -1960,23 +1961,46 @@ class TestInterestDetailRerouteParity:
             assert new_balances[periods[-1].id] > Decimal("9000.00")
 
 
-def _assert_grid_view_reconciles(account, scenario, periods, view):
-    """Assert the kind-aware view's three rows reconcile to the cent.
+def _projected_columns(view):
+    """Return the view's columns that carry a balance, in order.
+
+    A period the projection does not reach (pre-anchor) is present in
+    ``view.columns`` with ``balance is None`` -- it carries real subtotals but
+    no balance to roll forward, so the identity below has nothing to assert
+    about it.
+    """
+    return [
+        (pid, column) for pid, column in view.columns.items()
+        if column.balance is not None
+    ]
+
+
+def _assert_grid_view_reconciles(view):
+    """Assert the view's rows reconcile to the cent, off the view alone.
 
     For every adjacent pair of projected periods the displayed balance delta
-    must equal the transaction subtotal net plus the accrual increment --
-    the by-construction invariant
-    ``balances[p] - balances[q] == period_subtotal[p].net + increments[p]``
-    (the E-25 invariant carries the cash leg; the accrual carries the rest).
-    Only meaningful for an accruing account (``increments`` populated).
+    must equal the column's own net plus its remainder plus its accrual --
+    ruling R-K's identity
+    ``balance[p] - balance[p-1] == net[p] + reconciliation[p] + interest[p]``.
+
+    It reads ONE GridColumn per period rather than re-running the subtotal
+    producer beside the balance producer, which is the point of plan step
+    X-c2b1: the identity is a property of the row set, so an oracle that
+    re-derived one side from a second producer would be testing that the two
+    producers agree rather than that the row set is coherent.
     """
-    subtotals = cash_ledger.period_subtotals(account, scenario.id, periods)
-    items = list(view.balances.items())
+    items = _projected_columns(view)
     assert len(items) >= 2, "need >= 2 projected periods to reconcile a delta"
-    for (_prev_id, prev_bal), (pid, bal) in zip(items, items[1:]):
-        assert bal - prev_bal == subtotals[pid].net + view.increments[pid], (
-            f"period {pid}: balance delta {bal - prev_bal} != net "
-            f"{subtotals[pid].net} + increment {view.increments[pid]}"
+    for (_prev_id, prev), (pid, column) in zip(items, items[1:]):
+        accrual = (
+            column.interest if column.interest is not None
+            else Decimal("0.00")
+        )
+        expected = column.net + column.reconciliation + accrual
+        assert column.balance - prev.balance == expected, (
+            f"period {pid}: balance delta "
+            f"{column.balance - prev.balance} != net {column.net} + "
+            f"reconciliation {column.reconciliation} + interest {accrual}"
         )
 
 
@@ -1997,10 +2021,14 @@ class TestGridBalanceView:
             view = balance_at.grid_balance_view(account, bctx, periods)
             cash = balance_at.cash_balance_map(account, bctx, periods)
 
-            assert view.balances == cash.balances
+            assert {
+                pid: column.balance for pid, column in _projected_columns(view)
+            } == dict(cash.balances)
             assert view.stale_anchor_warning == cash.stale_anchor_warning
             # No accrual row for a plain cash account.
-            assert view.increments == {}
+            assert all(
+                column.interest is None for column in view.columns.values()
+            )
 
     def test_loan_stays_cash_flow_no_accrual(
         self, app, db, seed_user, seed_periods_today,
@@ -2025,8 +2053,12 @@ class TestGridBalanceView:
             view = balance_at.grid_balance_view(mortgage, bctx, periods)
             cash = balance_at.cash_balance_map(mortgage, bctx, periods)
 
-            assert view.balances == cash.balances
-            assert view.increments == {}
+            assert {
+                pid: column.balance for pid, column in _projected_columns(view)
+            } == dict(cash.balances)
+            assert all(
+                column.interest is None for column in view.columns.values()
+            )
 
     def test_interest_balances_kind_correct_and_reconcile(
         self, app, db, seed_user, seed_periods_today,
@@ -2063,13 +2095,17 @@ class TestGridBalanceView:
 
             # Displayed balances are the rounded kind-correct (interest-accrued)
             # map, strictly above the no-interest cash balance by the horizon.
-            assert set(view.balances.keys()) == set(cash.balances.keys())
-            for pid in view.balances:
-                assert view.balances[pid] == round_money(kc[pid])
-            assert view.balances[periods[-1].id] > cash.balances[periods[-1].id]
+            projected = dict(_projected_columns(view))
+            assert set(projected) == set(cash.balances)
+            for pid, column in projected.items():
+                assert column.balance == round_money(kc[pid])
+            assert (
+                projected[periods[-1].id].balance
+                > cash.balances[periods[-1].id]
+            )
 
-            # Rows reconcile to the cent (net + accrual == balance delta).
-            _assert_grid_view_reconciles(hysa, scenario, periods, view)
+            # The rows reconcile to the cent off the view's own columns.
+            _assert_grid_view_reconciles(view)
 
             # The accrual is real interest: the telescoped total equals the
             # final premium and matches the kernel's interest within a cent
@@ -2081,9 +2117,12 @@ class TestGridBalanceView:
             kernel_interest = net_worth_kernel.interest_by_period_for_account(
                 hysa, scenario, periods, params,
             )
-            total_accrual = sum(view.increments.values())
+            total_accrual = sum(
+                column.interest for _pid, column in _projected_columns(view)
+            )
             assert total_accrual == (
-                view.balances[periods[-1].id] - cash.balances[periods[-1].id]
+                projected[periods[-1].id].balance
+                - cash.balances[periods[-1].id]
             )
             assert abs(total_accrual - sum(kernel_interest.values())) <= Decimal("0.02")
             assert total_accrual > Decimal("0.00")
@@ -2112,13 +2151,17 @@ class TestGridBalanceView:
             view = balance_at.grid_balance_view(inv, bctx, periods)
             cash = balance_at.cash_balance_map(inv, bctx, periods)
 
-            assert view.balances == cash.balances
-            assert view.increments == {}
+            assert {
+                pid: column.balance for pid, column in _projected_columns(view)
+            } == dict(cash.balances)
+            assert all(
+                column.interest is None for column in view.columns.values()
+            )
             # It is the cash-flow (transaction) balance, NOT the growth-modeled
             # one: balance_map accrues growth above the flat cash basis at the
             # horizon, and the grid view deliberately does not.
             modeled = balance_at.balance_map(inv, bctx, periods)
-            assert view.balances[periods[-1].id] < modeled[periods[-1].id]
+            assert view.columns[periods[-1].id].balance < modeled[periods[-1].id]
 
     def test_property_stays_cash_flow_no_accrual(
         self, app, db, seed_user, seed_periods_today,
@@ -2143,11 +2186,15 @@ class TestGridBalanceView:
             view = balance_at.grid_balance_view(prop, bctx, periods)
             cash = balance_at.cash_balance_map(prop, bctx, periods)
 
-            assert view.balances == cash.balances
-            assert view.increments == {}
+            assert {
+                pid: column.balance for pid, column in _projected_columns(view)
+            } == dict(cash.balances)
+            assert all(
+                column.interest is None for column in view.columns.values()
+            )
             # Cash-flow (flat market value), NOT the appreciated projection.
             modeled = balance_at.balance_map(prop, bctx, periods)
-            assert view.balances[periods[-1].id] < modeled[periods[-1].id]
+            assert view.columns[periods[-1].id].balance < modeled[periods[-1].id]
 
     def test_none_scenario_raises(
         self, app, db, seed_user, seed_periods_today,
@@ -2190,28 +2237,36 @@ class TestGridBalanceView:
             )
             view = balance_at.grid_balance_view(hysa, bctx, periods)
 
-            assert view.balances == cash.balances
-            assert view.increments == {}
+            assert {
+                pid: column.balance for pid, column in _projected_columns(view)
+            } == dict(cash.balances)
+            assert all(
+                column.interest is None for column in view.columns.values()
+            )
 
     def test_interest_increment_pure_when_live_differs_from_stored(
         self, app, db, seed_user, seed_periods_today, monkeypatch,
     ):
         """INTEREST accrual stays pure interest when live income != stored (M1).
 
-        Regression guard for the income-basis trap the ``None`` normalization
-        fixes: an INTEREST account's cash walk auto-builds a live income map
-        from ``None`` while its kc walk (calculate_balances_with_interest)
-        uses stored income -- so if the two were left to diverge the premium
-        would absorb the income recompute instead of being pure interest.
+        Regression guard for the income-basis trap ruling R-Q closes at the
+        root: the cash walk auto-builds a LIVE income map while the kc walk
+        (``calculate_balances_with_interest``) does not, so if the two were
+        ever left to pick their own basis the premium would absorb the income
+        recompute instead of being pure interest.  The seam now builds ONE map
+        and threads it into both walks, so the divergence has no argument to
+        arrive through.
+
         Forces live ($1,500) != stored ($1,000) on a real income transaction
-        and asserts, via the default ``None`` path, that the total accrual
-        still equals the kernel's interest (both on one stored basis); a
-        regression to a live cash baseline would skew it by the $500 delta.
+        and asserts that BOTH walks landed on the live basis: the displayed
+        balances equal the LIVE kind-correct map (not the stored one, which
+        this shape proves is a different number), and the accrual telescopes
+        to the premium over the LIVE cash basis.
 
         (Only INTEREST is exercised: investment / property contributions are
         not live-recomputed -- the live seam covers salary income and
         loan-transfer shadows -- so live == stored there and the trap cannot
-        arise; their walks are also both live from ``None`` regardless.)
+        arise.)
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -2234,25 +2289,282 @@ class TestGridBalanceView:
             # Force live != stored: the live seam revalues this income at
             # $1,500 (vs the $1,000 stored).  Both the cash walk and the kc
             # walk must end up on ONE basis or the premium is polluted.
+            live = {income_txn.id: Decimal("1500.00")}
+            monkeypatch.setattr(
+                income_service, "live_projected_net",
+                lambda uid, sid, txns: dict(live),
+            )
+
+            view = balance_at.grid_balance_view(hysa, bctx, periods)
+            kc_live = balance_at.balance_map(
+                hysa, bctx, periods, amount_overrides=live,
+            )
+            kc_stored = balance_at.balance_map(
+                hysa, bctx, periods, amount_overrides={},
+            )
+            cash_live = balance_at.cash_balance_map(
+                hysa, bctx, periods, amount_overrides=live,
+            )
+            last = periods[-1].id
+
+            # The shape has teeth only if the two bases genuinely differ.
+            assert kc_live[last] - kc_stored[last] > Decimal("400.00")
+
+            # BOTH walks are on the live basis: the displayed balance is the
+            # live kind-correct figure, and the premium over the live cash
+            # basis is exactly the accrual.  On the stored basis it would be
+            # the $500 income delta plus interest instead.
+            projected = dict(_projected_columns(view))
+            assert projected[last].balance == round_money(kc_live[last])
+            total_accrual = sum(
+                column.interest for _pid, column in _projected_columns(view)
+            )
+            assert total_accrual == (
+                projected[last].balance - cash_live.balances[last]
+            )
+            assert total_accrual > Decimal("0.00")
+            assert total_accrual < Decimal("400.00")
+
+
+def _column(
+    *, balance=None, income="0.00", expense="0.00", net="0.00",
+    reconciliation="0.00", interest=None,
+):
+    """Build one hand-specified :class:`GridColumn` for the flag tests.
+
+    The visibility rule is pure logic over a column's values, so it is graded
+    on hand-built columns rather than on a seeded account: a producer-built
+    column cannot currently carry a non-zero remainder at all (see
+    :class:`TestTheRemainderIsZeroUnderTheShippingProducers`), so a data-driven
+    oracle could only ever exercise the false branch.
+    """
+    return balance_at.GridColumn(
+        balance=None if balance is None else Decimal(balance),
+        income=Decimal(income),
+        expense=Decimal(expense),
+        net=Decimal(net),
+        reconciliation=Decimal(reconciliation),
+        interest=None if interest is None else Decimal(interest),
+    )
+
+
+class TestGridRowFlags:
+    """``GridBalanceView.row_flags`` -- ruling R-O's conditional-row rule.
+
+    A conditional row renders for the whole visible window when at least ONE
+    visible column carries a non-zero value.  Stated once here because the same
+    rule governs two rows on four windows (the visible grid, the Plan tab, the
+    mobile This Period card, and the two self-refresh partials), and a template
+    deciding it per surface is how one form factor ends up rendering a balance
+    its own figures cannot explain (ruling R-P).
+    """
+
+    @staticmethod
+    def _view(columns):
+        """Wrap *columns* in a view (the flags read nothing else)."""
+        return balance_at.GridBalanceView(
+            columns=OrderedDict(columns),
+            stale_anchor_warning=False,
+            amount_overrides={},
+        )
+
+    @staticmethod
+    def _periods(*ids):
+        """Return period stand-ins carrying only the id the rule reads."""
+        return [SimpleNamespace(id=pid) for pid in ids]
+
+    def test_all_zero_window_renders_neither_row(self):
+        """Every column zero -> both rows hidden (the ordinary cash grid)."""
+        view = self._view({1: _column(), 2: _column()})
+        flags = view.row_flags(self._periods(1, 2))
+        assert flags.reconciliation is False
+        assert flags.interest is False
+
+    def test_one_non_zero_column_renders_the_row_for_the_window(self):
+        """A single non-zero column turns the row on for the whole window."""
+        view = self._view({
+            1: _column(),
+            2: _column(reconciliation="-788.68"),
+            3: _column(),
+        })
+        assert view.row_flags(self._periods(1, 2, 3)).reconciliation is True
+
+    def test_the_rule_is_per_window_not_per_account(self):
+        """A window that excludes the non-zero column hides the row.
+
+        The flag is asked of the VISIBLE periods, so navigating away from the
+        period that carries a remainder drops the row rather than leaving a
+        permanently-zero line on the forward-looking windows -- the half of
+        ruling R-O that rejected always-on.
+        """
+        view = self._view({1: _column(reconciliation="12.00"), 2: _column()})
+        assert view.row_flags(self._periods(2)).reconciliation is False
+        assert view.row_flags(self._periods(1, 2)).reconciliation is True
+
+    def test_a_negative_remainder_counts_as_non_zero(self):
+        """The rule is non-zero, not positive -- timing swings both ways."""
+        view = self._view({1: _column(reconciliation="-0.01")})
+        assert view.row_flags(self._periods(1)).reconciliation is True
+
+    def test_interest_none_and_interest_zero_both_hide_the_row(self):
+        """No accrual concept and a zero accrual both hide the Interest row.
+
+        ``None`` is a non-interest account (no accrual exists) and ``0.00`` is
+        an interest account whose visible window earns nothing -- a labelled row
+        of zeros either way, which ruling R-O's rule is what removes.
+        """
+        view = self._view({1: _column(interest=None), 2: _column(interest="0.00")})
+        assert view.row_flags(self._periods(1, 2)).interest is False
+
+    def test_a_non_zero_accrual_renders_the_interest_row(self):
+        """One accruing column turns the Interest row on."""
+        view = self._view({1: _column(interest="0.00"), 2: _column(interest="7.01")})
+        assert view.row_flags(self._periods(1, 2)).interest is True
+
+    def test_a_period_outside_the_view_contributes_nothing(self):
+        """A window period the projection never produced cannot flip a flag."""
+        view = self._view({1: _column(reconciliation="5.00")})
+        assert view.row_flags(self._periods(99)).reconciliation is False
+
+
+class TestTheViewOwnsTheLiveOverrideMap:
+    """Ruling R-Q: the seam builds the live map and hands it back.
+
+    The map is a balance INPUT, so the producer that folds it owns it.  Before
+    this it was the caller's argument and the grid route built a second copy for
+    its cells -- "provably identical" by an argument about which rows each side
+    filters (finding N-48), which is the agreeing-by-coincidence shape this arc
+    exists to end.  Handing the same object back makes the cells and the balance
+    row one map by construction.
+    """
+
+    def test_the_view_returns_the_map_it_projected_with(
+        self, app, db, seed_user, seed_periods_today, monkeypatch,
+    ):
+        """``amount_overrides`` is the live map, not an empty courtesy field."""
+        with app.app_context():
+            user_id = seed_user["user"].id
+            scenario = get_baseline_scenario(user_id)
+            bctx = BalanceContext.build(user_id)
+            periods = pay_period_service.get_all_periods(user_id)
+            account = seed_user["account"]
+            income_txn = Transaction(
+                account_id=account.id,
+                pay_period_id=periods[1].id,
+                scenario_id=scenario.id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="Paycheck",
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
+                estimated_amount=Decimal("1000.00"),
+            )
+            db.session.add(income_txn)
+            db.session.commit()
             monkeypatch.setattr(
                 income_service, "live_projected_net",
                 lambda uid, sid, txns: {income_txn.id: Decimal("1500.00")},
             )
 
-            view = balance_at.grid_balance_view(hysa, bctx, periods)
-            params = (
-                db.session.query(InterestParams)
-                .filter_by(account_id=hysa.id).one()
+            view = balance_at.grid_balance_view(account, bctx, periods)
+
+            assert view.amount_overrides == {income_txn.id: Decimal("1500.00")}
+            # And the projection actually used it: the live $1,500 lands in
+            # the column, not the stored $1,000.
+            assert view.columns[periods[1].id].income == Decimal("1500.00")
+
+
+class TestTheRemainderIsZeroUnderTheShippingProducers:
+    """The remainder really is ``0.00`` today -- the E-25 invariant, measured.
+
+    ``_grid._NO_REMAINDER`` is the value ruling R-K's row carries until plan
+    step X-c2b2 points it at the fold's independently-computed remainder, and
+    it is a claim about the SHIPPING producers rather than a placeholder: the
+    balance row and the subtotal row both count exactly the still-unpaid rows
+    of one anchor-seeded walk, through the same ``sum_projected`` engine, so
+    nothing the two clocks disagree about can reach either side.  If that ever
+    stopped holding the constant would be a lie and the grid would render a
+    contradiction with no row to explain it, so it is asserted rather than
+    assumed.
+    """
+
+    def test_every_column_reports_a_zero_remainder(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """No column carries a remainder, so ruling R-O hides the row."""
+        with app.app_context():
+            user_id = seed_user["user"].id
+            bctx = BalanceContext.build(user_id)
+            periods = pay_period_service.get_all_periods(user_id)
+            account = seed_user["account"]
+            _seed_grid_activity(db, seed_user, periods)
+
+            view = balance_at.grid_balance_view(account, bctx, periods)
+
+            assert view.columns
+            assert all(
+                column.reconciliation == Decimal("0.00")
+                for column in view.columns.values()
             )
-            kernel_interest = net_worth_kernel.interest_by_period_for_account(
-                hysa, scenario, periods, params,
-            )
-            # Pure interest: the total accrual matches the kernel's interest
-            # within a cent.  A live cash baseline (the M1 bug) would skew the
-            # premium by the $500 income delta and blow this tolerance.
-            total_accrual = sum(view.increments.values())
-            assert abs(total_accrual - sum(kernel_interest.values())) <= Decimal("0.02")
-            assert total_accrual > Decimal("0.00")
+            assert view.row_flags(periods).reconciliation is False
+
+    def test_the_balance_delta_is_exactly_the_net(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """``balance[p] - balance[p-1] == net[p]``, with nothing left over.
+
+        The reason the remainder is zero, asserted directly: on a PLAIN
+        account with no accrual the whole balance change is the subtotal net,
+        so a non-zero remainder would have to come from somewhere neither
+        producer can see.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            bctx = BalanceContext.build(user_id)
+            periods = pay_period_service.get_all_periods(user_id)
+            account = seed_user["account"]
+            _seed_grid_activity(db, seed_user, periods)
+
+            view = balance_at.grid_balance_view(account, bctx, periods)
+            items = _projected_columns(view)
+            assert len(items) >= 2
+            moved = [
+                pid for pid, column in items if column.net != Decimal("0.00")
+            ]
+            assert moved, "the fixture must move money or this proves nothing"
+            for (_prev_id, prev), (pid, column) in zip(items, items[1:]):
+                assert column.balance - prev.balance == column.net, (
+                    f"period {pid}: balance delta "
+                    f"{column.balance - prev.balance} != net {column.net}"
+                )
+
+
+def _seed_grid_activity(db, seed_user, periods):
+    """Add one projected income and one projected expense to the grid account.
+
+    Gives the remainder something to be non-zero ABOUT: an all-empty account
+    reports zeros for every figure, so the identity would hold vacuously and
+    the assertions above would prove nothing.
+    """
+    scenario = get_baseline_scenario(seed_user["user"].id)
+    account = seed_user["account"]
+    db.session.add(Transaction(
+        account_id=account.id,
+        pay_period_id=periods[1].id,
+        scenario_id=scenario.id,
+        status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+        name="Paycheck",
+        transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
+        estimated_amount=Decimal("2400.00"),
+    ))
+    db.session.add(Transaction(
+        account_id=account.id,
+        pay_period_id=periods[2].id,
+        scenario_id=scenario.id,
+        status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+        name="Rent",
+        transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+        estimated_amount=Decimal("1450.00"),
+    ))
+    db.session.commit()
 
 
 class TestLiabilityOwedAtDates:

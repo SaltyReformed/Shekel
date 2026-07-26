@@ -1,10 +1,28 @@
-{# Projected End Balance -- the only sticky footer row.
+{# Projected End Balance and the rows that explain it -- the sticky footer.
    Returned by the balance-row HTMX endpoint.  Replaces the entire
    <tfoot> when balanceChanged fires.  The self-referencing hx-get /
    hx-trigger / hx-swap attributes keep the refresh cycle alive.
 
-   Total Income, Total Expenses, and Net Cash Flow are now inline
-   subtotal rows in the <tbody> (added in Tasks 13-14).
+   Total Income, Total Expenses, and Net Cash Flow are inline subtotal
+   rows in the <tbody> (added in Tasks 13-14).
+
+   Ruling R-O seats the whole "how this balance is reached" chain here, in
+   one visual block: Timing & true-ups, then Interest, then Projected End
+   Balance.  Reading top to bottom from the Net Cash Flow row above, that is
+   the identity
+
+       balance[p] - balance[p-1] == net[p] + reconciliation[p] + interest[p]
+
+   and it holds because all four figures are one GridColumn -- one valued row
+   set grouped two ways plus its accrual -- rather than separate producers a
+   test keeps in step (ruling R-K).
+
+   Both explanatory rows are CONDITIONAL on the same rule, decided once in
+   the seam (GridBalanceView.row_flags, ruling R-O): present for the whole
+   visible window when at least one visible column carries a non-zero value,
+   showing its own figure in every column of that window.  The template only
+   reads the flag; it never decides visibility itself, because the same rule
+   governs four different windows.
 
    The stale-anchor warning banner is kept current via an out-of-band
    swap of the #stale-anchor-warning wrapper -- emitted ONLY on the
@@ -28,11 +46,12 @@
    the first top-level element and parses intact.  Do not "simplify"
    the wrapper away; tests/test_routes/test_grid.py pins this shape.
 
-   Expected context: periods, balances, account, num_periods,
+   Expected context: periods, columns, row_flags, account, num_periods,
    start_offset, low_balance_threshold, stale_anchor_warning, oob.
-   increments -- (optional) dict[period_id -> Decimal] per-period interest
-   accrual; when non-empty (INTEREST grid account) the read-only Interest
-   row renders above Projected End Balance.
+     columns   -- dict[period_id -> GridColumn]; a period absent from it
+                  (pre-anchor) renders "--" for the balance and blanks for
+                  the explanatory rows.
+     row_flags -- GridRowFlags for THIS window (.interest / .reconciliation).
 #}
 {% if oob %}
 <template>
@@ -49,23 +68,37 @@
        aria-atomic="true">
   {% from "grid/_grid_row_macros.html" import mstart %}
   {% from "_money_macros.html" import money %}
+  {# Read-only remainder row (ruling R-O) -- money budgeted to this column
+     that moved in another, money that moved here but is budgeted elsewhere,
+     and the balance assertions made inside the period.  What the Total
+     Income / Total Expenses rows structurally cannot say about the balance
+     change. #}
+  {% if row_flags.reconciliation %}
+  <tr class="accrual-row reconciliation-row">
+    <td class="sticky-col">
+      <i class="bi bi-arrow-left-right" aria-hidden="true"></i> Timing &amp; true-ups
+    </td>
+    {% for period in periods %}
+      {% set col = columns.get(period.id) %}
+      <td class="text-end font-mono{{ mstart(periods, loop.index0) }}">
+        {% if col is not none %}{{ money(col.reconciliation, cents=false) }}{% endif %}
+      </td>
+    {% endfor %}
+  </tr>
+  {% endif %}
   {# Read-only accrual row -- the interest the projected balance earns that
-     the transaction rows do not explain.  Rendered ONLY when ``increments``
-     is non-empty, which the balance-at seam populates exclusively for an
-     INTEREST grid account; for every other kind it is empty and this row is
-     omitted.  By construction balances[p] - balances[p-1] == subtotals[p].net
-     + increments[p], so the three rows reconcile to the cent.  Sits directly
-     above Projected End Balance so the Net Cash Flow -> Interest -> Balance
-     chain reads top to bottom. #}
-  {% if increments %}
+     the transaction rows do not explain.  The seam populates it exclusively
+     for an INTEREST grid account; for every other kind every column carries
+     none and ``row_flags.interest`` is false. #}
+  {% if row_flags.interest %}
   <tr class="accrual-row interest-row">
     <td class="sticky-col">
       <i class="bi bi-percent" aria-hidden="true"></i> Interest
     </td>
     {% for period in periods %}
-      {% set inc = increments.get(period.id) %}
+      {% set col = columns.get(period.id) %}
       <td class="text-end font-mono{{ mstart(periods, loop.index0) }}">
-        {% if inc is not none %}{{ money(inc, cents=false) }}{% endif %}
+        {% if col is not none and col.interest is not none %}{{ money(col.interest, cents=false) }}{% endif %}
       </td>
     {% endfor %}
   </tr>
@@ -75,7 +108,8 @@
       <i class="bi bi-bank"></i> Projected End Balance
     </td>
     {% for period in periods %}
-      {% set bal = balances.get(period.id) %}
+      {% set col = columns.get(period.id) %}
+      {% set bal = col.balance if col is not none else none %}
       <td class="text-end font-mono{{ mstart(periods, loop.index0) }} {% if bal is not none and bal < 0 %}balance-negative{% elif bal is not none and bal < low_balance_threshold %}balance-low{% endif %}">
         {% if bal is not none %}
           {% if bal < 0 %}<i class="bi bi-exclamation-triangle-fill" aria-hidden="true" title="Negative balance"></i> {% elif bal < low_balance_threshold %}<i class="bi bi-exclamation-circle" aria-hidden="true" title="Low balance"></i> {% endif %}

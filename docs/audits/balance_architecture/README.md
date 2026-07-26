@@ -103,7 +103,9 @@ post-cutover premium equals the cumulative interest to the cent, `$658.26`), **N
 path's own transaction query and `calculate_balances_with_interest` join the deletion list),
 **N-54** (the account-detail interest chip moves `$284.34` -> `$217.75`), and **N-55** (two seam
 docstrings cite an obligations panel that no longer exists).  N-44's own figure is corrected:
-`/savings` draws ZERO history points today and gains **6**, not 8.  **NEXT: X-c2b1.** Phases A and B complete (**A1** `f11382a0`, **A2** `c96c62be`,
+`/savings` draws ZERO history points today and gains **6**, not 8.  **X-c2b1 SHIPPED** -- the grid's three producer passes are ONE per-period view, 360 of 360
+real-data cells byte-identical HEAD-vs-post, and its own review caught a mobile row-flag scoping
+defect it had introduced (fixed, control fires).  **NEXT: X-c2b2, the cutover.** Phases A and B complete (**A1** `f11382a0`, **A2** `c96c62be`,
 **A3** `4e46a0a8`, N-9 `44cbd028`, **B0** `d1586254`, **B1** `e227de08`, **BG**
 `dba91dc0`, **B2** `8f070386`). **Phase C: C1** (`18fd3a04`, a loan's origination is its
 ledger opening), **C2** (`eb5de4ac`, the ONE CLOCK: an event counts from the day it
@@ -2225,15 +2227,40 @@ replaces.
     splits on the arc's own additive-then-cutover line (C3a->C3b, C6a->C6b, C8a->C8d, C9a->C9b,
     E1c->E1d), applied to the RENDER side for the first time, and the test churn partitions with it:
     route tests in b1, answers-that-move in b2, dead producers in b3.
-    - [ ] **X-c2b1** `refactor(grid): the grid's three producer passes become one view` -- the SHAPE,
-      baseline byte-identical. `GridBalanceView` carries the per-period subtotals, ruling R-K's
-      remainder and (ruling R-Q) the live override map beside the balances and increments; the grid
-      route drops `_build_grid_subtotals` and all three self-refresh endpoints read the one view;
-      the desktop `<tfoot>` and the three mobile surfaces gain ruling R-O / R-P's "Timing &
-      true-ups" row. Internals stay the SHIPPING producers with the remainder computed as `0.00`,
-      which the E-25 invariant makes exact and R-O's non-zero rule then HIDES -- so the rendered
-      grid is unchanged while its shape is the cutover's. Proven on 60 columns x 6 accounts,
-      HEAD-vs-post byte-identical.
+    - [x] **X-c2b1** `refactor(grid): the grid's three producer passes become one view`
+      -- **SHIPPED (see hash below).** The SHAPE, baseline byte-identical.  `GridBalanceView` is now
+      ONE `GridColumn` per period (balance, income, expense, net, reconciliation, interest) plus
+      ruling R-Q's live override map; the grid route drops `_build_grid_subtotals` and
+      `_grid_amount_overrides` and all three self-refresh endpoints read the one view; the desktop
+      `<tfoot>`, the mobile This Period card and the Plan recap gain ruling R-O / R-P's "Timing &
+      true-ups" row.  Internals stay the SHIPPING producers with the remainder `0.00`, which the
+      E-25 invariant makes exact and R-O's rule then HIDES -- so the rendered grid is unchanged.
+      **Verification: 360 of 360 (account, period) cells byte-identical HEAD-vs-post** on the
+      prod-shape clone (6 non-loan accounts x 60 periods, comparing balance / income / expense /
+      net / interest / stale flag / the whole override map, HEAD run from a detached worktree).
+      Producer work per render `219.9 ms -> 127.6 ms`; per-endpoint figures and the one endpoint
+      that gets SLOWER are in N-56, and N-57 corrects N-48's baseline arithmetic.
+      **Four things it settled that the one-liner did not carry.** (1) Ruling R-O's visibility rule
+      is now ONE rule for BOTH conditional rows, so an INTEREST account whose visible window accrues
+      nothing loses its labelled row of blanks -- a rendering unification, not a figure move, and
+      the reason R-O's "the rule the Interest row already follows" is now true rather than
+      approximately true. (2) `_accruing_grid_view` -> `_accruing_balances`, returning maps instead
+      of a view, with N-52's deletion note stated at the site. (3) The no-account shape moved into
+      the seam as `empty_grid_view()` -- three route entries each carried their own. (4) N-55's two
+      stale docstrings corrected.
+      **Its adversarial review found and fixed a defect it had introduced:** the mobile This Period
+      card renders `periods[0]` alone but the initial include was handed the DESKTOP window's row
+      flags, so a window carrying a figure in another column would have turned the card's bar on for
+      a period that has none -- and the `mobileCardSettled` refresh, which sees one period and no
+      window, would have turned it back off.  Fixed by a period-scoped `period_row_flags`, and the
+      redundant per-cell `is not none` guard that was masking it was DELETED so the flag is
+      load-bearing; pinned by a data-driven route test (an HYSA anchored ahead of today: the window
+      accrues, its leftmost column does not) whose control fires.
+      Eight firing controls, each shown to fire precisely its intended tests: the remainder constant
+      forced non-zero (2), R-O's rule forced always-on (4), the desktop row deleted (2), the mobile
+      bar deleted (1), the Plan figure deleted (1), the kc walk left on the stored basis (1), the
+      view returning an empty override map (1), and the mobile card handed the window's flags (1).
+      Full suite 7609, pylint 10.00 on all three trees, 146 checker tests, djlint clean.
     - [ ] **X-c2b2** `refactor(balance): the cash seam reads the fold` -- THE cutover, and the only
       step where money moves. The seam internals swap (the six sites above), `grid_balance_view`
       reads `cash_period_view`, and the two deletions that would otherwise become LIES go with it:
@@ -2444,6 +2471,8 @@ archive names so old references resolve here.
 | N-53 (X-c2b trace) | **Two more names die with the INTEREST seed, and one of them is the interest path's own transaction query.** Once the base comes from the fold's period-end sample, `_calculator.calculate_balances_with_interest` (whose whole body is "base + layer") collapses to its `_layer_interest` half, and `_kernel.load_account_period_transactions` -- whose ONLY caller is `_account_interest_projection`, as its own docstring says -- goes to zero callers. Neither was on X-c2b's deletion list. Note the query's stated reason is already stale: it loads EVERY non-deleted row "because the interest accrual downstream applies its own status logic and needs the full row set", but the accrual (`_layer_interest`) reads no transaction at all and the base filters through `is_projected` regardless | ~90 lines kept alive for their own tests | recorded; both delete at X-c2b3 | X-c2b3 |
 | N-54 (X-c2b trace) | **The cutover moves the account-detail "Interest, next 12 mo" chip, and X-c2b's one-liner does not name it.** N-47 caught this chip for ruling R-L's CLOCK half (shipped X-c2a); the SEED half moves it again, because `interest_by_period_for_account` shares `_account_interest_projection` with the balance path. **Measured 2026-07-26 on the prod-shape clone:** the chip reads `$284.34` today and `$217.75` after, and the modelled interest over the whole 60-period horizon `$793.56 -> $658.26`. The cause is not a rule change but the base: the Money Market really holds `$2,000.00` less than the screens say (finding cash D1), so less principal earns. The kind-correct current column moves with it, `$5,666.52 -> $3,664.04` | `-$66.59` on the chip; `-$135.30` on the horizon | recorded; signed off with X-c2b2's moved figures | X-c2b2 |
 | N-55 (X-c2b trace) | **Two seam docstrings name a consumer that no longer exists.** `_grid.py`'s module docstring and `_cash_flow.cash_balance_map` both cite "the dashboard obligations panel" as a reader of the cash-flow view. `app/routes/obligations.py` is a redirect-only shell whose own docstring says the card "is dropped: the dashboard's end-balance chart and the grid footer own" it, and `obligations_aggregator` imports no balance producer at all (`TransactionTemplate`, `TransferTemplate`, `amount_to_monthly`, `round_money`). An uncited claim about the code in the modules the cutover rewrites, so it is corrected with them (Section 7.6) | -- | recorded; corrected at X-c2b1 | X-c2b1 |
+| N-56 (X-c2b1) | **The desktop grid's two self-refresh endpoints now compute the SAME per-period view, twice per `balanceChanged`.**  ``#grid-summary`` (the sticky ``<tfoot>``) fires ``/grid/balance-row`` and ``#grid-subtotals-income`` fires ``/grid/subtotal-rows``, and since X-c2b1 both read one ``grid_balance_view`` -- which is what makes ruling R-K's identity survive the live swap, but means the browser pays for the projection twice.  Measured on the prod-shape clone 2026-07-26 (real Checking, 60 periods, 5 runs): per endpoint ``272.3 -> 165.4 ms`` (balance row) and ``87.9 -> 165.6 ms`` (subtotal rows), so the PAIR is ``360.2 -> 331.0 ms`` -- no aggregate regression, because the balance row stopped building a second override map, but the duplication is now visible and avoidable.  The fix is the pattern ``subtotal_rows`` already uses for its own two ``<tbody>`` blocks: let the balance-row response carry the two subtotal sections as ``hx-swap-oob`` fragments, so ONE GET refreshes the whole reconciling block and the rows are one response as well as one row set.  Not done here because it changes the refresh topology (a user-visible behaviour change in a commit whose contract is "the rendered grid is unchanged") and it has to clear the ``<template>`` parser constraint ``_balance_row.html`` documents | ``165.6 ms`` of duplicate producer work per refresh | recorded, deferred | own commit (or X-c2b2) |
+| N-57 (X-c2b1) | **N-48's ``338.0 ms`` baseline did not reproduce the shipped route's threading, so the headline saving is smaller than it reads.**  The measurement timed ``period_subtotals`` twice at ``74.2`` / ``75.8 ms`` -- each rebuilding the ~90 ms live override map -- but ``grid.index`` builds that map ONCE and threads it into both subtotal calls, which measure ``3.0`` / ``4.4 ms`` when threaded.  Re-measured on the same clone 2026-07-26: the shipped route's producer work is ``219.9 ms`` (route map 84.5 + grid_balance_view 128.0 + subtotals 3.0 + 4.4), and X-c2b1's one-view shape is ``127.6 ms`` -- the whole saving being the duplicate override build, not the subtotal passes.  The direction and the cause N-48 names are right; the arithmetic overstated the incumbent by ~118 ms.  Recorded because X-c2b2's own budget is set against these figures | -- | corrected in place | X-c2b1 |
 | N-14 (C6b) | **`contractual_schedule_from_origination` is computed twice per pass on the property page** -- once inside the (now-memoized) `ctx.loan_plan` and once in the equity chart's `_back_projection_by_month` (both call it for the same loan). Deferred (developer ruling): pure-CPU (no query), only 2x, property-page only, and a full dedup via a fourth context memo must FIRST prove the two call sites' rate-change inputs are identical (`load_rate_changes(id)` vs `resolved.context.rate_changes`) -- a correctness check better done in its own focused change | -- | recorded, deferred | own commit (or Phase D) |
 
 ## 7. Verification standard (what "done" means for every step)
