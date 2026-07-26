@@ -8,7 +8,6 @@ for inline editing, balance refresh, and carry forward.
 
 import logging
 from collections import OrderedDict
-from datetime import date
 from decimal import Decimal
 from typing import NamedTuple
 
@@ -35,6 +34,7 @@ from app.services.entry_service import build_entry_lists_dict, build_entry_sums_
 from app.services.grid_view_service import RowKey
 from app.services.balance_at import BalanceContext
 from app.utils.auth_helpers import require_owner
+from app.utils.dates import display_today
 
 logger = logging.getLogger(__name__)
 
@@ -633,7 +633,14 @@ def index():
             else "compact"
         ),
         anchor_balance=anchor_balance,
-        today=date.today(),
+        # The USER's today, not the server's UTC one: it drives the
+        # past-period column styling AND the add-entry form's hidden
+        # ``entry_date`` default, which the entry service refuses on that same
+        # display clock (ruling R-M).  Two clocks here would let a UTC-running
+        # process stamp tomorrow's date for the evening hours the frames
+        # disagree, and the app's own form would post a value its own guard
+        # rejects.
+        today=display_today(),
         all_periods=ctx.all_periods,
         low_balance_threshold=_resolve_low_balance_threshold(),
         stale_anchor_warning=grid_view.stale_anchor_warning,

@@ -5,7 +5,11 @@
      txn               -- parent Transaction object
      entries           -- list of TransactionEntry objects (ordered by entry_date)
      remaining         -- Decimal remaining budget (negative = overspent)
-     today             -- ISO date string for add form default date
+     today             -- the USER's today (display timezone): the add form's
+                          default entry_date AND the edit form's picker ``max``.
+                          Must be the same clock entry_service refuses a future
+                          entry date on (ruling R-M), or the form could offer a
+                          value the service rejects.
      editing_id        -- int or None -- entry ID to show inline edit form
      out_of_period_ids -- set of entry IDs with dates outside the pay period
      conflict          -- bool, optional -- when True, surface a warning
@@ -76,8 +80,15 @@
                class="form-control form-control-sm">
       </div>
       <div class="d-flex gap-1 align-items-center">
+        {# ``max`` is the user's today: a purchase entry records a purchase
+           that has already happened, so a forward date is refused by
+           entry_service (ruling R-M).  The picker bound is a courtesy that
+           keeps the control from offering a value the server will reject --
+           the service guard is the actual gate, since a hand-built PATCH
+           never sees this attribute. #}
         <input type="date" name="entry_date"
                value="{{ entry.entry_date.isoformat() }}"
+               max="{{ today }}"
                class="form-control form-control-sm mw-px-130">
         <div class="form-check form-check-inline mb-0">
           <input type="checkbox" name="is_credit" value="true"
