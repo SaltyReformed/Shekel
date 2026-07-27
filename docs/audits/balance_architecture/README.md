@@ -1432,6 +1432,21 @@ replaces.
       moves; every figure signed off. **N-73's five NULL-anchor guards STAY** -- the replay stops
       READING the anchor period, but deleting the `| None` contract reaches every consumer and is
       X-e's, per that finding's own text.
+
+      **ONE FORK IS OPEN AND MUST BE RULED BEFORE THIS SHIPS -- do not decide it in the commit.**
+      Ruling R-AB moves the `/investment` chart's seed from the END of the current period to the day
+      BEFORE the projection window opens, which MOVES the junction where the modelled HISTORY line
+      (`_build_history_series`, `balance_map` through the current period) meets the PROJECTION line
+      (`_run_growth_projection` from `ctx.projection_seed`). The two lines already differ by
+      construction -- history is modelled, the projection seeds pre-growth -- so the chart has always
+      had a step at "Today"; R-AB changes its SIZE and its DATE. The option space: (a) leave it
+      unlabelled, as today; (b) caption the junction ("projected from your balance on <date>"), the
+      treatment ruling R-O gave the grid's reconciling row; (c) seed the projection line's FIRST
+      point from the history line's last so the two meet, which hides a real difference and is the
+      shape ruling R-K refused for the grid subtotals. **Measure the junction step on both databases
+      before recommending** -- it is `$0.00` on today's data only if the three investment accounts
+      still hold zero transaction rows, and that is a property of the DATA (ruling R-V's caveat),
+      not of the design.
   * **X-g3** -- ruling R-W's grid. `grid_balance_view` renders the modeled balance and generalises
     the conditional Interest row to a "Growth"/accrual row on R-O's own non-zero rule, on BOTH form
     factors (R-P). Render plumbing only, no new figure the seam did not already answer at X-g2.
