@@ -4799,12 +4799,13 @@ class TestARetiredLoanHasNoDebtLine:
                 (m["kind"], m["date"]) for m in horizon["milestones"]
             } >= {("debt_free", self._CLEARING_PAYOFF)}
 
-            # And the caption on the same page agrees, which is the point: the
-            # debt summary selects on the loan's BALANCE, so it always read the
-            # real date while the chart beside it did not.  (ONE derivation for
-            # both is plan step X-q; this asserts the agreement X-o restores for
-            # this shape, not the general property -- the two producers still
-            # select different loan sets, finding N-98.)
+            # And the caption on the same page agrees, which is the point:
+            # the debt summary always read the real date here (it selects on
+            # the loan's BALANCE) while the chart beside it did not.  Since
+            # plan step X-q both fold ONE derivation
+            # (``_debt_line.loan_payoff_outlook``), so this asserts an
+            # agreement that is now structural; the shape that proves the
+            # merge is ``TestTheDebtFreeDateIsOneDerivation``.
             assert data["debt_summary"]["projected_debt_free_date"] == (
                 self._CLEARING_PAYOFF
             )
@@ -4814,8 +4815,8 @@ class TestARetiredLoanHasNoDebtLine:
     ):
         """FIRING CONTROL: the replaced predicate, on the same real data.
 
-        ``_debt_line_loans`` selects on ``is_retired``; before plan step X-o it
-        selected on ``is_paid_off``.  Substituting the old predicate into the
+        ``_debt_line.debt_line_loans`` selects on ``is_retired``; before plan
+        step X-o it selected on ``is_paid_off`` (and lived in ``_horizon``).  Substituting the old predicate into the
         projection dicts -- exactly what the old line read -- must produce the
         defect: no debt-free date, and the domain cut back to the loan-free
         fallback window.  A control that cannot fail is not a control
@@ -4905,3 +4906,217 @@ class TestARetiredLoanHasNoDebtLine:
             assert _resolve_horizon_domain(
                 account_data, date(2026, 3, 20),
             ) == (self._FALLBACK_END, None, False)
+
+
+class TestTheDebtFreeDateIsOneDerivation:
+    """The caption and the Horizon flag read ONE debt-free derivation.
+
+    Finding N-98, plan step X-q.  ``/savings`` renders both on one page and
+    derived the date twice from the same ``account_data``: the cockpit's
+    ``Debt-free <month>`` caption through ``_metrics._compute_debt_summary``,
+    which selected loans by their current BALANCE, and the Horizon chart's
+    ``Debt-free`` flag through ``_horizon._resolve_horizon_domain``, which
+    selected them by the debt-line predicate.
+
+    They part on a loan that has NOT been borrowed yet.  It owes ``$0.00``
+    today, so the balance rule dropped a mortgage whose whole 30-year line is
+    ahead of it and the caption reported the date the OTHER loans finish --
+    measured 19 years early on the developer's own mortgage rewritten into
+    that state, and 28 years early on the fixture below.
+
+    Both now fold :func:`.._debt_line.loan_payoff_outlook`.  The MONEY figures
+    keep their own membership deliberately (``total_debt`` and the monthly
+    payments answer "what do you owe today", where an unclosed mortgage
+    contributes nothing and pays nothing), which the last assertion pins so a
+    later "simplification" onto one set has to fail here first.
+    """
+
+    # A 24-month, $12,000 @ 5% loan originated 2026-01-01 (payment_day 1) has
+    # installments due 2026-02-01 .. 2028-01-01, but at the module's frozen
+    # 2026-03-20 clock two are already due and unpaid, and the fold pays
+    # nothing it has no settled record for -- so its zero crossing lands two
+    # installments past the contractual date.
+    _CAR_PAYOFF = date(2028, 3, 1)
+    # A 360-month mortgage originating 2026-06-01 (payment_day 1) has not been
+    # borrowed at the frozen clock, so nothing is overdue and its plan folds
+    # from its opening anchor to the contractual last installment.
+    _MORTGAGE_PAYOFF = date(2056, 6, 1)
+
+    def _car_now_and_mortgage_later(self, seed_user, db_session, periods):
+        """A loan already running, beside a mortgage that closes in June."""
+        # Pylint: ``import-outside-toplevel`` -- test-local helpers, matching
+        # this module's convention of importing them where used.
+        from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
+            create_loan_account,
+        )
+        create_loan_account(
+            seed_user, db_session, name="Car Loan",
+            principal=Decimal("12000.00"), rate=Decimal("0.05000"), term=24,
+            origination_date=date(2026, 1, 1), anchor_period=periods[0],
+        )
+        create_loan_account(
+            seed_user, db_session, name="Future Mortgage",
+            principal=Decimal("200000.00"), rate=Decimal("0.06000"), term=360,
+            origination_date=date(2026, 6, 1), anchor_period=periods[0],
+            account_type=AcctTypeEnum.MORTGAGE,
+        )
+        db_session.commit()
+
+    def test_an_unclosed_mortgage_sets_the_date_on_both_surfaces(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Both surfaces report the mortgage's payoff, not the car loan's."""
+        with app.app_context():
+            # Pylint: ``import-outside-toplevel`` -- the private producers
+            # under test, imported where used.
+            from app.services.savings_dashboard_service._debt_line import (  # pylint: disable=import-outside-toplevel
+                loan_payoff_outlook,
+            )
+            from app.services.savings_dashboard_service._horizon import (  # pylint: disable=import-outside-toplevel
+                _resolve_horizon_domain,
+            )
+            self._car_now_and_mortgage_later(
+                seed_user, db.session, seed_periods,
+            )
+
+            data = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            account_data = data["account_data"]
+            by_name = {
+                ad["account"].name: ad for ad in account_data
+                if ad.get("loan_params")
+            }
+            # The preconditions that make the fixture discriminating: the
+            # mortgage owes nothing today and is NOT retired -- its whole line
+            # is ahead of it -- and it clears far later than the car loan.
+            assert by_name["Future Mortgage"]["current_balance"] == (
+                Decimal("0.00")
+            )
+            assert by_name["Future Mortgage"]["is_originated"] is False
+            assert by_name["Future Mortgage"]["is_retired"] is False
+            assert by_name["Future Mortgage"]["payoff_date"] == (
+                self._MORTGAGE_PAYOFF
+            )
+            assert by_name["Car Loan"]["payoff_date"] == self._CAR_PAYOFF
+
+            # ONE derivation, and both surfaces read it.
+            assert loan_payoff_outlook(account_data).all_clear_on == (
+                self._MORTGAGE_PAYOFF
+            )
+            assert data["debt_summary"]["projected_debt_free_date"] == (
+                self._MORTGAGE_PAYOFF
+            )
+            assert _resolve_horizon_domain(
+                account_data, date(2026, 3, 20),
+            ) == (date(2057, 12, 31), self._MORTGAGE_PAYOFF, False)
+            assert {
+                (m["kind"], m["date"]) for m in data["net_worth"]["horizon"][
+                    "milestones"
+                ]
+            } >= {("debt_free", self._MORTGAGE_PAYOFF)}
+
+            # The MONEY figures keep the owed-today set: the mortgage is not
+            # borrowed, so it owes nothing and pays nothing this month.  Pinned
+            # as literals, not read back off the producer: the car loan has no
+            # settled payment at the frozen clock, so the fold is still its
+            # $12,000.00 opening anchor, and its level payment is
+            # 12000 * r(1+r)^24 / ((1+r)^24 - 1) at r = 0.05/12 = $526.46.
+            assert data["debt_summary"]["total_debt"] == Decimal("12000.00")
+            assert data["debt_summary"]["total_monthly_payments"] == (
+                Decimal("526.46")
+            )
+
+    def test_the_balance_rule_reports_the_wrong_date(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """FIRING CONTROL: the replaced membership rule, on the same data.
+
+        Before plan step X-q the caption's date was derived inside the
+        owed-today loop, so its membership was "current balance > 0".  This
+        substitutes that MEMBERSHIP into the new fold rather than resurrecting
+        the deleted loop -- the fold itself (latest payoff, poisoned by an
+        absent one) is unchanged between them, so the set is the whole
+        difference and is what this isolates.  It must produce the CAR LOAN's
+        payoff: the borrower told they are done with debt 28 years before a
+        mortgage they are about to close is paid off.
+        """
+        with app.app_context():
+            # Pylint: ``import-outside-toplevel`` -- the private producer under
+            # test, imported where used.
+            from app.services.savings_dashboard_service._debt_line import (  # pylint: disable=import-outside-toplevel
+                loan_payoff_outlook,
+            )
+            self._car_now_and_mortgage_later(
+                seed_user, db.session, seed_periods,
+            )
+
+            account_data = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )["account_data"]
+            owed_today = [
+                ad for ad in account_data
+                if ad.get("loan_params")
+                and (ad["current_balance"] or Decimal("0.00")) > Decimal("0.00")
+            ]
+            assert loan_payoff_outlook(owed_today).all_clear_on == (
+                self._CAR_PAYOFF
+            ), (
+                "the control does not fire: the owed-today set produced the "
+                "same date as the debt-line set, so this fixture cannot tell "
+                "the two membership rules apart"
+            )
+            assert loan_payoff_outlook(account_data).all_clear_on == (
+                self._MORTGAGE_PAYOFF
+            )
+
+    def test_a_past_payoff_is_reported_but_cannot_size_the_axis(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The developer's ruling on a payoff date that is already behind us.
+
+        ``plan_payoff_date`` returns the DUE date the balance first folds to
+        zero, and an overdue-but-still-projected installment that clears the
+        loan folds at a date behind today.  The ruling (plan step X-q): the
+        outlook REPORTS that date -- it is a fact about the loan's plan -- and
+        the Horizon, whose axis is today-forward, falls back to its fixed
+        window for AXIS SIZING only, because
+        ``savings._milestone_axis_x`` clamps a target at or before
+        ``dates[0]`` to index 0.0 and the flag would be planted on "Today".
+
+        The state is exercised by asking the domain resolver about a ``today``
+        past every payoff, which is what the producer's own signature allows
+        and is far cheaper than manufacturing an overdue installment.  **This
+        is the branch that CHANGED**: the rule it replaced dropped past
+        payoffs per loan and then read the empty list as "no loans at all",
+        so it returned ``is_loan_free=True`` for a borrower whose loan had
+        not cleared.
+        """
+        with app.app_context():
+            # Pylint: ``import-outside-toplevel`` -- the private producers
+            # under test, imported where used.
+            from app.services.savings_dashboard_service._debt_line import (  # pylint: disable=import-outside-toplevel
+                loan_payoff_outlook,
+            )
+            from app.services.savings_dashboard_service._horizon import (  # pylint: disable=import-outside-toplevel
+                _resolve_horizon_domain,
+            )
+            self._car_now_and_mortgage_later(
+                seed_user, db.session, seed_periods,
+            )
+
+            account_data = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )["account_data"]
+            # Read at a date past BOTH payoffs.
+            after_everything = date(2060, 1, 1)
+            assert loan_payoff_outlook(account_data).all_clear_on == (
+                self._MORTGAGE_PAYOFF
+            ), "the outlook reports the date whatever the reader's clock"
+            assert _resolve_horizon_domain(
+                account_data, after_everything,
+            ) == (date(2070, 12, 31), None, False), (
+                "a borrower whose loans have not cleared was reported "
+                "loan-free, or the axis was sized to a past date"
+            )
+

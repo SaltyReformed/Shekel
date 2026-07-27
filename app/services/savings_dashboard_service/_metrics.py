@@ -22,6 +22,9 @@ from app.services import (
     obligations_aggregator,
     paycheck_calculator,
 )
+from app.services.savings_dashboard_service._debt_line import (
+    loan_payoff_outlook,
+)
 from app.services.tax_config_service import load_tax_configs
 from app.utils.money import MONTHS_PER_YEAR, PAY_PERIODS_PER_YEAR, round_money
 
@@ -258,30 +261,43 @@ def _loan_ad_current_principal(ad: dict) -> Decimal | None:
     """Return a loan account dict's contributing current balance, or None.
 
     The single definition of "which loan accounts contribute to the debt
-    summary's active-loans-only aggregates" (its ``total_debt``,
+    summary's owed-today aggregates" (its ``total_debt``,
     ``total_monthly_payments``, and weighted-average rate).  A loan
-    contributes its resolver-derived current balance when it is neither
-    paid off nor at a zero (or negative) balance; otherwise it contributes
-    nothing and the caller skips it.  The principal-paid progress fraction
-    does NOT use this predicate -- it sums over ALL loans ever originated
-    (see :func:`_compute_principal_paid_fraction`), keeping paid-off loans
-    in both of its sums so the marker stays monotonic.  The displayed debt
-    balance, by contrast, is active-loans-only, which is exactly what this
-    predicate scopes.
+    contributes its seam-derived current balance when that balance is
+    positive; otherwise it contributes nothing and the caller skips it.
+
+    **The BALANCE is the whole predicate, and that is the right one for this
+    question** (plan step X-q).  These three figures answer "what do you owe
+    TODAY": a retired loan owes nothing, and a loan that has not been borrowed
+    yet owes nothing and is not yet paying anything either -- both read
+    ``$0.00`` here and both are correctly out.  The question "which loans have
+    a debt line AHEAD of them" is a different one with a different set, and it
+    lives at :func:`~.._debt_line.debt_line_loans`; this function used to test
+    ``is_paid_off`` as well, which was the CONGRATULATION predicate answering a
+    money question (finding B-16's class).  It was rescued only by the balance
+    test beside it: ``is_paid_off`` implies ``is_retired`` implies the fold at
+    the pass's as-of is ``<= 0``, and ``current_balance`` is
+    :func:`~app.services.balance_at.balance_at` at that same as-of, which for
+    an originated loan is that same fold -- so the arm could never change an
+    answer.  It is deleted rather than re-pointed: a predicate that cannot
+    fire reads as a rule and is not one.
+
+    The principal-paid progress fraction does NOT use this predicate -- it sums
+    over ALL loans ever originated (see
+    :func:`_compute_principal_paid_fraction`), keeping retired loans in both of
+    its sums so the marker stays monotonic.  The displayed debt balance, by
+    contrast, is owed-today, which is exactly what this predicate scopes.
 
     Args:
-        ad: A per-account dict carrying ``is_paid_off`` and
-            ``current_balance`` (a loan entry from
-            ``_compute_account_projections``).
+        ad: A per-account dict carrying ``current_balance`` (a loan entry
+            from ``_compute_account_projections``).
 
     Returns:
-        The loan's resolver-derived current balance as a positive
-        ``Decimal`` when it contributes, or ``None`` when it is paid off
-        or its balance is zero / negative.
+        The loan's seam-derived current balance as a positive ``Decimal``
+        when it contributes, or ``None`` when that balance is zero or
+        negative.
     """
-    if ad["is_paid_off"]:
-        return None
-    # Resolver-derived current_balance (E-18 / Commit 15).  Same dollar
+    # Seam-derived current_balance (E-18 / Commit 15).  Same dollar
     # figure as the loan card; replaces the previous read of the
     # non-authoritative ``LoanParams.current_principal`` column that
     # produced F-008's stored-vs-engine divergence.
@@ -298,7 +314,7 @@ def _compute_principal_paid_fraction(
 
     Computes ``(sum(original_principal) - sum(current_balance)) /
     sum(original_principal)`` over EVERY loan the pipeline surfaces, not
-    just the loans still carrying a balance.  A paid-off loan stays in
+    just the loans still carrying a balance.  A RETIRED loan stays in
     BOTH the numerator and the denominator, contributing
     ``Decimal("0.00")`` to the current-balance sum -- so its full
     ``original_principal`` lands in the "paid" portion of the numerator.
@@ -320,10 +336,13 @@ def _compute_principal_paid_fraction(
     filtered out upstream by ``_load_dashboard_core_data``
     (``is_active=True``) and never reach ``account_data``, so they cannot
     be included; a loan with no ``LoanParams`` row carries no
-    ``original_principal`` and is likewise not a loan-ad here.  Paid-off
+    ``original_principal`` and is likewise not a loan-ad here.  RETIRED
     loans, by contrast, remain active accounts and DO appear in
-    ``account_data`` carrying ``is_paid_off=True``, so the
-    all-loans-ever set is fully reachable.  A loan the user has
+    ``account_data`` carrying ``is_retired=True``, so the
+    all-loans-ever set is fully reachable.  The predicate is ``is_retired``
+    and not ``is_paid_off`` as of plan step X-q: "this loan owes nothing" is
+    the question this marker asks, and a loan retired by a lump-sum true-up
+    answers it whether or not the ledger can BADGE it.  A loan the user has
     configured but not yet BORROWED (a mortgage closing next month) is
     excluded from both sums -- see the loop.
 
@@ -362,13 +381,20 @@ def _compute_principal_paid_fraction(
         if not ad["is_originated"]:
             continue
         # ALL loans ever: every loan-ad contributes its original
-        # principal to the denominator.  A paid-off loan contributes
+        # principal to the denominator.  A RETIRED loan contributes
         # Decimal("0.00") to the current-balance sum (regardless of the
         # resolver's as-of-today figure) so its full principal counts as
-        # paid; an active loan contributes its resolver-derived current
-        # balance, never below zero.
+        # paid; a loan that still owes contributes its seam-derived current
+        # balance, never below zero.  The predicate is ``is_retired`` and not
+        # ``is_paid_off`` (plan step X-q): "this loan owes nothing" is the
+        # question here, and a loan retired by a lump-sum true-up with no
+        # payment rows answers it -- it is simply not BADGED.  The two agree on
+        # the figure either way (a retired loan's balance folds to <= $0.00,
+        # so the ``max(current, 0)`` below adds exactly nothing on either
+        # predicate), which is why this is a vocabulary fix and not a
+        # behaviour change.
         total_original += ad["loan_params"].original_principal
-        if ad["is_paid_off"]:
+        if ad["is_retired"]:
             continue
         current = ad["current_balance"] or Decimal("0.00")
         total_current += max(current, Decimal("0.00"))
@@ -385,13 +411,22 @@ def _compute_principal_paid_fraction(
 
 
 def _accumulate_loan_debt(
-    loan_ads: list, escrow_map: dict,
-) -> tuple[Decimal, Decimal, Decimal, list]:
-    """Sum debt metrics across active (non-paid-off) loan accounts.
+    loan_ads: list[dict], escrow_map: dict[int, list],
+) -> tuple[Decimal, Decimal, Decimal]:
+    """Sum the owed-today debt metrics across the loans that still owe.
 
-    Walks the per-account loan dicts, skipping paid-off loans and loans
-    whose resolver-derived current balance is zero, and accumulates the
-    running totals the debt summary reports.
+    Walks the per-account loan dicts, skipping any whose seam-derived current
+    balance is zero or negative, and accumulates the running totals the debt
+    summary reports.
+
+    **It no longer collects payoff dates** (plan step X-q).  It used to derive
+    the debt-free date inside this loop, over the loans that owe money TODAY --
+    a different set from the loans that still have a debt line, and the
+    difference is a mortgage that has not closed yet: it owes ``$0.00``, so it
+    was skipped here and the caption reported the date the OTHER loans finish,
+    19 years early on the developer's own data (finding N-98).  The date now
+    comes from :func:`~.._debt_line.loan_payoff_outlook`, which the Horizon
+    chart reads as well.
 
     Args:
         loan_ads: Per-account dicts that carry a ``loan_params`` key
@@ -399,21 +434,13 @@ def _accumulate_loan_debt(
         escrow_map: Dict mapping account_id to list of EscrowLine (with versions).
 
     Returns:
-        ``(total_debt, total_monthly, weighted_rate_sum, payoff_dates)``
-        -- the running sums (Decimals) and the list of per-loan payoff
-        dates, or ``None`` for that last element when ANY active loan has no
-        payoff at all: there is then no date by which the user is debt-free, and
-        a list would let the caller compute one from the loans that do clear.
+        ``(total_debt, total_monthly, weighted_rate_sum)`` -- the running sums.
     """
     total_debt = Decimal("0.00")
     total_monthly = Decimal("0.00")
     weighted_rate_sum = Decimal("0.00")
-    payoff_dates = []
-    never_clears = False
 
     for ad in loan_ads:
-        # The same contribute-or-skip rule the principal-paid fraction
-        # uses, so the two aggregates sum over one loan set (DRY).
         principal = _loan_ad_current_principal(ad)
         if principal is None:
             continue
@@ -439,41 +466,30 @@ def _accumulate_loan_debt(
         total_monthly += monthly_total
         weighted_rate_sum += rate * principal
 
-        # The payoff is DERIVED and legitimately absent since plan C8d, and an
-        # absent one POISONS the debt-free date rather than being skipped.  This
-        # loan is ACTIVE (it survived the contribute-or-skip gate above, so it
-        # owes money) and has no payoff, which means it never clears at its
-        # current payment -- there IS no date by which this user is debt-free.
-        # Dropping it and taking ``max()`` over the rest reports the date the
-        # OTHER loans finish, so a borrower owing $900,000 on a loan the same page
-        # labels "No payoff at current payment" was told they go debt-free when
-        # their car loan ends.  ``None`` here is the honest answer, and the caller
-        # renders its absence.
-        payoff = ad.get("payoff_date")
-        if payoff is None:
-            never_clears = True
-        else:
-            payoff_dates.append(payoff)
-
-    return (
-        total_debt, total_monthly, weighted_rate_sum,
-        None if never_clears else payoff_dates,
-    )
+    return total_debt, total_monthly, weighted_rate_sum
 
 
 def _compute_debt_summary(
-    account_data: list,
-    escrow_map: dict,
+    account_data: list[dict],
+    escrow_map: dict[int, list],
 ) -> dict | None:
-    """Compute aggregate debt metrics across active loan accounts.
+    """Compute aggregate debt metrics across the user's loan accounts.
 
-    Uses per-account data already computed by _compute_account_projections
-    (monthly_payment, payoff_date, loan_params, is_paid_off).  Escrow
-    components are loaded separately and included in the monthly total
-    so DTI reflects PITI (principal, interest, taxes, insurance).
+    Uses per-account data already computed by _compute_account_projections:
+    ``monthly_payment``, ``current_rate``, ``current_balance`` and
+    ``loan_params`` directly, and ``is_retired`` / ``payoff_date`` through
+    :func:`~.._debt_line.loan_payoff_outlook`.  Escrow components are loaded
+    separately and included in the monthly total so DTI reflects PITI
+    (principal, interest, taxes, insurance).
 
-    Paid-off loans are excluded from all aggregate metrics.  Loans with
-    missing LoanParams are skipped with a warning.
+    **Two questions, two sets, and they are answered in two places on purpose**
+    (plan step X-q).  The money figures are owed-TODAY and sum over the loans
+    whose balance is positive (:func:`_loan_ad_current_principal`); the
+    debt-free date is a question about the debt LINE and comes from
+    :func:`~.._debt_line.loan_payoff_outlook`, the ONE derivation the Horizon
+    chart's flag reads as well.  Deriving the date here, over the owed-today
+    set, is what put a 19-year contradiction between this caption and that
+    flag on one page (finding N-98).
 
     Args:
         account_data: List of per-account dicts from
@@ -489,7 +505,7 @@ def _compute_debt_summary(
     if not loan_ads:
         return None
 
-    total_debt, total_monthly, weighted_rate_sum, payoff_dates = (
+    total_debt, total_monthly, weighted_rate_sum = (
         _accumulate_loan_debt(loan_ads, escrow_map)
     )
 
@@ -500,22 +516,20 @@ def _compute_debt_summary(
     else:
         weighted_avg_rate = Decimal("0.00000")
 
-    # ``None`` (not an empty list) means an active loan never clears, so there is
-    # no debt-free date to report -- see :func:`_accumulate_loan_debt`.
-    debt_free_date = max(payoff_dates) if payoff_dates else None
+    outlook = loan_payoff_outlook(loan_ads)
 
     return {
         "total_debt": round_money(total_debt),
         "total_monthly_payments": round_money(total_monthly),
         "weighted_avg_rate": weighted_avg_rate,
-        "projected_debt_free_date": debt_free_date,
+        "projected_debt_free_date": outlook.all_clear_on,
         # Why the date is absent, which the caller must SAY rather than simply
-        # omit: an active loan that never clears at its current payment is a
-        # different state from "every loan is already paid off", and the loan
+        # omit: a debt-line loan that never clears at its current payment is a
+        # different state from "every loan is already retired", and the loan
         # detail page already names it in words on the same condition ("No payoff
-        # at current payment", plan C8d).  ``payoff_dates is None`` is the
-        # poisoned marker :func:`_accumulate_loan_debt` sets.
-        "has_unclearing_debt": payoff_dates is None,
+        # at current payment", plan C8d).  The outlook tells the two apart --
+        # that is what its third state exists for.
+        "has_unclearing_debt": outlook.never_clears,
     }
 
 

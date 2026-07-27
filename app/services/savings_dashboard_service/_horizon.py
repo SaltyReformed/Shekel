@@ -54,6 +54,10 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
+from app.services.savings_dashboard_service._debt_line import (
+    debt_line_loans,
+    loan_payoff_outlook,
+)
 from app.services.savings_dashboard_service._net_worth import (
     _ASSET_BANDS,
     _COMPOSITION_BANDS,
@@ -115,77 +119,35 @@ class _HorizonFrame:
     axis: list
 
 
-def _debt_line_loans(account_data: list[dict]) -> list[dict]:
-    """Return the AMORTIZING loan dicts that still have a DEBT LINE.
-
-    THE one "which loans still have a line ahead of them" selection, shared by
-    :func:`_resolve_horizon_domain` and :func:`_structural_milestones` so the
-    axis a payoff sizes and the flags drawn on that axis cannot be selected by
-    two rules.
-
-    Scoped to accounts carrying ``loan_params`` -- an amortizing loan with a
-    payoff to date -- which is NOT the same set the liability BAND draws
-    (:func:`_liability_band` sums every ``is_liability`` account, including a
-    revolving Credit Card the seam holds flat because it has no forward
-    model).  So a user carrying a card balance can still be flagged
-    "Debt-free" on the date their last LOAN clears.  That gap pre-dates this
-    selection and is recorded as its own finding; it is named here because a
-    reader would otherwise take this function for the answer to a question it
-    does not answer.
-
-    The predicate is the seam's
-    :attr:`~app.services.balance_at.LoanFigures.is_retired` -- the loan has
-    ORIGINATED and the fold of its recorded events owes nothing -- and
-    deliberately NOT ``is_paid_off``, which is that plus a confirmed-payment
-    guard.  That guard is a BADGING rule, and the seam says so in terms:
-    "Use ``is_retired`` to decide whether a loan has a debt line; use this to
-    decide whether to CONGRATULATE the user."
-
-    Asking the debt-line question with the congratulation predicate is finding
-    B-16, and the shape it fires on is the one the app's own true-up UI
-    produces: a loan paid off by a LUMP SUM recorded as a balance true-up has
-    no payment rows, so it reads ``is_paid_off=False`` while owing ``$0.00``.
-    It stayed in the ACTIVE set, and -- being retired, so having no forward
-    crossing left to date -- fired the "an active loan with no payoff never
-    clears" branch below: no debt-free date at all, every STRUCTURAL flag gone
-    (the loan payoffs and the "Debt-free" flag; the net-worth crossing flags
-    are built from the trajectory and survived), and the domain cut back to
-    the loan-free fallback window while the debt summary caption on the SAME
-    page still reported the real date.  Measured on the developer's own two
-    loans: the axis ended **2036-12-31** where the debt line ends
-    **2049-12-31**, and the presence of a payment ROW -- a badging detail --
-    was what decided between them.  The same collapse drew ``$197,049.32`` of
-    phantom debt on the property equity chart, which is the incident the
-    seam's contract was written by.
-
-    A loan that has NOT been borrowed yet is INCLUDED: it owes ``$0.00``
-    today and its whole debt line is ahead of it, which is precisely what
-    ``is_retired``'s origination half separates from a debt that is gone.
-
-    Args:
-        account_data: The per-account projection dicts.
-
-    Returns:
-        The loan dicts (those carrying ``loan_params``) that are not retired,
-        in *account_data* order.
-    """
-    return [
-        ad for ad in account_data
-        if ad.get("loan_params") and not ad.get("is_retired")
-    ]
-
-
 def _resolve_horizon_domain(
     account_data: list[dict], today: date,
 ) -> tuple[date, date | None, bool]:
     """Resolve the horizon domain end, debt-free date, and loan-free flag.
 
-    The domain runs to the last active loan payoff plus one year, rounded up
-    to that year's end (so the final sample lands on a year end).  Only
-    FUTURE payoffs of loans that still have a debt line count
-    (:func:`_debt_line_loans`); a user whose loans are all retired or dated in
-    the past is treated as loan-free and gets the fixed
-    :data:`_LOAN_FREE_HORIZON_YEARS`-year forward window.
+    The domain runs to the payoff of the user's last debt-line loan plus one
+    year, rounded up to that year's end (so the final sample lands on a year
+    end).  The payoff is NOT derived here: it is
+    :func:`~.._debt_line.loan_payoff_outlook`, the ONE derivation the cockpit
+    caption and the dashboard debt track read as well (plan step X-q), so the
+    flag this chart plants and the caption beside it cannot come from two
+    membership rules -- which is exactly how they came to be 19 years apart on
+    the developer's own data (finding N-98).
+
+    **This producer applies one rule of its own, and it is a RENDERING
+    constraint rather than a second opinion**: the axis is today-forward, so a
+    payoff that is not in the future cannot size a domain and cannot carry a
+    flag -- :func:`app.routes.savings._milestone_axis_x` clamps a target at or
+    before ``dates[0]`` to index ``0.0``, so the flag would be planted on the
+    "Today" sample rather than on the month the loan actually cleared.  The
+    outlook legitimately reports such a date -- an overdue-but-still-projected
+    installment that clears the loan folds at a past DUE date, developer ruling
+    at plan step X-q -- and this falls back to the fixed
+    :data:`_LOAN_FREE_HORIZON_YEARS`-year window for it, exactly as it does
+    when there is no date at all.  **The user is NOT loan-free in that state
+    and this now says so**: the rule it replaced dropped past payoffs per loan
+    and then read the empty list as "no loans", so a borrower with an overdue
+    installment was reported loan-free.  The caption on the same page reports
+    the date either way, which is the ruling's other half.
 
     Args:
         account_data: The per-account projection dicts (loans carry
@@ -194,28 +156,18 @@ def _resolve_horizon_domain(
 
     Returns:
         ``(horizon_end, debt_free_date, is_loan_free)`` -- the year-end
-        domain end, the last future payoff date (``None`` when loan-free OR
-        when an active loan never clears), and whether the user has no debt
-        line at all.  Those two ``None`` cases differ in ``is_loan_free``:
-        a borrower whose loan never pays off is NOT loan-free, and the
-        caller must not caption them as debt-free.
+        domain end, the last FUTURE payoff date (``None`` when loan-free, when
+        a debt-line loan never clears, and when the only payoff is already
+        past), and whether the user has no loan debt line at all.  Those
+        ``None`` cases differ in ``is_loan_free``: a borrower whose loan never
+        pays off is NOT loan-free, and the caller must not caption them as
+        debt-free.
     """
-    active = _debt_line_loans(account_data)
-    # An ACTIVE loan with no payoff never clears at its current payment (plan
-    # C8d), so there is no debt-free date at all -- and the user is emphatically
-    # not loan-free.  Skipping it would take ``max()`` over the loans that DO
-    # clear and plant a "Debt-free" milestone on a borrower who still owes; with
-    # every loan in that state it would fall through to the loan-free fallback
-    # window entirely.
-    if any(ad.get("payoff_date") is None for ad in active):
-        return date(today.year + _LOAN_FREE_HORIZON_YEARS, 12, 31), None, False
-    payoff_dates = [
-        ad["payoff_date"] for ad in active if ad["payoff_date"] > today
-    ]
-    debt_free_date = max(payoff_dates) if payoff_dates else None
-    if debt_free_date is not None:
-        return date(debt_free_date.year + 1, 12, 31), debt_free_date, False
-    return date(today.year + _LOAN_FREE_HORIZON_YEARS, 12, 31), None, True
+    outlook = loan_payoff_outlook(account_data)
+    fallback = date(today.year + _LOAN_FREE_HORIZON_YEARS, 12, 31)
+    if outlook.all_clear_on is None or outlook.all_clear_on <= today:
+        return fallback, None, outlook.is_loan_free
+    return date(outlook.all_clear_on.year + 1, 12, 31), outlook.all_clear_on, False
 
 
 def _build_sample_dates(today: date, horizon_end: date) -> list[date]:
@@ -602,13 +554,14 @@ def _structural_milestones(
     double-flagged as both its own payoff and the debt-free moment.  Empty
     for a loan-free user (``debt_free_date`` is ``None``).
 
-    The loan selection is :func:`_debt_line_loans`, the SAME one the domain
-    resolver uses, so a loan cannot size the axis while being skipped by the
-    flags on it -- or the reverse.  A loan that selection drops is already
-    retired, and a retired loan's ``payoff_date`` is ``None`` (there is no
-    forward crossing left to date), so the flag loop's own ``payoff is not
-    None`` test would have excluded it too; sharing the selection makes that
-    a property of the construction rather than of two rules agreeing.
+    The loan selection is :func:`~.._debt_line.debt_line_loans`, the SAME one
+    the domain resolver's outlook folds, so a loan cannot size the axis while
+    being skipped by the flags on it -- or the reverse.  A loan that selection
+    drops is already retired, and a retired loan's ``payoff_date`` is ``None``
+    (there is no forward crossing left to date), so the flag loop's own
+    ``payoff is not None`` test would have excluded it too; sharing the
+    selection makes that a property of the construction rather than of two
+    rules agreeing.
 
     Args:
         account_data: The per-account projection dicts.
@@ -622,7 +575,7 @@ def _structural_milestones(
     if debt_free_date is None:
         return []
     result: list[dict] = []
-    for ad in _debt_line_loans(account_data):
+    for ad in debt_line_loans(account_data):
         payoff = ad.get("payoff_date")
         if payoff is not None and frame.today < payoff < debt_free_date:
             result.append({

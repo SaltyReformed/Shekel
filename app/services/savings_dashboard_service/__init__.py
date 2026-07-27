@@ -33,6 +33,11 @@ Module map:
 * :mod:`app.services.savings_dashboard_service._metrics` -- emergency-fund
   expenses, the debt summary + DTI, and the canonical paycheck-breakdown
   producer.
+* :mod:`app.services.savings_dashboard_service._debt_line` -- the ONE
+  derivation of "which loans still have a debt line" and "when does the last
+  of them end" (plan step X-q), read by both ``_metrics``' debt summary and
+  ``_horizon``'s domain and milestone flags, which each used to answer it
+  with a membership rule of their own.
 * :mod:`app.services.savings_dashboard_service._display` -- account
   grouping and the shared id-based category classifier.
 * :mod:`app.services.savings_dashboard_service._net_worth` -- the

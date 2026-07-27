@@ -4330,17 +4330,28 @@ class TestUpcomingLoanDoesNotCorruptTheSurfaces:
             bctx = BalanceContext.build(seed_user["user"].id)
 
             def _ad(acct):
+                # This dict is hand-built, which is finding B-17: the
+                # production builder (``_project_one_account``) is never
+                # executed here, so a change to what IT publishes cannot fail
+                # this test.  Plan step X-h owns the repair.  Plan step X-q
+                # then MEASURED the cost of the pattern -- moving
+                # ``_compute_principal_paid_fraction`` onto ``is_retired``
+                # raised ``KeyError`` here, because the copy was one field
+                # behind the builder it mirrors -- so the key is added and the
+                # shape is left for the step that owns it.
                 figures = balance_at.loan_figures(acct, bctx)
                 return {
                     "loan_params": resolved_loan(acct, bctx).params,
                     "current_balance": balance_at.balance_at(
                         acct, bctx, bctx.as_of),
+                    "is_retired": figures.is_retired,
                     "is_paid_off": figures.is_paid_off,
                     "is_originated": figures.terms.is_originated,
                 }
 
             # The fixture really is in the hazardous state.
             assert _ad(mortgage)["current_balance"] == Decimal("0.00")
+            assert _ad(mortgage)["is_retired"] is False
             assert _ad(mortgage)["is_paid_off"] is False
             assert _ad(mortgage)["is_originated"] is False
             assert _ad(auto)["is_originated"] is True
