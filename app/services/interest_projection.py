@@ -100,34 +100,47 @@ def _days_in_quarter(period_start):
     return Decimal(str((q_end - q_start).days))
 
 
-def calculate_interest(
+def accrued_interest(
     balance,
     apy,
     compounding_frequency_id,
     period_start,
     period_end,
 ):
-    """Calculate projected interest earned during a pay period.
+    """Return the interest accrued over ``[period_start, period_end)``, UNROUNDED.
 
-    Daily compounding uses an actual/actual day count: the divisor is
-    366 when the projection window contains Feb 29 and 365 otherwise.
-    See the module docstring ("Day-count convention -- actual/actual
-    for leap-day-crossing windows") for the rationale and the residual
-    error this closes (MED-05 / PA-06).  Monthly and quarterly
-    compounding are unaffected.
+    The day-count rule itself -- the actual/actual daily divisor, the
+    calendar-month monthly divisor, the actual-length quarterly divisor
+    -- stated ONCE, so the two consumers cannot drift on it:
+
+    * :func:`calculate_interest` rounds this to cents.  It is the
+      per-PERIOD reader (``balance_at._interest._layer_interest``), whose
+      window is a whole pay period.
+    * the balance seam's modelled asset fold
+      (``balance_at._asset_fold``) accrues DAILY (plan ruling R-T) and
+      credits whole cents off a full-precision running total (ruling
+      R-X), so it needs the sub-cent amount rather than a rounded one.
+      Rounding each day independently is what would make a small
+      balance accrue nothing at all forever -- 0.45 cents a day on a
+      $50 HYSA at 3.29% APY rounds to zero every day.
+
+    Extracting it is what keeps the daily reader from restating a
+    financial rule: a second copy of the leap-day switch or the
+    calendar-month divisor is exactly where the two would disagree.
 
     Args:
-        balance: Account balance after all transactions/transfers for the period.
+        balance: Account balance the interest accrues on.
         apy: Annual percentage yield (e.g., Decimal("0.04500") for 4.5%).
         compounding_frequency_id: ``ref.compounding_frequencies.id`` of
             the account's compounding frequency (resolved against
             ``ref_cache``; #38).
-        period_start: Start date of the pay period.
-        period_end: End date of the pay period.
+        period_start: Inclusive start date of the accrual window.
+        period_end: EXCLUSIVE end date of the accrual window (the
+            ``(period_end - period_start).days`` convention this module
+            uses throughout).
 
     Returns:
-        Decimal interest earned, rounded to 2 decimal places via
-        :func:`app.utils.money.round_money` (``ROUND_HALF_UP``).
+        Decimal interest earned at full precision -- NOT cent-quantized.
         Returns :data:`ZERO` for non-positive balances, non-positive
         APY, inverted ``period_start`` / ``period_end`` ordering, or an
         unrecognised ``compounding_frequency_id``.
@@ -145,22 +158,59 @@ def calculate_interest(
     ):
         days_in_year = _days_in_year_for_window(period_start, period_end)
         daily_rate = apy / days_in_year
-        interest = balance * ((1 + daily_rate) ** period_days - 1)
-    elif compounding_frequency_id == ref_cache.compounding_frequency_id(
+        return balance * ((1 + daily_rate) ** period_days - 1)
+    if compounding_frequency_id == ref_cache.compounding_frequency_id(
         CompoundingFrequencyEnum.MONTHLY
     ):
         monthly_rate = apy / MONTHS_PER_YEAR
         days_in_month = Decimal(
             str(calendar.monthrange(period_start.year, period_start.month)[1])
         )
-        interest = balance * monthly_rate * (period_days / days_in_month)
-    elif compounding_frequency_id == ref_cache.compounding_frequency_id(
+        return balance * monthly_rate * (period_days / days_in_month)
+    if compounding_frequency_id == ref_cache.compounding_frequency_id(
         CompoundingFrequencyEnum.QUARTERLY
     ):
         quarterly_rate = apy / QUARTERS_IN_YEAR
         days_in_quarter = _days_in_quarter(period_start)
-        interest = balance * quarterly_rate * (period_days / days_in_quarter)
-    else:
-        return ZERO
+        return balance * quarterly_rate * (period_days / days_in_quarter)
+    return ZERO
 
-    return round_money(interest)
+
+def calculate_interest(
+    balance,
+    apy,
+    compounding_frequency_id,
+    period_start,
+    period_end,
+):
+    """Calculate projected interest earned during a pay period.
+
+    The cent-quantized form of :func:`accrued_interest`, which owns the
+    day-count rule.  Daily compounding uses an actual/actual day count:
+    the divisor is 366 when the projection window contains Feb 29 and
+    365 otherwise.  See the module docstring ("Day-count convention --
+    actual/actual for leap-day-crossing windows") for the rationale and
+    the residual error this closes (MED-05 / PA-06).  Monthly and
+    quarterly compounding are unaffected.
+
+    Args:
+        balance: Account balance after all transactions/transfers for the period.
+        apy: Annual percentage yield (e.g., Decimal("0.04500") for 4.5%).
+        compounding_frequency_id: ``ref.compounding_frequencies.id`` of
+            the account's compounding frequency (resolved against
+            ``ref_cache``; #38).
+        period_start: Start date of the pay period.
+        period_end: End date of the pay period.
+
+    Returns:
+        Decimal interest earned, rounded to 2 decimal places via
+        :func:`app.utils.money.round_money` (``ROUND_HALF_UP``).
+        Returns :data:`ZERO` for non-positive balances, non-positive
+        APY, inverted ``period_start`` / ``period_end`` ordering, or an
+        unrecognised ``compounding_frequency_id``.
+    """
+    return round_money(
+        accrued_interest(
+            balance, apy, compounding_frequency_id, period_start, period_end,
+        )
+    )

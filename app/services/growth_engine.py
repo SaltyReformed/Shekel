@@ -165,7 +165,8 @@ def calculate_employer_contribution(
         employer_params: dict with keys:
             - type_id: ``ref.employer_contribution_types.id`` -- the
               flat_percentage or match row (#38; the NONE row never
-              reaches here, ``_employer_params`` returns None for it)
+              reaches here -- ``employer_contribution_params`` in
+              ``investment_projection`` returns None for it)
             - flat_percentage: Decimal (for flat_percentage type)
             - match_percentage: Decimal (for match type)
             - match_cap_percentage: Decimal (for match type)

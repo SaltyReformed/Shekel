@@ -71,9 +71,19 @@ is DECIDED at the step: **X-g1** (the replay, additive and unwired) -> **X-g2** 
 **X-g3** (ruling R-W's grid) -> **X-g4** (the deletion). Three findings recorded: **N-74**, **N-75**,
 **N-76**.
 
-**NEXT: X-g1**, then X-g2 / X-g3 / X-g4, then **X-c2c4** (the deletion, which X-g's cutover is what
-makes possible, and which now carries the 52-period drift-oracle PORT as a prerequisite -- see the
-step).
+**X-g1 SHIPPED (2026-07-26)** -- the modelled replay, ADDITIVE and unwired
+(`balance_at/_asset_fold.py`). A modelled asset IS its cash fold plus two more event kinds: it takes
+`_cash_fold.assemble`'s whole record and resolves CONTRIBUTION and daily ACCRUAL onto the same
+running total in ONE sequential pass, after which the shipped `sample_cumulative` reads it exactly
+as it reads the cash and loan folds. Graded on 25 hand-computed oracle tests plus a 9-test parallel
+run that CLASSIFIES every divergence from the three shipping bases; **22 firing controls, and every
+one of the 34 tests fires on at least one of them**. Baseline BYTE-IDENTICAL on both databases
+(345,213 and 393,217 bytes of seam figures, HEAD run from a `git worktree`). Its three forks were
+ruled first: **R-X**, **R-Y**, **R-Z** in Section 4. Two findings recorded: **N-77**, **N-78**.
+
+**NEXT: X-g2** (the cutover), then X-g3 / X-g4, then **X-c2c4** (the deletion, which X-g's cutover is
+what makes possible, and which now carries the 52-period drift-oracle PORT as a prerequisite -- see
+the step).
 
 **E2 IS RATIFIED (developer ruling 2026-07-26) and runs LAST.** The super-package boundary is now a
 committed step in Section 5, not a Section 6 option: the read seam, the write cluster and the
@@ -185,6 +195,7 @@ ONE total fold and they closed together.
 | **The cash cutover: every cash figure the app renders is one fold, read at three grains** | dev | `d3489728` (X-c2b2) |
 | The replaced cash producers deleted | dev | `82557ca9` (X-c2b3) |
 | **What a cash row is WORTH is a function of the row alone** -- no reservation clock | dev | `b42dda42` (X-c2c1) |
+| The MODELLED replay: the cash fold plus CONTRIBUTION and daily ACCRUAL, one sequential pass | dev | X-g1 (additive, unwired) |
 
 **The loan baseline is still a LIVE regression gate for CASH commits.** Mortgage (account 3)
 **$177,277.97**, Van Loan (account 8) **$15,663.59**. Re-derive both from the seam before and
@@ -303,6 +314,18 @@ worth about `$7` on one period of the 401(k) -- a second rule and a surviving re
 a figure no screen shows. `growth_engine.reverse_project_balance` therefore leaves the balance path
 entirely rather than becoming a direction.
 
+**Three rules the BUILD had to settle that this design did not carry, ruled at X-g1 (Section 4).**
+(1) **R-Y sharpens R-L above:** "forward of the latest ASSERTION" includes the assertion's OWN day
+and therefore the remainder of the PERIOD holding it -- which INTEREST has done since plan step
+X-c2a but INVESTMENT and APPRECIATING have never done, so the anchor period earns nothing at all
+today (measured `$105.26` / `$44.95` / `$76.59` / `$170.11` on the four real modelled accounts).
+(2) **R-X fixes the grain's rounding:** a day's accrual is computed at full precision and CREDITED
+in whole cents with the sub-cent remainder carried, so every step stays an exact cent AND the
+cumulative equals `round(exact)`. Rounding each day on its own -- the per-PERIOD convention, scaled
+down -- makes a sub-half-cent daily accrual round to zero forever, so a `$50` HYSA at 3.29% would
+earn `$0.00` a year. (3) **R-Z dates a CONTRIBUTION at its pay period's `start_date`**, which the
+`PayPeriod` model calls the payday, and admits it only STRICTLY after the latest assertion.
+
 **What X-g deletes, and which defect CLASSES stop being representable:**
 
 * `_merge_balance_sources` and its preference order -- and with it the **whole N-43 class**. No join
@@ -321,7 +344,7 @@ entirely rather than becoming a direction.
 * **The two accrual BASES stop disagreeing.** `_interest._layer_interest` accrues on the period's
   END balance (`_interest.py:226`, `running_balance = base_bal + interest_cumulative`, where
   `base_bal` is the fold sampled at `period.end_date`) while `growth_engine._project_one_period`
-  grows the period's START balance (`growth_engine.py:387-392`). Two conventions for one question,
+  grows the period's START balance (`growth_engine.py:388-393`). Two conventions for one question,
   and they bracket the truth from opposite sides: a deposit made mid-period earns a FULL period of
   interest on the first rule and would earn none on the second. A daily replay accrues on the balance
   actually held on each day, so there is no convention left to pick -- and no test can pin the wrong
@@ -413,6 +436,18 @@ step that ends that.
 |---|---|---|
 | **R-V** (answered 2026-07-26, as recommended) | **Plan step X-c2c3 is CANCELLED; X-g replaces the modeled bases outright, and no compensator ships in the meantime.**  X-c2c3 was to WINDOW `investment_base_balance_map` and `build_appreciation_balance_map` onto the fold so their ruled pre-anchor models survived `_merge_balance_sources`' preference order (N-43).  This document already called that window a COMPENSATOR rather than a fix (**N-72**) and named X-g as what makes it unnecessary; the ruling stops paying for it.  **Three measured grounds.**  (1) Its benefit is near-vacuous on today's data: its own correction (a) measured all four affected accounts holding ZERO transaction rows in BOTH databases, so `balances_for` and the windowed fold are both "the latest assertion carried flat" and any producer passes -- finding N-69's shape, in the step's own words.  (2) Its cost is redone: four hand-built discriminating fixtures with firing controls, plus the `ctx`-for-`scenario` signature change across `_investment`'s three public entries and four callers, all of which X-g rewrites when the base becomes a replay.  (3) **It is a MONEY-MOVING cutover**, so cancelling it removes an entire cutover -- with its own independent oracle, its own every-figure sign-off and its own revert risk -- rather than deferring one; the alternative ran TWO money-moving swaps over the same four accounts to reach one end state.  **The price, stated so it is not discovered later:** findings cash D1 and cash D3 stay OPEN for INTEREST / INVESTMENT / APPRECIATING until X-g ships, alongside N-71 and N-43 which were already going to.  That price is `$0.00` on both databases today and is a property of the DATA, not the design -- it flips the day a contribution is recorded as a transaction and settles, which is the same caveat X-g's own entry already carries.  **Sequence becomes X-c2c2 -> X-g -> X-c2c4**, and X-c2c4's deletion of `_cash_engine` / `_calculator` is unblocked by X-g's cutover exactly as it would have been by X-c2c3's -- both remove the last two callers of `balances_for`.  Rejected: shipping the window anyway (pays for a compensator whose measured benefit is zero and whose artifacts are discarded), and deleting `_cash_engine` early (its two callers are live; the C3b3 prove-the-successor-first precedent). | X-c2c3 (cancelled), X-g, X-c2c4 |
 
+### Answered (developer ruling, 2026-07-26: X-g1's three forks, all as recommended)
+
+Three forks the X-g trace did not have, found while tracing X-g1 itself. Each carries what was
+MEASURED before it was asked, and R-T's own `+$0.14` / `+$1.73` figures were reproduced to the cent
+first so the comparisons are like-for-like.
+
+| # | ruling | consumed by |
+|---|---|---|
+| **R-X** (answered 2026-07-26) | **A day's ACCRUAL is computed at FULL precision and CREDITED in whole cents, carrying the sub-cent remainder.**  Every emitted step is therefore an exact cent -- the property ruling R-K's identity needs, and the property every other step in this arc already has -- while the cumulative accrual at any date equals `round(exact)`, so the daily grain introduces no rounding bias of its own.  **Rejected: rounding each day independently**, which is the codebase's per-PERIOD convention (`_layer_interest`, `growth_engine`) and is what R-T measured -- but at the daily grain it fails structurally on small balances, because a sub-half-cent daily accrual rounds to zero EVERY day, forever.  Measured, at 3.29% APY: a `$50` HYSA earns **`$0.00` a year and never grows**, against `$1.56` today and a true `$1.65`; `$100` earns `$3.65` against a true `$3.29` (+11%); `$500` earns `$18.25` against `$16.45`.  On the growth side at 10.5% a `$20` holding grows `$3.65` a year against a true `$2.00` (+82%) and a `$9` holding never grows at all.  On the REAL accounts the two rules differ by `$0.10` and `$0.09` over 840 days, so the cost of the wrong choice is invisible on today's data and total on a small one.  It costs one accumulator.  Measured effect on R-T's own figures: the daily-vs-shipped delta moves from `+$0.14` / `+$1.73` to **`+$0.04` / `+$1.64`** on the Fidelity Savings and the Money Market. | X-g1 |
+| **R-Y** (answered 2026-07-26) | **Ruling R-L generalises to ALL modelled kinds: ACCRUAL runs from the LATEST assertion's OWN day forward, including inside the period that holds it.**  INTEREST has worked that way since plan step X-c2a; INVESTMENT and APPRECIATING do not -- `_investment` splits its periods on `period_index > anchor_idx`, so the anchor PERIOD is served by the flat cash base and earns nothing at all.  That is the same defect R-L fixed for INTEREST, in the other direction: R-L closed a window that opened up to 13 days too EARLY, and this opens one that today never opens at all.  Measured on `shekel_f3_final`, the one-off lift at the anchor period (every later column then shifts up by it, compounding): Roth IRA **`$105.26`** (its assertion falls on the period's own start day, so a full 14 days), Traditional IRA **`$44.95`**, Empower 401(k) **`$76.59`** (9 days), and on `shekel` the Property **`$170.11`** (6 days).  It recurs on every re-assertion, which on the real data is every few weeks.  Rejected: keeping "growth starts the period AFTER the anchor" for the two growth kinds, which preserves today's figures at the cost of two rules for one question and of silently dropping up to a full period of return each time the user re-asserts. | X-g1 |
+| **R-Z** (answered 2026-07-26) | **A modelled CONTRIBUTION lands on its pay period's `start_date` -- the PAYDAY -- and exists only when that payday is STRICTLY AFTER the latest assertion.**  The date is a fact, not a fork: `PayPeriod`'s own docstring says "start_date (payday)", and it is already the date `investment_projection.build_contribution_timeline` stamps on every `ContributionRecord`.  Its consequence is a design decision and is taken deliberately -- the money is in the account from the payday, so it earns a full period of return, where `growth_engine._project_one_period` adds a period's contribution AFTER its growth and it earns none in its own period.  The BOUNDARY is the fork, and it is strict: a contribution on a payday at or before the assertion is money the asserted balance already contains, and modelling it again double counts -- an over-count that looks exactly like real growth and so cannot be detected later.  The ACCRUAL rule beside it is INCLUSIVE (`>=`) for a reason that does not transfer: a day count has to tile the calendar with no gap (the "13 of 14 days" defect), while a contribution is a discrete event that either is or is not inside the assertion.  Rejected: `>=` for both, which is one boundary expression instead of two but double counts the paycheck of a user who asserts a balance ON payday -- which is when someone checking their accounts after a paycheck would assert one.  Moves `$0.00` today: no account has an employee contribution feed, and the one live employer feed (Empower's flat 5%) has its anchor period's payday five days before the assertion, so both options agree there. | X-g1 |
+
 ### Answered (developer ruling, 2026-07-26: X-g's five forks, all as recommended)
 
 **The trace ran first and no code was written for it** -- the step's own stated first action. Each
@@ -422,7 +457,7 @@ their own premise once measured, and a fifth fork (**R-W**) did not exist until 
 
 | # | ruling | consumed by |
 |---|---|---|
-| **R-R** (answered 2026-07-26) | **A contribution is partitioned by SOURCE, so the two feeds are disjoint BY CONSTRUCTION and there is no de-dup rule to get wrong.**  A recorded transfer is an ACTUAL / PLANNED event (it HAS a transaction row); a payroll deduction is a modeled CONTRIBUTION event (it never has one).  The replay therefore never reads `_average_transfer_contribution`, which today folds both feeds into ONE scalar at `investment_projection.py:421-424` -- mixing them into one number is exactly what makes them indistinguishable.  **The mechanism was confirmed and measured, and it is not live.**  The two row sets provably overlap: `loan_loaders.query_shadow_income` (transfer-linked Income rows) and `cash_ledger._facts._unwindowed_contributing_rows` (what the fold counts) select the same rows.  Measured by creating six `$500.00` projected Checking -> Roth transfers inside a ROLLED-BACK transaction: the fold read `$30,432.35` at period 14 while the shipped map read `$31,098.91` -- the map had DISCARDED the rows and applied its own `$500.00`/period, so today's single count is a side effect of the merge X-g deletes.  A naive union would have added **`$3,000.00` over six periods** (~`$26,000` over the horizon, before compounding).  Not live today: **no deduction targets an investment account** (all 12 `paycheck_deductions.target_account_id` are NULL in both databases) and **the three investment accounts hold ZERO transaction rows of any kind** in both databases, so `periodic_contribution` is `$0.00` for all three.  The partition is SOUND because nothing in the app creates a transaction from a deduction -- AST-scanned over `app/` + `scripts/` (never a regex, Section 8): the 5 modules that IMPORT `PaycheckDeduction` (`models/__init__`, `routes/salary/items`, `investment_dashboard_service`, `projection_inputs`, `retirement_projection`) and the 5 that CONSTRUCT a `Transaction` (`routes/transactions/create`, `carry_forward_service/_execute`, `credit_workflow`, `recurrence_engine`, `transfer_service`) have an EMPTY intersection.  **Two consequences the ruling owns, so X-g1 does not rediscover them.**  (a) The EMPLOYER half is not partitioned: `growth_engine.calculate_employer_contribution` sizes a MATCH from the period's employee contribution, so it reads the RESOLVED employee total for that period whichever feed produced it (a flat-percentage employer -- the real Empower shape, `type_id` flat at 5% of `$3,631.74` gross -- does not depend on it at all).  (b) `_average_transfer_contribution` SURVIVES for the what-if surfaces under ruling R-U: "keep contributing at this rate for 30 years" is a legitimate question about a rate, and the synthetic long-horizon periods have no dated record to fall back from.  It leaves the BALANCE path, it is not deleted from the tree.  Rejected: rows-only (a payroll-funded 401(k) would stop growing from contributions, which have no row by construction), rate-only (the transfer's expense leg still leaves checking while its income leg never arrives -- broken double entry), and both-with-an-explicit-de-dup (today's compensator at `investment_projection.current_period_transfer_contribution:498`; it works, and it is a rule a reader must remember rather than a shape that cannot go wrong). | X-g |
+| **R-R** (answered 2026-07-26) | **A contribution is partitioned by SOURCE, so the two feeds are disjoint BY CONSTRUCTION and there is no de-dup rule to get wrong.**  A recorded transfer is an ACTUAL / PLANNED event (it HAS a transaction row); a payroll deduction is a modeled CONTRIBUTION event (it never has one).  The replay therefore never reads `_average_transfer_contribution`, which today folds both feeds into ONE scalar at `investment_projection.py:444-447` -- mixing them into one number is exactly what makes them indistinguishable.  **The mechanism was confirmed and measured, and it is not live.**  The two row sets provably overlap: `loan_loaders.query_shadow_income` (transfer-linked Income rows) and `cash_ledger._facts._unwindowed_contributing_rows` (what the fold counts) select the same rows.  Measured by creating six `$500.00` projected Checking -> Roth transfers inside a ROLLED-BACK transaction: the fold read `$30,432.35` at period 14 while the shipped map read `$31,098.91` -- the map had DISCARDED the rows and applied its own `$500.00`/period, so today's single count is a side effect of the merge X-g deletes.  A naive union would have added **`$3,000.00` over six periods** (~`$26,000` over the horizon, before compounding).  Not live today: **no deduction targets an investment account** (all 12 `paycheck_deductions.target_account_id` are NULL in both databases) and **the three investment accounts hold ZERO transaction rows of any kind** in both databases, so `periodic_contribution` is `$0.00` for all three.  The partition is SOUND because nothing in the app creates a transaction from a deduction -- AST-scanned over `app/` + `scripts/` (never a regex, Section 8): the 5 modules that IMPORT `PaycheckDeduction` (`models/__init__`, `routes/salary/items`, `investment_dashboard_service`, `projection_inputs`, `retirement_projection`) and the 5 that CONSTRUCT a `Transaction` (`routes/transactions/create`, `carry_forward_service/_execute`, `credit_workflow`, `recurrence_engine`, `transfer_service`) have an EMPTY intersection.  **Two consequences the ruling owns, so X-g1 does not rediscover them.**  (a) The EMPLOYER half is not partitioned: `growth_engine.calculate_employer_contribution` sizes a MATCH from the period's employee contribution, so it reads the RESOLVED employee total for that period whichever feed produced it (a flat-percentage employer -- the real Empower shape, `type_id` flat at 5% of `$3,631.74` gross -- does not depend on it at all).  (b) `_average_transfer_contribution` SURVIVES for the what-if surfaces under ruling R-U: "keep contributing at this rate for 30 years" is a legitimate question about a rate, and the synthetic long-horizon periods have no dated record to fall back from.  It leaves the BALANCE path, it is not deleted from the tree.  Rejected: rows-only (a payroll-funded 401(k) would stop growing from contributions, which have no row by construction), rate-only (the transfer's expense leg still leaves checking while its income leg never arrives -- broken double entry), and both-with-an-explicit-de-dup (today's compensator at `investment_projection.current_period_transfer_contribution:523`; it works, and it is a rule a reader must remember rather than a shape that cannot go wrong). | X-g |
 | **R-S** (answered 2026-07-26) | **An ASSERTION always wins, and before the FIRST one the balance holds FLAT -- ruling R-I's rule, for all five kinds.**  **The fork inverted once traced.**  Its own text assumed the reverse projection was a ruled model the fold would damage; the measurement says the reverse projection is the DEFECT.  The three modeled accounts carry **15 recorded assertions** (Roth 6, Trad IRA 6, Empower 3) and `build_investment_balance_map` reads only the LATEST, re-deriving every earlier period from a model.  At the period ending 2026-04-08 the app renders Roth `$26,604.63` against the user's own 2026-04-06 assertion of **`$23,851.08`**, Trad IRA `$11,360.85` against `$10,175.49`, Empower `$29,289.22` against its earliest record `$26,912.56` -- N-43's `-$6,315.57`, re-verified to the cent, now with its SIGN established: the fold reproduces every assertion and the model contradicts them (**N-74**).  The rule therefore is one rule, not three: `sample_cumulative` seeded at `first_assertion - sum(pre-assertion source deltas)` (R-I's own mechanism) replays every ASSERTION as a reset, so a period at or after an assertion reads that assertion plus its recorded rows, and the pre-tracking prefix holds flat.  It is ALREADY the Property's rule, stated in `build_appreciation_balance_map`.  Rejected: un-growing before the first assertion (worth about `$7` on ONE period of the 401(k) -- both IRAs' first assertions fall inside their earliest pay period, so no period end reads the region at all -- and it costs a second rule plus a surviving `reverse_project_balance` in the balance path), and keeping today's model (`/savings` keeps rendering `$6,315.57` of history that contradicts recorded facts, and keeps N-75 with it). | X-g |
 | **R-T** (answered 2026-07-26) | **ACCRUAL events are DAILY, resolved in ONE sequential pass, and `sample_cumulative` is NOT changed.**  Between two events the balance is constant, so the whole horizon's accrual deltas resolve in one pass over the sorted step list and merge into it; the shipped sampler -- shared with the LOAN fold -- is untouched.  A daily step means a sampled date never lands inside an unresolved span, so the answer is exact at every date and can never become a function of which OTHER dates were asked for (the shape rulings R-G / R-H kept out of the leaf).  **Measured, both halves, and each scoped to what was actually run.**  COST: a synthetic bench of the resolving pass plus `sample_cumulative` over **900 steps and 840 dates** takes **0.70 ms**, against **0.20 ms** for the same sampler over today's 60-step shape -- **+0.5 ms** per account per full-horizon read, where the real `fold_cash_balances` over the 840-day horizon already costs **2.7-13.8 ms** per account (load included) and one `/savings` + `/investment` pair costs ~500 ms (N-72).  BENEFIT: not the total.  For INTEREST, measured against the SHIPPED `_interest._layer_interest`, a day-by-day replay of the same `calculate_interest` rule differs by **`$0.14`** over 840 days on the HYSA and **`$1.73`** on the Money Market (the daily replay is the higher of the two in both cases).  For the three INVESTMENTS the comparison is grain-only -- the same `period_return_rate` at two grains with contributions held out of both, since their contribution feeds are empty -- and it differs by at most **`$0.05`**.  What the grain actually costs is WHEN the money lands.  N-71 re-verified at period 30: the scalar returns the IDENTICAL value on the period's first and last day (Empower `$38,617.11` against `$328.50` of growth in that period, Money Market `$9,090.81` / `$261.24`, Roth `$29,843.76` / `$114.07`).  Rejected: segment-per-compounding-interval-plus-event (exact and cheaper -- 2 to 60 segments per account today instead of 840 -- but a date INSIDE a segment needs a partial-accrual read that is not booked as a step, which is one more rule for a `$0.5 ms` saving), and keeping the pay-period grain (N-71 stays open forever and "balance at a DATE" stays a lie for three of five kinds). | X-g |
 | **R-U** (answered 2026-07-26) | **The replay owns the SEED and the history; the forward WHAT-IF keeps `growth_engine`.**  The chart is not a balance-at-T surface: `investment_dashboard_service` projects over SYNTHETIC periods (`growth_engine.generate_projection_periods`, a slider-driven horizon clamped to 40 years, `:721`) and re-projects the whole series for the what-if overlay with `contributions=None` (`:972`); `retirement_projection.py:593` does the same under a `return_rate_override` and a per-period `salary_basis`; `savings_dashboard_service/_horizon.py:413` runs a 30-year band.  A fold over STORED facts cannot answer a hypothetical, and cannot answer a date past the user's pay-period horizon at all.  So what changes is the SEED: `investment_seed_map` (`:249`, and `retirement_projection.py:492`) becomes the replay with ACCRUAL filtered out -- the FILTER Section 3.2 names -- and the surfaces keep their engine.  **The de-dup subtraction goes with it**: both seeds today subtract `current_period_transfer_contribution` (`investment_dashboard_service.py:318`, `retirement_projection.py:580`) because the seed includes recorded contributions the engine then re-applies for the current period.  Under R-R's partition the seed is read at the day BEFORE the projection window opens, so the overlap does not exist and deep-quality-hunt #9 / #14's compensator deletes rather than being ported.  Precedent, and it points the same way: plan step C5 made the property equity chart's DEBT line read `positions()` (finding B-2, `$299,701.35` wrong on 8 of 13 shapes) while its forward what-if kept projecting. | X-g |
@@ -1102,7 +1137,9 @@ replaces.
   the last step of the arc that can move a FIGURE.** ACCRUAL becomes the fourth event kind and all five account
   kinds read ONE sequential replay. Target shape, deletion list and measured scope: **Section 3.2**.
   Forks: **R-R, R-S, R-T, R-U and R-W in Section 4, and all five are ANSWERED** (developer ruling
-  2026-07-26, all as recommended) -- scope AND design are now traced.
+  2026-07-26, all as recommended) -- scope AND design are now traced.  **X-g1's own trace then found
+  three more -- R-X, R-Y, R-Z -- and they are ANSWERED too** (same date, all as recommended);
+  Section 3.2 carries what they changed about this step's design.
 
   **Why it exists, in one line:** the modeled kinds are the last place where a balance is three
   producers spliced by a preference order, which is the shape this whole arc exists to delete.
@@ -1155,7 +1192,9 @@ replaces.
   scratchpad, not the repo -- `tests/manual/verify_balance_baseline.py` is the saved harness this
   step's cutover is DIFFED with (Section 7.2).
 
-  **Build it the way the loan fold was built, and the way the cash fold was built** -- the discipline
+  **X-g1 IS BUILT and this paragraph is the record of how** -- kept because X-g2 / X-g3 are held to
+  the same standard.  **Build it the way the loan fold was built, and the way the cash fold was
+  built** -- the discipline
   the arc has now proved seven times (C3a->C3b, C6a->C6b, C8a->C8d, C9a->C9b, E1c->E1d, X-b->X-c2b2,
   X-c1->X-c2b1): the replay ADDITIVE and unwired, graded on a HAND-COMPUTED oracle (never a shipping
   producer as its own reference, finding N-7) PLUS an every-period and every-day parallel run against
@@ -1182,10 +1221,87 @@ replaces.
   additive-then-cutover line with the render side taken out of the money-moving commit exactly as
   X-c2b1 / b2 / b3 did:
 
-  * **X-g1** -- the modeled replay, seam-private and UNWIRED. The event builder (ASSERTION / ACTUAL
-    / PLANNED / CONTRIBUTION / ACCRUAL), the one sequential resolving pass, and per-kind rate
-    functions. Nothing consumes it, so the baseline cannot move. Graded on a hand-computed oracle
-    plus an every-period and every-day parallel run against all three shipping bases.
+  * [x] **X-g1** -- the modelled replay, seam-private and UNWIRED
+    (`app/services/balance_at/_asset_fold.py`). **SHIPPED (2026-07-26).**
+
+    **Its three forks were traced and RULED before any code was written** -- R-X (the accrual's
+    rounding), R-Y (does the anchor period accrue?), R-Z (the contribution's date and boundary),
+    all in Section 4, all as recommended. R-T's own `+$0.14` / `+$1.73` measurement was reproduced
+    to the cent FIRST so R-X's comparison was like-for-like, and every figure N-43 / N-71 / N-74 /
+    N-76 carries was independently re-derived on both databases before being relied on.
+
+    **The structural result, and it is the step's whole claim:** a modelled asset IS its cash fold
+    plus two more event kinds. The replay takes `_cash_fold.assemble`'s whole record -- the seed,
+    the three tiers' dated deltas, and the WALK it reads the latest assertion off -- and resolves
+    CONTRIBUTION and daily ACCRUAL onto the SAME running total in ONE sequential pass, after which
+    `_fold.sample_cumulative` (shared with the loan fold) is untouched. So there is no second cash
+    basis to keep in step, and `_cash_fold._assemble` / `_AssembledFold` became `assemble` /
+    `AssembledCashFold` rather than being reached through a private import.
+
+    **Three shared rules were EXTRACTED rather than restated**, which is what keeps the daily
+    reader from carrying a second copy of a financial rule: `interest_projection.accrued_interest`
+    (the day-count rule, UNROUNDED, with `calculate_interest` now its cent-quantized wrapper), and
+    `investment_projection.deduction_contribution_per_period` / `employer_contribution_params`
+    (promoted from private, because ruling R-R needs the DEDUCTION half of a contribution feed
+    without `_average_transfer_contribution` folded into it).
+
+    **One thing the trace found that this document did not carry: the contribution tier is NOT dead
+    on real data.** Ruling R-R measured both EMPLOYEE feeds empty and this plan reads as if the
+    whole tier moves `$0.00`; the Empower 401(k) carries `employer_contribution_type =
+    flat_percentage` at 5% of `$3,631.74` gross = **`$181.59` a period, `$9,624.27` over the
+    horizon**, and a flat-percentage employer does not read the employee amount at all.
+
+    **A second: the daily grain also fixes a MONTHLY / QUARTERLY day-count defect.**
+    `calculate_interest` reads `monthrange(period_start)` once for the whole window, so a 14-day pay
+    period straddling a month boundary prices every one of its days against the FIRST month's
+    length. Measured on `$10,000` at 3.29% over 2026-01-29 .. 02-11: **`$12.38` against a
+    day-by-day `$13.42`, short by `$1.04` on ONE period** (8.4%). The real Money Market compounds
+    MONTHLY. Same class as the "13 days of a 14-day period" note the interest path already carries,
+    on the two frequencies that note did not reach.
+
+    **Verification.** Baseline **BYTE-IDENTICAL on BOTH databases** (`verify_balance_baseline.py`,
+    345,213 and 393,217 bytes of seam figures, the HEAD side run from a `git worktree`) -- what an
+    additive step must prove, and load-bearing here because the step DID change two live modules.
+    Full suite **7590 -> 7624**, a delta of exactly the 34 tests added. `pylint app/` 10.00/10 under
+    the full `--fail-on` set, `scripts/` 10.00, the `tests/` decimal gate clean.
+
+    **34 tests and 22 firing controls, with every one of the 34 firing on at least one control.**
+    25 hand-computed oracle tests (`test_asset_fold.py`) -- never a shipping producer as a reference
+    (N-7), because the producers are wrong about exactly the cases the replay exists for -- plus a
+    9-test parallel run (`test_asset_fold_parallel.py`) that CLASSIFIES every divergence into three
+    named classes rather than demanding equality. Its strongest single result is an EQUALITY: on the
+    shape that isolates the grain, the daily replay tracks `growth_engine.project_balance` (seeded
+    at the replay's own anchor value) to **within a cent on every post-anchor period, eight of nine
+    EXACTLY** -- because `period_return_rate` over a 14-day span is the 14th power of the one-day
+    rate, so the grain is a re-grouping of ONE curve rather than a second model.
+
+    **Its adversarial review found a defect in its own tests: the R-R partition pin was VACUOUS.**
+    The fixture had no contribution feed at all, so the modelled tier was absent and the test could
+    not tell a partition from a union -- N-69's shape, and Section 7.3's whole argument, since the
+    firing control caught it and the reasoning did not. A second test named itself "lands on the
+    payday" while asserting only at the PERIOD, where a payday and a period end are
+    indistinguishable; it now asserts the day-by-day balances (`$20,051.97` on 01-15, `$20,555.78`
+    on 01-16). Three of the file's hand-computed figures were wrong on first write and the code was
+    right in all three.
+
+    **Measured cost, and it is a saving.** `asset_period_view` over 60 periods, best of five, on the
+    prod-shape clone against the producer it replaces: Roth `15.4 -> 3.8 ms`, Trad IRA
+    `14.7 -> 3.7`, Empower `14.5 -> 5.5`, Money Market `15.2 -> 16.2`, Fidelity Savings
+    `3.8 -> 5.7`, Home `1.6 -> 3.2`. The daily grain costs `+0.6` to `+2.9 ms` over the cash fold
+    alone (R-T budgeted `+0.5`, from a synthetic bench that did not include the per-day rate call);
+    the investments get CHEAPER because the growth engine's per-period walk and its whole input
+    assembly are gone.
+
+    **Three of this document's own citations drifted with the extraction and are corrected here**
+    (Section 7.6's rule, applied to what this step touched): ruling R-R's
+    `investment_projection.py:421-424` -> `:444-447` and
+    `current_period_transfer_contribution:498` -> `:523`, and Section 3.2's
+    `growth_engine.py:387-392` -> `:388-393`. Each was re-read at its new line, not arithmetic.
+
+    **Headroom for X-g2, stated so it is not discovered:** `_asset_fold.py` is **961 lines** against
+    pylint's 1000-line default (`.pylintrc` sets no `max-module-lines`). If X-g2 needs more than
+    ~35 lines here, split the contribution tier into its own module deliberately -- plan step D1c's
+    cohesion split, again -- rather than trimming a docstring to fit under a gate.
   * **X-g2** -- THE cutover. `build_investment_balance_map`, `build_appreciation_balance_map` and
     `_interest.layer_account_interest` are replaced by the replay; `investment_seed_map` becomes the
     ACCRUAL filter and `investment_growth_since_anchor` becomes a sum over the replay's ACCRUAL and
@@ -1368,6 +1484,8 @@ own write date, per Section 7.6.
 | N-75 (X-g trace) | **Entering a FUTURE contribution rewrites a PAST balance.** `_reverse_project_periods` passes the FORWARD `periodic_contribution` into `growth_engine.reverse_project_balance`, which un-contributes it walking backward -- so the pre-anchor half of the map is a function of the plan for the future. Measured by creating six `$500.00` projected Checking -> Roth transfers inside a ROLLED-BACK transaction: the Roth's period-7 (past) balance moved `$27,327.49 -> $26,829.40` while the user's recorded assertion for that period is `$27,332.33`. Both numbers are wrong and the second is `$502.93` wrong. Not reachable on today's data only because no investment account has a contribution feed at all (ruling R-R's measurement) | `-$498.09` on one past period from six future rows; unbounded in the contribution amount | **recorded, NOT fixed.** It dies with the reverse projection at X-g (ruling R-S); it is recorded separately from N-74 because it is a different defect -- N-74 is "the model overrides a fact", this is "the future mutates the past" | X-g |
 | N-76 (X-g trace) | **The grid and `/savings` answer one modeled account two ways, with no row explaining the gap.** `_grid.grid_balance_view` layers an accrual for INTEREST only (`_grid.py:271-277`), so an INVESTMENT or APPRECIATING account's grid balance is the kind-blind cash-flow fold while `_kind_correct.balance_map` returns the modeled map -- and both surfaces are reachable for those kinds (`account_resolver.is_cash_flow_account:41` admits every non-amortizing kind). Measured at the last projected period: Empower 401(k) grid `$31,070.06` vs `/savings` `$48,712.19`; Roth `$5,916.95` apart; Trad IRA `$2,526.68`; and on `shekel` the Property `$21,675.99`. The grid's interest column is `None` for every one of them. INTEREST accounts are byte-identical on both surfaces, which is what shows the unification works | **`$17,642.13`** on one account, growing with the horizon | **recorded, NOT fixed; RULED at R-W** -- the grid renders the modeled balance with a Growth row, so ruling R-K's identity holds for all five kinds | X-g3 (via R-W) |
 | X5 | **Anchor `effective_date`: an optional feature, not a step.** An `AccountAnchorHistory` row is dated by its `created_at` -- the instant it was ASSERTED -- so a user cannot enter a balance they read off last month's statement and have it land on last month. Adding an `effective_date` column would separate "when this was true" from "when it was typed", which is what a backdated statement assertion needs. Nothing depends on it: every shipped step and every remaining one (X-c2c .. X-g) works on the assertion instant | -- | **OPEN, optional, NOT committed to.** Converted from a step to a finding at the 2026-07-26 trim, on the same ground as E2: an optional feature nothing sequences against is a recorded option, not a commit -- and as the last numeric ID in a letter-suffixed scheme it read as a step whose position in the order was ambiguous. Its old text also said "NOT a prerequisite for X-a .. X-e", which had gone stale twice over (X-f and X-g did not exist when it was written) | own arc, if ever |
+| N-77 (X-g1) | **Two shared account factories leave their opening assertion on the WALL CLOCK, which plan step X-g2 makes load-bearing.** `create_hysa_account` pins its opening to the anchor period's first day and says why (the N-8 / N-65 shape, ruled at plan step X-c2a); `make_investment_account` and `make_appreciating_account` do not, so `account_service.create_account` stamps `AccountAnchorHistory.created_at` with the real clock while `tests/test_services` freezes today to 2026-03-20. Nothing fails TODAY because no shipped producer reads an INVESTMENT's or a Property's assertion DATE -- `_investment` pivots on the `current_anchor_period_id` cache column instead. **X-g1's own parallel run hit it immediately:** an unpinned Property opening dated 2026-07-27 is the LATEST assertion, lands past the seeded horizon, and the account then accrues NOTHING anywhere -- a state production cannot reach, and one in which a test asserting "the anchor period accrues $113.44" reads $0.00. Pinned per-fixture in X-g1's two files rather than in the shared helpers, because that is the X-c2a precedent exactly: `create_hysa_account` was pinned by the step that made the date load-bearing, with that step's full-suite run as the evidence | a fixture asserting against a state production cannot reach; every INVESTMENT / APPRECIATING fixture in the suite | **recorded, NOT fixed.** The fix is one `restamp_opening_assertion` call in each helper, and it belongs to X-g2, which is the step that makes the date load-bearing and which will re-run the whole suite anyway | X-g2 |
+| N-78 (X-g1) | **The investment balance map seeds the growth engine's YTD with the THROUGH-current total, which the field's own contract says double-charges the annual limit.** `InvestmentInputs` documents the pair precisely (`investment_projection.py:33-45`): `ytd_contributions` is the displayed limit-card value (`<=` the current period) and `ytd_contributions_seed` is "the `ytd_contributions_start` handed to the growth engine" (`<`), because "the engine's own per-period walk then applies and counts the current period's contribution against the limit" and "seeding the through-current value instead would charge the current period against the annual limit twice" (deep-quality-hunt #10). Three consumers obey it -- `investment_dashboard_service.py:374` and `:979`, `retirement_projection.py:600`. **`_investment._forward_project_rows:316` is the one that does not**: it passes `proj_inputs.ytd_contributions`, and its reference period is `post_anchor[0]` -- the FIRST period the forward walk then projects. So a recorded contribution in that period consumes the year's limit twice and the modelled amount for it is capped too low | not live: `ytd_contributions` is `$0.00` for all three real investment accounts (no shadow contribution rows anywhere), so the wrong field and the right one are the same number | **recorded, NOT fixed -- it dies with the module at X-g4.** X-g1's replay does not inherit it: the replay walks the recorded feed per period itself and caps against what is left, so there is no seed to get wrong. Recorded rather than patched because the correct fix in `_investment` is a one-word change to a module that is deleted two steps later, and shipping it would move a figure in a step whose contract is "the baseline cannot move" | X-g4 (deletion) |
 | N-73 (X-c2c trace) | **Five balance sites guard against a NULL anchor on two `nullable=False` columns.** `Account.current_anchor_balance` and `current_anchor_period_id` are both `nullable=False` (`app/models/account.py:91`, `:100`) with a `current_anchor_balance IS NOT NULL` check constraint (`:55`), and there are **0 NULLs across all 19 account rows in both databases**. Yet `_kernel.build_account_balance_map:508`, `_kernel.base_account_balance_map:341`, `_kernel.interest_projection_for_account:395`, `_kernel.interest_by_period_for_account:440` and `_investment.get_anchor_period_index:127` each branch on `is None`, and two of them return a `None` / empty map that every caller must then handle -- so a state the schema refuses is propagating optionality through the seam's signatures (line numbers re-verified 2026-07-26; the originals drifted by two at `c649b322`) | -- | **recorded, NOT fixed** (out of X-c2c's scope, rule 6). It is not merely dead: X-g removes the anchor PERIOD from the balance paths entirely, at which point four of the five guards have nothing left to test | X-g, then X-e |
 
 ## 7. Verification standard (what "done" means for every step)

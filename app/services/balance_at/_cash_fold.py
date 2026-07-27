@@ -34,7 +34,7 @@ samples it at each pay period's end -- the per-period map.
 rows a second way, by the period each was BUDGETED to, so the grid's balance row
 and its subtotal rows reconcile by construction with a named remainder for what
 neither clock alone can explain.  The assembly is shared rather than duplicated
-(:func:`_assemble`): one walk, one plan load, one valuation, whichever reader is
+(:func:`assemble`): one walk, one plan load, one valuation, whichever reader is
 asking.
 
 Keeping it to one sample is not economy, it is the correctness property: a fold
@@ -120,15 +120,25 @@ _ONE_DAY = timedelta(days=1)
 
 
 @dataclass(frozen=True)
-class _AssembledFold:
+class AssembledCashFold:
     """One account's whole running total, plus the facts it was built from.
 
-    The output of :func:`_assemble`, and the reason the three readers below are
+    The output of :func:`assemble`, and the reason the three readers below are
     readings of ONE valued row set rather than three producers a test keeps in
     step (ruling R-K).  It carries the sampling inputs (:attr:`seed` /
     :attr:`steps`) AND the groupings the period view regroups the same rows by
     (:attr:`walk` / :attr:`plan` / :attr:`day_nets`), so no reader re-loads or
     re-values anything a sibling reader already has.
+
+    **A fourth reader lives one module over** (plan step X-g1): the modelled
+    asset fold (:mod:`app.services.balance_at._asset_fold`) takes this whole
+    record and resolves two MORE event kinds onto the same running total --
+    CONTRIBUTION and ACCRUAL.  That is why :func:`assemble` and this record are
+    seam-visible rather than module-private: a modelled asset IS its cash fold
+    plus a modelled return (plan Section 3.2), so the two must share ONE
+    assembly rather than the modelled side re-deriving a cash basis.  It reads
+    :attr:`walk` for the latest ASSERTION, which is where its accrual window
+    opens (ruling R-L, generalised at ruling R-Y).
 
     Attributes:
         seed: The balance before every step (ruling R-I's back-projection).
@@ -148,9 +158,9 @@ class _AssembledFold:
     day_nets: "dict[date, Decimal]"
 
 
-def _assemble(
+def assemble(
     account: Account, scenario_id: int, as_of: date,
-) -> _AssembledFold:
+) -> AssembledCashFold:
     """Walk the account's facts and load its plan -- ONCE, for every reader.
 
     Args:
@@ -166,13 +176,13 @@ def _assemble(
             R-G).  It decides WHEN a row lands, never what it is worth.
 
     Returns:
-        The :class:`_AssembledFold`.
+        The :class:`AssembledCashFold`.
     """
     walk = walk_cash_ledger(account.id, scenario_id)
     plan = _cash_plan(account, scenario_id, as_of)
     day_nets = _planned_day_nets(plan)
     seed, steps = _running_steps(walk, day_nets)
-    return _AssembledFold(
+    return AssembledCashFold(
         seed=seed, steps=steps, walk=walk, plan=plan, day_nets=day_nets,
     )
 
@@ -202,7 +212,7 @@ def fold_cash_balances(
     Passing ``as_of`` as a valuation date is ordinary, not special.
 
     Args:
-        account: The account to value (see :func:`_assemble`).
+        account: The account to value (see :func:`assemble`).
         scenario_id: The budget scenario whose rows to fold.
         as_of: The reader's NOW (ruling R-G's clamp floor).
         dates: The dates to value the account at, in any order.  Duplicates
@@ -212,7 +222,7 @@ def fold_cash_balances(
         ``{date: balance}`` -- one cent-quantized ``Decimal`` per distinct
         requested date.  ``{}`` for an empty *dates*.
     """
-    folded = _assemble(account, scenario_id, as_of)
+    folded = assemble(account, scenario_id, as_of)
     return sample_cumulative(folded.seed, folded.steps, dates)
 
 
@@ -237,7 +247,7 @@ def cash_period_balances(
     balance in force THEN.
 
     Args:
-        account: The account to value (see :func:`_assemble`).
+        account: The account to value (see :func:`assemble`).
         scenario_id: The budget scenario whose rows to fold.
         as_of: The reader's NOW (ruling R-G's clamp floor).
         periods: The pay periods to value, in the caller's display order.  They
@@ -248,17 +258,17 @@ def cash_period_balances(
         *periods* was given.  EVERY input period is present.
     """
     return _period_balances(
-        _assemble(account, scenario_id, as_of), periods,
+        assemble(account, scenario_id, as_of), periods,
     )
 
 
 def _period_balances(
-    folded: _AssembledFold, periods: "list[PayPeriod]",
+    folded: AssembledCashFold, periods: "list[PayPeriod]",
 ) -> "OrderedDict[int, Decimal]":
     """Sample an assembled fold at each period's ``end_date``, keyed by period id.
 
     Args:
-        folded: The account's :class:`_AssembledFold`.
+        folded: The account's :class:`AssembledCashFold`.
         periods: The pay periods to value, in the caller's display order.
 
     Returns:
@@ -651,7 +661,7 @@ def cash_period_view(
         its folded balance), plus the live override map the projection was
         computed with.
     """
-    folded = _assemble(account, scenario_id, as_of)
+    folded = assemble(account, scenario_id, as_of)
     spans = _PeriodSpans.of(periods)
     return CashPeriodView(
         columns=_assemble_figures(

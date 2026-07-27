@@ -149,13 +149,25 @@ def _annual_cap_averaged(per_period_amount, deduction):
     return round_money(annual_capped / pay_per_year)
 
 
-def _periodic_from_deductions(deductions, salary_gross_biweekly):
+def deduction_contribution_per_period(deductions, salary_gross_biweekly):
     """Sum the per-period contribution from paycheck deductions.
 
     Each deduction's per-period amount is throttled to its calendar-year
     ``annual_cap`` via :func:`_annual_cap_averaged` (deep-hunt #2) before
     summing, so this fallback average respects the same cap the per-period
     timeline enforces.
+
+    **The DEDUCTION half of a contribution feed, on its own.**  Public
+    because the balance seam's modelled asset fold
+    (``balance_at._asset_fold``) needs exactly this and NOT the transfer
+    half: plan ruling R-R partitions a contribution by SOURCE, so a
+    recorded transfer is an ACTUAL / PLANNED event in the fold (it has a
+    transaction row) while a payroll deduction is a modelled
+    CONTRIBUTION event (it never has one).  Mixing the two into one
+    scalar -- which is what :func:`calculate_investment_inputs` does by
+    adding :func:`_average_transfer_contribution` to this -- is precisely
+    what makes them indistinguishable, so the replay reads this half
+    directly rather than the sum.
 
     Args:
         deductions:            List of deduction-like objects with
@@ -234,8 +246,19 @@ def _average_transfer_contribution(all_contributions):
     return ZERO
 
 
-def _employer_params(investment_params, gross_biweekly):
+def employer_contribution_params(investment_params, gross_biweekly):
     """Build the employer-contribution params dict, or None.
+
+    Public alongside :func:`deduction_contribution_per_period` and for the
+    same reason: the balance seam's modelled asset fold
+    (``balance_at._asset_fold``) sizes the employer amount per pay period
+    off the RESOLVED employee total for that period (plan ruling R-R
+    consequence (a)), so it needs this dict without the transfer-averaged
+    ``periodic_contribution`` :func:`calculate_investment_inputs` bundles
+    it with.  It is the only shape
+    :func:`~app.services.growth_engine.calculate_employer_contribution`
+    accepts, so building it anywhere else would be a second statement of
+    the same mapping.
 
     Args:
         investment_params: Object with ``employer_contribution_type_id``
@@ -418,14 +441,16 @@ def calculate_investment_inputs(  # pylint: disable=too-many-arguments,too-many-
     immediately-downstream ``growth_engine.project_balance``, which takes
     the same documented disable for the same reason.
     """
-    periodic_contribution, gross_biweekly = _periodic_from_deductions(
+    periodic_contribution, gross_biweekly = deduction_contribution_per_period(
         deductions, salary_gross_biweekly,
     )
     periodic_contribution += _average_transfer_contribution(all_contributions)
 
     return InvestmentInputs(
         periodic_contribution=periodic_contribution,
-        employer_params=_employer_params(investment_params, gross_biweekly),
+        employer_params=employer_contribution_params(
+            investment_params, gross_biweekly,
+        ),
         annual_contribution_limit=getattr(
             investment_params, "annual_contribution_limit", None),
         ytd_contributions=_ytd_contributions(
