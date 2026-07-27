@@ -71,7 +71,7 @@ is DECIDED at the step: **X-g1** (the replay, additive and unwired) -> **X-g2** 
 **X-g3** (ruling R-W's grid) -> **X-g4** (the deletion). Three findings recorded: **N-74**, **N-75**,
 **N-76**.
 
-**X-g1 SHIPPED (2026-07-26)** -- the modelled replay, ADDITIVE and unwired
+**X-g1 SHIPPED `17ead4c5` (2026-07-26)** -- the modelled replay, ADDITIVE and unwired
 (`balance_at/_asset_fold.py`). A modelled asset IS its cash fold plus two more event kinds: it takes
 `_cash_fold.assemble`'s whole record and resolves CONTRIBUTION and daily ACCRUAL onto the same
 running total in ONE sequential pass, after which the shipped `sample_cumulative` reads it exactly
@@ -195,7 +195,7 @@ ONE total fold and they closed together.
 | **The cash cutover: every cash figure the app renders is one fold, read at three grains** | dev | `d3489728` (X-c2b2) |
 | The replaced cash producers deleted | dev | `82557ca9` (X-c2b3) |
 | **What a cash row is WORTH is a function of the row alone** -- no reservation clock | dev | `b42dda42` (X-c2c1) |
-| The MODELLED replay: the cash fold plus CONTRIBUTION and daily ACCRUAL, one sequential pass | dev | X-g1 (additive, unwired) |
+| The MODELLED replay: the cash fold plus CONTRIBUTION and daily ACCRUAL, one sequential pass | dev | `17ead4c5` (X-g1, additive and unwired) |
 
 **The loan baseline is still a LIVE regression gate for CASH commits.** Mortgage (account 3)
 **$177,277.97**, Van Loan (account 8) **$15,663.59**. Re-derive both from the seam before and
@@ -1222,7 +1222,7 @@ replaces.
   X-c2b1 / b2 / b3 did:
 
   * [x] **X-g1** -- the modelled replay, seam-private and UNWIRED
-    (`app/services/balance_at/_asset_fold.py`). **SHIPPED (2026-07-26).**
+    (`app/services/balance_at/_asset_fold.py`). **SHIPPED `17ead4c5` (2026-07-26).**
 
     **Its three forks were traced and RULED before any code was written** -- R-X (the accrual's
     rounding), R-Y (does the anchor period accrue?), R-Z (the contribution's date and boundary),
