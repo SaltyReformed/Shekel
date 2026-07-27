@@ -40,8 +40,12 @@ rather than a period end, and the user's own recorded balance assertions winning
 had been overriding 12 of the 15 they had entered.
 
 **NEXT: X-g4**, the deletion -- `_investment` is production-dead already (zero live callers, AST-verified
-2026-07-27), so X-g4 and **X-c2c4** are one deletion front. Then the thirteen steps after them, in
-the order Section 5 lists.
+2026-07-27), so X-g4 and **X-c2c4** are one deletion front. **Its TRACE is done and its four forks
+are RULED** (R-AR..R-AU, 2026-07-27, all as recommended): the deletion is a CLOSED import cluster
+(`_investment` -> `_cash_engine` -> `_calculator`, zero `app/` entry points), two more surfaces fall
+with it (`_interest` WHOLE and `cash_ledger.load_balance_transactions`), exactly ONE coverage hole is
+real, and it ships as **X-g4a** the port then **X-g4b** the whole deletion, which ticks X-c2c4 too.
+Then the thirteen steps after them, in the order Section 5 lists.
 
 ---
 
@@ -469,6 +473,21 @@ stale resolvers and finding **N-95** were found.
 | **R-AQ** (answered 2026-07-27, **NOT as recommended -- it goes further**) | **There is no DEFERRED category. Every finding is owned by a step, and a wake condition is not an owner.**  The recommendation was to keep six rows as "residue" and give four of them stated wake conditions -- the premise that a finding costing `$0.00` on today's data can wait for the data to change.  **The developer ruled that a finding waiting on a condition is a time bomb with a note attached**, and that effort is not a reason to leave a defect in place: correctness takes priority, there is no QA team, and a deferred fix is one a future session pays for with interest.  So the six become five owned steps and one developer decision.  **It SUPERSEDES the record-not-fix half of ruling R-AG** (N-82: "let the fold answer and record this"), whose three grounds were one concession -- "correct in principle" -- and two costs, "invents a calendar the app does not have" and "materially larger than this step"; cost is now explicitly not a ground.  R-AG's OTHER half STANDS and is what keeps X-l safe: the fold stays TOTAL and is never clamped at a horizon.  **It also retires the word "residue" and the value "own commit" from Section 6's owner column**, which is what makes the gate below expressible: an owner is a live step ID, `operator`, or `developer-decision`, and nothing else.  **N-25's class is the single `developer-decision`** -- the developer has taken the custom-checker-versus-declined fork for its own session rather than having it decided here, which is an owner with a name on it and not a defer.  Where the roots landed: **X-o** B-16 (a LIVE defect, and the recommendation under-triaged it as residue), **X-l** the pay calendar's partiality (N-82 + N-79's far half -- one root, this arc's own disease on the other axis), **X-m** the projection engine's boundary arguments (N-86), **X-n** the loan schedule's destroyed installment date (N-36), **X-p** the calendar's two clocks (N-58, sequenced after X-f by its own prior ruling -- scheduled, not deferred).  Rejected: the wake-condition scheme (a condition nobody is watching is prose, and three of the four premises are properties of the DEVELOPER'S DATA that the suite cannot see at all -- so the guard would have been claimed and not held), and a staleness clock over the ledger (turns a real signal into recurring busywork, which is how a check stops being read) | X-l, X-m, X-n, X-o, X-p; the Section 9 gate |
 | **R-AP** (answered 2026-07-27, **NOT as recommended**) | **The write-side recurrence cluster STAYS in this arc as plan step X-k.**  The recommendation was to hand N-18 / N-19 / N-23 / N-24 to the recurring-transfer arc with pointer rows left here, on the ground that they are recurrence and transfer-WRITE semantics rather than balance reads.  **The developer ruled against it**: they stay in this ledger and get a step of their own.  Recorded as declined rather than silently adopted, because Section 4's other 2026-07-27 blocks all read "as recommended" and this one does not -- and because the ground the recommendation rested on survives the ruling and is what the step's own scoping has to respect: X-k touches the recurrence engine and the transfer write door, NOT the seam, so it shares no file with any other remaining step and must not grow into one | X-k |
 
+### Answered (developer ruling, 2026-07-27: X-g4's four forks, all as recommended)
+
+**The trace ran first and no code was written for it.** It scanned `app/` + `tests/` + `scripts/` +
+`tools/` with an AST (never a regex, Section 8) and then READ every consumer, which is how the name
+trap in R-AR and the already-blind CRIT-01 controls in R-AU were found. Three further forks it
+raised are trace DECISIONS taken under these four and recorded at the X-g4 entry as forks 3, 5 and
+7; they change no figure and are named so the build is not re-deciding them.
+
+| # | ruling | consumed by |
+|---|---|---|
+| **R-AR** (answered 2026-07-27, as recommended) | **X-g4 and X-c2c4 ship as TWO commits: X-g4a the PORT, then X-g4b the WHOLE deletion**, and both boxes tick with X-g4b's hash.  The trace measured the three modules as a CLOSED import cluster -- `_investment` -> `_cash_engine` -> `_calculator`, with **zero `app/` importers of any of them** -- so the page's stated X-g4-then-X-c2c4 split would produce an intermediate commit whose entire content is "delete a module nobody imports and keep its 815-line test file alive one more commit", a state neither endpoint has.  What the split that SURVIVES buys is the C3b3 prove-the-successor-first precedent applied to COVERAGE rather than to a producer: X-g4a lands the ported drift oracle while its incumbent is still alive and green, so the deletion cannot be the commit that first discovers the port is wrong.  **The deletion follows the MODULE, never the name, and the trace found why that matters**: `investment_growth_since_anchor` is defined TWICE -- dead in `_investment.py:575`, LIVE in `_kind_correct.py:260` (re-exported at `__init__.py:218`, called at `investment_dashboard_service/_orchestrator.py:64`) -- so a name-keyed deletion takes a live seam entry.  Rejected: three commits (above) and one commit (the port is never proved green before its incumbent dies) | X-g4a, X-g4b |
+| **R-AS** (answered 2026-07-27, as recommended) | **`_interest.py` DELETES WHOLE; its one surviving predicate folds into its one caller.**  After the layering pair goes, `accrual_params` is 37 lines with a single consumer (`_asset_fold._modelled_return:392`) -- and it re-runs `classify_account(account)` inside a branch whose caller has ALREADY classified, so inlining it removes a redundant second classification rather than merely moving code.  All three modelled kinds then read ONE shape: resolve this kind's params, `None` if absent.  The non-ORM-fake guard survives exactly, as `getattr(account, "interest_params", None) or None`; `_asset_fold` goes 883 -> ~890 lines, under the ceiling.  **What must NOT be lost with the file:** its docstring carries ruling R-L's window history and the day-count lesson Section 3.2 cites (`_interest.py:230-243`, counting 13 days of a 14-day period), so both are restated in `_asset_fold`'s docstring -- deleting the record of a defect class is how it comes back.  Rejected: keeping a one-function module whose name ("modelled INTEREST accrual over a folded base") no longer describes it and whose duplicate classification survives with it | X-g4b |
+| **R-AT** (answered 2026-07-27, as recommended) | **The ported 52-period drift oracle exercises ALL THREE of the fold's tiers, not the one the original had.**  `test_52_period_penny_accuracy` walks an anchor plus still-projected rows -- one tier -- so a faithful port would be a long-horizon drift oracle for a THIRD of the producer it now grades.  The ported shape is: an opening assertion, a SETTLED past half, **a mid-horizon RE-ASSERTION** (the reset the original could not express at all, and the rule the whole cash fold turns on), and a still-projected future half read at an `as_of` that makes ruling R-G's clamp a no-op, asserted at all 52 period ends against a test-local `Decimal` running total plus a cumulative cross-check.  The oracle stays a test-local total and never the fold reading itself (Section 7.2).  Same cost, three tiers instead of one.  Rejected: the faithful port, which reproduces exactly today's coverage and nothing more | X-g4a |
+| **R-AU** (answered 2026-07-27, as recommended) | **`test_asset_fold_parallel.py` KEEPS the two classes graded against something other than the dying incumbent, and loses the three that are not.**  Neither entry mentioned the file, and it is this step's largest test decision.  Three of its five classes compare the replay to `_investment` / `_interest`; the grain class's first test (`:96`) compares it to `growth_engine.project_balance` -- the INDEPENDENT engine ruling R-U deliberately keeps -- and `TestTheTwoGrainsAreOneRunningTotal` asserts properties of the replay alone.  Those two survive untouched; the three classes go, along with the grain class's second test, which reaches `_investment` at `:167`.  The module docstring is rewritten: it currently says the file runs the replay "in parallel with the shipping bases", which stops being true.  Rejected: merging the survivors into `test_asset_fold.py` and deleting the file (graded-against-an-independent-engine and graded-on-a-hand-computed-oracle are different KINDS of evidence and Section 7.2's independence rule turns on the distinction), and deleting the file whole (loses the only place the replay is graded against a second implementation).  **A fourth suite needed no ruling because the trace found its guard already blind:** `test_balance_resolver.py`'s CRIT-01 pair C5-1 / C5-2 asserts that a producer's value does not depend on the caller's eager-loading, and E-25 ALSO softened `_entry_aware_amount` to read `getattr(txn, "entries", ())` through the descriptor -- so stripping the loader's `selectinload` leaves both paths at `$160.00` and costs only queries.  The property is proved directly at the rule's own home by `test_cash_amounts.py::TestTheEntriesRelationshipIsNotASeam`; the pair deletes with its subject and opens nothing.  It is the B-17 class, found the same way | X-g4b |
+
 ### Answered (developer ruling, 2026-07-26: X-g's five forks, all as recommended)
 
 **The trace ran first and no code was written for it** -- the step's own stated first action. Each
@@ -510,9 +529,12 @@ before `X-d`. **ONE EXCEPTION, and it is the only one: `X-c2c4` sits above `X-g`
 runs AFTER it** (ruling R-V, 2026-07-26). It sat inside the `X-c2c` decomposition block, which the
 2026-07-27 archive extraction took whole (its three shipped siblings are in
 `archive/cash_arc_as_built_2026-07-27.md` Section 2.1), so it is now a top-level entry that has kept
-its decomposed ID -- append-only, and never renumbered for readability. The live order from here is
-**X-g -> X-c2c4 -> X-o -> X-h -> X-i -> X-j -> X-k -> X-l -> X-m -> X-n -> X-d -> X-e -> X-f ->
-X-p -> E2** (X-h .. X-k added 2026-07-27 by ruling R-AO and X-l .. X-p the same day by R-AQ; they
+its decomposed ID -- append-only, and never renumbered for readability. **Ruling R-AR (2026-07-27)
+then folded its CONTENT into `X-g4b`**, so the exception now costs no commit of its own: the entry
+stays where it is, its content is what X-g4b carries, and its box ticks with X-g4b's hash. The live
+order from here is
+**X-g4a -> X-g4b (= X-c2c4) -> X-o -> X-h -> X-i -> X-j -> X-k -> X-l -> X-m -> X-n -> X-d -> X-e ->
+X-f -> X-p -> E2** (X-h .. X-k added 2026-07-27 by ruling R-AO and X-l .. X-p the same day by R-AQ; they
 appear on this page in EXECUTION order, which is why X-o precedes X-h and X-p follows X-f -- the
 alphabet has never been this page's order, exactly as X-g running before X-d already showed);
 both steps say so at their own entries, and the "Where the arc stands" section at the top of this
@@ -567,6 +589,15 @@ preconditions cite entries in that file.
   `_cash_engine.balances_for` has no caller left, and X-g's replay is what takes the last two
   -- exactly as the cancelled X-c2c3's window would have. Do not attempt it earlier; the
   C3b3 prove-the-successor-first precedent is the whole reason this is a separate commit.
+
+  **X-g4's trace (2026-07-27) proposes this entry ship INSIDE X-g4b rather than as a commit of its
+  own, and that is fork 1 at the X-g4 entry -- unruled here.** Its precondition is met in every
+  sense but the physical removal, and the three modules it and X-g4 name are one closed import
+  cluster, so a separate commit's whole content would be "delete a module nobody imports and keep
+  its test file alive one more commit". The ID is append-only either way: it stays cited and is
+  ticked with X-g4b's hash if the fork rules that way. Its content below is UNCHANGED and is what
+  X-g4b would carry; three of its measurements were re-verified by that trace and one was wrong
+  (the `calculate_balances` count is 73 calls in 10 files, not 79 -- corrections 3 and 4 there).
 
   **It now carries what the KEEP correction deferred into it, and none of this is optional.**
   (i) The `_calculator`-discriminating tests die HERE, with the module: the anchor arithmetic,
@@ -723,6 +754,120 @@ preconditions cite entries in that file.
     Those five bullets are residue of the dispatch ladder X-g2b deleted, and `_kernel.py:10-22`
     already shows what replaces them -- one paragraph, one replay, tiers that exist only if the
     account's own parameters put them there.
+
+    **THE TRACE IS DONE (2026-07-27), NO code was written for it, and ALL FOUR of its forks are
+    RULED** (developer ruling R-AR / R-AS / R-AT / R-AU, Section 4, all as recommended); the three
+    remaining forks below are trace DECISIONS taken under them, which move no figure. It ran an AST
+    scan over `app/` + `tests/` + `scripts/` + `tools/` (never a regex, Section 8) and read every
+    consumer it found. What it CONFIRMED and what it CORRECTED:
+
+    **CONFIRMED, and the deletion is a CLOSED cluster rather than a list of functions.** The three
+    modules import only each other -- `_investment` -> `_cash_engine` -> `_calculator` -- and
+    **nothing in `app/` imports any of the three**. So this is not "delete eight functions and see
+    what breaks": it is the removal of a subgraph with zero entry points, and every remaining
+    reference to it is a TEST or a docstring. Line counts, re-measured on this date:
+    `_investment.py` 650, `_cash_engine.py` 201, `_calculator.py` 137.
+
+    **CORRECTION 1 -- the AST evidence has a NAME TRAP, and following the name would delete a live
+    seam entry.** `investment_growth_since_anchor` is defined TWICE: in `_investment` (dead) and in
+    `_kind_correct.py:260` (live -- re-exported at `__init__.py:218` and called at
+    `investment_dashboard_service/_orchestrator.py:64`, which reaches
+    `_asset_fold.asset_growth_at`). A name-keyed scan reports a live production caller for the dead
+    module's function. **The deletion follows the MODULE, never the name**; every name it removes is
+    re-scanned for a surviving twin before the line goes.
+
+    **CORRECTION 2 -- two more things fall with the cluster, and neither entry lists them.**
+    (a) `_interest.layer_account_interest` and `_interest._layer_interest`: `_asset_fold.py:392` is
+    the module's ONLY `app/` consumer and it reaches exactly one name, `accrual_params`. So
+    `_interest.py` (272 lines) is 235 lines of dead producer wrapping a 37-line predicate -- fork 2.
+    (b) `cash_ledger.load_balance_transactions` loses its last `app/` caller (`_cash_engine.py:174`)
+    and its last consumer of ANY kind is one test line -- fork 3.
+
+    **CORRECTION 3 -- the `calculate_balances` count.** X-c2c4's entry says "79 call sites across 10
+    files". The AST call-scan finds **73 calls in 10 files** (72 in `tests/`, 1 in `app/`) -- the
+    FILE list is exactly right and the 79 was a textual count. The other 8 textual mentions are the
+    definition and the two static-guard string arms, which is the archive's correction (c) already
+    naming them; recorded so the sign-off checks the right number.
+
+    **CORRECTION 4 -- the doc sweep is 22 `app/` sites, not "~30", and its "contract made FALSE"
+    list is wrong in one place and short in four.** `savings_dashboard_service/_net_worth.py:118` is
+    named by X-c2c4 and was ALREADY corrected at X-g2b (it now reads "Since plan step X-g2b every
+    kind is a TOTAL fold"); what is still false there is `:294-296`, which N-95 already owns. NOT on
+    either list and each stating a contract the deletion makes false: `cash_ledger/_amounts.py:194`
+    ("the canonical producer `balance_at._cash_engine.balances_for` always eager-loads" -- the
+    rationale for the surviving lazy-load `getattr`), `cash_ledger/_flows.py:12-16`
+    (`sum_projected` is "the shared engine BOTH cash bases reduce through" -- after this there is
+    ONE), `interest_projection.py:117` (cites `balance_at._interest._layer_interest` as the
+    per-PERIOD reader), and `_asset_fold.py:35` / `:472` (cite `_investment._merge_balance_sources`
+    and `_layer_interest`'s period-END accrual base -- the second is the WHY for the daily replay
+    having no convention to pick, so it is restated, never just cut).
+
+    **CORRECTION 5 -- the coverage question is bigger than the one test X-c2c4 names, and the answer
+    is that only ONE hole is real.** Read every dying suite against its successor:
+    * `test_balance_calculator.py` (2,326 lines) -- its per-row rules are already pinned at their own
+      homes by X-c2c2 (`test_cash_amounts.py` for the entry-aware reservation, the cleared flag and
+      the live override; `test_cash_flows.py` for the status gate), and its degenerate shapes by
+      `test_cash_fold.py`'s `TestTotality`. `test_52_period_penny_accuracy` IS the real hole and
+      ports -- fork 6. `TestBalanceCalcIgnoresDueDate` deletes without a successor DELIBERATELY: it
+      pins "the balance ignores `due_date`", a rule ruling R-G REVERSED.
+    * `test_balance_resolver.py` (815 lines) -- **C5-1 / C5-2, the CRIT-01 preload-independence
+      pair, are already controls that cannot fire**, and that is why deleting them opens nothing.
+      E-25 also softened `_entry_aware_amount` to read `getattr(txn, "entries", ())` through the
+      descriptor, so removing the loader's `selectinload` would leave both paths returning
+      `$160.00` and cost only queries. The property is proved directly, at the rule's own home, by
+      `test_cash_amounts.py::TestTheEntriesRelationshipIsNotASeam`. Its C5-8 static guard is a
+      different matter -- fork 5.
+    * `test_asset_fold_parallel.py` (456 lines) -- **neither entry mentions it and it is this step's
+      largest test decision.** Three of its five classes grade the replay against the dying
+      incumbent; two grade it against `growth_engine` (which ruling R-U KEEPS) or against itself --
+      fork 4.
+    * `test_hostile_qa.py`'s four, `test_audit_fixes.py`'s three, `test_workflows.py`'s four,
+      `test_loan_payment_pipeline.py`'s two, `test_accounts.py`'s one, `test_transfers.py`'s two and
+      `test_carry_forward_service.py`'s two all use the calculator as a convenient REFERENCE for
+      "did the shadow move the balance". They re-point onto the seam, which is strictly stronger --
+      they then assert what the app renders. Read every site: a left-behind `balances, _ =` unpacks
+      dict KEYS instead of raising.
+
+    **THE THREE TRACE DECISIONS, taken under R-AR..R-AU and recorded so the build is not
+    re-deciding them.** None moves a figure.
+
+    * **`cash_ledger.load_balance_transactions` DELETES** -- with its `__init__` re-export and its
+      W9909 non-producer ruling (`balance_seam.py:261`), whose reverse-staleness meta-test
+      (`tools/pylint/tests/test_shekel_checkers.py:940`) fails the build if the ruling outlives the
+      name. Its one surviving consumer, `test_cash_period_view.py:154`'s non-vacuity reference,
+      re-expresses on `planned_cash_rows`: the figure is unchanged at `$75.00` because
+      `sum_projected` re-applies `is_projected` over whatever it is handed, and the re-pointed test
+      is STRICTER -- it then references the loader the producer under test actually uses instead of
+      a second loader that happens to agree.
+    * **C5-8 (`test_seam_removed`) MOVES to `test_cash_amounts.py` and WIDENS.** It is the static
+      guard asserting the CRIT-01 silent-degrade pattern is absent from source, and it dies with its
+      host file. It moves to the home of the rule it guards, drops the two now-deleted file paths,
+      and scans `cash_ledger` PLUS `balance_at` (both `rglob`'d) rather than `cash_ledger` alone --
+      its own docstring already argues the widening ("a scan keyed on a file NAME would have gone
+      quiet at exactly the moment the code it guards moved", finding N-28) and every balance
+      producer now lives in `balance_at`. Verified free on this date: neither forbidden pattern
+      appears in either package. Note it fails LOUD if left alone (`read_text` on a deleted path
+      raises), so this is a decision and not a trap.
+    * **The ported oracle lives in `test_cash_fold.py`**, under its own class. It is a
+      hand-computed oracle, not a parallel run, and `test_cash_fold_parallel.py`'s subject (the
+      three seam entries agreeing with the fold on every day) is a different question.
+
+  * [ ] **X-g4a** `test(balance): the drift oracle walks 52 periods of the fold` -- ruling R-AT's
+    shape, ADDITIVE. No production change, no deletion, the incumbent still alive and green beside
+    it, and the `verify_balance_baseline.py` harness byte-identical on both databases. It is the
+    C3b3 prove-the-successor-first precedent applied to COVERAGE: the deletion must not be the
+    commit that first discovers the port is wrong.
+
+  * [ ] **X-g4b** `refactor(balance): the modelled and cash producers delete` -- ruling R-AR's ONE
+    deletion, carrying X-c2c4's whole content as well as this entry's. Production: `_investment.py`,
+    `_cash_engine.py`, `_calculator.py`, `_interest.py` (R-AS), and
+    `cash_ledger.load_balance_transactions` with its re-export and its W9909 ruling. Tests:
+    `test_balance_calculator.py` and `test_balance_resolver.py` whole (C5-8 relocated first),
+    `test_asset_fold_parallel.py`'s three dead classes (R-AU), the two vacuous static-guard arms
+    (`test_grid.py:4791`, `test_accounts.py:3554`), and every one of the 73 `calculate_balances`
+    calls re-pointed onto the seam or deleted with its subject -- read every site, never `sed`,
+    because a left-behind `balances, _ =` unpacks dict KEYS instead of raising. Docs: the 22 `app/`
+    sites correction 4 lists, N-95's included. Both this box and **X-c2c4**'s tick with its hash.
 
   Do NOT collapse X-g2 and X-g3: the whole point of the b1/b2/b3 split was that mixing render
   plumbing with a money-moving cutover makes a plumbing slip read exactly like a fold slip. Do NOT
