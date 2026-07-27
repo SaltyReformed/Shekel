@@ -16,8 +16,15 @@ where two tests agreed over an account holding no rows.
 
 **What it captures, per account:**
 
-* the kind-correct scalar at today and the kind-correct period map (all five
-  account kinds, so a loan regression shows up in a cash commit);
+* the kind-correct scalar at today, at five fixed valuation dates, and the
+  kind-correct period map (all five account kinds, so a loan regression shows up
+  in a cash commit).  **The dated scalars are plan step X-g2b-0's addition and
+  they exist because the other two are BLIND between them**: the map answers
+  period ENDS and the today scalar answers one day, so a mid-period date-precise
+  read (finding N-71) and the pre-horizon back-projection (N-74) -- the two
+  regions plan step X-g2b moves furthest -- fell straight through the gap.  Two
+  of the five dates are deliberately outside the seeded horizon, which is where
+  a period-keyed producer and a total fold differ most;
 * for every non-loan account: the whole ``GridBalanceView`` -- balance, income,
   expense, net, ruling R-K's reconciliation remainder, interest -- plus the
   live override map the projection was computed with (ruling R-Q);
@@ -85,15 +92,25 @@ from app.services.account_projection import (
 )
 
 
-# Fixed valuation dates spanning the horizon: two in the past (one of them
-# pre-anchor for the real accounts, which is where the cutover's pre-anchor
-# fabrication used to live), today's neighbourhood, and two forward.
+# Fixed valuation dates spanning the horizon, read by BOTH the cash-flow scalar
+# and the kind-correct one: two in the past (one of them pre-anchor for the real
+# accounts, which is where the cutover's pre-anchor fabrication used to live),
+# today's neighbourhood, and three forward.
+#
+# Two of the six sit deliberately OUTSIDE the seeded horizon -- 2026-01-15
+# before the first pay period and 2029-01-01 after the last -- because that is
+# where a period-keyed producer and a total fold differ most, and neither the
+# period map nor the today scalar can see it.  A producer that resolves a date
+# to its period answers the FIRST period's balance before the horizon and the
+# LAST period's after it; a fold answers the date.  Plan step X-g2b moves both
+# ends (findings N-74 and N-82), so both are pinned here.
 _SCALAR_DATES = (
     date(2026, 1, 15),
     date(2026, 4, 30),
     date(2026, 6, 3),
     date(2026, 12, 31),
     date(2027, 6, 30),
+    date(2029, 1, 1),
 )
 
 
@@ -198,6 +215,14 @@ def _account_blob(account, ctx, periods):
         "scalar_today": _money(
             balance_at.balance_at(account, ctx, date.today()),
         ),
+        # The kind-correct scalar at each fixed date (plan step X-g2b-0).  It is
+        # asked of EVERY kind, loans included: a loan's is ``positions()``, so
+        # these dates are also the standing loan regression gate read at a past
+        # and a future date rather than only at today.
+        "scalar_dates": {
+            day.isoformat(): _money(balance_at.balance_at(account, ctx, day))
+            for day in _SCALAR_DATES
+        },
         "kind_correct_map": {
             str(period_id): _money(balance)
             for period_id, balance in balance_at.balance_map(
