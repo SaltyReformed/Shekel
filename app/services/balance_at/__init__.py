@@ -66,20 +66,20 @@ duplication this work exists to kill.
 * The CASH-FLOW entries (:func:`cash_balance_map`, :func:`cash_balance_at`,
   :func:`cash_daily_balance_series`) always return the account's pure
   transaction running-balance with NO kind dispatch -- the view the
-  single-account cash-flow surfaces (grid, dashboard pulse, calendar, cash
-  detail) need, where the balance must reconcile with the on-screen transaction
+  single-account cash-flow surfaces (dashboard pulse, calendar, cash detail)
+  need, where the balance must reconcile with the on-screen transaction
   rows, and where the account is NOT guaranteed cash
-  (``resolve_grid_account`` can point at any kind, so accruing a modelled
-  return into the grid balance row without a row to explain it would leave a
-  balance change the screen cannot account for -- ruling R-K's
+  (``resolve_grid_account`` can point at any kind).  A modelled return may
+  reach such a surface only where a ROW explains it, which is ruling R-K's
   ``balance[p] - balance[p-1]
-  == net[p] + reconciliation[p] + contribution[p] + accrual[p]``, whose
+  == net[p] + reconciliation[p] + contribution[p] + accrual[p]`` -- whose
   FOURTH term is ruling R-AH's correction: a modelled asset has TWO modelled
   tiers, and on the real Empower 401(k) the CONTRIBUTION is the larger of them,
-  so the three-term form breaks on 53 of 59 real period pairs).
-  See :mod:`._cash_flow`,
-  and :mod:`._grid` for the kind-aware :func:`grid_balance_view` that layers a
-  modelled account's tiers back on for the grid.
+  so the three-term form breaks on 53 of 59 real period pairs.  The GRID has
+  those rows and left this family at plan step X-g3b; see :mod:`._grid` for
+  :func:`grid_balance_view`, which answers every kind its modelled balance.
+  See :mod:`._cash_flow` for the entries the pulse, the calendar and the cash
+  detail page still read.
 * The LIABILITY entry (:func:`liability_owed_at_dates`) answers every debt's
   owed magnitude at a list of FORWARD calendar dates in one resolution pass --
   the shape a long-horizon liability band needs, which neither the period-keyed
@@ -153,7 +153,7 @@ completeness scope DELETE rather than shrink or travel.  ``_kernel``'s ``debt_sc
 seam entries the out-of-cluster consumers (the account-detail route, the savings
 orchestrator) read.  ``property_equity_chart`` and ``home_equity_service`` import
 FROM here, not the other way round.  Inside the package the direction is
-``_grid -> {_cash_fold, _interest, _inputs}``,
+``_grid -> {_asset_fold, _cash_fold, _inputs}``,
 ``{_cash_flow, _kind_correct} -> _cash_fold -> _fold``,
 ``{_inputs, _positions, _loan_interest} -> _kernel -> _asset_fold ->
 {_asset_contributions, _cash_fold}``, ``_kind_correct -> {_asset_fold,

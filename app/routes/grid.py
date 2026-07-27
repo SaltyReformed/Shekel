@@ -820,12 +820,12 @@ def balance_row():
     all_periods = pay_period_service.get_all_periods(current_user.id)
 
     # The whole column set via the balance-at seam's kind-aware grid view,
-    # which owns the live override map and the per-kind dispatch.  For an
-    # INTEREST grid account this yields the interest-accrued balance and the
-    # "Interest" row; every other kind gets the folded cash balance with no
-    # accrual.  Asking the seam for the whole period set and reading the
-    # window's flags off it is what keeps this refresh and the full-page
-    # render one projection.
+    # which owns the live override map and the per-kind dispatch.  For
+    # a modelled grid account this yields the modelled balance and the accrual /
+    # contribution rows that explain it; an account that models nothing gets the
+    # folded cash balance with both tiers at zero (plan step X-g3b).  Asking the
+    # seam for the whole period set and reading the window's flags off it is
+    # what keeps this refresh and the full-page render one projection.
     view, _anchor = _build_grid_view(
         window.account, window.balance_ctx, all_periods,
     )
@@ -952,8 +952,9 @@ def mobile_this_period_summary():
         return "", 204
 
     # Kind-aware balance, subtotals and accrual from the ONE seam view (the
-    # kind-correct-grid feature).  For every non-INTEREST kind this is the
-    # cash-flow running-balance with no accrual -- the prior behavior.
+    # kind-correct-grid feature).  Since plan step X-g3b every kind reads the
+    # modelled balance; an account that models no return resolves no tier, so
+    # its figure IS the cash-flow running balance.
     view, _anchor = _build_grid_view(
         base.account, base.balance_ctx,
         pay_period_service.get_all_periods(user_id),

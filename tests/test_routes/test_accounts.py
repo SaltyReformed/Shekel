@@ -3228,15 +3228,18 @@ class TestCheckingDetailCanonicalProducer:
 
             # Grid value via the seam entry the grid's balance row reads, so
             # replaying it here is "what does the grid show" without a route
-            # round-trip.  It was ``_cash_engine.balances_for`` until plan step
-            # X-c2b2 pointed every cash surface at the FOLD, which left this
-            # replay comparing the detail page against a producer the grid no
-            # longer calls -- a guard that had stopped guarding (the N-63 shape).
-            grid_current_balance = balance_at.cash_balance_map(
+            # round-trip.  It has been repointed TWICE for the same reason -- a
+            # guard that had stopped guarding (the N-63 shape): from
+            # ``_cash_engine.balances_for`` at plan step X-c2b2, and from
+            # ``cash_balance_map`` at X-g3b, where the grid stopped reading the
+            # cash view for a modelled account (ruling R-W).  This account is
+            # PLAIN, so the two agree by construction -- which is exactly the
+            # condition that made the previous spelling look harmless.
+            grid_current_balance = balance_at.grid_balance_view(
                 account,
                 BalanceContext.build(seed_user["user"].id),
                 seed_periods_today,
-            )[current_period.id]
+            ).columns[current_period.id].balance
 
             # F-009 / CRIT-01: 614.29 - max(500 - 45.71 - 0, 0)
             #                = 614.29 - 454.29 = 160.00.

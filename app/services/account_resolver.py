@@ -41,13 +41,20 @@ from app.services import account_service
 def is_cash_flow_account(account: Account) -> bool:
     """Return True when a CASH-FLOW surface may render *account*.
 
-    A cash-flow surface shows a balance that is a running sum of the
-    account's own transaction rows from its anchor -- the seam's
-    ``cash_balance_map`` / ``cash_balance_at`` /
-    ``cash_daily_balance_series``.  This predicate gates the surfaces
-    reached through the two resolvers in this module: the budget grid's
-    balance row, the dashboard hero and pulse, and the analytics
-    calendar's end-of-day line and month-end figure.  The remaining
+    A cash-flow surface renders a balance beside the account's OWN transaction
+    rows, so the two have to reconcile on screen.  This predicate gates the
+    surfaces reached through the two resolvers in this module: the budget
+    grid, the dashboard hero and pulse, and the analytics calendar's
+    end-of-day line and month-end figure.
+
+    **What such a surface READS is no longer one answer** (plan step X-g3b).
+    The dashboard and the calendar read the seam's cash entries
+    (``cash_balance_map`` / ``cash_balance_at`` / ``cash_daily_balance_series``
+    -- a pure running sum from the anchor); the grid reads
+    ``grid_balance_view``, which renders the MODELLED balance with the accrual
+    and contribution rows that explain it (ruling R-W).  Both are cash-flow
+    surfaces in the sense this gate cares about, and the gate itself is
+    unchanged by that split: a LOAN is refused from all of them.  The remaining
     consumer, the cash detail page, carries its own wider gate
     (``routes.accounts.detail._cash_detail_wrong_type``, which also
     refuses appreciating and retirement / investment kinds), so it is

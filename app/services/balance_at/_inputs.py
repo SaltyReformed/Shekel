@@ -48,11 +48,10 @@ So a caller that wants a contribution feed asks for a contribution feed, and the
 loan gate asks one named predicate.  Nothing assembles a bundle to slice.
 
 The feed's readers are the three :mod:`._kind_correct` entries listed on
-:func:`_contribution_inputs_for_accounts`, and only those: :mod:`._cash_flow`
-answers a pure transaction running balance and models nothing, and
-:func:`._grid.grid_balance_view` still passes
-:meth:`ContributionInputs.absent` -- deleting that gate is plan step X-g3b's
-cutover, not this module's business.
+:func:`_contribution_inputs_for_accounts` plus
+:func:`._grid.grid_balance_view`, which joined them at plan step X-g3b when its
+kind gate was deleted.  :mod:`._cash_flow` is not one and cannot become one: it
+answers a pure transaction running balance and models nothing by contract.
 """
 
 from collections import OrderedDict
@@ -82,8 +81,9 @@ def _contribution_inputs_for_accounts(
     The single loading point shared by the single-account entry
     (:func:`_contribution_inputs_for_account`, called by
     :func:`~app.services.balance_at.balance_map`,
-    :func:`~app.services.balance_at._kind_correct._modelled_scalar` and
-    :func:`~app.services.balance_at.investment_growth_since_anchor`) and the
+    :func:`~app.services.balance_at._kind_correct._modelled_scalar`,
+    :func:`~app.services.balance_at.investment_growth_since_anchor` and
+    :func:`~app.services.balance_at.grid_balance_view`) and the
     batch one (:func:`~app.services.balance_at.build_maps`), so single- and
     batch-loading run identical logic and preserve the N+1 avoidance: one
     investment-params query, one deductions query, and one raise-aware gross

@@ -4,11 +4,9 @@ The interest-bearing counterpart of :mod:`app.services.balance_at._investment`:
 that module models an INVESTMENT's growth and an APPRECIATING asset's
 appreciation on top of their cash bases, and this one models an INTEREST
 account's accrual on top of its folded cash balance.  One statement of "where
-modelled interest begins and how it compounds", shared by the two surfaces that
-show it -- the kind-correct balance map (through
-:mod:`app.services.balance_at._kernel`) and the budget grid's read-only
-"Interest" row (:mod:`app.services.balance_at._grid`) -- so a rendered accrual
-and the balance it lifts cannot come from two walks.
+modelled interest begins and how it compounds", reached through the ONE replay
+every balance surface now reads (:mod:`app.services.balance_at._asset_fold`), so
+a rendered accrual and the balance it lifts cannot come from two walks.
 
 **It layered, it did not project** (plan step X-c2b2).  The base balances came
 from the cash fold (:func:`app.services.balance_at._cash_fold.cash_period_balances`),
@@ -45,19 +43,20 @@ from ._context import BalanceContext
 def accrual_params(account: Account) -> "InterestParams | None":
     """Return *account*'s interest params if it models an accrual, else ``None``.
 
-    "Does this account earn modelled interest?" asked ONCE.  Both readers ask it
-    here rather than each spelling out the kind test and the params presence,
-    because two spellings of one predicate is how a screen ends up accruing
-    where a sibling screen does not (plan Section 8's "a DRY refactor of a
-    PREDICATE can move money" -- these two provably answer the same question, so
-    they share the rule rather than mirroring it).
+    "Does this account earn modelled interest?" asked ONCE, and answered in one
+    place rather than by each caller spelling out the kind test and the params
+    presence -- because two spellings of one predicate is how a screen ends up
+    accruing where a sibling screen does not (plan Section 8's "a DRY refactor
+    of a PREDICATE can move money").
 
-    Since plan step X-g2b the two readers are the modelled replay's own rate
-    resolver (:func:`app.services.balance_at._asset_fold._modelled_return`,
+    Since plan step X-g3b there is exactly ONE reader: the modelled replay's own
+    rate resolver (:func:`app.services.balance_at._asset_fold._modelled_return`),
     which delegates INTEREST here so the general "does this account model a
-    return?" question and this one cannot answer that kind differently) and the
-    grid's column set (:func:`app.services.balance_at.grid_balance_view`).  The
-    kernel used to be the first of them, through a ``base_account_balance_map``
+    return?" question and this one cannot answer that kind differently.  The
+    grid was the second until that step, where it asked this predicate to decide
+    whether to reach the replay at all -- a second statement of a decision the
+    replay makes, and the gate whose deletion put the modelled balance on the
+    grid.  The kernel was one before that, through a ``base_account_balance_map``
     that ruling R-AD deleted with the per-kind ladder.
 
     An INTEREST-kinded account with NO params row models nothing: it is a HYSA

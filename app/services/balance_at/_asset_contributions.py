@@ -54,10 +54,9 @@ class ContributionInputs:
     them (plan step X-g2a).  Plan step X-g1 deliberately did NOT bundle them --
     it had one caller, and its own docstring recorded that re-wrapping three
     independent inputs "in a bundle no other caller shares would be the stamp
-    coupling the standards reject".  X-g2b is what changes that: **SEVEN readers
-    hand them over there, and THREE of the seven hand nothing** -- the two
-    interest accessors and the grid, none of which can have a contribution feed.
-    Spelling "nothing" as three separate literals at each of those sites is the
+    coupling the standards reject".  X-g2b is what changed that: seven readers
+    hand them over there, several of which cannot have a contribution feed at
+    all.  Spelling "nothing" as three separate literals at each such site is the
     argument-a-caller-can-get-wrong shape the plan's Section 8 rules a defect
     rather than a contract; :meth:`absent` makes it one token that cannot be
     half-written.
@@ -88,12 +87,17 @@ class ContributionInputs:
     def absent(cls) -> "ContributionInputs":
         """Return the inputs of an account that models NO contribution feed.
 
-        The explicit token for "this reader cannot have contributions": an
-        INTEREST account (no ``InvestmentParams``, so no rate to contribute
-        against), a Property, and the grid's kind-blind cash-flow view.  Named
-        rather than spelled out so the three call sites that mean it say so, and
-        so a reader never has to decide whether an empty deduction list beside a
-        zero gross was meant or forgotten.
+        The explicit token for "this reader cannot have contributions".  Named
+        rather than spelled out so a call site that means it says so, and so a
+        reader never has to decide whether an empty deduction list beside a zero
+        gross was meant or forgotten.
+
+        **Its production audience is down to ONE** -- the modelled-return
+        accessor in :mod:`._kernel` -- because plan step X-g3b deleted the
+        grid's kind gate and the grid now loads a REAL feed
+        (:func:`._inputs._contribution_inputs_for_account`).  The constructor
+        stays: it is what a reader that genuinely has no feed should say, and
+        the tests that build a bundle by hand use it.
 
         Returns:
             The empty :class:`ContributionInputs`.

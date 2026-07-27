@@ -2480,20 +2480,21 @@ class TestCanonicalProducerRouting:
                 )
             db.session.commit()
 
-            # Grid value: ``balance_at.cash_balance_map`` is the seam entry the
+            # Grid value: ``balance_at.grid_balance_view`` is the seam entry the
             # grid's balance row reads, so replaying it here is "what does the
-            # grid show" without a route round-trip.  It was
-            # ``_cash_engine.balances_for`` until plan step X-c2b2 pointed every
-            # cash surface at the FOLD -- which left this replay comparing
-            # /savings against a producer the grid no longer calls, a guard that
-            # had stopped guarding (the N-63 shape).  Corrected here rather than
-            # left as prose, because the whole point of the test is that the two
-            # surfaces read ONE producer.
-            grid_current_balance = balance_at.cash_balance_map(
+            # grid show" without a route round-trip.  It has been repointed
+            # TWICE for the same reason -- a guard that had stopped guarding
+            # (the N-63 shape): from ``_cash_engine.balances_for`` at plan step
+            # X-c2b2, and from ``cash_balance_map`` at X-g3b, where the grid
+            # stopped reading the cash view for a modelled account (ruling
+            # R-W).  Corrected here rather than left as prose, because the whole
+            # point of the test is that the two surfaces read ONE producer --
+            # and this account is PLAIN, where they agree by construction.
+            grid_current_balance = balance_at.grid_balance_view(
                 seed_user["account"],
                 BalanceContext.build(seed_user["user"].id),
                 seed_periods_today,
-            )[current_period.id]
+            ).columns[current_period.id].balance
 
             # F-009 / CRIT-01: 614.29 - max(500 - 45.71 - 0, 0)
             #                = 614.29 - 454.29 = 160.00.

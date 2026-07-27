@@ -71,14 +71,29 @@ def compute_balance_section(user_id: int) -> dict:
     used to read the scalar at TODAY, which was the same number only because
     that scalar was period-FLAT; the fold makes it date-precise (plan step
     X-c2b2, finding cash D2), so the date has to be stated.  This surface
-    reads the CASH-FLOW
-    view (the pure transaction running balance), not the kind-correct
-    ``balance_at`` scalar: the dashboard account is ``resolve_grid_account``'s
-    pick, which may be ANY kind (a user can point the dashboard at an HYSA,
-    or the fallback can land on a non-checking account), and the kind-correct
-    scalar would accrue interest / amortize / compound for those -- diverging
-    from the grid, which deliberately keeps the same account on the cash-flow
-    view.  When no period contains today the seam cannot project to today, so
+    reads the CASH-FLOW view (the pure transaction running balance), not the
+    kind-correct ``balance_at`` scalar: the dashboard account is
+    ``resolve_grid_account``'s pick, which may be ANY kind (a user can point
+    the dashboard at an HYSA, or the fallback can land on a non-checking
+    account), and ``/dashboard`` asks a RUNWAY question -- modelled growth
+    inflates the balance a user reads as "what I have to spend", which is a
+    property of this page's question and not of the grid's.
+
+    **The agreement argument this docstring used to give beside that one was
+    FALSE and is deleted** (finding N-87, ruling R-AK), matching the correction
+    ``dashboard_pulse_service`` took at plan step X-g3a.  It claimed the
+    kind-correct scalar would diverge "from the grid, which deliberately keeps
+    the same account on the cash-flow view".  The grid has layered an accrual
+    for an INTEREST account since PR #47 and renders the MODELLED balance for
+    every kind since plan step X-g3b, so this hero and the grid already
+    disagree by design: measured at the current period on the prod-shape clone
+    2026-07-27, the hero reads ``$31,070.06`` for the Empower 401(k) against
+    the grid's ``$31,751.40``, and ``resolve_grid_account`` returns that very
+    account on the developer's own data -- so it is the DEFAULT ``/dashboard``
+    against the DEFAULT ``/grid``.  The divergence is RECORDED, not fixed:
+    whether this page's runway question should read a modelled balance is its
+    own ruling with its own measurement, and it is not made inside a render
+    cutover.  When no period contains today the seam cannot project to today, so
     the raw anchor balance is used (the editor is only reachable with a
     current period in practice; this keeps the helper total).
 

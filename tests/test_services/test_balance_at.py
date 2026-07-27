@@ -2634,6 +2634,148 @@ def _assert_grid_view_reconciles(view):
         )
 
 
+class TestTheContributionRowOnARealFeed:
+    """Plan step X-g3b's PRODUCER-side control for the fourth term.
+
+    X-g3a seated ruling R-K's four-term identity and could only grade it on
+    HAND-BUILT views (``TestTheReconciliationOracleSeesAllFourTerms``), because
+    with the kind gate in place no producer could put a figure in
+    ``contribution``: only an INTEREST account reached the replay, and only an
+    INVESTMENT can have a payroll feed.  This is the first commit in which one
+    can, so this is where the term is proven end to end -- from a real
+    ``PaycheckDeduction`` through the replay to the column the grid renders.
+
+    The figures are hand-computed off a $104,000 salary, which is $4,000.00 per
+    period on the fixture's 26-period year -- chosen over the helper's default
+    $75,000 precisely so the employer arithmetic below lands on whole cents and
+    the pin is on the RULE rather than on a rounding path.
+    """
+
+    _EMPLOYEE = Decimal("200.00")
+    _ANNUAL_SALARY = Decimal("104000.00")
+    _GROSS = Decimal("4000.00")  # 104000 / 26
+
+    def _401k_with_feed(self, db, seed_user, periods, **params):
+        """Return a 401(k) anchored at ``periods[2]`` with a $200/period feed.
+
+        The anchor matters: the opening assertion is stamped at the anchor
+        period's first day, and a modelled CONTRIBUTION exists only STRICTLY
+        after it (ruling R-Z), so ``periods[2]`` contributes nothing and every
+        later period contributes.
+        """
+        account = make_investment_account(
+            seed_user, db.session, periods[2], Decimal("10000.00"), **params,
+        )
+        profile = make_salary_profile(
+            seed_user, db.session, annual_salary=self._ANNUAL_SALARY,
+        )
+        db.session.flush()
+        _add_flat_deduction(db, profile, account, self._EMPLOYEE)
+        db.session.commit()
+        return account
+
+    def test_the_employee_feed_lands_in_the_contribution_column(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A $200/period deduction renders $200.00 in every period after the anchor.
+
+        Hand-computed: a flat pre-tax $200.00 deduction contributes $200.00 per
+        pay period, with no employer configured and no annual limit set, so the
+        column IS the deduction.  The anchor period itself carries $0.00 --
+        ruling R-Z's strict boundary, since a contribution on or before the
+        asserted day is money the assertion already contains.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            bctx = BalanceContext.build(user_id)
+            periods = pay_period_service.get_all_periods(user_id)
+            account = self._401k_with_feed(db, seed_user, periods)
+
+            view = balance_at.grid_balance_view(account, bctx, periods)
+
+            assert view.columns[periods[2].id].contribution == Decimal("0.00")
+            assert view.columns[periods[3].id].contribution == self._EMPLOYEE
+            assert view.columns[periods[4].id].contribution == self._EMPLOYEE
+            # And the row therefore renders (ruling R-O's visibility rule).
+            assert view.row_flags(periods).contribution is True
+            _assert_grid_view_reconciles(view)
+
+    def test_an_employer_match_is_in_the_same_column(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A 100%-to-6% match doubles the column, and the arithmetic is pinned.
+
+        Hand-computed on the $4,000.00 per-period gross:
+          matchable = 4000.00 * 0.06 = 240.00
+          matched   = min(employee 200.00, 240.00) * 1.00 = 200.00
+          column    = employee 200.00 + employer 200.00 = 400.00
+
+        **That gross is the DEDUCTION-derived one**, ``round_money(annual /
+        pay_periods_per_year)`` from
+        ``investment_projection._compute_deduction_per_period`` -- NOT the
+        raise-aware ``salary_gross_biweekly``, which
+        ``deduction_contribution_per_period`` uses only as the fallback when no
+        deduction supplies one, and this fixture has one.  The two agree here
+        ($104,000 / 26), which is why the fixture picks that salary; stating
+        which one the arithmetic actually consumes keeps the pin on the rule.
+
+        The employer half is what makes the row more than a restatement of the
+        user's own deduction -- and on the developer's real Empower 401(k) it is
+        a flat 5% that no employee amount is needed to trigger at all, which is
+        the term ruling R-AH measured breaking the three-term identity on 53 of
+        59 period pairs.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            bctx = BalanceContext.build(user_id)
+            periods = pay_period_service.get_all_periods(user_id)
+            account = self._401k_with_feed(
+                db, seed_user, periods,
+                employer_type="match",
+                match_pct=Decimal("1.0000"),
+                match_cap_pct=Decimal("0.0600"),
+            )
+
+            view = balance_at.grid_balance_view(account, bctx, periods)
+
+            assert view.columns[periods[3].id].contribution == Decimal("400.00")
+            _assert_grid_view_reconciles(view)
+
+    def test_the_three_term_identity_breaks_on_this_fixture(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """THE CONTROL: the fourth term is load-bearing on a real producer.
+
+        ``_assert_grid_view_reconciles`` carries four terms, and X-g3a proved it
+        can distinguish them on hand-built columns.  What no test could show
+        until now is that a PRODUCER puts a figure in the fourth one -- so this
+        recomputes the retired THREE-term form on this fixture's real columns
+        and asserts it FAILS, by exactly the contribution.  Without this, the
+        four-term oracle above could be passing because every producer-built
+        column still carries ``$0.00`` there, which is the state X-g3a shipped
+        in and could not escape.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            bctx = BalanceContext.build(user_id)
+            periods = pay_period_service.get_all_periods(user_id)
+            account = self._401k_with_feed(db, seed_user, periods)
+
+            view = balance_at.grid_balance_view(account, bctx, periods)
+            previous = view.columns[periods[3].id]
+            column = view.columns[periods[4].id]
+            delta = column.balance - previous.balance
+            three_term = (
+                column.net + column.reconciliation + column.accrual
+            )
+
+            # The retired form is short by the whole contribution, and the
+            # four-term form closes it exactly.
+            assert column.contribution == self._EMPLOYEE
+            assert delta != three_term
+            assert delta - three_term == column.contribution
+
+
 class TestGridBalanceView:
     """``grid_balance_view`` -- the kind-aware grid + obligations view."""
 
@@ -2760,21 +2902,29 @@ class TestGridBalanceView:
             assert abs(total_accrual - sum(kernel_interest.values())) <= Decimal("0.02")
             assert total_accrual > Decimal("0.00")
 
-    def test_investment_stays_cash_flow_no_accrual(
+    def test_investment_renders_the_modelled_balance_and_reconciles(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """An investment grid account stays on the cash-flow view (no accrual).
+        """An INVESTMENT grid account shows the MODELLED balance (ruling R-W).
 
-        Investment balances are projection-driven (the growth engine), not a
-        sum of the account's transactions, so an ad-hoc grid row would not
-        move a kind-correct balance -- the same projection-vs-transaction
-        mismatch that excludes loans.  By decision (INTEREST-only grid
-        accrual) an investment grid account therefore shows the cash-flow
-        running-balance with no accrual row, exactly like PLAIN and AMORTIZING.
+        **This test asserted the opposite until plan step X-g3b**, on the
+        reasoning that an investment's balance is projection-driven rather than
+        a sum of its transactions, so "an ad-hoc grid row would not move a
+        kind-correct balance".  Under one event replay that is no longer true --
+        a typed grid row IS an event in the same stream, measured on the real
+        Empower 401(k) at ``$1,003.84`` in its own column and ``$1,211.04`` at
+        the horizon, the difference being the accrual ON the new money.  So the
+        objection that justified the cash basis is gone, and what remained was
+        one account answered two ways: ``$31,070.06`` here against ``$48,712.19``
+        on ``/savings`` (finding N-76).  The developer's ruling R-W is the
+        authority that the expected behaviour changed.
+
+        The grid balance must now EQUAL the modelled map -- not merely exceed
+        the cash basis -- because equality is what closes N-76, and it must
+        still reconcile off the view's own rows.
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             inv = make_investment_account(
@@ -2783,34 +2933,36 @@ class TestGridBalanceView:
 
             view = balance_at.grid_balance_view(inv, bctx, periods)
             cash = balance_at.cash_balance_map(inv, bctx, periods)
+            modelled = balance_at.balance_map(inv, bctx, periods)
 
+            # THE unification: the grid and /savings are the same producer's
+            # answer, in every column.
             assert {
                 pid: column.balance for pid, column in _all_columns(view)
-            } == dict(cash)
-            assert all(
-                column.accrual == Decimal("0.00")
-                and column.contribution == Decimal("0.00")
+            } == dict(modelled)
+            # Non-vacuous: the modelled answer is genuinely above the cash one,
+            # so an unmoved grid would fail rather than agree by accident.
+            assert view.columns[periods[-1].id].balance > cash[periods[-1].id]
+            # And the growth is explained on screen rather than implied.
+            assert any(
+                column.accrual > Decimal("0.00")
                 for column in view.columns.values()
             )
-            # It is the cash-flow (transaction) balance, NOT the growth-modeled
-            # one: balance_map accrues growth above the flat cash basis at the
-            # horizon, and the grid view deliberately does not.
-            modeled = balance_at.balance_map(inv, bctx, periods)
-            assert view.columns[periods[-1].id].balance < modeled[periods[-1].id]
+            _assert_grid_view_reconciles(view)
 
-    def test_property_stays_cash_flow_no_accrual(
+    def test_property_renders_the_modelled_balance_and_reconciles(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """A property grid account stays on the cash-flow view (no accrual).
+        """An APPRECIATING grid account shows the MODELLED value (ruling R-W).
 
-        Property balances are appreciation-projected, not a sum of
-        transactions, so (like loans and investments) a property grid account
-        shows the cash-flow running-balance -- the flat market value -- with no
-        accrual row, per the INTEREST-only grid-accrual decision.
+        The sibling inversion, for the kind whose accrual row reads
+        "Appreciation".  It asserted the flat market value until plan step
+        X-g3b; a house that appreciates has that appreciation on the grid now,
+        with a row explaining it, and the figure equals what ``/savings`` and
+        the net-worth trend already showed.
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
             prop = make_appreciating_account(
@@ -2820,18 +2972,22 @@ class TestGridBalanceView:
 
             view = balance_at.grid_balance_view(prop, bctx, periods)
             cash = balance_at.cash_balance_map(prop, bctx, periods)
+            modelled = balance_at.balance_map(prop, bctx, periods)
 
             assert {
                 pid: column.balance for pid, column in _all_columns(view)
-            } == dict(cash)
-            assert all(
-                column.accrual == Decimal("0.00")
-                and column.contribution == Decimal("0.00")
+            } == dict(modelled)
+            assert view.columns[periods[-1].id].balance > cash[periods[-1].id]
+            assert any(
+                column.accrual > Decimal("0.00")
                 for column in view.columns.values()
             )
-            # Cash-flow (flat market value), NOT the appreciated projection.
-            modeled = balance_at.balance_map(prop, bctx, periods)
-            assert view.columns[periods[-1].id].balance < modeled[periods[-1].id]
+            # A Property has no payroll feed, whatever else it models.
+            assert all(
+                column.contribution == Decimal("0.00")
+                for column in view.columns.values()
+            )
+            _assert_grid_view_reconciles(view)
 
     def test_none_scenario_raises(
         self, app, db, seed_user, seed_periods_today,

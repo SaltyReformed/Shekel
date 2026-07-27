@@ -215,17 +215,40 @@ def _bctx(ctx):
 def _grid_value(ctx):
     """Read the grid surface's balance for the anchor period.
 
-    The grid route renders one balance per visible-period cell, off the seam's
-    cash-flow entry ``balance_at.cash_balance_map`` (Level-1 Commit 8; the
-    fold since plan step X-c2b2).
-    Reading through that SAME seam entry -- not a producer beneath it -- keeps
-    this surface reader on the production path, so a regression in the seam's
-    cash view is caught here.
+    Through ``balance_at.grid_balance_view`` -- the entry the grid ROUTE calls
+    (``routes/grid.py:_build_grid_view``) -- so this reader is on the production
+    path rather than one producer beneath it.
+
+    **It read ``cash_balance_map`` until plan step X-g3b**, which was harmless
+    only while the two agreed.  They agree for a PLAIN account by construction
+    (a cash account models no return, so the replay resolves no tier and its
+    columns ARE its cash fold, measured unmoved on 60 of 60 columns for every
+    real PLAIN account on both databases), and this module's cash matrix is
+    PLAIN -- but for a modelled kind they now answer differently BY DESIGN
+    (ruling R-W), and a reader on the wrong one would prove nothing about the
+    grid while looking like it did.  One reader, on the entry the route uses,
+    for the cash matrix and both modelled locks below.
     """
-    balances = balance_at.cash_balance_map(
+    view = balance_at.grid_balance_view(
         ctx["account"], _bctx(ctx), ctx["all_periods"],
     )
-    return balances[ctx["anchor_period"].id]
+    return view.columns[ctx["anchor_period"].id].balance
+
+
+def _grid_current_period_value(ctx):
+    """Read the grid's balance for the CURRENT period.
+
+    The modelled per-kind locks below compare every surface at the current
+    period (``_modelled_current_balance``), where the cash matrix compares at
+    the anchor -- so the grid needs a reader at each convention rather than one
+    that silently answers the wrong column.  Both go through the same
+    ``grid_balance_view`` entry the route calls; only the column differs.
+    """
+    view = balance_at.grid_balance_view(
+        ctx["account"], _bctx(ctx), ctx["all_periods"],
+    )
+    current = pay_period_service.get_current_period(ctx["user_id"])
+    return view.columns[current.id].balance
 
 
 def _dashboard_value(ctx):
@@ -954,13 +977,20 @@ _LOAN_SURFACE_READERS = {
     "net_worth_trend": _trend_liabilities_value,
     "schedule_table": _loan_schedule_table_value,
 }
+# The GRID joins both modelled locks at plan step X-g3b (ruling R-W): it renders
+# the modelled balance for every kind now, so it is a surface these figures must
+# agree on rather than one holding a deliberate cash-basis gap.  It reads through
+# ``_grid_value``, which calls ``grid_balance_view`` -- NOT ``cash_balance_map``,
+# which after that step answers a modelled account differently by design.
 _PROPERTY_SURFACE_READERS = {
     "savings": _savings_tile_value,
+    "grid": _grid_current_period_value,
     "property_detail": _property_detail_value,
     "net_worth_trend": _trend_assets_value,
 }
 _INVESTMENT_SURFACE_READERS = {
     "savings": _savings_tile_value,
+    "grid": _grid_current_period_value,
     "investment_dashboard": _investment_dashboard_value,
     "net_worth_trend": _trend_assets_value,
 }

@@ -78,23 +78,31 @@ def cash_balance_map(
 
     The cash-flow view: the account's projected end balance per period as a
     pure transaction running-balance, with NO per-kind dispatch.  This is what
-    the single-account cash-flow surfaces show -- the budget grid, the dashboard
-    pulse chart, and the cash detail page -- where the balance row must
-    reconcile with the account's own transaction rows and subtotal row on the
-    same screen.
+    the single-account cash-flow surfaces show -- the dashboard pulse chart and
+    the cash detail page -- where the balance row must reconcile with the
+    account's own transaction rows and subtotal row on the same screen.
+
+    **The budget grid was on this list until plan step X-g3b and is not any
+    more** (ruling R-W): it reads :func:`~app.services.balance_at.grid_balance_view`,
+    which answers a modelled account its MODELLED balance.  A reader that wants
+    "what does the grid show" must call that entry -- for a modelled kind the
+    two now answer differently by design, and this one would look right while
+    proving nothing.
 
     Contrast with :func:`~app.services.balance_at.balance_map`, the
     KIND-CORRECT view: for an interest-bearing (HYSA), loan, investment, or
     property account ``balance_map`` dispatches to that kind's engine (accruing
     interest, walking an amortization schedule, compounding growth /
-    appreciation) -- which is what the net-worth surfaces want, but would
-    break a cash-flow surface.  Accruing interest into the grid's balance
-    row while its subtotal row stays transaction-based would leave a balance
-    change the rows on screen cannot explain, and the grid account is not
-    always CHECKING (an HYSA, a savings or credit-card account, even a property
-    or investment account can be ``resolve_grid_account``'s pick).  So these
-    surfaces ask for the cash-flow balance of whatever account they are pointed
-    at, regardless of its kind.
+    appreciation) -- which is what the net-worth surfaces want, and what a
+    cash-flow surface can only carry if the modelled movement is EXPLAINED on
+    screen beside it.  The reason this entry once gave -- "accruing interest
+    into the grid's balance row while its subtotal row stays transaction-based
+    would leave a balance change the rows on screen cannot explain" -- was
+    answered rather than overruled: ruling R-K put the explaining rows there
+    (the accrual and the contribution), so the grid moved to the modelled
+    balance at plan step X-g3b.  The surfaces still on THIS entry have no such
+    rows, so they ask for the cash-flow balance of whatever account they are
+    pointed at, regardless of its kind.
 
     **The one kind they are never pointed at is AMORTIZING, and that is a
     gate rather than a coincidence.**  A loan's balance is not a
@@ -195,7 +203,9 @@ def cash_daily_balance_series(
     The daily-granularity cash-flow view -- the same fold as
     :func:`cash_balance_at`, sampled at every day of the range instead of one,
     which is what makes the calendar's running-balance line reconcile with the
-    grid at every period end::
+    other CASH-basis surfaces at every period end (the grid left that set at
+    plan step X-g3b, and the calendar can be pointed at a modelled account by
+    explicit ``account_id`` -- finding N-87 records the divergence)::
 
         series[P.end_date] == cash_balance_at(account, ctx, P.end_date)
 
