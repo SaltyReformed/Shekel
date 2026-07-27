@@ -584,7 +584,8 @@ Read that file for what each measured and which findings it closed. **X-c2c4 did
 here**, re-parented to the top level now that its `X-c2c` decomposition header is archived; its
 preconditions cite entries in that file.
 
-- [ ] **X-c2c4** `refactor(balance): the last cash producer deletes` -- pure deletion, no
+- [x] **X-c2c4** `refactor(balance): the last cash producer deletes` -- **SHIPPED dev 2026-07-27
+  INSIDE X-g4b (`1c753f7e`)**, ruling R-AR. Pure deletion, no
   behaviour. **RUNS AFTER X-g, not after X-c2c2** (ruling R-V): its precondition is that
   `_cash_engine.balances_for` has no caller left, and X-g's replay is what takes the last two
   -- exactly as the cancelled X-c2c3's window would have. Do not attempt it earlier; the
@@ -872,16 +873,56 @@ preconditions cite entries in that file.
     boundary is stated rather than discovered. Ruling **R-I is NOT gradeable at this grain** (no
     period end precedes the opening) and the docstring says so instead of claiming it.
 
-  * [ ] **X-g4b** `refactor(balance): the modelled and cash producers delete` -- ruling R-AR's ONE
-    deletion, carrying X-c2c4's whole content as well as this entry's. Production: `_investment.py`,
-    `_cash_engine.py`, `_calculator.py`, `_interest.py` (R-AS), and
-    `cash_ledger.load_balance_transactions` with its re-export and its W9909 ruling. Tests:
-    `test_balance_calculator.py` and `test_balance_resolver.py` whole (C5-8 relocated first),
-    `test_asset_fold_parallel.py`'s three dead classes (R-AU), the two vacuous static-guard arms
-    (`test_grid.py:4791`, `test_accounts.py:3554`), and every one of the 73 `calculate_balances`
-    calls re-pointed onto the seam or deleted with its subject -- read every site, never `sed`,
-    because a left-behind `balances, _ =` unpacks dict KEYS instead of raising. Docs: the 22 `app/`
-    sites correction 4 lists, N-95's included. Both this box and **X-c2c4**'s tick with its hash.
+  * [x] **X-g4b** `refactor(balance): the modelled and cash producers delete` -- **SHIPPED dev
+    2026-07-27 (`1c753f7e`)**, ruling R-AR's ONE deletion, carrying X-c2c4's whole content.
+    **1,347 production lines and 4,937 test lines removed; `verify_balance_baseline.py`
+    BYTE-IDENTICAL on BOTH databases, run HEAD-vs-post in a `git worktree`.** Loan gate unmoved
+    (Mortgage `$177,277.97`, Van Loan `$15,663.59`). Full suite 7588; the **-79** against X-g4a's
+    7666 reconciles exactly against the deleted test counts (47 + 10 + 15 + 4 + 5, less the two
+    added). `pylint app/` 10.00/10 with the full `--fail-on` set; the 146 checker tests green,
+    which is what proves the W9909 ruling deleted WITH its name rather than going stale.
+
+    **Two things the deletion FOUND, neither in its entry.** (a) `interest_projection.`
+    `calculate_interest` -- a two-line `round_money` wrapper -- was orphaned by removing the
+    per-period interest layer, its only caller. It deletes here rather than being inherited as a
+    public function read by nothing but its own tests; its 24 unit tests re-point onto
+    `accrued_interest`, every hand-computed figure unchanged, and the MED-05 / PA-06 audit
+    rationale that lived on its docstring MOVED onto the function that has always owned the
+    day-count rule (losing it is the failure mode a deletion makes easy). (b) `create_hysa_account`
+    hardcoded DAILY compounding, so **no test anywhere ran a MONTHLY or QUARTERLY account through a
+    balance PRODUCER** -- and the developer's real Money Market compounds MONTHLY. The gap
+    pre-dates this step (the deleted tests graded the unwired layer, never the replay) but became
+    total with it, so the helper is parameterised and a hand-computed MONTHLY test added. Its
+    firing control: hardcoding DAILY in the replay's rate resolver reads `$12.63` against the
+    ruled `$12.39`.
+
+    **Three claims the adversarial review proved FALSE, all written by this step and all fixed
+    rather than reworded** -- the same class X-g4a's reviews caught, which is why the review ran
+    twice. (i) A new sentence in `interest_projection.py` named surviving consumers for
+    `calculate_interest` that do not exist, papering over (a) above. (ii) The ported drift oracle's
+    docstring credited a TELESCOPE arm that cannot fail: measured, all three mutations
+    (per-day rounding, a stale accrual base, a halved rate) fail through the MONOTONICITY arm and
+    none through the telescope, which holds by construction. The docstring now says which arm
+    discriminates, that the telescope is a consistency check and not evidence, and what
+    monotonicity does not catch. (iii) The `test_loan_payment_pipeline` step deleted here was
+    justified by ruling R-J, which forbids the kind-BLIND view and not the seam. The review was
+    right that a re-point existed in principle and WRONG that it holds: measured, the pipeline's
+    payment is still PROJECTED at that point, so the loan reads `$250,000.00` on both sides and
+    there is no property to grade. It is deleted with the measurement recorded, not the guess.
+
+    **What it removed.** Production: `_investment.py` (650), `_cash_engine.py` (201),
+    `_calculator.py` (137), `_interest.py` (272, ruling R-AS -- its one surviving predicate folded
+    into `_asset_fold._modelled_return`, deleting a redundant second `classify_account`),
+    `cash_ledger.load_balance_transactions` with its re-export and W9909 ruling, and
+    `interest_projection.calculate_interest`. Tests: `test_balance_calculator.py` and
+    `test_balance_resolver.py` whole (C5-8 relocated to `test_cash_amounts.py` FIRST, and WIDENED
+    from the `cash_ledger` package to `cash_ledger` + `balance_at` -- the review proved the
+    widening fires), `test_interest_accrual.py` whole (its long-horizon no-drift claim PORTED),
+    `test_asset_fold_parallel.py`'s three dead classes (R-AU) and `test_hostile_qa`'s section 6,
+    the two vacuous static-guard arms, and all 73 `calculate_balances` calls -- re-pointed onto the
+    seam or deleted with their subject, every site read. Four re-points got STRONGER: the fold
+    loads the account's own rows instead of taking a hand-picked list, and two conditional `if`
+    guards that could never fail became unconditional asserts. Docs: 26 `app/` sites.
 
   Do NOT collapse X-g2 and X-g3: the whole point of the b1/b2/b3 split was that mixing render
   plumbing with a money-moving cutover makes a plumbing slip read exactly like a fold slip. Do NOT
@@ -1450,6 +1491,8 @@ docstring stating the contract X-g2b retired.
 | B-17 | **The debt-track `is_originated` guard proves where the value comes FROM and never that production puts it there -- the N-63 / N-67 class, third instance.** `test_balance_at.py:3583-3592` builds its OWN `_ad` dict with `"is_originated": figures.terms.is_originated` and asserts `_metrics` behaviour on it. Production builds that dict at `_projections.py:241-243`, with the same expression PLUS a `loan_result is None` fallback of `True` the test's dict has no branch for. Change the production key to `False`, to `is_retired`, or drop it, and the test stays GREEN -- it never executes the builder. The value's source is proven; the WIRING is not | the debt track counting an unclosed mortgage as 100% paid (the defect the flag was added to stop) | **OPEN -- RE-VERIFIED 2026-07-26** (the trim). Its old status ("flag deleted at C3b") was WRONG: `is_originated` is live on `LoanFigures.terms`, read through that dict at `_metrics.py:362`. The fix is the Section 8 rule N-63 wrote: assert the CALL, or assert behaviour through the real builder **TRIAGED 2026-07-27 (ruling R-AO): to X-h**, with the three other controls that cannot fire. | X-h |
 | FU-1 / F1 | **The Van Loan's one unexplained true-up STEP -- an operator question, not a code fix.** RE-SCOPED 2026-07-25 on a fresh PROD clone: the duplicate same-day anchors the finding named are DEV-CLONE pollution (created 2026-07-07 during arc development), not production. Prod's account 8 carries exactly THREE anchors (origination 2023-02-14 `$32,402.45`, user_trueup 2026-05-22 `$17,020.47`, user_trueup 2026-06-23 `$15,663.59`) and an audit trail of 6 INSERTs / 0 UPDATE / 0 DELETE -- the shape was never there, so it was not silently repaired either. What DOES remain: the 2026-06-23 true-up moves the balance `$905.33` beyond what the recorded payment explains (after the 06-22 installment's `$451.55` principal the walk stands at `$16,568.92`; the anchor asserts `$15,663.59`). That is a user ASSERTION, which the architecture treats as authoritative by design, not a defect -- the Mortgage's own 2026-05-22 true-up reconciles to the cent (`$177,829.83` == the walk after two payments), so the machinery is not suspect | `$905.33` against the servicer's statement | **OPEN -- awaiting the OPERATOR.** Whether the `$905.33` matches the servicer's statement is a question only you can answer; it blocks nothing, and the ledger is self-consistent under E1a's assert either way. Converted from a Phase F step to a finding at the 2026-07-26 trim, because it is a question and not a commit | operator (unchanged by the R-AO triage) |
 | FU-3 | Standing overpayment resolves at today for any as-of | -- | latent **RE-VERIFIED 2026-07-27** and it is the X-i class, not a C-phase note: `_resolution.py:294` calls `loan_standing_extra_for_account(account.id)`, which resolves through `recurring_transfer_query.py:72-76` off the CURRENT template row with no as-of, inside a resolution the context pins an `as_of` for. **TRIAGED 2026-07-27 (ruling R-AO): to X-i2.** | X-i2 |
+| N-96 | **`balance_at.interest_by_period_for_account` is a public seam entry with ZERO `app/` callers.** AST-verified 2026-07-27 during X-g4b's review: the account-detail route reads `interest_projection_for_account`, and nothing reads this. `__init__.py` states as fact that it and `debt_schedule_rows` are "the two non-balance seam entries the out-of-cluster consumers (the account-detail route, the savings orchestrator) read" -- true of the second, FALSE of the first. Same class as the `calculate_interest` orphan X-g4b deleted, but it pre-dates that step rather than being created by it, so it was reported and not swept | a public seam entry no screen can reach, described as one two screens read | **OPEN -- found 2026-07-27** by X-g4b's adversarial review, AST-verified, deliberately NOT fixed in that commit (out of its scope, CLAUDE.md rule 6) | X-e |
+| N-97 | **`app/utils/dates.py:314` cites `balance_resolver.daily_cash_balance_series` as a live consumer of `attribution_date`.** That producer was deleted at plan step X-c2b3 (the calendar's per-day line is the fold sampled at every day). The rule the sentence states -- one attribution rule shared by the calendar's day cells and the balance line's steps, so a flow's cell and its step land on the same day -- is STILL TRUE and load-bearing; only its named example is gone. Found 2026-07-27 in X-g4b's sweep, outside that step's 26-site scope | a present-tense claim naming a producer deleted a month earlier, in the docstring of the rule two surfaces share | **OPEN -- found 2026-07-27**, reported not fixed (pre-dates X-g4b) | X-p |
 | cash D4 | Anchor column vs history table: divergence detected, only logged | latent | latent | X-e (widened 2026-07-27) |
 | N-4 (A1) | Pay-period reset re-anchors EVERY kind, refreshing loan cash-anchor rows (balance-preserving `stage_anchor_true_up` inside the reset's deferred-FK transaction; same-value, not user-supplied) | -- | **OPEN** -- residue of the archived B-15 (a kind-blind true-up wrote a CASH anchor onto a LOAN; both real loans carried such rows), whose mechanism closed at A1 while these two writers did not | X-e (widened 2026-07-27; see also N-73) |
 | N-5 (A1) | Account-create factory writes an origination cash anchor for every kind -- a loan created with a balance seeds the column at birth (entangled with loan onboarding) | -- | **OPEN** -- residue of the archived B-15, as above: the mechanism that RENDERED the wrong anchor closed at A1, the writers that create one did not | X-e (widened 2026-07-27; see also N-73) |

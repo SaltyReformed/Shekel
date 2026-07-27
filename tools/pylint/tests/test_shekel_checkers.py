@@ -517,9 +517,11 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
     Every screen must obtain an account's balance through
     ``app.services.balance_at``, and that is now STRUCTURAL, not name-keyed:
     plan step D1d moved every producer inside the seam as a private submodule
-    (``_cash_fold`` / ``_cash_engine`` / ``_calculator`` / ``_kernel`` /
-    ``_investment``; ``_daily_series`` was one until plan step X-c2b3 deleted it,
-    the calendar's per-day line being the fold sampled at every day),
+    (today ``_cash_fold`` / ``_asset_fold`` / ``_kernel``; ``_daily_series``
+    went at plan step X-c2b3, the calendar's per-day line being the fold
+    sampled at every day, and ``_cash_engine`` / ``_calculator`` /
+    ``_investment`` / ``_interest`` at X-g4b, once TWO folds answered what
+    six producers used to),
     W9910 forbids reaching one from outside the package in
     every import spelling, and plan step E1e DELETED the last public producer
     outside the seam (the two genesis posting readers) rather than fencing it.
@@ -953,7 +955,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
                     )
             # Only the module's OWN non-producer rulings are pinned for staleness:
             # the producer set is shared across the cluster (a producer defined
-            # in ``_cash_engine`` is legitimately absent from ``_kernel``).
+            # in one member module is legitimately absent from another).
             stale = non_producers - defined
             assert not stale, (
                 f"{module}: non-producer rulings for functions it no longer "

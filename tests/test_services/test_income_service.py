@@ -41,7 +41,6 @@ from app.services import (
     paycheck_calculator,
     savings_dashboard_service,
 )
-from app.services.balance_at import _cash_engine as balance_resolver
 from app.services.tax_config_service import load_tax_configs
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import freeze_today, make_investment_account
@@ -305,7 +304,7 @@ class TestLiveIncomeThroughBalanceResolver:
     ):
         """A projected salary income row with a stale $1.00 stored amount
         contributes its LIVE net to the grid's income row AND to the
-        anchor-forward walk -- never the stale stored value.
+        rendered BALANCE -- never the stale stored value.
 
         $104,000 profile, no deductions, no tax configs seeded -> net =
         gross = 104000/26 = $4,000.00.  The transaction is stored at $1.00
@@ -355,14 +354,18 @@ class TestLiveIncomeThroughBalanceResolver:
                 f"got {column.income} (stale stored was 1.00)"
             )
 
-            # balances_for: the income period's balance moves by the live net.
-            result = balance_resolver.balances_for(
-                account, scenario.id, periods,
+            # The BALANCE moves by the live net too, not just the rendered
+            # income row -- the property that makes the override a basis rather
+            # than a display value.  Re-pointed off the deleted anchor-forward
+            # walk onto the cash view at plan step X-g4b; the delta is
+            # unchanged because both read one ``live_amount_overrides`` map.
+            result = balance_at.cash_balance_map(
+                account, bctx, periods,
             )
             idx = next(i for i, p in enumerate(periods) if p.id == period.id)
             prior = result[periods[idx - 1].id]
             assert result[period.id] - prior == expected_net, (
-                "balances_for income-period delta should be the live net "
+                "the income period's balance delta should be the live net "
                 f"{expected_net}, got {result[period.id] - prior}"
             )
 

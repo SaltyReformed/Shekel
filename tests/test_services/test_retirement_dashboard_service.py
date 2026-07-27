@@ -34,7 +34,6 @@ from app.services import (
     paycheck_calculator,
     retirement_dashboard_service,
 )
-from app.services.balance_at import _cash_engine as balance_resolver
 from tests._test_helpers import make_investment_account
 
 
@@ -493,13 +492,16 @@ class TestRetirementProjectionEntryAware:
             )
             db.session.commit()
 
-            # The anchor-forward base a retirement account's growth curve
-            # seeds off (the contract Commit 8 locks; still this producer
-            # until plan step X-g replaces it with the modelled replay).
-            producer = balance_resolver.balances_for(
-                acct, scenario.id, seed_periods_today,
+            # The entries-aware CASH BASIS the modelled balance is computed
+            # ON: 50,000 - max(500 - 45.71 - 0, 0) = 49,545.71.  Read through
+            # the seam's cash-flow view at plan step X-g4b, which deleted the
+            # anchor-forward producer this asserted against; that view is the
+            # same fold the modelled replay folds beneath its accrual, so the
+            # basis under test is genuinely the one the tile is built on.
+            basis = balance_at.cash_balance_map(
+                acct, BalanceContext.build(user.id), seed_periods_today,
             )
-            assert producer[current_period.id] == Decimal("49545.71")
+            assert basis[current_period.id] == Decimal("49545.71")
 
             result = retirement_dashboard_service.compute_gap_data(user.id)
             projections = result["retirement_account_projections"]
@@ -510,7 +512,7 @@ class TestRetirementProjectionEntryAware:
             #                      = 50000 - 454.29 = 49,545.71.
             # Pre-Commit-8 this was 49,500.00.
             assert target["current_balance"] == Decimal("49545.71")
-            assert target["current_balance"] == producer[current_period.id]
+            assert target["current_balance"] == basis[current_period.id]
 
 
 class TestRetirementAnchorInPastModeledHeadlineDatedSeed:

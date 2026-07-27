@@ -9,43 +9,36 @@ data point; every new surface re-invented that boundary and shipped a bug
 at least once.  This package owns all four per-kind boundary rules in ONE
 place, documented and tested together (the documented-once contract):
 
-* **PLAIN / INTEREST (cash)** -- a FOLD over the account's event stream
-  (assertions + settled rows + the still-projected plan), so every period is
-  answered: a past one reads the balance in force THEN, replayed from the
-  assertions, and a period before the account's FIRST assertion reads that
-  assertion back-projected over the records it already contains (ruling R-I).
-  Pre-anchor periods used to be OMITTED, on the reasoning that a cash balance
-  is a transaction sum carried forward from the anchor and flat-carrying it
-  backward would fabricate balances the account never had -- true of the
-  carry, but it left every past column blank while the scalar answered the
-  same dates with TODAY's balance (finding cash D3 / B-18, closed at plan step
-  X-c2b2).
-* **AMORTIZING (loan)** -- ONE total producer, :func:`positions` (plan C3):
-  the FOLD of the loan's recorded events (anchors + settled payments -- the
+**There are TWO answers here, not five, and the five-bullet per-kind narrative
+this docstring used to carry was residue of a dispatch ladder that no longer
+exists** (finding N-95, deleted at plan step X-g4b).
+
+* **A configured LOAN** is its amortization :func:`positions` (plan C3): the
+  FOLD of the loan's recorded events (anchors + settled payments -- the
   complete record of the past, true-ups above all) for a date at or before the
   pass's as-of, and the forward PLAN fold (payment records, then contractual
   synthesis) after.  A date before any event folds to ``0.00`` (the loan does
   not exist yet), and a paid-off loan holds its folded ``0.00`` flat -- NEVER
   the loan's original principal (which made the liability leap down the moment
   the first payment landed).
-* **INVESTMENT** -- model-from-anchor: the anchor compounded forward at the
-  assumed return (plus contributions) for post-anchor periods, and
-  reverse-projected backward for pre-anchor periods.
-* **APPRECIATING (property)** -- the user-set market value compounds
-  forward at its annual rate; a manually-asserted valuation has no
-  historical basis to compound backward from, so pre-anchor periods
-  flat-carry the anchor value.
+* **EVERYTHING ELSE** is ONE event replay
+  (:mod:`app.services.balance_at._asset_fold`): the cash fold -- assertions,
+  settled rows and the still-projected plan -- plus an ACCRUAL tier that exists
+  only for an account whose own parameters model a return, and a CONTRIBUTION
+  tier only for one whose payroll funds it.  A checking account, an HYSA, a
+  brokerage and a Property are therefore not four dispatches; they are one
+  producer given different facts, which is what ruling R-AD deleted the ladder
+  to say.  Every period is answered: a past one reads the balance in force
+  THEN, and a period before the account's FIRST assertion reads that assertion
+  back-projected over the records it already contains (ruling R-I).
 
-The seam does NOT reimplement any of that math.  It loads each account's
+The seam does NOT reimplement the growth math.  It loads each account's
 modelled-contribution feed (its investment params, its deductions and the
-engine gross-biweekly) from the shared loaders and DELEGATES the per-kind
-dispatch -- to
-:func:`app.services.balance_at._kernel.build_account_balance_map` for every
-NON-loan kind, and to its own ``positions()`` fold for an AMORTIZING loan,
-whose producer sits ABOVE the kernel and so cannot be dispatched from inside
-it (plan step C3b3).  Centralising a dispatch that two consumers had each
-grown their own copy of is the whole point: a third copy is exactly the
-duplication this work exists to kill.
+engine gross-biweekly) from the shared loaders and hands it to the replay,
+whose rate resolver reads the one params row the account's kind carries.
+Centralising a dispatch that two consumers had each grown their own copy of is
+the whole point: a third copy is exactly the duplication this work exists to
+kill.
 
 **Five shapes, one seam.**
 
@@ -119,23 +112,21 @@ over, the LOAN leaves it composes the loan shapes from (``loan_resolver`` /
 ``loan_ledger`` / ``loan_loaders`` / ``loan_payment_service`` /
 ``amortization_engine``), and the models -- never a consumer package.  **Plan
 step D1d moved ALL of the balance PRODUCERS INSIDE this package as private
-submodules**, so the fence is one package boundary: the CASH chain
-(``_cash_engine`` = the anchor-forward roll-up, ``_calculator`` = the pure
-carry-forward walk it delegates to) and the NET-WORTH chain (``_kernel`` = the
-per-kind balance dispatch, ``_investment`` = the growth / appreciation
-sub-chain, ``_interest`` = the modelled accrual an INTEREST account layers on
-its folded cash).  **Plan step X-c2b2 then made the cash FOLD (``_cash_fold``)
-the one cash producer every view reads**, so ``_cash_engine`` / ``_calculator``
-survive only for the investment and appreciation bases.  Plan step **X-g**
-replaces those bases with the modelled-asset REPLAY and X-c2c4 then deletes both
-modules; the window that was to stand between (X-c2c3) is CANCELLED, ruling
-R-V.  **Plan step X-c2b3 then DELETED what the cutover replaced**: the
+submodules**, so the fence is one package boundary.  **Plan steps X-c2b2 and
+X-g2b then replaced every one of them with TWO folds** -- ``_cash_fold`` for
+cash and ``_asset_fold``, which is that fold plus the modelled tiers, for every
+non-loan kind -- and plan step **X-g4b deleted the replaced producers whole**:
+``_cash_engine`` (the anchor-forward roll-up), ``_calculator`` (the pure
+carry-forward walk it delegated to), ``_investment`` (the growth / appreciation
+three-source merge) and ``_interest`` (the modelled accrual layered over a
+finished base map, whose one surviving predicate folded into
+``_asset_fold._modelled_return``).  Deleted alongside them at X-c2b3: the
 per-day producer ``_daily_series`` whole (the calendar's running-balance line is
-the fold sampled at every day of its range), ``_cash_engine``'s date-precise
-scalar ``balance_as_of_date`` with its prefix walk, and that module's
-``BalanceResult`` wrapper -- whose ``stale_anchor_warning`` field the fold makes
-unrepresentable, a settled row after the last assertion now MOVING the balance
-rather than warning that it might not have (findings cash D1 / D2, N-50).
+the fold sampled at every day of its range), the date-precise scalar
+``balance_as_of_date`` with its prefix walk, and the ``BalanceResult``
+wrapper -- whose ``stale_anchor_warning`` field the fold makes unrepresentable,
+a settled row after the last assertion now MOVING the balance rather than
+warning that it might not have (findings cash D1 / D2, N-50).
 **Plan step D-ctx then moved the read
 pass's resolution CONTEXT in too** (``_context`` = ``BalanceContext`` /
 ``require_scenario``, re-exported below as the seam's public read-pass handle):
@@ -160,9 +151,9 @@ FROM here, not the other way round.  Inside the package the direction is
 _inputs}``,
 ``_liability -> _inputs``, ``_secured_debt -> {_loan_figures, _positions,
 _inputs}``, and ``_loan_figures -> _positions -> _plan`` (the figures' payoff is
-the fold to zero, plan step C8d) -- a DAG with ``_fold`` / ``_calculator`` /
-``_interest`` / ``_investment`` at the producer floor, so no module imports a
-sibling that imports it back.  Every loan producer also imports ``_resolution`` for the read
+the fold to zero, plan step C8d) -- a DAG with ``_fold`` at the producer floor,
+so no module imports a sibling that imports it back.  Every loan producer also
+imports ``_resolution`` for the read
 pass's ONE whole-loan read; ``_resolution`` imports only ``_context`` among its
 siblings, plus ``_confirmed_view`` for the confirmed seed it threads into every
 resolution (plan step E1d-b); ``_confirmed_view`` imports ``_context`` and

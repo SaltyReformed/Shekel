@@ -18,6 +18,8 @@ from app.models.recurrence_rule import RecurrenceRule
 from app.models.user import User, UserSettings
 from app.models.scenario import Scenario
 from app.models.ref import AccountType, RecurrencePattern, Status
+from app.services import balance_at
+from app.services.balance_at import BalanceContext
 from app.services import transfer_service
 from app.services.auth_service import hash_password
 from app.services import account_service
@@ -2192,8 +2194,6 @@ class TestOneTimeTransfer:
         The checking balance should decrease and savings balance should
         increase by the transfer amount.
         """
-        from app.services.balance_at import _calculator as balance_calculator  # pylint: disable=import-outside-toplevel
-
         with app.app_context():
             savings = _create_savings_account(seed_user)
             savings.current_anchor_period_id = seed_periods_today[0].id
@@ -2224,11 +2224,17 @@ class TestOneTimeTransfer:
                 )
                 .all()
             )
-            checking_balances, _ = balance_calculator.calculate_balances(
-                anchor_balance=Decimal("1000.00"),
-                anchor_period_id=seed_periods_today[0].id,
-                periods=seed_periods_today[:3],
-                transactions=checking_shadows,
+            assert checking_shadows
+            # ``as_of`` is pinned inside period 0: the transfer lands in period
+            # 1, which is in the PAST relative to this fixture's today, and
+            # ruling R-G clamps a still-Projected row forward past a reader's
+            # own now rather than letting it sit in a period that has gone by.
+            ctx = BalanceContext.build(
+                seed_user["user"].id,
+                as_of=seed_periods_today[0].start_date,
+            )
+            checking_balances = balance_at.cash_balance_map(
+                seed_user["account"], ctx, seed_periods_today[:3],
             )
             # Checking decreased by 250 in period 2.
             assert checking_balances[seed_periods_today[1].id] == Decimal("750.00")
@@ -2243,11 +2249,9 @@ class TestOneTimeTransfer:
                 )
                 .all()
             )
-            savings_balances, _ = balance_calculator.calculate_balances(
-                anchor_balance=Decimal("0.00"),
-                anchor_period_id=seed_periods_today[0].id,
-                periods=seed_periods_today[:3],
-                transactions=savings_shadows,
+            assert savings_shadows
+            savings_balances = balance_at.cash_balance_map(
+                savings, ctx, seed_periods_today[:3],
             )
             # Savings increased by 250 in period 2.
             assert savings_balances[seed_periods_today[1].id] == Decimal("250.00")

@@ -163,10 +163,11 @@
       <span class="street__today-label">Today</span>
     </div>
     {# The end-station sits AT the period end on the axis, so it renders
-       the period-end chart point (balances_for), not the as-of-today
-       hero -- identical unless an entry is dated after today, and the
-       label must agree with the figure either way (principle 2; SSOT
-       verification 2026-06-12). #}
+       the period-end chart point (the cash fold sampled at the period's
+       end_date), not the as-of-today hero -- identical unless an entry is
+       dated after today, and the label must agree with the figure either
+       way (principle 2; SSOT verification 2026-06-12; the producer name
+       here was balances_for until plan step X-g4b deleted it). #}
     <div class="street__end" data-day="{{ pulse.street.days_total }}">
       <span class="street__event-label">
         period ends {{ pulse.hero.period_end_date.strftime('%b %-d') }}

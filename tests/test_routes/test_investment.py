@@ -1957,7 +1957,6 @@ class TestInvestmentEntryAwareRouting:
         the rendered string.
         """
         from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
-        from app.services.balance_at import _cash_engine as balance_resolver  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
             user = seed_user["user"]
@@ -1991,22 +1990,23 @@ class TestInvestmentEntryAwareRouting:
             )
             db.session.commit()
 
-            # The anchor-forward base an investment's growth curve seeds
-            # off (``_investment.investment_base_balance_map``, which is
-            # still this producer until plan step X-g replaces it with the
-            # modelled replay): 50,000 - max(500 - 45.71 - 0, 0)
-            #       = 50,000 - 454.29 = 49,545.71.
-            producer = balance_resolver.balances_for(
-                acct, scenario.id, seed_periods_today,
+            # The entries-aware CASH BASIS the modelled balance is computed
+            # ON: 50,000 - max(500 - 45.71 - 0, 0) = 49,545.71.  Read through
+            # the seam's cash-flow view at plan step X-g4b, which deleted the
+            # anchor-forward producer this asserted against; that view is the
+            # same fold the modelled replay folds beneath its accrual, so the
+            # basis under test is genuinely the one the tile is built on.
+            bctx = BalanceContext.build(user.id)
+            basis = balance_at.cash_balance_map(
+                acct, bctx, seed_periods_today,
             )
-            assert producer[current_period.id] == Decimal("49545.71")
+            assert basis[current_period.id] == Decimal("49545.71")
 
             # What the tile RENDERS is that cash basis plus the modelled
             # accrual, since plan step X-g2b gave the anchor period its own
             # days (ruling R-Y).  The entries-aware arithmetic above is still
             # the load-bearing half: it is what the accrual is computed ON, so
             # the pre-fix seed would still land the rendered figure ~$45 low.
-            bctx = BalanceContext.build(user.id)
             displayed = balance_at.balance_map(
                 acct, bctx, seed_periods_today,
             )[current_period.id]

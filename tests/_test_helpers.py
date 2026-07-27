@@ -873,9 +873,9 @@ def create_savings_account(
     return account
 
 
-def create_hysa_account(
+def create_hysa_account(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     seed_user, db_session, anchor_period, balance,
-    apy=Decimal("0.05000"), name="HYSA",
+    apy=Decimal("0.05000"), name="HYSA", compounding=None,
 ):
     """Create an HYSA account (INTEREST) with InterestParams (default 5% APY daily).
 
@@ -917,9 +917,22 @@ def create_hysa_account(
         apy: The annual percentage yield as a Decimal fraction (default
             ``Decimal("0.05000")`` for 5%).
         name: The account name (default ``"HYSA"``).
+        compounding: The :class:`~app.enums.CompoundingFrequencyEnum` member,
+            or ``None`` for DAILY.  Parameterised at plan step X-g4b: the
+            helper hardcoded DAILY, so no test anywhere ran a MONTHLY or
+            QUARTERLY account through a balance PRODUCER -- and the real Money
+            Market compounds MONTHLY, so a regression hardcoding the frequency
+            in the replay's rate resolver would have misspriced a live account
+            with the whole suite green.
 
     Returns:
         The created HYSA :class:`~app.models.account.Account`.
+
+    Pylint: ``too-many-arguments`` (7/5) / ``too-many-positional-arguments``
+    (7/5) -- a test FACTORY whose parameters are the account's independent
+    configurable facts (owner, session, anchor period, balance, rate,
+    name, compounding frequency); bundling them would put a
+    parameter object between every suite and its fixture.
     """
     # Pylint: ``import-outside-toplevel`` -- this module imports no app
     # symbols at top level (its collection-time-safety convention); load
@@ -947,7 +960,7 @@ def create_hysa_account(
         account_id=account.id,
         apy=apy,
         compounding_frequency_id=ref_cache.compounding_frequency_id(
-            CompoundingFrequencyEnum.DAILY,
+            compounding or CompoundingFrequencyEnum.DAILY,
         ),
     ))
     restamp_opening_assertion(

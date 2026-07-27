@@ -257,12 +257,13 @@ _FENCED_MODULE_RULINGS = {
         # date), not a computed projection.  Consumers read it for the "as of"
         # caption; their balances come from the seam.
         "resolve_anchor",
-        # A loader: it selects rows, and carries no balance of any kind.
-        "load_balance_transactions",
-        # The PLAN loader (plan step X-b), a non-producer on the same ground as
-        # its windowed sibling above and its settled twin ``settled_cash_facts``
-        # below: it SELECTS rows and returns them unchanged.  It is the weaker
-        # of the two shapes, deliberately -- the settled loader returns facts
+        # The PLAN loader (plan step X-b), a non-producer on the same ground
+        # as its settled twin ``settled_cash_facts`` below: it SELECTS rows and
+        # returns them unchanged.  Its WINDOWED sibling
+        # ``load_balance_transactions`` carried this same ruling until plan step
+        # X-g4b deleted it with the anchor-forward producer that was its last
+        # caller.  It is the weaker of the two shapes, deliberately -- the
+        # settled loader returns facts
         # already VALUED and DATED, while this one cannot date anything, because
         # a projected row's effective date is ``max(attribution, as_of + 1d)``
         # (ruling R-G) and this package reads no clock.  Rows in, rows out; the

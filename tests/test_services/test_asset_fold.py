@@ -8,7 +8,7 @@ reads it yet, so nothing in this file can move a shipped balance.
 **Every expected figure below is HAND-COMPUTED and written out in the test that
 asserts it.**  None is taken from a shipping producer, and that is not a style
 preference: the shipping producers are WRONG about exactly the cases this file
-exists for -- ``_investment._merge_balance_sources`` renders $6,315.57 of
+exists for -- the retired three-source merge rendered $6,315.57 of
 net-worth history that contradicts the user's own recorded assertions (findings
 N-43 / N-74), and the three modelled kinds answer a DATE with a PERIOD (N-71).
 Grading the replay against them would prove the defect rather than the fix
@@ -45,7 +45,11 @@ from app.extensions import db
 from app.models.account import AccountAnchorHistory
 from app.models.paycheck_deduction import PaycheckDeduction
 from app import ref_cache
-from app.enums import CalcMethodEnum, DeductionTimingEnum
+from app.enums import (
+    CalcMethodEnum,
+    CompoundingFrequencyEnum,
+    DeductionTimingEnum,
+)
 from app.services import growth_engine
 from app.services.balance_at import (
     _asset_contributions,
@@ -261,12 +265,12 @@ class TestTheAccrualWindow:
         half-cent) and the 14 days of period 0 accrue **$51.97**, ending at
         **$20,051.97**.
 
-        Today that period reads a flat $20,000.00: ``_investment`` splits its
-        periods on ``period_index > anchor_idx``, so the anchor period is served
-        by the flat cash base and growth starts the period after.  On the real
-        data that silently drops $105.26 on the Roth IRA, $44.95 on the
-        Traditional IRA and $76.59 on the Empower 401(k) -- and it recurs every
-        time the user re-asserts, which they do every few weeks.
+        The retired map read that period as a flat $20,000.00: it split its
+        periods on ``period_index > anchor_idx``, so the anchor period was
+        served by the flat cash base and growth started the period after.  On
+        the real data that silently dropped $105.26 on the Roth IRA, $44.95 on
+        the Traditional IRA and $76.59 on the Empower 401(k) -- and it recurred
+        every time the user re-asserted, which they do every few weeks.
         """
         account = _401k(
             seed_user, seed_periods[0], Decimal("20000.00"),
@@ -349,7 +353,7 @@ class TestTheAccrualWindow:
         The window opens on the latest ``AccountAnchorHistory`` row read off
         the WALK, not on the denormalized column -- the dated-SoT ruling plan
         step X-c2c3's trace made (correction (b)), inherited here.  Where the
-        two disagree today, ``_investment.get_anchor_period_index`` pivots on
+        two disagreed, the retired map's anchor-period lookup pivoting on
         the CACHE and its ``base_balances.get(...)`` misses, projecting the
         whole investment map from ZERO.  Corrupting the cache here changes
         nothing at all.
@@ -637,6 +641,114 @@ class TestTheCentCarry:
         assert sum(
             (column.accrual for column in columns.values()), Decimal("0.00"),
         ) == last.balance - Decimal("10000.00")
+
+    def test_a_monthly_account_accrues_on_its_own_calendar_divisor(
+        self, db, seed_user, seed_periods,
+    ):
+        """MONTHLY compounding, through the PRODUCER -- not just the engine.
+
+        **Added at plan step X-g4b, closing a gap the deletion exposed rather
+        than created.**  ``create_hysa_account`` hardcoded DAILY, so no test
+        anywhere ran a MONTHLY or QUARTERLY account through a balance producer:
+        the frequency was graded only against ``accrued_interest`` directly
+        (``test_interest_projection.py``) and through a form round-trip
+        (``test_hysa.py``).  A regression hardcoding DAILY in the replay's rate
+        resolver (:func:`._asset_fold._modelled_return`) would have passed the
+        whole suite -- and the developer's real Money Market compounds MONTHLY,
+        which ``_InterestAccrual`` records in its own docstring.
+
+        Hand-computed, and the divisor is the point.  MONTHLY is SIMPLE
+        interest inside the month, so one day is
+        ``balance x (apy / 12) / days_in_month`` -- not the DAILY rule's
+        ``apy / 365`` compounded.  On $10,000.00 at 3.29% APY, both seeded
+        periods lie wholly inside JANUARY (31 days), so each day accrues
+        ``balance x 0.0329 / 12 / 31``.  Credited in whole cents off a
+        full-precision running total (ruling R-X)::
+
+            period 0 (2026-01-02 .. 01-15, 14 days): $12.39 -> $10,012.39
+            period 1 (2026-01-16 .. 01-29, 14 days): $12.40 -> $10,024.79
+
+        Under the DAILY rule the same window earns $12.63 in period 0, so the
+        assertion discriminates the two divisors rather than merely the rate.
+        """
+        account = create_hysa_account(
+            seed_user, db.session, seed_periods[0], Decimal("10000.00"),
+            apy=Decimal("0.03290"),
+            compounding=CompoundingFrequencyEnum.MONTHLY,
+        )
+        ctx = _ctx(seed_user)
+
+        columns = _view(account, ctx, seed_periods[:2])
+        assert columns[seed_periods[0].id].accrual == Decimal("12.39")
+        assert columns[seed_periods[0].id].balance == Decimal("10012.39")
+        assert columns[seed_periods[1].id].accrual == Decimal("12.40")
+        assert columns[seed_periods[1].id].balance == Decimal("10024.79")
+
+    def test_it_does_not_drift_over_a_production_scale_horizon(
+        self, db, seed_user, seed_periods_52,
+    ):
+        """52 periods of compounding telescope EXACTLY and never lose a cent.
+
+        The long-horizon no-drift oracle, ported at plan step **X-g4b** from
+        ``test_interest_accrual.py``'s ``test_hysa_26_period_compounding_no_``
+        ``drift``, which died with the per-PERIOD layer it graded.  The claim
+        transfers directly and gets stronger with the grain: over a full 2-year
+        projection the per-period accruals must sum to the balance change with
+        NO residue, which is only possible if every one of the ~730 daily steps
+        is a whole cent (ruling R-X's carry).
+
+        **MONOTONICITY is the arm that discriminates, and the telescope beside
+        it does not** -- measured, not reasoned.  Each period's accrual must
+        STRICTLY EXCEED the one before it, which is what compounding means: a
+        balance that only grows must earn more each period.  Three one-line
+        production mutations were run against this test and all three fail on
+        exactly that assertion, none on the telescope: crediting each day's
+        accrual rounded INDEPENDENTLY (the defect ruling R-X exists to stop --
+        it plateaus at $19.18), accruing on a STALE period-start base (also
+        $19.18), and a uniformly halved rate ($9.61).
+
+        **The telescope arm is a consistency check, NOT evidence, and saying so
+        is the point.**  ``sum(accruals) == balance change`` holds under all
+        three of those mutations, because ``_resolve_days`` builds the running
+        balance by adding exactly the steps it records -- the identity is
+        arithmetic, and :mod:`app.services.balance_at._asset_fold` says so
+        itself ("it holds BY CONSTRUCTION rather than as an invariant a test
+        polices").  It is kept because it costs nothing and would catch a
+        future producer that stopped deriving the two from one step list; it is
+        not what makes this test a control.
+
+        **What monotonicity does NOT catch, stated so the boundary is known:**
+        a rate wrong by a factor small enough that each period still out-earns
+        the last.  That is pinned by
+        :meth:`test_the_cumulative_accrual_is_the_rounded_exact_total` in this
+        same class, whose $19.20 over 14 days is hand-computed against the
+        APY -- so the two together pin the RATE and its long-horizon BEHAVIOUR
+        separately, which is the split this file uses everywhere.
+
+        No sampling: every one of the 52 columns participates in both arms.
+        """
+        account = create_hysa_account(
+            seed_user, db.session, seed_periods_52[0], Decimal("10000.00"),
+            apy=Decimal("0.05000"),
+        )
+        ctx = BalanceContext.build(
+            seed_user["user"].id, as_of=date(2028, 12, 31),
+        )
+
+        columns = _view(account, ctx, seed_periods_52)
+        assert len(columns) == 52
+
+        accruals = [columns[period.id].accrual for period in seed_periods_52]
+        last = columns[seed_periods_52[-1].id]
+        assert sum(accruals, Decimal("0.00")) == (
+            last.balance - Decimal("10000.00")
+        )
+        for index in range(1, len(accruals)):
+            assert accruals[index] > accruals[index - 1], (
+                f"period {index} accrued {accruals[index]} against "
+                f"{accruals[index - 1]} the period before -- a compounding "
+                "balance must earn strictly more each period"
+            )
 
 
 class TestTheContributionTier:

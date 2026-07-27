@@ -42,7 +42,8 @@ from app.services import (
     transfer_recurrence,
     transfer_service,
 )
-from app.services.balance_at import _calculator as balance_calculator
+from app.services import balance_at
+from app.services.balance_at import BalanceContext
 
 
 def _create_transaction(seed_user, seed_periods, period_index=0,
@@ -1006,11 +1007,18 @@ class TestCarryForwardOverrideSibling:
                 ).all()
             )
             account = seed_user["account"]
-            balances, _stale = balance_calculator.calculate_balances(
-                anchor_balance=account.current_anchor_balance,
-                anchor_period_id=account.current_anchor_period_id,
-                periods=seed_periods,
-                transactions=target_txns,
+            # Plan step X-g4b: read what the app renders.  The fold loads the
+            # account's own rows, so the period-window query above is no longer
+            # threaded in -- it stays only as this test's own statement of what
+            # it put there.  ``as_of`` is pinned inside period 0 so ruling R-G
+            # does not clamp the still-Projected rows out of the window.
+            assert len(target_txns) == 2
+            balances = balance_at.cash_balance_map(
+                account,
+                BalanceContext.build(
+                    seed_user["user"].id, as_of=seed_periods[0].start_date,
+                ),
+                seed_periods,
             )
 
             # Two $250 expenses pull the period balance down by $500
@@ -2449,11 +2457,15 @@ class TestCarryForwardEnvelopeBalanceInvariant:
             )
 
             account = seed_user["account"]
-            balances, _stale = balance_calculator.calculate_balances(
-                anchor_balance=account.current_anchor_balance,
-                anchor_period_id=account.current_anchor_period_id,
-                periods=seed_periods,
-                transactions=txns,
+            # Plan step X-g4b: read what the app renders (see the sibling test
+            # above for why ``as_of`` is pinned).
+            assert txns
+            balances = balance_at.cash_balance_map(
+                account,
+                BalanceContext.build(
+                    seed_user["user"].id, as_of=seed_periods[0].start_date,
+                ),
+                seed_periods,
             )
 
             # Anchor balance from seed_user is $1000; settled source

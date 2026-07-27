@@ -378,8 +378,8 @@ def grid_balance_view(
 
     **The account's REAL contribution feed is loaded here, and it is the whole
     INVESTMENT half** (ruling R-AJ (a)).  :func:`._asset_fold._modelled_return`
-    reads the CALLER's ``investment_params`` on the INVESTMENT arm, where INTEREST
-    reads ``_interest.accrual_params`` and APPRECIATING reads the account row --
+    reads the CALLER's ``investment_params`` on the INVESTMENT arm, while the
+    INTEREST and APPRECIATING arms read the account's own params row --
     so passing ``ContributionInputs.absent()`` here, as this entry did until the
     cutover, would model NO return at all for the whole kind, not merely no
     contribution.  It loads through :func:`._inputs._contribution_inputs_for_account`,

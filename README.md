@@ -428,7 +428,7 @@ timeout 660 pytest -v --tb=short
 timeout 660 pytest --cov=app --cov-report=term-missing
 
 # Run specific test files (fast feedback during development)
-pytest tests/test_services/test_balance_calculator.py -v
+pytest tests/test_services/test_cash_fold.py -v
 pytest tests/test_routes/test_grid.py -v
 ```
 

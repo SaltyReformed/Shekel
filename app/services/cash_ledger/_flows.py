@@ -9,11 +9,13 @@ balance.
 
 ONE function since plan step X-c2b3: :func:`sum_projected`, the Projected-only
 ``(income, expense)`` reduction over an already-loaded row set, valuing each row
-through :mod:`._amounts`.  It is the shared engine BOTH cash bases reduce
-through -- the seam's fold (``balance_at._cash_fold``) for the still-projected
-tier and the retiring anchor-forward walk (``balance_at._calculator``) for the
-investment / appreciation bases -- which is what keeps ONE entries-aware expense
-rule and ONE live-override basis across them.
+through :mod:`._amounts`.  Since plan step X-g4b there is ONE consumer, the
+seam's cash fold (``balance_at._cash_fold``) -- the anchor-forward walk that was
+the second was deleted with the producers it served.  It stays here rather than
+moving inside the seam for the reason this module exists at all: a SUM over rows
+is a flow, not a stock, and the rule for what one row contributes is not a
+balance rule.  Its home is also what keeps ONE entries-aware expense rule and
+ONE live-override basis available to the next reader that needs a flow.
 
 **Its per-period siblings are gone, and what they were FOR is why.**
 ``period_subtotal`` / ``period_subtotals`` / ``PeriodSubtotal`` loaded a window's
@@ -62,10 +64,12 @@ from ._amounts import _expense_amount, income_amount
 def sum_projected(transactions, amount_overrides=None):
     """Sum projected (unsettled) income and expenses for one pay period.
 
-    Part of this module's public surface (no leading underscore): both cash
-    bases call it -- the seam's fold and the retiring anchor-forward walk -- so
-    the projected-sum rule lives in exactly one place rather than being
-    re-implemented per surface.
+    Part of this module's public surface (no leading underscore): the seam's
+    cash fold reaches it from another package, so the projected-sum rule lives
+    in exactly one place rather than being re-implemented per surface.  It was
+    called by two cash bases until plan step X-g4b deleted the anchor-forward
+    walk; one caller does not make it private, because the caller is across a
+    package boundary and the rule is a FLOW rather than a balance.
 
     Only Projected items contribute to the projected balance: settled
     (done / received), credit, and cancelled transactions are excluded
@@ -78,13 +82,12 @@ def sum_projected(transactions, amount_overrides=None):
     visits, anchor and post-anchor alike (D6-06): in the anchor period
     the excluded settled items are the ones already reflected in the
     anchor balance the user entered; in post-anchor periods nothing is
-    settled yet.  Either way only the projected remainder is summed.  The
-    anchor-vs-roll-forward distinction -- which starting balance this sum
-    is added to -- lives solely in
-    :func:`~app.services.balance_at._calculator.calculate_balances`, not here,
-    which is why a single helper serves both branches (collapsed from the
-    historically-separate ``_sum_remaining`` / ``_sum_all`` once both
-    became Projected-only).
+    settled yet.  Either way only the projected remainder is summed.  WHERE a
+    sum lands -- which day, on which running total -- has never lived here, and
+    since plan step X-g4b there is no anchor-vs-roll-forward branch anywhere:
+    the fold has one running total and this reduction values a day's group of
+    rows on it (collapsed from the historically-separate ``_sum_remaining`` /
+    ``_sum_all`` once both became Projected-only).
 
     Income uses :func:`~app.services.cash_ledger._amounts.income_amount`
     (effective_amount, or a live override when present).  Expenses use

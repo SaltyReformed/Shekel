@@ -23,8 +23,16 @@ What did NOT move, and why the split is not "the whole file":
   the reductions over a SET of rows are :mod:`app.services.cash_ledger._flows`'
   question, and moved to ``test_cash_flows.py``;
 * the two ANCHOR-PERIOD tests discriminate a ``_calculator`` branch -- which of
-  its two arms calls the shared reduction -- so they stay with that module and
-  die with it at X-c2c4.
+  its two arms calls the shared reduction -- so they stayed with that module and
+  died with it at plan step X-g4b.
+
+**Plan step X-g4b then moved C5-8 here too** --
+:meth:`TestTheEntriesRelationshipIsNotASeam.test_the_silent_degrade_seam_is_absent_from_source`,
+the STATIC guard that the CRIT-01 short-circuit has not been re-introduced.  It
+lived in ``test_balance_resolver.py``, which died with ``balances_for``; its
+home is the module holding the rule it guards, and its scan WIDENED with the
+move (see the method for why that is the guard's own stated logic rather than
+opportunism).
 
 The plan's own one-liner said "``test_balance_calculator_entries.py`` (27 tests)
 is the three-bucket reservation formula"; tracing measured 18, and the
@@ -41,6 +49,7 @@ The reservation formula under test::
 
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 
 from app.services.cash_ledger._amounts import (
     _entry_aware_amount,
@@ -425,6 +434,68 @@ class TestTheEntriesRelationshipIsNotASeam:
             assert "entries" not in txn.__dict__
 
             assert _entry_aware_amount(txn) == Decimal("200.00")
+
+    def test_the_silent_degrade_seam_is_absent_from_source(self):
+        """C5-8: the ``'entries' not in __dict__`` short-circuit is not in source.
+
+        The static half of the guard above: the test beside it proves the rule
+        BEHAVES correctly today, and this one proves the shape that broke it
+        cannot be re-introduced anywhere a balance is folded.  A future
+        regression re-adding the eager-load presence check fails this loud.
+
+        **It MOVED here at plan step X-g4b, and its scan WIDENED with the
+        move.**  It lived in ``test_balance_resolver.py`` and scanned
+        ``balance_at/_cash_engine.py``, ``balance_at/_calculator.py`` and the
+        whole ``cash_ledger`` package; the first two were deleted at that step
+        and the guard would have raised on their paths.  Its own rationale is
+        why the replacement is a WIDENING rather than a subtraction: it enumerates
+        a PACKAGE rather than naming files precisely because "a scan keyed on a
+        file NAME would have gone quiet at exactly the moment the code it guards
+        moved" (finding N-28, the shape where creating a module escapes a
+        module-keyed gate).  Every balance producer now lives in ``balance_at``,
+        so that package is scanned whole beside ``cash_ledger`` -- and
+        ``rglob``, not ``glob``, so a future nested subpackage cannot escape
+        either.
+
+        Verified free at the move: neither forbidden pattern appears in either
+        package on this date, so the widening costs nothing and closes the
+        larger surface.
+        """
+        services = Path(__file__).resolve().parents[2] / "app" / "services"
+        packages = {
+            name: sorted((services / name).rglob("*.py"))
+            for name in ("cash_ledger", "balance_at")
+        }
+        # The walk must really have happened AND must have reached the module
+        # the forbidden patterns would actually appear in.  Asserting a total
+        # instead would be a magic count that breaks when a package legitimately
+        # gains or sheds a module.
+        for name, sources in packages.items():
+            assert sources, f"the {name} package enumerated to nothing"
+        assert any(
+            source.name == "_amounts.py" for source in packages["cash_ledger"]
+        ), (
+            "the entry-aware rule's module was not scanned: "
+            f"{[s.name for s in packages['cash_ledger']]}"
+        )
+        assert any(
+            source.name == "_cash_fold.py" for source in packages["balance_at"]
+        ), (
+            "the cash fold's module was not scanned: "
+            f"{[s.name for s in packages['balance_at']]}"
+        )
+
+        forbidden_patterns = ("not in txn.__dict__", "'entries' not in")
+        for sources in packages.values():
+            for source_path in sources:
+                source = source_path.read_text(encoding="utf-8")
+                for pattern in forbidden_patterns:
+                    assert pattern not in source, (
+                        f"Forbidden seam pattern {pattern!r} found in "
+                        f"{source_path}.  E-25 / CRIT-01 / F-009 regression: no "
+                        "balance path may consult the instance __dict__ to "
+                        "decide whether the entries-aware reduction applies."
+                    )
 
 
 class _FakeRow:  # pylint: disable=too-few-public-methods

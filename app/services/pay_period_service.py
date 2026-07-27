@@ -33,9 +33,10 @@ def _reject_overlapping_batch(existing_periods, new_starts):
     order.  The cash fold indexes a day's column by DATE
     (``balance_at._cash_fold._PeriodSpans``, a bisect over sorted
     ``start_date``) so it would place a flow in the wrong column rather than
-    skip it, and the surviving index-ordered walks (the investment and
-    appreciation bases, ``_cash_engine.balances_for``) skip the out-of-order
-    period outright and silently drop its transactions.  A start date that
+    skip it.  The index-ordered anchor-forward walks that used to SKIP such a
+    period outright -- silently dropping its transactions -- were deleted at
+    plan step X-g4b, so the date-keyed misplacement is now the only failure
+    mode, and it is the reason this batch is rejected rather than reshuffled.  A start date that
     lands ON or WITHIN any existing period's ``[start_date, end_date]`` span
     also produces overlapping date ranges (two periods covering one day) and a
     nondeterministic ``get_current_period``.

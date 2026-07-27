@@ -19,8 +19,9 @@ balances themselves.  (:func:`compute_property_equity` is the exception that
 proves the boundary: it is an EQUITY figure, not a net-worth balance, and it
 delegates to :mod:`app.services.home_equity_service`.)
 
-The dense per-account balance maps are built ONCE (over ALL periods, so
-``balance_resolver`` always has its anchor seed) and shared by both the
+The dense per-account balance maps are built ONCE (over ALL periods -- see
+:func:`build_account_net_worth_maps` for why that rule OUTLIVED the
+anchor-seeking producer that motivated it) and shared by both the
 series and the change delta, via :func:`build_account_net_worth_maps`;
 the orchestrator builds them and threads the result into both producers.
 """
@@ -291,9 +292,13 @@ def _honest_history_start_index(
       balance, not its real past balance.  Gates at its schedule-start index
       (:func:`_loan_schedule_start_index`).
 
-    INVESTMENT (reverse-projected) and APPRECIATING (flat-carried) accounts
-    are defined at every period by the seam's own modeling, so they do not
-    constrain the window.
+    Every NON-loan kind is defined at every period by the seam's one event
+    replay, so none of them constrains the window.  This paragraph named the
+    INVESTMENT reverse projection and the APPRECIATING flat carry until plan
+    step X-g4b: those were two arms of a dispatch ladder ruling R-AD deleted,
+    and the property that mattered -- defined everywhere -- is now a
+    consequence of the fold being TOTAL rather than of each arm modelling its
+    own past.
 
     **Cash no longer CONSTRAINS the window (plan step X-c2b2, finding N-44).**
     PLAIN and INTEREST accounts used to gate at their anchor period, because

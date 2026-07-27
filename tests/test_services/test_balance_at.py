@@ -64,7 +64,7 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
-from app.services.balance_at import _investment as net_worth_investment, _kernel as net_worth_kernel
+from app.services.balance_at import _kernel as net_worth_kernel
 from app.services.balance_at._asset_contributions import ContributionInputs
 from app.services.projection_inputs import (
     load_active_deductions_for_accounts,

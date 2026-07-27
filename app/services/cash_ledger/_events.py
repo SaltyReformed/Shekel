@@ -112,9 +112,8 @@ class CashAnchorFact:
         account_id: The ``budget.accounts`` id the assertion belongs to.
         anchor_balance: The asserted balance, LEDGER-NATIVE sign: an
             owed-as-negative liability anchor stays negative.  The walk never
-            branches on account class, exactly as
-            :func:`app.services.balance_at._calculator.calculate_balances` never
-            does; classifying asset vs liability belongs to the net-worth
+            branches on account class (ruling R-J), and neither does the fold
+            above it; classifying asset vs liability belongs to the net-worth
             consumers.
         pay_period_id: The history row's pay period (NOT NULL) -- the period a
             correction derived from this assertion is attributed to.
@@ -296,9 +295,9 @@ def settled_cash_facts(
     :func:`~app.utils.balance_predicates.balance_contributing_clause` eligibility
     gate (``is_deleted = FALSE AND status_id NOT IN (Credit, Cancelled)``) and
     both eager loads are stated once for the two halves of the event stream
-    rather than copied per half.  That gate is the same one
-    :func:`app.services.cash_ledger.load_balance_transactions` applies, so the
-    fold and the projection cannot disagree about which rows exist at all.
+    rather than copied per half.  One gate for both halves is what makes the
+    SETTLED and PLANNED tiers a partition of the contributing set rather than
+    two filters that could disagree about which rows exist at all.
 
     This half supplies the SETTLED narrowing, in SQL rather than as a Python
     post-filter, and the difference is real work: the contributing gate alone

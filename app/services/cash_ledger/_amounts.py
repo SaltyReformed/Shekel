@@ -190,13 +190,15 @@ def _entry_aware_amount(txn):
     vs $114.29 on /savings for the same data) is exactly that seam in
     production: the grid eager-loaded entries and computed the
     reduction; /savings did not and got back ``estimated_amount``
-    unchanged.  E-25's correction makes the canonical producer
-    ``app.services.balance_at._cash_engine.balances_for`` always
-    eager-load entries (through
-    :func:`app.services.cash_ledger._facts.load_balance_transactions`),
-    so this function never sees an unloaded relationship from a routed
-    caller.  The remaining ``getattr(txn, "entries", ())`` access below
-    covers two safe cases:
+    unchanged.  E-25's correction put the eager load inside the
+    LOADER rather than leaving it to each consumer, and plan step X-g4b
+    left that property where the fold reads: every row this rule is
+    handed comes from
+    :func:`app.services.cash_ledger._facts._unwindowed_contributing_rows`,
+    which issues ``selectinload(Transaction.entries)`` for both halves
+    of the event stream, so this function never sees an unloaded
+    relationship from a routed caller.  The remaining
+    ``getattr(txn, "entries", ())`` access below covers two safe cases:
 
       * **Not-yet-routed ORM callers** (savings/accounts/calendar/
         year-end/investment/retirement, fixed in Commits 6-9): the

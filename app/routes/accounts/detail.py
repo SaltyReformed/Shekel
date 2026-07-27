@@ -37,9 +37,12 @@ the page shows changed there and not here:
 Both seam entries delegate to the canonical entries-aware producers, so
 the silent-degrade seam fixed by CRIT-01 / F-009 cannot reappear here.
 The F-6 static guard in :mod:`tests.test_routes.test_accounts` pins this
-contract by asserting that the seam (``balance_at.``) is used and the bare
-entries-blind producer ``calculate_balances`` (in ``balance_calculator``)
-is not; that guard reads this file directly.
+contract by asserting that the seam (``balance_at.``) is used and that the
+whole-account kind-correct ``balance_map`` is NOT called beside the interest
+map; that guard reads this file directly.  Its third arm forbade the bare
+entries-blind ``calculate_balances``, and plan step X-g4b deleted the arm with
+the producer: a negative arm naming a function that no longer exists is a
+sentence that can never fail.
 """
 
 from __future__ import annotations

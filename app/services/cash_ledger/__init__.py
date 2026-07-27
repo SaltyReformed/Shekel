@@ -76,7 +76,6 @@ from ._events import (
 )
 from ._facts import (
     AnchorPoint,
-    load_balance_transactions,
     planned_cash_rows,
     resolve_anchor,
 )
@@ -99,7 +98,6 @@ __all__ = [
     "dated_deltas",
     "income_amount",
     "live_amount_overrides",
-    "load_balance_transactions",
     "merge_anchor_and_cash_events",
     "planned_cash_rows",
     "resolve_anchor",

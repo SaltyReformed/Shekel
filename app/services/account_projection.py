@@ -49,9 +49,9 @@ class AccountProjectionKind(Enum):
        by :func:`app.services.loan_resolver.resolve_loan` via the
        :func:`app.services.loan_resolver.compute_payoff_scenarios`
        composer).
-    2. :data:`INTEREST` -- interest projection layered over the
-       balance calculator
-       (:mod:`app.services.balance_at._interest`, layered on the cash fold).
+    2. :data:`INTEREST` -- a modelled accrual over the account's folded
+       cash balance, resolved by the seam's ONE event replay
+       (:mod:`app.services.balance_at._asset_fold`).
     3. :data:`APPRECIATING` -- the growth engine run as pure compound
        appreciation with no contributions
        (:func:`app.services.growth_engine.project_balance`, fed by

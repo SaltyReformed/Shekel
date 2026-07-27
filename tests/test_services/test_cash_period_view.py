@@ -147,14 +147,21 @@ class TestTheSubtotalsCountEveryAttributedRow:
         # reference: the settled row is what makes this column differ from what
         # an unpaid-only reduction could ever report, so assert it is PRESENT in
         # the figures rather than merely that the figures are self-consistent.
-        # The retired subtotal WAS ``sum_projected`` over the same loader's
-        # rows, so composing the two reproduces its answer exactly -- $75.00 --
-        # and the column exceeds it by the settled $200.00.
-        _, unpaid_only_expense = cash_ledger.sum_projected(
-            cash_ledger.load_balance_transactions(
-                account, scenario.id, [seed_periods[2].id],
-            ),
-        )
+        # The retired subtotal WAS ``sum_projected`` over the account's rows,
+        # so composing the two reproduces its answer exactly -- $75.00 -- and
+        # the column exceeds it by the settled $200.00.  Plan step X-g4b
+        # re-pointed this off ``load_balance_transactions`` (deleted with its
+        # last caller) onto ``planned_cash_rows``, which is the loader the
+        # producer under test ACTUALLY uses: the reference is now the same row
+        # set the column is built from rather than a second loader that agreed.
+        # ``sum_projected`` re-applies ``is_projected`` over whatever it is
+        # handed, so the figure is unchanged.
+        _, unpaid_only_expense = cash_ledger.sum_projected([
+            row for row in cash_ledger.planned_cash_rows(
+                account.id, scenario.id,
+            )
+            if row.pay_period_id == seed_periods[2].id
+        ])
         assert unpaid_only_expense == Decimal("75.00")
         assert figures.expense - unpaid_only_expense == Decimal("200.00")
 

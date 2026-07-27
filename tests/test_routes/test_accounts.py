@@ -31,7 +31,6 @@ from app.services import (
     cash_ledger,
     pay_period_service,
 )
-from app.services.balance_at import _calculator as balance_calculator
 from app.services.auth_service import hash_password
 
 
@@ -2802,10 +2801,18 @@ class TestCheckingDetail:
     def test_checking_detail_matches_grid_balance(
         self, app, auth_client, seed_user,
     ):
-        """Checking detail projections use the same balance calculator as the grid.
+        """The detail page's 3-month projection is the HAND-COMPUTED figure.
 
-        Calls calculate_balances() directly and verifies the detail page
-        displays the same value for the 3-month projection.
+        It used to derive its expected value by calling the balance producer
+        the route also called, which proved only that one function is
+        deterministic.  Plan step X-g4b deleted that producer and the
+        derivation with it: the figure below is arithmetic, so the page and the
+        seam must both be right rather than merely agree.
+
+        Hand-computed: a $5,000.00 opening assertion, then 26 periods each
+        carrying +$2,000.00 income and -$1,500.00 expense (net +$500.00).  The
+        3-month projection is period 6, six periods forward of the anchor:
+        ``5,000.00 + 6 x 500.00 = $8,000.00``.
         """
         with app.app_context():
             scenario = seed_user["scenario"]
@@ -2846,36 +2853,11 @@ class TestCheckingDetail:
                 ))
             db.session.commit()
 
-            # Call balance calculator directly (same function grid.py uses).
-            acct_transactions = (
-                db.session.query(Transaction)
-                .filter(
-                    Transaction.account_id == acct.id,
-                    Transaction.pay_period_id.in_([p.id for p in periods]),
-                    Transaction.scenario_id == scenario.id,
-                    Transaction.is_deleted.is_(False),
-                )
-                .all()
-            )
-
-            balances, _ = balance_calculator.calculate_balances(
-                anchor_balance=Decimal("5000.00"),
-                anchor_period_id=periods[0].id,
-                periods=periods,
-                transactions=acct_transactions,
-            )
-
-            # Get the 3-month balance from the calculator.
-            target_period = periods[6]
-            calc_balance = balances[target_period.id]
-
-            # Verify the detail page shows this exact value.
             resp = auth_client.get(f"/accounts/{acct.id}/details")
             assert resp.status_code == 200
 
             # The projection summary uses {:,.0f} format.
-            expected_str = "${:,.0f}".format(float(calc_balance))
-            assert expected_str.encode() in resp.data
+            assert b"$8,000" in resp.data
 
     def test_cash_detail_serves_plain_savings(
         self, app, auth_client, seed_user,
@@ -3479,17 +3461,16 @@ class TestCheckingDetailCanonicalProducer:
         Commit 11 of the main remediation) cannot catch a route-handler
         bypass of the canonical producer because its /accounts reader
         re-runs ``balance_at.cash_balance_map`` itself rather than parsing
-        the rendered HTML.  A regression that swaps the detail route to the
-        bare entries-blind producer ``balance_calculator.calculate_balances``
-        (re-opening the F-009 / CRIT-01 silent-degrade seam) would drift
-        silently through that lock.  This static guard closes the gap.
+        the rendered HTML.  A regression that swaps the detail route for a
+        hand-rolled balance loop would drift silently through that lock.  This
+        static guard closes the gap.
 
         The single ``cash_detail`` route reads plain cash balances via the
         cash-flow entry ``balance_at.cash_balance_map`` and interest-bearing
         balances via ``balance_at.interest_projection_for_account``, which
         returns the accrued balances AND the earned-interest map from ONE cash
-        fold.  It calls neither a ``_cash_engine`` producer nor a
-        ``balance_calculator`` one for balances directly.
+        fold.  It reaches no producer directly -- structurally since plan step
+        D3, W9910 forbidding any import of a seam-private module.
 
         **Every arm matches the CALL, with its open paren, and that is the
         whole reason this guard was rewritten** (plan finding N-63, promoted to
@@ -3502,7 +3483,7 @@ class TestCheckingDetailCanonicalProducer:
         call sites, three prose mentions, green.  The docstrings were corrected
         with it.
 
-        Four assertions:
+        Three assertions:
           1. ``balance_at.cash_balance_map(`` must appear (positive: the
              plain-cash seam wiring is intact).
           2. ``balance_at.interest_projection_for_account(`` must appear
@@ -3512,10 +3493,12 @@ class TestCheckingDetailCanonicalProducer:
              reaching it beside the interest map is what made the page fold the
              SAME account twice per render (finding N-64).  This arm is what
              keeps that fix from silently regressing.
-          4. ``balance_calculator.calculate_balances(`` (the entries-blind
-             walk) must NOT appear, so neither it nor a
-             ``calculate_balances_with_interest(`` can re-open the
-             entries-blind seam.
+
+        **A FOURTH arm forbade ``balance_calculator.calculate_balances(`` and
+        was deleted at plan step X-g4b, with the producer.**  Section 8's rule:
+        when the name a negative arm forbids no longer exists, the arm stops
+        being a guard and becomes a sentence that can never fail -- which reads
+        as coverage and is not.  It deletes WITH the name.
 
         File path note: the merged ``cash_detail`` route (and the
         ``checking_detail`` / ``interest_detail`` redirect stubs) live in
@@ -3550,12 +3533,6 @@ class TestCheckingDetailCanonicalProducer:
             "pre-X-c2b2 shape, and calling it beside the interest map folds "
             "the same account twice per render (N-64).  Read both halves from "
             "``interest_projection_for_account`` instead."
-        )
-        assert "balance_calculator.calculate_balances(" not in accounts_source, (
-            "app/routes/accounts/detail.py imports the bare entries-blind "
-            "``balance_calculator.calculate_balances`` -- this bypasses "
-            "the entries-aware reduction (F-009 / CRIT-01 fix).  Use the "
-            "``balance_at`` seam instead."
         )
 
 

@@ -16,8 +16,12 @@ The first three are exactly :mod:`app.services.balance_at._cash_fold`'s three
 tiers, taken whole through :func:`~app.services.balance_at._cash_fold.assemble`
 rather than re-derived -- which is the structural claim this module exists to
 make: an INTEREST account, an INVESTMENT and a Property are not three questions,
-they are the cash fold plus a rate, and :mod:`._interest` already said so in its
-own words before there was a shape that could express it.
+they are the cash fold plus a rate.  The retired interest layer said exactly
+that in its own words ("that module models an INVESTMENT's growth and an
+APPRECIATING asset's appreciation on top of their cash bases, and this one models
+an INTEREST account's accrual on top of its folded cash balance") years before
+there was a shape that could express it; plan step X-g4b deleted it, and this
+module is the sentence made structural.
 
 **ACCRUAL is the only MULTIPLICATIVE kind, and that is the whole difference.**
 Its delta is a function of the running balance at its own instant, so resolving
@@ -29,28 +33,39 @@ module shares with the LOAN fold and the cash fold, is unchanged.  Generalising
 that sampler to be balance-dependent would have put this step's blast radius on
 the loan side for no gain.
 
-**What it replaces, and why the replacement is not a preference** (plan step
-X-g2 wires it; this module ships ADDITIVE and unwired).  Today a modelled
-account's map is three producers merged by a preference order
-(``_investment._merge_balance_sources``): a forward growth projection, the
-anchor-forward cash base, and a REVERSE growth projection.  Measured on the
-prod-shape clone, that merge renders **$6,315.57** of net-worth history that
-contradicts the user's own recorded balance assertions -- the three modelled
-accounts carry 15 of them and the map reads only the LATEST, re-deriving every
-earlier period from a model (findings N-43 / N-74).  A fold has no join, so it
-has no join rule to get wrong: every ASSERTION is replayed as a reset, which is
-what makes the earlier periods read the numbers the user typed in.
+**What it REPLACED, and why the replacement was not a preference** (wired at
+plan step X-g2b, and the producers it replaced were deleted at X-g4b).  A
+modelled account's map used to be three producers merged by a preference
+order -- a forward growth projection, the anchor-forward cash base, and a
+REVERSE growth projection.  Measured on the prod-shape clone, that merge
+rendered **$6,315.57** of net-worth history contradicting the user's own
+recorded balance assertions: the three modelled accounts carry 15 of them and
+the map read only the LATEST, re-deriving every earlier period from a model
+(findings N-43 / N-74).  A fold has no join, so it has no join rule to get
+wrong: every ASSERTION is replayed as a reset, which is what makes the earlier
+periods read the numbers the user typed in.
 
 **Four rules decide where the modelled tiers start and what they are worth.**
 
 * **Ruling R-L, generalised at ruling R-Y.**  ACCRUAL exists only on days at or
   after the LATEST balance assertion, and the assertion's OWN day accrues.
   Everything at or before it is a bank fact the user typed in, and modelling
-  across those days adds money the assertion already contains.  This is what
-  ``_interest`` has done since plan step X-c2a; ruling R-Y extends it to
-  INVESTMENT and APPRECIATING, which today skip the anchor PERIOD entirely and
-  so silently drop up to a full period of return (measured: Roth +$105.26, Trad
-  IRA +$44.95, Empower +$76.59, Property +$170.11 at the anchor period).
+  across those days adds money the assertion already contains.  The retired
+  interest layer had done this since plan step X-c2a -- before it, accrual began
+  at the anchor PERIOD's start, up to 13 days early, worth $6.77 over 14 days on
+  the real Fidelity Savings where the honest window earns $1.45 over 3 -- and
+  ruling R-Y extended it to INVESTMENT and APPRECIATING, which skipped the anchor
+  PERIOD entirely and so silently dropped up to a full period of return
+  (measured: Roth +$105.26, Trad IRA +$44.95, Empower +$76.59, Property +$170.11
+  at the anchor period).
+* **The DAY-COUNT class stops being representable, and it is recorded here
+  because the module that recorded it is gone.**  The retired per-period layer
+  had to convert a pay period's INCLUSIVE ``end_date`` into the exclusive right
+  boundary its interest formula wanted, and getting that wrong counted 13 days of
+  a 14-day period -- understating a HYSA's yield by ~1 day in 14 (~7%), the
+  interest-path twin of the growth engine's own day-count defect.  A date-keyed
+  daily ACCRUAL has no period boundary to convert, so there is no convention left
+  to misstate.
 * **Ruling R-S.**  There is no backward direction.  Before the FIRST assertion
   the balance is ruling R-I's back-projection over the records it already
   contains -- the cash fold's own answer, inherited here for free -- and the
@@ -113,7 +128,7 @@ from app.services.account_projection import (
 from app.services.interest_projection import accrued_interest
 from app.utils.money import round_money
 
-from . import _asset_contributions, _cash_fold, _interest
+from . import _asset_contributions, _cash_fold
 from ._asset_contributions import ContributionInputs
 from ._context import BalanceContext
 from ._fold import sample_cumulative
@@ -144,7 +159,7 @@ class _InterestAccrual:
     That is also what the daily grain BUYS on the monthly and quarterly
     frequencies, and it is measurable: a 14-day pay period straddling a month
     boundary prices every one of its days against the FIRST month's length,
-    because ``calculate_interest`` reads ``monthrange(period_start)`` once for
+    because a per-PERIOD reader resolves ``monthrange(period_start)`` once for
     the whole window.  On $10,000 at 3.29% APY over 2026-01-29 .. 2026-02-11 --
     three January days and eleven February ones -- that is **$12.38** against a
     day-by-day **$13.42**, so one period is short by **$1.04** (8.4%).  It is
@@ -365,9 +380,17 @@ def _modelled_return(
     """Return *account*'s modelled per-day return, or ``None`` if it models none.
 
     "Does this account model a return, and at what rate?" asked ONCE, for all
-    three modelled kinds -- the generalisation of
-    :func:`app.services.balance_at._interest.accrual_params`, which this
-    delegates to for INTEREST so the two cannot answer that kind differently.
+    three modelled kinds, and answered in ONE shape per kind: resolve that
+    kind's params row, and model nothing when it is absent.
+
+    **INTEREST used to answer through a second function** (``_interest``'s
+    ``accrual_params``, deleted at plan step X-g4b with the module).  That
+    function re-ran :func:`~app.services.account_projection.classify_account`
+    inside a branch this one has ALREADY classified -- one predicate stated
+    twice, and the branch below is what the second statement existed to serve.
+    Folding it here is the same substitution ruling R-AD made one level up when
+    it deleted the per-kind ladder: the three arms differ only in which params
+    row they read.
 
     An account whose parameters are absent models NOTHING and is its cash fold:
     an INTEREST-kinded account with no params row is an HYSA the user has not
@@ -378,7 +401,9 @@ def _modelled_return(
 
     Args:
         account: The account to test.  Its ``account_type`` drives the
-            classifier.
+            classifier.  The INTEREST arm's ``getattr`` covers a non-ORM test
+            fake carrying no ``interest_params`` attribute at all, which the
+            balance paths have always tolerated.
         investment_params: The account's
             :class:`~app.models.investment_params.InvestmentParams`, or ``None``
             -- supplied by the caller's batch-loaded bundle rather than
@@ -389,7 +414,7 @@ def _modelled_return(
     """
     kind = classify_account(account)
     if kind is AccountProjectionKind.INTEREST:
-        interest_params = _interest.accrual_params(account)
+        interest_params = getattr(account, "interest_params", None) or None
         return None if interest_params is None else _InterestAccrual(
             apy=interest_params.apy,
             compounding_frequency_id=interest_params.compounding_frequency_id,
@@ -466,13 +491,16 @@ def _resolve(
     :func:`~app.services.balance_at._fold.sample_cumulative` reads the result
     exactly as it reads the cash and loan folds.
 
-    **A day accrues on the balance it ENDS holding.**  The day's cash and
-    contribution steps are applied first, then the accrual is computed on the
-    result and credited on the same day.  That is the shipped interest rule's
-    own base (``_layer_interest`` accrues on the period's END balance) taken to
-    the daily grain, where the two conventions the code carries today -- accrue
-    on the period's END for interest, on its START for growth -- collapse into
-    "the balance actually held on the day", with no boundary left to pick.
+    **A day accrues on the balance it ENDS holding, and that dissolved a fork
+    rather than picking a side.**  The day's cash and contribution steps are
+    applied first, then the accrual is computed on the result and credited on
+    the same day.  The two producers this replaced disagreed about that base --
+    the interest layer accrued on the pay period's END balance, the growth
+    engine on its START -- so a deposit made mid-period earned a FULL period of
+    interest under one rule and none under the other, and no test could pin the
+    right one because each was self-consistent.  At the daily grain both
+    collapse into "the balance actually held on the day", and there is no
+    boundary left for a convention to be wrong about.
 
     **Ruling R-X's cent carry, in three lines.**  The accrual is accumulated at
     full precision in ``exact``; what is CREDITED is ``round_money(exact)``, and

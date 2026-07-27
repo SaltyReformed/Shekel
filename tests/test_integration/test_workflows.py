@@ -11,6 +11,7 @@ Tests multi-step workflows that span services and routes:
 """
 
 from collections import OrderedDict
+from datetime import timedelta
 from decimal import Decimal
 
 import pytest
@@ -33,7 +34,9 @@ from app.services import (
     recurrence_engine,
     transfer_recurrence,
 )
-from app.services.balance_at import _calculator as balance_calculator
+from app.services import balance_at
+from app.services.balance_at import BalanceContext
+from tests._test_helpers import override_anchor, settle_instant_on
 
 
 class TestSalaryToGrid:
@@ -168,12 +171,17 @@ class TestTransferToBalance:
                 .all()
             )
 
-            # Calculate balances with the shadow expense transaction.
-            balances, _ = balance_calculator.calculate_balances(
-                anchor_balance=Decimal("1000.00"),
-                anchor_period_id=seed_periods[0].id,
-                periods=seed_periods,
-                transactions=shadow_txns,
+            # What the app RENDERS (plan step X-g4b re-pointed this off the
+            # deleted anchor-forward walk).  ``as_of`` is pinned inside period
+            # 0 so ruling R-G's clamp does not carry the still-Projected shadow
+            # past the window; the $1,000.00 anchor is the fixture's own.
+            assert shadow_txns
+            balances = balance_at.cash_balance_map(
+                seed_user["account"],
+                BalanceContext.build(
+                    seed_user["user"].id, as_of=seed_periods[0].start_date,
+                ),
+                seed_periods,
             )
 
             # Shadow expense of $200 reduces balance: 1000 - 200 = 800.
@@ -217,16 +225,17 @@ class TestCreditPaybackBalance:
             assert payback.estimated_amount == Decimal("75.00")
             assert payback.credit_payback_for_id == txn.id
 
-            # Balance calculation: credit txn contributes 0, payback contributes full amount.
-            all_txns = db.session.query(Transaction).filter(
-                Transaction.is_deleted.is_(False),
-            ).all()
-
-            balances, _ = balance_calculator.calculate_balances(
-                anchor_balance=Decimal("1000.00"),
-                anchor_period_id=seed_periods[0].id,
-                periods=seed_periods[:3],
-                transactions=all_txns,
+            # Balance: the Credit txn contributes 0, the payback the full
+            # amount.  Read through the seam (plan step X-g4b) rather than by
+            # handing a producer a hand-loaded row list -- the fold loads the
+            # account's own rows, which is what makes the Credit exclusion a
+            # property of the PRODUCER here rather than of this query.
+            balances = balance_at.cash_balance_map(
+                seed_user["account"],
+                BalanceContext.build(
+                    seed_user["user"].id, as_of=seed_periods[0].start_date,
+                ),
+                seed_periods[:3],
             )
             # Period 0: credit txn → $0 effect, balance stays 1000.
             assert balances[seed_periods[0].id] == Decimal("1000.00")
@@ -257,20 +266,34 @@ class TestAnchorTrueUpBalance:
             db.session.add(txn)
             db.session.commit()
 
-            # Calculate with anchor = $2000.
-            balances_2k, _ = balance_calculator.calculate_balances(
-                anchor_balance=Decimal("2000.00"),
-                anchor_period_id=seed_periods[0].id,
-                periods=seed_periods[:3],
-                transactions=[txn],
+            # Plan step X-g4b: the anchor is an ASSERTION the account carries,
+            # not an argument a caller passes -- so the true-up is performed
+            # through the same helper production writes one with, and read back
+            # through the seam.  That is what this test was always about; the
+            # deleted producer merely let it be simulated with a parameter.
+            ctx = BalanceContext.build(
+                seed_user["user"].id, as_of=seed_periods[0].start_date,
+            )
+            override_anchor(
+                db.session, seed_user["account"], seed_periods[0],
+                Decimal("2000.00"), notes="workflow true-up 2k",
+                at=settle_instant_on(seed_periods[0].start_date),
+            )
+            db.session.commit()
+            balances_2k = balance_at.cash_balance_map(
+                seed_user["account"], ctx, seed_periods[:3],
             )
 
-            # Calculate with anchor = $3000 (+$1000 difference).
-            balances_3k, _ = balance_calculator.calculate_balances(
-                anchor_balance=Decimal("3000.00"),
-                anchor_period_id=seed_periods[0].id,
-                periods=seed_periods[:3],
-                transactions=[txn],
+            override_anchor(
+                db.session, seed_user["account"], seed_periods[0],
+                Decimal("3000.00"), notes="workflow true-up 3k",
+                at=settle_instant_on(
+                    seed_periods[0].start_date + timedelta(days=1),
+                ),
+            )
+            db.session.commit()
+            balances_3k = balance_at.cash_balance_map(
+                seed_user["account"], ctx, seed_periods[:3],
             )
 
             # Every period's balance should differ by exactly $1000.

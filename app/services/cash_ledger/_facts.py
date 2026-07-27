@@ -7,8 +7,6 @@ and nothing that folds them:
   * :class:`AnchorPoint` / :func:`resolve_anchor` -- the user's balance
     ASSERTION, read from the dated ``AccountAnchorHistory`` source of truth
     (E-19).  A stored fact, not a computed projection.
-  * :func:`load_balance_transactions` -- the account's balance-contributing
-    transaction rows over a period window, with ``entries`` eager-loaded.
   * :func:`planned_cash_rows` -- the account's still-PROJECTED
     balance-contributing rows, unwindowed: the PLAN, which the seam's cash fold
     dates and values (ruling R-G) because a plan's effective date depends on the
@@ -136,11 +134,13 @@ def resolve_anchor(account: Account, scenario_id: int) -> AnchorPoint:
             scenario-scoped at the storage tier -- so the anchor
             returned is identical across scenarios for the same
             account.  The parameter is kept in the signature for two
-            reasons: API symmetry with the
-            ``balances_for(account, scenario_id, periods)`` producer
-            that does need scenario for transaction filtering, and
-            forward compatibility with a possible future per-scenario
-            anchor override.  The value is included in the
+            reasons: API symmetry with the row loaders beside it
+            (``planned_cash_rows`` / ``settled_cash_facts``), which DO
+            need the scenario to filter transactions, and forward
+            compatibility with a possible future per-scenario anchor
+            override.  It cited the anchor-forward ``balances_for``
+            producer until plan step X-g4b deleted it; the symmetry
+            argument is unchanged, only its example is.  The value is included in the
             reconciliation log payload so a future scenario-scoped
             divergence is traceable.
 
@@ -224,64 +224,6 @@ def resolve_anchor(account: Account, scenario_id: int) -> AnchorPoint:
         period=latest.pay_period,
         as_of_date=as_of_date,
         created_at=latest.created_at,
-    )
-
-
-def load_balance_transactions(
-    account: Account,
-    scenario_id: int,
-    period_ids: list[int],
-) -> list[Transaction]:
-    """Return the transactions that participate in a balance projection.
-
-    The single point where the producer's query lives.  Filters:
-
-      * ``account_id`` -- balance is per-account; never mix accounts.
-      * ``scenario_id`` -- balance is per-scenario.
-      * ``pay_period_id IN period_ids`` -- only the periods the caller
-        is projecting over.
-      * :func:`balance_contributing_clause` -- the centralized
-        ``is_deleted = FALSE AND status_id NOT IN (Credit, Cancelled)``
-        gate from ``app.utils.balance_predicates`` (E-15, Commit 2).
-        Using the shared clause here means the SQL filter and the
-        Python summation predicate cannot disagree.
-
-    The query MUST eager-load ``Transaction.entries`` so the
-    entries-aware reduction in
-    :func:`app.services.cash_ledger._amounts._entry_aware_amount`
-    applies unconditionally.  This is the structural fix for CRIT-01
-    / F-009: by owning the query, the producer guarantees the
-    selectinload that pre-remediation consumers each had to remember
-    to add themselves (and ``/savings``, ``/accounts``, calendar,
-    year-end, investment, and retirement collectively forgot to).
-    ``Transaction.status`` is already ``lazy='joined'`` on the model
-    so the joined load suffices; no extra ``selectinload(status)``
-    is needed and adding one would emit a redundant SELECT.
-
-    Args:
-        account: The :class:`~app.models.account.Account` to project.
-            Must be attached to ``db.session``.
-        scenario_id: The scenario the balance is being projected
-            under.
-        period_ids: Pay period ids the projection covers.  An empty
-            list yields an empty result (the empty-projection case;
-            the caller is expected to handle that upstream).
-
-    Returns:
-        ``list[Transaction]`` with ``entries`` eagerly populated.
-    """
-    if not period_ids:
-        return []
-    return (
-        db.session.query(Transaction)
-        .options(selectinload(Transaction.entries))
-        .filter(
-            Transaction.account_id == account.id,
-            Transaction.scenario_id == scenario_id,
-            Transaction.pay_period_id.in_(period_ids),
-            balance_contributing_clause(),
-        )
-        .all()
     )
 
 

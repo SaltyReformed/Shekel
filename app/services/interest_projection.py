@@ -41,7 +41,7 @@ from decimal import Decimal
 
 from app import ref_cache
 from app.enums import CompoundingFrequencyEnum
-from app.utils.money import MONTHS_PER_YEAR, round_money
+from app.utils.money import MONTHS_PER_YEAR
 
 ZERO = Decimal("0.00")
 # Actual/actual day count, evaluated per projection window.  See module
@@ -109,17 +109,29 @@ def accrued_interest(
 ):
     """Return the interest accrued over ``[period_start, period_end)``, UNROUNDED.
 
-    The day-count rule itself -- the actual/actual daily divisor, the
-    calendar-month monthly divisor, the actual-length quarterly divisor
-    -- stated ONCE, so the two consumers cannot drift on it:
+    **Daily compounding uses an actual/actual day count: the divisor is 366
+    when the projection window contains Feb 29 and 365 otherwise.**  See the
+    module docstring ("Day-count convention -- actual/actual for
+    leap-day-crossing windows") for the rationale and the residual error this
+    closes (MED-05 / PA-06).  Monthly and quarterly compounding are unaffected.
+    That paragraph lived on the cent-rounding wrapper ``calculate_interest``
+    until plan step X-g4b deleted it; the rule it describes has always been
+    THIS function's, and a caller reading only the function docstring -- the
+    common case in an editor -- must still learn it here.
 
-    * :func:`calculate_interest` rounds this to cents.  It is the
-      per-PERIOD reader (``balance_at._interest._layer_interest``), whose
-      window is a whole pay period.
-    * the balance seam's modelled asset fold
-      (``balance_at._asset_fold``) accrues DAILY (plan ruling R-T) and
-      credits whole cents off a full-precision running total (ruling
-      R-X), so it needs the sub-cent amount rather than a rounded one.
+    The day-count rule -- the actual/actual daily divisor, the calendar-month
+    monthly divisor, the actual-length quarterly divisor -- stated ONCE.
+
+    **There is exactly ONE consumer, and the sibling that made it two was
+    deleted at plan step X-g4b.**  The balance seam's modelled asset fold
+    (``balance_at._asset_fold``) accrues DAILY (plan ruling R-T) and credits
+    whole cents off a FULL-PRECISION running total (ruling R-X), so it needs
+    the sub-cent amount this returns rather than a rounded one.  Its sibling
+    ``calculate_interest`` was a two-line ``round_money`` wrapper serving the
+    per-PERIOD interest layer, and X-g4b deleted that layer -- leaving a public
+    production function whose only readers were its own unit tests, which is
+    the residue this arc's deletions exist to remove rather than inherit.  The
+    rounding it applied is ``round_money``, applied by whoever needs cents.
       Rounding each day independently is what would make a small
       balance accrue nothing at all forever -- 0.45 cents a day on a
       $50 HYSA at 3.29% APY rounds to zero every day.
@@ -174,43 +186,3 @@ def accrued_interest(
         days_in_quarter = _days_in_quarter(period_start)
         return balance * quarterly_rate * (period_days / days_in_quarter)
     return ZERO
-
-
-def calculate_interest(
-    balance,
-    apy,
-    compounding_frequency_id,
-    period_start,
-    period_end,
-):
-    """Calculate projected interest earned during a pay period.
-
-    The cent-quantized form of :func:`accrued_interest`, which owns the
-    day-count rule.  Daily compounding uses an actual/actual day count:
-    the divisor is 366 when the projection window contains Feb 29 and
-    365 otherwise.  See the module docstring ("Day-count convention --
-    actual/actual for leap-day-crossing windows") for the rationale and
-    the residual error this closes (MED-05 / PA-06).  Monthly and
-    quarterly compounding are unaffected.
-
-    Args:
-        balance: Account balance after all transactions/transfers for the period.
-        apy: Annual percentage yield (e.g., Decimal("0.04500") for 4.5%).
-        compounding_frequency_id: ``ref.compounding_frequencies.id`` of
-            the account's compounding frequency (resolved against
-            ``ref_cache``; #38).
-        period_start: Start date of the pay period.
-        period_end: End date of the pay period.
-
-    Returns:
-        Decimal interest earned, rounded to 2 decimal places via
-        :func:`app.utils.money.round_money` (``ROUND_HALF_UP``).
-        Returns :data:`ZERO` for non-positive balances, non-positive
-        APY, inverted ``period_start`` / ``period_end`` ordering, or an
-        unrecognised ``compounding_frequency_id``.
-    """
-    return round_money(
-        accrued_interest(
-            balance, apy, compounding_frequency_id, period_start, period_end,
-        )
-    )

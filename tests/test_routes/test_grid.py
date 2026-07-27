@@ -4739,12 +4739,10 @@ class TestGridPeriodSubtotalCanonical:
         (``tests/test_integration/test_cross_page_balance_equality.py``,
         Commit 11 of the main remediation) cannot catch a route-handler
         bypass of the canonical producer because its grid reader
-        re-runs ``balance_resolver.balances_for`` itself rather than
-        parsing the rendered HTML.  A regression that re-introduces a
-        hand-rolled balance loop in ``app/routes/grid.py`` (or that
-        swaps the seam for the bare entries-blind
-        ``balance_calculator.calculate_balances``) would therefore drift
-        silently.  This static lock closes that gap.
+        re-runs the seam itself rather than parsing the rendered HTML.  A
+        regression that re-introduces a hand-rolled balance loop in
+        ``app/routes/grid.py`` would therefore drift silently.  This static
+        lock closes that gap.
 
         Updated for plan step X-c2b2: the grid reads EVERY per-period figure
         -- the balance, the subtotals and ruling R-K's remainder -- through
@@ -4760,15 +4758,15 @@ class TestGridPeriodSubtotalCanonical:
         the wiring it claimed to lock had moved.  Matching ``.grid_balance_view(``
         with its open paren is what makes it a call site again.
 
-        Three assertions:
+        **The second arm forbade ``balance_calculator.calculate_balances(``
+        and was deleted at plan step X-g4b, with the producer** -- Section 8's
+        rule that an arm whose forbidden name no longer exists is a sentence
+        that can never fail, and reads as coverage while being none.
+
+        Two assertions:
           1. ``balance_at.grid_balance_view(`` must appear in
              ``app/routes/grid.py`` (positive: the seam wiring is intact).
-          2. ``balance_calculator.calculate_balances(`` (the bare
-             entries-blind producer) must NOT appear -- the entries-
-             aware reduction in ``_entry_aware_amount`` is the F-009 /
-             CRIT-01 fix; the bare producer would re-open the silent-
-             degrade seam.
-          3. ``balance_at.balance_map(`` (the KIND-CORRECT map) must NOT
+          2. ``balance_at.balance_map(`` (the KIND-CORRECT map) must NOT
              appear: the grid account may be interest-bearing, and reading
              the accrued balance without the accrual row beside it is the
              shape ruling R-K refuses.
@@ -4788,12 +4786,6 @@ class TestGridPeriodSubtotalCanonical:
             "hand-rolled loop, a direct producer call, or the kind-correct "
             "``balance_map`` (which would accrue interest into the balance "
             "row with no row to explain it)."
-        )
-        assert "balance_calculator.calculate_balances(" not in grid_source, (
-            "app/routes/grid.py imports the bare entries-blind "
-            "``balance_calculator.calculate_balances`` -- this bypasses "
-            "the entries-aware reduction (F-009 / CRIT-01 fix).  Use "
-            "``balance_at.grid_balance_view`` instead."
         )
         assert "balance_at.balance_map(" not in grid_source, (
             "app/routes/grid.py calls the KIND-CORRECT ``balance_map`` -- "
