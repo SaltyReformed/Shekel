@@ -18,7 +18,7 @@ Three carried-forward rows were re-verified against the code during the trim and
 B-10 (closed at F2, the row never updated), B-16 and B-17 (both still LIVE, and B-17 turned out to
 be the N-63 / N-67 class for the third time).
 
-**State as of 2026-07-26.** Phase X, the cash half, is IN FLIGHT and its CUTOVER IS DONE. Shipped:
+**State as of 2026-07-27.** Phase X, the cash half, is IN FLIGHT and its CUTOVER IS DONE. Shipped:
 **X-a** `929b3a72` (the cash walk leaf, additive), **X-a1** `47dd4bbb` (the calendar refuses a
 loan -- finding B-3 live on the one cash-flow surface the archived kind-gate ruling D4 did not
 enumerate; ruling R-J below restates what it gates and why), **X-b**
@@ -99,9 +99,23 @@ projection inputs became `ContributionInputs` with an `absent()` constructor, ki
 (`asset_seed_at`, `asset_growth_at`) on 8 hand-computed oracle tests. Finding **N-77** closed with
 it.
 
-**NEXT: X-g2b** (the cutover), then X-g3 / X-g4, then **X-c2c4** (the deletion, which X-g's cutover is
-what makes possible, and which now carries the 52-period drift-oracle PORT as a prerequisite -- see
-the step).
+**X-g2b's TRACE IS DONE (2026-07-27) -- no code, three rulings, five findings.** Its ONE recorded
+open fork is RULED along with two the trace itself found: **R-AE**, **R-AF**, **R-AG** in Section 4,
+all as recommended. **The recorded fork's premise INVERTED**: this document predicted the chart's
+Today junction would be `$0.00` while the three investment accounts hold zero transaction rows; they
+do, in both databases, and it is not -- rulings R-U and R-AB correct ONE overlap TWICE, so the
+projection line would start up to **`$292.11`** below its own history line (**N-80**). R-AE drops the
+second correction, which deletes `asset_seed_at` unwired and leaves `investment_seed_map` with no
+successor at all. R-AF then removes the junction rather than captioning it, by opening the axis the
+day after the history line ends -- verified seed-equals-history-point on both databases, and it lands
+the synthetic axis on the real pay calendar, closing the near half of **N-79** for free. Four
+corrections to the step and four more findings: **N-81** (a defect the step would introduce, fixed
+in-commit), **N-82**, **N-83**, **N-84**. The step gains a prerequisite commit, **X-g2b-0**, because
+the regression harness is blind to exactly the region the cutover moves most.
+
+**NEXT: X-g2b-0 then X-g2b** (the cutover), then X-g3 / X-g4, then **X-c2c4** (the deletion, which
+X-g's cutover is what makes possible, and which now carries the 52-period drift-oracle PORT as a
+prerequisite -- see the step).
 
 **E2 IS RATIFIED (developer ruling 2026-07-26) and runs LAST.** The super-package boundary is now a
 committed step in Section 5, not a Section 6 option: the read seam, the write cluster and the
@@ -491,6 +505,22 @@ already assembles the cash fold once for `cash_period_view`, and reaching the
 replay through its own entry would have assembled the account a second time --
 undoing plan step X-c1's "one walk, one plan load, one valuation, whichever
 reader is asking."
+
+### Answered (developer ruling, 2026-07-27: X-g2b's three forks, all as recommended)
+
+X-g2b's own trace, run before any code as this arc's steps now always are. It
+found the ONE fork this document recorded as open (the chart junction) and two
+more, and it INVERTED the recorded fork's premise: the junction is not
+`$0.00`-because-the-accounts-are-empty, it is non-zero BECAUSE two rulings
+correct one overlap twice. Every figure below was measured on 2026-07-27 against
+both databases, and the three modelled accounts hold ZERO transaction rows in
+both -- so none of it is a property of the data.
+
+| # | ruling | consumed by |
+|---|---|---|
+| **R-AE** (N-80; answered 2026-07-27) | **The forward-projection SEED is the modelled balance at the day before the window, with NOTHING filtered out -- `asset_seed_at` DELETES and `investment_seed_map` leaves with no successor at all.**  Rulings R-U and R-AB are two corrections for ONE overlap, and stacking them UNDER-counts.  R-U's filter was written when the seed was a period MAP read at the current period's END, where the projection window genuinely re-grew days the seed had already grown; R-AB then moved the read to `window_start - 1 day`, after which the window opens STRICTLY after the seed and `growth_engine.project_balance` grows only the periods it is handed -- so no modelled growth can be re-applied and the filter has nothing left to prevent.  **Measured, and it is the amount the projection line would start BELOW its own history line:** Roth `$161.31`, Trad IRA `$109.10`, Empower `$292.11` on `shekel`; `$82.67` / `$35.30` / `$292.11` on `shekel_f3_final`.  That is a balance the history line beside it has not rendered since the assertion date -- the visible contradiction ruling R-K refused to ship, on one chart rather than across two.  **R-U's CONTRIBUTION half is untouched and still does all the work it was ruled for**: a contribution dated inside the window is not in the seed and the engine applies it exactly once, which is what lets `current_period_transfer_contribution` delete.  With the filter gone the seed is not a special entry at all -- it is `balance_at(account, ctx, window_start - 1 day)`, the ordinary date-precise scalar THIS SAME STEP makes total -- so Section 3.2's "`investment_seed_map` loses its reason to exist" becomes literally true instead of a rename.  Rejected: shipping both (above), and reverting R-AB's date so the filter is load-bearing again (restores the contribution double count R-AB measured, and leaves the seed read three days AFTER the window opens on today's data -- an inverted overlap). | X-g2b |
+| **R-AF** (answered 2026-07-27) | **The `/investment` chart's projection axis starts the day AFTER the history line's last valued date, seeded from the balance ON that date, so the two lines join BY CONSTRUCTION and there is no junction to caption.**  The recorded fork's option space was (a) leave it unlabelled, (b) caption it, (c) force the first projected point to equal the history's last.  The trace found a fourth that removes the step instead of explaining or hiding it, because the seed is now a DATE and a date can be CHOSEN: `_build_history_series` ends at the current pay period's `end_date` while `_assemble_chart_context` opens its axis at `date.today()`, so the two are 10-13 days out of step for a reason no ruling ever chose.  **Verified on both databases: the seed then equals the history line's last point EXACTLY on all three accounts** (`$27,537.61` / `$11,759.26` / `$31,751.40` on `shekel_f3_final`), and the first projected step (`$105.66`) is indistinguishable from the second (`$106.07`) and the third (`$106.47`) -- an ordinary step of one line, not a seam.  It also lands the synthetic axis exactly on the real pay calendar (`2026-07-30..2026-08-12` against real period 9's own dates, verified `True` on both databases), so `_project_one_period`'s `contribution_lookup` finds real `ContributionRecord`s over the near horizon instead of falling back to a flat average -- the near half of finding **N-79**, closed as a side effect rather than as a claim.  Rejected: (b), because a caption explains a step that has no reason to exist and Section 8 rules a label weaker than a predicate, which is already not a safety; (c), because overwriting the first projected point with the history's last hides a real difference -- the shape ruling R-K refused for the grid subtotals and the shape of the very compensator R-AB deletes; (a), because the step does not merely persist, it changes size and SIGN at this step (`-$301.96` to `+$277.27` on the Empower) and an unexplained jump that MOVES is worse than one that does not. | X-g2b |
+| **R-AG** (N-82; answered 2026-07-27) | **The modelled scalar stays TOTAL past the pay-period horizon, and the contribution tier's silence out there is RECORDED rather than compensated.**  Today `_kind_correct.balance_at` resolves a date to its period and reads the map, so a date past the user's last pay period clamps to the final period's balance (`find_period_containing_date` falls back to the latest period that ended earlier).  The replay answers the date.  Measured at 2029-01-01, six months past the horizon: Empower **`+$2,501.92`**, Roth `+$1,754.08`, Property `+$5,427.07`, Money Market `+$272.24`.  **Not live**: the ONLY non-loan caller of this scalar in production is `investment_dashboard_service.compute_balance_hero_cell`, at today -- the four other call sites are loan-gated (`debt_strategy.py:140` behind `loan_terms is None: continue`, `loan/_helpers.py:183`, `savings_dashboard_service/_projections.py:131` inside `_compute_loan_account`, `home_equity_service.py:142` over secured loans).  Keeping the fold total is the single property this whole arc turns on, and clamping would put a partial answer back inside a total fold for a figure nothing reads.  What IS recorded (**N-82**): past the calendar the ACCRUAL tier keeps running while the CONTRIBUTION tier stops, because a contribution is dated on a real payday and there are none out there -- a half model, honest about what the app knows and worth naming before someone reads it.  Rejected: clamping at the horizon (a boundary rule nothing else in the seam has, reintroducing the partiality Section 3 deletes), and extending the payday cadence past the calendar so both tiers stop together (correct in principle, invents a calendar the app does not have, and is materially larger than this step). | X-g2b |
 
 ### Answered (developer ruling, 2026-07-26: X-g's five forks, all as recommended)
 
@@ -1412,6 +1442,14 @@ replaces.
       `period_view_of(assemble(x)) == cash_period_view(x)` would be arithmetically true and
       therefore vacuous (Section 7.2's forbidden shape). What is pinned here is that the extraction
       changed no answer; the payoff is verified at X-g2b.
+    * [ ] **X-g2b-0** `test(manual): the baseline harness reads the modelled scalar at a DATE`
+      -- correction (d) below, and a PREREQUISITE rather than part of the cutover (the X-c0 / X-a1
+      precedent). `verify_balance_baseline.py` gains the kind-correct scalar at its five fixed
+      dates, so the two regions X-g2b moves most -- a mid-period date-precise read (N-71) and the
+      pre-horizon back-projection (N-74) -- are visible in the diff instead of falling between the
+      today scalar and the period-end map. No production change and no test-suite change: the file
+      is outside pytest's collection, so the arithmetic that proves it moves nothing is that
+      `app/` is untouched.
     * [ ] **X-g2b** -- THE cutover, and the only step of X-g that moves a figure.
       `build_investment_balance_map`, `build_appreciation_balance_map` and
       `_interest.layer_account_interest` are replaced by the replay, and the kernel's per-kind
@@ -1420,12 +1458,17 @@ replaces.
       `find_period_containing_date` and the pre-horizon anchor fallback out of `_kind_correct`
       entirely (**N-29** closes with them); the GRID's interest row reads the replay in this same
       commit, because INTEREST is byte-identical across `/grid` and `/savings` today and must stay
-      so; `investment_seed_map` becomes `investment_seed_at` (ruling R-AB) and
-      `investment_growth_since_anchor` a sum over the replay's two modelled tiers (ruling R-AC) --
-      both are seam entries `verify_balance_baseline.py` already captures, so the cutover is DIFFED
-      rather than argued; the two chart seeds (`investment_dashboard_service.py:249`,
+      so; **`investment_seed_map` DELETES with no successor** (ruling R-AE corrects R-AB's
+      `investment_seed_at`: with the seed read a day before the window there is no overlap left for
+      a filter to prevent, so the seed is `balance_at(account, ctx, window_start - 1 day)` and
+      X-g2a's additive `asset_seed_at` deletes unwired) and
+      `investment_growth_since_anchor` becomes a sum over the replay's two modelled tiers (ruling
+      R-AC) -- both are seam entries `verify_balance_baseline.py` already captures, so the cutover is
+      DIFFED rather than argued; the two chart seeds (`investment_dashboard_service.py:249`,
       `retirement_projection.py:492`) re-point and their `current_period_transfer_contribution`
-      subtractions delete with the overlap. Two contract statements the change makes FALSE are
+      subtractions delete with the overlap; the `/investment` chart's projection axis opens the day
+      after its history line's last valued date (ruling R-AF), which is what makes the two lines
+      join. Two contract statements the change makes FALSE are
       corrected in-commit rather than swept later: `savings_dashboard_service/_net_worth.py:117-122`
       ("the INVESTMENT and APPRECIATING paths still seed off the anchor-forward producer ... a
       forward-only period list would starve them of their seed") and `_kernel.py:23-29`. Money
@@ -1433,20 +1476,76 @@ replaces.
       READING the anchor period, but deleting the `| None` contract reaches every consumer and is
       X-e's, per that finding's own text.
 
-      **ONE FORK IS OPEN AND MUST BE RULED BEFORE THIS SHIPS -- do not decide it in the commit.**
-      Ruling R-AB moves the `/investment` chart's seed from the END of the current period to the day
-      BEFORE the projection window opens, which MOVES the junction where the modelled HISTORY line
-      (`_build_history_series`, `balance_map` through the current period) meets the PROJECTION line
-      (`_run_growth_projection` from `ctx.projection_seed`). The two lines already differ by
-      construction -- history is modelled, the projection seeds pre-growth -- so the chart has always
-      had a step at "Today"; R-AB changes its SIZE and its DATE. The option space: (a) leave it
-      unlabelled, as today; (b) caption the junction ("projected from your balance on <date>"), the
-      treatment ruling R-O gave the grid's reconciling row; (c) seed the projection line's FIRST
-      point from the history line's last so the two meet, which hides a real difference and is the
-      shape ruling R-K refused for the grid subtotals. **Measure the junction step on both databases
-      before recommending** -- it is `$0.00` on today's data only if the three investment accounts
-      still hold zero transaction rows, and that is a property of the DATA (ruling R-V's caveat),
-      not of the design.
+      **THE OPEN FORK IS RULED (developer ruling 2026-07-27, all three as recommended) and the
+      trace that ruled it found two more; R-AE, R-AF and R-AG are in Section 4.** No code was
+      written for it. What it changed, so the build starts from the corrected picture:
+
+      * **The recorded fork's premise INVERTED.** This entry predicted the junction would be
+        `$0.00` while the three investment accounts hold zero transaction rows. They do hold zero
+        rows, in BOTH databases, and the junction is `-$76.99` / `-$73.97` / `-$15.96` on `shekel`
+        under R-AB as written. It is not a property of the data: rulings R-U and R-AB correct ONE
+        overlap TWICE, and ruling **R-AE** drops the ACCRUAL filter that was the second correction.
+        `asset_seed_at` therefore DELETES rather than shipping (X-g2a built it additive and
+        unwired, which is exactly what made this cheap to reverse), and the seed becomes the
+        ordinary date-precise scalar.
+      * **The junction is removed rather than captioned** (ruling **R-AF**): the axis starts the day
+        AFTER the history line's last valued date. Verified on both databases -- seed == the
+        history line's last point EXACTLY, first step `$105.66` against a second of `$106.07`.
+      * **The scalar stays total past the horizon** (ruling **R-AG**), and finding **N-82** records
+        the contribution tier's silence out there.
+
+      **Four corrections to this entry's own text, all traced 2026-07-27.**
+      (a) **Two seam accessors are missing from the list and move with it.**
+      `_kernel.interest_projection_for_account` and `interest_by_period_for_account` share
+      `_account_interest_projection` -> `_interest.layer_account_interest`, which this step
+      replaces, so the account-detail balance chart AND its "Interest, next 12 mo" chip
+      (`routes/accounts/detail.py:280`) move in the same commit. That is finding N-47's shape a
+      THIRD time -- a reader the one-liner did not name because it shares a producer rather than a
+      call site.
+      (b) **This step introduces a defect unless it is fixed in-commit.**
+      `investment_dashboard_service.compute_balance_hero_cell` (the anchor editor's Cancel / Escape
+      / 409 revert target) reads the SCALAR while the headline it restores reads
+      `balance_map[current_period]`. They are identical today only because the scalar IS the period
+      read; the date-precise switch separates them by the accrual from today to the period's end --
+      measured `$9.65` to `$26.05` across the three accounts on both databases. Both read ONE
+      producer here (**N-81**); the deeper question of whether a "current balance" should be a DATE
+      or a period END is NOT opened -- `/savings` has shown the period-end figure for every kind
+      since X-c2b2 (Checking `$2,824.26` at today against `$2,683.63` in its current column), and
+      changing that convention is a different step.
+      (c) **Two citations drifted.** Finding N-29's seam call site for
+      `find_period_containing_date` is `_kind_correct.py:265`, not `:278`; and N-73's five
+      NULL-anchor guards become FOUR here, because `base_account_balance_map` dies with its guard
+      (ruling R-AD). The remaining four still stay for X-e, per N-73's own text.
+      (d) **The regression harness is BLIND to the region this step moves most, and that is fixed
+      FIRST.** `verify_balance_baseline.py` captures the kind-correct scalar only at today and the
+      kind-correct map only at period ENDS -- so a mid-period date-precise move (N-71) and the
+      pre-horizon back-projection (N-74) are both invisible in its diff. It gains kind-correct
+      scalars at its five fixed dates as **X-g2b-0** before the cutover runs, on the same ground the
+      harness itself was a commit of its own (`60dbc117`): the instrument is built before the
+      measurement, never alongside it.
+
+      **What the cutover moves, measured 2026-07-27 on BOTH databases** (the sign-off list this
+      step is checked against; the three investment accounts and the Property hold ZERO transaction
+      rows in both, so none of it is data-dependent):
+
+      | account | scalar at today | current column | worst column | columns moving |
+      |---|---|---|---|---|
+      | Checking / S8 Checking (PLAIN) | `$0.00` | `$0.00` | `$0.00` | **0 of 60** |
+      | Fidelity Savings (INTEREST) | `-$1.46` | `$0.00` | `+$0.04` | 52 of 60 |
+      | Money Market (INTEREST) | `-$249.69` (`shekel`) / `+$0.45` | `+$1.34` / `+$1.42` | `+$2.75` | 52-53 of 60 |
+      | Roth IRA (INVESTMENT) | `+$53.87` / `+$82.67` | `+$76.99` / `+$105.26` | **`-$3,408.27`** / `-$2,753.55` | 60 of 60 |
+      | Trad IRA (INVESTMENT) | `+$19.33` / `+$35.30` | `+$29.00` / `+$44.95` | `-$1,234.76` / `-$1,185.36` | 60 of 60 |
+      | Empower 401(k) (INVESTMENT) | `+$52.52` | `+$78.57` | `-$2,670.63` | 60 of 60 |
+      | Property (APPRECIATING) | `+$85.24` (`shekel`) | `+$170.50` | `+$180.67` | 54 of 60 |
+      | Mortgage / Van Loan | **UNMOVED** -- the standing regression gate | | | |
+
+      **PLAIN moving `$0.00` on every one of 60 columns and on the scalar, for all three real plain
+      accounts across both databases, is what makes ruling R-AD's ladder collapse safe** rather than
+      merely intended: an account with no modelled return IS its cash fold, and the replay proves it
+      on real data before the ladder that used to route it is deleted. The INTEREST pennies are the
+      daily grain plus X-g1's monthly day-count fix; the INVESTMENT pre-anchor columns are N-74
+      (the fold reproducing assertions the merge overrode); the Property column is ruling R-Y's
+      anchor-period accrual.
   * **X-g3** -- ruling R-W's grid. `grid_balance_view` renders the modeled balance and generalises
     the conditional Interest row to a "Growth"/accrual row on R-O's own non-zero rule, on BOTH form
     factors (R-P). Render plumbing only, no new figure the seam did not already answer at X-g2.
@@ -1623,8 +1722,13 @@ own write date, per Section 7.6.
 | X5 | **Anchor `effective_date`: an optional feature, not a step.** An `AccountAnchorHistory` row is dated by its `created_at` -- the instant it was ASSERTED -- so a user cannot enter a balance they read off last month's statement and have it land on last month. Adding an `effective_date` column would separate "when this was true" from "when it was typed", which is what a backdated statement assertion needs. Nothing depends on it: every shipped step and every remaining one (X-c2c .. X-g) works on the assertion instant | -- | **OPEN, optional, NOT committed to.** Converted from a step to a finding at the 2026-07-26 trim, on the same ground as E2: an optional feature nothing sequences against is a recorded option, not a commit -- and as the last numeric ID in a letter-suffixed scheme it read as a step whose position in the order was ambiguous. Its old text also said "NOT a prerequisite for X-a .. X-e", which had gone stale twice over (X-f and X-g did not exist when it was written) | own arc, if ever |
 | N-77 (X-g1) | **Two shared account factories leave their opening assertion on the WALL CLOCK, which plan step X-g2 makes load-bearing.** `create_hysa_account` pins its opening to the anchor period's first day and says why (the N-8 / N-65 shape, ruled at plan step X-c2a); `make_investment_account` and `make_appreciating_account` do not, so `account_service.create_account` stamps `AccountAnchorHistory.created_at` with the real clock while `tests/test_services` freezes today to 2026-03-20. Nothing fails TODAY because no shipped producer reads an INVESTMENT's or a Property's assertion DATE -- `_investment` pivots on the `current_anchor_period_id` cache column instead. **X-g1's own parallel run hit it immediately:** an unpinned Property opening dated 2026-07-27 is the LATEST assertion, lands past the seeded horizon, and the account then accrues NOTHING anywhere -- a state production cannot reach, and one in which a test asserting "the anchor period accrues $113.44" reads $0.00. Pinned per-fixture in X-g1's two files rather than in the shared helpers, because that is the X-c2a precedent exactly: `create_hysa_account` was pinned by the step that made the date load-bearing, with that step's full-suite run as the evidence | a fixture asserting against a state production cannot reach; every INVESTMENT / APPRECIATING fixture in the suite | **CLOSED at X-g2a.** Both helpers now pin the opening to the anchor period's first day and say why, and X-g1's own per-fixture restamp for the Property was deleted with the compensator it was. Its firing control: reverting the helper's restamp fails `test_pre_anchor_periods_agree_and_the_anchor_period_accrues`, the one test whose Property fixture does not restamp for itself | X-g2a |
 | N-78 (X-g1) | **The investment balance map seeds the growth engine's YTD with the THROUGH-current total, which the field's own contract says double-charges the annual limit.** `InvestmentInputs` documents the pair precisely (`investment_projection.py:33-45`): `ytd_contributions` is the displayed limit-card value (`<=` the current period) and `ytd_contributions_seed` is "the `ytd_contributions_start` handed to the growth engine" (`<`), because "the engine's own per-period walk then applies and counts the current period's contribution against the limit" and "seeding the through-current value instead would charge the current period against the annual limit twice" (deep-quality-hunt #10). Three consumers obey it -- `investment_dashboard_service.py:374` and `:979`, `retirement_projection.py:600`. **`_investment._forward_project_rows:316` is the one that does not**: it passes `proj_inputs.ytd_contributions`, and its reference period is `post_anchor[0]` -- the FIRST period the forward walk then projects. So a recorded contribution in that period consumes the year's limit twice and the modelled amount for it is capped too low | not live: `ytd_contributions` is `$0.00` for all three real investment accounts (no shadow contribution rows anywhere), so the wrong field and the right one are the same number | **recorded, NOT fixed -- it dies with the module at X-g4.** X-g1's replay does not inherit it: the replay walks the recorded feed per period itself and caps against what is left, so there is no seed to get wrong. Recorded rather than patched because the correct fix in `_investment` is a one-word change to a module that is deleted two steps later, and shipping it would move a figure in a step whose contract is "the baseline cannot move" | X-g4 (deletion) |
-| N-79 (X-g2 trace) | **The investment chart's projection axis and its contribution timeline are on two different calendars, so the chart answers differently depending on the day it is opened.** `_assemble_chart_context` projects over SYNTHETIC periods starting at `date.today()` (`growth_engine.generate_projection_periods`, `investment_dashboard_service.py:721-723`), while `ctx.contributions` is `build_contribution_timeline(..., periods=all_periods)` -- REAL pay periods, each `ContributionRecord` dated on its period's `start_date` (`investment_projection.py:639`). `growth_engine._project_one_period` looks a record up by the projection period's own `start_date` (`:399`), so the two align only when today IS a pay-period start: on a payday every synthetic period inside the real horizon matches its record and the chart applies the RECORDED amounts, and on the other thirteen days none matches and every period falls back to the flat `periodic_contribution`. Same account, same inputs, two answers | not yet measured in dollars; the gap is `recorded amount - periodic average` per period over the real horizon, and it is `$0.00` on today's data because no account has a contribution feed at all (ruling R-R) | **recorded, NOT fixed.** It is inside the forward WHAT-IF engine ruling R-U deliberately KEEPS, not the balance path, so X-g touches neither half -- but it is the same two-clocks-in-one-figure shape as plan step C6c-ii's double count and the plan's Section 8 lesson names it ("when a rule says period, ask if it means instant"). The honest fix is for the synthetic axis to carry the recorded feed by DATE rather than by period identity | own commit (investment chart) |
-| N-73 (X-c2c trace) | **Five balance sites guard against a NULL anchor on two `nullable=False` columns.** `Account.current_anchor_balance` and `current_anchor_period_id` are both `nullable=False` (`app/models/account.py:91`, `:100`) with a `current_anchor_balance IS NOT NULL` check constraint (`:55`), and there are **0 NULLs across all 19 account rows in both databases**. Yet `_kernel.build_account_balance_map:508`, `_kernel.base_account_balance_map:341`, `_kernel.interest_projection_for_account:395`, `_kernel.interest_by_period_for_account:440` and `_investment.get_anchor_period_index:127` each branch on `is None`, and two of them return a `None` / empty map that every caller must then handle -- so a state the schema refuses is propagating optionality through the seam's signatures (line numbers re-verified 2026-07-26; the originals drifted by two at `c649b322`) | -- | **recorded, NOT fixed** (out of X-c2c's scope, rule 6). It is not merely dead: X-g removes the anchor PERIOD from the balance paths entirely, at which point four of the five guards have nothing left to test. **Confirmed at X-g2's trace and re-scoped**: the replay reads no anchor period at all, so from X-g2b the guards test a state the schema refuses AND that the producer beneath them no longer consults -- but deleting them changes `balance_map`'s `\| None` contract, which every net-worth consumer handles, so they stay for X-e | X-g2b (the need), then X-e (the guards) |
+| N-79 (X-g2 trace) | **The investment chart's projection axis and its contribution timeline are on two different calendars, so the chart answers differently depending on the day it is opened.** `_assemble_chart_context` projects over SYNTHETIC periods starting at `date.today()` (`growth_engine.generate_projection_periods`, `investment_dashboard_service.py:721-723`), while `ctx.contributions` is `build_contribution_timeline(..., periods=all_periods)` -- REAL pay periods, each `ContributionRecord` dated on its period's `start_date` (`investment_projection.py:639`). `growth_engine._project_one_period` looks a record up by the projection period's own `start_date` (`:399`), so the two align only when today IS a pay-period start: on a payday every synthetic period inside the real horizon matches its record and the chart applies the RECORDED amounts, and on the other thirteen days none matches and every period falls back to the flat `periodic_contribution`. Same account, same inputs, two answers | not yet measured in dollars; the gap is `recorded amount - periodic average` per period over the real horizon, and it is `$0.00` on today's data because no account has a contribution feed at all (ruling R-R) | **recorded, NOT fixed.** It is inside the forward WHAT-IF engine ruling R-U deliberately KEEPS, not the balance path, so X-g touches neither half -- but it is the same two-clocks-in-one-figure shape as plan step C6c-ii's double count and the plan's Section 8 lesson names it ("when a rule says period, ask if it means instant"). The honest fix is for the synthetic axis to carry the recorded feed by DATE rather than by period identity. **Its NEAR half closes at X-g2b as a side effect of ruling R-AF**: an axis opening the day after the current period's end lands on the real pay-period boundaries exactly (verified `2026-07-30..2026-08-12` against real period 9's own dates on both databases), so every synthetic period inside the real horizon matches its record whatever day the page is opened. The FAR half survives -- past the user's last pay period there is no record to match, which is where the flat fallback is the honest answer anyway | own commit (investment chart); near half at X-g2b (via R-AF) |
+| N-73 (X-c2c trace) | **Five balance sites guard against a NULL anchor on two `nullable=False` columns.** `Account.current_anchor_balance` and `current_anchor_period_id` are both `nullable=False` (`app/models/account.py:91`, `:100`) with a `current_anchor_balance IS NOT NULL` check constraint (`:55`), and there are **0 NULLs across all 19 account rows in both databases**. Yet `_kernel.build_account_balance_map:508`, `_kernel.base_account_balance_map:341`, `_kernel.interest_projection_for_account:395`, `_kernel.interest_by_period_for_account:440` and `_investment.get_anchor_period_index:127` each branch on `is None`, and two of them return a `None` / empty map that every caller must then handle -- so a state the schema refuses is propagating optionality through the seam's signatures (line numbers re-verified 2026-07-26; the originals drifted by two at `c649b322`) | -- | **recorded, NOT fixed** (out of X-c2c's scope, rule 6). It is not merely dead: X-g removes the anchor PERIOD from the balance paths entirely, at which point four of the five guards have nothing left to test. **Confirmed at X-g2's trace and re-scoped**: the replay reads no anchor period at all, so from X-g2b the guards test a state the schema refuses AND that the producer beneath them no longer consults -- but deleting them changes `balance_map`'s `\| None` contract, which every net-worth consumer handles, so they stay for X-e. **Corrected at X-g2b's trace: FIVE becomes FOUR**, because `base_account_balance_map` deletes with the ladder (ruling R-AD) and its guard at `:341` goes with the function rather than surviving as one of the five | X-g2b (the need), then X-e (the guards) |
+| N-80 (X-g2b trace) | **Two rulings correct ONE overlap twice, and stacking them starts the `/investment` chart's projection line below its own history line.** Ruling R-U made the forward-projection seed "the replay with ACCRUAL filtered out"; ruling R-AB then moved that read to `window_start - 1 day`. The filter's whole purpose is to stop the growth engine re-growing a period the seed already grew -- and R-AB's date makes that impossible, because `growth_engine.project_balance` grows only the periods it is handed and every one of them starts at or after `window_start`. So the filter subtracts growth the window never touches: the accrual since the account's latest assertion, measured 2026-07-27 as Roth **`$161.31`**, Trad IRA `$109.10`, Empower `$292.11` on `shekel` and `$82.67` / `$35.30` / `$292.11` on `shekel_f3_final`. The result is a projection line starting from a balance the history line beside it has not rendered since the assertion date. NOT data-dependent: all three accounts hold ZERO transaction rows in both databases, which is what this document predicted would make the junction `$0.00` | the projection line up to **`$292.11`** below its own history line at the junction; the junction itself `-$76.99` / `-$73.97` / `-$15.96` on `shekel` under R-AB as written | **RULED at R-AE (2026-07-27): the filter goes, `asset_seed_at` deletes unwired, and the seed is the ordinary date-precise scalar.** Found because this document required the junction be MEASURED before the display fork was recommended, on a step whose own additive commit had already shipped the filtered entry -- which is the argument for additive-then-cutover, from the other end | X-g2b (via R-AE) |
+| N-81 (X-g2b trace) | **The `/investment` balance hero and the cell that RESTORES it read two different producers.** `investment_dashboard_service.compute_balance_hero_cell` -- the anchor editor's Cancel / Escape / 409 revert target, whose own docstring says it returns "the model-from-anchor balance the headline shows" -- reads the seam SCALAR (`balance_at.balance_at(account, ctx, ctx.as_of)`, `:684`), while `compute_dashboard_data`'s headline reads `balance_map[current_period]` via `_resolve_current_balance` (`:221`). They agree today only by accident: the kind-correct scalar for an INVESTMENT is period-granular, so it IS the map read at the containing period. X-g2b makes the scalar date-precise and they separate by the accrual from today to the period's end -- measured `$22.59` / `$9.65` / `$26.05` on `shekel_f3_final` and `$23.12` / `$9.67` / `$26.05` on `shekel`. Cancelling the anchor editor would then restore a figure the page was not showing | up to **`$26.05`** between a rendered balance and the value its own revert restores | **recorded and FIXED IN-COMMIT at X-g2b** (correction (b) at the step): one cell, one producer. The broader question it sits on -- whether a "current balance" tile should be a DATE or a period END -- is NOT opened here: `/savings` has shown the period-end figure for every kind since X-c2b2 (Checking `$2,824.26` at today against `$2,683.63` in its current column), so the modelled kinds are joining a shipped convention, not setting one | X-g2b |
+| N-82 (X-g2b trace) | **Past the pay-period horizon the replay's ACCRUAL keeps running while its CONTRIBUTION tier stops.** A contribution event is dated on a real payday (`_asset_contributions._dated_events` walks `pay_period_service.get_all_periods`), and there are no paydays past the user's last pay period; the accrual window's end is the caller's own furthest requested date. So a date beyond the calendar reads growth-only. Today's producer has the opposite wart -- `_kind_correct.balance_at` resolves the date to a period and `find_period_containing_date` falls back to the latest period that ENDED earlier, so a past-horizon date clamps to the final column. Measured at 2029-01-01, six months past a horizon ending 2028-07-12: Empower **`+$2,501.92`**, Roth `+$1,754.08`, Property `+$5,427.07`, Money Market `+$272.24` | `+$5,427.07` at six months past the horizon; `$0.00` on any rendered surface | **RULED at R-AG (2026-07-27): let the fold answer and record this.** Not live -- the only non-loan caller of that scalar in production is the `/investment` hero cell, at today (the other four call sites are loan-gated), so nothing reads a past-horizon modelled date. The honest fix is a payday cadence that outlives the calendar, which is materially larger than X-g2b and belongs with whatever step extends the pay-period horizon | own commit (if ever) |
+| N-83 (X-g2b trace) | **A Property's value is answered two ways on adjacent screens, and X-g2b widens the gap.** `/savings` net worth and the grid read the modelled map (which appreciates from the latest assertion's own day, ruling R-Y); the property detail page's equity HERO (`home_equity_service.resolve_home_equity:137`) and its equity CHART (`property_equity_chart._value_series`) BOTH read `Account.current_anchor_balance` -- the denormalized CACHE column -- and deliberately flat-carry it through today ("the last honest value"). Measured on `shekel`: the modelled current-period value is `$350,794.53` today against `$350,000.00` flat on the property page, a **`$794.53`** gap that X-g2b widens to **`$965.03`**. It is ruling R-W's shape on a different pair of surfaces (one account, two producers, no row explaining the difference), and it is also cash D4's cache column reaching a screen | **`$965.03`** after X-g2b, growing with the time since the last assertion | **recorded, NOT fixed.** PRE-EXISTING -- X-g2b changes its size, not its existence -- so fixing it inside a cutover would mix a second surface's unification into the money-moving commit, which is the argument that split X-c2b. Its resolution is R-W's: one producer, with the difference rendered rather than implied. Note both readers take the CACHE column, so plan step X-e touches them too | own commit (property surfaces), with X-e |
+| N-84 (X-g2b trace) | **The `/investment` chart's de-dup compensator subtracts a contribution the engine never re-applies on that axis.** `current_period_transfer_contribution` is subtracted from the chart's seed (`investment_dashboard_service.py:318`) so the growth engine does not double-count a recorded current-period contribution. But the chart's axis is SYNTHETIC and opens at `date.today()`, while `_project_one_period` looks a `ContributionRecord` up by the projection period's own `start_date` and every record is dated on a REAL pay-period start (finding N-79) -- so on thirteen days in fourteen no synthetic period matches the current period's record and the engine applies the flat fallback instead. The subtraction is then a pure UNDER-count on that surface, not a de-dup. It IS load-bearing on `retirement_projection`'s real-period fallback axis (`:379-382`), where the dates do match, which is why ruling R-AB had to establish the date before the compensator could delete | `$0.00` today (no account has a recorded contribution feed -- ruling R-R's measurement); the current period's recorded contribution, per open of the chart, when one exists | **recorded, and it DELETES at X-g2b** with the overlap ruling R-AB removed. Kept as a row because it is the measured reason the compensator was never a de-dup on one of its two surfaces -- a compensator that was wrong in both directions at once, which is the shape this ledger exists to make visible before it is quietly ported | X-g2b (via R-AB / R-AE) |
 
 ## 7. Verification standard (what "done" means for every step)
 
