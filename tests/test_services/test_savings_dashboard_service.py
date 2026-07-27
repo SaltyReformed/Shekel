@@ -4668,3 +4668,240 @@ class TestUnclearingDebtHasNoDebtFreeDate:
                 "a borrower carrying a loan that never pays off was handed the "
                 "loan-free horizon window"
             )
+
+
+class TestARetiredLoanHasNoDebtLine:
+    """The Horizon asks the debt-line question with the debt-line predicate.
+
+    Finding B-16, plan step X-o.  ``LoanFigures`` states the split in terms --
+    "Use ``is_retired`` to decide whether a loan has a debt line; use this
+    [``is_paid_off``] to decide whether to CONGRATULATE the user" -- because
+    ``is_paid_off`` adds a confirmed-payment guard that exists for BADGING.  A
+    loan paid off by a LUMP SUM recorded as a balance true-up has no payment
+    rows, so it owes ``$0.00`` and reads ``is_paid_off=False``.
+
+    The Horizon's domain resolver asked the debt-LINE question with that
+    badging predicate, so such a loan stayed in the ACTIVE set -- and, being
+    retired, it has no forward payoff to date, which fired the "an active loan
+    with no payoff never clears" branch: no debt-free date, every STRUCTURAL
+    flag gone (the payoffs and "Debt-free"; the net-worth crossing flags are
+    built from the trajectory and survived), and the axis cut back to the
+    loan-free fallback window, while the debt-summary caption on the SAME page
+    (which selects on the loan's BALANCE) still reported the real date.
+    Measured on the developer's own two loans: the axis ended 2036-12-31 where
+    the debt line ends 2049-12-31.  The same collapse drew $197,049.32 of
+    phantom debt on the property equity chart -- the incident the seam's
+    contract was written by.
+
+    **Only the DOMAIN resolver was a defect.**  ``_structural_milestones``
+    took the same predicate, and plan step X-o moved it onto the shared
+    selection too -- but its own ``payoff is not None`` test already excluded
+    every retired loan (a retired loan has no forward crossing to date), so
+    that half is behaviour-neutral by construction and has no firing control
+    because none can exist.  Said here rather than discovered at a review.
+    """
+
+    # today + _LOAN_FREE_HORIZON_YEARS, on this module's frozen 2026-03-20
+    # clock: the window the resolver falls back to when it has no debt-free
+    # date to size an axis with.
+    _FALLBACK_END = date(2036, 12, 31)
+    # The clearing loan's DERIVED payoff.  Its 24 installments run 2026-02-01
+    # .. 2028-01-01, but the fold pays nothing it has no settled record for,
+    # and at the frozen 2026-03-20 as-of TWO installments (2026-02-01 and
+    # 2026-03-01) are already due and unpaid -- so the plan's zero crossing
+    # lands two installments past the contractual date.
+    _CLEARING_PAYOFF = date(2028, 3, 1)
+    # The domain end the resolver derives from it: the payoff year plus one,
+    # at that year's end.
+    _CLEARING_DOMAIN_END = date(2029, 12, 31)
+
+    def _two_loans(self, seed_user, db_session, periods):
+        """A loan retired by a lump-sum true-up, beside one that still clears.
+
+        The retired loan has ZERO settled payment rows -- the shape the app's
+        own true-up UI produces -- so it is ``is_retired`` without being
+        ``is_paid_off``.  Its true-up is dated two months AFTER origination so
+        the fixture tells the story it claims (a loan borrowed, then cleared by
+        a lump sum) rather than the degenerate ``$0``-opening shape
+        ``is_paid_off``'s guard exists to catch.
+
+        The second loan is what makes the debt-free date OBSERVABLE: with only
+        the retired one there is no date to report either way, and the test
+        could not tell the predicates apart.
+        """
+        # Pylint: ``import-outside-toplevel`` -- test-local helpers, matching
+        # this module's convention of importing them where used.
+        from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
+            create_loan_account, insert_trueup_event, loan_params_for,
+        )
+        retired = create_loan_account(
+            seed_user, db_session, name="Lump Sum Payoff",
+            principal=Decimal("12000.00"), rate=Decimal("0.05000"), term=24,
+            origination_date=date(2026, 1, 1), anchor_period=periods[0],
+        )
+        insert_trueup_event(
+            loan_params_for(db_session, retired.id), Decimal("0.00"),
+            anchor_date=date(2026, 3, 1),
+        )
+        clearing = create_loan_account(
+            seed_user, db_session, name="Still Clearing",
+            principal=Decimal("12000.00"), rate=Decimal("0.05000"), term=24,
+            origination_date=date(2026, 1, 1), anchor_period=periods[0],
+        )
+        db_session.commit()
+        return retired, clearing
+
+    def test_the_retired_loan_is_not_a_debt_line(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The debt-free date is the SURVIVING loan's payoff, and it is flagged.
+
+        End to end through ``compute_dashboard_data``: the domain runs to the
+        clearing loan's payoff plus a year and the "Debt-free" flag lands on
+        that payoff.  Every expected value is a pinned literal, not a value
+        read back off the producer: a regression that moved the clearing
+        loan's payoff to some other future date must fail here.  Its firing
+        control is :meth:`test_the_badging_predicate_loses_the_debt_free_date`,
+        which re-runs the same data through the predicate this step replaced.
+        """
+        with app.app_context():
+            # Pylint: ``import-outside-toplevel`` -- the private producer under
+            # test, imported where used.
+            from app.services.savings_dashboard_service._horizon import (  # pylint: disable=import-outside-toplevel
+                _resolve_horizon_domain,
+            )
+            retired, clearing = self._two_loans(
+                seed_user, db.session, seed_periods,
+            )
+
+            ctx = BalanceContext.build(seed_user["user"].id)
+            retired_figures = balance_at.loan_figures(retired, ctx)
+            clearing_figures = balance_at.loan_figures(clearing, ctx)
+            # The precondition that makes this fixture discriminating: the loan
+            # owes nothing and is NOT badged, because nothing was ever paid.
+            assert balance_at.balance_at(
+                retired, ctx, ctx.as_of,
+            ) == Decimal("0.00")
+            assert retired_figures.is_retired is True
+            assert retired_figures.is_paid_off is False
+            assert retired_figures.payoff_date is None
+            assert clearing_figures.payoff_date == self._CLEARING_PAYOFF
+
+            data = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            assert _resolve_horizon_domain(
+                data["account_data"], date(2026, 3, 20),
+            ) == (self._CLEARING_DOMAIN_END, self._CLEARING_PAYOFF, False)
+
+            horizon = data["net_worth"]["horizon"]
+            assert {
+                (m["kind"], m["date"]) for m in horizon["milestones"]
+            } >= {("debt_free", self._CLEARING_PAYOFF)}
+
+            # And the caption on the same page agrees, which is the point: the
+            # debt summary selects on the loan's BALANCE, so it always read the
+            # real date while the chart beside it did not.  (ONE derivation for
+            # both is plan step X-q; this asserts the agreement X-o restores for
+            # this shape, not the general property -- the two producers still
+            # select different loan sets, finding N-98.)
+            assert data["debt_summary"]["projected_debt_free_date"] == (
+                self._CLEARING_PAYOFF
+            )
+
+    def test_the_badging_predicate_loses_the_debt_free_date(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """FIRING CONTROL: the replaced predicate, on the same real data.
+
+        ``_debt_line_loans`` selects on ``is_retired``; before plan step X-o it
+        selected on ``is_paid_off``.  Substituting the old predicate into the
+        projection dicts -- exactly what the old line read -- must produce the
+        defect: no debt-free date, and the domain cut back to the loan-free
+        fallback window.  A control that cannot fail is not a control
+        (Section 7.3 of the balance plan of record).
+        """
+        with app.app_context():
+            # Pylint: ``import-outside-toplevel`` -- the private producer under
+            # test, imported where used.
+            from app.services.savings_dashboard_service._horizon import (  # pylint: disable=import-outside-toplevel
+                _resolve_horizon_domain,
+            )
+            self._two_loans(seed_user, db.session, seed_periods)
+
+            data = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            account_data = data["account_data"]
+            # The fixed producer, on unmodified data.
+            assert _resolve_horizon_domain(
+                account_data, date(2026, 3, 20),
+            ) == (self._CLEARING_DOMAIN_END, self._CLEARING_PAYOFF, False)
+
+            # The same producer, reading the badging predicate instead.
+            for ad in account_data:
+                ad["is_retired"] = ad["is_paid_off"]
+            assert _resolve_horizon_domain(
+                account_data, date(2026, 3, 20),
+            ) == (self._FALLBACK_END, None, False), (
+                "the control does not fire: the badging predicate produced the "
+                "same domain as the debt-line predicate, so this fixture "
+                "cannot tell them apart"
+            )
+
+    def test_a_user_whose_only_loan_is_retired_is_loan_free(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """One loan, retired by a true-up: the user IS loan-free.
+
+        The single-loan half of the same defect.  ``is_loan_free`` separates
+        "no debt line at all" from "a debt line that never clears", and the
+        badging predicate collapsed a retired loan into the second.
+
+        **This one pins a producer CONTRACT, not a rendered figure, and the
+        distinction is stated so the coverage is not over-read.**  With a
+        single retired loan both predicates return the same ``horizon_end``
+        (the fallback window) and the same ``debt_free_date`` (``None``), so
+        the sample dates, both series and the milestone list are identical
+        either way; the ONLY value that discriminates is ``is_loan_free``,
+        which ``_serialize_horizon`` does not emit and no template reads
+        (finding N-100).  It is worth fixing and pinning ahead of a consumer
+        -- a producer that reports "still in debt" for a borrower who owes
+        nothing is wrong whether or not a screen has asked yet -- and it is
+        not evidence that anything on screen changed.
+        """
+        with app.app_context():
+            # Pylint: ``import-outside-toplevel`` -- the private producer under
+            # test, imported where used.
+            from app.services.savings_dashboard_service._horizon import (  # pylint: disable=import-outside-toplevel
+                _resolve_horizon_domain,
+            )
+            from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
+                create_loan_account, insert_trueup_event, loan_params_for,
+            )
+            retired = create_loan_account(
+                seed_user, db.session, name="Only Loan",
+                principal=Decimal("12000.00"), rate=Decimal("0.05000"),
+                term=24, origination_date=date(2026, 1, 1),
+                anchor_period=seed_periods[0],
+            )
+            insert_trueup_event(
+                loan_params_for(db.session, retired.id), Decimal("0.00"),
+            )
+            db.session.commit()
+
+            data = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            account_data = data["account_data"]
+            assert _resolve_horizon_domain(
+                account_data, date(2026, 3, 20),
+            ) == (self._FALLBACK_END, None, True)
+
+            # FIRING CONTROL: the badging predicate keeps the retired loan in
+            # the active set, so the user is reported NOT loan-free.
+            for ad in account_data:
+                ad["is_retired"] = ad["is_paid_off"]
+            assert _resolve_horizon_domain(
+                account_data, date(2026, 3, 20),
+            ) == (self._FALLBACK_END, None, False)

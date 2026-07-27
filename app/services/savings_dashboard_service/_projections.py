@@ -193,9 +193,10 @@ def _project_one_account(acct, ctx, balance_maps):
 
     Returns:
         A dict with keys: account, current_balance, projected,
-        needs_setup, is_paid_off, is_liability, plus optional type-specific
-        params (interest_params / investment_params / loan_params +
-        monthly_payment + current_rate + payoff_date).
+        needs_setup, is_retired, is_paid_off, is_originated, is_liability,
+        plus optional type-specific params (interest_params /
+        investment_params / loan_params + monthly_payment + current_rate +
+        payoff_date).
     """
     kind = classify_account(acct)
     acct_interest_params = ctx.params.interest_params_map.get(acct.id)
@@ -233,6 +234,18 @@ def _project_one_account(acct, ctx, balance_maps):
         "current_balance": current_bal,
         "projected": projected,
         "needs_setup": needs_setup,
+        # The two loan-done predicates are BOTH published, because they answer
+        # different questions and a consumer holding only one has to make the
+        # other up.  ``is_retired`` is "this loan has no debt line" (originated,
+        # and its folded events owe nothing); ``is_paid_off`` is that PLUS a
+        # confirmed payment -- a badging rule, so a lump-sum payoff recorded as
+        # a balance true-up reads False here while owing $0.00.  See
+        # ``LoanFigures.is_retired`` / ``.is_paid_off``, which state the split
+        # and the $197,049.32 defect that collapsing it produced.  This dict
+        # carried only the badging one until plan step X-o, so the Horizon's
+        # debt-free question -- a debt-LINE question -- was asked with the
+        # congratulation predicate (finding B-16).
+        "is_retired": loan_result.figures.is_retired if loan_result else False,
         "is_paid_off": loan_result.figures.is_paid_off if loan_result else False,
         # A loan the user has configured but not yet BORROWED owes $0.00 today,
         # and a consumer that reads that zero as "this debt is repaid" reports
