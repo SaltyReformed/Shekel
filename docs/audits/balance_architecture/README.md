@@ -39,13 +39,16 @@ were unmoved. **What the modelled cutover bought:** an investment's balance answ
 rather than a period end, and the user's own recorded balance assertions winning over a model that
 had been overriding 12 of the 15 they had entered.
 
-**NEXT: X-g4**, the deletion -- `_investment` is production-dead already (zero live callers, AST-verified
-2026-07-27), so X-g4 and **X-c2c4** are one deletion front. **Its TRACE is done and its four forks
-are RULED** (R-AR..R-AU, 2026-07-27, all as recommended): the deletion is a CLOSED import cluster
-(`_investment` -> `_cash_engine` -> `_calculator`, zero `app/` entry points), two more surfaces fall
-with it (`_interest` WHOLE and `cash_ledger.load_balance_transactions`), exactly ONE coverage hole is
-real, and it ships as **X-g4a** the port then **X-g4b** the whole deletion, which ticks X-c2c4 too.
-Then the thirteen steps after them, in the order Section 5 lists.
+**X-g4 and X-c2c4 are DONE**, shipped 2026-07-27 as X-g4a (`2ee817b4`, the ported 52-period drift
+oracle) and X-g4b (`17c57cde`, the deletion). The deletion turned out to be a CLOSED import cluster with
+zero `app/` entry points -- `_investment` -> `_cash_engine` -> `_calculator`, plus `_interest` WHOLE
+and two loaders orphaned by them -- so **1,347 production lines and 4,937 test lines went, and the
+`verify_balance_baseline.py` harness stayed BYTE-IDENTICAL on both databases.** Every producer this
+arc set out to replace is now gone from the tree rather than merely unwired: a non-loan balance is
+ONE event replay, a loan is its `positions()` fold, and there is no third answer left to pick.
+
+**NEXT: X-o**, then the twelve steps after it in the order Section 5 lists. X-o is a one-predicate
+fix to a LIVE defect on a rendered screen and depends on nothing.
 
 ---
 
@@ -75,8 +78,8 @@ order that overrode the user's own recorded facts -- `$6,315.57` of rendered net
 contradicting 12 of the 15 balance assertions the three modelled accounts carry (finding N-74), plus
 a future contribution that rewrote a past balance (N-75) -- and three kinds answered a DATE with a
 PERIOD, so a whole period's growth landed on its first day (`$328.50` on the Empower 401(k), N-71).
-One event replay closed both. `_merge_balance_sources` and the reverse projection are now dead code
-with no live caller, awaiting plan step **X-g4**'s deletion. The full record is
+One event replay closed both. `_merge_balance_sources` and the reverse projection were dead code with no
+live caller and were DELETED at plan step **X-g4b** (`17c57cde`). The full record is
 `archive/cash_arc_as_built_2026-07-27.md`.
 
 **What remains, and the first three are the same disease this document opened with:**
@@ -585,7 +588,7 @@ here**, re-parented to the top level now that its `X-c2c` decomposition header i
 preconditions cite entries in that file.
 
 - [x] **X-c2c4** `refactor(balance): the last cash producer deletes` -- **SHIPPED dev 2026-07-27
-  INSIDE X-g4b (`1c753f7e`)**, ruling R-AR. Pure deletion, no
+  INSIDE X-g4b (`17c57cde`)**, ruling R-AR. Pure deletion, no
   behaviour. **RUNS AFTER X-g, not after X-c2c2** (ruling R-V): its precondition is that
   `_cash_engine.balances_for` has no caller left, and X-g's replay is what takes the last two
   -- exactly as the cancelled X-c2c3's window would have. Do not attempt it earlier; the
@@ -728,7 +731,7 @@ preconditions cite entries in that file.
   grid trio. The design they implement is Section 3.2 above, which stays live because X-g4 is held to
   it. **X-g4 did NOT ship and stays below.**
 
-  * [ ] **X-g4** -- the deletion. `_merge_balance_sources`, `_reverse_project_periods`,
+  * [x] **X-g4** -- the deletion. **SHIPPED** as X-g4a + X-g4b. `_merge_balance_sources`, `_reverse_project_periods`,
     `_forward_project_periods`, `_forward_project_rows`, `_assemble_investment_projection_inputs`,
     `investment_base_balance_map`, `get_anchor_period_index`, and `_interest._layer_interest`'s
     second pass. `_cash_engine.balances_for` loses its last two callers here, which is X-c2c4's
@@ -874,7 +877,7 @@ preconditions cite entries in that file.
     period end precedes the opening) and the docstring says so instead of claiming it.
 
   * [x] **X-g4b** `refactor(balance): the modelled and cash producers delete` -- **SHIPPED dev
-    2026-07-27 (`1c753f7e`)**, ruling R-AR's ONE deletion, carrying X-c2c4's whole content.
+    2026-07-27 (`17c57cde`)**, ruling R-AR's ONE deletion, carrying X-c2c4's whole content.
     **1,347 production lines and 4,937 test lines removed; `verify_balance_baseline.py`
     BYTE-IDENTICAL on BOTH databases, run HEAD-vs-post in a `git worktree`.** Loan gate unmoved
     (Mortgage `$177,277.97`, Van Loan `$15,663.59`). Full suite 7588; the **-79** against X-g4a's
