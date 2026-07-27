@@ -5,6 +5,14 @@
 completed as-built record, a superseded plan, or an audit whose surviving findings were absorbed
 into the plan of record's findings ledger. Archived 2026-07-16, extended 2026-07-26.
 
+**Start here for the CASH half:** `cash_arc_as_built_2026-07-27.md`. It is the as-built record of
+Phase X as far as it has shipped -- X-a through X-g3b, on `dev` and NOT yet in production -- holding
+the plan of record's whole running-state narrative, every shipped step's measurements and firing
+controls, and the 10 findings they closed. It differs from the loan record in one way that matters:
+the loan half was archived because it was COMPLETE, while Phase X is still IN FLIGHT, so this is a
+shipped-so-far record and the remaining steps (X-g4, X-c2c4 and thirteen more) are still live in
+`../README.md`.
+
 **Start here for the loan half:** `loan_arc_as_built_2026-07-26.md`. It is the as-built record of
 Phases A-F -- the whole loan arc, shipped to production in PR #64 -- extracted verbatim from the
 plan of record when that document was trimmed to the work that remains. It also holds the register
@@ -13,6 +21,7 @@ in the live findings ledger, because unfinished work belongs where work is plann
 
 | file | what it was | why archived |
 |---|---|---|
+| `cash_arc_as_built_2026-07-27.md` | The CASH half as far as it has shipped: the plan of record's entire preamble (its running state narrative), Phase X steps X-a .. X-c2c3 and X-g1 .. X-g3b as built, and the 10-row closed-findings register | Extracted 2026-07-27 on the developer's instruction, at 2,982 lines, so the plan of record carries the work that REMAINS rather than the log of work that is done. **Phase X is NOT complete and none of it is in production** -- read this for how a shipped cash behaviour was decided and which commit shipped it; the remaining steps are live in `../README.md` |
 | `loan_arc_as_built_2026-07-26.md` | The LOAN half of the plan of record: its running state narrative, the loan problem and root causes, the loan fold's target shape, rulings D1-D5 / R-A / R-C / R-D / R-E, Phases A-E and F2/F3 as built, and the 75-row closed-findings register | The loan arc is COMPLETE and in production (PR #64, merge `88c79857`, 2026-07-25). Extracted 2026-07-26 so the live document could shrink from 2,713 lines to the cash work that remains. Read it for how a shipped loan behaviour was decided and which commit shipped it; do NOT read it as instructions |
 | `recurring_loan_balance_root_cause.md` | The original 2026-06-26 diagnosis | Superseded by the deeper root cause (partial balance function) |
 | `implementation_plan_level1_balance_seam.md` | Level-1 `balance_at` seam plan | SHIPPED to prod 2026-06-27 (PR #45) |
