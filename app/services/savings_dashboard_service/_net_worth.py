@@ -113,13 +113,14 @@ def build_account_net_worth_maps(
     seam deliberately returns balances only (liability classification is
     not a balance concern), so this consumer adds ``is_liability`` itself.
 
-    The seam builds each map over ALL periods (never a forward sub-window):
-    the INVESTMENT and APPRECIATING paths still seed off the anchor-forward
-    producer (``_cash_engine.balances_for`` -- "Must include the anchor
-    period"), so a forward-only period list would starve them of their seed.
-    The cash and interest paths are TOTAL folds since plan step X-c2b2 and no
-    longer need it; passing the dense domain stays the one rule because the
-    forward consumers read the periods they want back out by id anyway.
+    The seam builds each map over ALL periods (never a forward sub-window).
+    Since plan step X-g2b every kind is a TOTAL fold, so no path NEEDS the
+    dense domain to find a seed any more -- the reason this rule was written
+    (the INVESTMENT and APPRECIATING paths seeding off an anchor-forward
+    producer that had to be handed its anchor period) is gone with the producer.
+    What survives is the rule itself: a window is a window, and the forward
+    consumers read the periods they want back out by id, so passing everything
+    keeps one caller from asking about a slice and rendering it as a whole.
 
     Returns the same ``{account_id, balances, is_liability}`` shape
     :func:`compute_net_worth_series` (via

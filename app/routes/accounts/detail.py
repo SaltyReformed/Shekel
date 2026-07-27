@@ -241,7 +241,6 @@ def _cash_projection(
     is_interest: bool,
     balance_ctx: BalanceContext,
     all_periods: list[PayPeriod],
-    params: InterestParams | None,
 ) -> "tuple[dict[int, Decimal], dict[int, Decimal], AnchorPoint | None]":
     """Produce the per-period balances (and interest) for a cash account.
 
@@ -250,7 +249,11 @@ def _cash_projection(
 
     * interest-bearing accounts read
       ``balance_at.interest_projection_for_account`` -- the interest-accrued
-      balances AND the per-period earned interest, from ONE fold (N-64), and
+      balances AND the per-period earned interest, from ONE fold (N-64).  It
+      no longer takes the account's ``InterestParams``: since plan step X-g2b
+      the replay reads the account's own accrual rule through the seam's ONE
+      predicate, so this route cannot hand it a rate loaded from somewhere
+      else, and
     * plain cash accounts read the cash-flow ``balance_at.cash_balance_map``
       (pure transaction running-balance).
 
@@ -278,7 +281,7 @@ def _cash_projection(
             # would also have had two chances to disagree with itself.
             balances, interest_by_period = (
                 balance_at.interest_projection_for_account(
-                    account, balance_ctx, all_periods, params,
+                    account, balance_ctx, all_periods,
                 )
             )
     elif scenario is not None and all_periods:
@@ -377,7 +380,7 @@ def _cash_detail_context(account: Account) -> dict:
     )
 
     balances, interest_by_period, anchor = _cash_projection(
-        account, is_interest, balance_ctx, all_periods, params,
+        account, is_interest, balance_ctx, all_periods,
     )
 
     current_balance = _current_period_balance(balances, current_period, anchor)

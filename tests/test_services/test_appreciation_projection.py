@@ -14,6 +14,13 @@ from app.models.ref import AccountType
 from app.services.balance_at import BalanceContext
 from app.services import account_service, growth_engine, pay_period_service, savings_dashboard_service
 from app.services.balance_at import _kernel as net_worth_kernel
+from app.services.balance_at._asset_contributions import (
+    ContributionInputs,
+)
+from tests._test_helpers import (
+    restamp_opening_assertion,
+    settle_instant_on,
+)
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
@@ -21,7 +28,21 @@ from app.services.account_projection import (
 
 
 def _make_property(db, seed_user, periods, anchor_period, balance, rate=None):
-    """Create a Property account, optionally with an appreciation rate."""
+    """Create a Property account, optionally with an appreciation rate.
+
+    **The opening assertion is stamped at the anchor period's first day**, the
+    N-77 / N-65 pin the shared ``make_appreciating_account`` helper already
+    carries.  ``account_service.create_account`` stamps
+    ``AccountAnchorHistory.created_at`` with ``db.func.now()`` -- the DATABASE
+    clock, which the suite's frozen today does not reach -- while these fixtures
+    seed their pay periods relative to that frozen today.  The opening therefore
+    lands MONTHS after the whole seeded horizon, and since plan step X-g2b a
+    modelled asset accrues only forward of its LATEST assertion (ruling R-Y),
+    an unpinned Property would earn nothing at any period and this file's
+    appreciation assertions would all read the flat market value.  That is a
+    state production cannot reach: a real opening is stamped when the account is
+    created, inside its own anchor period.
+    """
     property_type = (
         db.session.query(AccountType).filter_by(name="Property").one()
     )
@@ -40,6 +61,9 @@ def _make_property(db, seed_user, periods, anchor_period, balance, rate=None):
         db.session.add(AssetAppreciationParams(
             account_id=acct.id, annual_appreciation_rate=rate,
         ))
+    restamp_opening_assertion(
+        db.session, acct, settle_instant_on(anchor_period.start_date),
+    )
     db.session.commit()
     return acct
 
@@ -65,7 +89,22 @@ class TestAppreciationBalanceMap:
     """The net-worth kernel projects appreciation forward, flat backward."""
 
     def test_compound_forward_flat_backward(self, app, db, seed_user, seed_periods_today):
-        """Post-anchor periods compound; the anchor and pre-anchor stay flat."""
+        """Pre-anchor holds flat; the ANCHOR period and everything after compound.
+
+        **The anchor period moved at plan step X-g2b (ruling R-Y).**  It used to
+        hold flat with the pre-anchor ones, because the shipped producer split
+        its periods on ``period_index > anchor_idx`` and served the anchor period
+        from the flat cash base -- so a Property earned nothing at all in the
+        period it was valued in, and lost that period again every time the user
+        re-asserted its value.  The assertion's OWN day accrues now, so with the
+        opening pinned to the anchor period's first day the whole 14 days do:
+        ``400000 * ((1.03 ** (14/365)) - 1) = $453.76``, hand-computed and
+        pinned below.
+
+        Pre-anchor periods still hold flat, and that is a RULING rather than an
+        oversight (R-S): a manually-asserted point-in-time market value has no
+        historical basis to compound backward from.
+        """
         with app.app_context():
             all_periods = sorted(
                 seed_periods_today, key=lambda p: p.period_index,
@@ -77,36 +116,45 @@ class TestAppreciationBalanceMap:
             )
             balances = net_worth_kernel.build_account_balance_map(
                 acct, BalanceContext.build(seed_user["user"].id), all_periods,
-                investment_params=None,
-                deductions=[], salary_gross_biweekly=Decimal("0.00"),
+                ContributionInputs.absent(),
             )
 
-            # Pre-anchor and anchor periods hold flat at the user-set value:
-            # a manually-set valuation is not back-cast (flat-carry backward).
+            # Pre-anchor periods hold flat at the user-set value: a
+            # manually-set valuation is not back-cast (ruling R-S).
             for period in all_periods:
-                if period.period_index <= anchor.period_index:
+                if period.period_index < anchor.period_index:
                     assert balances[period.id] == Decimal("400000.00")
+
+            # The ANCHOR period earns its own 14 days, hand-computed above.
+            assert balances[anchor.id] == Decimal("400453.76")
 
             # Post-anchor periods compound forward -- strictly increasing.
             post = [p for p in all_periods if p.period_index > anchor.period_index]
             assert post  # the anchor is mid-list, so post-anchor periods exist
-            prev = Decimal("400000.00")
+            prev = balances[anchor.id]
             for period in post:
                 assert balances[period.id] > prev
                 prev = balances[period.id]
 
-            # SSOT: the kernel delegates appreciation to the growth engine, so
-            # the post-anchor values equal a direct contributions-zeroed call.
+            # The growth itself is the SHARED curve, not a second model: seeded
+            # at the anchor period's own end balance, the growth engine's
+            # per-period projection tracks the daily replay to within a cent at
+            # every post-anchor period.  (Not equality -- the grain differs by
+            # ruling R-T, and X-g1 measured that difference at at most $0.05
+            # across the three real investment accounts.  Equality here would
+            # be asserting the replay IS the producer it replaced.)
             expected = {
                 pb.period_id: pb.end_balance
                 for pb in growth_engine.project_balance(
-                    current_balance=Decimal("400000.00"),
+                    current_balance=balances[anchor.id],
                     assumed_annual_return=Decimal("0.03000"),
                     periods=post,
                 )
             }
             for period in post:
-                assert balances[period.id] == expected[period.id]
+                assert abs(
+                    balances[period.id] - expected[period.id],
+                ) <= Decimal("0.01"), f"period {period.period_index} diverged"
 
     def test_zero_rate_is_flat(self, app, db, seed_user, seed_periods_today):
         """A Property with a 0% rate carries its value flat at every period."""
@@ -120,8 +168,7 @@ class TestAppreciationBalanceMap:
             )
             balances = net_worth_kernel.build_account_balance_map(
                 acct, BalanceContext.build(seed_user["user"].id), all_periods,
-                investment_params=None,
-                deductions=[], salary_gross_biweekly=Decimal("0.00"),
+                ContributionInputs.absent(),
             )
             # rate 0 -> no growth; every period equals the anchor value.
             for period in all_periods:
@@ -143,8 +190,7 @@ class TestAppreciationBalanceMap:
             )
             balances = net_worth_kernel.build_account_balance_map(
                 acct, BalanceContext.build(seed_user["user"].id), all_periods,
-                investment_params=None,
-                deductions=[], salary_gross_biweekly=Decimal("0.00"),
+                ContributionInputs.absent(),
             )
             for period in all_periods:
                 assert balances[period.id] == Decimal("400000.00")
@@ -192,8 +238,7 @@ class TestSavingsDashboardProjection:
             modeled_map = net_worth_kernel.build_account_balance_map(
                 acct, BalanceContext.build(seed_user["user"].id),
                 seed_periods_today,
-                investment_params=None,
-                deductions=[], salary_gross_biweekly=Decimal("0.00"),
+                ContributionInputs.absent(),
             )
             assert entry["current_balance"] == modeled_map[current_period.id]
             assert entry["current_balance"] > Decimal("400000.00")

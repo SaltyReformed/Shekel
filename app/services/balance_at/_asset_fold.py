@@ -296,18 +296,22 @@ class AssetPeriodFigures:
         balance: The modelled end-of-period balance.
         accrual: The modelled return credited inside this period's span.
         contribution: The modelled contribution credited inside it.
-        balance_without_accrual: The same balance with the ACCRUAL events
-            filtered out -- the pre-growth SEED a forward chart compounds FROM
-            (ruling R-U).  It is the balance MINUS the cumulative accrual rather
-            than a second resolve, and the two are equal because no contribution
-            amount depends on the balance: the deduction amount, the annual cap
-            and the employer match are all balance-independent recurrences.
+
+    A fourth field carried the same balance with the ACCRUAL events filtered
+    out -- the pre-growth seed ruling R-U had a forward chart compound FROM.
+    **Ruling R-AE retired that idea** (plan step X-g2b): with the seed read at a
+    DATE strictly before the projection window, the window and the seed's past
+    are disjoint, so there is no overlap for a pre-growth basis to correct --
+    and filtering the modelled return instead DROPS every cent the account
+    earned since its last assertion (up to $292.11 on the real Empower 401(k),
+    finding N-80).  A chart seeds from the ordinary balance at a date now, so
+    neither that field nor its scalar twin ``asset_seed_at`` has a reader, and
+    both went with the ruling rather than surviving as an attractive nuisance.
     """
 
     balance: Decimal
     accrual: Decimal
     contribution: Decimal
-    balance_without_accrual: Decimal
 
 
 @dataclass(frozen=True)
@@ -318,7 +322,7 @@ class ModelledFold:
     :func:`~app.services.balance_at._fold.sample_cumulative` reads; the two maps
     beside it are the same deltas kept apart so a reader can report WHY a
     balance moved without re-deriving it -- which is what
-    :func:`asset_seed_at` filters and :func:`asset_growth_at` totals.
+    :func:`asset_growth_at` totals.
 
     Attributes:
         seed: The balance before every step (the cash fold's ruling R-I seed).
@@ -637,10 +641,9 @@ def _assemble(
 ) -> ModelledFold:
     """Assemble the cash fold and resolve the modelled tiers onto it -- ONCE.
 
-    The single assembly the four convenience entries below share, so a scalar, a
-    period map, a seed and a growth decomposition of the same account are
-    readings of ONE resolved step list rather than four producers a test keeps in
-    step.
+    The single assembly the three convenience entries below share, so a scalar,
+    a period map and a growth decomposition of the same account are readings of
+    ONE resolved step list rather than three producers a test keeps in step.
 
     Args:
         account: The account to value.
@@ -672,13 +675,14 @@ def fold_asset_balances(
 
     The modelled counterpart of
     :func:`app.services.balance_at._cash_fold.fold_cash_balances`, and the
-    producer that makes a modelled kind answer a DATE rather than a period: the
-    three modelled kinds are period-granular today
-    (``_kind_correct.balance_at`` resolves a date to its period and reads the
-    map), so a whole period's growth lands on the period's FIRST day -- measured
-    at period 30 on the prod-shape clone, the scalar returns the identical value
-    on that period's first and last day while $328.50 of growth accrues inside
-    it (finding N-71).  A daily step list has no such state to be in.
+    producer that makes a modelled kind answer a DATE rather than a period.
+    Until plan step X-g2b wired it, ``_kind_correct.balance_at`` resolved a date
+    to its pay period and read a period-keyed map for these three kinds, so a
+    whole period's growth landed on the period's FIRST day -- measured at period
+    30 on the prod-shape clone, the scalar returned the identical value on that
+    period's first and last day while $328.50 of growth accrued inside it
+    (finding N-71).  A daily step list has no such state to be in, and since
+    that step this is what the scalar reads.
 
     Args:
         account: The account to value.
@@ -706,8 +710,8 @@ def asset_period_view(
 ) -> "OrderedDict[int, AssetPeriodFigures]":
     """Return *account*'s modelled column for each of *periods*.
 
-    The per-period map, its accrual and contribution components, and ruling
-    R-U's pre-growth seed, all sampled off ONE resolved step list.  Each period
+    The per-period map and its accrual and contribution components, sampled off
+    ONE resolved step list.  Each period
     is valued over its OWN span -- ``(p.start_date - 1 day, p.end_date]`` -- so
     the periods need be neither contiguous nor ordered, and the first period is
     covered without a predecessor to subtract from.
@@ -775,53 +779,6 @@ def period_columns(
             _ZERO_MONEY, sorted(folded.contribution_by_day.items()), boundaries,
         ),
     )
-
-
-def asset_seed_at(
-    account: Account,
-    ctx: BalanceContext,
-    as_of: date,
-    inputs: ContributionInputs,
-) -> Decimal:
-    """Return *account*'s balance at *as_of* with the modelled RETURN filtered out.
-
-    Ruling R-U's SEED: what a forward what-if chart compounds FROM.  It is the
-    replay with its ACCRUAL events omitted -- the filter plan Section 3.2 names,
-    and the reason ``investment_seed_map`` stops being a producer of its own.
-    That accessor existed only because the previous design could not express "the
-    same balance without the modelled tier" without building a second cash basis;
-    under one event stream it is one subtraction.
-
-    **It is a DATE, and that is the whole point** (ruling R-U).  A caller reads it
-    at the day BEFORE its projection window opens, so every event inside the
-    window is the ENGINE's to apply and none of them is in the seed.  That is what
-    lets ``current_period_transfer_contribution`` -- the de-dup subtraction both
-    chart seeds carried (deep-quality-hunt #9 / #14) -- delete rather than be
-    ported: a recorded contribution landing on the window's first payday is not in
-    a seed that stops the day before, and the growth engine applies it exactly
-    once.  Under ruling R-R's partition the two feeds are disjoint anyway, so
-    there is no de-dup rule left to state.
-
-    Seeding from the DISPLAYED balance instead would compound growth on growth,
-    which is the warning the retired accessor's docstring carried and which this
-    entry preserves structurally rather than by instruction.
-
-    Args:
-        account: The account to seed from.
-        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
-        as_of: The seed date -- the day before the projection window opens.
-        inputs: The account's
-            :class:`~app.services.balance_at._asset_contributions.ContributionInputs`.
-
-    Returns:
-        The cent-quantized ``Decimal`` balance at *as_of*, less every ACCRUAL
-        credited on or before it.  CONTRIBUTIONS stay IN: they are money the
-        account holds, not modelled return, and the engine re-applies only the
-        ones dated inside its own window.
-    """
-    folded = _assemble(account, ctx, as_of, inputs)
-    balance = sample_cumulative(folded.seed, folded.steps, [as_of])[as_of]
-    return balance - _cumulative(folded.accrual_by_day, as_of)
 
 
 def asset_growth_at(
@@ -918,9 +875,6 @@ def _assemble_columns(
             accrual=accrued[period.end_date] - accrued[opening],
             contribution=(
                 contributed[period.end_date] - contributed[opening]
-            ),
-            balance_without_accrual=(
-                balances[period.end_date] - accrued[period.end_date]
             ),
         )
     return columns

@@ -1,5 +1,15 @@
 """
-Shekel Budget App -- Investment growth balance sub-chain.
+Shekel Budget App -- Investment growth balance sub-chain (UNWIRED).
+
+**Nothing in production reads this module since plan step X-g2b.**  Every
+non-loan balance is now ONE event replay
+(:mod:`app.services.balance_at._asset_fold`), so the kernel's per-kind ladder --
+which is what dispatched here -- is gone (ruling R-AD).  What is left alive here
+is the INCUMBENT plan step X-g1's parallel run grades that replay AGAINST, kept
+until plan step **X-g4** deletes it, because this arc's rule is to prove the
+successor before deleting the producer it replaces (the C3b3 precedent, applied
+nine times now).  Do not add a caller; do not "fix" a defect in it (finding
+N-78 is recorded and deliberately unfixed for exactly that reason).
 
 The investment / retirement growth projection, extracted from the kernel
 (:mod:`app.services.balance_at._kernel`, which reached its module-size
@@ -7,11 +17,11 @@ ceiling).  Two views built on ONE assembly and ONE forward projection so
 they cannot drift:
 
 * :func:`build_investment_balance_map` -- the modeled balance an
-  investment account DISPLAYS: the anchor compounded forward at the assumed
-  return (plus contributions), reverse-projected before the anchor, spliced
-  over the anchor-forward cash basis.  The kernel's
-  :func:`~app.services.balance_at._kernel.build_account_balance_map` dispatches
-  here for INVESTMENT accounts.
+  investment account USED TO DISPLAY: the anchor compounded forward at the
+  assumed return (plus contributions), reverse-projected before the anchor,
+  spliced over the anchor-forward cash basis.  That splice is what findings
+  N-43 / N-74 measured overriding 12 of the 15 balance assertions the three
+  real modelled accounts carry.
 * :func:`investment_growth_since_anchor` -- the growth-vs-contributed
   decomposition the detail page's Growth chip reads.  It sums the SAME
   forward projection's per-period ``growth`` and ``contribution`` /
@@ -87,17 +97,20 @@ def investment_base_balance_map(
     unmoved on every column precisely BECAUSE they still seed here, which is
     what makes this the last cash producer rather than a second opinion.
 
-    Shared by every investment growth projection so none re-derives the seed:
-    :func:`build_investment_balance_map` (which forward/reverse-projects growth
-    off it), the year-end savings-progress projection, and the investment /
-    retirement dashboard forward projections (which seed from this cash basis
-    while the DISPLAYED headline reads the modeled
-    :func:`build_investment_balance_map`).  Each must seed from THIS pre-growth
-    map, not the growth-modeled map the ``balance_at`` seam returns -- seeding
-    from the modeled balance would compound growth on growth (re-grow the
-    current period).  Exposed so those consumers read the seed without calling
-    the fenced cash producer directly (the seam re-exposes it as
-    :func:`~app.services.balance_at.investment_seed_map`).
+    **It has ONE caller left and that caller is itself unwired**
+    (:func:`build_investment_balance_map`).  It was shared by every investment
+    growth projection so none re-derived the seed -- the year-end
+    savings-progress projection (deleted at plan step F2) and the investment /
+    retirement dashboard forward projections (re-pointed at plan step X-g2b,
+    which made a chart's seed the ordinary modelled balance at a DATE).  Each
+    had to seed from THIS pre-growth map rather than the growth-modeled map the
+    seam returned, because with the window overlapping the seed's period,
+    seeding from the modeled balance compounded growth on growth.  The seam
+    re-exposed it as ``investment_seed_map`` until plan step X-g2b DELETED that
+    entry (ruling R-AE): once the seed is read at a
+    DATE strictly before the projection window, there is no overlap for a
+    pre-growth basis to correct, so a chart reads the ordinary date-precise
+    scalar and nothing here is reachable from outside.
 
     Args:
         account: The investment account.

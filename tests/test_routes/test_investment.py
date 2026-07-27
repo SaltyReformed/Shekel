@@ -20,7 +20,26 @@ from app.models.investment_params import InvestmentParams
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.ref import AccountType, FilingStatus
 from app.models.salary_profile import SalaryProfile
-from app.services import account_service, investment_dashboard_service
+from app.services import (
+    account_service,
+    balance_at,
+    growth_engine,
+    investment_dashboard_service,
+    pay_period_service,
+)
+from app.services.balance_at import BalanceContext
+from app.services.investment_dashboard_service import (
+    _context as investment_context,
+)
+from app.services.investment_dashboard_service._context import (
+    _projection_ytd,
+)
+from app.services.investment_projection import InvestmentInputs
+from app.utils.money import round_money
+from tests._test_helpers import (
+    restamp_opening_assertion,
+    settle_instant_on,
+)
 from app.services.investment_dashboard_service import _cards as investment_cards
 from tests._test_helpers import freeze_today, make_investment_account
 
@@ -92,17 +111,22 @@ class TestInvestmentDashboard:
         """GET returns 200 with params and projection data."""
         acct = _create_investment_account(seed_user, db.session)
         # Anchor stays at the factory's current period (cache AND the
-        # AccountAnchorHistory row in sync).  The headline now reads the
-        # model-from-anchor balance through the balance_at seam, and at
-        # anchor==current that equals the $50,000 cash basis.  The old
-        # ``current_anchor_period_id = seed_periods_today[0]`` override set
-        # ONLY the cache, not the history row the resolver reads -- a
-        # divergence the prior cash-basis fallback masked but the modeled
-        # map cannot, and which never matched a real (factory-built) account.
+        # AccountAnchorHistory row in sync).  The headline reads the
+        # model-from-anchor balance through the balance_at seam.  It used to
+        # equal the $50,000 cash basis at anchor==current; since plan step
+        # X-g2b the anchor period earns its own days (ruling R-Y), so the
+        # headline is that basis PLUS the accrual -- read here from the seam
+        # rather than pinned, because the arithmetic belongs to
+        # tests/test_services/test_asset_fold.py's hand-computed oracles.
         _create_investment_params(db.session, acct.id)
+        headline = balance_at.balance_map(
+            acct, BalanceContext.build(seed_user["user"].id),
+            seed_periods_today,
+        )[pay_period_service.get_current_period(seed_user["user"].id).id]
+        assert headline > Decimal("50000.00")
         resp = auth_client.get(f"/accounts/{acct.id}/investment")
         assert resp.status_code == 200
-        assert b"50,000.00" in resp.data
+        assert f"{headline:,.2f}".encode() in resp.data
 
     def test_dashboard_idor(
         self, auth_client, second_user, db, seed_periods_today,
@@ -133,10 +157,15 @@ class TestInvestmentDashboard:
             annual_contribution_limit=None,
             contribution_limit_year=None,
         )
+        headline = balance_at.balance_map(
+            acct, BalanceContext.build(seed_user["user"].id),
+            seed_periods_today,
+        )[pay_period_service.get_current_period(seed_user["user"].id).id]
+        assert headline > Decimal("25000.00")  # ruling R-Y: the anchor accrues
         resp = auth_client.get(f"/accounts/{acct.id}/investment")
         assert resp.status_code == 200
         assert b"Brokerage" in resp.data
-        assert b"25,000.00" in resp.data
+        assert f"{headline:,.2f}".encode() in resp.data
         # P2 rebuild: the summary tile became the hero's "modeled at x%
         # assumed return" caption (investment_audit.md, locked anatomy).
         assert b"assumed return" in resp.data
@@ -236,14 +265,21 @@ class TestInvestmentDashboard:
         assert "Growth since" in html
         assert "contributed" in html
 
-    def test_growth_chip_hidden_when_anchored_at_current(
+    def test_growth_chip_shows_when_anchored_at_current(
         self, auth_client, seed_user, db, seed_periods_today,
     ):
-        """No growth-since-anchor chip when the account was anchored this period.
+        """An account anchored THIS period SHOWS its chip (ruling R-AC / R-Y).
 
-        With the anchor AT the current period there is no elapsed window, so
-        the seam returns None and the band omits the chip (rather than showing
-        a spurious +$0.00).
+        **This inverted at plan step X-g2b.**  The shipped producer split its
+        periods on ``period_index > anchor_idx``, so an account anchored in the
+        current period had no post-anchor window, the seam returned ``None`` and
+        the band omitted the chip.  Ruling R-Y removes that premise: the
+        assertion's own day accrues, so the account HAS earned something --
+        measured $105.26 on the real Roth IRA at its anchor period -- and hiding
+        the chip would deny a figure the balance beside it already contains.
+
+        The chip is still hidden where it should be: no investment params, or no
+        current period (the two arms ruling R-AC kept).
         """
         from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
         current = pay_period_service.get_current_period(seed_user["user"].id)
@@ -253,7 +289,7 @@ class TestInvestmentDashboard:
         )
         resp = auth_client.get(f"/accounts/{inv.id}/investment")
         assert resp.status_code == 200
-        assert "Growth since" not in resp.data.decode()
+        assert "Growth since" in resp.data.decode()
 
 
 class TestContributionLimitZeroCap:
@@ -1965,14 +2001,25 @@ class TestInvestmentEntryAwareRouting:
             )
             assert producer[current_period.id] == Decimal("49545.71")
 
+            # What the tile RENDERS is that cash basis plus the modelled
+            # accrual, since plan step X-g2b gave the anchor period its own
+            # days (ruling R-Y).  The entries-aware arithmetic above is still
+            # the load-bearing half: it is what the accrual is computed ON, so
+            # the pre-fix seed would still land the rendered figure ~$45 low.
+            bctx = BalanceContext.build(user.id)
+            displayed = balance_at.balance_map(
+                acct, bctx, seed_periods_today,
+            )[current_period.id]
+            assert displayed > Decimal("49545.71")
+            assert displayed - Decimal("49545.71") < Decimal("200.00")
+
             resp = auth_client.get(f"/accounts/{acct.id}/investment")
             assert resp.status_code == 200
-            # The rendered current-balance tile carries the comma-
-            # formatted Decimal.  Pre-Commit-8 it would render
-            # 49,500.00 (silent degrade).  Asserting both presence of
-            # the correct value AND absence of the pre-fix value
-            # locks the regression in both directions.
-            assert b"49,545.71" in resp.data
+            # The rendered current-balance tile carries the comma-formatted
+            # Decimal.  Pre-Commit-8 it would render 49,500.00 (silent
+            # degrade); asserting the modelled figure's presence AND the
+            # pre-fix value's absence locks the regression in both directions.
+            assert f"{displayed:,.2f}".encode() in resp.data
             assert b"49,500.00" not in resp.data
 
     def test_investment_growth_chart_entry_aware(
@@ -2038,27 +2085,28 @@ class TestInvestmentEntryAwareRouting:
             balances = _extract_data_attr(resp.data, "balances")
             assert balances is not None and len(balances) > 0
 
-            # First chart point sits within roughly one biweekly's
-            # compounding of the entries-aware seed 49,545.71.  At 7%
-            # annual return that is ~ 49,545.71 * 0.07 / 26 ~ $133 per
-            # biweekly period; the engine actually returns about
-            # $49,665 for this configuration (no contributions, no
-            # employer match, one period of compounding plus a small
-            # adjustment for the contribution-limit math).  The
-            # pre-fix seed 49,500.00 with the same compounding lands
-            # near $49,619 -- about $46 lower, which is the difference
-            # between the two seeds carried forward.  The assertion
-            # band [49,640, 49,800] strictly contains the entries-
-            # aware first point and strictly excludes the pre-fix
-            # value.
-            first_point = Decimal(balances[0])
-            assert first_point >= Decimal("49640.00"), (
-                f"First chart point {first_point} below the entries-"
-                "aware lower bound; pre-Commit-8 silent-degrade "
-                "regression suspected (pre-fix value lands near "
-                "$49,619)."
+            # The band this used to assert is now an EXACT identity, because
+            # plan step X-g2b made the seed a date the chart also opens its
+            # axis from (ruling R-AF): the first projected point is the
+            # account's modelled balance at the current period's END,
+            # compounded over exactly one period.  With no contributions and no
+            # employer match there is nothing else in the row.
+            bctx = BalanceContext.build(user.id)
+            seed = balance_at.balance_at(acct, bctx, current_period.end_date)
+            # 7.0% is ``_create_investment_params``' default assumed return.
+            rate = growth_engine.period_return_rate(
+                Decimal("0.07000"), current_period,
             )
-            assert first_point <= Decimal("49800.00")
+            first_point = Decimal(balances[0])
+            assert first_point == seed + round_money(seed * rate), (
+                f"First chart point {first_point} is not the seed {seed} "
+                "compounded one period; the chart and its seed have "
+                "separated (ruling R-AF)."
+            )
+            # ...and it is still strictly above where the pre-Commit-8
+            # silent-degrade seed (49,500.00) would land, which is what this
+            # test was written to catch.
+            assert first_point > Decimal("49640.00")
 
 
 class TestEmployerMatchCapped:
@@ -2250,7 +2298,7 @@ class TestEmployerMatchCapped:
         )
 
 
-class TestProjectionNoCurrentPeriodDoubleCount:
+class TestTheProjectionAppliesEachContributionOnce:
     """deep-quality-hunt #9: the investment dashboard projection applies the
     current period's transfer contribution exactly once.
 
@@ -2263,37 +2311,6 @@ class TestProjectionNoCurrentPeriodDoubleCount:
     removed.
     """
 
-    def _make_projected_shadow_income(
-        self, seed_user, to_account, period, amount, db_session,
-    ):
-        """Seed a PROJECTED transfer into the investment account in *period*.
-
-        A projected shadow income is BOTH counted in the entries-aware
-        end-of-current balance (``cash_ledger.sum_projected``) and
-        re-applied by the growth-engine timeline -- the exact double-count
-        the seed correction removes.
-        """
-        from app.enums import StatusEnum  # pylint: disable=import-outside-toplevel
-        from app.services import transfer_service  # pylint: disable=import-outside-toplevel
-
-        projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
-        cat = seed_user["categories"]["Groceries"]
-        xfer = transfer_service.create_transfer(
-            transfer_service.TransferSpec(
-                user_id=seed_user["user"].id,
-                from_account_id=seed_user["account"].id,
-                to_account_id=to_account.id,
-                pay_period_id=period.id,
-                scenario_id=seed_user["scenario"].id,
-                amount=amount,
-                status_id=projected_id,
-                category_id=cat.id,
-                name="current-period contribution",
-            ),
-        )
-        db_session.commit()
-        return xfer
-
     def test_current_period_transfer_applied_once_in_projection(
         self, auth_client, seed_user, db, seed_periods_today,
     ):
@@ -2303,16 +2320,16 @@ class TestProjectionNoCurrentPeriodDoubleCount:
           401(k) anchored at the current period at $10,000.
           $1,000 PROJECTED shadow contribution in the current period.
 
-        Entries-aware end-of-current balance = 10,000 + 1,000 = $11,000
-        (the displayed tile).  The projection seed removes the current
-        period's own $1,000 contribution -> $10,000; the engine then
-        re-applies it once for the first projected period.
+        The modelled end-of-current balance = 10,000 + 1,000 = $11,000 (the
+        displayed tile, and the history line's last point).  The projection
+        seeds from exactly that and opens the day after, so the $1,000 the user
+        recorded is in the seed and the $1,000 the engine adds is the NEXT
+        period's modelled contribution.
 
         C2 (Loop B P1, developer-approved behavior change): the dashboard
-        chart now renders on the SAME synthetic-period basis as the HTMX
-        fragment, and the ``projection`` context key was dropped, so the
-        double-count is verified through the first PROJECTED chart balance
-        (``chart_balances[0]``) instead of the removed per-row
+        chart renders on the SAME synthetic-period basis as the HTMX fragment
+        and the ``projection`` context key was dropped, so this is verified
+        through the chart's own points rather than a per-row
         ``ProjectedBalance`` list.  With 0% return the first synthetic period
         accrues no growth, and the $1,000 transfer averaged over its single
         period gives a $1,000 periodic contribution, so:
@@ -2339,22 +2356,254 @@ class TestProjectionNoCurrentPeriodDoubleCount:
             seed_user["user"].id,
         )
         assert current_period is not None
-        self._make_projected_shadow_income(
+        _make_projected_shadow_income(
             seed_user, acct, current_period, Decimal("1000.00"), db.session,
         )
 
         data = compute_dashboard_data(seed_user["user"].id, acct)
 
-        # Displayed tile = entries-aware end-of-current (unchanged by the fix
-        # and by the C2 chart-basis change).
+        # Displayed tile = the modelled end-of-current balance.
         assert data["current_balance"] == Decimal("11000.00")
 
-        # First projected chart point applies the current-period contribution
-        # exactly once: 10,000 seed + 0% growth + 1,000 = 11,000 (NOT the
-        # pre-fix double-counted 12,000).
+        # The two lines MEET: the history line's last point is the balance the
+        # projection seeds from, so there is no step at the Today marker for a
+        # caption to explain (ruling R-AF).
+        history = data["history_balances"]
         chart_balances = data["chart_balances"]
+        assert history, "the chart should render modelled history"
         assert chart_balances, "chart should project the horizon forward"
-        assert Decimal(chart_balances[0]) == Decimal("11000.00")
+        assert Decimal(history[-1]) == Decimal("11000.00")
+
+        # ...and then steps by EXACTLY one modelled period's contribution.
+        # A double count lands here at 13,000; the retired subtraction ported
+        # onto this axis lands the history/seed junction at 10,000 instead.
+        assert Decimal(chart_balances[0]) == Decimal("12000.00")
+        assert (
+            Decimal(chart_balances[0]) - Decimal(history[-1])
+        ) == Decimal("1000.00")
+
+
+def _make_projected_shadow_income(
+    seed_user, to_account, period, amount, db_session,
+):
+    """Seed a PROJECTED transfer into the investment account in *period*.
+
+    The shape the double count needed: a projected shadow income is counted
+    in the balance the projection seeds from AND is the kind of row the
+    growth-engine timeline re-applies.  It stays the fixture because it is
+    still the discriminating shape -- under rulings R-AB / R-AF the seed's
+    date and the window are disjoint, so the row is counted once, and this
+    is where that would fail if either moved.
+    """
+    from app.enums import StatusEnum  # pylint: disable=import-outside-toplevel
+    from app.services import transfer_service  # pylint: disable=import-outside-toplevel
+
+    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+    cat = seed_user["categories"]["Groceries"]
+    xfer = transfer_service.create_transfer(
+        transfer_service.TransferSpec(
+            user_id=seed_user["user"].id,
+            from_account_id=seed_user["account"].id,
+            to_account_id=to_account.id,
+            pay_period_id=period.id,
+            scenario_id=seed_user["scenario"].id,
+            amount=amount,
+            status_id=projected_id,
+            category_id=cat.id,
+            name="current-period contribution",
+        ),
+    )
+    db_session.commit()
+    return xfer
+
+class TestTheAnnualLimitSeedFollowsTheWindow:
+    """The engine's YTD seed holds exactly the periods OUTSIDE the window.
+
+    The annual contribution limit is consumed by the contributions the growth
+    engine does NOT project plus the ones it does, so its
+    ``ytd_contributions_start`` must cover exactly the periods the window
+    excludes -- no more, no less.
+
+    **Ruling R-AF moved that boundary and the seed did not follow it.**  The
+    axis used to open at ``date.today()``, so its first synthetic period stood
+    in for the rest of the current pay period and the engine applied that
+    period's contribution itself; the seed therefore excluded it
+    (``ytd_contributions_seed``, deep-quality-hunt #10).  The axis now opens the
+    day AFTER the current period ends, so the engine never applies it and the
+    seed must INCLUDE it.  Keeping the old field reports room that is already
+    spent: on a $23,500 limit with $1,000 a period and today in the year's 15th
+    period, the engine prices $9,500 of remaining room where $8,500 is left,
+    projects one extra contribution inside the calendar year, and compounds it
+    for the whole horizon.  It also disagrees with the limit CARD on the same
+    page, which has always counted the current period.
+
+    The rule is one pure function, so it is pinned as one: an integration
+    fixture would have to drive a real contribution feed all the way to the
+    annual cap to see the difference, and would then be pinning the growth
+    engine's capping rather than this boundary.  The wiring is pinned
+    separately below.
+    """
+
+    @staticmethod
+    def _inputs(seed, through):
+        """Return an ``InvestmentInputs`` carrying the two YTD totals."""
+        return InvestmentInputs(
+            periodic_contribution=Decimal("1000.00"),
+            employer_params=None,
+            annual_contribution_limit=Decimal("23500.00"),
+            ytd_contributions=Decimal(through),
+            ytd_contributions_seed=Decimal(seed),
+            gross_biweekly=Decimal("3846.15"),
+        )
+
+    def test_a_window_after_the_current_period_seeds_the_through_total(self):
+        """The chart's window: the current period is outside it, so it counts.
+
+        $14,000 strictly before the current period and $15,000 through it.  The
+        window opens the day AFTER the period ends, so the engine will never
+        apply that period's $1,000 -- the seed must, or the year has $1,000 of
+        room that is already spent.
+        """
+        current = SimpleNamespace(
+            start_date=date(2026, 7, 16), end_date=date(2026, 7, 29),
+        )
+        assert _projection_ytd(
+            self._inputs("14000.00", "15000.00"),
+            date(2026, 7, 30), current,
+        ) == Decimal("15000.00")
+
+    def test_a_window_inside_the_current_period_seeds_the_strictly_before_total(
+        self,
+    ):
+        """The retirement axes: the engine applies the current period itself.
+
+        Both of ``retirement_projection``'s axes open at or inside the current
+        period, so the engine walks that period and charges its contribution
+        against the limit as it applies it -- seeding the through-current total
+        there would charge it twice (deep-quality-hunt #10).  The boundary is
+        inclusive of the period's own end day, which is the last day a window
+        can open on and still contain it.
+        """
+        current = SimpleNamespace(
+            start_date=date(2026, 7, 16), end_date=date(2026, 7, 29),
+        )
+        for opens_on in (date(2026, 7, 16), date(2026, 7, 27),
+                         date(2026, 7, 29)):
+            assert _projection_ytd(
+                self._inputs("14000.00", "15000.00"), opens_on, current,
+            ) == Decimal("14000.00"), f"window opening {opens_on}"
+
+    def test_no_current_period_seeds_the_strictly_before_total(self):
+        """With no current period there is nothing to be inside or outside of.
+
+        It falls back to the seed the engine has always taken, which is what the
+        surrounding context does with every other current-period-dependent
+        value.
+        """
+        assert _projection_ytd(
+            self._inputs("14000.00", "15000.00"), date(2026, 7, 30), None,
+        ) == Decimal("14000.00")
+
+    def test_the_chart_reads_the_resolved_ytd(
+        self, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """The wiring: a real context resolves to the through-current total.
+
+        A $1,000.00 contribution recorded IN the current period makes the two
+        YTD fields differ, so this cannot pass by them coinciding.
+        """
+        acct = _create_investment_account(
+            seed_user, db.session, type_name="401(k)",
+            name="Limit 401k", balance="10000.00",
+        )
+        _create_investment_params(db.session, acct.id)
+        current = pay_period_service.get_current_period(seed_user["user"].id)
+        _make_projected_shadow_income(
+            seed_user, acct, current, Decimal("1000.00"), db.session,
+        )
+
+        ctx = investment_context._load_projection_context(
+            seed_user["user"].id, acct,
+            investment_context._load_investment_params(acct.id),
+            pay_period_service.get_all_periods(seed_user["user"].id),
+            current,
+        )
+        # The two fields differ, and the resolved one is the through-current.
+        assert ctx.inputs.ytd_contributions == Decimal("1000.00")
+        assert ctx.inputs.ytd_contributions_seed == Decimal("0.00")
+        assert ctx.projection_ytd == Decimal("1000.00")
+        # ...because the window opens past the current period (ruling R-AF).
+        assert ctx.projection_start > current.end_date
+
+
+class TestTheProjectionContinuesTheHistory:
+    """Rulings R-AE / R-AF: the chart's two lines MEET, and nothing is filtered.
+
+    The chart draws modelled HISTORY through the current pay period and then a
+    PROJECTION.  Two rulings decide whether they join, and they were written
+    apart: R-U said the projection's seed has modelled growth filtered out (so
+    the engine could not re-grow a period the seed already grew) and R-AB said
+    the seed is read the day BEFORE the window opens (so the engine cannot
+    re-apply a contribution the seed already holds).  The date makes the filter
+    unnecessary -- the window and the seed's past are disjoint -- and applying
+    both starts the projection line BELOW the history line by every cent the
+    account earned since its last balance assertion: measured $161.31 /
+    $109.10 / $292.11 on the three real accounts (finding N-80).
+
+    So the seed is the account's ordinary modelled balance on that day, which
+    is exactly the history line's last point.
+    """
+
+    def test_the_projection_opens_where_the_history_closes(
+        self, seed_user, db, seed_periods_today,
+    ):
+        """The first projected point is the history's last, compounded once.
+
+        The identity is exact and it is what fires on BOTH regressions: restore
+        the ACCRUAL filter and the seed drops to the un-grown basis, and open
+        the axis at today instead of the day after the history ends and the
+        first point carries a different span.  A bare "the projection rises"
+        assertion catches neither -- it is true of every configuration.
+
+        The opening assertion is restamped into the PAST so the account has
+        modelled growth to lose (``account_service.create_account`` anchors at
+        the current period and stamps the row with the database clock, which the
+        suite's frozen today does not reach -- findings N-65 / N-77).
+        """
+        acct = _create_investment_account(
+            seed_user, db.session, name="Grown 401k", balance="50000.00",
+        )
+        _create_investment_params(db.session, acct.id)
+        # Anchor a full period back, so the history line has grown by the time
+        # it reaches the current period's end.
+        restamp_opening_assertion(
+            db.session, acct,
+            settle_instant_on(seed_periods_today[0].start_date),
+        )
+        db.session.commit()
+
+        data = investment_dashboard_service.compute_dashboard_data(
+            seed_user["user"].id, acct,
+        )
+        history = data["history_balances"]
+        assert history, "the chart should render modelled history"
+        # It HAS grown -- otherwise the ACCRUAL filter would be undetectable.
+        assert Decimal(history[-1]) > Decimal("50000.00")
+
+        bctx = BalanceContext.build(seed_user["user"].id)
+        current = pay_period_service.get_current_period(seed_user["user"].id)
+        seed = balance_at.balance_at(acct, bctx, current.end_date)
+        # The seed IS the history line's last point (ruling R-AE) ...
+        assert Decimal(history[-1]) == seed
+        # ... and the first projected point is that seed compounded over ONE
+        # period of the axis that opens the next day (ruling R-AF).  7.0% is
+        # ``_create_investment_params``' default assumed return.
+        rate = growth_engine.period_return_rate(
+            Decimal("0.07000"), current,
+        )
+        assert Decimal(data["chart_balances"][0]) == seed + round_money(
+            seed * rate,
+        )
 
 
 class TestInvestmentBalanceHeroTrueUp:
@@ -2380,9 +2629,17 @@ class TestInvestmentBalanceHeroTrueUp:
         )
         assert resp.status_code == 200
         html = resp.data.decode()
-        # Anchor == current period, so the modeled balance equals the $50,000
-        # anchor (no contributions, no growth accrued yet).
-        assert "50,000.00" in html
+        # The hero renders the model-from-anchor balance -- the SAME producer
+        # the page's headline reads (finding N-81: they used to be two, and
+        # cancelling the editor would have restored a figure the page was not
+        # showing).  At anchor == current that is the $50,000 assertion plus
+        # the anchor period's own accrual (ruling R-Y).
+        headline = balance_at.balance_map(
+            acct, BalanceContext.build(seed_user["user"].id),
+            seed_periods_today,
+        )[pay_period_service.get_current_period(seed_user["user"].id).id]
+        assert headline > Decimal("50000.00")
+        assert f"{headline:,.2f}" in html
         assert "investment-balance-hero" in html
         # Opens the shared anchor editor scoped to the investment surface, so
         # Cancel / Escape / 409 revert back to this hero, not the grid cell.

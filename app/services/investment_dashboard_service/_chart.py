@@ -15,7 +15,7 @@ Boundary discipline (``CLAUDE.md``): no Flask symbol, all money is
 serialization boundary.
 """
 
-from datetime import date, timedelta
+from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 
 from app.models.account import Account
@@ -42,11 +42,19 @@ def _run_growth_projection(
     real periods vs. the chart's synthetic horizon periods).  Callers
     must guard ``ctx.params is not None`` before calling.
 
-    Seeds from ``ctx.projection_seed`` (the START-of-current-period
-    balance) and ``ctx.inputs.ytd_contributions_seed`` (YTD strictly
-    before the current period), not the end-of-current-period tile, so
-    the current period -- which the window includes -- has its growth and
-    contribution applied exactly once (deep-quality-hunt #9 / #10).
+    Seeds from ``ctx.projection_seed`` -- the modelled balance on the day
+    BEFORE ``ctx.projection_start``, which is the day after the history line's
+    last valued point (rulings R-AB / R-AE / R-AF).  The window and the seed's
+    past are therefore disjoint: the engine cannot re-grow a day the seed
+    already grew, nor re-apply a contribution it already holds, so nothing has
+    to be subtracted back out of either (deep-quality-hunt #9 / #14, findings
+    N-80 / N-84).
+
+    The annual-limit accounting seeds from ``ctx.projection_ytd``, which is the
+    THROUGH-current total on this surface: ruling R-AF put the current pay
+    period OUTSIDE the window, so the engine never applies that period's own
+    contribution and the strictly-before seed would leave the limit one period
+    too roomy (:func:`._context._projection_ytd` carries the worked figure).
     """
     return growth_engine.project_balance(
         current_balance=ctx.projection_seed,
@@ -55,7 +63,7 @@ def _run_growth_projection(
         periodic_contribution=ctx.inputs.periodic_contribution,
         employer_params=ctx.inputs.employer_params,
         annual_contribution_limit=ctx.params.annual_contribution_limit,
-        ytd_contributions_start=ctx.inputs.ytd_contributions_seed,
+        ytd_contributions_start=ctx.projection_ytd,
         contributions=ctx.contributions,
     )
 
@@ -118,11 +126,18 @@ def _assemble_chart_context(
     optional what-if series, plus modeled history and Today/retirement
     markers), so they cannot disagree on basis.  Empty when the horizon yields
     no periods; callers guard ``ctx.params is not None``.
+
+    **The axis opens at ``ctx.projection_start``, not at today** (ruling R-AF):
+    the day after the history line's last valued point, which is the same day
+    ``ctx.projection_seed`` is read on.  Taking the window and the seed from ONE
+    derivation is what makes the two lines MEET -- deriving the window here and
+    the seed in the loader is exactly how they came to be 10-13 days apart, with
+    a step at the Today marker that nobody had chosen.
     """
     horizon_years = max(1, min(horizon_years, 40))
-    end_date = date.today() + timedelta(days=horizon_years * 365)
+    end_date = ctx.projection_start + timedelta(days=horizon_years * 365)
     periods = growth_engine.generate_projection_periods(
-        start_date=date.today(), end_date=end_date,
+        start_date=ctx.projection_start, end_date=end_date,
     )
     if not periods:
         return _empty_chart_context()
@@ -272,7 +287,7 @@ def _compute_what_if_overlay(
         periodic_contribution=what_if_amount,
         employer_params=ctx.inputs.employer_params,
         annual_contribution_limit=ctx.params.annual_contribution_limit,
-        ytd_contributions_start=ctx.inputs.ytd_contributions_seed,
+        ytd_contributions_start=ctx.projection_ytd,
         contributions=None,
     )
 

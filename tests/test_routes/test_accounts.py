@@ -3947,7 +3947,6 @@ class TestCashDetailContext:
             from app.services.balance_at import BalanceContext
             ibp = net_worth_kernel.interest_by_period_for_account(
                 acct, BalanceContext.build(seed_user["user"].id), periods,
-                params,
             )
             lo = current.period_index + 1
             hi = current.period_index + 26  # 26 biweekly periods = 1 year.

@@ -114,13 +114,6 @@ def _view(account, ctx, periods, *, params=None, deductions=(), gross=_ZERO):
     )
 
 
-def _seed(account, ctx, as_of, *, params=None, deductions=(), gross=_ZERO):
-    """Return *account*'s pre-growth seed at *as_of* (ruling R-U)."""
-    return _asset_fold.asset_seed_at(
-        account, ctx, as_of, _inputs(params, deductions, gross),
-    )
-
-
 def _growth(account, ctx, as_of, *, params=None, deductions=(), gross=_ZERO):
     """Return *account*'s ``(accrual, contribution)`` through *as_of*."""
     return _asset_fold.asset_growth_at(
@@ -228,9 +221,9 @@ class TestTheAccrualWindow:
         assert columns[seed_periods[0].id].balance == Decimal("10019.20")
         assert columns[seed_periods[0].id].accrual == Decimal("19.20")
         assert columns[seed_periods[0].id].contribution == Decimal("0.00")
-        assert columns[
-            seed_periods[0].id
-        ].balance_without_accrual == Decimal("10000.00")
+        # ...so the balance less its own accrual is the asserted $10,000.00.
+        column = columns[seed_periods[0].id]
+        assert column.balance - column.accrual == Decimal("10000.00")
 
     def test_a_mid_period_assertion_accrues_only_its_remaining_days(
         self, db, seed_user, seed_periods,
@@ -627,7 +620,11 @@ class TestTheCentCarry:
 
         Every step being a whole cent is what makes this exact rather than
         within-a-cent: the reported accrual per period sums to the difference
-        between the final balance and the pre-growth seed, with no residue.
+        between the final balance and the balance the account was ASSERTED at,
+        with no residue.  (This read the retired ``balance_without_accrual``
+        field until plan step X-g2b; ruling R-AE took that field with the
+        pre-growth-seed idea it belonged to, and the assertion is the honest
+        right-hand side for an account holding no other rows.)
         """
         account = create_hysa_account(
             seed_user, db.session, seed_periods[0], Decimal("10000.00"),
@@ -639,7 +636,7 @@ class TestTheCentCarry:
         last = columns[seed_periods[-1].id]
         assert sum(
             (column.accrual for column in columns.values()), Decimal("0.00"),
-        ) == last.balance - last.balance_without_accrual
+        ) == last.balance - Decimal("10000.00")
 
 
 class TestTheContributionTier:
@@ -1036,115 +1033,17 @@ class TestThePerPeriodIdentity:
             ), f"identity broke on period {period.period_index}"
 
 
-class TestTheSeedFiltersTheModelledReturn:
-    """Ruling R-U: the seed is the replay with ACCRUAL omitted, read at a DATE.
-
-    ``investment_seed_map`` exists today only because the shipping design cannot
-    express "the same balance without the modelled tier" -- its own docstring
-    warns that seeding a chart from the modelled map "would compound growth on
-    top of growth".  Under one event stream that is a FILTER, and this class
-    grades it.
-
-    The DATE half is what ruling R-U turns on and what the second test pins: a
-    caller reads the seed the day BEFORE its projection window opens, so every
-    event inside the window is the growth engine's to apply and none of them is
-    in the seed.  That is what lets ``current_period_transfer_contribution`` --
-    the de-dup subtraction both chart seeds carry today -- delete rather than be
-    ported (deep-quality-hunt #9 / #14).
-    """
-
-    def test_the_seed_is_the_asserted_balance_while_the_fold_has_grown(
-        self, db, seed_user, seed_periods,
-    ):
-        """$10,000 at 5% APY: the fold reads $10,008.22, the seed $10,000.00.
-
-        Hand-computed from this file's own daily table (see
-        :meth:`TestTheAccrualWindow.test_an_hysa_accrues_from_its_assertions_own_day`):
-        six days from 2026-01-02 credit $1.37 each, so the cumulative accrual at
-        2026-01-07 is **$8.22** and the balance is **$10,008.22**.  The seed is
-        that balance less every ACCRUAL credited on or before the date, which is
-        the asserted $10,000.00 exactly.
-        """
-        account = create_hysa_account(
-            seed_user, db.session, seed_periods[0], Decimal("10000.00"),
-            apy=Decimal("0.05000"),
-        )
-        ctx = _ctx(seed_user)
-
-        assert _fold(
-            account, ctx, [date(2026, 1, 7)],
-        )[date(2026, 1, 7)] == Decimal("10008.22")
-        assert _seed(account, ctx, date(2026, 1, 7)) == Decimal("10000.00")
-
-    def test_a_settled_row_is_in_the_seed_only_from_the_day_it_moved(
-        self, db, seed_user, seed_periods,
-    ):
-        """The $500 transfer of 2026-01-08 is out of the 01-07 seed and in the 01-08 one.
-
-        The property ruling R-U rests on, and the reason the seed became a DATE
-        read rather than staying a period map: a projection window opening on
-        01-08 seeds from 01-07 and the engine owns everything from 01-08 on, so
-        the transfer is counted exactly once whichever side applies it.  Read at
-        the period's END instead -- what the retired ``investment_seed_map`` did
-        -- the same $500.00 is in the seed AND re-applied by the engine, which is
-        the double count the shipped compensator subtracts back out.
-
-        Hand-computed: the seed is **$10,000.00** on 01-07 and **$10,500.00** on
-        01-08.  The balances behind them are $10,008.22 and $10,509.66 -- the
-        day's cash step lands first and its own accrual then computes on the
-        raised base ($10,508.22 * 0.05 / 365 = $1.4395, carrying the cumulative
-        to $9.66), so a test that read the BALANCES could not tell the filter
-        from an off-by-a-day.
-        """
-        account = create_hysa_account(
-            seed_user, db.session, seed_periods[0], Decimal("10000.00"),
-            apy=Decimal("0.05000"),
-        )
-        create_settled_transfer(
-            seed_user, db.session, seed_user["account"], account,
-            seed_periods[0], amount=Decimal("500.00"),
-            paid_at=_instant(2026, 1, 8),
-        )
-        db.session.commit()
-        ctx = _ctx(seed_user)
-
-        assert _seed(account, ctx, date(2026, 1, 7)) == Decimal("10000.00")
-        assert _seed(account, ctx, date(2026, 1, 8)) == Decimal("10500.00")
-        folded = _fold(account, ctx, [date(2026, 1, 7), date(2026, 1, 8)])
-        assert folded[date(2026, 1, 7)] == Decimal("10008.22")
-        assert folded[date(2026, 1, 8)] == Decimal("10509.66")
-
-    def test_a_modelled_contribution_stays_in_the_seed(
-        self, seed_user, seed_periods,
-    ):
-        """Only ACCRUAL is filtered: a contribution is money the account holds.
-
-        Hand-computed on the $20,000 401(k) at 7% with a $500.00 deduction: the
-        01-16 payday lands the contribution and the balance reads **$20,555.78**
-        (see ``TestTheContributionTier``'s
-        ``test_a_deduction_lands_on_the_payday_and_earns_its_own_period``).
-        The cumulative accrual there is $55.78, so the seed is **$20,500.00** --
-        the asserted balance plus the contribution, and none of the growth.
-
-        Filtering contributions out too would under-seed every chart by the
-        contributions already made, which is a different error from the one the
-        filter exists to prevent.
-        """
-        account = _401k(
-            seed_user, seed_periods[0], Decimal("20000.00"),
-            opened_on=date(2026, 1, 2),
-        )
-        _salaried_deduction(seed_user, account, "500.00")
-        ctx = _ctx(seed_user)
-        params = _params_for(account)
-        deductions = _deductions_for(seed_user, account)
-
-        assert _seed(
-            account, ctx, date(2026, 1, 16),
-            params=params, deductions=deductions,
-        ) == Decimal("20500.00")
-
-
+# ``TestTheSeedFiltersTheModelledReturn`` stood here until plan step X-g2b.
+# It graded ``asset_seed_at`` -- ruling R-U's ACCRUAL-filtered read -- and both
+# went with ruling **R-AE**, which found that filter to be a SECOND correction
+# for an overlap ruling R-AB's date had already removed: applied together they
+# start a chart's projection line BELOW its own history line by every cent
+# earned since the account's last assertion (up to $292.11 on the real Empower
+# 401(k), finding N-80).  What replaced the rule is pinned where the seed is
+# now read -- ``tests/test_routes/test_investment.py``'s
+# ``TestTheProjectionContinuesTheHistory`` (the seed IS the history line's last
+# point), ``TestTheProjectionAppliesEachContributionOnce`` (applied once),
+# and ``test_retirement_dashboard_service.py``'s three-way seed discrimination.
 class TestTheGrowthDecomposition:
     """``asset_growth_at``: what the market did and what the user put in.
 

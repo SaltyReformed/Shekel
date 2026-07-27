@@ -287,12 +287,14 @@ def _retirement_investment_bands(
 
     The employer-contribution base is held CONSTANT (``employer_salary_basis``
     is ``None``), which is what the ruled oracle used and what every
-    net-worth consumer does -- the ``2 years`` band's investment growth
-    (``balance_at._investment._forward_project_rows`` ->
-    ``growth_engine.project_balance`` with no ``salary_basis``) keeps the
-    constant base too, so the Horizon retirement band and the ``2 years``
-    retirement band agree at their shared today point and share one growth
-    model.  Only the /retirement READINESS page grows the employer base with
+    net-worth consumer does.  **The two bands no longer share a growth MODEL**
+    (plan step X-g2b): the ``2 years`` band is the per-period balance map, which
+    is now the daily event replay, while this Horizon band still projects
+    forward through ``growth_engine`` -- ruling R-U keeps the engine for the
+    forward what-if and moves only the balance-at-T half.  What they share is
+    their TODAY point (both read the seam's modelled value there) and the
+    constant employer base, so the two ranges of one chart still meet where they
+    touch.  Only the /retirement READINESS page grows the employer base with
     the projected salary path (its own fork F3 refinement, documented at
     ``retirement_dashboard_service`` as "every other engine consumer keeps
     the constant base"); applying it here would diverge the Horizon range

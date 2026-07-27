@@ -10,8 +10,6 @@ Boundary discipline (``CLAUDE.md``): no Flask symbol; the route owns
 hints these return.
 """
 
-from decimal import Decimal
-
 from app.models.account import Account
 from app.extensions import db
 from app.services import balance_at, pay_period_service
@@ -28,6 +26,7 @@ from ._context import (
     _load_investment_params,
     _load_projection_context,
     _resolve_anchor_as_of,
+    _resolve_current_balance,
 )
 
 
@@ -63,7 +62,7 @@ def compute_dashboard_data(user_id: int, account: Account) -> dict:
     # Measured growth since the anchor (None -> chip hidden), via the seam.
     growth = (
         balance_at.investment_growth_since_anchor(
-            account, ctx.balance_ctx, all_periods, current_period,
+            account, ctx.balance_ctx, current_period,
         )
         if ctx.balance_ctx.scenario is not None else None
     )
@@ -91,19 +90,28 @@ def compute_balance_hero_cell(user_id: int, account_id: int) -> dict | None:
     """Narrow producer for the investment balance hero cell (C4 revert target).
 
     Backs ``investment.balance_hero`` (the anchor editor's Cancel / Escape /
-    409 revert target): the model-from-anchor balance the headline shows (via
-    the :mod:`app.services.balance_at` seam scalar) plus the anchor caption
-    date, so the reverted cell restores the page's figure.  ``None`` (a 404)
-    when the account is not the user's active account (404-for-both).
+    409 revert target): the model-from-anchor balance the headline shows plus
+    the anchor caption date, so the reverted cell restores the page's figure.
+    ``None`` (a 404) when the account is not the user's active account
+    (404-for-both).
+
+    **It reads the headline's OWN producer** (:func:`._context._resolve_current_balance`,
+    finding N-81).  It used to read the seam SCALAR instead, which agreed only
+    by accident: the kind-correct scalar for an investment was period-granular,
+    so it WAS the map read at the containing period.  Plan step X-g2b makes the
+    scalar date-precise, and the two then separate by the accrual between today
+    and the period's end -- measured $22.59 / $9.65 / $26.05 on the three real
+    accounts -- so cancelling the editor would have restored a figure the page
+    was never showing.  One cell, one producer.
     """
     account = db.session.get(Account, account_id)
     if account is None or account.user_id != user_id or not account.is_active:
         return None
     balance_ctx = BalanceContext.build(user_id)
-    balance = (
-        balance_at.balance_at(account, balance_ctx, balance_ctx.as_of)
-        if balance_ctx.scenario is not None
-        else account.current_anchor_balance or Decimal("0.00")
+    balance = _resolve_current_balance(
+        account, balance_ctx,
+        pay_period_service.get_current_period(user_id),
+        pay_period_service.get_all_periods(user_id),
     )
     return {
         "account": account,

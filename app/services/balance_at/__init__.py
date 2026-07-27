@@ -50,12 +50,19 @@ duplication this work exists to kill.
 **Five shapes, one seam.**
 
 * The KIND-CORRECT entries (:func:`balance_map`, :func:`build_maps`,
-  :func:`balance_at`, plus the investment projection-input accessors
-  :func:`investment_seed_map` / :func:`investment_growth_since_anchor`) dispatch
-  per account kind -- a HYSA accrues interest, a loan walks its amortization
-  schedule, an investment / property compounds -- the view the NET-WORTH
-  surfaces (the savings cockpit and the dashboards) want.  See
-  :mod:`._kind_correct`.
+  :func:`balance_at`, plus the growth decomposition
+  :func:`investment_growth_since_anchor`) answer "what is this account WORTH" --
+  a HYSA accrues interest, a loan walks its amortization schedule, an investment
+  / property compounds -- the view the NET-WORTH surfaces (the savings cockpit
+  and the dashboards) want.  Since plan step X-g2b they dispatch on ONE
+  question, not five: a configured loan is its ``positions()``, and every other
+  kind is one event replay whose modelled tiers exist only if the account's own
+  parameters put them there (ruling R-AD).  See :mod:`._kind_correct`.
+  ``investment_seed_map`` was a sixth entry here and is GONE (ruling R-AE): a
+  chart's pre-growth SEED existed only because the previous design could not
+  express "this account's balance at a DATE", so a caller now reads
+  :func:`balance_at` the day before its projection window opens and there is
+  nothing to keep in step.
 * The CASH-FLOW entries (:func:`cash_balance_map`, :func:`cash_balance_at`,
   :func:`cash_daily_balance_series`) always return the account's pure
   transaction running-balance with NO kind dispatch -- the view the
@@ -144,9 +151,9 @@ orchestrator) read.  ``property_equity_chart`` and ``home_equity_service`` impor
 FROM here, not the other way round.  Inside the package the direction is
 ``_grid -> {_cash_fold, _interest, _inputs}``,
 ``{_cash_flow, _kind_correct} -> _cash_fold -> _fold``,
-``{_inputs, _positions, _loan_interest} -> _kernel -> {_cash_fold, _interest,
-_investment}``, ``_kind_correct -> _investment -> _cash_engine ->
-_calculator``,
+``{_inputs, _positions, _loan_interest} -> _kernel -> _asset_fold ->
+{_asset_contributions, _cash_fold}``, ``_kind_correct -> {_asset_fold,
+_inputs}``,
 ``_liability -> _inputs``, ``_secured_debt -> {_loan_figures, _positions,
 _inputs}``, and ``_loan_figures -> _positions -> _plan`` (the figures' payoff is
 the fold to zero, plan step C8d) -- a DAG with ``_fold`` / ``_calculator`` /
@@ -208,7 +215,6 @@ from ._kind_correct import (
     balance_map,
     build_maps,
     investment_growth_since_anchor,
-    investment_seed_map,
 )
 from ._liability import liability_owed_at_dates
 from ._loan_figures import (
@@ -275,7 +281,6 @@ __all__ = [
     "interest_by_period_for_account",
     "interest_projection_for_account",
     "investment_growth_since_anchor",
-    "investment_seed_map",
     "liability_owed_at_dates",
     "loan_figures",
     "loan_terms",

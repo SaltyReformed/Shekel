@@ -12,7 +12,7 @@ Boundary discipline (``CLAUDE.md``): no Flask symbol, all money is
 """
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from app.extensions import db
@@ -33,7 +33,6 @@ from app.services.investment_projection import (
     InvestmentInputs,
     adapt_deductions,
     build_contribution_timeline,
-    current_period_transfer_contribution,
 )
 from app.services.projection_inputs import (
     build_investment_projection_inputs,
@@ -79,23 +78,26 @@ class _ProjectionContext:  # pylint: disable=too-many-instance-attributes
             the /savings net-worth tile, the year-end asset aggregate, and
             the net-worth trend (an anchor-in-past investment shows its
             modeled market value, not the flat cash-basis contribution
-            total).  DISPLAY ONLY: the projection seeds from the cash basis
-            instead (see ``projection_seed``).
-        projection_seed: The CASH-BASIS end-of-current-period balance (the
-            pre-growth contribution total from
-            :func:`_resolve_seed_balance`, NOT the modeled
-            ``current_balance``) with the current period's own transfer
-            contribution removed.  The growth projection seeds from this
-            while still including the current period in its window: the
-            engine re-applies that contribution for the current period, so
-            subtracting it from the seed first leaves it applied exactly
-            once (deep-quality-hunt #9).  Seeding from the cash basis (not
-            the modeled headline, which already grew the anchor forward to
-            today) likewise leaves the current period's GROWTH applied
-            exactly once.  Only the transfer contribution is removed --
-            every other current-period movement (expenses, deposits) stays,
-            because the engine never re-creates those.  It is also the base
-            of the chart's cumulative-contribution series.
+            total).  It is read at the CURRENT PERIOD's end, which is the
+            convention every net-worth surface uses; the projection seeds from
+            the same curve one day before its own window opens (see
+            ``projection_start`` / ``projection_seed``).
+        projection_start: The day the projection's window OPENS -- the day
+            after the history line's last valued point
+            (:func:`_projection_start`, ruling R-AF).
+        projection_ytd: The year-to-date employee contribution the growth
+            engine's annual-limit accounting must START from
+            (:func:`_projection_ytd`).  It is the THROUGH-current total on this
+            surface, because :attr:`projection_start` puts the current pay
+            period outside the projection window.
+        projection_seed: The account's MODELLED balance on the day before
+            :attr:`projection_start`, so it IS the history line's last point and
+            the two lines meet (:func:`_resolve_seed_balance`).  Nothing is
+            filtered out of it and nothing is subtracted from it: the window
+            opens strictly after its date, so the growth engine can neither
+            re-grow a day it already grew nor re-apply a contribution it already
+            holds (findings N-80 / N-84).  It is also the base of the chart's
+            cumulative-contribution series.
         inputs: The :class:`InvestmentInputs` the growth engine needs
             (periodic contribution, employer params, annual contribution
             limit, YTD contributions).
@@ -115,6 +117,8 @@ class _ProjectionContext:  # pylint: disable=too-many-instance-attributes
 
     params: InvestmentParams | None
     current_balance: Decimal
+    projection_start: date
+    projection_ytd: Decimal
     projection_seed: Decimal
     inputs: InvestmentInputs
     contributions: list[growth_engine.ContributionRecord]
@@ -175,9 +179,11 @@ def _resolve_current_balance(
     :func:`~app.services.balance_at.balance_map` at the current period so it
     agrees to the cent with /savings and the net-worth trend (an investment
     anchored in the past shows its modeled market value, not the flat cash
-    basis).  DISPLAY only -- the projection seeds from the cash basis
-    (:func:`_resolve_seed_balance`) to avoid re-growing today.  Falls back to
-    :attr:`Account.current_anchor_balance` with no scenario / anchor / period.
+    basis).  The projection seeds from the SAME curve, read one day before its
+    own window opens (:func:`_resolve_seed_balance`) -- it used to seed from a
+    flat cash basis, which discarded every cent earned since the last assertion
+    (finding N-80).  Falls back to :attr:`Account.current_anchor_balance` with
+    no scenario / anchor / period.
     """
     anchor_balance = account.current_anchor_balance or Decimal("0.00")
     if balance_ctx.scenario is None or current_period is None:
@@ -188,32 +194,118 @@ def _resolve_current_balance(
     return balances.get(current_period.id, anchor_balance)
 
 
+def _projection_start(current_period) -> date:
+    """Return the day the projection's window opens (ruling R-AF).
+
+    The day AFTER the history line's last valued point.
+    ``_chart._build_history_series`` plots one point per real pay period
+    through the current one, each valued at its ``end_date``, so a projection
+    that opens the next day CONTINUES that line -- and MEETS it, because
+    :func:`_resolve_seed_balance` reads the seed on that same last day.
+
+    It used to be ``date.today()``, 10-13 days short of the history line's last
+    point, so the chart carried a step at the Today marker whose size and sign
+    nobody had chosen: measured -$301.96 on the real Empower 401(k) and
+    +$105.26 on the Roth IRA.  Verified on both real databases, opening here
+    makes the first projected step ($105.66) indistinguishable from the second
+    ($106.07).  A biweekly axis from here also lands on the user's REAL
+    pay-period boundaries, so the engine's dated contribution lookup matches its
+    records over the near horizon instead of falling back to a flat average
+    (the near half of finding N-79).
+
+    Args:
+        current_period: The current :class:`~app.models.pay_period.PayPeriod`,
+            or ``None``.
+
+    Returns:
+        The current period's ``end_date`` plus one day, or today when there is
+        no current period -- there is then no history line to continue.
+    """
+    if current_period is None:
+        return date.today()
+    return current_period.end_date + timedelta(days=1)
+
+
 def _resolve_seed_balance(
     account: Account,
     balance_ctx: BalanceContext,
     current_period,
-    all_periods: list,
 ) -> Decimal:
-    """Return the cash-basis balance the forward growth projection seeds from.
+    """Return the balance the forward growth projection seeds from.
 
-    The end-of-current balance with NO modeled growth, read through the
-    seam's cash-basis seed accessor
-    (:func:`~app.services.balance_at.investment_seed_map`) so the projection
-    compounds from the cash basis, not the modeled headline (which already
-    grew the anchor to today -- seeding from it would double-count the current
-    period's growth, deep-quality-hunt #9; the seed producer is reachable only
-    through the seam, being a private submodule of it).  Falls back to
-    :attr:`Account.current_anchor_balance` with no scenario / anchor / period.
+    The account's MODELLED balance on the day before :func:`_projection_start`,
+    read through the seam's date-precise scalar -- the same number the history
+    line's last point renders (rulings R-AB / R-AE).
+
+    Nothing is filtered out of it and nothing is subtracted from it: the window
+    opens strictly after its date, so the engine can neither re-grow a day it
+    already grew nor re-apply a contribution it already holds.  Both
+    compensators this function used to carry corrected an overlap that existed
+    only because the seed was read at the current period's END while the window
+    opened at TODAY -- and the modelled-growth filter, had it survived the date
+    change, would have started the projection line BELOW the history line by
+    every cent earned since the last balance assertion (findings N-80 / N-84).
+
+    Args:
+        account: The investment account.
+        balance_ctx: The read pass's ``BalanceContext``.
+        current_period: The current pay period, or ``None``.
+
+    Returns:
+        The seed balance, falling back to
+        :attr:`Account.current_anchor_balance` with no scenario or no anchor
+        period -- the states in which the seam cannot answer.
     """
-    anchor_balance = account.current_anchor_balance or Decimal("0.00")
     if (balance_ctx.scenario is None
-            or account.current_anchor_period_id is None
-            or current_period is None):
-        return anchor_balance
-    balances = balance_at.investment_seed_map(
-        account, balance_ctx, all_periods,
+            or account.current_anchor_period_id is None):
+        return account.current_anchor_balance or Decimal("0.00")
+    return balance_at.balance_at(
+        account, balance_ctx,
+        _projection_start(current_period) - timedelta(days=1),
     )
-    return balances.get(current_period.id, anchor_balance)
+
+
+def _projection_ytd(inputs: InvestmentInputs, projection_start: date,
+                    current_period) -> Decimal:
+    """Return the YTD contribution the growth engine's limit walk starts from.
+
+    The annual limit is consumed by contributions the engine does NOT project
+    plus the ones it does, so the seed must hold exactly the periods outside the
+    window: ``ytd_contributions_seed`` is the total STRICTLY BEFORE the current
+    period, ``ytd_contributions`` the total THROUGH it, and which is right
+    depends on whether the window contains the current period.
+
+    **On this surface it does not** (ruling R-AF), and that is a change.  The
+    axis used to open at ``date.today()``, so its first synthetic period stood
+    in for the rest of the current period and the engine applied that period's
+    contribution itself -- which is precisely why the seed excluded it
+    (deep-quality-hunt #10).  The axis now opens the day AFTER the current
+    period ends, so the engine never applies it, and seeding the strictly-before
+    total leaves the annual limit one period's contribution too roomy: on a
+    $23,500 limit with $1,000 a period and today in the year's 15th period, the
+    engine would price $9,500 of remaining room where $8,500 is left, project an
+    extra contribution inside the calendar year, and compound it for the whole
+    horizon.  It would also disagree with the limit CARD on the same page, which
+    has always read the through-current total.
+
+    Derived HERE, beside the window it depends on, rather than chosen at each
+    ``project_balance`` call: two call sites picking between two YTD fields is
+    the argument-a-caller-can-get-wrong shape the balance plan's Section 8 rules
+    a defect rather than a contract.  ``retirement_projection`` keeps the
+    strictly-before seed and is right to: both of its axes open at or inside the
+    current period, so its engine does apply that period.
+
+    Args:
+        inputs: The account's :class:`InvestmentInputs`.
+        projection_start: The day the projection's window opens.
+        current_period: The current pay period, or ``None``.
+
+    Returns:
+        The ``Decimal`` YTD to seed the engine's limit accounting with.
+    """
+    if current_period is None or projection_start <= current_period.end_date:
+        return inputs.ytd_contributions_seed
+    return inputs.ytd_contributions
 
 
 def _load_projection_context(
@@ -251,9 +343,10 @@ def _load_projection_context(
         values the projection primitives and card builders consume.
     """
     balance_ctx = BalanceContext.build(user_id)
-    # The headline tile shows the model-from-anchor balance (so it agrees
-    # with /savings and the net-worth trend); the forward projection seeds
-    # from the cash basis instead, so the two are resolved separately.
+    # The headline tile shows the model-from-anchor balance at the current
+    # period's END (so it agrees with /savings and the net-worth trend); the
+    # projection seeds from the same curve one day before its own window opens,
+    # so the two are read at different DATES rather than off different bases.
     current_balance = _resolve_current_balance(
         account, balance_ctx, current_period, all_periods,
     )
@@ -267,21 +360,13 @@ def _load_projection_context(
     acct_contributions = load_shadow_income_contributions_for_account(
         account.id, [p.id for p in all_periods],
     )
-    # Seed for the forward projection: the CASH-BASIS end-of-current balance
-    # (:func:`_resolve_seed_balance`, NOT the modeled ``current_balance``
-    # headline) with the current period's own transfer contribution removed,
-    # so the engine -- which re-applies that contribution when its window
-    # includes the current period -- does not double-count it
-    # (deep-quality-hunt #9).  Seeding from the cash basis (the modeled
-    # headline already grew the anchor forward to today) likewise leaves the
-    # current period's GROWTH applied exactly once.  Other current-period
-    # balance movements (expenses, deposits) stay in the seed because the
-    # engine never re-creates them.
-    projection_seed = (
-        _resolve_seed_balance(account, balance_ctx, current_period, all_periods)
-        - current_period_transfer_contribution(
-            acct_contributions, current_period,
-        )
+    # Seed for the forward projection: the account's MODELLED balance on the
+    # day before the window opens, which is the history line's own last point
+    # (rulings R-AB / R-AE).  Nothing is filtered out of it and nothing is
+    # subtracted from it -- the window opens strictly after the seed's date, so
+    # there is no overlap for a compensator to correct.
+    projection_seed = _resolve_seed_balance(
+        account, balance_ctx, current_period,
     )
     inputs = build_investment_projection_inputs(
         params, adapted_deductions, acct_contributions,
@@ -295,6 +380,10 @@ def _load_projection_context(
     return _ProjectionContext(
         params=params,
         current_balance=current_balance,
+        projection_start=_projection_start(current_period),
+        projection_ytd=_projection_ytd(
+            inputs, _projection_start(current_period), current_period,
+        ),
         projection_seed=projection_seed,
         inputs=inputs,
         contributions=contributions,

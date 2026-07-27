@@ -35,6 +35,7 @@ from app.services.projection_inputs import (
     load_investment_params_for_accounts,
 )
 
+from ._asset_contributions import ContributionInputs
 from ._context import BalanceContext, require_scenario
 from . import _kernel
 from ._positions import positions_period_map
@@ -202,16 +203,27 @@ def _account_balance_map(
       kernel's dispatcher, because ``positions`` sits ABOVE
       :mod:`app.services.balance_at._kernel` (at its module-size cap, and it cannot
       import the seam back).
-    * **Every other kind** delegates to the shared
-      :func:`app.services.balance_at._kernel.account_balance_map_from_inputs`,
-      which unpacks the bundle for *account* and calls the kernel's per-kind
-      ladder (cash / interest / investment / appreciation).  The seam does not
-      re-implement that ladder.
+    * **Every other kind** slices this account's
+      :class:`~app.services.balance_at._asset_contributions.ContributionInputs`
+      out of the batch bundle and hands it to
+      :func:`app.services.balance_at._kernel.build_account_balance_map`, which
+      since plan step X-g2b dispatches on nothing at all -- every non-loan kind
+      is ONE event replay (ruling R-AD).
 
-    It no longer takes a live override map (ruling R-Q, plan step X-c2b2): the
-    cash fold builds its own over its own plan, so there is no basis left for a
-    caller to choose -- and the asymmetry that made the choice load-bearing (the
-    plain path auto-built a live map from ``None`` while the interest path used
+    **The slice lives HERE, beside the bundle it slices** (plan step X-g2b).
+    It used to live in the kernel as ``account_balance_map_from_inputs``, which
+    had to DUCK-TYPE its parameter -- "any bundle exposing
+    ``investment_params_map``, ``deductions_by_account`` and
+    ``salary_gross_biweekly`` qualifies" -- precisely because
+    :class:`_AssembledInputs` lives in this consumer module and the engine below
+    must not import it.  Moving the slice to the bundle's own home replaces a
+    structural contract stated in prose with an ordinary typed one, and the
+    kernel now takes the narrow named bundle instead of three loose parameters.
+
+    It takes no live override map (ruling R-Q, plan step X-c2b2): the cash fold
+    builds its own over its own plan, so there is no basis left for a caller to
+    choose -- and the asymmetry that made the choice load-bearing (the plain
+    path auto-built a live map from ``None`` while the interest path used
     stored amounts) is gone with it.
 
     Args:
@@ -219,7 +231,8 @@ def _account_balance_map(
         ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
         periods: The pay periods to project over (the output domain).
         inputs: The :class:`_AssembledInputs` bundle for the account's set.  Its
-            ``debt_schedules`` membership gates the loan arm.
+            ``debt_schedules`` membership gates the loan arm; the other three
+            fields are sliced per account for the replay.
 
     Returns:
         The OrderedDict period_id -> Decimal balance, or ``None`` when the
@@ -240,8 +253,43 @@ def _account_balance_map(
         if account.current_anchor_period_id is None:
             return None
         return positions_period_map(account, ctx, periods)
-    return _kernel.account_balance_map_from_inputs(
-        account, ctx, periods, inputs,
+    return _kernel.build_account_balance_map(
+        account, ctx, periods, _contribution_inputs(account, inputs),
+    )
+
+
+def _contribution_inputs(
+    account: Account, inputs: _AssembledInputs,
+) -> ContributionInputs:
+    """Slice one account's modelled-contribution feed out of the batch bundle.
+
+    The bundle-field-to-bundle-field slice, kept beside
+    :class:`_AssembledInputs` rather than in the engine that consumes it (plan
+    step X-g2b): the batch is loaded ONCE per account set and this reads one
+    account's share of it, so the replay never re-queries what assembly already
+    fetched.
+
+    A non-investment account is absent from every one of the three maps, so it
+    slices to the empty bundle -- which is the same value
+    :meth:`~app.services.balance_at._asset_contributions.ContributionInputs.absent`
+    names for the readers that construct it directly.  It is built by slicing
+    rather than by branching on the kind, because "does this account have a
+    contribution feed?" is already answered by whether the loaders returned
+    anything for it (:func:`_assemble_inputs` scopes the deduction and gross
+    loads to the investment-params keys), and asking a second time in a second
+    place is how two answers to one question start.
+
+    Args:
+        account: The account to slice for.
+        inputs: The :class:`_AssembledInputs` bundle for its set.
+
+    Returns:
+        The account's :class:`ContributionInputs`.
+    """
+    return ContributionInputs(
+        investment_params=inputs.investment_params_map.get(account.id),
+        deductions=inputs.deductions_by_account.get(account.id, []),
+        salary_gross_biweekly=inputs.salary_gross_biweekly,
     )
 
 

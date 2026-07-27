@@ -10,17 +10,17 @@ show it -- the kind-correct balance map (through
 "Interest" row (:mod:`app.services.balance_at._grid`) -- so a rendered accrual
 and the balance it lifts cannot come from two walks.
 
-**It layers, it does not project** (plan step X-c2b2).  The base balances come
+**It layered, it did not project** (plan step X-c2b2).  The base balances came
 from the cash fold (:func:`app.services.balance_at._cash_fold.cash_period_balances`),
-which is the whole cutover: the accrual used to be seeded off the
+which was the whole of that cutover: the accrual used to be seeded off the
 ``current_anchor_balance`` CACHE column and carried forward over still-Projected
 rows only, so it compounded on a balance that ignored every row settled since
 the last assertion.  On the real Money Market that was ``$2,000.00`` of settled
 money the base never saw, and the grid rendered the gap as ``$2,007.01`` of
-INTEREST EARNED (finding N-49) until both halves moved together.  Because both
-halves now derive from ONE fold over ONE period list, the grid's accrual row IS
-the map this module returns rather than the difference of two independently
-computed balance maps (finding N-52).
+INTEREST EARNED (finding N-49) until both halves moved together.  The property
+that bought -- the grid's accrual row IS a producer's answer rather than the
+difference of two independently computed balance maps (finding N-52) -- is
+unchanged by the replay taking over; it is now the replay's own accrual tier.
 
 Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes; all money is
 :class:`~decimal.Decimal`.
@@ -45,15 +45,20 @@ from ._context import BalanceContext
 def accrual_params(account: Account) -> "InterestParams | None":
     """Return *account*'s interest params if it models an accrual, else ``None``.
 
-    "Does this account earn modelled interest?" asked ONCE.  Both readers that
-    layer an accrual -- the kind-correct balance map
-    (:func:`app.services.balance_at._kernel.base_account_balance_map`) and the
-    grid's column set (:func:`app.services.balance_at.grid_balance_view`) --
-    ask it here rather than each spelling out the kind test and the params
-    presence, because two spellings of one predicate is how a screen ends up
-    accruing where a sibling screen does not (plan Section 8's "a DRY refactor
-    of a PREDICATE can move money" -- these two provably answer the same
-    question, so they share the rule rather than mirroring it).
+    "Does this account earn modelled interest?" asked ONCE.  Both readers ask it
+    here rather than each spelling out the kind test and the params presence,
+    because two spellings of one predicate is how a screen ends up accruing
+    where a sibling screen does not (plan Section 8's "a DRY refactor of a
+    PREDICATE can move money" -- these two provably answer the same question, so
+    they share the rule rather than mirroring it).
+
+    Since plan step X-g2b the two readers are the modelled replay's own rate
+    resolver (:func:`app.services.balance_at._asset_fold._modelled_return`,
+    which delegates INTEREST here so the general "does this account model a
+    return?" question and this one cannot answer that kind differently) and the
+    grid's column set (:func:`app.services.balance_at.grid_balance_view`).  The
+    kernel used to be the first of them, through a ``base_account_balance_map``
+    that ruling R-AD deleted with the per-kind ladder.
 
     An INTEREST-kinded account with NO params row models nothing: it is a HYSA
     the user has not configured, and inventing a rate for it would put interest
@@ -84,11 +89,21 @@ def layer_account_interest(
 ) -> "tuple[OrderedDict[int, Decimal], dict[int, Decimal]]":
     """Layer *account*'s modelled accrual onto its folded *base_balances*.
 
-    The ONE place ruling R-L's window is stated, which is why both readers come
-    through here rather than each resolving the account's assertion date: the
-    balance a screen renders and the interest figure beside it are the same walk
-    (plan finding N-47 -- the account-detail "Interest, next 12 mo" chip is this
-    map, summed).
+    **UNWIRED since plan step X-g2b: no production code calls this.**  Every
+    surface that shows an accrual reads the modelled replay
+    (:func:`app.services.balance_at._asset_fold.resolve`) -- the kind-correct
+    map, the budget grid's Interest row, and the account-detail "Interest, next
+    12 mo" chip alike.  What survives here is the INCUMBENT that replay is
+    graded against (``test_asset_fold_parallel.py`` composes it by hand), kept
+    until plan step **X-g4** deletes it, because this arc's rule is to prove the
+    successor before deleting the producer it replaces.  Do not add a caller:
+    editing this to "fix" a rendered accrual would change nothing on any screen.
+
+    It was the ONE place ruling R-L's window was stated, which is why both
+    readers came through it rather than each resolving the account's assertion
+    date: the balance a screen renders and the interest figure beside it had to
+    be the same walk (plan finding N-47).  The replay states that window once,
+    for all three modelled kinds (rulings R-L / R-Y).
 
     **Where modelled interest begins (ruling R-L, plan step X-c2a).**  The
     accrual window opens at the account's LATEST balance assertion -- the UTC

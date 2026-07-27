@@ -1783,11 +1783,16 @@ def cross_page_property_ctx(db, seed_user):
 
     Builds the shared period grid, neutralises the seed_user Checking to
     $0, then creates ONE Property whose user-set market value is V =
-    $400,000, anchored at the current period.  Anchor == current means the
-    flat carry and the forward appreciation coincide at today, so the
-    /savings tile, the home-equity market value, the year-end asset
-    aggregate, and the net-worth trend all read V.  Returns a ctx dict
-    mirroring ``seed_cross_page_account`` plus ``V``.
+    $400,000, anchored at the current period.
+
+    **Anchor == current no longer means the surfaces read V** (plan step X-g2b,
+    ruling R-Y): the anchor period earns its own days now, where the shipped
+    producer split on ``period_index > anchor_idx`` and served that period from
+    a flat carry.  What the surfaces must still agree on is the VALUE, whatever
+    it is -- which is what the cross-page classes assert, and what makes them a
+    wiring lock rather than a figure pin.  Returns a ctx dict mirroring
+    ``seed_cross_page_account`` plus ``V``, the ASSERTED value the modelled one
+    is measured against.
     """
     user = seed_user["user"]
     scenario = seed_user["scenario"]
@@ -1820,11 +1825,13 @@ def cross_page_investment_ctx(db, seed_user):
     Builds the shared period grid, neutralises the seed_user Checking to
     $0, then creates ONE 401(k) whose balance is V = $100,000, anchored at
     the current period, with no employer match and no contribution feed.
-    Anchor == current with no current-period contribution means the
-    /savings tile, the investment dashboard, the year-end asset aggregate,
-    and the net-worth trend all read the anchor balance V (the growth
-    projection re-applies nothing at the anchor period itself).  Returns a
-    ctx dict mirroring ``seed_cross_page_account`` plus ``V``.
+    Anchor == current used to mean every surface read the anchor balance V,
+    because the growth projection skipped the anchor period entirely.  **Ruling
+    R-Y gives that period its own days** (plan step X-g2b), so the surfaces read
+    V plus that growth; what they must still do is agree, which is what the
+    consuming test asserts -- reading the expected figure from the seam and
+    pinning it strictly above V.  Returns a ctx dict mirroring
+    ``seed_cross_page_account`` plus ``V``, the ASSERTED balance.
     """
     user = seed_user["user"]
     scenario = seed_user["scenario"]
@@ -1865,9 +1872,9 @@ def cross_page_investment_past_anchor_ctx(db, seed_user):
     net-worth-trend surfaces read the modeled value, and the reroute makes the
     tile adopt the modeled value the other kernel surfaces already report.
 
-    Contrast ``cross_page_investment_ctx`` (anchor == current), where the flat
-    carry and the projection coincide so every surface reads ``V0`` and there
-    is no divergence to lock.
+    Contrast ``cross_page_investment_ctx`` (anchor == current), where the
+    divergence is only that period's own growth (ruling R-Y) rather than a whole
+    anchor-to-today span.
 
     The seed_user Checking is neutralised to $0 so the AGGREGATE surfaces
     (year-end net worth, the savings net-worth trend) reflect the investment
@@ -1921,8 +1928,12 @@ def cross_page_secured_ctx(db, seed_user):
     $250,000 today, linked via ``mortgage.collateral_account_id =
     property.id`` so the property's ``secured_loans`` backref lists the
     mortgage.  The relationship under test: market value (PV) minus total
-    secured debt (MC) is the equity, which must equal the year-end
-    net-worth aggregate and the trend's net at the current period.  Returns
+    secured debt (MC) is the equity, on the equity producer's own basis.
+
+    **Since plan step X-g2b the /savings tile reads the MODELLED property value
+    while that producer still reads the ``current_anchor_balance`` cache
+    column** (finding N-83, scheduled for its own commit), so the consuming test
+    asserts the two differ by exactly that gap rather than matching.  Returns
     PV, MC, and both account handles plus the standard period keys.
     """
     # Pylint: ``import-outside-toplevel`` -- Account / LoanParams are loaded

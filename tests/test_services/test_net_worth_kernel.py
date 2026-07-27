@@ -27,6 +27,9 @@ from decimal import Decimal
 
 from app.services import pay_period_service
 from app.services.balance_at import _kernel as net_worth_kernel
+from app.services.balance_at._asset_contributions import (
+    ContributionInputs,
+)
 from app.services.scenario_resolver import get_baseline_scenario
 from app.services.balance_at import BalanceContext
 
@@ -53,9 +56,11 @@ class TestBuildAccountBalanceMap:
 
             balances = net_worth_kernel.build_account_balance_map(
                 account, bctx, all_periods,
-                investment_params=None,
-                deductions=[],
-                salary_gross_biweekly=Decimal("0.00"),
+                ContributionInputs(
+                    investment_params=None,
+                    deductions=[],
+                    salary_gross_biweekly=Decimal("0.00"),
+                ),
             )
 
             assert balances is not None
@@ -77,9 +82,11 @@ class TestBuildAccountBalanceMap:
             account = SimpleNamespace(current_anchor_period_id=None)
             assert net_worth_kernel.build_account_balance_map(
                 account, object(), [],
-                investment_params=None,
-                deductions=[],
-                salary_gross_biweekly=Decimal("0.00"),
+                ContributionInputs(
+                    investment_params=None,
+                    deductions=[],
+                    salary_gross_biweekly=Decimal("0.00"),
+                ),
             ) is None
 
 
@@ -110,5 +117,5 @@ class TestInterestByPeriodForAccount:
         with app.app_context():
             account = SimpleNamespace(current_anchor_period_id=None)
             assert net_worth_kernel.interest_by_period_for_account(
-                account, object(), [], None,
+                account, object(), [],
             ) == {}

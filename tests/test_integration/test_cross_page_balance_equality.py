@@ -74,6 +74,7 @@ from app.services import (
     dashboard_service,
     home_equity_service,
     investment_dashboard_service,
+    pay_period_service,
     savings_dashboard_service,
 )
 from app.services.balance_at import _kernel as net_worth_kernel
@@ -1235,33 +1236,76 @@ class TestLoanCrossPageEquality:
             )
 
 
-class TestPropertyCrossPageEquality:
-    """Every property surface reports the same market value V.
+def _modelled_current_balance(ctx) -> Decimal:
+    """Return the account's modelled balance at the current period, from the seam.
 
-    A single isolated appreciating Property (market value V, anchored at the
-    current period so the flat carry and the appreciation projection
-    coincide at today) must report V identically on the /savings tile, the
+    The independent oracle the cross-page classes compare their surfaces
+    against since plan step X-g2b.  It used to be the fixture's asserted V,
+    which worked only while an account anchored in the current period earned
+    nothing in it -- the state ruling R-Y deleted.  Reading it once HERE, from
+    the seam's own per-period map, keeps the classes what they are: a lock that
+    every surface reaches ONE figure, by three different paths.
+    """
+    balance_ctx = BalanceContext.build(ctx["user_id"])
+    current = pay_period_service.get_current_period(ctx["user_id"])
+    return balance_at.balance_map(
+        ctx["account"], balance_ctx, ctx["all_periods"],
+    )[current.id]
+
+
+class TestPropertyCrossPageEquality:
+    """Every property surface reports the same MODELLED market value.
+
+    A single isolated appreciating Property (asserted value V, anchored at the
+    current period) must report ONE figure on the /savings tile, the
     home-equity market value (total_debt zero -- no secured loans), the
     year-end asset aggregate, and the net-worth trend's assets at today.
+
+    **The figure is no longer V, and one surface has not followed yet** (plan
+    step X-g2b).  Ruling R-Y gives the anchor period its own appreciation, so a
+    Property is worth more than the number last typed into it from the day after
+    that number was typed.  The cockpit tile and the net-worth trend both read
+    the modelled map and must agree to the cent.  The property DETAIL page still
+    reads ``Account.current_anchor_balance`` -- the cache column -- which is
+    finding **N-83**, recorded and scheduled for its own commit alongside plan
+    step X-e rather than fixed inside a money-moving cutover.
+
+    That gap is asserted EXPLICITLY below rather than papered over: it is the
+    asserted V exactly, and it is strictly below the modelled figure.  So it
+    cannot drift silently, and N-83's own commit FAILS here and has to update
+    this class -- which is what a recorded finding should cost its resolver.
     """
 
     def test_all_surfaces_equal(
         self, app, cross_page_property_ctx, auth_client,
     ):
-        """Every property surface returns V at today.
+        """Every property surface returns the SAME modelled value at today.
 
-        V = $400,000, anchored at the current period.  The /savings tile,
-        the home-equity market value, the year-end asset aggregate, and the
-        net-worth trend assets all read V.
+        The expected figure is read once from the seam and compared against all
+        three surfaces, each of which reaches it by a different path (the
+        cockpit's projection service, the home-equity producer, the net-worth
+        trend).  It is asserted strictly above the asserted V, which is what
+        would fail if any surface fell back to the cache column.
         """
         with app.app_context():
             ctx = cross_page_property_ctx
-            expected = ctx["V"]
+            expected = _modelled_current_balance(ctx)
+            assert expected > ctx["V"], (
+                "the anchor period must earn its own days (ruling R-Y)"
+            )
             surface_values = {
                 name: reader(ctx)
                 for name, reader in _PROPERTY_SURFACE_READERS.items()
             }
-            _assert_surfaces_equal(surface_values, expected, "property kind")
+            # The two SEAM-fed surfaces agree to the cent.
+            _assert_surfaces_equal(
+                {k: v for k, v in surface_values.items()
+                 if k != "property_detail"},
+                expected, "property kind",
+            )
+            # The property detail page is still on the cache column (N-83).
+            assert surface_values["property_detail"] == ctx["V"]
+            assert surface_values["property_detail"] < expected
 
             resp = auth_client.get(f"/accounts/{ctx['account_id']}/property")
             assert resp.status_code == 200, (
@@ -1271,13 +1315,16 @@ class TestPropertyCrossPageEquality:
 
 
 class TestInvestmentCrossPageEquality:
-    """Every investment surface reports the same balance V.
+    """Every investment surface reports the same MODELLED balance.
 
-    A single isolated Investment (balance V, anchored at the current period
-    with no current-period contribution, so the growth projection re-applies
-    nothing at the anchor period) must report V identically on the /savings
-    tile, the investment dashboard, the year-end asset aggregate, and the
-    net-worth trend's assets at today.
+    A single isolated Investment (asserted balance V, anchored at the current
+    period with no current-period contribution) must report ONE figure on the
+    /savings tile, the investment dashboard, the year-end asset aggregate, and
+    the net-worth trend's assets at today.
+
+    **The figure is no longer V** (plan step X-g2b, ruling R-Y): the anchor
+    period earns its own days, so an account anchored in it is worth more than
+    the number last typed into it.
 
     Scope note: at anchor==current all four surfaces legitimately resolve
     through the same base producer (the resolver's current-period balance),
@@ -1294,15 +1341,18 @@ class TestInvestmentCrossPageEquality:
     def test_all_surfaces_equal(
         self, app, cross_page_investment_ctx, auth_client,
     ):
-        """Every investment surface returns V at today.
+        """Every investment surface returns the SAME modelled balance.
 
         V = $100,000, anchored at the current period with no contribution.
-        The /savings tile, the investment dashboard, the year-end asset
-        aggregate, and the net-worth trend assets all read V.
+        The expected figure is read once from the seam and compared against
+        each surface, which reach it by three different paths; it is asserted
+        strictly above V, so a surface that fell back to the asserted number
+        would fail rather than agree by accident.
         """
         with app.app_context():
             ctx = cross_page_investment_ctx
-            expected = ctx["V"]
+            expected = _modelled_current_balance(ctx)
+            assert expected > ctx["V"]  # ruling R-Y: the anchor period accrues
             surface_values = {
                 name: reader(ctx)
                 for name, reader in _INVESTMENT_SURFACE_READERS.items()
@@ -1402,14 +1452,29 @@ class TestSecuredHomeEquityEquality:
     def test_equity_relationship(self, app, cross_page_secured_ctx):
         """market_value == PV, total_debt == MC, equity == PV - MC everywhere.
 
-        PV = $400,000, MC = $250,000, so equity = $150,000.  The home-equity
-        producer's market_value / total_debt / equity reconcile to the
-        /savings tiles, the loan-detail balance, the year-end aggregate, and
-        the net-worth trend net.
+        PV = $400,000 ASSERTED, MC = $250,000.  The home-equity producer's
+        market_value / total_debt / equity reconcile to the /savings tiles, the
+        loan-detail balance, the year-end aggregate, and the net-worth trend
+        net.
+
+        **The property leg is still the ASSERTED PV** (finding N-83): the equity
+        producer reads ``Account.current_anchor_balance``, where the cockpit tile
+        beside it reads the modelled map that ruling R-Y moved.  The gap is
+        asserted explicitly so it cannot drift, and it is N-83's own commit that
+        closes it.  The DEBT leg is untouched and still pins MC exactly -- a
+        loan's balance is its schedule, which no part of this step moves, and
+        that half is the standing regression gate.
         """
         with app.app_context():
             ctx = cross_page_secured_ctx
             pv, mc = ctx["PV"], ctx["MC"]
+            # Finding N-83: the cockpit tile has moved to the modelled value
+            # and this producer has not, so they are knowingly apart here.
+            assert _modelled_current_balance({
+                "user_id": ctx["property_account"].user_id,
+                "account": ctx["property_account"],
+                "all_periods": ctx["all_periods"],
+            }) > pv
             equity = home_equity_service.resolve_home_equity(
                 ctx["property_account"],
                 BalanceContext.build(ctx["property_account"].user_id),
@@ -1431,10 +1496,18 @@ class TestSecuredHomeEquityEquality:
                 date.today(),
             )
 
-            # Property leg: market value == the property tile == PV.
-            assert equity.market_value == prop_tile == pv, (
+            # Property leg: the equity producer still reads the cache column,
+            # so it pins the ASSERTED PV, while the cockpit tile beside it now
+            # reads the modelled map (ruling R-Y).  Finding N-83 owns the gap;
+            # both halves are asserted so neither can drift and so N-83's own
+            # commit fails here.
+            assert equity.market_value == pv, (
                 f"property leg disagreed: market_value={equity.market_value!r}, "
-                f"savings_tile={prop_tile!r}, PV={pv!r}"
+                f"PV={pv!r}"
+            )
+            assert prop_tile > pv, (
+                f"the cockpit tile must carry the modelled value "
+                f"(tile={prop_tile!r}, asserted={pv!r})"
             )
             # Mortgage leg: total secured debt == the mortgage tile == the
             # loan-detail balance == MC.
@@ -1445,13 +1518,22 @@ class TestSecuredHomeEquityEquality:
                 f"savings_tile={mortgage_tile!r}, "
                 f"loan_detail={loan_detail!r}, MC={mc!r}"
             )
-            # Equity == trend net == PV - MC.
+            # Equity == PV - MC on the equity producer's own (cache-column)
+            # basis, and the TREND nets the modelled value against the same
+            # debt -- so the two differ by exactly the N-83 gap measured above,
+            # never by anything else.  Asserting the difference rather than the
+            # equality is what keeps this a lock while the finding is open.
             series = dashboard["net_worth"]["series"]
             trend_net = series["net"][series["current_index"]]
             # PV - MC = 400000.00 - 250000.00 = 150000.00.
-            assert equity.equity == trend_net == (pv - mc), (
+            assert equity.equity == (pv - mc), (
                 f"equity disagreed: equity={equity.equity!r}, "
-                f"trend_net={trend_net!r}, PV-MC={(pv - mc)!r}"
+                f"PV-MC={(pv - mc)!r}"
+            )
+            assert trend_net - equity.equity == prop_tile - pv, (
+                f"the trend and the equity card differ by something other than "
+                f"finding N-83's gap: trend_net={trend_net!r}, "
+                f"equity={equity.equity!r}, tile={prop_tile!r}, PV={pv!r}"
             )
 
 

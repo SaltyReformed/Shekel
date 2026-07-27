@@ -28,25 +28,37 @@ all, and that broke on 8 of 59 real period pairs (worst ``$2,505.17``) the
 moment the balance became a fold (finding N-41).  Reading one row set grouped
 two ways makes the identity a property of the object the template reads.
 
-ONLY INTEREST accrues here.  INTEREST is the one non-cash kind whose balance is
-a transaction SUM (anchor + the account's rows) plus a layered accrual, so a row
-the user types on the editable grid flows into the projected balance and the
-accrual row reconciles.  The other non-cash kinds are deliberately left on the
-cash-flow view because their balance is NOT a transaction sum -- a typed grid
-row would not move it:
+ONLY INTEREST accrues here, and since plan step X-g2b that is a SEQUENCING fact
+rather than a structural one.  Its accrual is the modelled replay
+(:func:`app.services.balance_at._asset_fold.resolve`) resolved over the very
+:class:`~app.services.balance_at._cash_fold.AssembledCashFold` this view
+regroups into its cash columns -- ONE walk, one plan load, one valuation -- so
+the grid's INTEREST balance and ``/savings``' are the same producer's answer
+rather than two that a test keeps byte-identical.
+
+The other non-cash kinds are still on the kind-blind cash-flow view here:
 
 * AMORTIZING (loan) -- the amortization schedule drives the balance (principal
   paydown), while its grid "transactions" are payment transfers recorded as
   income (opposite sign, different magnitude); no single accrual row reconciles
   them.  Ruling D4 refuses one at the resolver anyway, so this branch is the
-  degenerate safety, not a supported view.
-* INVESTMENT / APPRECIATING -- the growth / appreciation projection drives the
-  balance (anchor + modeled contributions, compounded), so an ad-hoc grid row
-  lands in the cash basis but not the projected balance.  Their modeled value is
-  shown on the /savings cockpit and detail pages, where the projection is
-  read-only.
+  degenerate safety, not a supported view.  An AMORTIZING account with no
+  ``LoanParams`` reaches the cash view and belongs there.
+* INVESTMENT / APPRECIATING -- **the reason this module used to give is no
+  longer true, and finding N-76 is what remains of it.**  It said their balance
+  is not a transaction sum, so "an ad-hoc grid row lands in the cash basis but
+  not the projected balance".  Under one replay a typed grid row IS an event in
+  the same stream, so it moves the modelled balance exactly as it moves a
+  HYSA's -- which is why ruling **R-W** puts the modelled balance and a
+  generalised "Growth" row on this surface.  That is plan step **X-g3**: it is
+  render work on both form factors, and mixing it into the money-moving cutover
+  is the shape the b1/b2/b3 split exists to prevent.  Until it ships the grid
+  answers those two kinds on the cash basis while ``/savings`` answers them
+  modelled -- measured at `$17,642.13` on the Empower 401(k) -- and N-76 stays
+  open with that number on it.
 
-PLAIN likewise carries no accrual (its kind-correct balance IS its cash basis).
+PLAIN likewise carries no accrual (its kind-correct balance IS its cash basis,
+and the replay says the same thing by having no ACCRUAL tier to resolve).
 """
 
 from collections import OrderedDict
@@ -55,8 +67,9 @@ from decimal import Decimal
 
 from app.models.account import Account
 
+from ._asset_contributions import ContributionInputs
 from ._context import BalanceContext
-from . import _cash_fold, _interest
+from . import _asset_fold, _cash_fold, _interest
 from ._inputs import ZERO, _require_scenario
 
 
@@ -257,24 +270,30 @@ def grid_balance_view(
     """Return the kind-aware cash-flow-surface view for *account*.
 
     The single entry the budget grid reads to project one account's column set.
-    ONE :func:`~app.services.balance_at._cash_fold.cash_period_view` supplies
-    every figure but the accrual -- the balance, the income and expense
-    subtotals, and ruling R-K's remainder, all from one valued row set grouped
-    two ways -- and an INTEREST account then layers its modelled accrual on top
-    (:func:`app.services.balance_at._interest.layer_account_interest`).  So
+    ONE :func:`~app.services.balance_at._cash_fold.assemble` supplies every
+    figure the surface renders: :func:`._cash_fold.period_view_of` regroups it
+    into the income and expense subtotals and ruling R-K's remainder, and for an
+    INTEREST account :func:`._asset_fold.resolve` resolves the modelled tiers
+    over the SAME record for the balance and the accrual.  So
 
         balance[p] - balance[p-1] == net[p] + reconciliation[p] + interest[p]
 
     is a property of the construction rather than an invariant a test polices
     across three independent producer passes (finding N-48).
 
-    **Only INTEREST accrues** here, because only its balance is a transaction
-    sum plus a layered rate (so a row typed on the editable grid flows into it
-    and the accrual row still reconciles).  PLAIN carries no accrual (its
-    kind-correct balance IS its cash basis); AMORTIZING, INVESTMENT and
-    APPRECIATING are schedule- or growth-driven, so a typed grid row would not
-    move their modelled balance and no single accrual row could explain the
-    difference -- see the module docstring.
+    **The sharing is the point, and it is what plan step X-g2a built**
+    (Section 4's constraint under ruling R-AA).  Reaching the replay through its
+    own entry (:func:`._asset_fold.asset_period_view`) would have walked the
+    account, loaded its plan and valued its rows a SECOND time -- undoing plan
+    step X-c1's "one walk, one plan load, one valuation, whichever reader is
+    asking" for the sake of one extra tier.
+
+    **Only INTEREST accrues** here at this step; ruling R-W generalises it to
+    the other modelled kinds at plan step X-g3, and the module docstring carries
+    what that costs in the meantime (finding N-76).  PLAIN carries no accrual --
+    the replay has no ACCRUAL tier to resolve for it, which is the same
+    statement its old "its kind-correct balance IS its cash basis" made, now
+    made by the producer instead of by a branch.
 
     **The accrual is a producer's answer, not a residual** (plan step X-c2b2,
     finding N-52).  It used to be the period-to-period delta of the PREMIUM
@@ -284,7 +303,7 @@ def grid_balance_view(
     the ``current_anchor_balance`` cache would have shown ``$2,007.01`` of
     interest in the current column -- the ``$2,000.00`` of settled money the
     cache never saw, relabelled (finding N-49).  Both halves now come off ONE
-    fold over ONE period list, so the row is the accrual map itself.
+    resolved step list, so the row is the accrual map itself.
 
     **ONE income basis, and nobody chooses it** (ruling R-Q).  The live override
     map -- recomputed salary income and derived loan debits -- is built inside
@@ -310,19 +329,37 @@ def grid_balance_view(
             nullable baseline must guard first.
     """
     _require_scenario(ctx)
-    view = _cash_fold.cash_period_view(
-        account, ctx.scenario.id, ctx.as_of, periods,
-    )
+    if not periods:
+        # A user with no pay periods has no columns to render and no rows to
+        # price, so the override map describes nothing.  Early-out rather than
+        # asking the modelled arm below for a horizon it cannot derive from an
+        # empty list -- the same guard :func:`._asset_fold.asset_period_view`
+        # and :func:`._asset_fold.period_columns` already carry.
+        return empty_grid_view()
+    folded = _cash_fold.assemble(account, ctx.scenario.id, ctx.as_of)
+    view = _cash_fold.period_view_of(folded, periods)
     balances: "OrderedDict[int, Decimal]" = OrderedDict(
         (period_id, column.balance)
         for period_id, column in view.columns.items()
     )
     accrual: "dict[int, Decimal]" = {}
-    interest_params = _interest.accrual_params(account)
-    if interest_params is not None:
-        balances, accrual = _interest.layer_account_interest(
-            account, ctx, periods, balances, interest_params,
+    if _interest.accrual_params(account) is not None:
+        modelled = _asset_fold.period_columns(
+            _asset_fold.resolve(
+                account, folded,
+                max(period.end_date for period in periods),
+                ContributionInputs.absent(),
+            ),
+            periods,
         )
+        balances = OrderedDict(
+            (period_id, column.balance)
+            for period_id, column in modelled.items()
+        )
+        accrual = {
+            period_id: column.accrual
+            for period_id, column in modelled.items()
+        }
     return GridBalanceView(
         columns=_assemble_columns(periods, balances, view.columns, accrual),
         amount_overrides=view.amount_overrides,

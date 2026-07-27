@@ -41,7 +41,12 @@ from decimal import Decimal
 
 from app.extensions import db
 from app.services import growth_engine
-from app.services.balance_at import _asset_fold, _investment, _kernel
+from app.services.balance_at import (
+    _asset_fold,
+    _cash_fold,
+    _interest,
+    _investment,
+)
 from app.services.balance_at._asset_contributions import ContributionInputs
 from app.services.balance_at._context import BalanceContext
 from app.services.projection_inputs import load_investment_params_for_accounts
@@ -315,7 +320,19 @@ class TestTheInterestPathDivergesOnlyByTheGrain:
         )
         ctx = _ctx(seed_user)
 
-        shipped = _kernel.base_account_balance_map(account, ctx, seed_periods)
+        # The incumbent is COMPOSED here rather than called through the kernel:
+        # plan step X-g2b deleted ``base_account_balance_map`` with the per-kind
+        # ladder (ruling R-AD), and ``_interest.layer_account_interest`` over the
+        # cash fold is exactly what that function was.  Building it in the test
+        # is what keeps this a parallel run against the producer the replay
+        # replaced, rather than a comparison with the replay itself.
+        shipped, _ = _interest.layer_account_interest(
+            account, ctx, seed_periods,
+            _cash_fold.cash_period_balances(
+                account, ctx.scenario.id, ctx.as_of, seed_periods,
+            ),
+            _interest.accrual_params(account),
+        )
         replayed = _replay(account, ctx, seed_periods)
         for period in seed_periods:
             gap = replayed[period.id].balance - shipped[period.id]

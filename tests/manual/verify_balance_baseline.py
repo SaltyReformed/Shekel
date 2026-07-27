@@ -16,24 +16,24 @@ where two tests agreed over an account holding no rows.
 
 **What it captures, per account:**
 
-* the kind-correct scalar at today, at five fixed valuation dates, and the
+* the kind-correct scalar at today, at six fixed valuation dates, and the
   kind-correct period map (all five account kinds, so a loan regression shows up
   in a cash commit).  **The dated scalars are plan step X-g2b-0's addition and
   they exist because the other two are BLIND between them**: the map answers
   period ENDS and the today scalar answers one day, so a mid-period date-precise
   read (finding N-71) and the pre-horizon back-projection (N-74) -- the two
   regions plan step X-g2b moves furthest -- fell straight through the gap.  Two
-  of the five dates are deliberately outside the seeded horizon, which is where
+  of the six dates are deliberately outside the seeded horizon, which is where
   a period-keyed producer and a total fold differ most;
 * for every non-loan account: the whole ``GridBalanceView`` -- balance, income,
   expense, net, ruling R-K's reconciliation remainder, interest -- plus the
   live override map the projection was computed with (ruling R-Q);
-* the cash-flow scalar at today and at five fixed valuation dates spanning past
-  and future, and the day-by-day series over the entire period horizon (the
+* the cash-flow scalar at today and at the same six fixed valuation dates, and the day-by-day series over the entire period horizon (the
   no-sampling requirement);
-* for the modelled kinds, ``investment_seed_map`` and
-  ``investment_growth_since_anchor`` -- the two seam entries plan step X-g
-  changes, captured so that step's cutover can be diffed rather than argued.
+* for the modelled kinds, ``investment_growth_since_anchor`` -- the seam entry
+  plan step X-g changes, captured so that step's cutover can be diffed rather
+  than argued.  Its sibling ``investment_seed_map`` was captured here too until
+  plan step X-g2b deleted that entry (ruling R-AE).
 
 **Usage** (from the repository root)::
 
@@ -172,32 +172,26 @@ def _cash_figures(account, ctx, periods):
     return figures
 
 
-def _modelled_figures(account, ctx, periods):
-    """Return the two seam entries plan step X-g changes, or ``{}``.
+def _modelled_figures(account, ctx):
+    """Return the growth decomposition the detail page's chip renders, or ``{}``.
 
-    ``investment_seed_map`` exists only because today's design cannot express
-    "the same balance without the modelled tier" (its own docstring warns that
-    seeding a chart from the modelled map would compound growth on growth), and
-    X-g turns that into a FILTER on the event stream.  Capturing both here is
-    what lets that step's cutover be diffed rather than argued.
+    ``investment_seed_map`` used to be captured beside it -- the pre-growth SEED
+    a forward chart compounded FROM -- and plan step X-g2b DELETED that entry
+    (ruling R-AE): a seed is the account's balance on a date, which
+    ``scalar_dates`` above already answers, so there is nothing left for a
+    separate accessor to say.  Its keys therefore disappear from this blob at
+    that step, which is the deletion showing up rather than a figure moving.
     """
     if classify_account(account) not in (
         AccountProjectionKind.INVESTMENT,
         AccountProjectionKind.APPRECIATING,
     ):
         return {}
-    current = pay_period_service.get_current_period(ctx.user_id)
     growth = balance_at.investment_growth_since_anchor(
-        account, ctx, periods, current,
+        account, ctx, pay_period_service.get_current_period(ctx.user_id),
     )
     return {
-        "investment_seed_map": {
-            str(period_id): _money(balance)
-            for period_id, balance in balance_at.investment_seed_map(
-                account, ctx, periods,
-            ).items()
-        },
-        # A ``(contributions, growth)`` pair, or None when the account models
+        # A ``(growth, contributed)`` pair, or None when the account models
         # no growth -- not a scalar, which is why it is unpacked rather than
         # passed straight to :func:`_money`.
         "investment_growth_since_anchor": [
@@ -236,7 +230,7 @@ def _account_blob(account, ctx, periods):
     if kind is not AccountProjectionKind.AMORTIZING:
         blob.update(_grid_columns(account, ctx, periods))
         blob.update(_cash_figures(account, ctx, periods))
-        blob.update(_modelled_figures(account, ctx, periods))
+        blob.update(_modelled_figures(account, ctx))
     return blob
 
 

@@ -794,10 +794,15 @@ class TestRetirementProjections:
         # Extract projected balances from the retirement accounts table.
         # The table has current balance then projected (fw-bold) on the same row.
         import re
-        # Match the projected balance cells (fw-bold) that follow the
-        # current balance cell and the annual return rate cell.
+        # Match the projected balance cells (fw-bold) that follow the current
+        # balance cell and the annual return rate cell.  The current-balance
+        # cell is matched by SHAPE rather than by the $10,000.00 literal it
+        # used to carry: since plan step X-g2b an account anchored in the
+        # current period earns that period's own days (ruling R-Y), so the
+        # rendered opening balance is $10,000 plus a few dollars of accrual.
         projected_values = re.findall(
-            r'\$10,000\.00</td>\s*<td[^>]*>.*?</td>\s*<td class="text-end font-mono fw-bold">\$([0-9,]+\.\d{2})',
+            r'\$10,0[0-9][0-9]\.\d{2}</td>\s*<td[^>]*>.*?</td>'
+            r'\s*<td class="text-end font-mono fw-bold">\$([0-9,]+\.\d{2})',
             html, re.DOTALL,
         )
         assert projected_values, "Expected projected balance for retirement account"
