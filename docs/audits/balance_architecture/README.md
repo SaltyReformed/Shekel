@@ -89,8 +89,8 @@ CONSTRAINT rather than a fork -- the grid's interest row must move in the same c
 because INTEREST is byte-identical across both surfaces today -- and that is what forces X-g2a's
 assembly-sharing refactor. One finding recorded: **N-79**. One closed: **N-77**.
 
-**X-g2a SHIPPED (2026-07-26)** -- the SHAPE, and no production reader changed, so the baseline
-provably cannot move. The contribution tier split into `balance_at/_asset_contributions.py`
+**X-g2a SHIPPED `5cb26d09` (2026-07-26)** -- the SHAPE, and no production reader changed, so the
+baseline does not move (byte-identical on both databases). The contribution tier split into `balance_at/_asset_contributions.py`
 (`_asset_fold.py` stood at 958 of pylint's 1000 lines); assembly split from resolution on BOTH sides
 (`_cash_fold.period_view_of`, `_asset_fold.resolve` / `period_columns`) so the grid can regroup ONE
 `AssembledCashFold` into cash columns AND resolve the modelled tiers over it; the three loose
@@ -1350,8 +1350,9 @@ replaces.
     additive-then-cutover line because tracing measured roughly two thirds of its diff as refactor
     and plumbing that cannot move a cent. Its four forks are **R-AA, R-AB, R-AC and R-AD in
     Section 4, and all four are ANSWERED** (developer ruling 2026-07-26, all as recommended).
-    * [ ] **X-g2a** `refactor(balance): one assembly serves the cash columns and the modelled tiers`
-      -- the SHAPE, provably baseline-identical because NO production reader changes. Four pieces,
+    * [x] **X-g2a** `refactor(balance): one assembly serves the cash columns and the modelled tiers`
+      -- **SHIPPED `5cb26d09` (2026-07-26).** The SHAPE, baseline-identical because NO production
+      reader changed. Four pieces,
       each a prerequisite the cutover would otherwise carry: (1) the contribution tier splits into
       `balance_at/_asset_contributions.py` -- `_asset_fold.py` stood at **958 lines against
       pylint's 1000 default**, the headroom X-g1 flagged, and the split is plan step D1c's cohesion
