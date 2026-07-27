@@ -70,11 +70,19 @@ what makes the earlier periods read the numbers the user typed in.
 **Ruling R-R partitions a contribution by SOURCE**, which is what makes the two
 feeds disjoint by construction rather than by a de-dup rule: a recorded transfer
 HAS a transaction row, so it is already an ACTUAL / PLANNED event; a payroll
-deduction never has one, so it is a modelled CONTRIBUTION event.  This module
-therefore never reads ``investment_projection._average_transfer_contribution``,
-which folds both feeds into one scalar.  The recorded feed is still READ here --
-for the annual-limit accounting and as the employer match's base (ruling R-R
-consequence (a)) -- but it is never added a second time.
+deduction never has one, so it is a modelled CONTRIBUTION event.  That tier is
+:mod:`app.services.balance_at._asset_contributions`, split off here at plan step
+X-g2a on plan step D1c's cohesion line; this module asks it for dated events and
+states no contribution rule of its own.
+
+**Assembly and resolution are separate entries** (plan step X-g2a).
+:func:`resolve` takes an ALREADY-assembled
+:class:`~app.services.balance_at._cash_fold.AssembledCashFold`, so a reader that
+needs the cash period columns AND the modelled tiers off one account -- the
+budget grid, from plan step X-g2b -- pays for ONE walk, ONE plan load and ONE
+valuation.  :func:`fold_asset_balances` and :func:`asset_period_view` are the
+convenience entries that assemble first, for the readers that want only the
+modelled answer.
 
 **TOTAL over every date and every account, like the folds it extends.**  An
 account that models no return (an INTEREST account whose params row is absent,
@@ -97,21 +105,16 @@ from decimal import Decimal
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
 from app.models.pay_period import PayPeriod
-from app.services import growth_engine, pay_period_service
+from app.services import growth_engine
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
 from app.services.interest_projection import accrued_interest
-from app.services.investment_projection import (
-    adapt_deductions,
-    deduction_contribution_per_period,
-    employer_contribution_params,
-)
-from app.services.loan_loaders import query_shadow_income
 from app.utils.money import round_money
 
-from . import _cash_fold, _interest
+from . import _asset_contributions, _cash_fold, _interest
+from ._asset_contributions import ContributionInputs
 from ._context import BalanceContext
 from ._fold import sample_cumulative
 
@@ -273,34 +276,6 @@ class _AccrualWindow:
 
 
 @dataclass(frozen=True)
-class _ContributionPlan:
-    """What an INVESTMENT account's modelled contributions are made of.
-
-    A cohesive assembly record (:func:`_contribution_plan`): the modelled
-    per-period employee amount, the employer configuration, the annual limit,
-    and the RECORDED contributions per pay period -- which are read for the
-    limit and the match base and never contributed again (ruling R-R).
-
-    Attributes:
-        per_period: The employee contribution one pay period's paycheck
-            deductions produce, each already throttled to its own calendar-year
-            cap (:func:`~app.services.investment_projection.deduction_contribution_per_period`).
-        employer_params: The employer-contribution configuration
-            (:func:`~app.services.investment_projection.employer_contribution_params`),
-            or ``None`` when the account has none.
-        annual_limit: The account's annual employee-contribution ceiling, or
-            ``None`` for an account with no IRS limit.
-        recorded_by_period: pay_period_id -> the ``effective_amount`` sum of the
-            transfer-linked contributions actually recorded in that period.
-    """
-
-    per_period: Decimal
-    employer_params: dict | None
-    annual_limit: Decimal | None
-    recorded_by_period: dict[int, Decimal]
-
-
-@dataclass(frozen=True)
 class AssetPeriodFigures:
     """One pay period's modelled column: the balance and what moved it.
 
@@ -336,13 +311,14 @@ class AssetPeriodFigures:
 
 
 @dataclass(frozen=True)
-class _ModelledFold:
+class ModelledFold:
     """One account's resolved modelled step list, plus what each tier contributed.
 
-    The output of :func:`_assemble`.  :attr:`steps` is what
+    The output of :func:`resolve`.  :attr:`steps` is what
     :func:`~app.services.balance_at._fold.sample_cumulative` reads; the two maps
     beside it are the same deltas kept apart so a reader can report WHY a
-    balance moved without re-deriving it.
+    balance moved without re-deriving it -- which is what
+    :func:`asset_seed_at` filters and :func:`asset_growth_at` totals.
 
     Attributes:
         seed: The balance before every step (the cash fold's ruling R-I seed).
@@ -377,7 +353,7 @@ def _compound_accrual(annual_rate) -> _CompoundAccrual:
 
 
 def _modelled_return(
-    account: Account, investment_params: "InvestmentParams | None",
+    account: Account, investment_params: InvestmentParams | None,
 ) -> "_InterestAccrual | _CompoundAccrual | None":
     """Return *account*'s modelled per-day return, or ``None`` if it models none.
 
@@ -467,170 +443,11 @@ def _latest_assertion_day(
     return walk.anchor_corrections[-1].visible_on
 
 
-def _recorded_contributions(
-    account_id: int, scenario_id: int,
-) -> dict[int, Decimal]:
-    """Return the transfer-linked contributions recorded per pay period.
-
-    The RECORDED half of ruling R-R's partition, loaded through the shared
-    :func:`~app.services.loan_loaders.query_shadow_income` -- the app's one
-    definition of "a contribution into this account" (a transfer's income-leg
-    shadow, excluding soft-deleted and balance-excluded rows), which the YTD
-    and limit accounting already read.
-
-    These rows are NOT contributed by this module: they are ordinary ACTUAL /
-    PLANNED events in the cash fold underneath it, which is exactly why the
-    partition needs no de-dup rule.  They are read here for the two things the
-    fold cannot know from a cash delta alone -- how much of the year's
-    contribution limit is already consumed, and what employee total the employer
-    match sizes off (ruling R-R consequence (a)).
-
-    Unwindowed by pay period, deliberately: the limit is a CALENDAR-YEAR
-    recurrence, so a windowed feed would under-count the year a projection
-    starts in.  It is windowed by account and scenario, which is the whole
-    domain.
-
-    Args:
-        account_id: The account receiving the contributions.
-        scenario_id: The budget scenario the rows live in.
-
-    Returns:
-        ``{pay_period_id: total}`` over the rows' ``effective_amount`` -- the
-        realized actual for a settled shadow, else its estimate.  ``{}`` for an
-        account with none.
-    """
-    totals: dict[int, Decimal] = {}
-    for txn in query_shadow_income(account_id, scenario_id).all():
-        amount = Decimal(str(txn.effective_amount))
-        totals[txn.pay_period_id] = (
-            totals.get(txn.pay_period_id, _ZERO) + amount
-        )
-    return totals
-
-
-def _contribution_plan(
-    account: Account,
-    scenario_id: int,
-    investment_params: InvestmentParams,
-    deductions: list,
-    salary_gross_biweekly: Decimal,
-) -> "_ContributionPlan | None":
-    """Assemble *account*'s modelled contribution plan, or ``None`` if it has none.
-
-    ``None`` when nothing is modelled at all -- no deduction produces a positive
-    amount AND no employer contribution is configured -- which is what keeps a
-    plain IRA from paying for a period-calendar load it has no use for.  Note
-    that an employer FLAT percentage models money with a zero employee feed (the
-    real Empower 401(k) shape: 5% of $3,631.74 = $181.59 a period), so the test
-    is on both halves, not on the employee amount alone.
-
-    Args:
-        account: The investment account.
-        scenario_id: The budget scenario the recorded contributions live in.
-        investment_params: The account's
-            :class:`~app.models.investment_params.InvestmentParams`.
-        deductions: Its active paycheck deductions (adapted here).
-        salary_gross_biweekly: The raise-aware engine gross per pay period, the
-            employer-match cap basis and the fallback gross when no deduction
-            supplies one.
-
-    Returns:
-        The :class:`_ContributionPlan`, or ``None``.
-    """
-    per_period, gross_biweekly = deduction_contribution_per_period(
-        adapt_deductions(deductions), salary_gross_biweekly,
-    )
-    employer_params = employer_contribution_params(
-        investment_params, gross_biweekly,
-    )
-    if per_period <= _ZERO and employer_params is None:
-        return None
-    return _ContributionPlan(
-        per_period=per_period,
-        employer_params=employer_params,
-        annual_limit=investment_params.annual_contribution_limit,
-        recorded_by_period=_recorded_contributions(account.id, scenario_id),
-    )
-
-
-def _contribution_events(
-    plan: _ContributionPlan,
-    periods: "list[PayPeriod]",
-    accrual_start: date,
-) -> "list[tuple[date, Decimal]]":
-    """Resolve the plan into dated CONTRIBUTION events, one per paying period.
-
-    **A contribution lands on its pay period's ``start_date``, because that is
-    the payday** -- the :class:`~app.models.pay_period.PayPeriod` model says so
-    in its own docstring ("start_date (payday)"), and it is already the date
-    ``investment_projection.build_contribution_timeline`` stamps on every
-    ``ContributionRecord``.  So the money is in the account from the payday and
-    earns a full period of return, where the growth engine adds a period's
-    contribution AFTER its growth and so earns none in its own period.
-
-    **It stops at the latest assertion, and the boundary is STRICT** (ruling
-    R-Z): an event exists only when ``payday > accrual_start``.  A contribution
-    on a payday at or before the assertion is money the asserted balance already
-    contains, and modelling it again double counts -- an over-count that looks
-    exactly like real growth and so cannot be detected later.  The ACCRUAL rule
-    beside it is inclusive (``>=``) for a reason that does not transfer: a day
-    count has to tile the calendar with no gap, while a contribution is a
-    discrete event that either is or is not inside the assertion.
-
-    **The annual limit is a calendar-year recurrence over BOTH feeds.**  Every
-    period's RECORDED contributions consume the year's limit whether or not the
-    period is modelled -- they happened, so they are never capped or dropped --
-    and the modelled amount is then capped against what is left, through the
-    same :func:`~app.services.growth_engine.cap_contribution_at_limit` the
-    growth engine applies.  The employer amount is sized off the RESOLVED
-    employee total for the period, recorded plus modelled (ruling R-R
-    consequence (a)), and is not itself charged against the employee limit --
-    the growth engine's own rule.
-
-    Args:
-        plan: The account's :class:`_ContributionPlan`.
-        periods: The user's pay periods, CHRONOLOGICAL (ordered by
-            ``period_index``), and the whole calendar rather than a caller's
-            window -- the year-boundary reset and the limit accounting are
-            wrong over a slice.
-        accrual_start: The latest assertion's UTC civil day.
-
-    Returns:
-        ``[(payday, amount), ...]`` in period order, one entry per period that
-        contributes a non-zero amount.
-    """
-    events: "list[tuple[date, Decimal]]" = []
-    ytd = _ZERO
-    prev_year: int | None = None
-    for period in periods:
-        period_year = period.start_date.year
-        if prev_year is not None and period_year != prev_year:
-            ytd = _ZERO
-        prev_year = period_year
-
-        recorded = plan.recorded_by_period.get(period.id, _ZERO)
-        ytd += recorded
-        if period.start_date <= accrual_start:
-            continue
-
-        employee = growth_engine.cap_contribution_at_limit(
-            plan.per_period, plan.annual_limit, ytd,
-        )
-        employer = growth_engine.calculate_employer_contribution(
-            plan.employer_params, recorded + employee,
-        )
-        ytd += employee
-        amount = employee + employer
-        if amount != _ZERO:
-            events.append((period.start_date, amount))
-    return events
-
-
 def _resolve(
     cash: _cash_fold.AssembledCashFold,
     contributions: "list[tuple[date, Decimal]]",
     window: "_AccrualWindow | None",
-) -> _ModelledFold:
+) -> ModelledFold:
     """Replay the merged event stream ONCE, resolving each day's accrual in order.
 
     The sequential pass ACCRUAL forces and the reason it is the only kind that
@@ -665,14 +482,14 @@ def _resolve(
             models no return (the result is then the cash fold, unchanged).
 
     Returns:
-        The :class:`_ModelledFold`.
+        The :class:`ModelledFold`.
     """
     by_day, contribution_by_day = _merged_day_deltas(cash, contributions)
     days = set(by_day)
     if window is not None:
         days.update(window.days())
     steps, accrual_by_day = _resolve_days(cash.seed, by_day, days, window)
-    return _ModelledFold(
+    return ModelledFold(
         seed=cash.seed,
         steps=steps,
         accrual_by_day=accrual_by_day,
@@ -750,46 +567,51 @@ def _resolve_days(
     return steps, accrual_by_day
 
 
-def _assemble(  # pylint: disable=too-many-arguments
+def resolve(
     account: Account,
-    ctx: BalanceContext,
+    cash: _cash_fold.AssembledCashFold,
     horizon_end: date,
-    *,
-    investment_params: "InvestmentParams | None",
-    deductions: list,
-    salary_gross_biweekly: Decimal,
-) -> _ModelledFold:
-    """Build and resolve *account*'s whole modelled event stream -- ONCE.
+    inputs: ContributionInputs,
+) -> ModelledFold:
+    """Resolve *account*'s modelled tiers onto an ALREADY-assembled cash fold.
 
-    The single assembly both entries below share, so a scalar and a period map
-    of the same account are readings of ONE resolved step list rather than two
-    producers a test keeps in step.
+    The replay's real entry, and the reason a modelled asset needs no cash basis
+    of its own: it takes :func:`~app.services.balance_at._cash_fold.assemble`'s
+    whole record -- the seed, the three tiers' dated deltas, and the walk it
+    reads the latest assertion off -- and adds the two modelled kinds to it.
 
-    Pylint: ``too-many-arguments`` (6/5) -- the keyword-only group is this
-    account's three independent projection inputs (its investment params, its
-    deductions, the engine gross-biweekly), mirroring
-    :func:`~app.services.balance_at._kernel.build_account_balance_map`'s own
-    signature so plan step X-g2's cutover is a call swap rather than a
-    re-assembly.  They are not a cohesive named concept, and re-wrapping them in
-    a bundle no other caller shares would be the stamp coupling the standards
-    reject.
+    Taking the assembled fold rather than assembling one is what lets a reader
+    that ALSO needs the cash period columns share the walk (plan step X-g2a):
+    :func:`~app.services.balance_at._cash_fold.period_view_of` regroups the very
+    same record.  The two convenience entries below assemble first, for the
+    readers that want only the modelled answer.
+
+    It takes NO context, and that is deliberate: everything it would have read
+    off one -- the scenario the contribution feed is scoped by, the ``as_of``
+    ruling R-G clamps to -- is already inside *cash*.  A signature that took both
+    could be handed a fold assembled at one scenario and a context carrying
+    another, and the modelled tier would then be loaded against a row set the
+    cash tiers underneath it never saw.  Reading it off the fold removes the
+    disagreement rather than documenting it.
 
     Args:
         account: The account to value.
-        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
-            (its scenario scopes the fold and the contribution feed, its
-            ``as_of`` is ruling R-G's clamp floor, its ``user_id`` is not read
-            -- the period calendar comes off the account).
-        horizon_end: The furthest date this read will be sampled at.
-        investment_params: The account's ``InvestmentParams``, or ``None``.
-        deductions: Its active paycheck deductions.
-        salary_gross_biweekly: The raise-aware engine gross per pay period.
+        cash: The account's
+            :class:`~app.services.balance_at._cash_fold.AssembledCashFold`, which
+            carries the scenario it was scoped by.
+        horizon_end: The furthest date this read will be sampled at.  Sampling
+            beyond it would read a balance that had stopped accruing, so every
+            caller derives it from its OWN request rather than from a horizon
+            constant.
+        inputs: The account's
+            :class:`~app.services.balance_at._asset_contributions.ContributionInputs`
+            -- its ``absent()`` constructor for a reader that cannot have a
+            contribution feed.
 
     Returns:
-        The resolved :class:`_ModelledFold`.
+        The resolved :class:`ModelledFold`.
     """
-    cash = _cash_fold.assemble(account, ctx.scenario.id, ctx.as_of)
-    accrual = _modelled_return(account, investment_params)
+    accrual = _modelled_return(account, inputs.investment_params)
     if accrual is None:
         return _resolve(cash, [], None)
 
@@ -798,30 +620,53 @@ def _assemble(  # pylint: disable=too-many-arguments
         start=_latest_assertion_day(account, cash.walk),
         end=horizon_end,
     )
-    contributions: "list[tuple[date, Decimal]]" = []
-    if (classify_account(account) is AccountProjectionKind.INVESTMENT
-            and investment_params is not None):
-        plan = _contribution_plan(
-            account, ctx.scenario.id, investment_params,
-            deductions, salary_gross_biweekly,
-        )
-        if plan is not None:
-            contributions = _contribution_events(
-                plan,
-                pay_period_service.get_all_periods(account.user_id),
-                window.start,
-            )
-    return _resolve(cash, contributions, window)
+    return _resolve(
+        cash,
+        _asset_contributions.contribution_events(
+            account, cash.scenario_id, inputs, window.start,
+        ),
+        window,
+    )
 
 
-def fold_asset_balances(  # pylint: disable=too-many-arguments
+def _assemble(
+    account: Account,
+    ctx: BalanceContext,
+    horizon_end: date,
+    inputs: ContributionInputs,
+) -> ModelledFold:
+    """Assemble the cash fold and resolve the modelled tiers onto it -- ONCE.
+
+    The single assembly the four convenience entries below share, so a scalar, a
+    period map, a seed and a growth decomposition of the same account are
+    readings of ONE resolved step list rather than four producers a test keeps in
+    step.
+
+    Args:
+        account: The account to value.
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
+            (its scenario scopes the fold and the contribution feed, its
+            ``as_of`` is ruling R-G's clamp floor).
+        horizon_end: The furthest date this read will be sampled at.
+        inputs: The account's
+            :class:`~app.services.balance_at._asset_contributions.ContributionInputs`.
+
+    Returns:
+        The resolved :class:`ModelledFold`.
+    """
+    return resolve(
+        account,
+        _cash_fold.assemble(account, ctx.scenario.id, ctx.as_of),
+        horizon_end,
+        inputs,
+    )
+
+
+def fold_asset_balances(
     account: Account,
     ctx: BalanceContext,
     dates: list[date],
-    *,
-    investment_params: "InvestmentParams | None",
-    deductions: list,
-    salary_gross_biweekly: Decimal,
+    inputs: ContributionInputs,
 ) -> dict[date, Decimal]:
     """Return *account*'s modelled balance at each of *dates*.
 
@@ -835,16 +680,13 @@ def fold_asset_balances(  # pylint: disable=too-many-arguments
     on that period's first and last day while $328.50 of growth accrues inside
     it (finding N-71).  A daily step list has no such state to be in.
 
-    Pylint: ``too-many-arguments`` (6/5) -- see :func:`_assemble`.
-
     Args:
         account: The account to value.
         ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
         dates: The dates to value the account at, in any order.  Duplicates
             collapse.
-        investment_params: The account's ``InvestmentParams``, or ``None``.
-        deductions: Its active paycheck deductions.
-        salary_gross_biweekly: The raise-aware engine gross per pay period.
+        inputs: The account's
+            :class:`~app.services.balance_at._asset_contributions.ContributionInputs`.
 
     Returns:
         ``{date: balance}`` -- one cent-quantized ``Decimal`` per distinct
@@ -852,23 +694,15 @@ def fold_asset_balances(  # pylint: disable=too-many-arguments
     """
     if not dates:
         return {}
-    folded = _assemble(
-        account, ctx, max(dates),
-        investment_params=investment_params,
-        deductions=deductions,
-        salary_gross_biweekly=salary_gross_biweekly,
-    )
+    folded = _assemble(account, ctx, max(dates), inputs)
     return sample_cumulative(folded.seed, folded.steps, dates)
 
 
-def asset_period_view(  # pylint: disable=too-many-arguments
+def asset_period_view(
     account: Account,
     ctx: BalanceContext,
     periods: "list[PayPeriod]",
-    *,
-    investment_params: "InvestmentParams | None",
-    deductions: list,
-    salary_gross_biweekly: Decimal,
+    inputs: ContributionInputs,
 ) -> "OrderedDict[int, AssetPeriodFigures]":
     """Return *account*'s modelled column for each of *periods*.
 
@@ -884,15 +718,12 @@ def asset_period_view(  # pylint: disable=too-many-arguments
     :class:`AssetPeriodFigures` arithmetically true and therefore untestable,
     and would silently absorb whatever the resolution got wrong.
 
-    Pylint: ``too-many-arguments`` (6/5) -- see :func:`_assemble`.
-
     Args:
         account: The account to value.
         ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
         periods: The pay periods to value, in the caller's display order.
-        investment_params: The account's ``InvestmentParams``, or ``None``.
-        deductions: Its active paycheck deductions.
-        salary_gross_biweekly: The raise-aware engine gross per pay period.
+        inputs: The account's
+            :class:`~app.services.balance_at._asset_contributions.ContributionInputs`.
 
     Returns:
         ``OrderedDict`` period id -> :class:`AssetPeriodFigures`, in the order
@@ -901,13 +732,37 @@ def asset_period_view(  # pylint: disable=too-many-arguments
     """
     if not periods:
         return OrderedDict()
-
-    folded = _assemble(
-        account, ctx, max(period.end_date for period in periods),
-        investment_params=investment_params,
-        deductions=deductions,
-        salary_gross_biweekly=salary_gross_biweekly,
+    return period_columns(
+        _assemble(
+            account, ctx, max(period.end_date for period in periods), inputs,
+        ),
+        periods,
     )
+
+
+def period_columns(
+    folded: ModelledFold, periods: "list[PayPeriod]",
+) -> "OrderedDict[int, AssetPeriodFigures]":
+    """Read *periods*' columns off an ALREADY-resolved modelled fold.
+
+    :func:`asset_period_view`'s body, split from its assembly for the same
+    reason :func:`~app.services.balance_at._cash_fold.period_view_of` was (plan
+    step X-g2a): the grid resolves the modelled tiers over the very
+    :class:`~app.services.balance_at._cash_fold.AssembledCashFold` it regroups
+    into cash columns, so both of its row sets come off ONE walk.
+
+    Args:
+        folded: The account's :class:`ModelledFold` (:func:`resolve`), resolved
+            to a horizon at or past every period's ``end_date``.
+        periods: The pay periods to value, in the caller's display order.
+
+    Returns:
+        ``OrderedDict`` period id -> :class:`AssetPeriodFigures`, in the order
+        *periods* was given.  EVERY input period is present.  Empty for an empty
+        *periods*.
+    """
+    if not periods:
+        return OrderedDict()
     ends = [period.end_date for period in periods]
     boundaries = ends + [period.start_date - _ONE_DAY for period in periods]
     return _assemble_columns(
@@ -920,6 +775,119 @@ def asset_period_view(  # pylint: disable=too-many-arguments
             _ZERO_MONEY, sorted(folded.contribution_by_day.items()), boundaries,
         ),
     )
+
+
+def asset_seed_at(
+    account: Account,
+    ctx: BalanceContext,
+    as_of: date,
+    inputs: ContributionInputs,
+) -> Decimal:
+    """Return *account*'s balance at *as_of* with the modelled RETURN filtered out.
+
+    Ruling R-U's SEED: what a forward what-if chart compounds FROM.  It is the
+    replay with its ACCRUAL events omitted -- the filter plan Section 3.2 names,
+    and the reason ``investment_seed_map`` stops being a producer of its own.
+    That accessor existed only because the previous design could not express "the
+    same balance without the modelled tier" without building a second cash basis;
+    under one event stream it is one subtraction.
+
+    **It is a DATE, and that is the whole point** (ruling R-U).  A caller reads it
+    at the day BEFORE its projection window opens, so every event inside the
+    window is the ENGINE's to apply and none of them is in the seed.  That is what
+    lets ``current_period_transfer_contribution`` -- the de-dup subtraction both
+    chart seeds carried (deep-quality-hunt #9 / #14) -- delete rather than be
+    ported: a recorded contribution landing on the window's first payday is not in
+    a seed that stops the day before, and the growth engine applies it exactly
+    once.  Under ruling R-R's partition the two feeds are disjoint anyway, so
+    there is no de-dup rule left to state.
+
+    Seeding from the DISPLAYED balance instead would compound growth on growth,
+    which is the warning the retired accessor's docstring carried and which this
+    entry preserves structurally rather than by instruction.
+
+    Args:
+        account: The account to seed from.
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
+        as_of: The seed date -- the day before the projection window opens.
+        inputs: The account's
+            :class:`~app.services.balance_at._asset_contributions.ContributionInputs`.
+
+    Returns:
+        The cent-quantized ``Decimal`` balance at *as_of*, less every ACCRUAL
+        credited on or before it.  CONTRIBUTIONS stay IN: they are money the
+        account holds, not modelled return, and the engine re-applies only the
+        ones dated inside its own window.
+    """
+    folded = _assemble(account, ctx, as_of, inputs)
+    balance = sample_cumulative(folded.seed, folded.steps, [as_of])[as_of]
+    return balance - _cumulative(folded.accrual_by_day, as_of)
+
+
+def asset_growth_at(
+    account: Account,
+    ctx: BalanceContext,
+    as_of: date,
+    inputs: ContributionInputs,
+) -> "tuple[Decimal, Decimal]":
+    """Return *account*'s ``(accrual, contribution)`` since its latest assertion.
+
+    The growth-vs-contributed decomposition the investment detail page's chip
+    renders, read off the replay's own two modelled tiers rather than
+    re-projected.
+
+    **"Since the latest assertion" needs no window arithmetic**, which is what
+    makes this ONE sample rather than a difference of two: ACCRUAL exists only
+    from the latest assertion's own day forward (rulings R-L / R-Y) and a
+    CONTRIBUTION only strictly after it (ruling R-Z), so the cumulative total at
+    *as_of* IS the total since the anchor.  A window subtraction would state the
+    same boundary a second time, and a second statement of a boundary is where
+    this arc's defects live.
+
+    The two are reported apart rather than summed because they answer different
+    questions -- what the market did, and what the user put in -- and together
+    they explain the whole modelled part of the balance change: for any period
+    the account holds no recorded rows in,
+    ``balance(as_of) - asserted == accrual + contribution`` exactly, every term
+    being a whole cent (ruling R-X).
+
+    Args:
+        account: The account to decompose.
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
+        as_of: The date to report through, inclusive.
+        inputs: The account's
+            :class:`~app.services.balance_at._asset_contributions.ContributionInputs`.
+
+    Returns:
+        ``(accrual, contribution)`` -- cumulative cent-quantized ``Decimal``
+        totals through *as_of*.  ``(0.00, 0.00)`` for an account that models
+        neither, which is a real answer and not a missing one.
+    """
+    folded = _assemble(account, ctx, as_of, inputs)
+    return (
+        _cumulative(folded.accrual_by_day, as_of),
+        _cumulative(folded.contribution_by_day, as_of),
+    )
+
+
+def _cumulative(by_day: "dict[date, Decimal]", as_of: date) -> Decimal:
+    """Return the total of a tier's dated deltas on or before *as_of*.
+
+    Read through the shared
+    :func:`~app.services.balance_at._fold.sample_cumulative` rather than by
+    summing a filtered dict, so a tier total and the balance it moved are the
+    same prefix of the same series.
+
+    Args:
+        by_day: One tier's ``{day: delta}`` map from a :class:`ModelledFold`.
+        as_of: The date to total through, inclusive.
+
+    Returns:
+        The cent-quantized cumulative ``Decimal``; ``0.00`` for an empty tier.
+    """
+    return sample_cumulative(
+        _ZERO_MONEY, sorted(by_day.items()), [as_of],
+    )[as_of]
 
 
 def _assemble_columns(

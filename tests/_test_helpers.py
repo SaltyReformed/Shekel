@@ -2765,6 +2765,17 @@ def make_appreciating_account(seed_user, db_session, anchor_period, balance, rat
     rate so the account classifies APPRECIATING.  Commits before
     returning so the account is fully resolvable.
 
+    **The opening assertion is stamped at the anchor period's first day**
+    (via :func:`restamp_opening_assertion`) -- finding N-77, fixed at plan step
+    X-g2a for the reason :func:`create_hysa_account` was at X-c2a, and read
+    there for the full argument.  ``account_service.create_account`` writes that
+    row with the WALL CLOCK, and from plan step X-g2b a Property's appreciation
+    accrues only forward of its LATEST assertion (ruling R-Y), so an unpinned
+    opening is the newest assertion, lands past the suite's seeded horizon, and
+    the account then appreciates NOTHING anywhere -- a state production cannot
+    reach.  A test that needs a MID-period or later assertion restamps it
+    itself, exactly as the interest suites do.
+
     Args:
         seed_user: The ``seed_user`` fixture dict.
         db_session: The test ``db.session``.
@@ -2804,6 +2815,9 @@ def make_appreciating_account(seed_user, db_session, anchor_period, balance, rat
     db_session.add(AssetAppreciationParams(
         account_id=account.id, annual_appreciation_rate=rate,
     ))
+    restamp_opening_assertion(
+        db_session, account, settle_instant_on(anchor_period.start_date),
+    )
     db_session.commit()
     return account
 
@@ -2821,6 +2835,14 @@ def make_investment_account(
     ``InvestmentParams`` row (7% assumed annual return) so the account
     classifies INVESTMENT.  Commits before returning so the account is
     fully resolvable.
+
+    **The opening assertion is stamped at the anchor period's first day**
+    (via :func:`restamp_opening_assertion`) -- finding N-77, fixed at plan step
+    X-g2a; see :func:`make_appreciating_account` beside it and
+    :func:`create_hysa_account` for the full argument.  From plan step X-g2b an
+    investment's growth accrues only forward of its LATEST assertion (ruling
+    R-Y), and the factory writes that row with the WALL CLOCK, so an unpinned
+    opening leaves the account growing nowhere.
 
     Args:
         seed_user: The ``seed_user`` fixture dict.
@@ -2872,6 +2894,9 @@ def make_investment_account(
         employer_match_percentage=match_pct,
         employer_match_cap_percentage=match_cap_pct,
     ))
+    restamp_opening_assertion(
+        db_session, account, settle_instant_on(anchor_period.start_date),
+    )
     db_session.commit()
     return account
 

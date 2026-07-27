@@ -141,6 +141,15 @@ class AssembledCashFold:
     opens (ruling R-L, generalised at ruling R-Y).
 
     Attributes:
+        scenario_id: The budget scenario the rows below were scoped by.  Carried
+            so the record is self-describing: a reader that resolves something
+            FURTHER off this fold -- the modelled tiers
+            (:func:`app.services.balance_at._asset_fold.resolve`) load a
+            contribution feed of their own -- scopes that load off the fold it is
+            extending rather than off a scenario passed beside it.  A caller
+            cannot then hand the two different scenarios, which is the only way
+            they could have disagreed (plan Section 8: an argument a caller can
+            get wrong is a defect, not a contract).
         seed: The balance before every step (ruling R-I's back-projection).
         steps: The dated deltas, ASCENDING by date -- the ACTUAL tier, the
             opening's compensator, and the PLANNED tier merged into one list.
@@ -151,6 +160,7 @@ class AssembledCashFold:
         day_nets: The PLANNED tier's per-day nets.
     """
 
+    scenario_id: int
     seed: Decimal
     steps: "list[tuple[date, Decimal]]"
     walk: CashLedgerWalk
@@ -183,6 +193,7 @@ def assemble(
     day_nets = _planned_day_nets(plan)
     seed, steps = _running_steps(walk, day_nets)
     return AssembledCashFold(
+        scenario_id=scenario_id,
         seed=seed, steps=steps, walk=walk, plan=plan, day_nets=day_nets,
     )
 
@@ -661,7 +672,35 @@ def cash_period_view(
         its folded balance), plus the live override map the projection was
         computed with.
     """
-    folded = assemble(account, scenario_id, as_of)
+    return period_view_of(assemble(account, scenario_id, as_of), periods)
+
+
+def period_view_of(
+    folded: AssembledCashFold, periods: "list[PayPeriod]",
+) -> CashPeriodView:
+    """Regroup an ALREADY-assembled fold into its per-period columns.
+
+    :func:`cash_period_view`'s body, split from its assembly so a reader that
+    needs the cash columns AND something else off the same account pays for ONE
+    walk, ONE plan load and ONE valuation rather than two (plan step X-g2a).
+    The grid is that reader: from plan step X-g2b it renders the modelled
+    balance -- :func:`app.services.balance_at._asset_fold.resolve` over this very
+    :class:`AssembledCashFold` -- beside the budget-clock subtotals this returns,
+    and calling both entry points would have assembled the account twice.
+
+    Taking the assembled record rather than the account is what makes the
+    sharing STRUCTURAL: the columns and whatever the caller resolves beside them
+    are readings of one valued row set by construction, not two producers that a
+    test keeps in step.
+
+    Args:
+        folded: The account's :class:`AssembledCashFold` (:func:`assemble`).
+        periods: The pay periods to report, in the caller's display order.  See
+            :func:`cash_period_view` for the windowing contract.
+
+    Returns:
+        The :class:`CashPeriodView`.
+    """
     spans = _PeriodSpans.of(periods)
     return CashPeriodView(
         columns=_assemble_figures(

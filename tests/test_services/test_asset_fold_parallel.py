@@ -42,6 +42,7 @@ from decimal import Decimal
 from app.extensions import db
 from app.services import growth_engine
 from app.services.balance_at import _asset_fold, _investment, _kernel
+from app.services.balance_at._asset_contributions import ContributionInputs
 from app.services.balance_at._context import BalanceContext
 from app.services.projection_inputs import load_investment_params_for_accounts
 from tests._test_helpers import (
@@ -71,8 +72,7 @@ def _params_for(account):
 def _replay(account, ctx, periods, params=None):
     """Return the modelled per-period columns, with no contribution feed."""
     return _asset_fold.asset_period_view(
-        account, ctx, periods,
-        investment_params=params, deductions=[], salary_gross_biweekly=_ZERO,
+        account, ctx, periods, ContributionInputs(investment_params=params),
     )
 
 
@@ -348,17 +348,12 @@ class TestTheAppreciationPathDivergesOnlyByTheAnchorPeriod:
             seed_user, db.session, seed_periods[0], Decimal("100000.00"),
             Decimal("0.03000"),
         )
-        # ``make_appreciating_account`` leaves the factory's opening assertion
-        # at the WALL CLOCK (finding N-77, the N-8 / N-65 fixture shape again).
-        # Unpinned, that row is the LATEST assertion, it lands past the seeded
-        # horizon, and the account accrues nothing anywhere -- a state
-        # production cannot reach.  Pinned here rather than in the shared
-        # helper because no shipped producer reads this kind's assertion DATE
-        # until plan step X-g2 does.
-        restamp_opening_assertion(
-            db.session, account,
-            settle_instant_on(seed_periods[0].start_date),
-        )
+        # The factory now pins its own opening assertion to the anchor period's
+        # first day (finding N-77, closed at plan step X-g2a), so the local
+        # restamp this test carried is gone.  What it was compensating for is
+        # exactly what the helper now owns: an unpinned wall-clock opening is
+        # the LATEST assertion, lands past the seeded horizon, and leaves the
+        # account accruing nothing anywhere.
         override_anchor(
             db.session, account, seed_periods[3], Decimal("100000.00"),
             notes="market value",
@@ -407,8 +402,7 @@ class TestTheTwoGrainsAreOneRunningTotal:
         ]
 
         daily = _asset_fold.fold_asset_balances(
-            account, ctx, horizon,
-            investment_params=None, deductions=[], salary_gross_biweekly=_ZERO,
+            account, ctx, horizon, ContributionInputs(),
         )
         columns = _replay(account, ctx, seed_periods)
         assert len(daily) == 140
@@ -437,8 +431,7 @@ class TestTheTwoGrainsAreOneRunningTotal:
         ]
 
         daily = _asset_fold.fold_asset_balances(
-            account, ctx, horizon,
-            investment_params=None, deductions=[], salary_gross_biweekly=_ZERO,
+            account, ctx, horizon, ContributionInputs(),
         )
         previous = Decimal("10000.00")
         for day in horizon:

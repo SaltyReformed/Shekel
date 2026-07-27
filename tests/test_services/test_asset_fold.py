@@ -47,7 +47,12 @@ from app.models.paycheck_deduction import PaycheckDeduction
 from app import ref_cache
 from app.enums import CalcMethodEnum, DeductionTimingEnum
 from app.services import growth_engine
-from app.services.balance_at import _asset_fold, _cash_fold
+from app.services.balance_at import (
+    _asset_contributions,
+    _asset_fold,
+    _cash_fold,
+)
+from app.services.balance_at._asset_contributions import ContributionInputs
 from app.services.balance_at._context import BalanceContext
 from app.services.projection_inputs import (
     load_active_deductions_for_accounts,
@@ -86,23 +91,40 @@ def _ctx(seed_user, as_of=_LATE_AS_OF):
     return BalanceContext.build(seed_user["user"].id, as_of=as_of)
 
 
-def _fold(account, ctx, dates, *, params=None, deductions=(), gross=_ZERO):
-    """Fold *account* at each of *dates*, returning ``{date: Decimal}``."""
-    return _asset_fold.fold_asset_balances(
-        account, ctx, list(dates),
+def _inputs(params=None, deductions=(), gross=_ZERO):
+    """Bundle a case's contribution feed the way the seam's callers do."""
+    return ContributionInputs(
         investment_params=params,
         deductions=list(deductions),
         salary_gross_biweekly=gross,
     )
 
 
+def _fold(account, ctx, dates, *, params=None, deductions=(), gross=_ZERO):
+    """Fold *account* at each of *dates*, returning ``{date: Decimal}``."""
+    return _asset_fold.fold_asset_balances(
+        account, ctx, list(dates), _inputs(params, deductions, gross),
+    )
+
+
 def _view(account, ctx, periods, *, params=None, deductions=(), gross=_ZERO):
     """Return *account*'s modelled per-period columns."""
     return _asset_fold.asset_period_view(
-        account, ctx, periods,
-        investment_params=params,
-        deductions=list(deductions),
-        salary_gross_biweekly=gross,
+        account, ctx, periods, _inputs(params, deductions, gross),
+    )
+
+
+def _seed(account, ctx, as_of, *, params=None, deductions=(), gross=_ZERO):
+    """Return *account*'s pre-growth seed at *as_of* (ruling R-U)."""
+    return _asset_fold.asset_seed_at(
+        account, ctx, as_of, _inputs(params, deductions, gross),
+    )
+
+
+def _growth(account, ctx, as_of, *, params=None, deductions=(), gross=_ZERO):
+    """Return *account*'s ``(accrual, contribution)`` through *as_of*."""
+    return _asset_fold.asset_growth_at(
+        account, ctx, as_of, _inputs(params, deductions, gross),
     )
 
 
@@ -119,11 +141,14 @@ def _params_for(account):
 
 
 def _401k(seed_user, period, balance, *, opened_on, **kwargs):
-    """Build a 7%-return 401(k) whose OPENING assertion is on a pinned day.
+    """Build a 7%-return 401(k) whose OPENING assertion is on a CHOSEN day.
 
-    ``make_investment_account`` leaves the opening at the wall clock (the N-65
-    shape), and this file's whole subject is where an accrual window opens, so
-    every investment fixture pins it.
+    ``make_investment_account`` now pins its own opening to the anchor period's
+    first day (finding N-77, closed at plan step X-g2a), so this wrapper is no
+    longer a compensator for a wall-clock stamp -- it exists because this file's
+    whole subject is WHERE an accrual window opens, and several cases need that
+    day to be somewhere other than the period's start (mid-period, or on a later
+    period's payday).
     """
     account = make_investment_account(
         seed_user, db.session, period, balance, **kwargs,
@@ -133,6 +158,34 @@ def _401k(seed_user, period, balance, *, opened_on, **kwargs):
     )
     db.session.commit()
     return account
+
+
+def _salaried_deduction(seed_user, account, amount):
+    """Attach an active flat-dollar deduction targeting *account*.
+
+    Module-level rather than a method on the contribution class: three classes
+    now build the same feed, and the modelled tier is only LIVE when one exists
+    -- a fixture without it cannot tell a partition from a union (finding N-69,
+    which is how the first version of the R-R pin was found vacuous).
+    """
+    profile = make_salary_profile(
+        seed_user, db.session, annual_salary=Decimal("94425.24"),
+    )
+    db.session.flush()
+    deduction = PaycheckDeduction(
+        salary_profile_id=profile.id,
+        target_account_id=account.id,
+        name="401k deferral",
+        amount=Decimal(amount),
+        calc_method_id=ref_cache.calc_method_id(CalcMethodEnum.FLAT),
+        deduction_timing_id=ref_cache.deduction_timing_id(
+            DeductionTimingEnum.PRE_TAX,
+        ),
+        is_active=True,
+    )
+    db.session.add(deduction)
+    db.session.commit()
+    return deduction
 
 
 class TestTheAccrualWindow:
@@ -601,27 +654,6 @@ class TestTheContributionTier:
     periods.
     """
 
-    def _salaried_deduction(self, seed_user, account, amount):
-        """Attach an active flat-dollar deduction targeting *account*."""
-        profile = make_salary_profile(
-            seed_user, db.session, annual_salary=Decimal("94425.24"),
-        )
-        db.session.flush()
-        deduction = PaycheckDeduction(
-            salary_profile_id=profile.id,
-            target_account_id=account.id,
-            name="401k deferral",
-            amount=Decimal(amount),
-            calc_method_id=ref_cache.calc_method_id(CalcMethodEnum.FLAT),
-            deduction_timing_id=ref_cache.deduction_timing_id(
-                DeductionTimingEnum.PRE_TAX,
-            ),
-            is_active=True,
-        )
-        db.session.add(deduction)
-        db.session.commit()
-        return deduction
-
     def test_a_flat_percentage_employer_contributes_with_no_employee_feed(
         self, db, seed_user, seed_periods,
     ):
@@ -678,7 +710,7 @@ class TestTheContributionTier:
             seed_user, seed_periods[0], Decimal("20000.00"),
             opened_on=date(2026, 1, 2),
         )
-        self._salaried_deduction(seed_user, account, "500.00")
+        _salaried_deduction(seed_user, account, "500.00")
         ctx = _ctx(seed_user)
 
         deductions = _deductions_for(seed_user, account)
@@ -715,7 +747,7 @@ class TestTheContributionTier:
             seed_user, seed_periods[0], Decimal("20000.00"),
             opened_on=date(2026, 1, 16),
         )
-        self._salaried_deduction(seed_user, account, "500.00")
+        _salaried_deduction(seed_user, account, "500.00")
         ctx = _ctx(seed_user)
 
         deductions = _deductions_for(seed_user, account)
@@ -749,7 +781,7 @@ class TestTheContributionTier:
             seed_user, seed_periods[0], Decimal("20000.00"),
             opened_on=date(2026, 1, 2),
         )
-        self._salaried_deduction(seed_user, account, "100.00")
+        _salaried_deduction(seed_user, account, "100.00")
         create_settled_transfer(
             seed_user, db.session, seed_user["account"], account,
             seed_periods[1], amount=Decimal("500.00"),
@@ -794,7 +826,7 @@ class TestTheContributionTier:
             employer_type="match", match_pct=Decimal("0.5000"),
             match_cap_pct=Decimal("0.0600"),
         )
-        self._salaried_deduction(seed_user, account, "200.00")
+        _salaried_deduction(seed_user, account, "200.00")
         create_settled_transfer(
             seed_user, db.session, seed_user["account"], account,
             seed_periods[1], amount=Decimal("300.00"),
@@ -820,7 +852,7 @@ class TestTheContributionWalksLimit:  # pylint: disable=protected-access
     fixture calendar does not contain.
 
 
-    Driven directly against :func:`_asset_fold._contribution_events` over
+    Driven directly against :func:`_asset_contributions._dated_events` over
     synthetic periods, because the rule that needs grading -- the reset at a
     calendar-year boundary -- needs periods spanning New Year, and the seeded
     fixture calendar covers five months.  The walk is pure, so nothing is
@@ -842,13 +874,13 @@ class TestTheContributionWalksLimit:  # pylint: disable=protected-access
         Hand-computed: the cap is ``max(limit - ytd, 0)`` applied per period,
         which is the growth engine's own ``cap_contribution_at_limit``.
         """
-        plan = _asset_fold._ContributionPlan(
+        plan = _asset_contributions._ContributionPlan(
             per_period=Decimal("500.00"),
             employer_params=None,
             annual_limit=Decimal("1200.00"),
             recorded_by_period={},
         )
-        events = _asset_fold._contribution_events(
+        events = _asset_contributions._dated_events(
             plan, self._periods(date(2026, 1, 2), 4), date(2026, 1, 1),
         )
         assert [amount for _day, amount in events] == [
@@ -867,13 +899,13 @@ class TestTheContributionWalksLimit:  # pylint: disable=protected-access
         here rather than incidental.
         """
         periods = self._periods(date(2026, 1, 2), 3)
-        plan = _asset_fold._ContributionPlan(
+        plan = _asset_contributions._ContributionPlan(
             per_period=Decimal("500.00"),
             employer_params=None,
             annual_limit=Decimal("1200.00"),
             recorded_by_period={periods[0].id: Decimal("900.00")},
         )
-        events = _asset_fold._contribution_events(
+        events = _asset_contributions._dated_events(
             plan, periods, date(2026, 1, 1),
         )
         assert [amount for _day, amount in events] == [Decimal("300.00")]
@@ -885,8 +917,8 @@ class TestTheContributionWalksLimit:  # pylint: disable=protected-access
         paydays fall in 2026 and exhaust a $600 limit ($500 then $100); the
         2027 paydays start a fresh $600 and pay $500 again.
         """
-        events = _asset_fold._contribution_events(
-            _asset_fold._ContributionPlan(
+        events = _asset_contributions._dated_events(
+            _asset_contributions._ContributionPlan(
                 per_period=Decimal("500.00"),
                 employer_params=None,
                 annual_limit=Decimal("600.00"),
@@ -1002,3 +1034,245 @@ class TestThePerPeriodIdentity:
                 cash_column.net + cash_column.reconciliation
                 + column.accrual + column.contribution
             ), f"identity broke on period {period.period_index}"
+
+
+class TestTheSeedFiltersTheModelledReturn:
+    """Ruling R-U: the seed is the replay with ACCRUAL omitted, read at a DATE.
+
+    ``investment_seed_map`` exists today only because the shipping design cannot
+    express "the same balance without the modelled tier" -- its own docstring
+    warns that seeding a chart from the modelled map "would compound growth on
+    top of growth".  Under one event stream that is a FILTER, and this class
+    grades it.
+
+    The DATE half is what ruling R-U turns on and what the second test pins: a
+    caller reads the seed the day BEFORE its projection window opens, so every
+    event inside the window is the growth engine's to apply and none of them is
+    in the seed.  That is what lets ``current_period_transfer_contribution`` --
+    the de-dup subtraction both chart seeds carry today -- delete rather than be
+    ported (deep-quality-hunt #9 / #14).
+    """
+
+    def test_the_seed_is_the_asserted_balance_while_the_fold_has_grown(
+        self, db, seed_user, seed_periods,
+    ):
+        """$10,000 at 5% APY: the fold reads $10,008.22, the seed $10,000.00.
+
+        Hand-computed from this file's own daily table (see
+        :meth:`TestTheAccrualWindow.test_an_hysa_accrues_from_its_assertions_own_day`):
+        six days from 2026-01-02 credit $1.37 each, so the cumulative accrual at
+        2026-01-07 is **$8.22** and the balance is **$10,008.22**.  The seed is
+        that balance less every ACCRUAL credited on or before the date, which is
+        the asserted $10,000.00 exactly.
+        """
+        account = create_hysa_account(
+            seed_user, db.session, seed_periods[0], Decimal("10000.00"),
+            apy=Decimal("0.05000"),
+        )
+        ctx = _ctx(seed_user)
+
+        assert _fold(
+            account, ctx, [date(2026, 1, 7)],
+        )[date(2026, 1, 7)] == Decimal("10008.22")
+        assert _seed(account, ctx, date(2026, 1, 7)) == Decimal("10000.00")
+
+    def test_a_settled_row_is_in_the_seed_only_from_the_day_it_moved(
+        self, db, seed_user, seed_periods,
+    ):
+        """The $500 transfer of 2026-01-08 is out of the 01-07 seed and in the 01-08 one.
+
+        The property ruling R-U rests on, and the reason the seed became a DATE
+        read rather than staying a period map: a projection window opening on
+        01-08 seeds from 01-07 and the engine owns everything from 01-08 on, so
+        the transfer is counted exactly once whichever side applies it.  Read at
+        the period's END instead -- what the retired ``investment_seed_map`` did
+        -- the same $500.00 is in the seed AND re-applied by the engine, which is
+        the double count the shipped compensator subtracts back out.
+
+        Hand-computed: the seed is **$10,000.00** on 01-07 and **$10,500.00** on
+        01-08.  The balances behind them are $10,008.22 and $10,509.66 -- the
+        day's cash step lands first and its own accrual then computes on the
+        raised base ($10,508.22 * 0.05 / 365 = $1.4395, carrying the cumulative
+        to $9.66), so a test that read the BALANCES could not tell the filter
+        from an off-by-a-day.
+        """
+        account = create_hysa_account(
+            seed_user, db.session, seed_periods[0], Decimal("10000.00"),
+            apy=Decimal("0.05000"),
+        )
+        create_settled_transfer(
+            seed_user, db.session, seed_user["account"], account,
+            seed_periods[0], amount=Decimal("500.00"),
+            paid_at=_instant(2026, 1, 8),
+        )
+        db.session.commit()
+        ctx = _ctx(seed_user)
+
+        assert _seed(account, ctx, date(2026, 1, 7)) == Decimal("10000.00")
+        assert _seed(account, ctx, date(2026, 1, 8)) == Decimal("10500.00")
+        folded = _fold(account, ctx, [date(2026, 1, 7), date(2026, 1, 8)])
+        assert folded[date(2026, 1, 7)] == Decimal("10008.22")
+        assert folded[date(2026, 1, 8)] == Decimal("10509.66")
+
+    def test_a_modelled_contribution_stays_in_the_seed(
+        self, seed_user, seed_periods,
+    ):
+        """Only ACCRUAL is filtered: a contribution is money the account holds.
+
+        Hand-computed on the $20,000 401(k) at 7% with a $500.00 deduction: the
+        01-16 payday lands the contribution and the balance reads **$20,555.78**
+        (see ``TestTheContributionTier``'s
+        ``test_a_deduction_lands_on_the_payday_and_earns_its_own_period``).
+        The cumulative accrual there is $55.78, so the seed is **$20,500.00** --
+        the asserted balance plus the contribution, and none of the growth.
+
+        Filtering contributions out too would under-seed every chart by the
+        contributions already made, which is a different error from the one the
+        filter exists to prevent.
+        """
+        account = _401k(
+            seed_user, seed_periods[0], Decimal("20000.00"),
+            opened_on=date(2026, 1, 2),
+        )
+        _salaried_deduction(seed_user, account, "500.00")
+        ctx = _ctx(seed_user)
+        params = _params_for(account)
+        deductions = _deductions_for(seed_user, account)
+
+        assert _seed(
+            account, ctx, date(2026, 1, 16),
+            params=params, deductions=deductions,
+        ) == Decimal("20500.00")
+
+
+class TestTheGrowthDecomposition:
+    """``asset_growth_at``: what the market did and what the user put in.
+
+    The investment detail page's growth chip, read off the replay's own two
+    modelled tiers instead of being re-projected by the growth engine.  "Since
+    the latest assertion" needs no window arithmetic and that is the point: an
+    ACCRUAL exists only from the assertion's own day (rulings R-L / R-Y) and a
+    CONTRIBUTION only strictly after it (ruling R-Z), so the cumulative total at
+    a date IS the total since the anchor.
+    """
+
+    def test_the_two_tiers_and_the_assertion_explain_the_whole_balance(
+        self, seed_user, seed_periods,
+    ):
+        """$20,000 at 7% with a $500.00 deduction: (55.78, 500.00) on 2026-01-16.
+
+        Hand-computed, and it closes on itself: the 14 days of period 0 accrue
+        **$51.97** (this file's own figure), the 01-16 payday lands **$500.00**,
+        and that day's growth on the raised $20,551.97 base is **$3.81** -- so
+        the cumulative accrual is $55.78 and ``20000.00 + 55.78 + 500.00 ==
+        20555.78``, the balance the fold independently reports for that day.
+        The chip's two numbers and the balance beside it therefore reconcile by
+        construction rather than by a test keeping two producers in step.
+        """
+        account = _401k(
+            seed_user, seed_periods[0], Decimal("20000.00"),
+            opened_on=date(2026, 1, 2),
+        )
+        _salaried_deduction(seed_user, account, "500.00")
+        ctx = _ctx(seed_user)
+        params = _params_for(account)
+        deductions = _deductions_for(seed_user, account)
+
+        accrual, contribution = _growth(
+            account, ctx, date(2026, 1, 16),
+            params=params, deductions=deductions,
+        )
+        assert accrual == Decimal("55.78")
+        assert contribution == Decimal("500.00")
+        assert Decimal("20000.00") + accrual + contribution == _fold(
+            account, ctx, [date(2026, 1, 16)],
+            params=params, deductions=deductions,
+        )[date(2026, 1, 16)]
+
+    def test_the_anchor_periods_own_days_are_reported_not_hidden(
+        self, seed_user, seed_periods,
+    ):
+        """Ruling R-Y: an account anchored THIS period has already grown.
+
+        The shipping decomposition returns ``None`` -- and the page hides the
+        chip -- when no period follows the anchor, because its forward
+        projection starts the period AFTER.  The replay accrues from the
+        assertion's own day, so there is a real figure to report on day one:
+        hand-computed, $20,000 at 7% credits **$3.71** on 2026-01-02 alone.
+        Hiding it would deny a number the balance beside it already contains.
+        """
+        account = _401k(
+            seed_user, seed_periods[0], Decimal("20000.00"),
+            opened_on=date(2026, 1, 2),
+        )
+        ctx = _ctx(seed_user)
+
+        assert _growth(
+            account, ctx, date(2026, 1, 2), params=_params_for(account),
+        ) == (Decimal("3.71"), Decimal("0.00"))
+
+    def test_an_account_that_models_nothing_reports_zeros_not_none(
+        self, seed_user, seed_periods,
+    ):
+        """A plain savings account decomposes to ``(0.00, 0.00)``.
+
+        A real answer rather than a missing one, which is the totality rule the
+        whole arc turns on: the caller decides whether a zero chip is worth
+        rendering, and no consumer has to compose this producer with a fallback.
+        """
+        ctx = _ctx(seed_user)
+
+        assert _growth(
+            seed_user["account"], ctx, seed_periods[-1].end_date,
+        ) == (Decimal("0.00"), Decimal("0.00"))
+
+
+class TestTheContributionTierIsDecidedByTheKind:
+    """A payroll feed belongs to an INVESTMENT, whatever the caller handed in.
+
+    ``ContributionInputs`` is batch-loaded by the seam and sliced per account, so
+    in production a Property never carries ``InvestmentParams``.  The tier gates
+    on the account's own KIND anyway, because an argument a caller can get wrong
+    is a defect rather than a contract (plan Section 8) -- and a wrong bundle
+    here would model payroll contributions into a house, which is a figure no
+    reviewer would recognise as wrong on the screen.
+    """
+
+    def test_a_property_handed_an_investments_feed_contributes_nothing(
+        self, db, seed_user, seed_periods,
+    ):
+        """The Property appreciates and receives no contribution at all.
+
+        Hand-computed: $100,000 at 3% asserted on 2026-01-02 credits $8.10 a day
+        (with an $8.11 where the full-precision total crosses a half-cent), so
+        period 0's 14 days accrue **$113.44** -- the same figure the parallel run
+        pins -- and the contribution column stays **$0.00** even though the call
+        supplies the 401(k)'s own params and a live $500.00 deduction.
+
+        **Period 1 is what gives this teeth, and the firing control is why it is
+        here.**  Ruling R-Z's boundary is STRICT, so the ANCHOR period skips a
+        payday on its own start day whatever the kind is -- a first version of
+        this test read period 0 alone, and deleting the kind guard left it GREEN
+        (finding N-69's shape).  Period 1's payday (2026-01-16) is strictly after
+        the assertion, so without the guard the house would receive $500.00
+        there.
+        """
+        house = make_appreciating_account(
+            seed_user, db.session, seed_periods[0], Decimal("100000.00"),
+            Decimal("0.03000"),
+        )
+        investment = _401k(
+            seed_user, seed_periods[0], Decimal("20000.00"),
+            opened_on=date(2026, 1, 2), name="401k-for-params",
+        )
+        _salaried_deduction(seed_user, investment, "500.00")
+        ctx = _ctx(seed_user)
+
+        columns = _view(
+            house, ctx, seed_periods[:2],
+            params=_params_for(investment),
+            deductions=_deductions_for(seed_user, investment),
+        )
+        assert columns[seed_periods[0].id].accrual == Decimal("113.44")
+        assert columns[seed_periods[0].id].contribution == Decimal("0.00")
+        assert columns[seed_periods[1].id].contribution == Decimal("0.00")
