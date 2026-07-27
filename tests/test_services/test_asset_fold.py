@@ -1129,7 +1129,7 @@ class TestTheGrowthDecomposition:
 class TestTheContributionTierIsDecidedByTheKind:
     """A payroll feed belongs to an INVESTMENT, whatever the caller handed in.
 
-    ``ContributionInputs`` is batch-loaded by the seam and sliced per account, so
+    ``ContributionInputs`` is loaded per account by the seam, so
     in production a Property never carries ``InvestmentParams``.  The tier gates
     on the account's own KIND anyway, because an argument a caller can get wrong
     is a defect rather than a contract (plan Section 8) -- and a wrong bundle

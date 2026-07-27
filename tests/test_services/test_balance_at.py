@@ -60,6 +60,10 @@ from app.services import (
     income_service,
     pay_period_service,
 )
+from app.services.account_projection import (
+    AccountProjectionKind,
+    classify_account,
+)
 from app.services.balance_at import _investment as net_worth_investment, _kernel as net_worth_kernel
 from app.services.balance_at._asset_contributions import ContributionInputs
 from app.services.projection_inputs import (
@@ -70,7 +74,14 @@ from app.services.savings_dashboard_service._data import _load_account_params
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.money import round_money
 from app.services.balance_at import BalanceContext
-from app.services.balance_at._resolution import resolved_loan
+from app.services.balance_at._inputs import (
+    _contribution_inputs_for_account,
+    _contribution_inputs_for_accounts,
+)
+from app.services.balance_at._resolution import (
+    configured_loan,
+    resolved_loan,
+)
 from tests._test_helpers import (
     add_txn,
     create_account_of_type,
@@ -529,9 +540,17 @@ class TestBalanceMapLoan:
 
         A balance trueup to $0 leaves the resolver with an empty schedule and a
         $0 current balance.  The seam's map dispatch routes the loan to the fold
-        on MEMBERSHIP in ``inputs.debt_schedules`` (an empty schedule is still a
-        configured loan, not a fall-through to cash), and it reports $0 at every
-        period.
+        on ``_resolution.configured_loan`` -- an empty schedule is still a
+        CONFIGURED loan, not a fall-through to cash -- and it reports $0 at
+        every period.
+
+        This is one half of the pair that makes plan step X-g3b-0's gate change
+        safe (the other is
+        ``TestBrokenLoanFailsLoud.test_an_amortizing_account_with_no_loan_params_does_NOT_raise``):
+        the retired gate tested MEMBERSHIP in a ``debt_schedules`` map, and a
+        loan whose schedule is EMPTY is exactly the shape a careless
+        reimplementation drops to cash.  ``TestTheLoanGateIsOneQuestion`` below
+        asserts the two spellings agree on this shape directly.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -618,6 +637,287 @@ class TestBalanceMapLoan:
             # A real reduction: strictly below the $200,000 seed, still owing.
             assert Decimal("0.00") < expected < schedule.projection_seed
             assert schedule.projection_seed == Decimal("200000.00")
+
+
+class TestTheLoanGateIsOneQuestion:
+    """The seam asks "is this a configured loan?" ONE way (plan step X-g3b-0).
+
+    The scalar (``_kind_correct.balance_at``) has always asked
+    ``classify_account(...) is AMORTIZING and resolved_loan(account, ctx) is not
+    None``.  The per-period map asked a DIFFERENT expression -- membership in an
+    ``_AssembledInputs.debt_schedules`` map the seam built and then discarded the
+    values of -- and the forward liability band decomposed the same rule into two
+    guard clauses.  The equivalence between the three was recorded in a docstring
+    rather than enforced.  X-g3b-0 deleted the bundle and pointed all three at
+    one named predicate, ``_resolution.configured_loan``.
+
+    **What these cases lock, stated so the class is not over-trusted.**  The
+    SHIPPED side calls the production predicate, so a mutation of it fires here.
+    The RETIRED side is rebuilt from ``generate_debt_schedules``, which is still
+    live for its other callers -- so the pair also fires if that producer ever
+    gains a filter the resolver lacks (dropping a loan with no schedule rows,
+    say), which is the drift that would otherwise surface only as a moved
+    balance on a screen.  What they do NOT lock is that the map and the band
+    still CALL the predicate: that is
+    ``TestBalanceMapLoan`` / ``TestBrokenLoanFailsLoud``'s job, by value.
+    """
+
+    @staticmethod
+    def _both_spellings(account, ctx):
+        """Return ``(retired_gate, shipped_gate)`` for *account*.
+
+        The retired spelling is rebuilt exactly as it stood -- the kind test AND
+        membership in the schedule map, over the AMORTIZING-filtered subset the
+        assembly passed -- because dropping the kind conjunct would compare a
+        LOOSER rule and report a false divergence for a ``LoanParams`` row on a
+        non-amortizing account, which is a data defect both surfaces are
+        supposed to degrade identically.
+
+        The shipped spelling is the PRODUCTION function, not a copy of it, so a
+        mutation of the predicate fires these cases rather than passing a
+        reimplementation.
+        """
+        retired = (
+            classify_account(account) is AccountProjectionKind.AMORTIZING
+            and account.id in net_worth_kernel.generate_debt_schedules(
+                [account], ctx,
+            )
+        )
+        return retired, configured_loan(account, ctx) is not None
+
+    def test_a_configured_loan_is_a_loan_under_both(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """The ordinary case: a Mortgage with LoanParams takes the loan arm."""
+        with app.app_context():
+            bctx = BalanceContext.build(seed_user["user"].id)
+            periods = pay_period_service.get_all_periods(seed_user["user"].id)
+            loan, _params = _make_mortgage(
+                db, seed_user, periods[0], Decimal("240000.00"),
+                date(2024, 1, 1),
+            )
+            db.session.commit()
+
+            retired, shipped = self._both_spellings(loan, bctx)
+
+            assert retired is True
+            assert shipped is True
+            assert retired == shipped
+
+    def test_a_paid_off_loan_with_an_empty_schedule_is_still_a_loan(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """The discriminating shape: configured, but its schedule is EMPTY.
+
+        A trueup to $0 leaves the resolver with no amortization rows at all.
+        Both spellings must still say "loan" -- a gate that tested the SCHEDULE
+        rather than the RESOLUTION would drop this account onto the cash
+        producer, where its balance would become the sum of its payment
+        transfers read as income (finding B-3's shape).
+        """
+        with app.app_context():
+            bctx = BalanceContext.build(seed_user["user"].id)
+            periods = pay_period_service.get_all_periods(seed_user["user"].id)
+            loan, params = _make_mortgage(
+                db, seed_user, periods[0], Decimal("240000.00"),
+                date(2024, 1, 1),
+            )
+            insert_trueup_event(params, Decimal("0.00"))
+            db.session.commit()
+
+            resolved = resolved_loan(loan, bctx)
+            retired, shipped = self._both_spellings(loan, bctx)
+
+            # The shape really is the discriminating one.
+            assert resolved is not None
+            assert resolved.state.schedule == []
+            assert retired is True
+            assert shipped is True
+            assert retired == shipped
+
+    def test_a_mortgage_with_no_loan_params_is_not_a_loan_under_either(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """The other side: Mortgage-typed, terms never entered -> NOT a loan."""
+        # Pylint: ``import-outside-toplevel`` -- the shared factory is imported
+        # lazily here exactly as the sibling fall-through test does it.
+        # pylint: disable=import-outside-toplevel
+        from tests._test_helpers import create_account_of_type
+
+        with app.app_context():
+            acct = create_account_of_type(
+                seed_user, db.session, "Mortgage", "Terms Never Entered",
+                anchor_balance=Decimal("150000.00"),
+            )
+            db.session.commit()
+            bctx = BalanceContext.build(seed_user["user"].id)
+
+            retired, shipped = self._both_spellings(acct, bctx)
+
+            assert classify_account(acct) is AccountProjectionKind.AMORTIZING
+            assert retired is False
+            assert shipped is False
+            assert retired == shipped
+
+    def test_a_non_loan_account_is_not_a_loan_under_either(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """A plain checking account: neither spelling admits it."""
+        with app.app_context():
+            bctx = BalanceContext.build(seed_user["user"].id)
+
+            retired, shipped = self._both_spellings(seed_user["account"], bctx)
+
+            assert retired is False
+            assert shipped is False
+            assert retired == shipped
+
+    def test_loan_terms_on_a_non_amortizing_account_are_not_a_loan(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """The CLASSIFIER half: ``LoanParams`` alone must not make a loan.
+
+        Without this case the kind conjunct inside ``configured_loan`` is
+        unpinned -- deleting it leaves every other case in this class green,
+        because none of them carries loan terms on an account the classifier
+        refuses.  The resolver half is pinned by the params-less Mortgage above;
+        this is its opposite number.
+
+        **The shape is production-reachable, not hypothetical.**  A user can
+        edit an existing account type and flip ``has_amortization`` off
+        (``routes/accounts/types.py:151-157``); the boundary guard refuses only
+        while a linked ledger carries postings, and nothing deletes the
+        ``LoanParams`` rows of accounts already on that type.  What is left is
+        exactly this: loan terms on an account the classifier no longer calls
+        amortizing.  Both spellings must refuse it, or ``positions`` would
+        amortize an account whose balance is its transaction rows.
+        """
+        with app.app_context():
+            bctx = BalanceContext.build(seed_user["user"].id)
+            periods = pay_period_service.get_all_periods(seed_user["user"].id)
+            loan, _params = _make_mortgage(
+                db, seed_user, periods[0], Decimal("240000.00"),
+                date(2024, 1, 1),
+            )
+            db.session.commit()
+            # It IS a configured loan until the type flag moves.
+            assert configured_loan(loan, bctx) is not None
+
+            loan.account_type.has_amortization = False
+            db.session.commit()
+            db.session.refresh(loan)
+            bctx = BalanceContext.build(seed_user["user"].id)
+
+            retired, shipped = self._both_spellings(loan, bctx)
+
+            # The loan terms are still there -- only the classifier moved.
+            assert resolved_loan(loan, bctx) is not None
+            assert classify_account(loan) is not AccountProjectionKind.AMORTIZING
+            assert retired is False
+            assert shipped is False
+            assert retired == shipped
+
+    def test_the_control_the_equivalence_would_fail(
+        self, app, db, seed_user, seed_periods_today, monkeypatch,
+    ):
+        """THE CONTROL: the comparison can distinguish the two spellings.
+
+        Every case above asserts the pair AGREES, and a pair of expressions that
+        could never disagree would pass all four vacuously.  This one PATCHES
+        the retired spelling's producer to drop a loan whose schedule is empty
+        -- the exact filter a careless reimplementation would add -- and asserts
+        ``_both_spellings`` then reports a DISAGREEMENT on the same fixture the
+        case above found agreement on.  So the helper can return an unequal
+        pair, and ``retired == shipped`` is a real assertion rather than a
+        tautology.
+        """
+        with app.app_context():
+            bctx = BalanceContext.build(seed_user["user"].id)
+            periods = pay_period_service.get_all_periods(seed_user["user"].id)
+            loan, params = _make_mortgage(
+                db, seed_user, periods[0], Decimal("240000.00"),
+                date(2024, 1, 1),
+            )
+            insert_trueup_event(params, Decimal("0.00"))
+            db.session.commit()
+
+            # Unpatched, the pair agrees (the case above, restated so the
+            # patched result below is a change and not a fresh observation).
+            assert self._both_spellings(loan, bctx) == (True, True)
+
+            real = net_worth_kernel.generate_debt_schedules
+
+            def _schedule_rows_only(accounts, ctx):
+                """The careless filter: a loan with no rows is dropped."""
+                return {
+                    account_id: schedule
+                    for account_id, schedule in real(accounts, ctx).items()
+                    if schedule.schedule
+                }
+
+            monkeypatch.setattr(
+                net_worth_kernel, "generate_debt_schedules",
+                _schedule_rows_only,
+            )
+
+            # The retired spelling now says "not a loan" while the shipped one
+            # still says "loan" -- the divergence the agreement cases exist to
+            # catch, shown to be reachable.
+            assert self._both_spellings(loan, bctx) == (False, True)
+
+
+class TestAFeedIsTheSameWhoeverItIsLoadedBeside:
+    """One account's contribution feed does not depend on its batch mates.
+
+    The property :func:`._inputs._contribution_inputs_for_accounts` promises in
+    its Returns clause, and it needed a test rather than a comment (plan step
+    X-g3b-0's second adversarial review).  The gross FETCH is scoped to the SET
+    -- it is skipped entirely when no account in it has investment params -- so
+    handing the set's gross to every member would make a checking account's feed
+    read ``$0`` alone and the user's real gross beside a 401(k).
+
+    Nothing consumes the field on such an account today (the contribution tier
+    short-circuits on kind and params first), which is exactly why the batch
+    shape is the only place the difference is observable and exactly why the
+    single-account case below cannot stand in for it: on a one-element set the
+    set-level gate returns ``ZERO`` on its own, so that assertion passes with
+    the per-account arm deleted.
+    """
+
+    def test_a_checking_accounts_feed_is_identical_alone_and_in_a_batch(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """The contract, asserted as the identity it is.
+
+        The 401(k) beside it is what makes the case non-vacuous: it forces the
+        gross fetch to happen, so the checking account's ``0`` is the
+        per-account arm's doing and not the set gate's.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            periods = pay_period_service.get_all_periods(user_id)
+            checking = seed_user["account"]
+            roth = make_investment_account(
+                seed_user, db.session, periods[2], Decimal("10000.00"),
+            )
+            # A real salary, or the gross is $0 for everyone and the case
+            # cannot tell the per-account arm from the set-level gate.  The
+            # non-vacuity assertion below is what caught its absence.
+            make_salary_profile(seed_user, db.session)
+            db.session.commit()
+            gross = income_service.get_current_gross_biweekly(user_id)
+
+            alone = _contribution_inputs_for_account(checking)
+            batched = _contribution_inputs_for_accounts([checking, roth])
+
+            # Non-vacuity: the batch really did fetch a gross to hand out.
+            assert gross > Decimal("0")
+            assert batched[roth.id].salary_gross_biweekly == gross
+            # The arm: the account that cannot consume one carries none, in
+            # BOTH shapes -- so the two reads are the same object's worth of
+            # facts, which is the Returns clause stated as an assertion.
+            assert batched[checking.id].salary_gross_biweekly == Decimal("0")
+            assert alone == batched[checking.id]
 
 
 class TestBalanceMapInvestment:
@@ -930,8 +1230,9 @@ class TestBuildMaps:
           direct kernel call, NOT the rerouted ``build_account_net_worth_maps``
           (which delegates to ``build_maps`` -- comparing would be tautological).
         * **Loan accounts**: the batch seam map must equal the SINGLE-account seam
-          map, proving the batch assembly routed the loan to its fold (kept it in
-          ``debt_schedules`` rather than dropping it to the cash path).  The loan's
+          map, proving the batch loop routed the loan to its fold (the shared
+          ``configured_loan`` gate admitted it rather than dropping it to the
+          cash path).  The loan's
           VALUE correctness is ``TestBalanceMapLoan``, ``TestMultiLoanIsolation``,
           and the B2 fold oracle.
         """
@@ -1378,8 +1679,8 @@ class TestMultiLoanIsolation:
 
         A shared or positional debt-schedule forward would collapse both loans onto
         one balance.  Loan A is trued up to $200,000 today and loan B to $50,000, so
-        the seam must report each loan's OWN balance -- the ``debt_schedules`` map is
-        keyed by account id, not positional.
+        the seam must report each loan's OWN balance -- every producer beneath the
+        batch loop is asked per account, never positionally.
 
         The seam folds each loan from its OWN memoized walk
         (:meth:`~app.services.balance_at.BalanceContext.loan_walk`, keyed
@@ -4166,11 +4467,12 @@ class TestBrokenLoanFailsLoud:
                 acct, bctx, bctx.as_of,
             ) == Decimal("150000.00")
 
-            # The per-period MAP degrades identically (C3b3 hazard 1): an
-            # unconfigured loan is absent from ``inputs.debt_schedules``, so the
-            # seam's map dispatch falls through to the cash producer rather than
-            # reaching positions()'s fail-loud for a schedule-less loan.  Pinned by
-            # value at the current period ($150,000.00 anchor, held flat).
+            # The per-period MAP degrades identically (C3b3 hazard 1): the seam's
+            # map dispatch reads ``_resolution.configured_loan``, which is None for
+            # an unconfigured loan, so it falls through to the cash producer
+            # rather than reaching positions()'s fail-loud for a schedule-less
+            # loan.  Pinned by value at the current period ($150,000.00 anchor,
+            # held flat).
             periods = pay_period_service.get_all_periods(seed_user["user"].id)
             current = pay_period_service.get_current_period(seed_user["user"].id)
             loan_map = balance_at.balance_map(acct, bctx, periods)

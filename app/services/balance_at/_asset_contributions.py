@@ -64,9 +64,9 @@ class ContributionInputs:
 
     They stay a caller's argument rather than something this module loads,
     deliberately: the seam batch-loads them ONCE per account SET
-    (``_inputs._assemble_inputs`` -- one investment-params query, one deductions
-    query, one raise-aware gross fetch), and loading them per account here would
-    reinstate the N+1 that assembly exists to avoid.
+    (``_inputs._contribution_inputs_for_accounts`` -- one investment-params
+    query, one deductions query, one raise-aware gross fetch), and loading them
+    per account here would reinstate the N+1 that loader exists to avoid.
 
     Attributes:
         investment_params: The account's

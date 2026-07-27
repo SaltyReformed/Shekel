@@ -560,18 +560,28 @@ class TestConsumerIntegration:
             # Savings consumer: after the Level-1 balance-seam reroute the
             # savings package no longer loads the gross itself -- each
             # investment tile delegates its projection to the ``balance_at``
-            # seam, which assembles the engine gross in ``_assemble_inputs``
-            # (loaded ONLY when the set has an investment account, the seam's
-            # investment-only scoping).  So the savings consumer's gross now
-            # routes seam -> income_service; lock it at the seam's assembly
-            # point.  A real INVESTMENT account must be in the set or the seam
-            # skips the gross fetch by design (and returns ZERO).
+            # seam, which loads the engine gross in
+            # ``_contribution_inputs_for_account`` (fetched ONLY when the account has
+            # investment params, the seam's investment-only scoping).  So the
+            # savings consumer's gross now routes seam -> income_service; lock
+            # it at the seam's own loading point.  A real INVESTMENT account is
+            # required or the seam skips the gross fetch by design (returning
+            # ZERO), which is asserted below as the scoping control.
             inv = make_investment_account(
                 seed_user, db.session, seed_periods_today[0],
                 Decimal("10000.00"),
             )
-            seam_inputs = balance_at._assemble_inputs([inv], bctx)
+            seam_inputs = balance_at._contribution_inputs_for_account(inv)
             assert seam_inputs.salary_gross_biweekly == canonical
+
+            # The scoping control: a non-investment account in the same user's
+            # set gets NO gross, so the assertion above is pinning the
+            # investment-only fetch rather than a value every account carries.
+            checking_inputs = balance_at._contribution_inputs_for_account(
+                seed_user["account"],
+            )
+            assert checking_inputs.salary_gross_biweekly == Decimal("0")
+            assert checking_inputs.investment_params is None
 
             # Investment consumer: Commit 17 introduced a thin
             # ``_salary_gross_biweekly`` wrapper around

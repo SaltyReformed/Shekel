@@ -420,10 +420,10 @@ def build_account_balance_map(
         inputs: This account's
             :class:`~app.services.balance_at._asset_contributions.ContributionInputs`
             -- its investment params, its deductions and the engine
-            gross-biweekly, sliced out of the seam's batch bundle by
-            :mod:`app.services.balance_at._inputs`.  Its ``absent()``
-            constructor is the explicit token for an account that cannot have a
-            contribution feed.
+            gross-biweekly, loaded by
+            :func:`app.services.balance_at._inputs._contribution_inputs_for_accounts`.
+            Its ``absent()`` constructor is the explicit token for an account
+            that cannot have a contribution feed.
 
     Returns:
         OrderedDict mapping period_id to Decimal balance, or None if the

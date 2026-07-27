@@ -1,7 +1,8 @@
 """Balance-at-T seam -- shared input assembly and the fail-loud scenario guard.
 
-The seam's private foundation: the batch-loaded per-account projection inputs
-every view assembles from (:class:`_AssembledInputs` / :func:`_assemble_inputs`),
+The seam's private foundation: the batch-loaded per-account modelled-contribution
+feed
+(:func:`_contribution_inputs_for_accounts` / :func:`_contribution_inputs_for_account`),
 the ONE per-kind dispatch site (:func:`_account_balance_map`), and the
 :func:`_require_scenario` guard every public entry (bar the liability view --
 see :mod:`._liability`) runs first.
@@ -9,27 +10,56 @@ see :mod:`._liability`) runs first.
 Kept in one submodule so the view modules (:mod:`._kind_correct`,
 :mod:`._cash_flow`, :mod:`._grid`, :mod:`._liability`) depend only on these
 primitives and never on each other's internals.  The package's SOLID dependency
-direction is ``<view module> -> _inputs``.  ``_inputs`` in turn depends only on
+direction is ``<view module> -> _inputs``.  ``_inputs`` in turn depends on two
+groups and nothing else: the outer LOADERS it issues its queries through
+(:mod:`app.services.projection_inputs`, :mod:`app.services.income_service`), and
 the leaf PRODUCERS its dispatch fans out to -- the engine cluster
 (:mod:`app.services.balance_at._kernel`) and the loan producer
 (:func:`._positions.positions_period_map`, the one per-kind branch that lives in
-the seam because it reads ``positions`` above the kernel).  Neither producer
+the seam because it reads ``positions`` above the kernel) -- plus the one
+PREDICATE its gate asks, :func:`._resolution.configured_loan`, which produces no
+balance and is named apart from the producers for that reason.  None of those
 imports ``_inputs`` back (``_positions`` takes its no-baseline guard straight
 from :mod:`app.services.balance_at._context`, the C3b3 cycle break), so the
 direction stays acyclic.
+
+**There is ONE bundle here and it carries ONE concern** (plan step X-g3b-0).
+This module used to assemble an ``_AssembledInputs`` of FOUR fields -- the three
+that ARE a
+:class:`~app.services.balance_at._asset_contributions.ContributionInputs`, plus a
+``debt_schedules`` map -- and every caller then SLICED the three it wanted back
+out of it.  Two defects rode on that shape, and both are gone with it:
+
+* **The fourth field's VALUE was never read.**  Its only use in the app was the
+  membership test ``account.id in inputs.debt_schedules``, so a map of fully
+  resolved amortizations was built on every seam read to answer one boolean --
+  and :func:`._positions.positions_period_map`, the consumer that test gated,
+  re-derived the identical resolution itself.
+* **That boolean was the seam's SECOND spelling of one predicate**, where
+  :func:`._kind_correct.balance_at` wrote the rule out longhand and
+  :func:`._liability.liability_owed_at_dates` decomposed it into two guard
+  clauses.  The docstring on the scalar RECORDED the equivalence
+  ("``resolved_loan(...) is None`` iff ``generate_debt_schedules`` would skip
+  it") rather than collapsing it, and nothing enforced it.  All three now ask
+  :func:`._resolution.configured_loan`, which is the one place the rule is
+  stated.
+
+So a caller that wants a contribution feed asks for a contribution feed, and the
+loan gate asks one named predicate.  Nothing assembles a bundle to slice.
+
+The feed's readers are the three :mod:`._kind_correct` entries listed on
+:func:`_contribution_inputs_for_accounts`, and only those: :mod:`._cash_flow`
+answers a pure transaction running balance and models nothing, and
+:func:`._grid.grid_balance_view` still passes
+:meth:`ContributionInputs.absent` -- deleting that gate is plan step X-g3b's
+cutover, not this module's business.
 """
 
 from collections import OrderedDict
-from dataclasses import dataclass
 from decimal import Decimal
 
 from app.models.account import Account
-from app.models.investment_params import InvestmentParams
 from app.services import income_service
-from app.services.account_projection import (
-    AccountProjectionKind,
-    classify_account,
-)
 from app.services.projection_inputs import (
     load_active_deductions_for_accounts,
     load_investment_params_for_accounts,
@@ -39,108 +69,67 @@ from ._asset_contributions import ContributionInputs
 from ._context import BalanceContext, require_scenario
 from . import _kernel
 from ._positions import positions_period_map
+from ._resolution import configured_loan
 
 ZERO = Decimal("0")
 
 
-@dataclass(frozen=True)
-class _AssembledInputs:
-    """The batch-loaded per-account projection inputs for a set of accounts.
+def _contribution_inputs_for_accounts(
+    accounts: list[Account],
+) -> dict[int, ContributionInputs]:
+    """Batch-load each account's modelled-contribution feed ONCE.
 
-    Bundles the four shared-loader outputs that
-    :func:`app.services.balance_at._kernel.build_account_balance_map`
-    dispatches on -- the amortization schedules, the investment-params map,
-    the per-account deductions, and the engine gross-biweekly -- so the
-    single-account (:func:`~app.services.balance_at.balance_map`) and batch
-    (:func:`~app.services.balance_at.build_maps`) entry points assemble them
-    through ONE helper (:func:`_assemble_inputs`) and dispatch through ONE
-    helper (:func:`_account_balance_map`).  Mirrors the year-end package's
-    ``_ProjectionInputs`` and the savings package's ``_AccountParams``; kept
-    seam-local (not shared with either consumer) so each surface still owns its
-    own assembly contract.
+    The single loading point shared by the single-account entry
+    (:func:`_contribution_inputs_for_account`, called by
+    :func:`~app.services.balance_at.balance_map`,
+    :func:`~app.services.balance_at._kind_correct._modelled_scalar` and
+    :func:`~app.services.balance_at.investment_growth_since_anchor`) and the
+    batch one (:func:`~app.services.balance_at.build_maps`), so single- and
+    batch-loading run identical logic and preserve the N+1 avoidance: one
+    investment-params query, one deductions query, and one raise-aware gross
+    fetch for the whole set.
 
-    Attributes:
-        debt_schedules: account_id ->
-            :class:`~app.services.balance_at._kernel.DebtSchedule` for the
-            amortizing-loan subset (its schedule plus the resolver's current
-            balance).  Non-loan accounts are absent.
-        investment_params_map: account_id ->
-            :class:`~app.models.investment_params.InvestmentParams` for the
-            accounts the canonical classifier marks INVESTMENT.  A
-            params-less investment, and every non-investment account, is
-            absent (callers use ``dict.get``).
-        deductions_by_account: account_id -> list of active paycheck
-            deductions, loaded ONLY for accounts in
-            ``investment_params_map`` (see :func:`_assemble_inputs`).
-        salary_gross_biweekly: The raise-aware engine gross per pay period
-            (the employer-match cap basis), shared by every investment in
-            the set.
-    """
+    The three loaders are the shared building blocks the savings cockpit's
+    ``_load_account_params`` and the year-end summary already use -- this seam
+    reuses them rather than writing new inline param queries.
 
-    debt_schedules: dict[int, _kernel.DebtSchedule]
-    investment_params_map: dict[int, InvestmentParams]
-    deductions_by_account: dict[int, list]
-    salary_gross_biweekly: Decimal
-
-
-def _assemble_inputs(
-    accounts: list[Account], ctx: BalanceContext,
-) -> _AssembledInputs:
-    """Batch-load the per-account projection inputs ONCE for *accounts*.
-
-    The single assembly point shared by
-    :func:`~app.services.balance_at.balance_map` (called with a one-element
-    list) and :func:`~app.services.balance_at.build_maps` (called with the whole
-    set), so single- and batch-assembly run identical loader logic and preserve
-    the N+1 avoidance: one
-    :func:`~app.services.balance_at._kernel.generate_debt_schedules` over the
-    amortizing-loan subset, one investment-params query, one deductions query,
-    and one raise-aware gross fetch for the whole set.
-
-    The four loaders are the shared building blocks the savings cockpit's
-    ``_load_account_params`` and the year-end summary already use -- this
-    seam reuses them rather than writing new inline param queries.
-
-    Assembling per call is what keeps single-account and batch reads from
-    drifting -- but it used to mean N seam calls in one request did N LOAN
-    RESOLUTIONS.  The context now owns the resolutions, so re-assembling is
-    cheap: the second and later assemblies in a pass re-slice the same memoized
-    :class:`~app.services.balance_at._resolution.ResolvedLoan` instead of replaying the
-    amortization.  Statelessness is preserved; only the waste is gone.
+    **It takes no** :class:`~app.services.balance_at.BalanceContext`, and the
+    honest version of why is narrower than "the concern does not need one":
+    none of the three loads it issues READS one today.  That is not the same as
+    the feed being context-free, and the difference is a cost this step does not
+    pay.  :func:`~app.services.income_service.get_current_gross_biweekly` takes
+    both ``scenario_id`` and ``as_of`` keywords; passing neither is what makes
+    the gross resolve against that helper's implicit ``date.today()`` and the
+    user's active profile across all scenarios, rather than against the read
+    pass's pinned ``ctx.as_of`` and ``ctx.scenario`` -- the unnamed-clock shape
+    :func:`._kind_correct.balance_at` describes in its own "two dates,
+    deliberately distinct" note.  The retired bundle took a context and did not
+    thread it either, so nothing regressed here; but the parameter is not
+    reinstated on the strength of a defect it would not fix, because an argument
+    nothing reads is one a caller can get wrong (plan Section 8).
 
     Args:
-        accounts: The accounts to assemble inputs for, each with its
-            ``account_type`` relationship available for the classifier.  An
-            empty list returns an empty bundle without issuing any query.
-        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
-            (it scopes the loan resolver's payment history and memoizes each
-            loan's resolution for the pass).
+        accounts: The accounts to load feeds for, each with its
+            ``account_type`` relationship available for the classifier.  They
+            belong to ONE user (the caller's).  An empty list returns an empty
+            map without issuing any query.
 
     Returns:
-        The :class:`_AssembledInputs` bundle.
+        ``{account_id: ContributionInputs}``, TOTAL over *accounts* -- an
+        account with no feed maps to
+        :meth:`~app.services.balance_at._asset_contributions.ContributionInputs.absent`'s
+        value rather than being absent, so a caller indexes rather than
+        defaulting and a missing key is a defect instead of a silently unfunded
+        account.  One account's feed is the same whoever it is loaded beside
+        (see the gross's per-account arm below), so batching is an optimisation
+        and never a difference in the answer.
     """
     if not accounts:
-        return _AssembledInputs(
-            debt_schedules={},
-            investment_params_map={},
-            deductions_by_account={},
-            salary_gross_biweekly=ZERO,
-        )
+        return {}
 
     # Every account in the set is owned by one user (the caller's), so the
     # user id for the deductions / gross loaders comes off any of them.
     user_id = accounts[0].user_id
-
-    # Amortizing loans drive the schedule path; resolve their schedules
-    # once.  ``generate_debt_schedules`` returns an empty map for an empty
-    # subset, so a no-loan set issues no resolver work.
-    loan_accounts = [
-        account for account in accounts
-        if classify_account(account) is AccountProjectionKind.AMORTIZING
-    ]
-    debt_schedules = _kernel.generate_debt_schedules(
-        loan_accounts, ctx,
-    )
 
     # The shared loader owns the canonical-classifier filter, so a
     # parameterised physical asset (Property -> APPRECIATING) is correctly
@@ -149,12 +138,12 @@ def _assemble_inputs(
 
     # Deduction-scoping rule (mirrors savings ``_load_account_params``):
     # load deductions ONLY for the investment accounts that HAVE an
-    # InvestmentParams row.  ``build_account_balance_map`` feeds deductions
-    # to the growth engine ONLY for an INVESTMENT account whose
-    # ``investment_params`` is not None, so deductions for a params-less
-    # account are never consumed -- scoping to the params map's keys is the
-    # canonical rule that keeps this seam, savings, and year-end in
-    # agreement on which accounts get a deduction feed.
+    # InvestmentParams row.  ``_asset_contributions.contribution_events`` models
+    # a feed ONLY for an INVESTMENT account whose ``investment_params`` is not
+    # None, so deductions for a params-less account are never consumed --
+    # scoping to the params map's keys is the canonical rule that keeps this
+    # seam, savings, and year-end in agreement on which accounts get a
+    # deduction feed.
     deductions_by_account = (
         load_active_deductions_for_accounts(
             user_id, list(investment_params_map.keys()),
@@ -162,31 +151,72 @@ def _assemble_inputs(
     )
 
     # Same investment-only scoping as the deductions above: the gross is the
-    # employer-match cap basis the growth engine consumes ONLY on the
-    # investment branch of ``build_account_balance_map``, so a set with no
-    # investment account never reads it.  Skipping the paycheck-engine fetch
-    # there keeps a single-account ``balance_map`` for a cash / interest / loan
-    # account free of the engine run (the value would be unused), so routing
-    # those reads through the seam stays as cheap as the prior direct producer
-    # call -- no O(N) paycheck regression in the year-end savings-progress loop.
+    # employer-match cap basis the contribution tier consumes ONLY for an
+    # account with investment params, so a set with no investment account never
+    # reads it.  Skipping the paycheck-engine fetch there keeps a single-account
+    # read for a cash / interest / loan account free of the engine run (the
+    # value would be unused), so routing those reads through the seam stays as
+    # cheap as a direct producer call -- no O(N) paycheck regression in the
+    # year-end savings-progress loop.
     salary_gross_biweekly = (
         income_service.get_current_gross_biweekly(user_id)
         if investment_params_map else ZERO
     )
 
-    return _AssembledInputs(
-        debt_schedules=debt_schedules,
-        investment_params_map=investment_params_map,
-        deductions_by_account=deductions_by_account,
-        salary_gross_biweekly=salary_gross_biweekly,
-    )
+    # The gross reaches only the accounts that can CONSUME one, and that arm is
+    # what makes the Returns contract above true by construction rather than by
+    # a downstream gate.  The fetch is scoped to the SET (it is skipped entirely
+    # when no account has params), so handing the set's gross to every member
+    # would make a non-investment's feed depend on which OTHER accounts shared
+    # its read: ``_contribution_inputs_for_account(checking)`` would carry
+    # ``0`` while ``_contribution_inputs_for_accounts([checking, roth])`` gave
+    # the same account the user's real gross.  Nothing reads it there -- the
+    # contribution tier short-circuits on kind and params first
+    # (``_asset_contributions.contribution_events``) -- so today the difference
+    # is invisible, which is exactly why it must not be left to a docstring:
+    # the caller-dependent input is the shape this loader exists to rule out.
+    return {
+        account.id: ContributionInputs(
+            investment_params=investment_params_map.get(account.id),
+            deductions=deductions_by_account.get(account.id, []),
+            salary_gross_biweekly=(
+                salary_gross_biweekly
+                if account.id in investment_params_map else ZERO
+            ),
+        )
+        for account in accounts
+    }
+
+
+def _contribution_inputs_for_account(account: Account) -> ContributionInputs:
+    """Return ONE account's modelled-contribution feed.
+
+    The single-account entry, expressed as the batch loader over a one-element
+    set rather than as its own query pair -- which is what keeps a scalar read,
+    a period map and the grid's column set from being given different feeds for
+    one account.  The shape plan Section 8 rules a defect is the alternative: a
+    second loader that answers the same question a second way, agreeing only
+    while nobody edits one of them.
+
+    Args:
+        account: The account to load the feed for.  Its ``account_type`` drives
+            the classifier and its ``user_id`` scopes the deduction / gross
+            loaders.
+
+    Returns:
+        The account's
+        :class:`~app.services.balance_at._asset_contributions.ContributionInputs`
+        -- the empty bundle (:meth:`ContributionInputs.absent`'s value) for an
+        account with no feed, which is a real answer and not a missing one.
+    """
+    return _contribution_inputs_for_accounts([account])[account.id]
 
 
 def _account_balance_map(
     account: Account,
     ctx: BalanceContext,
     periods: list,
-    inputs: _AssembledInputs,
+    inputs: ContributionInputs,
 ) -> OrderedDict[int, Decimal] | None:
     """Dispatch ONE account's per-period balance map.
 
@@ -194,31 +224,34 @@ def _account_balance_map(
     :func:`~app.services.balance_at.balance_map` and
     :func:`~app.services.balance_at.build_maps`.  It has exactly two arms:
 
-    * **AMORTIZING loans** read the seam's own :func:`positions_period_map`
+    * **CONFIGURED LOANS** read the seam's own :func:`positions_period_map`
       (plan step C3b3): the fold for begun periods, the projection for the
       future, from the ONE total loan producer
       (:func:`app.services.balance_at.positions`) -- so the scalar, the map, and
       the liability band all answer a loan from ``positions`` and cannot
       disagree.  This one per-kind branch lives HERE in the seam, not in the
       kernel's dispatcher, because ``positions`` sits ABOVE
-      :mod:`app.services.balance_at._kernel` (at its module-size cap, and it cannot
-      import the seam back).
-    * **Every other kind** slices this account's
+      :mod:`app.services.balance_at._kernel` (at its module-size cap, and it
+      cannot import the seam back).
+    * **Every other kind** hands its
       :class:`~app.services.balance_at._asset_contributions.ContributionInputs`
-      out of the batch bundle and hands it to
-      :func:`app.services.balance_at._kernel.build_account_balance_map`, which
-      since plan step X-g2b dispatches on nothing at all -- every non-loan kind
-      is ONE event replay (ruling R-AD).
+      to :func:`app.services.balance_at._kernel.build_account_balance_map`,
+      which since plan step X-g2b dispatches on nothing at all -- every non-loan
+      kind is ONE event replay (ruling R-AD).
 
-    **The slice lives HERE, beside the bundle it slices** (plan step X-g2b).
-    It used to live in the kernel as ``account_balance_map_from_inputs``, which
-    had to DUCK-TYPE its parameter -- "any bundle exposing
-    ``investment_params_map``, ``deductions_by_account`` and
-    ``salary_gross_biweekly`` qualifies" -- precisely because
-    :class:`_AssembledInputs` lives in this consumer module and the engine below
-    must not import it.  Moving the slice to the bundle's own home replaces a
-    structural contract stated in prose with an ordinary typed one, and the
-    kernel now takes the narrow named bundle instead of three loose parameters.
+    **The loan gate is the seam's ONE predicate** (plan step X-g3b-0),
+    :func:`._resolution.configured_loan`.  It used to be ``account.id in
+    inputs.debt_schedules`` -- membership in a map of resolved amortizations
+    this module assembled and then discarded the values of -- which was a second
+    spelling of what the scalar wrote out longhand and a third of what the
+    liability band decomposed into two guard clauses.  The three were equivalent
+    by an argument recorded in a docstring rather than by construction: the
+    schedule map is built from the AMORTIZING subset alone, so membership in it
+    IS ``AMORTIZING and resolved_loan(...) is not None``.  Asking one named
+    predicate costs nothing -- the resolution is memoized on the pass either
+    way, and ``positions_period_map`` re-derives it regardless -- and it is the
+    difference between an equivalence a reader must re-derive and one the code
+    cannot lose.
 
     It takes no live override map (ruling R-Q, plan step X-c2b2): the cash fold
     builds its own over its own plan, so there is no basis left for a caller to
@@ -230,22 +263,22 @@ def _account_balance_map(
         account: The account to project.
         ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
         periods: The pay periods to project over (the output domain).
-        inputs: The :class:`_AssembledInputs` bundle for the account's set.  Its
-            ``debt_schedules`` membership gates the loan arm; the other three
-            fields are sliced per account for the replay.
+        inputs: The account's
+            :class:`~app.services.balance_at._asset_contributions.ContributionInputs`
+            (:func:`_contribution_inputs_for_account` for a single read, or the batch
+            map's entry).  Consumed by the replay arm only -- a configured loan
+            models no contribution.
 
     Returns:
         The OrderedDict period_id -> Decimal balance, or ``None`` when the
         account has no anchor period (the kernel's own no-anchor contract, which
         the loan arm reproduces).
     """
-    # AMORTIZING loans read the seam's positions()-based per-period map.  The gate
-    # is the same debt-schedule membership the retired kernel AMORTIZING branch
-    # used: a Mortgage-typed account with no LoanParams is absent from
-    # ``debt_schedules``, so it falls through to the kernel's cash producer here
-    # rather than reaching positions()'s fail-loud for an unconfigured loan.
-    if (classify_account(account) is AccountProjectionKind.AMORTIZING
-            and account.id in inputs.debt_schedules):
+    # A Mortgage-typed account with no LoanParams is NOT a configured loan, so
+    # it falls through to the replay here rather than reaching positions()'s
+    # fail-loud for an unconfigured loan.  Both halves of that rule live in the
+    # predicate; see its docstring for why neither implies the other.
+    if configured_loan(account, ctx) is not None:
         # The no-anchor-period contract build_account_balance_map enforced
         # upstream of its (now-retired) AMORTIZING branch; positions_period_map
         # does not replicate it.  Unreachable today (the column is NOT NULL) but
@@ -253,44 +286,7 @@ def _account_balance_map(
         if account.current_anchor_period_id is None:
             return None
         return positions_period_map(account, ctx, periods)
-    return _kernel.build_account_balance_map(
-        account, ctx, periods, _contribution_inputs(account, inputs),
-    )
-
-
-def _contribution_inputs(
-    account: Account, inputs: _AssembledInputs,
-) -> ContributionInputs:
-    """Slice one account's modelled-contribution feed out of the batch bundle.
-
-    The bundle-field-to-bundle-field slice, kept beside
-    :class:`_AssembledInputs` rather than in the engine that consumes it (plan
-    step X-g2b): the batch is loaded ONCE per account set and this reads one
-    account's share of it, so the replay never re-queries what assembly already
-    fetched.
-
-    A non-investment account is absent from every one of the three maps, so it
-    slices to the empty bundle -- which is the same value
-    :meth:`~app.services.balance_at._asset_contributions.ContributionInputs.absent`
-    names for the readers that construct it directly.  It is built by slicing
-    rather than by branching on the kind, because "does this account have a
-    contribution feed?" is already answered by whether the loaders returned
-    anything for it (:func:`_assemble_inputs` scopes the deduction and gross
-    loads to the investment-params keys), and asking a second time in a second
-    place is how two answers to one question start.
-
-    Args:
-        account: The account to slice for.
-        inputs: The :class:`_AssembledInputs` bundle for its set.
-
-    Returns:
-        The account's :class:`ContributionInputs`.
-    """
-    return ContributionInputs(
-        investment_params=inputs.investment_params_map.get(account.id),
-        deductions=inputs.deductions_by_account.get(account.id, []),
-        salary_gross_biweekly=inputs.salary_gross_biweekly,
-    )
+    return _kernel.build_account_balance_map(account, ctx, periods, inputs)
 
 
 # The seam's fail-loud no-baseline guard.  It lives on the context (the object

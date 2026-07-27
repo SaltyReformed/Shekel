@@ -50,6 +50,10 @@ from decimal import Decimal
 from app.models.account import Account
 from app.models.loan_params import LoanParams
 from app.services import loan_resolver
+from app.services.account_projection import (
+    AccountProjectionKind,
+    classify_account,
+)
 from app.services.amortization_engine import AmortizationRow, RateChangeRecord
 from app.services.loan_loaders import (
     load_loan_anchor_facts,
@@ -166,6 +170,58 @@ def resolved_loan(
     return _memoize_once(
         ctx.loans, account.id, lambda: resolve_loan_bundle(account, ctx),
     )
+
+
+def configured_loan(
+    account: Account, ctx: BalanceContext,
+) -> "ResolvedLoan | None":
+    """Return *account*'s resolution iff it is a CONFIGURED LOAN, else ``None``.
+
+    The seam's ONE spelling of "does this account's balance come from an
+    amortization schedule?", and the gate every balance surface splits on: the
+    scalar (:func:`._kind_correct.balance_at`), the per-period map
+    (:func:`._inputs._account_balance_map`) and the forward liability band
+    (:func:`._liability.liability_owed_at_dates`) all ask it here.
+
+    **It is one function because it was three spellings** (plan step X-g3b-0).
+    The scalar wrote ``classify_account(...) is AMORTIZING and
+    resolved_loan(account, ctx) is not None``, the map tested MEMBERSHIP in a
+    ``debt_schedules`` bundle it built and then discarded the values of, and the
+    band decomposed the same rule into two separate guard clauses.  The three
+    were equivalent by an argument recorded in a docstring rather than by
+    construction -- and plan Section 8's own lesson is that a DRY refactor of a
+    PREDICATE can move money, which cuts both ways: a predicate stated three
+    times can move money when one statement is edited and the others are not.
+    Nothing enforced the agreement, so nothing would have caught the drift.
+
+    **BOTH halves are load-bearing and neither implies the other.**
+    :func:`resolve_loan_bundle` tests for a
+    :class:`~app.models.loan_params.LoanParams` row and never consults the
+    account's KIND, so a params row on a non-amortizing account would resolve
+    here; the classifier test is what keeps such a data defect off the
+    amortization path instead of silently amortizing a savings account.  The
+    resolver test is what degrades a Mortgage-typed account whose terms were
+    never entered -- two clicks in the UI produce one -- to the cash producer
+    rather than letting it reach :func:`._positions.positions`' fail-loud.
+
+    It returns the RESOLUTION rather than a bool because that is what
+    :func:`resolved_loan` already hands back; narrowing it to a bool would throw
+    information away for nothing.  All three call sites discard it today and
+    test it against ``None``.
+
+    Args:
+        account: The account to test.  Must belong to ``ctx.user_id`` (the
+            caller owns the ownership check -- the loaders trust it).
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`,
+            whose ``as_of`` is the date the loan is RESOLVED at.
+
+    Returns:
+        The pass's memoized :class:`ResolvedLoan`, or ``None`` when *account* is
+        not an amortizing account with loan terms.
+    """
+    if classify_account(account) is not AccountProjectionKind.AMORTIZING:
+        return None
+    return resolved_loan(account, ctx)
 
 
 def resolve_loan_bundle(

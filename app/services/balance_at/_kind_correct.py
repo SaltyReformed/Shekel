@@ -28,22 +28,17 @@ from datetime import date
 from decimal import Decimal
 
 from app.models.account import Account
-from app.services.account_projection import (
-    AccountProjectionKind,
-    classify_account,
-)
-
 from ._context import BalanceContext
 
 from . import _asset_fold
 from ._inputs import (
     _account_balance_map,
-    _assemble_inputs,
-    _contribution_inputs,
+    _contribution_inputs_for_account,
+    _contribution_inputs_for_accounts,
     _require_scenario,
 )
 from ._positions import positions
-from ._resolution import resolved_loan
+from ._resolution import configured_loan
 
 
 def balance_map(
@@ -51,11 +46,11 @@ def balance_map(
 ) -> "OrderedDict[int, Decimal] | None":
     """Return one account's period_id -> balance map across *periods*.
 
-    The single-account per-period producer.  Assembles THIS account's
-    inputs via the shared :func:`._inputs._assemble_inputs` (its debt schedule
-    when it is an amortizing loan, its investment params, its deductions when it
-    has params, and the engine gross-biweekly) and delegates the per-kind
-    dispatch to the kernel via :func:`._inputs._account_balance_map` -- the same
+    The single-account per-period producer.  Loads THIS account's
+    modelled-contribution feed via the shared
+    :func:`._inputs._contribution_inputs_for_account` (its investment params, its
+    deductions when it has params, and the engine gross-biweekly) and delegates
+    the per-kind dispatch to :func:`._inputs._account_balance_map` -- the same
     code path :func:`build_maps` runs per account, so single- and batch-assembly
     cannot drift.
 
@@ -90,8 +85,9 @@ def balance_map(
     # is preserved; the seam raising here is the defensive contract that turns
     # a deep AttributeError (or a silent $0 net worth) into a clear failure.
     _require_scenario(ctx)
-    inputs = _assemble_inputs([account], ctx)
-    return _account_balance_map(account, ctx, periods, inputs)
+    return _account_balance_map(
+        account, ctx, periods, _contribution_inputs_for_account(account),
+    )
 
 
 def build_maps(
@@ -101,14 +97,19 @@ def build_maps(
 ) -> "dict[int, OrderedDict[int, Decimal]]":
     """Return account_id -> period balance map for many accounts (batch).
 
-    The batch producer that preserves the existing N+1 avoidance: it
-    assembles ALL inputs ONCE via :func:`._inputs._assemble_inputs` (one
-    debt-schedule generation over the loan subset, one investment-params query,
-    one deductions query, one gross fetch for the whole set), then loops the
-    shared :func:`._inputs._account_balance_map` per account.  This is the
+    The batch producer that preserves the existing N+1 avoidance: it loads ALL
+    the contribution feeds ONCE via
+    :func:`._inputs._contribution_inputs_for_accounts` (one investment-params
+    query, one deductions query, one gross fetch for the whole set), then loops
+    the shared :func:`._inputs._account_balance_map` per account.  This is the
     per-account dense-map build the savings cockpit's
     ``build_account_net_worth_maps`` performs today, internalised behind the
     seam so the assembly lives in one place.
+
+    The feed map is TOTAL over *accounts*, so it is INDEXED per account rather
+    than defaulted: an account missing from it would be a defect in the loader,
+    and ``.get(..., absent())`` would render it as an account whose payroll
+    funds nothing -- a wrong figure wearing a plausible shape.
 
     Accounts whose map is ``None`` (no anchor period) are omitted from the
     result, matching the net-worth section's ``balances is None`` skip.
@@ -129,10 +130,12 @@ def build_maps(
             nullable baseline must guard first.
     """
     _require_scenario(ctx)
-    inputs = _assemble_inputs(accounts, ctx)
+    feeds = _contribution_inputs_for_accounts(accounts)
     result: "dict[int, OrderedDict[int, Decimal]]" = {}
     for account in accounts:
-        balances = _account_balance_map(account, ctx, periods, inputs)
+        balances = _account_balance_map(
+            account, ctx, periods, feeds[account.id],
+        )
         if balances is None:
             continue
         result[account.id] = balances
@@ -149,11 +152,10 @@ def _modelled_scalar(
     replay, which is the cash fold plus whatever modelled tiers the account's
     own parameters put on it.
 
-    **It reaches the replay through the SAME assembly the map does**
-    (:func:`._inputs._assemble_inputs` sliced by
-    :func:`._inputs._contribution_inputs`), so the scalar and the period map
-    cannot be given different contribution feeds for one account -- the shape
-    plan Section 8 rules a defect rather than a contract.  The assembly costs
+    **It reaches the replay through the SAME loader the map does**
+    (:func:`._inputs._contribution_inputs_for_account`), so the scalar and the period
+    map cannot be given different contribution feeds for one account -- the
+    shape plan Section 8 rules a defect rather than a contract.  The load costs
     one indexed investment-params lookup for an account that has none, and its
     deduction and gross loads are already scoped to the accounts that do.
 
@@ -172,8 +174,7 @@ def _modelled_scalar(
         The cent-quantized ``Decimal`` balance at *as_of*.
     """
     return _asset_fold.fold_asset_balances(
-        account, ctx, [as_of],
-        _contribution_inputs(account, _assemble_inputs([account], ctx)),
+        account, ctx, [as_of], _contribution_inputs_for_account(account),
     )[as_of]
 
 
@@ -196,10 +197,14 @@ def balance_at(
     * **Everything else** -> the event REPLAY
       (:func:`_modelled_scalar`).  That includes an AMORTIZING account with no
       ``LoanParams`` -- a Mortgage typed but never filled in, which has no
-      schedule to fold and whose balance is its transaction rows.  The degrade
-      is decided on the resolver's own fact (``resolved_loan(...) is None`` iff
-      ``generate_debt_schedules`` would skip it), never on a kind test that
-      could disagree with it.
+      schedule to fold and whose balance is its transaction rows.
+
+    The branch is :func:`._resolution.configured_loan`, the seam's ONE spelling
+    of that question (plan step X-g3b-0): this scalar, the per-period map and
+    the forward liability band each used to write it out for themselves, so
+    "the three agree" was an argument rather than a property.  The degrade is
+    decided on the resolver's own fact, never on a kind test that could
+    disagree with it.
 
     **Every kind is DATE-precise now** (plan step X-g2b, finding N-71).  INTEREST,
     INVESTMENT and APPRECIATING used to resolve *as_of* to the pay period
@@ -247,8 +252,7 @@ def balance_at(
             nullable baseline must guard first.
     """
     _require_scenario(ctx)
-    if (classify_account(account) is AccountProjectionKind.AMORTIZING
-            and resolved_loan(account, ctx) is not None):
+    if configured_loan(account, ctx) is not None:
         return positions(account, ctx, [as_of])[as_of]
     return _modelled_scalar(account, ctx, as_of)
 
@@ -313,12 +317,14 @@ def investment_growth_since_anchor(
             nullable baseline must guard first.
     """
     _require_scenario(ctx)
-    inputs = _assemble_inputs([account], ctx)
-    if inputs.investment_params_map.get(account.id) is None:
+    inputs = _contribution_inputs_for_account(account)
+    # Read off the account's OWN feed, not out of a batch map keyed by id: the
+    # bundle handed to the producer below and the bundle this decision is made
+    # on are then the same object rather than two readings of one load.
+    if inputs.investment_params is None:
         return None
     if current_period is None:
         return None
     return _asset_fold.asset_growth_at(
-        account, ctx, current_period.end_date,
-        _contribution_inputs(account, inputs),
+        account, ctx, current_period.end_date, inputs,
     )

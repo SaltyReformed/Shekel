@@ -36,8 +36,8 @@ place, documented and tested together (the documented-once contract):
   historical basis to compound backward from, so pre-anchor periods
   flat-carry the anchor value.
 
-The seam does NOT reimplement any of that math.  It assembles each
-account's inputs (its debt schedule, investment params, deductions, and the
+The seam does NOT reimplement any of that math.  It loads each account's
+modelled-contribution feed (its investment params, its deductions and the
 engine gross-biweekly) from the shared loaders and DELEGATES the per-kind
 dispatch -- to
 :func:`app.services.balance_at._kernel.build_account_balance_map` for every
@@ -204,10 +204,7 @@ from ._grid import (
 )
 from ._inputs import (
     ZERO,
-    _account_balance_map,
-    _AssembledInputs,
-    _assemble_inputs,
-    _require_scenario,
+    _contribution_inputs_for_account,
 )
 from ._kernel import (
     debt_schedule_rows,
@@ -249,13 +246,32 @@ from ._secured_debt import (
 # The seam's public surface, re-exported so every consumer's existing
 # ``balance_at.<entry>`` attribute access keeps working unchanged after the
 # module -> package split.  The underscore-prefixed names are
-# internal-but-tested (``tests/test_services/test_balance_at.py`` reaches
-# ``balance_at._assemble_inputs`` / ``._AssembledInputs`` /
-# ``._account_balance_map`` to pin the assembly contract directly); they are
-# listed here so the re-export is explicit rather than an unused import.
-# ``._accruing_balances`` was a fourth until plan step X-c2b2 deleted it: the
-# grid's Interest row IS the accrual map ``_interest`` returns, not the
-# difference of two independently-computed balance maps (finding N-52).
+# internal-but-tested: ``tests/test_services/test_income_service.py`` reaches
+# ``balance_at._contribution_inputs_for_account`` to pin the raise-aware gross at the
+# seam's own loading point.  It is the ONLY private name here with an outside
+# reader.
+# They are listed here so the re-export is explicit rather than an unused
+# import.
+#
+# **The list named the wrong test file and the wrong count** (plan step
+# X-g3b-0, which corrected it while deleting two of the three names).  It said
+# ``test_balance_at.py`` reached ``._assemble_inputs`` / ``._AssembledInputs`` /
+# ``._account_balance_map`` "to pin the assembly contract directly".  That file
+# reached NONE of them; the only reader of any was
+# ``test_income_service.py``, and only of ``._assemble_inputs``.  The first two
+# names were deleted with the bundle, and ``._account_balance_map`` went with
+# them rather than staying exported for a reader that does not exist -- it is
+# imported directly by the one module that dispatches through it.
+# ``._require_scenario`` was dropped in the same commit and for the same reason:
+# no reader outside this package ever reached it.  The seam modules that want it
+# import it directly -- four of them under this name from ``._inputs``, and
+# ``._plan`` / ``._positions`` as ``require_scenario`` from ``._context``, which
+# is the same guard under the name it is defined with.  (Its underlying ``require_scenario`` stays
+# public below -- that is the seam's documented read-pass handle, and a
+# different name with a real audience.)  ``._accruing_balances`` was a fourth until plan step
+# X-c2b2 deleted it: the grid's Interest row IS the accrual map ``_interest``
+# returns, not the difference of two independently-computed balance maps
+# (finding N-52).
 __all__ = [
     "ZERO",
     "BalanceContext",
@@ -268,10 +284,7 @@ __all__ = [
     "TIER_CONFIRMED",
     "TIER_ESTIMATED",
     "TIER_PROJECTED",
-    "_AssembledInputs",
-    "_account_balance_map",
-    "_assemble_inputs",
-    "_require_scenario",
+    "_contribution_inputs_for_account",
     "balance_at",
     "balance_map",
     "build_maps",
