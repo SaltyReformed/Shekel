@@ -852,11 +852,25 @@ preconditions cite entries in that file.
       hand-computed oracle, not a parallel run, and `test_cash_fold_parallel.py`'s subject (the
       three seam entries agreeing with the fold on every day) is a different question.
 
-  * [ ] **X-g4a** `test(balance): the drift oracle walks 52 periods of the fold` -- ruling R-AT's
-    shape, ADDITIVE. No production change, no deletion, the incumbent still alive and green beside
-    it, and the `verify_balance_baseline.py` harness byte-identical on both databases. It is the
-    C3b3 prove-the-successor-first precedent applied to COVERAGE: the deletion must not be the
-    commit that first discovers the port is wrong.
+  * [x] **X-g4a** `test(balance): the drift oracle walks 52 periods of the fold` -- **SHIPPED dev
+    2026-07-27 (`2ee817b4`)**, ruling R-AT's shape, ADDITIVE: `git diff app/` empty, so the harness
+    is byte-identical by construction and the incumbent stayed alive and green beside it. Full
+    suite 7666 (baseline 7664).
+
+    **What it took beyond the ruling, recorded because X-g4b leans on it.** Two independent
+    adversarial reviews found the first draft's controls were partly PROSE: one test was an
+    arithmetic tautology (`after != before + net` after asserting `after == before - 10156.34`),
+    a second was dominated by its neighbour's hand-written literal, the ruling R-B comment credited
+    discriminating power to a detail that carried none (the shape had no settle sharing an
+    assertion's civil day at all), and the claimed firing-control count was WRONG -- a false
+    statement about coverage, which this arc rates worse than the gap it describes. Both dead tests
+    were DELETED rather than reworded, and the shape gained what the reviews measured missing: the
+    R-B straddle, an ACTUAL-over-estimate settled row, `attribution_date`'s two clamp arms, and
+    period 16 holding the SETTLED and PLANNED tiers in ONE column -- the shape every user's current
+    period has, which the draft had nowhere (Section 7.4). **EIGHT one-line production mutations now
+    fail it**, listed in the class docstring with the THREE classes that do not and why, so the
+    boundary is stated rather than discovered. Ruling **R-I is NOT gradeable at this grain** (no
+    period end precedes the opening) and the docstring says so instead of claiming it.
 
   * [ ] **X-g4b** `refactor(balance): the modelled and cash producers delete` -- ruling R-AR's ONE
     deletion, carrying X-c2c4's whole content as well as this entry's. Production: `_investment.py`,
