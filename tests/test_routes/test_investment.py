@@ -21,6 +21,7 @@ from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.ref import AccountType, FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.services import account_service, investment_dashboard_service
+from app.services.investment_dashboard_service import _cards as investment_cards
 from tests._test_helpers import freeze_today, make_investment_account
 
 
@@ -279,7 +280,7 @@ class TestContributionLimitZeroCap:
         "no cap" and hide the card (return ``None``).
         """
         params = InvestmentParams(annual_contribution_limit=Decimal("0"))
-        result = investment_dashboard_service._compute_limit_info(
+        result = investment_cards._compute_limit_info(
             params, Decimal("100.00"),
         )
         # C1 (Loop B P1): the dict gained is_over / over_amount.  Zero cap +
@@ -302,7 +303,7 @@ class TestContributionLimitZeroCap:
         The card still renders (``limit`` is 0, not ``None``).
         """
         params = InvestmentParams(annual_contribution_limit=Decimal("0"))
-        result = investment_dashboard_service._compute_limit_info(
+        result = investment_cards._compute_limit_info(
             params, Decimal("0"),
         )
         # C1: zero cap + zero YTD is NOT over (0 > 0 is false), so over_amount
@@ -324,7 +325,7 @@ class TestContributionLimitZeroCap:
         ``is None`` fix.
         """
         params = InvestmentParams(annual_contribution_limit=None)
-        result = investment_dashboard_service._compute_limit_info(
+        result = investment_cards._compute_limit_info(
             params, Decimal("100.00"),
         )
         assert result is None
@@ -341,7 +342,7 @@ class TestContributionLimitZeroCap:
         old truncated ``99``.  Revert-proof: ``int(99.6) == 99`` fails this.
         """
         params = InvestmentParams(annual_contribution_limit=Decimal("5000"))
-        result = investment_dashboard_service._compute_limit_info(
+        result = investment_cards._compute_limit_info(
             params, Decimal("4980.00"),
         )
         # C1: $4,980 <= $5,000 cap, so is_over = (4980 > 5000) = False and
@@ -367,7 +368,7 @@ class TestContributionLimitZeroCap:
         params = InvestmentParams(
             annual_contribution_limit=Decimal("23500.00"),
         )
-        result = investment_dashboard_service._compute_limit_info(
+        result = investment_cards._compute_limit_info(
             params, Decimal("24100.00"),
         )
         assert result == {
@@ -387,7 +388,7 @@ class TestContributionLimitZeroCap:
         cap rather than the legacy $500 fallback truthiness once produced.
         """
         params = InvestmentParams(annual_contribution_limit=Decimal("0"))
-        result = investment_dashboard_service._compute_suggested_contribution(
+        result = investment_cards._compute_suggested_contribution(
             params, Decimal("0"), [], None,
         )
         assert result == Decimal("0.00")
@@ -401,7 +402,7 @@ class TestContributionLimitZeroCap:
         non-zero default for the no-cap case.
         """
         params = InvestmentParams(annual_contribution_limit=None)
-        result = investment_dashboard_service._compute_suggested_contribution(
+        result = investment_cards._compute_suggested_contribution(
             params, Decimal("0"), [], None,
         )
         assert result == Decimal("0")
@@ -427,7 +428,7 @@ class TestContributionLimitZeroCap:
         """
         freeze_today(
             monkeypatch, date(2026, 1, 15),
-            modules=("app.services.investment_dashboard_service",),
+            modules=("app.services.investment_dashboard_service._cards",),
         )
         periods = [
             SimpleNamespace(start_date=date(2026, 1, 1)),
@@ -437,7 +438,7 @@ class TestContributionLimitZeroCap:
         ]
         current_period = periods[1]
         params = InvestmentParams(annual_contribution_limit=Decimal("7000"))
-        result = investment_dashboard_service._compute_suggested_contribution(
+        result = investment_cards._compute_suggested_contribution(
             params, Decimal("3000"), periods, current_period,
         )
         # 7000 - 3000 = 4000; periods strictly after Jan 15 = {Jan 29,
@@ -460,7 +461,7 @@ class TestContributionLimitZeroCap:
         """
         freeze_today(
             monkeypatch, date(2026, 1, 22),
-            modules=("app.services.investment_dashboard_service",),
+            modules=("app.services.investment_dashboard_service._cards",),
         )
         periods = [
             SimpleNamespace(start_date=date(2026, 1, 1)),
@@ -470,7 +471,7 @@ class TestContributionLimitZeroCap:
         ]
         current_period = periods[1]
         params = InvestmentParams(annual_contribution_limit=Decimal("7000"))
-        result = investment_dashboard_service._compute_suggested_contribution(
+        result = investment_cards._compute_suggested_contribution(
             params, Decimal("3000"), periods, current_period,
         )
         # 4000 spread over {Jan 29, Feb 12} = 2 -> 2000.00 (same as old).
