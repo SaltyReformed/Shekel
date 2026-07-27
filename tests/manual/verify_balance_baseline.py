@@ -26,8 +26,12 @@ where two tests agreed over an account holding no rows.
   of the six dates are deliberately outside the seeded horizon, which is where
   a period-keyed producer and a total fold differ most;
 * for every non-loan account: the whole ``GridBalanceView`` -- balance, income,
-  expense, net, ruling R-K's reconciliation remainder, interest -- plus the
-  live override map the projection was computed with (ruling R-Q);
+  expense, net, ruling R-K's reconciliation remainder, and BOTH modelled tiers
+  (contribution and accrual, plan step X-g3a) -- plus the live override map the
+  projection was computed with (ruling R-Q).  The two tiers are captured at
+  X-g3a, which moves no figure, precisely so plan step X-g3b's cutover can be
+  DIFFED rather than argued: the instrument before the measurement, the
+  X-g2b-0 precedent;
 * the cash-flow scalar at today and at the same six fixed valuation dates, and the day-by-day series over the entire period horizon (the
   no-sampling requirement);
 * for the modelled kinds, ``investment_growth_since_anchor`` -- the seam entry
@@ -137,7 +141,8 @@ def _grid_columns(account, ctx, periods):
                 "expense": _money(col.expense),
                 "net": _money(col.net),
                 "reconciliation": _money(col.reconciliation),
-                "interest": _money(col.interest),
+                "contribution": _money(col.contribution),
+                "accrual": _money(col.accrual),
             }
             for period_id, col in view.columns.items()
         },

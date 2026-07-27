@@ -127,10 +127,24 @@ def compute_pulse_section(user_id: int) -> dict | None:
     # account), and this region is the spending-account runway -- so it reads
     # the pure transaction running balance, NOT the kind-correct
     # ``balance_map`` (which would accrue interest into an HYSA's chart,
-    # amortize a loan, or compound an investment, diverging from the grid
-    # that deliberately keeps the SAME account on the cash-flow view, and
-    # inflating the "lowest point ahead" so a real future dip below zero
-    # could be hidden).  The chart slices the current-period-forward
+    # amortize a loan, or compound an investment, and would inflate the
+    # "lowest point ahead" so a real future dip below zero could be hidden).
+    #
+    # **The RUNWAY argument above is the whole reason; the agreement argument
+    # this comment used to give beside it was FALSE and is deleted** (finding
+    # N-87, ruling R-AK).  It claimed the modelled map would diverge "from the
+    # grid that deliberately keeps the SAME account on the cash-flow view".
+    # The grid has layered an accrual for an INTEREST account since PR #47, so
+    # this region and the grid ALREADY disagree for that kind: measured at the
+    # last projected period on the prod-shape clone 2026-07-27, Fidelity
+    # Savings $5,363.56 here against the grid's $5,779.68 ($416.12) and the
+    # Money Market $16,644.27 against $17,348.99 ($704.72).  Plan step X-g3b
+    # extends the same gap to the INVESTMENT and APPRECIATING kinds.  The
+    # divergence is RECORDED, not fixed: whether ``/dashboard``'s runway
+    # question should read a modelled balance is its own ruling with its own
+    # measurement, and it is not made inside a render cutover.
+    #
+    # The chart slices the current-period-forward
     # tail to 13 points and the trough scans the whole forward tail.  The
     # trough horizon is the entire forward run -- the retired
     # negative-projection alert's full multi-year reach, but DELIBERATELY

@@ -1,7 +1,21 @@
 {% from "_money_macros.html" import money %}
-{# Grid row macros -- single source for matching-driven row rendering.
+{# Grid row macros -- the grid's shared display rules, stated once each.
 
-   Both macros consume `matched_by_row_period`, the precomputed
+   TWO groups, and they share only this file:
+
+     * the MATCHING-DRIVEN row renderers (`render_row_cells`,
+       `render_row_card`, `render_row_one_card`, `render_row_static`),
+       described below;
+     * the grid's shared CELL rules -- `mstart` (the month spine) and
+       `accrual_class` / `accrual_money` (the modelled-return row's sign
+       treatment, plan step X-g3a / finding N-88).  These take plain values,
+       consume no matching dict, and exist here rather than in
+       `_money_macros.html` because their rule is the GRID's: the accrual row
+       breaks on `> 0` where `/investment`'s chip breaks on `>= 0`, and merging
+       two predicates that answer slightly different questions is the move
+       Section 8 of the balance plan warns costs money.
+
+   The matching-driven macros consume `matched_by_row_period`, the precomputed
    dict that app/routes/grid.py::index will build in Commit 2 of
    the mobile-first v3 implementation; key shape is
    `(category_id, template_id, txn_name, period_id) ->
@@ -30,6 +44,67 @@
     continuous vertical line.
 -#}
 {%- if idx > 0 and periods[idx].start_date.month != periods[idx - 1].start_date.month %} mstart{% endif -%}
+{%- endmacro %}
+
+{% macro accrual_class(value) -%}
+{#- Sign treatment for the grid's modelled-return row, on all THREE surfaces
+    that render it (the desktop <tfoot>, the mobile This Period card and the
+    Plan recap) -- stated once here because ruling R-P is exactly that the form
+    factors must not disagree about one figure.
+
+    Rendered with a LEADING space so it appends to an existing class list, the
+    same convention ``mstart`` above uses and for the same reason: the caller
+    writes ``class="font-mono{{ accrual_class(v) }}"`` and gets no stray
+    separator when the figure is neither a gain nor a loss.
+
+    Finding N-88: the mobile card hard-coded ``text-success`` on this row, which
+    was safe only while INTEREST was the sole kind reaching it
+    (``interest_params`` bounds ``apy >= 0``).  The two kinds ruling R-W adds
+    are bounded only ``> -1`` -- ``asset_appreciation_params`` says so in its
+    own words, "A negative rate is permitted so a future depreciating asset
+    (e.g. Vehicle) reuses this table unchanged" -- so a depreciating asset or a
+    401(k) in a down market would have rendered a measured -$142.11 in success
+    green.
+
+    Three-way, so the colour and the rendered sign always agree: a gain is
+    green and carries a ``+`` (see ``accrual_money``), a loss is the danger
+    token and carries the ``-`` the money macro already renders, and a column
+    that earned nothing is neither.  Colour is therefore never the only signal,
+    which is ``/investment``'s shipped rule in its own words ("the rendered sign
+    carries the meaning so color is never the only signal",
+    investment/dashboard.html).  Zero is neutral rather than positive because
+    ruling R-O renders ``$0`` in every column of a window the row is on for,
+    and a column with no accrual is not a gain.
+-#}
+{%- if value > 0 %} text-success{% elif value < 0 %} balance-negative{% endif -%}
+{%- endmacro %}
+
+{% macro accrual_money(value, cents=true) -%}
+{#- The modelled-return figure with its sign made explicit: ``+$95.98`` on a
+    gain, ``$0.00`` on a column that earned nothing, ``-$142.11`` on a loss (the
+    shared ``money`` macro renders the minus).
+
+    **This row and the Contributions row beside it render CENTS, where the four
+    rows around them render whole dollars** (developer ruling 2026-07-27, from
+    X-g3a's adversarial review).  The reason is ruling R-O's own rule: the row
+    is on screen because at least one visible column carries a NON-ZERO accrual,
+    and at whole-dollar precision a sub-50-cent accrual rounds to ``$0`` -- so
+    the row could appear showing nothing but zeros, and the rule that put it
+    there would be unverifiable from what is rendered.  That is reachable, not
+    theoretical: a 14-day accrual under 50 cents is any INTEREST account below
+    roughly $460 at 4% APY, and also the FIRST column after a mid-period balance
+    assertion, where ruling R-Y's window is only a few days wide.  Cents also
+    keep the styling honest -- at whole dollars a 31-cent gain rendered ``+$0``
+    in success green beside a genuinely-zero ``$0`` in no colour, the same
+    visible text treated two ways.  The balance, subtotal and remainder rows
+    stay whole-dollar: they carry hundreds-to-thousands, where the cents are
+    noise.
+
+    Paired with ``accrual_class`` above on
+    the same three-way boundary, so the two can never disagree about which side
+    of zero a figure is on.
+-#}
+{%- if value > 0 %}+{% endif %}{{ money(value, cents=cents) }}
 {%- endmacro %}
 
 {% macro render_row_cells(rk, periods, matched_by_row_period, entry_sums, txn_type_id, account, today, current_period_id=none, band=none) -%}

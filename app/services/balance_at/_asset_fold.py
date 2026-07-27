@@ -289,8 +289,11 @@ class AssetPeriodFigures:
     (the boundary form, so the FIRST period is covered too -- it has no
     predecessor to subtract), and it holds BY CONSTRUCTION rather than as an
     invariant a test polices: all four terms are readings of ONE resolved step
-    list, and every step is a whole cent (ruling R-X).  Plan step X-g3 renders
-    the last two as ruling R-W's "Growth" row.
+    list, and every step is a whole cent (ruling R-X).  The grid renders the
+    last two as TWO rows since plan step X-g3a -- ruling R-W wrote one "Growth"
+    row and ruling R-AH split it, because a single summed row can report a GAIN
+    on an account that lost money (measured at a -10.5% return: -$7,366.83 of
+    market beside +$9,624.27 of payroll renders +$2,257.44).
 
     Attributes:
         balance: The modelled end-of-period balance.

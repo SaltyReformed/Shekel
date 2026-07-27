@@ -4496,8 +4496,8 @@ class TestGridPeriodSubtotalCanonical:
     onto one shared reduction; plan steps X-c2b1 / X-c2b2 went further and made
     the balance row and the subtotal rows ONE ``GridColumn`` per period off ONE
     valued row set, so a Projected envelope expense with cleared entries reports
-    the same entries-aware impact on both rows and
-    ``balance[p] - balance[p-1] == net[p] + reconciliation[p] + interest[p]``
+    the same entries-aware impact on both rows and ``balance[p] - balance[p-1]
+    == net[p] + reconciliation[p] + contribution[p] + accrual[p]``
     holds by construction rather than by two producers agreeing.
     """
 
@@ -4580,7 +4580,7 @@ class TestGridPeriodSubtotalCanonical:
     def test_grid_subtotal_reconciles_balance_delta(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """``balance[p] - balance[p-1] == net + reconciliation + interest``.
+        """``balance delta == net + reconciliation + contribution + accrual``.
 
         Same-formula invariant E-25 / Q-10, on ruling R-K's basis: ONE valued
         row set supplies the grid's balance row and its subtotal rows, so the
@@ -4701,7 +4701,8 @@ class TestGridPeriodSubtotalCanonical:
             # keeps the identity below from passing on a remainder that quietly
             # absorbed a mis-grouped row (Section 7.2's forbidden residual).
             assert column.reconciliation == Decimal("0.00")
-            assert column.interest is None
+            assert column.accrual == Decimal("0.00")
+            assert column.contribution == Decimal("0.00")
             assert delta == column.net + column.reconciliation, (
                 f"balance delta {delta!r} must equal net {column.net!r} + "
                 f"reconciliation {column.reconciliation!r}"
@@ -6527,7 +6528,7 @@ class TestMobilePlanTab:
                     balance=balance,
                     income=Decimal("0"), expense=Decimal("0"),
                     net=Decimal("0"), reconciliation=Decimal("0.00"),
-                    interest=None,
+                    contribution=Decimal("0.00"), accrual=Decimal("0.00"),
                 )
                 for period, balance in (
                     (p_neg, Decimal("-150.00")),
@@ -6544,7 +6545,7 @@ class TestMobilePlanTab:
                 plan_matched_by_row_period={},
                 plan_columns=plan_columns,
                 plan_row_flags=balance_at.GridRowFlags(
-                    interest=False, reconciliation=False,
+                    reconciliation=False, contribution=False, accrual=False,
                 ),
                 low_balance_threshold=500,
             )
@@ -6689,11 +6690,12 @@ class TestMobilePlanTab:
                         expense=Decimal("1200"),
                         net=Decimal("-1200"),
                         reconciliation=Decimal("0.00"),
-                        interest=None,
+                        contribution=Decimal("0.00"),
+                        accrual=Decimal("0.00"),
                     ),
                 },
                 plan_row_flags=balance_at.GridRowFlags(
-                    interest=False, reconciliation=False,
+                    reconciliation=False, contribution=False, accrual=False,
                 ),
                 low_balance_threshold=500,
             )
@@ -6748,11 +6750,12 @@ class TestMobilePlanTab:
                         expense=Decimal("0"),
                         net=Decimal("2500"),
                         reconciliation=Decimal("0.00"),
-                        interest=None,
+                        contribution=Decimal("0.00"),
+                        accrual=Decimal("0.00"),
                     ),
                 },
                 plan_row_flags=balance_at.GridRowFlags(
-                    interest=False, reconciliation=False,
+                    reconciliation=False, contribution=False, accrual=False,
                 ),
                 low_balance_threshold=500,
             )
@@ -6815,11 +6818,12 @@ class TestMobilePlanTab:
                         expense=Decimal("125"),
                         net=Decimal("-125"),
                         reconciliation=Decimal("0.00"),
-                        interest=None,
+                        contribution=Decimal("0.00"),
+                        accrual=Decimal("0.00"),
                     ),
                 },
                 plan_row_flags=balance_at.GridRowFlags(
-                    interest=False, reconciliation=False,
+                    reconciliation=False, contribution=False, accrual=False,
                 ),
                 low_balance_threshold=500,
             )
@@ -7048,6 +7052,103 @@ class TestMobileJumpToPeriod:
         assert "form.submit()" in src
 
 
+def _summary_periods():
+    """Two period stand-ins carrying what the summary templates read."""
+    return [
+        SimpleNamespace(
+            id=101, start_date=date(2026, 6, 1),
+            end_date=date(2026, 6, 14), period_index=10,
+        ),
+        SimpleNamespace(
+            id=102, start_date=date(2026, 6, 15),
+            end_date=date(2026, 6, 28), period_index=11,
+        ),
+    ]
+
+
+def _summary_columns(
+    periods, *, reconciliation="0.00", contribution="0.00", accrual="0.00",
+):
+    """Return one hand-built GridColumn per period, all carrying the same figures.
+
+    The three conditional rows are graded on hand-built columns because a
+    producer cannot reach every arm of the render at every step: plan step
+    X-c2b1 could not put a figure in "Timing & true-ups" at all, and X-g3a
+    cannot put one in "Contributions" for ANY fixture -- the grid's kind gate
+    admits only INTEREST accounts and ``contribution_events`` returns ``[]``
+    for every kind but INVESTMENT.  A row whose template nobody ever executed
+    would arrive at the cutover unproven, and the cutover is the commit where
+    money moves.
+    """
+    return {
+        period.id: balance_at.GridColumn(
+            balance=Decimal("3000.00"),
+            income=Decimal("2400.00"),
+            expense=Decimal("1450.00"),
+            net=Decimal("950.00"),
+            reconciliation=Decimal(reconciliation),
+            contribution=Decimal(contribution),
+            accrual=Decimal(accrual),
+        )
+        for period in periods
+    }
+
+
+def _row_flags(*, reconciliation=False, contribution=False, accrual=False):
+    """Return GridRowFlags with every arm explicit (no defaulted visibility)."""
+    return balance_at.GridRowFlags(
+        reconciliation=reconciliation,
+        contribution=contribution,
+        accrual=accrual,
+    )
+
+
+def _render_grid_footer(app, periods, columns, flags, accrual_label="Interest"):
+    """Render the desktop ``<tfoot>`` partial against a hand-built context."""
+    template = app.jinja_env.get_template("grid/_balance_row.html")
+    with app.test_request_context("/"):
+        return template.render(
+            periods=periods,
+            columns=columns,
+            row_flags=flags,
+            accrual_label=accrual_label,
+            account=None,
+            num_periods=len(periods),
+            start_offset=0,
+            low_balance_threshold=500,
+        )
+
+
+def _render_mobile_card(app, period, columns, flags, accrual_label="Interest"):
+    """Render the mobile "This Period" summary against a hand-built context."""
+    template = app.jinja_env.get_template("grid/_mobile_tp_summary.html")
+    with app.test_request_context("/"):
+        return template.render(
+            period=period,
+            columns=columns,
+            period_row_flags=flags,
+            accrual_label=accrual_label,
+            account=None,
+            oob=False,
+        )
+
+
+def _render_plan_recap(app, period, columns, flags, accrual_label="Interest"):
+    """Render the mobile Plan recap against a hand-built context."""
+    template = app.jinja_env.get_template("grid/_mobile_plan.html")
+    with app.test_request_context("/"):
+        return template.render(
+            plan_periods=[period],
+            plan_income_row_keys=[],
+            plan_expense_row_keys=[],
+            plan_matched_by_row_period={},
+            plan_columns=columns,
+            plan_row_flags=flags,
+            accrual_label=accrual_label,
+            low_balance_threshold=500,
+        )
+
+
 class TestTimingAndTrueUpsRow:
     """Ruling R-O / R-P: the "Timing & true-ups" row, on every surface.
 
@@ -7066,52 +7167,23 @@ class TestTimingAndTrueUpsRow:
     """
 
     @staticmethod
-    def _columns(*, reconciliation, periods, interest=None):
+    def _columns(*, reconciliation, periods):
         """Return one GridColumn per period, all carrying *reconciliation*."""
-        return {
-            period.id: balance_at.GridColumn(
-                balance=Decimal("3000.00"),
-                income=Decimal("2400.00"),
-                expense=Decimal("1450.00"),
-                net=Decimal("950.00"),
-                reconciliation=Decimal(reconciliation),
-                interest=None if interest is None else Decimal(interest),
-            )
-            for period in periods
-        }
+        return _summary_columns(periods, reconciliation=reconciliation)
 
     @staticmethod
     def _periods():
         """Two period stand-ins carrying what the footer template reads."""
-        return [
-            SimpleNamespace(
-                id=101, start_date=date(2026, 6, 1),
-                end_date=date(2026, 6, 14), period_index=10,
-            ),
-            SimpleNamespace(
-                id=102, start_date=date(2026, 6, 15),
-                end_date=date(2026, 6, 28), period_index=11,
-            ),
-        ]
+        return _summary_periods()
 
     def _render_footer(self, app, reconciliation, flag):
         """Render the desktop ``<tfoot>`` with a given remainder + flag."""
         periods = self._periods()
-        template = app.jinja_env.get_template("grid/_balance_row.html")
-        with app.test_request_context("/"):
-            return template.render(
-                periods=periods,
-                columns=self._columns(
-                    reconciliation=reconciliation, periods=periods,
-                ),
-                row_flags=balance_at.GridRowFlags(
-                    interest=False, reconciliation=flag,
-                ),
-                account=None,
-                num_periods=2,
-                start_offset=0,
-                low_balance_threshold=500,
-            )
+        return _render_grid_footer(
+            app, periods,
+            self._columns(reconciliation=reconciliation, periods=periods),
+            _row_flags(reconciliation=flag),
+        )
 
     def test_desktop_footer_renders_the_row_above_the_balance(self, app):
         """The row sits in the tfoot ABOVE Projected End Balance (ruling R-O).
@@ -7154,18 +7226,12 @@ class TestTimingAndTrueUpsRow:
             columns[periods[0].id] = balance_at.GridColumn(
                 balance=Decimal("3000.00"), income=Decimal("2400.00"),
                 expense=Decimal("1450.00"), net=Decimal("950.00"),
-                reconciliation=Decimal("-788.68"), interest=None,
+                reconciliation=Decimal("-788.68"),
+                contribution=Decimal("0.00"), accrual=Decimal("0.00"),
             )
-            template = app.jinja_env.get_template("grid/_balance_row.html")
-            with app.test_request_context("/"):
-                html = template.render(
-                    periods=periods, columns=columns,
-                    row_flags=balance_at.GridRowFlags(
-                        interest=False, reconciliation=True,
-                    ),
-                    account=None, num_periods=2, start_offset=0,
-                    low_balance_threshold=500,
-                )
+            html = _render_grid_footer(
+                app, periods, columns, _row_flags(reconciliation=True),
+            )
 
         row = html[html.index("reconciliation-row"):]
         row = row[:row.index("</tr>")]
@@ -7181,21 +7247,11 @@ class TestTimingAndTrueUpsRow:
         """
         period = self._periods()[0]
         with app.app_context():
-            template = app.jinja_env.get_template(
-                "grid/_mobile_tp_summary.html",
+            html = _render_mobile_card(
+                app, period,
+                self._columns(reconciliation="-788.68", periods=[period]),
+                _row_flags(reconciliation=True),
             )
-            with app.test_request_context("/"):
-                html = template.render(
-                    period=period,
-                    columns=self._columns(
-                        reconciliation="-788.68", periods=[period],
-                    ),
-                    period_row_flags=balance_at.GridRowFlags(
-                        interest=False, reconciliation=True,
-                    ),
-                    account=None,
-                    oob=False,
-                )
 
         assert "Timing &amp; true-ups" in html
         assert "-$789" in html
@@ -7208,21 +7264,11 @@ class TestTimingAndTrueUpsRow:
         """The mobile card follows the SAME rule, not its own."""
         period = self._periods()[0]
         with app.app_context():
-            template = app.jinja_env.get_template(
-                "grid/_mobile_tp_summary.html",
+            html = _render_mobile_card(
+                app, period,
+                self._columns(reconciliation="0.00", periods=[period]),
+                _row_flags(),
             )
-            with app.test_request_context("/"):
-                html = template.render(
-                    period=period,
-                    columns=self._columns(
-                        reconciliation="0.00", periods=[period],
-                    ),
-                    period_row_flags=balance_at.GridRowFlags(
-                        interest=False, reconciliation=False,
-                    ),
-                    account=None,
-                    oob=False,
-                )
 
         assert "Timing &amp; true-ups" not in html
         assert "Net Cash Flow" in html
@@ -7231,21 +7277,11 @@ class TestTimingAndTrueUpsRow:
         """Ruling R-P again: the Plan tab recap carries the figure too."""
         period = self._periods()[0]
         with app.app_context():
-            template = app.jinja_env.get_template("grid/_mobile_plan.html")
-            with app.test_request_context("/"):
-                html = template.render(
-                    plan_periods=[period],
-                    plan_income_row_keys=[],
-                    plan_expense_row_keys=[],
-                    plan_matched_by_row_period={},
-                    plan_columns=self._columns(
-                        reconciliation="-788.68", periods=[period],
-                    ),
-                    plan_row_flags=balance_at.GridRowFlags(
-                        interest=False, reconciliation=True,
-                    ),
-                    low_balance_threshold=500,
-                )
+            html = _render_plan_recap(
+                app, period,
+                self._columns(reconciliation="-788.68", periods=[period]),
+                _row_flags(reconciliation=True),
+            )
 
         assert "Timing" in html
         assert "-$789" in html
@@ -7254,21 +7290,11 @@ class TestTimingAndTrueUpsRow:
         """And hides it on the same rule."""
         period = self._periods()[0]
         with app.app_context():
-            template = app.jinja_env.get_template("grid/_mobile_plan.html")
-            with app.test_request_context("/"):
-                html = template.render(
-                    plan_periods=[period],
-                    plan_income_row_keys=[],
-                    plan_expense_row_keys=[],
-                    plan_matched_by_row_period={},
-                    plan_columns=self._columns(
-                        reconciliation="0.00", periods=[period],
-                    ),
-                    plan_row_flags=balance_at.GridRowFlags(
-                        interest=False, reconciliation=False,
-                    ),
-                    low_balance_threshold=500,
-                )
+            html = _render_plan_recap(
+                app, period,
+                self._columns(reconciliation="0.00", periods=[period]),
+                _row_flags(),
+            )
 
         assert "Timing" not in html
 
@@ -7309,8 +7335,8 @@ class TestTimingAndTrueUpsRow:
             view = balance_at.grid_balance_view(hysa, bctx, all_periods)
             # The shape this test needs: the window accrues, its first
             # column does not.
-            assert view.row_flags(window).interest is True
-            assert view.row_flags(window[:1]).interest is False
+            assert view.row_flags(window).accrual is True
+            assert view.row_flags(window[:1]).accrual is False
 
         resp = auth_client.get(f"/grid?account_id={hysa.id}&periods=6")
         assert resp.status_code == 200
@@ -7318,14 +7344,14 @@ class TestTimingAndTrueUpsRow:
 
         # The desktop footer row renders: the window DOES contain accrual.
         footer = html[html.index('id="grid-summary"'):html.index("</tfoot>")]
-        assert "interest-row" in footer
+        assert "modelled-accrual-row" in footer
 
         # The mobile card renders the leftmost period, which has none.  It is
         # the last block of the This Period pane, so the Plan pane bounds it.
         card_start = html.index('id="mobile-tp-summary-')
         card = html[card_start:html.index('id="mobile-plan"', card_start)]
         assert "Net Cash Flow" in card, "the card must actually have rendered"
-        assert "interest-row" not in card
+        assert "modelled-accrual-row" not in card
 
     def test_the_shipped_grid_shows_no_row_today(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -7340,6 +7366,473 @@ class TestTimingAndTrueUpsRow:
         assert resp.status_code == 200
         assert b"reconciliation-row" not in resp.data
         assert b"Timing" not in resp.data
+
+
+class TestTheContributionsRow:
+    """Ruling R-AH: the modelled tiers are TWO rows, on both form factors.
+
+    A modelled asset has two modelled tiers and the CONTRIBUTION is the larger
+    of them on the real Empower 401(k) ($9,624.27 against $8,152.58 over the
+    horizon), which is why ruling R-K's identity gained a fourth term.  They are
+    two rows rather than one sum because a single summed row can render POSITIVE
+    on an account that LOST money: measured at a -10.5% return the market takes
+    -$7,366.83 while payroll puts in +$9,624.27, so one row would report
+    +$2,257.44 -- a figure that is neither what the market did nor what the user
+    put in.
+
+    **Graded on hand-built columns because no producer can reach the row at this
+    step, and that is a property of the code rather than of a fixture.**  Plan
+    step X-g3a keeps the grid's kind gate, so only an INTEREST account resolves
+    the modelled arm, and ``_asset_contributions.contribution_events`` returns
+    ``[]`` for every kind but INVESTMENT -- so ``contribution`` is ``0.00`` in
+    every column of every account for EVERY POSSIBLE FIXTURE and
+    ``row_flags.contribution`` is permanently ``False``.  X-g3b supplies the
+    producer-side control on a 401(k) fixture with a real feed.  This is exactly
+    how "Timing & true-ups" was graded at X-c2b1 and for the same stated reason.
+    """
+
+    def test_desktop_footer_seats_the_row_between_timing_and_the_accrual(
+        self, app,
+    ):
+        """Row ORDER is the model's own (ruling R-AH), not a preference.
+
+        A contribution lands on its pay period's ``start_date`` and
+        ``_asset_fold._resolve_days`` applies the day's deltas and THEN accrues
+        on the balance the day ENDS holding -- so the money is contributed and
+        then earns.  Addition is commutative and the identity holds either way;
+        reading order is not, and the rows tell the story in the order the
+        replay does.
+        """
+        with app.app_context():
+            periods = _summary_periods()
+            html = _render_grid_footer(
+                app, periods,
+                _summary_columns(
+                    periods, reconciliation="-788.68",
+                    contribution="181.59", accrual="95.98",
+                ),
+                _row_flags(
+                    reconciliation=True, contribution=True, accrual=True,
+                ),
+            )
+
+        assert "modelled-contribution-row" in html
+        assert "$181.59" in html
+        assert html.index("Timing &amp; true-ups") < html.index("Contributions")
+        assert html.index("Contributions") < html.index(
+            "modelled-accrual-row",
+        )
+        assert html.index("modelled-accrual-row") < html.index(
+            "Projected End Balance",
+        )
+
+    def test_desktop_footer_hides_an_all_zero_contributions_row(self, app):
+        """A window that contributes nothing renders no row -- R-O's rule.
+
+        This is the state EVERY account is in at plan step X-g3a, so it also
+        pins that the shipped page is unchanged by the new row.
+        """
+        with app.app_context():
+            periods = _summary_periods()
+            html = _render_grid_footer(
+                app, periods, _summary_columns(periods), _row_flags(),
+            )
+
+        assert "modelled-contribution-row" not in html
+        assert "Contributions" not in html
+        assert "Projected End Balance" in html
+
+    def test_desktop_footer_shows_zero_where_a_column_contributes_none(
+        self, app,
+    ):
+        """Once on, the row shows ``$0`` rather than blank -- R-O's other half.
+
+        Blank would read as "not measured".  A payday falls in one pay period
+        and not its neighbour, so a live 401(k) genuinely has zero columns
+        beside contributing ones.
+        """
+        with app.app_context():
+            periods = _summary_periods()
+            columns = _summary_columns(periods)
+            columns[periods[0].id] = balance_at.GridColumn(
+                balance=Decimal("3000.00"), income=Decimal("2400.00"),
+                expense=Decimal("1450.00"), net=Decimal("950.00"),
+                reconciliation=Decimal("0.00"),
+                contribution=Decimal("181.59"), accrual=Decimal("0.00"),
+            )
+            html = _render_grid_footer(
+                app, periods, columns, _row_flags(contribution=True),
+            )
+
+        row = html[html.index("modelled-contribution-row"):]
+        row = row[:row.index("</tr>")]
+        assert "$181.59" in row
+        # Cents, so a column that contributed nothing is visibly distinct from
+        # one that contributed a sub-dollar amount (developer ruling).
+        assert "$0.00" in row
+
+    def test_the_mobile_card_carries_both_bars_in_the_same_order(self, app):
+        """Ruling R-P: the mobile summary explains its balance the same way.
+
+        Without both bars the card would show a Net Cash Flow that does not
+        account for the balance beside it -- the visible contradiction ruling
+        R-K refused to ship, on the form factor Mark Paid is used from.
+        """
+        period = _summary_periods()[0]
+        with app.app_context():
+            html = _render_mobile_card(
+                app, period,
+                _summary_columns(
+                    [period], reconciliation="-788.68",
+                    contribution="181.59", accrual="95.98",
+                ),
+                _row_flags(
+                    reconciliation=True, contribution=True, accrual=True,
+                ),
+                accrual_label="Growth",
+            )
+
+        assert "modelled-contribution-row" in html
+        assert "$181.59" in html
+        assert html.index("Net Cash Flow") < html.index("Timing &amp; true-ups")
+        assert html.index("Timing &amp; true-ups") < html.index("Contributions")
+        assert html.index("Contributions") < html.index("Growth")
+        assert html.index("Growth") < html.index("Projected Balance")
+
+    def test_the_mobile_card_hides_an_all_zero_contributions_bar(self, app):
+        """The card follows the SAME rule, not its own."""
+        period = _summary_periods()[0]
+        with app.app_context():
+            html = _render_mobile_card(
+                app, period, _summary_columns([period]), _row_flags(),
+            )
+
+        assert "modelled-contribution-row" not in html
+        assert "Contributions" not in html
+        assert "Net Cash Flow" in html
+
+    def test_the_plan_recap_carries_both_figures(self, app):
+        """Ruling R-P again: the Plan tab recap explains the same chain."""
+        period = _summary_periods()[0]
+        with app.app_context():
+            html = _render_plan_recap(
+                app, period,
+                _summary_columns(
+                    [period], reconciliation="-788.68",
+                    contribution="181.59", accrual="95.98",
+                ),
+                _row_flags(
+                    reconciliation=True, contribution=True, accrual=True,
+                ),
+                accrual_label="Appreciation",
+            )
+
+        assert "Contributions $181.59" in " ".join(html.split())
+        assert html.index("Timing") < html.index("Contributions")
+        assert html.index("Contributions") < html.index("Appreciation")
+
+    def test_the_plan_recap_hides_an_all_zero_contributions_figure(self, app):
+        """And hides it on the same rule."""
+        period = _summary_periods()[0]
+        with app.app_context():
+            html = _render_plan_recap(
+                app, period, _summary_columns([period]), _row_flags(),
+            )
+
+        assert "Contributions" not in html
+
+
+class TestTheAccrualRowSignReachesItsStyling:
+    """Finding N-88: a rendered market LOSS must not be styled as a gain.
+
+    The mobile card hard-coded ``text-success`` on the modelled-return figure.
+    That was safe only while INTEREST was the sole kind reaching the row --
+    ``interest_params`` bounds ``apy >= 0`` -- and the two kinds ruling R-W adds
+    are bounded only ``> -1``, with ``asset_appreciation_params`` saying so in
+    its own words ("A negative rate is permitted so a future depreciating asset
+    (e.g. Vehicle) reuses this table unchanged").  A depreciating Vehicle or a
+    401(k) in a down market would have rendered a measured -$142.11 in success
+    green, while the desktop footer and the Plan recap rendered the same figure
+    colourless -- so the app would also have disagreed with itself across form
+    factors, the shape ruling R-P exists to prevent.
+
+    The rule is three-way and stated ONCE (``accrual_class`` / ``accrual_money``
+    in ``grid/_grid_row_macros.html``): a gain is the success token with an
+    explicit ``+``, a loss is the danger token with the ``-`` the money macro
+    already renders, and a column that earned nothing is neither.  So colour is
+    never the only signal, which is ``/investment``'s shipped rule in its own
+    words, and a ``$0`` column is not reported as a gain.
+    """
+
+    @staticmethod
+    def _accrual_cell(html):
+        """Return just the modelled-accrual row / bar out of *html*.
+
+        Bounded at the element's own closing tag rather than by a character
+        count, so a template that grows cannot silently push the figure out of
+        the slice and turn an assertion vacuous.  The desktop row closes with
+        ``</tr>`` and the mobile bar with ``</div>``; whichever comes first is
+        this element's end.
+        """
+        body = html[html.index("modelled-accrual-row"):]
+        ends = [body.index(tag) for tag in ("</tr>", "</div>") if tag in body]
+        assert ends, "the modelled-accrual element never closed"
+        return body[:min(ends)]
+
+    def test_a_gain_is_green_and_carries_an_explicit_plus(self, app):
+        """Desktop, mobile and Plan all render ``+$96`` in the success token."""
+        periods = _summary_periods()
+        with app.app_context():
+            footer = _render_grid_footer(
+                app, periods,
+                _summary_columns(periods, accrual="95.98"),
+                _row_flags(accrual=True),
+            )
+            card = _render_mobile_card(
+                app, periods[0],
+                _summary_columns([periods[0]], accrual="95.98"),
+                _row_flags(accrual=True),
+            )
+            recap = _render_plan_recap(
+                app, periods[0],
+                _summary_columns([periods[0]], accrual="95.98"),
+                _row_flags(accrual=True),
+            )
+
+        for html in (footer, card):
+            cell = self._accrual_cell(html)
+            assert "text-success" in cell
+            assert "balance-negative" not in cell
+            assert "+$95.98" in cell
+        assert "+$95.98" in recap
+        assert "text-success" in recap
+
+    def test_a_loss_is_the_danger_token_and_never_success(self, app):
+        """The N-88 regression itself, on all three surfaces.
+
+        ``-$142`` is ruling R-AH's own measured worst single column at a -10.5%
+        return on the real Empower 401(k).  The assertion that ``text-success``
+        is ABSENT is the firing control: it is the exact class the mobile card
+        hard-coded, so re-introducing it fails here.
+        """
+        periods = _summary_periods()
+        with app.app_context():
+            footer = _render_grid_footer(
+                app, periods,
+                _summary_columns(periods, accrual="-142.11"),
+                _row_flags(accrual=True),
+            )
+            card = _render_mobile_card(
+                app, periods[0],
+                _summary_columns([periods[0]], accrual="-142.11"),
+                _row_flags(accrual=True),
+                accrual_label="Growth",
+            )
+            recap = _render_plan_recap(
+                app, periods[0],
+                _summary_columns([periods[0]], accrual="-142.11"),
+                _row_flags(accrual=True),
+                accrual_label="Growth",
+            )
+
+        for html in (footer, card):
+            cell = self._accrual_cell(html)
+            assert "balance-negative" in cell
+            assert "text-success" not in cell
+            # The SIGN carries the meaning; colour is never the only signal.
+            assert "-$142.11" in cell
+        assert "-$142.11" in recap
+        assert "text-success" not in recap
+        assert "balance-negative" in recap
+
+    def test_a_zero_column_is_neither_a_gain_nor_a_loss(self, app):
+        """``$0`` renders plain -- not ``+$0`` and not green.
+
+        Ruling R-O renders ``$0`` in every column of a window the row is on
+        for, which is a state ``/investment``'s chip never faces, so the
+        verbatim ``>= 0`` boundary it uses would paint an empty column as a
+        gain.  Zero is neutral here (developer ruling 2026-07-27).
+        """
+        periods = _summary_periods()
+        with app.app_context():
+            columns = _summary_columns(periods)
+            columns[periods[0].id] = balance_at.GridColumn(
+                balance=Decimal("3000.00"), income=Decimal("2400.00"),
+                expense=Decimal("1450.00"), net=Decimal("950.00"),
+                reconciliation=Decimal("0.00"),
+                contribution=Decimal("0.00"), accrual=Decimal("95.98"),
+            )
+            footer = _render_grid_footer(
+                app, periods, columns, _row_flags(accrual=True),
+            )
+
+        row = footer[footer.index("modelled-accrual-row"):]
+        row = row[:row.index("</tr>")]
+        cells = row.split("<td")
+        # The accruing column is the first data cell after the sticky label.
+        assert "+$95.98" in cells[2]
+        assert "text-success" in cells[2]
+        # The empty one reports $0.00 and claims nothing about it.  CENTS is
+        # what makes these two cells tell different stories: at whole dollars
+        # both read "$0" and only the colour distinguished them, and ruling
+        # R-O's reason for the row being on screen at all was invisible.
+        assert "$0.00" in cells[3]
+        assert "+$0" not in cells[3]
+        assert "text-success" not in cells[3]
+        assert "balance-negative" not in cells[3]
+
+
+class TestTheAccrualRowLabelIsPerKind:
+    """Ruling R-AI: "Interest" on an HYSA, "Growth" on a 401(k), "Appreciation".
+
+    Not a new vocabulary: the app already speaks all three, each on that kind's
+    own page.  Those are PHRASES with their own windows baked in rather than
+    instances of one string, so the route's map is the canonical source for the
+    GRID's row and not a fourth copy of any of them.
+
+    Rejected at the ruling: ONE word for every kind (a fourth vocabulary
+    contradicting three shipped pages, and it renames the "Interest" row an
+    HYSA has carried since PR #47), and keeping "Interest" everywhere (which
+    would label a house's appreciation and a 401(k)'s market return "Interest").
+    """
+
+    def test_the_map_is_total_over_the_projection_kinds(self):
+        """EVERY ``AccountProjectionKind`` has a word -- no default, no KeyError.
+
+        The lookup is subscripted rather than ``.get``-with-a-default because a
+        kind added to the enum without a word here must fail at the render
+        rather than label a new kind silently and wrongly.  That only holds if
+        the map is total, so this is the test that keeps it total.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.routes.grid import _ACCRUAL_ROW_LABELS
+        from app.services.account_projection import AccountProjectionKind
+
+        assert set(_ACCRUAL_ROW_LABELS) == set(AccountProjectionKind)
+
+    def test_each_kind_resolves_its_own_word(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A real account of each modelled kind gets that kind's word."""
+        # pylint: disable=import-outside-toplevel
+        from app.routes.grid import _accrual_row_label
+        from tests._test_helpers import (
+            create_loan_account,
+            make_appreciating_account,
+            make_investment_account,
+        )
+
+        hysa = create_hysa_account(
+            seed_user, db.session, seed_periods_today[0], Decimal("5000.00"),
+        )
+        with app.app_context():
+            inv = make_investment_account(
+                seed_user, db.session, seed_periods_today[0],
+                Decimal("10000.00"),
+            )
+            prop = make_appreciating_account(
+                seed_user, db.session, seed_periods_today[0],
+                Decimal("400000.00"), Decimal("0.03000"),
+            )
+            loan = create_loan_account(
+                seed_user, db.session,
+                anchor_period=seed_periods_today[0],
+                principal=Decimal("240000.00"),
+            )
+
+            assert _accrual_row_label(hysa) == "Interest"
+            assert _accrual_row_label(inv) == "Growth"
+            assert _accrual_row_label(prop) == "Appreciation"
+            # A LIABILITY's accrual is interest CHARGED, so it must not be
+            # named after an asset's growth.  The row cannot render for this
+            # kind today, but ``resolve_grid_account`` can point the grid at a
+            # loan (``grid_balance_view`` supports the degenerate cash view for
+            # one), so the label is resolved on every such render and a wrong
+            # word here is one commit away from being on screen.
+            assert _accrual_row_label(loan) == "Interest"
+            # PLAIN can never render the row (it resolves no ACCRUAL tier), but
+            # it is the account every default /grid render resolves to, so the
+            # lookup must answer it rather than raise.  It models no return at
+            # all, so no word is truthful and it carries the neutral one.
+            assert _accrual_row_label(seed_user["account"]) == "Growth"
+
+    def test_the_zero_accounts_user_resolves_a_word_rather_than_crashing(self):
+        """``account=None`` is the real zero-accounts state, not a hypothetical.
+
+        ``_build_grid_view`` carries ``None`` for a user with no account rows at
+        all, and ``classify_account(None)`` would ``AttributeError``.  Such a
+        user has no columns, so no row ever renders -- but the label is resolved
+        in the route before that is known.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.routes.grid import _accrual_row_label
+
+        assert _accrual_row_label(None) == "Growth"
+
+    def test_the_hysa_grid_page_labels_the_row_interest(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """End to end: the real page renders the word, on both form factors.
+
+        The route-level contract, because that is where ruling R-P binds: the
+        desktop ``<tfoot>`` and the mobile This Period card are rendered from
+        ONE context variable, so they cannot name the same row differently.
+        """
+        hysa = create_hysa_account(
+            seed_user, db.session, seed_periods_today[0], Decimal("100000.00"),
+        )
+        resp = auth_client.get(f"/grid?account_id={hysa.id}")
+        assert resp.status_code == 200
+        html = resp.data.decode()
+
+        footer = html[html.index('id="grid-summary"'):html.index("</tfoot>")]
+        row = footer[footer.index("modelled-accrual-row"):]
+        assert "Interest" in row[:row.index("</tr>")]
+
+        card_start = html.index('id="mobile-tp-summary-')
+        card = html[card_start:html.index('id="mobile-plan"', card_start)]
+        bar = card[card.index("modelled-accrual-row"):]
+        assert "Interest" in bar[:bar.index("</div>")]
+
+    def test_the_balance_row_refresh_labels_the_row_too(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The self-refresh partial supplies its own label, not an empty one.
+
+        Each of the three render entries resolves the label independently, so a
+        ``balanceChanged`` refresh that dropped it would swap a headless row
+        into the footer.
+        """
+        hysa = create_hysa_account(
+            seed_user, db.session, seed_periods_today[0], Decimal("100000.00"),
+        )
+        resp = auth_client.get(
+            f"/grid/balance-row?periods=6&offset=0&account_id={hysa.id}",
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        row = html[html.index("modelled-accrual-row"):]
+        assert "Interest" in row[:row.index("</tr>")]
+
+    def test_the_mobile_summary_refresh_labels_the_row_too(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """And so does the ``mobileCardSettled`` refresh."""
+        hysa = create_hysa_account(
+            seed_user, db.session, seed_periods_today[0], Decimal("100000.00"),
+        )
+        with app.app_context():
+            current = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+        resp = auth_client.get(
+            f"/grid/this-period-summary?period_id={current.id}"
+            f"&account_id={hysa.id}",
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        bar = html[html.index("modelled-accrual-row"):]
+        assert "Interest" in bar[:bar.index("</div>")]
 
 
 class TestGridInterestAccrual:
@@ -7375,21 +7868,27 @@ class TestGridInterestAccrual:
         # Seam truth the route must render (current is the leftmost visible col).
         view = balance_at.grid_balance_view(hysa, bctx, all_periods)
         accrued = view.columns[current.id].balance
-        interest = view.columns[current.id].interest
+        interest = view.columns[current.id].accrual
 
         resp = auth_client.get(f"/grid?account_id={hysa.id}")
         assert resp.status_code == 200
         html = resp.data.decode()
 
         # The read-only accrual row renders for an interest grid account.
-        assert "interest-row" in html
+        assert "modelled-accrual-row" in html
         # Interest accrues: the current-period balance exceeds the $100,000
         # anchor, and the grid renders exactly the seam's accrued figure.
         assert accrued > Decimal("100000.00")
         assert f"${accrued:,.0f}" in html
-        # The per-period interest is positive and rendered in the Interest row.
+        # The per-period interest is positive and rendered in the accrual row,
+        # to the CENT and with its gain sign (developer ruling 2026-07-27): the
+        # row's precision differs from the balance row's above it, so asserting
+        # it at whole dollars would pass on a substring of the cents rendering
+        # and stop grading the thing that changed.
         assert interest > Decimal("0.00")
-        assert f"${interest:,.0f}" in html
+        row = html[html.index("modelled-accrual-row"):]
+        row = row[:row.index("</tr>")]
+        assert f"+${interest:,.2f}" in row
 
     def test_plain_account_has_no_accrual_row(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -7397,7 +7896,7 @@ class TestGridInterestAccrual:
         """The default checking (PLAIN) grid shows no Interest accrual row."""
         resp = auth_client.get("/grid")
         assert resp.status_code == 200
-        assert b"interest-row" not in resp.data
+        assert b"modelled-accrual-row" not in resp.data
 
     def test_interest_account_balance_row_refresh_shows_accrual_row(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -7417,7 +7916,7 @@ class TestGridInterestAccrual:
         )
         assert resp.status_code == 200
         html = resp.data.decode()
-        assert "interest-row" in html
+        assert "modelled-accrual-row" in html
         assert "Projected End Balance" in html
 
     def test_mobile_summary_refresh_shows_interest_for_hysa(
@@ -7439,7 +7938,7 @@ class TestGridInterestAccrual:
             f"&account_id={hysa.id}",
         )
         assert resp.status_code == 200
-        assert b"interest-row" in resp.data
+        assert b"modelled-accrual-row" in resp.data
 
     def test_mobile_summary_refresh_no_interest_for_plain(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -7450,7 +7949,7 @@ class TestGridInterestAccrual:
             f"/grid/this-period-summary?period_id={current.id}",
         )
         assert resp.status_code == 200
-        assert b"interest-row" not in resp.data
+        assert b"modelled-accrual-row" not in resp.data
 
     def test_refresh_uses_live_income_matching_full_render(
         self, app, auth_client, seed_user, seed_periods_today, monkeypatch,

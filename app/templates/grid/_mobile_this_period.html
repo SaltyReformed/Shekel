@@ -72,11 +72,21 @@
                             gracefully omitted.
      period_row_flags    -- (optional) GridRowFlags for `periods[0]`, the
                             ONE period this partial renders, forwarded to the
-                            summary partial for ruling R-O / R-P's two
-                            conditional bars.  Scoped to that period rather
-                            than to the grid's visible window so the initial
-                            include and the self-refresh endpoint (which sees
-                            one period and no window) cannot disagree.
+                            summary partial for ruling R-O / R-P's THREE
+                            conditional bars (Timing & true-ups,
+                            Contributions, and the modelled return).  Scoped
+                            to that period rather than to the grid's visible
+                            window so the initial include and the self-refresh
+                            endpoint (which sees one period and no window)
+                            cannot disagree.
+     accrual_label       -- the modelled-return bar's per-kind heading
+                            (ruling R-AI), forwarded to the summary partial.
+                            REQUIRED whenever `period_row_flags` is supplied:
+                            the bar renders its heading with no fallback, so
+                            a caller that supplies the flags without the label
+                            ships a headless row.  Companion supplies neither
+                            -- and supplies no `columns` either, which is what
+                            suppresses the whole summary block.
      can_edit            -- (optional) bool, default True; forwarded
                             to `render_row_card` so companion
                             (`can_edit=False`) drops the

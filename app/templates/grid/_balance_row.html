@@ -7,17 +7,31 @@
    rows in the <tbody> (added in Tasks 13-14).
 
    Ruling R-O seats the whole "how this balance is reached" chain here, in
-   one visual block: Timing & true-ups, then Interest, then Projected End
-   Balance.  Reading top to bottom from the Net Cash Flow row above, that is
-   the identity
+   one visual block: Timing & true-ups, then Contributions, then the modelled
+   return, then Projected End Balance.  Reading top to bottom from the Net Cash
+   Flow row above, that is the identity
 
-       balance[p] - balance[p-1] == net[p] + reconciliation[p] + interest[p]
+       balance[p] - balance[p-1]
+           == net[p] + reconciliation[p] + contribution[p] + accrual[p]
 
-   and it holds because all four figures are one GridColumn -- one valued row
-   set grouped two ways plus its accrual -- rather than separate producers a
-   test keeps in step (ruling R-K).
+   and it holds because all five figures are one GridColumn -- one valued row
+   set grouped two ways plus its two modelled tiers -- rather than separate
+   producers a test keeps in step (ruling R-K).
 
-   Both explanatory rows are CONDITIONAL on the same rule, decided once in
+   ROW ORDER is the MODEL's own (ruling R-AH): a contribution lands on its pay
+   period's start_date and the day's accrual is then taken on the balance that
+   day ENDS holding, so the money is contributed and then earns.  Addition is
+   commutative and the identity holds either way; reading order is not.
+
+   The two modelled tiers are TWO rows rather than one sum, and that is the
+   ruling too: a single summed row can render POSITIVE on an account that lost
+   money (measured on the real Empower 401(k) at a -10.5% return, the market
+   takes -$7,366.83 while payroll puts in +$9,624.27, so one row would show
+   +$2,257.44).  ``/investment`` already renders the same two tiers apart, for
+   the reason its producer states -- "they answer different questions: what the
+   market did, and what the user put in".
+
+   All three explanatory rows are CONDITIONAL on the same rule, decided once in
    the seam (GridBalanceView.row_flags, ruling R-O): present for the whole
    visible window when at least one visible column carries a non-zero value,
    showing its own figure in every column of that window.  The template only
@@ -33,12 +47,16 @@
    from the day they moved, so there is nothing left to warn about and nothing
    left to swap.
 
-   Expected context: periods, columns, row_flags, account, num_periods,
-   start_offset, low_balance_threshold.
+   Expected context: periods, columns, row_flags, accrual_label, account,
+   num_periods, start_offset, low_balance_threshold.
      columns   -- dict[period_id -> GridColumn]; a period absent from it
                   (only the user-with-no-accounts empty view) renders "--" for
                   the balance and blanks for the explanatory rows.
-     row_flags -- GridRowFlags for THIS window (.interest / .reconciliation).
+     row_flags -- GridRowFlags for THIS window (.reconciliation /
+                  .contribution / .accrual).
+     accrual_label -- the modelled-return row's per-kind heading, resolved in
+                  the route from classify_account (ruling R-AI): "Interest" on
+                  an HYSA, "Growth" on a 401(k), "Appreciation" on a house.
 #}
 <tfoot id="grid-summary"
        hx-get="{{ url_for('grid.balance_row', periods=num_periods|default(periods|length), offset=start_offset|default(0), account_id=account.id) if account else url_for('grid.balance_row', periods=num_periods|default(periods|length), offset=start_offset|default(0)) }}"
@@ -46,7 +64,7 @@
        hx-swap="outerHTML"
        aria-live="polite"
        aria-atomic="true">
-  {% from "grid/_grid_row_macros.html" import mstart %}
+  {% from "grid/_grid_row_macros.html" import mstart, accrual_class, accrual_money %}
   {% from "_money_macros.html" import money %}
   {# Read-only remainder row (ruling R-O) -- money budgeted to this column
      that moved in another, money that moved here but is budgeted elsewhere,
@@ -66,19 +84,37 @@
     {% endfor %}
   </tr>
   {% endif %}
-  {# Read-only accrual row -- the interest the projected balance earns that
-     the transaction rows do not explain.  The seam populates it exclusively
-     for an INTEREST grid account; for every other kind every column carries
-     none and ``row_flags.interest`` is false. #}
-  {% if row_flags.interest %}
-  <tr class="accrual-row interest-row">
+  {# Read-only Contributions row -- what the account's payroll puts into it,
+     employee plus employer.  Only an INVESTMENT account has such a feed
+     (``_asset_contributions.contribution_events`` returns [] for every other
+     kind), so this row can never appear on an HYSA or a Property. #}
+  {% if row_flags.contribution %}
+  <tr class="accrual-row modelled-contribution-row">
     <td class="sticky-col">
-      <i class="bi bi-percent" aria-hidden="true"></i> Interest
+      <i class="bi bi-plus-circle" aria-hidden="true"></i> Contributions
     </td>
     {% for period in periods %}
       {% set col = columns.get(period.id) %}
       <td class="text-end font-mono{{ mstart(periods, loop.index0) }}">
-        {% if col is not none and col.interest is not none %}{{ money(col.interest, cents=false) }}{% endif %}
+        {% if col is not none %}{{ money(col.contribution) }}{% endif %}
+      </td>
+    {% endfor %}
+  </tr>
+  {% endif %}
+  {# Read-only modelled-return row -- the growth the projected balance earns
+     that the transaction rows do not explain, labelled per kind by the route
+     (ruling R-AI).  A column always carries a Decimal here: the field is total
+     since plan step X-g3a, so there is no per-cell "is not none" beside the
+     flag -- a guard against a shape the producer cannot be in. #}
+  {% if row_flags.accrual %}
+  <tr class="accrual-row modelled-accrual-row">
+    <td class="sticky-col">
+      <i class="bi bi-percent" aria-hidden="true"></i> {{ accrual_label }}
+    </td>
+    {% for period in periods %}
+      {% set col = columns.get(period.id) %}
+      <td class="text-end font-mono{{ mstart(periods, loop.index0) }}{% if col is not none %}{{ accrual_class(col.accrual) }}{% endif %}">
+        {% if col is not none %}{{ accrual_money(col.accrual) }}{% endif %}
       </td>
     {% endfor %}
   </tr>

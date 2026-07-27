@@ -2167,8 +2167,8 @@ class TestASettledRowMovesEveryCashAnswerTogether:
             # accrual -- never the basis the cache would have carried.
             column = view.columns[current.id]
             assert column.balance - cash[current.id] == sum(
-                other.interest for pid, other in view.columns.items()
-                if pid in cash and other.interest is not None
+                other.accrual for pid, other in view.columns.items()
+                if pid in cash
                 and list(cash).index(pid) <= list(cash).index(current.id)
             )
             # The accrual is interest, not the missing $2,000.00 -- and it is
@@ -2182,10 +2182,9 @@ class TestASettledRowMovesEveryCashAnswerTogether:
             # not a coincidence: compounding a daily rate over 14 days IS
             # ``(1 + 0.05/365) ** 14``, so the two rules are the same curve
             # re-grouped whenever no money moves inside the period.
-            assert view.columns[periods[0].id].interest == Decimal("95.98")
+            assert view.columns[periods[0].id].accrual == Decimal("95.98")
             total_accrual = sum(
-                col.interest for col in view.columns.values()
-                if col.interest is not None
+                col.accrual for col in view.columns.values()
             )
             # $944.94 until plan step X-g2b, and the $0.28 it gained is DERIVED
             # rather than observed.  The per-period layer accrued a whole period
@@ -2298,9 +2297,20 @@ def _assert_grid_view_reconciles(view):
     """Assert the view's rows reconcile to the cent, off the view alone.
 
     For every adjacent pair of periods the displayed balance delta must equal
-    the column's own net plus its remainder plus its accrual -- ruling R-K's
-    identity
-    ``balance[p] - balance[p-1] == net[p] + reconciliation[p] + interest[p]``.
+    the column's own net plus its remainder plus BOTH modelled tiers -- ruling
+    R-K's identity in the four-term form ruling R-AH measured::
+
+        balance[p] - balance[p-1]
+            == net[p] + reconciliation[p] + contribution[p] + accrual[p]
+
+    The fourth term is the CONTRIBUTION, and it is not decoration: the
+    three-term form breaks on 53 of 59 period pairs on the real Empower 401(k),
+    worst $181.59 a column (a flat-percentage employer match), while the
+    four-term form holds on all 59.  It is written here at plan step X-g3a,
+    where the grid's kind gate still admits only INTEREST accounts and the term
+    is therefore identically $0.00, so that the oracle is already in its final
+    form when X-g3b's cutover puts a figure in it.  X-g3b supplies the
+    producer-side control that can distinguish the two forms.
 
     It reads ONE GridColumn per period rather than re-running the subtotal
     producer beside the balance producer, which is the point of plan steps
@@ -2311,15 +2321,15 @@ def _assert_grid_view_reconciles(view):
     items = _all_columns(view)
     assert len(items) >= 2, "need >= 2 periods to reconcile a delta"
     for (_prev_id, prev), (pid, column) in zip(items, items[1:]):
-        accrual = (
-            column.interest if column.interest is not None
-            else Decimal("0.00")
+        expected = (
+            column.net + column.reconciliation
+            + column.contribution + column.accrual
         )
-        expected = column.net + column.reconciliation + accrual
         assert column.balance - prev.balance == expected, (
             f"period {pid}: balance delta "
             f"{column.balance - prev.balance} != net {column.net} + "
-            f"reconciliation {column.reconciliation} + interest {accrual}"
+            f"reconciliation {column.reconciliation} + contribution "
+            f"{column.contribution} + accrual {column.accrual}"
         )
 
 
@@ -2345,7 +2355,9 @@ class TestGridBalanceView:
             } == dict(cash)
             # No accrual row for a plain cash account.
             assert all(
-                column.interest is None for column in view.columns.values()
+                column.accrual == Decimal("0.00")
+                and column.contribution == Decimal("0.00")
+                for column in view.columns.values()
             )
 
     def test_loan_stays_cash_flow_no_accrual(
@@ -2375,7 +2387,9 @@ class TestGridBalanceView:
                 pid: column.balance for pid, column in _all_columns(view)
             } == dict(cash)
             assert all(
-                column.interest is None for column in view.columns.values()
+                column.accrual == Decimal("0.00")
+                and column.contribution == Decimal("0.00")
+                for column in view.columns.values()
             )
 
     def test_interest_balances_kind_correct_and_reconcile(
@@ -2436,7 +2450,7 @@ class TestGridBalanceView:
                 hysa, bctx, periods,
             )
             total_accrual = sum(
-                column.interest for _pid, column in _all_columns(view)
+                column.accrual for _pid, column in _all_columns(view)
             )
             assert total_accrual == (
                 projected[periods[-1].id].balance
@@ -2473,7 +2487,9 @@ class TestGridBalanceView:
                 pid: column.balance for pid, column in _all_columns(view)
             } == dict(cash)
             assert all(
-                column.interest is None for column in view.columns.values()
+                column.accrual == Decimal("0.00")
+                and column.contribution == Decimal("0.00")
+                for column in view.columns.values()
             )
             # It is the cash-flow (transaction) balance, NOT the growth-modeled
             # one: balance_map accrues growth above the flat cash basis at the
@@ -2508,7 +2524,9 @@ class TestGridBalanceView:
                 pid: column.balance for pid, column in _all_columns(view)
             } == dict(cash)
             assert all(
-                column.interest is None for column in view.columns.values()
+                column.accrual == Decimal("0.00")
+                and column.contribution == Decimal("0.00")
+                for column in view.columns.values()
             )
             # Cash-flow (flat market value), NOT the appreciated projection.
             modeled = balance_at.balance_map(prop, bctx, periods)
@@ -2533,9 +2551,12 @@ class TestGridBalanceView:
 
         A HYSA whose ``InterestParams`` is missing models no rate, so inventing
         one would put interest on screen the account has never earned.  The
-        view must show the folded cash balance with ``interest=None`` in every
+        view must show the folded cash balance with a ``0.00`` accrual in every
         column, never raise -- the degenerate arm of
-        ``_interest.accrual_params``.
+        ``_interest.accrual_params``.  ``0.00`` and not ``None``: ruling
+        R-AJ (c) made both modelled fields total, so "models no rate" and
+        "earned nothing this window" report the same figure and ruling R-O's
+        rule hides the row for both.
 
         (This replaces a test that forced ``balance_map`` to return ``None``
         and asserted the grid degraded to cash.  ``grid_balance_view`` does not
@@ -2561,7 +2582,9 @@ class TestGridBalanceView:
                 pid: column.balance for pid, column in _all_columns(view)
             } == dict(cash)
             assert all(
-                column.interest is None for column in view.columns.values()
+                column.accrual == Decimal("0.00")
+                and column.contribution == Decimal("0.00")
+                for column in view.columns.values()
             )
 
     def test_the_accrual_is_pure_interest_on_one_income_basis(
@@ -2625,9 +2648,9 @@ class TestGridBalanceView:
             # On the STORED basis the premium would carry the $500 income
             # delta as well, which is the divergence ruling R-Q deleted.
             projected = dict(_all_columns(view))
-            assert view.columns[periods[0].id].interest == Decimal("9.60")
+            assert view.columns[periods[0].id].accrual == Decimal("9.60")
             total_accrual = sum(
-                column.interest for _pid, column in _all_columns(view)
+                column.accrual for _pid, column in _all_columns(view)
             )
             assert total_accrual == projected[last].balance - cash[last]
             assert total_accrual < Decimal("500.00"), (
@@ -2638,7 +2661,7 @@ class TestGridBalanceView:
 
 def _column(
     *, balance="0.00", income="0.00", expense="0.00", net="0.00",
-    reconciliation="0.00", interest=None,
+    reconciliation="0.00", contribution="0.00", accrual="0.00",
 ):
     """Build one hand-specified :class:`GridColumn` for the flag tests.
 
@@ -2648,6 +2671,11 @@ def _column(
     and would still only assert the rule through whatever those shapes happen
     to produce.  ``TestTheRemainderIsWhatTheRowsCannotExplain`` grades the
     producer-built remainder itself.
+
+    Every parameter is a STRING and every field is a ``Decimal``: neither
+    modelled tier is optional since plan step X-g3a (ruling R-AJ (c)), so
+    ``None`` is not a value this builder can produce and no test can assert a
+    shape the producer cannot be in.
     """
     return balance_at.GridColumn(
         balance=Decimal(balance),
@@ -2655,7 +2683,8 @@ def _column(
         expense=Decimal(expense),
         net=Decimal(net),
         reconciliation=Decimal(reconciliation),
-        interest=None if interest is None else Decimal(interest),
+        contribution=Decimal(contribution),
+        accrual=Decimal(accrual),
     )
 
 
@@ -2664,7 +2693,7 @@ class TestGridRowFlags:
 
     A conditional row renders for the whole visible window when at least ONE
     visible column carries a non-zero value.  Stated once here because the same
-    rule governs two rows on four windows (the visible grid, the Plan tab, the
+    rule governs three rows on four windows (the visible grid, the Plan tab, the
     mobile This Period card, and the two self-refresh partials), and a template
     deciding it per surface is how one form factor ends up rendering a balance
     its own figures cannot explain (ruling R-P).
@@ -2682,12 +2711,13 @@ class TestGridRowFlags:
         """Return period stand-ins carrying only the id the rule reads."""
         return [SimpleNamespace(id=pid) for pid in ids]
 
-    def test_all_zero_window_renders_neither_row(self):
-        """Every column zero -> both rows hidden (the ordinary cash grid)."""
+    def test_all_zero_window_renders_no_row(self):
+        """Every column zero -> all three rows hidden (the ordinary cash grid)."""
         view = self._view({1: _column(), 2: _column()})
         flags = view.row_flags(self._periods(1, 2))
         assert flags.reconciliation is False
-        assert flags.interest is False
+        assert flags.contribution is False
+        assert flags.accrual is False
 
     def test_one_non_zero_column_renders_the_row_for_the_window(self):
         """A single non-zero column turns the row on for the whole window."""
@@ -2715,25 +2745,185 @@ class TestGridRowFlags:
         view = self._view({1: _column(reconciliation="-0.01")})
         assert view.row_flags(self._periods(1)).reconciliation is True
 
-    def test_interest_none_and_interest_zero_both_hide_the_row(self):
-        """No accrual concept and a zero accrual both hide the Interest row.
+    def test_an_all_zero_accrual_window_hides_the_accrual_row(self):
+        """A window that earns nothing hides the row -- a labelled row of zeros.
 
-        ``None`` is a non-interest account (no accrual exists) and ``0.00`` is
-        an interest account whose visible window earns nothing -- a labelled row
-        of zeros either way, which ruling R-O's rule is what removes.
+        Both an account that models NO return and one whose visible window
+        happens to earn nothing report ``0.00`` here, and ruling R-O removes the
+        row in both cases.  The two used to be distinguishable -- ``None`` for
+        the first, ``0.00`` for the second -- and ruling R-AJ (c) deleted that
+        distinction: under one replay every column carries a ``Decimal``, so
+        ``None`` is a state the producer cannot be in and a flag rule testing
+        for it would be testing an unreachable arm.
         """
-        view = self._view({1: _column(interest=None), 2: _column(interest="0.00")})
-        assert view.row_flags(self._periods(1, 2)).interest is False
+        view = self._view({1: _column(), 2: _column(accrual="0.00")})
+        assert view.row_flags(self._periods(1, 2)).accrual is False
 
-    def test_a_non_zero_accrual_renders_the_interest_row(self):
-        """One accruing column turns the Interest row on."""
-        view = self._view({1: _column(interest="0.00"), 2: _column(interest="7.01")})
-        assert view.row_flags(self._periods(1, 2)).interest is True
+    def test_a_non_zero_accrual_renders_the_accrual_row(self):
+        """One accruing column turns the modelled-return row on."""
+        view = self._view({1: _column(accrual="0.00"), 2: _column(accrual="7.01")})
+        assert view.row_flags(self._periods(1, 2)).accrual is True
+
+    def test_a_negative_accrual_renders_the_accrual_row(self):
+        """A market LOSS turns the row on -- the rule is non-zero, not positive.
+
+        The two kinds ruling R-W adds to this row are bounded only ``> -1``
+        (``investment_params`` / ``asset_appreciation_params``), so a
+        depreciating asset or a down market accrues negative.  A rule that
+        tested for a positive figure would hide exactly the column the user most
+        needs to see (finding N-88's other half; the rendering of that sign is
+        graded in ``tests/test_routes/test_grid.py``).
+        """
+        view = self._view({1: _column(accrual="-142.11")})
+        assert view.row_flags(self._periods(1)).accrual is True
+
+    def test_a_non_zero_contribution_renders_the_contribution_row(self):
+        """One contributing column turns the Contributions row on.
+
+        The third flag is its own predicate over its own field: the two modelled
+        tiers answer different questions (what the market did, and what the user
+        put in), and a single summed row can render POSITIVE on an account that
+        LOST money -- measured on the real Empower 401(k) at a -10.5% return,
+        ``-$7,366.83`` of market against ``+$9,624.27`` of payroll (ruling
+        R-AH).  So the two rows appear and disappear independently.
+        """
+        view = self._view({
+            1: _column(contribution="0.00"),
+            2: _column(contribution="181.59"),
+        })
+        flags = view.row_flags(self._periods(1, 2))
+        assert flags.contribution is True
+        assert flags.accrual is False
+
+    def test_an_accruing_window_that_contributes_nothing_hides_only_that_row(self):
+        """An HYSA accrues and never contributes -- one row, not two.
+
+        ``_asset_contributions.contribution_events`` returns ``[]`` for every
+        kind but INVESTMENT, so an interest-bearing account's Contributions row
+        can never render.  Pinned as a flag property rather than left to the
+        producer, because it is the rule that keeps a permanently-zero row off
+        the HYSA grid the developer actually uses.
+        """
+        view = self._view({1: _column(accrual="95.98"), 2: _column(accrual="96.30")})
+        flags = view.row_flags(self._periods(1, 2))
+        assert flags.accrual is True
+        assert flags.contribution is False
 
     def test_a_period_outside_the_view_contributes_nothing(self):
         """A window period the projection never produced cannot flip a flag."""
         view = self._view({1: _column(reconciliation="5.00")})
         assert view.row_flags(self._periods(99)).reconciliation is False
+
+
+class TestTheReconciliationOracleSeesAllFourTerms:
+    """``_assert_grid_view_reconciles`` is the CUTOVER's oracle, so grade it.
+
+    Plan step X-g3b moves every modelled account's grid balance, and this
+    helper is what will police that the rows still explain it.  At X-g3a no
+    PRODUCER can put a figure in ``contribution`` -- the kind gate admits only
+    INTEREST accounts and their contribution feed is empty by construction --
+    so an oracle written in the three-term form and one written in the four-term
+    form are indistinguishable on every fixture in the suite.  That is exactly
+    the state in which a term gets dropped and nothing notices.
+
+    The helper takes a VIEW, not an account, so the control needs no producer
+    and no fixture: a hand-built view whose balance delta contains a
+    contribution reconciles under the four-term form and cannot reconcile under
+    the three-term one.  Section 7.3 -- every guard gets a negative control that
+    is shown to fire -- and this is the guard that guards the money.
+    """
+
+    @staticmethod
+    def _view(columns):
+        """Wrap *columns* in a view (the oracle reads nothing else)."""
+        return balance_at.GridBalanceView(
+            columns=OrderedDict(columns), amount_overrides={},
+        )
+
+    # The figures are ruling R-AH's own: $181.59 is the employer's flat 5% of
+    # $3,631.74 -- the term whose omission breaks the identity on 53 of 59 real
+    # period pairs on the Empower 401(k) -- and $95.98 is the HYSA accrual this
+    # file hand-derives elsewhere.
+    _NET = "100.00"
+    _RECONCILIATION = "10.00"
+    _CONTRIBUTION = "181.59"
+    _ACCRUAL = "95.98"
+
+    def _two_columns(self, *, contribution):
+        """Return an opening column and one whose delta is all four terms."""
+        opening = _column(balance="1000.00")
+        moved = _column(
+            balance=str(
+                Decimal("1000.00") + Decimal(self._NET)
+                + Decimal(self._RECONCILIATION) + Decimal(contribution)
+                + Decimal(self._ACCRUAL)
+            ),
+            net=self._NET,
+            reconciliation=self._RECONCILIATION,
+            contribution=contribution,
+            accrual=self._ACCRUAL,
+        )
+        return self._view({1: opening, 2: moved})
+
+    def test_a_contributing_column_reconciles(self):
+        """The four-term form holds when all four terms carry a figure."""
+        _assert_grid_view_reconciles(
+            self._two_columns(contribution=self._CONTRIBUTION),
+        )
+
+    def test_dropping_the_contribution_term_breaks_the_identity(self):
+        """THE CONTROL: a delta short its contribution must not reconcile.
+
+        Built by moving the contribution OUT of the column while leaving it in
+        the balance delta, which is precisely what a three-term oracle would
+        wave through -- and what X-g3b would ship if the term were dropped from
+        the helper.  The failure message must name the term, so a real break
+        points at the tier rather than at "the numbers disagree".
+        """
+        broken = self._two_columns(contribution=self._CONTRIBUTION)
+        columns = OrderedDict(broken.columns)
+        moved = columns[2]
+        columns[2] = balance_at.GridColumn(
+            balance=moved.balance,
+            income=moved.income,
+            expense=moved.expense,
+            net=moved.net,
+            reconciliation=moved.reconciliation,
+            contribution=Decimal("0.00"),
+            accrual=moved.accrual,
+        )
+
+        # The pattern matches the MESSAGE, not the repr.  ``match=`` searches
+        # the whole rendered AssertionError, and pytest's rewriting appends the
+        # GridColumn repr -- which contains the literal ``contribution=`` for
+        # every column -- so a bare ``match="contribution"`` passes even when
+        # the message never names the term.  ``+ contribution `` (a space, no
+        # equals) appears only in the oracle's own sentence.
+        with pytest.raises(AssertionError, match=r"\+ contribution "):
+            _assert_grid_view_reconciles(self._view(columns))
+
+    def test_the_accrual_term_is_load_bearing_too(self):
+        """The same control for the tier the row already renders.
+
+        Stated so the oracle is graded on BOTH modelled terms rather than only
+        the new one: an oracle that had quietly lost its accrual term would
+        also pass every INTEREST fixture whose window happens not to accrue.
+        """
+        view = self._two_columns(contribution=self._CONTRIBUTION)
+        columns = OrderedDict(view.columns)
+        moved = columns[2]
+        columns[2] = balance_at.GridColumn(
+            balance=moved.balance,
+            income=moved.income,
+            expense=moved.expense,
+            net=moved.net,
+            reconciliation=moved.reconciliation,
+            contribution=moved.contribution,
+            accrual=Decimal("0.00"),
+        )
+
+        with pytest.raises(AssertionError, match=r"\+ accrual "):
+            _assert_grid_view_reconciles(self._view(columns))
 
 
 class TestTheViewOwnsTheLiveOverrideMap:

@@ -36,15 +36,21 @@
                                   scoped to plan_periods.
      plan_columns *            -- dict[period_id -> GridColumn] for the
                                   whole recap: the income / expense / net
-                                  headline, the two conditional figures,
+                                  headline, the three conditional figures,
                                   and the projected balance.  A period
                                   absent from it (or carrying
                                   `balance is None`) omits the balance
                                   line.
      plan_row_flags            -- (optional) GridRowFlags for the PLAN
                                   window (rulings R-O / R-P): which of
-                                  "Timing & true-ups" and "Interest" the
-                                  recap adds after Net.
+                                  "Timing & true-ups", "Contributions" and
+                                  the modelled-return figure the recap adds
+                                  after Net.
+     accrual_label             -- the modelled-return figure's per-kind
+                                  heading, resolved in the route from
+                                  classify_account (ruling R-AI):
+                                  "Interest" on an HYSA, "Growth" on a
+                                  401(k), "Appreciation" on a house.
      low_balance_threshold     -- (optional) int/Decimal.  When the
                                   projected balance is below this
                                   but >= 0, the balance gets the
@@ -53,7 +59,7 @@
                                   the desktop `_balance_row.html`
                                   pattern.
 #}
-{% from "grid/_grid_row_macros.html" import render_row_static %}
+{% from "grid/_grid_row_macros.html" import render_row_static, accrual_class, accrual_money %}
 {% from "_money_macros.html" import money %}
 
 {% if plan_periods %}
@@ -116,18 +122,26 @@
                 <span class="{{ 'balance-negative' if col.net < 0 else '' }}">
                   {{ money(col.net, cents=false) }}
                 </span>
-                {# The two conditional figures (rulings R-O / R-P), on the
-                   seam's one visibility rule: Timing & true-ups explains the
-                   part of the balance change the budget columns cannot, and
-                   Interest the part the transactions cannot.  Net + those two
-                   is the whole balance change. #}
+                {# The three conditional figures (rulings R-O / R-P / R-AH), on
+                   the seam's one visibility rule and in the order the replay
+                   resolves them: Timing & true-ups explains the part of the
+                   balance change the budget columns cannot, Contributions what
+                   payroll put in, and the modelled return what that money then
+                   earned.  Net + those three is the whole balance change. #}
                 {% if plan_row_flags is defined and plan_row_flags.reconciliation %}
                 &middot;
                 Timing {{ money(col.reconciliation, cents=false) }}
                 {% endif %}
-                {% if plan_row_flags is defined and plan_row_flags.interest and col.interest is not none %}
+                {% if plan_row_flags is defined and plan_row_flags.contribution %}
                 &middot;
-                Interest {{ money(col.interest, cents=false) }}
+                Contributions {{ money(col.contribution) }}
+                {% endif %}
+                {% if plan_row_flags is defined and plan_row_flags.accrual %}
+                &middot;
+                {{ accrual_label }}
+                <span class="{{ accrual_class(col.accrual) }}">
+                  {{ accrual_money(col.accrual) }}
+                </span>
                 {% endif %}
               </small>
             {% endif %}

@@ -26,12 +26,13 @@
        HTMX ignores ``hx-swap-oob`` and the duplicate spans would
        otherwise double the totals on screen).
 
-   Ruling R-P: this card renders ruling R-O's "Timing & true-ups" line on
-   R-O's own rule, so the mobile summary explains its balance with the same
-   chain the desktop footer does.  Without it the card would show a Net Cash
-   Flow that does not account for the balance beside it -- the visible
-   contradiction ruling R-K refused to ship, on the form factor Mark Paid is
-   used from.
+   Ruling R-P: this card renders ruling R-O's three conditional lines -- Timing
+   & true-ups, Contributions and the modelled return -- on R-O's own rule, so
+   the mobile summary explains its balance with the same chain the desktop
+   footer does, in the same order (ruling R-AH: the money is contributed and
+   then earns).  Without them the card would show a Net Cash Flow that does not
+   account for the balance beside it -- the visible contradiction ruling R-K
+   refused to ship, on the form factor Mark Paid is used from.
 
    Expected context (* required):
      period *     -- the PayPeriod being summarised.
@@ -40,13 +41,24 @@
                      Missing this period's key -> the Projected Balance card
                      is omitted.
      period_row_flags -- (optional) GridRowFlags for THIS period alone.
-                     ``.reconciliation`` / ``.interest`` decide the two
-                     conditional bars.  Deliberately NOT the visible
-                     window's flags: this card is a one-period surface, so
-                     ruling R-O's "at least one visible column" is "this
+                     ``.reconciliation`` / ``.contribution`` / ``.accrual``
+                     decide the three conditional bars.  Deliberately NOT the
+                     visible window's flags: this card is a one-period surface,
+                     so ruling R-O's "at least one visible column" is "this
                      column", and the self-refresh endpoint has no window to
                      evaluate anyway -- feeding it the grid's window would
                      make the initial include and the refresh disagree.
+     accrual_label -- the modelled-return bar's per-kind heading, resolved in
+                     the route from classify_account (ruling R-AI): "Interest"
+                     on an HYSA, "Growth" on a 401(k), "Appreciation" on a
+                     house.  REQUIRED wherever ``period_row_flags`` is -- the
+                     two arrive together from all three render entries, and
+                     the one include that supplies neither (the companion
+                     page) is already suppressed whole by the ``columns is
+                     defined`` guard above.  Deliberately NOT defaulted: a
+                     fallback word would let a fourth render entry ship a
+                     silently wrong label, which is the shape ruling R-AI's
+                     "no default-less ``.get``" reasoning rejects.
      account      -- (optional) the grid Account, for the self-refresh
                      url_for's ``account_id``.  ``None`` for the
                      zero-accounts edge.
@@ -67,6 +79,7 @@
 
   {# --- Net Cash Flow Bar --- #}
   {% from "_money_macros.html" import money %}
+  {% from "grid/_grid_row_macros.html" import accrual_class, accrual_money %}
   {% if col is not none %}
   {% set net = col.net %}
   <div class="d-flex justify-content-between align-items-center px-3 py-2 mb-3 rounded bg-surface-raised">
@@ -89,21 +102,37 @@
   </div>
   {% endif %}
 
-  {# --- Interest accrual (INTEREST grid account only) ---
-       The seam populates it exclusively for an INTEREST grid account; for
-       every other kind every column carries none and the flag is false.
-       Sits between the explanations and Projected Balance so the accrual
-       that lifts the balance beyond the cash flow is visible.
+  {# --- Contributions (INVESTMENT grid account only) ---
+       What the account's payroll puts in, employee plus employer.  Only an
+       INVESTMENT account has such a feed, so this bar can never appear on an
+       HYSA or a Property. #}
+  {% if period_row_flags is defined and period_row_flags.contribution %}
+  <div class="d-flex justify-content-between align-items-center px-3 py-2 mb-3 rounded bg-surface-raised accrual-row modelled-contribution-row">
+    <span class="fw-bold small"><i class="bi bi-plus-circle" aria-hidden="true"></i> Contributions</span>
+    <span class="font-mono fw-bold">{{ money(col.contribution) }}</span>
+  </div>
+  {% endif %}
 
-       The FLAG alone decides, with no second ``is not none`` test beside it:
-       for this one-period surface a true flag means THIS column is non-zero,
-       so a redundant guard here would only mask a flag scoped to the wrong
-       window (the defect X-c2b1's review found -- the initial include was
-       passing the grid's whole visible window). #}
-  {% if period_row_flags is defined and period_row_flags.interest %}
-  <div class="d-flex justify-content-between align-items-center px-3 py-2 mb-3 rounded bg-surface-raised accrual-row interest-row">
-    <span class="fw-bold small"><i class="bi bi-percent" aria-hidden="true"></i> Interest</span>
-    <span class="font-mono fw-bold text-success">{{ money(col.interest, cents=false) }}</span>
+  {# --- Modelled return (an account that models one) ---
+       Labelled per kind by the route (ruling R-AI).  Sits between the
+       explanations and Projected Balance so the growth that lifts the balance
+       beyond the cash flow is visible, and AFTER Contributions because that is
+       the order the replay resolves them in (ruling R-AH).
+
+       The FLAG alone decides, with no second test beside it: for this
+       one-period surface a true flag means THIS column is non-zero, so a
+       redundant guard here would only mask a flag scoped to the wrong window
+       (the defect X-c2b1's review found -- the initial include was passing the
+       grid's whole visible window).
+
+       The sign reaches the styling (finding N-88): this bar hard-coded
+       ``text-success``, which was safe only while INTEREST was the sole kind
+       reaching it.  ``accrual_class`` / ``accrual_money`` state the three-way
+       rule once for all three surfaces. #}
+  {% if period_row_flags is defined and period_row_flags.accrual %}
+  <div class="d-flex justify-content-between align-items-center px-3 py-2 mb-3 rounded bg-surface-raised accrual-row modelled-accrual-row">
+    <span class="fw-bold small"><i class="bi bi-percent" aria-hidden="true"></i> {{ accrual_label }}</span>
+    <span class="font-mono fw-bold{{ accrual_class(col.accrual) }}">{{ accrual_money(col.accrual) }}</span>
   </div>
   {% endif %}
 

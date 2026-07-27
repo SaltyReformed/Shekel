@@ -595,9 +595,13 @@ class TestSubtotalReconciliation:
             for label, column in (
                 ("anchor", anchor_column), ("next", next_column),
             ):
-                assert column.interest is None, (
+                assert column.accrual == Decimal("0.00"), (
                     f"case {case['id']!r}: {label} column carries an accrual "
-                    f"({column.interest!r}) on a PLAIN account"
+                    f"({column.accrual!r}) on a PLAIN account"
+                )
+                assert column.contribution == Decimal("0.00"), (
+                    f"case {case['id']!r}: {label} column carries a modelled "
+                    f"contribution ({column.contribution!r}) on a PLAIN account"
                 )
 
             anchor_delta = (

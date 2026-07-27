@@ -69,13 +69,17 @@ duplication this work exists to kill.
   single-account cash-flow surfaces (grid, dashboard pulse, calendar, cash
   detail) need, where the balance must reconcile with the on-screen transaction
   rows, and where the account is NOT guaranteed cash
-  (``resolve_grid_account`` can point at any kind, so accruing interest into
-  the grid balance row without a row to explain it would leave a balance
-  change the screen cannot account for -- ruling R-K's
-  ``balance[p] - balance[p-1] == net[p] + reconciliation[p] + interest[p]``).
+  (``resolve_grid_account`` can point at any kind, so accruing a modelled
+  return into the grid balance row without a row to explain it would leave a
+  balance change the screen cannot account for -- ruling R-K's
+  ``balance[p] - balance[p-1]
+  == net[p] + reconciliation[p] + contribution[p] + accrual[p]``, whose
+  FOURTH term is ruling R-AH's correction: a modelled asset has TWO modelled
+  tiers, and on the real Empower 401(k) the CONTRIBUTION is the larger of them,
+  so the three-term form breaks on 53 of 59 real period pairs).
   See :mod:`._cash_flow`,
-  and :mod:`._grid` for the kind-aware :func:`grid_balance_view` that layers an
-  INTEREST account's accrual back on for the grid.
+  and :mod:`._grid` for the kind-aware :func:`grid_balance_view` that layers a
+  modelled account's tiers back on for the grid.
 * The LIABILITY entry (:func:`liability_owed_at_dates`) answers every debt's
   owed magnitude at a list of FORWARD calendar dates in one resolution pass --
   the shape a long-horizon liability band needs, which neither the period-keyed

@@ -177,9 +177,11 @@ def _layer_interest(
 
         balance[p] - balance[p-1] == base[p] - base[p-1] + interest[p]
 
-    which is the ``+ interest[p]`` term of the grid's identity (ruling R-K):
-    what the transaction rows on screen cannot explain about the balance change
-    is exactly the accrual, by construction.
+    which is the ``+ accrual[p]`` term of the grid's identity (rulings R-K /
+    R-AH): what the transaction rows on screen cannot explain about the balance
+    change is the two modelled tiers, and for an INTEREST account the
+    contribution tier is empty, so here it is exactly the accrual -- by
+    construction.
 
     **A period accrues only over the days it holds the ASSERTED balance**
     (ruling R-L, plan step X-c2a): the accrual window is

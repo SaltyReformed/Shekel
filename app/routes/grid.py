@@ -27,6 +27,10 @@ from app.services import (
     pay_period_admin,
     pay_period_service,
 )
+from app.services.account_projection import (
+    AccountProjectionKind,
+    classify_account,
+)
 from app.services.account_resolver import resolve_grid_account
 from app.services.entry_service import build_entry_lists_dict, build_entry_sums_dict
 from app.services.grid_view_service import RowKey
@@ -234,7 +238,8 @@ def _build_grid_view(account, balance_ctx, all_periods):
     :class:`~app.services.balance_at.GridColumn` per period carrying every
     figure the grid renders for it -- the projected end balance, the income /
     expense / net subtotals, ruling R-K's "Timing & true-ups" remainder, and
-    (for an INTEREST account) the interest accrual.
+    the two modelled tiers (the contribution and the accrual, rendered as their
+    own conditional rows and labelled per kind by :func:`_accrual_row_label`).
 
     **One producer pass, not three** (plan step X-c2b1, finding N-48).  The
     route used to call the balance producer once and the subtotal producer
@@ -282,6 +287,76 @@ def _build_grid_view(account, balance_ctx, all_periods):
         balance_at.grid_balance_view(account, balance_ctx, all_periods),
         account.current_anchor_balance,
     )
+
+
+# The word each account kind uses for the return it models, for the grid's
+# conditional accrual row (ruling R-AI).  It is not a new vocabulary: the app
+# already speaks all three, each on that kind's own page -- "Interest, next
+# 12 mo" (``accounts/_cash_band.html``), "Growth since Jun 23"
+# (``investment/dashboard.html``) and "appreciation" / "at 3.0%/yr"
+# (``accounts/property_detail.html``).  Those are PHRASES with their own
+# windows baked in rather than instances of one string, so this map is the
+# canonical source for the GRID's row and not a fourth copy of any of them.
+#
+# It is TOTAL over ``AccountProjectionKind`` and subscripted, never ``.get``
+# with a default: a kind added to the enum without a word here must fail at the
+# render rather than label a new kind silently and wrongly, which is the same
+# reason this codebase refuses a bare ``except``.  PLAIN and AMORTIZING can
+# never reach the row -- neither resolves an ACCRUAL tier, so
+# ``row_flags.accrual`` is False for both -- but they are members because the
+# map is a function of the enum, not of what happens to render today.
+#
+# The two unreachable kinds still carry the word their row WOULD honestly use,
+# because a knowingly-wrong entry is the very thing the subscript above exists
+# to prevent.  **AMORTIZING therefore reads "Interest", not the generic word:**
+# a loan's accrual is interest CHARGED, and naming a liability's accrual after
+# an asset's growth reads as the opposite of what it is.  PLAIN models no
+# return at all, so no word is truthful for it and it carries the kind-neutral
+# one -- which is also what a ``None`` account resolves to.
+#
+# The placeholder is its OWN constant even though it spells the same word an
+# INVESTMENT's row carries.  Those are two decisions, not one: "Growth" is the
+# vocabulary ruling R-AI chose for a 401(k), to match what ``/investment``
+# already renders.  Binding them together would let a later edit to the
+# placeholder silently rename the row the ruling named.
+_UNMODELLED_ACCRUAL_LABEL = "Growth"
+
+_ACCRUAL_ROW_LABELS = {
+    AccountProjectionKind.INTEREST: "Interest",
+    AccountProjectionKind.INVESTMENT: "Growth",
+    AccountProjectionKind.APPRECIATING: "Appreciation",
+    AccountProjectionKind.AMORTIZING: "Interest",
+    AccountProjectionKind.PLAIN: _UNMODELLED_ACCRUAL_LABEL,
+}
+
+
+def _accrual_row_label(account: "Account | None") -> str:
+    """Return the label the grid's modelled-return row carries for *account*.
+
+    Ruling R-AI: the row is "Interest" on an HYSA, "Growth" on a 401(k) and
+    "Appreciation" on a house.  Resolved in the presentation layer because
+    :mod:`app.services.balance_at._grid` carries no display strings -- its
+    ``GridRowFlags`` earns its place in the seam by carrying no money and
+    deciding no figure, and a label decides no figure but is not a balance rule
+    either, so it belongs where the render entries already build their context.
+
+    **It is TOTAL over ``Account | None``, not a three-entry subscript.**
+    :func:`~app.services.account_projection.classify_account` returns FIVE
+    values and :func:`_build_grid_view` legitimately carries ``account=None``
+    for the zero-accounts user, so a three-key lookup would ``KeyError`` on the
+    PLAIN checking account every default ``/grid`` render resolves to, and
+    ``classify_account(None)`` would ``AttributeError`` beside it.
+
+    Args:
+        account: The grid account, or ``None`` for the user-with-zero-accounts
+            edge case (which has no columns, so no row ever renders).
+
+    Returns:
+        The row's label.
+    """
+    if account is None:
+        return _UNMODELLED_ACCRUAL_LABEL
+    return _ACCRUAL_ROW_LABELS[classify_account(account)]
 
 
 class _GridRowData(NamedTuple):
@@ -542,6 +617,11 @@ def index():
         # ``mobileCardSettled`` refresh (which sees one period and no window)
         # from disagreeing about whether a row is on screen.
         period_row_flags=grid_view.row_flags(ctx.periods[:1]),
+        # ONE label for the three surfaces this render feeds -- the desktop
+        # <tfoot>, the mobile This Period card and the Plan recap all read it
+        # from this context (ruling R-AI / R-P), so the form factors cannot name
+        # the same row differently.
+        accrual_label=_accrual_row_label(ctx.account),
         categories=[c for c in all_categories if c.is_active],
         income_row_keys=row_data.income_row_keys,
         expense_row_keys=row_data.expense_row_keys,
@@ -755,6 +835,7 @@ def balance_row():
         periods=window.periods,
         columns=view.columns,
         row_flags=view.row_flags(window.periods),
+        accrual_label=_accrual_row_label(window.account),
         account=window.account,
         num_periods=window.num_periods,
         start_offset=window.start_offset,
@@ -802,9 +883,10 @@ def subtotal_rows():
 
     # The same column set the grid index route and the balance row read --
     # never a re-derived inline loop -- so ``balance[p] - balance[p-1] ==
-    # net[p] + reconciliation[p] + interest[p]`` keeps holding across the live
-    # swap because both sides are the same rows (E-25 / Commit 10, ruling
-    # R-K).  The window is the whole anchor-forward set for the same reason
+    # net[p] + reconciliation[p] + contribution[p] + accrual[p]`` keeps holding
+    # across the live swap because both sides are the same rows (E-25 /
+    # Commit 10, rulings R-K / R-AH).  The window is the whole anchor-forward
+    # set for the same reason
     # the index route passes it: a projection re-based on the visible slice
     # would answer a different question at the window's left edge, and asking
     # for one this endpoint then does not render would be an argument a caller
@@ -882,6 +964,7 @@ def mobile_this_period_summary():
         period=period,
         columns=view.columns,
         period_row_flags=view.row_flags([period]),
+        accrual_label=_accrual_row_label(base.account),
         account=base.account,
         oob=True,
     )
