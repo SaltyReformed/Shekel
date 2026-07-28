@@ -454,6 +454,11 @@ _FENCED_MODULE_RULINGS = {
         # The baseline scenario's id -- an int, and the ONE place the
         # no-baseline degradation is expressed.
         "scenario_id",
+        # Whether this pass has a baseline at all -- a bool, and the PRECONDITION
+        # ``require_scenario`` raises on (plan step X-t2, finding N-107).  A
+        # caller that legitimately handles the empty state guards on it before
+        # calling the seam; it answers nothing about an account.
+        "has_baseline",
         # The fail-loud no-baseline guard.  It raises or returns None; it
         # answers nothing about an account.
         "require_scenario",

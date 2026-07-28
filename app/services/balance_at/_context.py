@@ -204,6 +204,41 @@ class BalanceContext:
         """
         return self.scenario.id if self.scenario is not None else None
 
+    @property
+    def has_baseline(self) -> bool:
+        """Whether this pass can be answered at all -- the seam's precondition.
+
+        THE statement of the rule :func:`require_scenario` enforces, and the one
+        a caller that legitimately handles the empty state guards on BEFORE
+        calling the seam.  Both read this property, so the raise and the
+        pre-check cannot come apart.
+
+        **It exists because the rule was written out everywhere but here**
+        (plan step X-t2, finding N-107).  The finding counted four spellings of
+        ``ctx.scenario is None``; reading the code it named found two more in
+        ``retirement_projection``, and an AST-free census of the whole tree
+        found **18 in total** (the seam's own
+        :func:`~app.services.balance_at.liability_owed_at_dates` is a
+        nineteenth, and is the documented exception -- a missing baseline is the
+        degenerate case of its own rule there, not an error).  X-t2 converts the
+        six in the ``/savings`` and dashboard-tracks path and DELETES two of
+        them outright; the remaining **12** are finding N-112, owner X-v, because
+        each needs its degradation read rather than its predicate renamed.
+
+        Two of the three savings copies answered the same question with
+        DIFFERENT degraded values -- an empty map list beside a trend window
+        that built its axis anyway -- which is what a rule restated rather than
+        named buys.
+
+        A caller that does NOT handle the state calls the seam and gets
+        :func:`require_scenario`'s ``ValueError``, which is the intended
+        fail-loud path and is unchanged.
+
+        Returns:
+            ``True`` when this pass has a baseline scenario.
+        """
+        return self.scenario is not None
+
     def loan_walk(self, account: Account) -> LoanLedgerWalk:
         """Return *account*'s ledger walk for this pass, walking it at most once.
 
@@ -308,9 +343,15 @@ def require_scenario(ctx: BalanceContext) -> None:
     ``get_baseline_scenario`` can return ``None`` (a fresh user with no
     baseline).  Centralising the guard keeps the contract and its message
     single-sourced.  Callers that legitimately handle the no-baseline case keep
-    their own ``if ctx.scenario is None: return ...`` guard BEFORE calling the
+    their own ``if not ctx.has_baseline: return ...`` guard BEFORE calling the
     seam; this is the defensive backstop that turns a missed guard into a clear
     failure instead of a deep ``AttributeError`` (or a silent ``$0``).
+
+    **The predicate is one property, read from both ends** (plan step X-t2,
+    finding N-107): this raise and every caller's pre-check both ask
+    :attr:`BalanceContext.has_baseline`, so the guard and the condition it
+    guards cannot be stated differently.  Six callers spelled it out
+    independently before that.
 
     The ONE seam entry that does not run this guard is
     :func:`app.services.balance_at.liability_owed_at_dates`, where a missing
@@ -324,7 +365,7 @@ def require_scenario(ctx: BalanceContext) -> None:
     Raises:
         ValueError: When ``ctx.scenario`` is ``None``.
     """
-    if ctx.scenario is None:
+    if not ctx.has_baseline:
         raise ValueError(
             "the balance_at seam requires a baseline scenario; build the "
             "BalanceContext for a user who has one, and guard a None scenario "

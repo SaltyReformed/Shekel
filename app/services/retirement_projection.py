@@ -492,7 +492,9 @@ def _resolve_displayed_balances(
     Returns:
         ``{account_id: displayed balance}``.
     """
-    if balance_ctx.scenario is None or not ctx.all_periods:
+    # The seam's own precondition, read off the context rather than spelled
+    # out here (plan step X-t2, finding N-107).
+    if not balance_ctx.has_baseline or not ctx.all_periods:
         return {}
     return _pick_current_period_balances(
         ctx, balance_at.build_maps(ctx.accounts, balance_ctx, ctx.all_periods),
@@ -548,7 +550,8 @@ def _resolve_seed_balances(
         ``{account_id: seed balance}``; empty when there is no scenario, no
         periods, or no axis (each account then falls back to its anchor).
     """
-    if (batch.balance_ctx.scenario is None
+    # The seam's own precondition (plan step X-t2, finding N-107).
+    if (not batch.balance_ctx.has_baseline
             or not ctx.all_periods
             or not projection_periods):
         return {}

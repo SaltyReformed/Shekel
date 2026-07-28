@@ -61,19 +61,24 @@ def _seam_batches(accounts, ctx):
     ``ValueError`` from the fifth -- the loan arm reaching ``require_scenario``
     through ``loan_figures`` -> ``memoized_payoff``.
 
-    **What that does NOT mean, stated because the first draft of this docstring
-    claimed it and was wrong** (caught by X-s2's adversarial review): the rule
-    is not stated once in the PACKAGE.  Three more copies carry it, each in a
-    producer this step does not touch --
-    :func:`~.._net_worth.build_account_net_worth_maps` (the guard at
-    ``_net_worth.py:150``), :func:`~.._orchestrator._build_trend_window`
-    (``_orchestrator.py:454``), and
-    :func:`app.services.dashboard_pulse_service.compute_pulse_section`
-    (``dashboard_pulse_service.py:157``).  Hoisting all four to the build entry
-    is the fix and it is finding **N-107**, owned by plan step **X-t**.  A new
-    seam call added inside this module's per-account loop would likewise escape
-    -- nothing mechanical prevents it, since W9909 / W9910 gate imports and
-    module identity, never call sites.
+    **This is now ONE of the package's TWO doors, and they are the only two**
+    (plan step X-t2, finding N-107).  The rule was written out in three
+    producers here; the other two -- the dense-map builder and the trend window
+    -- sat under one caller, so it moved up to
+    :func:`~.._orchestrator._compute_net_worth_section` and they simply call the
+    seam.  This door survives because it belongs to a DIFFERENT caller: the
+    projection runs for the full page and for each narrow producer, and its
+    degraded value is a blank tile rather than an empty region.
+
+    The PREDICATE itself is the seam's own
+    :attr:`~app.services.balance_at.BalanceContext.has_baseline`, which
+    :func:`~app.services.balance_at.require_scenario` raises on -- so the guard
+    and the precondition it guards are one property, read from both ends,
+    rather than an independent spelling of ``ctx.scenario is None`` at each call
+    site (18 in the tree when X-t2 measured it; the 12 this step does not reach
+    are finding N-112).  A new seam call added inside this module's per-account
+    loop would still escape -- nothing mechanical prevents it, since W9909 /
+    W9910 gate imports and module identity, never call sites.
 
     Args:
         accounts: The accounts being projected (any mix of kinds).
@@ -85,7 +90,7 @@ def _seam_batches(accounts, ctx):
         when there is no baseline scenario, which is the legitimate empty state
         every tile then degrades through.
     """
-    if ctx.balance_ctx.scenario is None:
+    if not ctx.balance_ctx.has_baseline:
         return _SeamBatches(balance_maps={}, loan_results={})
 
     loan_results = {}

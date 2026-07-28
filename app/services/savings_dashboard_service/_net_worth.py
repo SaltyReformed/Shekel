@@ -139,13 +139,20 @@ def build_account_net_worth_maps(
     :func:`compute_sparklines` consume.  Accounts with no anchor period (no
     dense map) are omitted by the seam and skipped here.
 
+    **The no-baseline rule is its CALLER's** (plan step X-t2, finding N-107).
+    This producer used to return an empty list for a ``None`` scenario, and the
+    trend-window builder beside it -- reached from the same caller, in the same
+    region -- answered the same question by building its axis anyway.  Two
+    degradations for one state is what a rule restated in each producer buys, so
+    :func:`~.._orchestrator._compute_net_worth_section` now states it once above
+    both and this calls the seam unconditionally.
+
     Args:
         accounts: The user's active accounts.
         ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
-            With no baseline scenario on it the seam's resolver path cannot run,
-            so an empty list is returned (the degraded no-scenario state)
-            WITHOUT calling the seam -- the seam raises on a ``None`` scenario by
-            contract, and this caller owns the legitimate empty state.
+            It MUST carry a baseline (``ctx.has_baseline``); the seam raises
+            otherwise, which is the intended fail-loud path for a caller that
+            did not guard.
         all_periods: All of the user's pay periods (the dense domain).
 
     Returns:
@@ -157,9 +164,6 @@ def build_account_net_worth_maps(
         :func:`_sum_composition_at_period` keys each account's composition
         band off it.
     """
-    if ctx.scenario is None:
-        return []
-
     balance_maps = balance_at.build_maps(accounts, ctx, all_periods)
     return to_net_worth_account_data(accounts, balance_maps)
 

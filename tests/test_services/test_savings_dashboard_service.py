@@ -4721,6 +4721,77 @@ class TestNoBaselineDegradesEveryKindTheSameWay:
             # summarise rather than a half-built one.
             assert data["debt_summary"] is None
 
+    def test_the_net_worth_region_degrades_through_one_door(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """No baseline: the region reports today's zeros and draws NOTHING.
+
+        Plan step X-t2 (finding N-107).  The rule was stated in each producer of
+        this region and two of the copies answered it DIFFERENTLY: the dense-map
+        builder returned ``[]`` while the trend window built its axis anyway, so
+        the page drew a flat ``$0`` net-worth line across a real two-year window
+        for a user whose balances the app cannot answer at all.  One guard above
+        both now decides, and the honest answer is the empty series and no
+        Horizon -- the same shape the no-pay-periods path already renders, so
+        the template's ``{% if net_worth.series.periods %}`` hides the chart
+        rather than drawing a fabricated one.
+
+        The empty series is BUILT by the real producer over an empty window, so
+        its band keys are the producer's own; asserting them here would pass
+        against a hand-written literal, which is what this checks it is not.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.services.savings_dashboard_service._net_worth import (
+            _COMPOSITION_BANDS,
+        )
+        with app.app_context():
+            _create_small_loan(seed_user, db.session, name="No Baseline")
+            scenario = db.session.get(Scenario, seed_user["scenario"].id)
+            scenario.is_baseline = False
+            db.session.commit()
+
+            net_worth = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )["net_worth"]
+
+            # The today figures still come from the (blank) projections, so the
+            # hero reads zero rather than raising.
+            assert net_worth["net_worth"] == Decimal("0.00")
+            assert net_worth["total_assets"] == Decimal("0.00")
+            assert net_worth["total_liabilities"] == Decimal("0.00")
+            # Nothing is drawn: no trend points, no forward projection, no
+            # Horizon axis.
+            assert net_worth["series"]["periods"] == []
+            assert net_worth["series"]["net"] == []
+            assert net_worth["series"]["current_index"] == 0
+            assert net_worth["series"]["composition"] == {
+                band: [] for band in _COMPOSITION_BANDS
+            }
+            assert net_worth["horizon"] is None
+
+    def test_the_page_renders_with_no_baseline(
+        self, app, auth_client, db, seed_user, seed_periods_today,
+    ):
+        """/savings returns 200 for a user with no baseline scenario.
+
+        The end-to-end arm: the degraded region's shape must be one the
+        template can render.  A producer returning ``None`` where the page
+        subscripts, or an empty series the chart block still enters, is a 500
+        that the service-level assertions above cannot see.
+        """
+        with app.app_context():
+            _create_small_loan(seed_user, db.session, name="No Baseline")
+            scenario = db.session.get(Scenario, seed_user["scenario"].id)
+            scenario.is_baseline = False
+            db.session.commit()
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            body = resp.data.decode()
+            assert "Net worth" in body
+            # The chart block is skipped entirely (no canvas, so no payload).
+            assert 'id="net-worth-chart-canvas"' not in body
+
 
 class TestUnclearingDebtHasNoDebtFreeDate:
     """A loan that never pays off must not be dropped from the debt-free date.

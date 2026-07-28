@@ -441,6 +441,12 @@ def _build_trend_window(
     ONLY the gate; the dense-map build assembles its own inside the
     :mod:`app.services.balance_at` seam.
 
+    **It carries no no-baseline guard of its own** (plan step X-t2, finding
+    N-107): its one caller owns that rule for the whole region, so this is
+    reached with a baseline and calls the seam unconditionally.  The guard it
+    used to hold silently answered the question a different way from the map
+    builder beside it.
+
     Args:
         core: The loaded core data (accounts, scenario, periods).
         params: The batch-loaded params (its loan-params map selects the
@@ -453,12 +459,9 @@ def _build_trend_window(
     loan_accounts = [
         acct for acct in core.accounts if acct.id in params.loan_params_map
     ]
-    debt_schedules = (
-        balance_at.debt_schedule_rows(loan_accounts, core.balance_ctx)
-        if core.balance_ctx.scenario is not None else {}
-    )
     return build_trend_periods(
-        core.accounts, core.all_periods, core.current_period, debt_schedules,
+        core.accounts, core.all_periods, core.current_period,
+        balance_at.debt_schedule_rows(loan_accounts, core.balance_ctx),
     )
 
 
@@ -519,6 +522,22 @@ def _compute_net_worth_section(
     (:func:`~app.services.savings_dashboard_service._horizon.build_horizon`
     returns ``None`` then).
 
+    **This is the ONE no-baseline door for the whole region** (plan step X-t2,
+    finding N-107).  Every seam read below it -- the dense maps, the trend
+    window's loan schedules, the sparklines and the Horizon's bands -- is
+    reachable only with a baseline, so the rule is stated HERE and the three
+    producers below simply call the seam.  It was stated in each of them
+    instead, and two of those copies degraded DIFFERENTLY: the map builder
+    returned an empty list (a $0 trend drawn over a real window) while the trend
+    window still built its axis.  A user with no baseline has no balance the app
+    can answer, so the honest region is the today figures over an empty series
+    and no Horizon at all -- which is exactly the state the no-pay-periods path
+    already renders, so the template and the client need no new branch.
+
+    The empty series is BUILT by :func:`compute_net_worth_series` over an empty
+    window rather than written out as a literal here, so the degraded shape
+    cannot drift from the real one.
+
     Args:
         core: The loaded :class:`_DashboardCoreData`.
         params: The batch-loaded :class:`_AccountParams`.
@@ -537,6 +556,11 @@ def _compute_net_worth_section(
     """
     today = compute_net_worth_today(account_data)
     category = category_key_by_account_id(account_data)
+
+    if not core.balance_ctx.has_baseline:
+        empty_series = compute_net_worth_series([], [], category)
+        empty_series["current_index"] = 0
+        return {**today, "series": empty_series, "horizon": None}, {}
 
     account_maps = build_account_net_worth_maps(
         core.accounts, core.balance_ctx, core.all_periods,

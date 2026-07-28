@@ -154,7 +154,11 @@ def compute_pulse_section(user_id: int) -> dict | None:
         computed (no account / scenario / current period).
     """
     account, balance_ctx, current_period = _resolve_section_context(user_id)
-    if (account is None or balance_ctx.scenario is None
+    # ``has_baseline`` is the SEAM's own precondition, read off the context
+    # rather than re-spelled as ``scenario is None`` (plan step X-t2, finding
+    # N-107): this region legitimately handles the empty state, and the
+    # property it guards on is the one ``require_scenario`` raises on.
+    if (account is None or not balance_ctx.has_baseline
             or current_period is None):
         return None
 
