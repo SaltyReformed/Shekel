@@ -217,12 +217,19 @@
           <div class="card-body text-muted">
             <div class="d-flex justify-content-between align-items-start">
               <div>
+                {# No "Paid Off" badge here: the archived list's dicts carry
+                   ``account`` and ``current_balance`` ONLY
+                   (``_data._load_archived_accounts``, which deliberately runs
+                   no engine or seam call for a historical account), so the
+                   badge's condition could never be true.  Plan step X-r
+                   deleted the branch rather than re-pointing it at the seam's
+                   figures: a guard against an impossible shape reads as
+                   coverage and is not.  Whether an archived paid-off loan
+                   SHOULD be badged -- at the cost of resolving loans for the
+                   archived list -- is finding N-102. #}
                 <h6 class="card-title mb-1">
                   <i class="bi bi-archive me-1"></i>
                   {{ ad.account.name }}
-                  {% if ad.is_paid_off is defined and ad.is_paid_off %}
-                  <span class="badge bg-success ms-1">Paid Off</span>
-                  {% endif %}
                 </h6>
                 <small>{{ ad.account.account_type.name if ad.account.account_type else '--' }}</small>
               </div>

@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 
 from app.services import balance_at, savings_goal_service
 from app.services.balance_at import BalanceContext
+from app.services.net_worth_account_data import is_liability_account
 from app.services.savings_dashboard_service._data import (
     _load_account_params,
     _load_archived_accounts,
@@ -136,10 +137,10 @@ def _debt_summary_with_dti(
     return debt_summary
 
 
-def _project_loan_accounts(
+def _project_debt_accounts(
     user_id: int, balance_ctx: BalanceContext | None = None,
 ) -> tuple[_DashboardCoreData, _AccountParams, list[dict]] | None:
-    """Load + project the user's loan accounts for the debt producers.
+    """Load + project the user's DEBT accounts for the debt producers.
 
     The single home for the load-core -> load-params -> filter-to-loans ->
     early-``None`` -> build-context -> project pipeline that both narrow
@@ -152,9 +153,20 @@ def _project_loan_accounts(
     "can never disagree on which loans count" is enforced by both reading
     one projection of one loan set, not by two copies staying in sync.
 
-    Restricts the projection to the loan accounts (those with a
-    ``LoanParams`` row); per-account projections are independent, so the
-    restriction cannot change any projected figure versus the full build.
+    Restricts the projection to the user's LIABILITY accounts -- the loans
+    (those with a ``LoanParams`` row) plus every other liability, which since
+    plan step X-q3 the debt summary also reports on (``revolving_debt``, the
+    debt no payoff date can speak for).  Per-account projections are
+    independent, so the restriction cannot change any projected figure versus
+    the full build.
+
+    **It was loans ONLY, and that quietly broke the "identical figures"
+    promise below**: `debt_without_payoff_model` sums the liabilities that are
+    NOT loans, so over a loans-only projection it is always ``$0.00`` while
+    the full ``/savings`` build reports the real figure.  Nothing rendered the
+    difference -- only the cockpit footer reads that key -- which is exactly
+    the kind of silent divergence between two paths to one number this arc
+    exists to remove.  Found by plan step X-r''''s adversarial review.
 
     Args:
         user_id: Integer ID of the current user.
@@ -173,14 +185,18 @@ def _project_loan_accounts(
     """
     core = _load_dashboard_core_data(user_id, balance_ctx)
     params = _load_account_params(core.accounts)
-    loan_accounts = [
-        acct for acct in core.accounts if acct.id in params.loan_params_map
-    ]
-    if not loan_accounts:
+    if not any(acct.id in params.loan_params_map for acct in core.accounts):
+        # No loans: both debt producers answer ``None`` (a user with only a
+        # card has no payoff caption to qualify and no principal to progress),
+        # so nothing is projected at all.
         return None
+    debt_accounts = [
+        acct for acct in core.accounts
+        if acct.id in params.loan_params_map or is_liability_account(acct)
+    ]
 
     ctx = _build_projection_context(core, params)
-    account_data = _compute_account_projections(loan_accounts, ctx)
+    account_data = _compute_account_projections(debt_accounts, ctx)
     return core, params, account_data
 
 
@@ -194,10 +210,11 @@ def compute_debt_summary(
     efficiency/SRP half).  Identical figures to
     ``compute_dashboard_data(user_id)["debt_summary"]`` by construction:
     it runs the same loaders and the same per-account projection
-    dispatch -- restricted to the accounts the debt summary reads (those
-    with a ``LoanParams`` row; per-account projections are independent,
-    so the restriction cannot change any projected figure), via the shared
-    :func:`_project_loan_accounts` -- and routes through the shared
+    dispatch -- restricted to the accounts the debt summary reads (its loans, plus
+    the other liabilities its ``revolving_debt`` figure names; per-account
+    projections are independent, so the restriction cannot change any
+    projected figure), via the shared
+    :func:`_project_debt_accounts` -- and routes through the shared
     :func:`_debt_summary_with_dti`.  What it skips is the dashboard-only
     work: every non-loan account's projection, goal progress, the
     emergency-fund metrics, account grouping, and the archived-account
@@ -206,7 +223,7 @@ def compute_debt_summary(
     Args:
         user_id: Integer ID of the current user.
         balance_ctx: An optional shared read-pass context (see
-            :func:`_project_loan_accounts`).
+            :func:`_project_debt_accounts`).
 
     Returns:
         The debt-summary dict with the DTI keys applied, or ``None``
@@ -216,7 +233,7 @@ def compute_debt_summary(
         projections and the breakdown's paycheck-engine call -- the
         debt summary needs neither).
     """
-    projected = _project_loan_accounts(user_id, balance_ctx)
+    projected = _project_debt_accounts(user_id, balance_ctx)
     if projected is None:
         return None
     core, params, account_data = projected
@@ -237,7 +254,7 @@ def compute_debt_principal_progress(
     The narrow producer behind the budget dashboard's debt track marker
     (Loop B B-1): it runs the same loaders and per-account projection
     dispatch :func:`compute_debt_summary` uses -- the shared
-    :func:`_project_loan_accounts` pipeline restricted to the loan
+    :func:`_project_debt_accounts` pipeline restricted to the loan
     accounts -- and routes through the shared
     :func:`_compute_principal_paid_fraction`.
 
@@ -261,16 +278,16 @@ def compute_debt_principal_progress(
     Args:
         user_id: Integer ID of the current user.
         balance_ctx: An optional shared read-pass context (see
-            :func:`_project_loan_accounts`).
+            :func:`_project_debt_accounts`).
 
     Returns:
         The principal-paid fraction as a ``Decimal`` in ``[0, 1]``, or
         ``None`` ONLY when the user has no loan accounts at all (the
-        :func:`_project_loan_accounts` early return).  A fully paid-off
+        :func:`_project_debt_accounts` early return).  A fully paid-off
         loan set returns ``Decimal("1")``, not ``None``.  The UI renders
         no marker for ``None``.
     """
-    projected = _project_loan_accounts(user_id, balance_ctx)
+    projected = _project_debt_accounts(user_id, balance_ctx)
     if projected is None:
         return None
     _core, _params, account_data = projected
@@ -306,7 +323,7 @@ def compute_goal_progress(
     Args:
         user_id: Integer ID of the current user.
         balance_ctx: An optional shared read-pass context (see
-            :func:`_project_loan_accounts`).
+            :func:`_project_debt_accounts`).
 
     Returns:
         A list of per-goal progress dicts (see

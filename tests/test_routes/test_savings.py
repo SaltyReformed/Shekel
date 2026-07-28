@@ -31,6 +31,8 @@ from app.models.savings_goal import SavingsGoal
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
+from app.services import balance_at
+from app.services.balance_at import BalanceContext
 
 from tests._test_helpers import (
     create_hysa_account,
@@ -3156,6 +3158,63 @@ class TestDebtSummaryDisplay:
             assert "excludes" in html
             assert "$500.00" in html
             assert "revolving" in html
+
+    def test_the_loan_cell_renders_its_rate_payment_and_payoff(
+        self, app, auth_client, seed_user, seed_periods, db,
+    ):
+        """The three loan-cell figures reach the page off the seam's bundle.
+
+        Plan step X-r moved the projection dict from six flattened copies of
+        ``LoanFigures`` to the value object itself, and four cockpit sites now
+        read through it.  This pins three of them; the fourth, the "Paid Off"
+        badge, is already covered by ``TestPaidOffBadge``.
+
+        **What the Jinja risk actually is, measured rather than assumed.**  A
+        mis-pointed attribute on the two MONEY sites and the payoff raises
+        (``money()`` compares the value, ``to_percent`` constructs a
+        ``Decimal``, ``strftime`` is an attribute access on ``Undefined``), so
+        those fail loud on their own.  The badge guard is the one site that
+        degrades SILENTLY -- ``Undefined`` is falsy, so the badge just stops
+        rendering -- and it is the one this test does not need to cover.
+        Both halves were confirmed by mutating the template.
+
+        A $1,000.00 24-month auto loan at 5.000%: the rate renders to three
+        decimals (the debt footer's own rate uses two, so the assertion cannot
+        be satisfied by that one), and the level payment is
+        1000 * r(1+r)^24 / ((1+r)^24 - 1) at r = 0.05/12 = $43.87 -- asserted
+        glued to the cell's own markup, because with one loan and no escrow
+        the footer's monthly total is the SAME number and a bare substring
+        would be satisfied by it.
+        """
+        with app.app_context():
+            loan = create_loan_account(
+                seed_user, db.session, name="Auto Loan",
+                principal=Decimal("1000.00"), rate=Decimal("0.05000"),
+                term=24, origination_date=date(2026, 1, 1),
+            )
+            db.session.commit()
+
+            ctx = BalanceContext.build(seed_user["user"].id)
+            figures = balance_at.loan_figures(loan, ctx)
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "5.000%" in html
+            assert (
+                'Monthly Payment <span class="font-mono">$43.87</span>' in html
+            )
+            # The payoff month is read back off the seam deliberately: this
+            # module's clock is NOT frozen, and the fold's zero crossing moves
+            # with it (an installment already due and unpaid pushes it out).
+            # The DERIVATION is oracle-tested at
+            # ``test_loan_payoff_date_oracle.py``; what is asserted here is
+            # that the cell renders it, and the string "payoff <Mon YYYY>"
+            # appears nowhere else on the page.
+            assert figures.payoff_date is not None
+            assert (
+                "payoff " + figures.payoff_date.strftime("%b %Y")
+            ) in html
 
     def test_dashboard_no_debt_summary_when_no_loans(
         self, app, auth_client, seed_user, seed_periods,

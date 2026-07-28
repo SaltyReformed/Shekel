@@ -6,6 +6,7 @@ the extracted business logic produces correct financial computations
 independently of the Flask route layer.
 """
 
+from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 
@@ -850,7 +851,7 @@ class TestPaidOffFlag:
                 ad for ad in result["account_data"]
                 if ad["account"].id == acct.id
             )
-            assert loan_ad["is_paid_off"] is True
+            assert loan_ad["loan_figures"].is_paid_off is True
 
     def test_paid_off_false_no_confirmed_payments(
         self, app, db, seed_user, seed_periods,
@@ -866,7 +867,7 @@ class TestPaidOffFlag:
                 ad for ad in result["account_data"]
                 if ad["account"].id == acct.id
             )
-            assert loan_ad["is_paid_off"] is False
+            assert loan_ad["loan_figures"].is_paid_off is False
 
     def test_paid_off_false_partial_confirmed_payments(
         self, app, db, seed_user, seed_periods,
@@ -903,7 +904,7 @@ class TestPaidOffFlag:
                 ad for ad in result["account_data"]
                 if ad["account"].id == acct.id
             )
-            assert loan_ad["is_paid_off"] is False
+            assert loan_ad["loan_figures"].is_paid_off is False
 
     def test_paid_off_false_projected_only(
         self, app, db, seed_user, seed_periods,
@@ -942,7 +943,7 @@ class TestPaidOffFlag:
                 ad for ad in result["account_data"]
                 if ad["account"].id == acct.id
             )
-            assert loan_ad["is_paid_off"] is False
+            assert loan_ad["loan_figures"].is_paid_off is False
 
     def test_paid_off_false_for_non_loan_account(
         self, app, db, seed_user, seed_periods,
@@ -957,12 +958,18 @@ class TestPaidOffFlag:
                 ad for ad in result["account_data"]
                 if ad["account"].name == "Checking"
             )
-            assert checking_ad["is_paid_off"] is False
+            assert "loan_figures" not in checking_ad
 
     def test_paid_off_false_no_loan_params(
         self, app, db, seed_user, seed_periods,
     ):
-        """Loan account with no LoanParams: is_paid_off=False, no crash."""
+        """A loan-TYPE account with no LoanParams carries no figures, no crash.
+
+        Since plan step X-r the projection dict carries the seam's
+        ``LoanFigures`` whole rather than five flattened copies of its fields,
+        so "not a configured loan" is the bundle's ABSENCE -- which is what
+        the tile, the debt summary and the debt-line selection all gate on.
+        """
         with app.app_context():
             loan_type = (
                 db.session.query(AccountType)
@@ -986,7 +993,7 @@ class TestPaidOffFlag:
                 ad for ad in result["account_data"]
                 if ad["account"].id == acct.id
             )
-            assert loan_ad["is_paid_off"] is False
+            assert "loan_figures" not in loan_ad
 
 
 class TestPaidOffReadsTheLedgerNotTheReplay:
@@ -1086,7 +1093,7 @@ class TestPaidOffReadsTheLedgerNotTheReplay:
             )
             # The ledger booked the real principal: nothing is owed.
             assert loan_ad["current_balance"] == Decimal("0.00")
-            assert loan_ad["is_paid_off"] is True
+            assert loan_ad["loan_figures"].is_paid_off is True
 
     def test_short_paid_loan_never_vanishes_from_total_debt(
         self, app, db, seed_user, seed_periods_today,
@@ -1136,7 +1143,7 @@ class TestPaidOffReadsTheLedgerNotTheReplay:
             )
             # The ledger still owes, so the loan is NOT paid off ...
             assert loan_ad["current_balance"] > Decimal("0.00")
-            assert loan_ad["is_paid_off"] is False
+            assert loan_ad["loan_figures"].is_paid_off is False
             # ... and it therefore still counts toward the debt card's total.
             assert result["debt_summary"] is not None
             assert (
@@ -4553,8 +4560,7 @@ class TestTypeDriftedLoanParamsRow:
             # No loan fields: the tile shows no payment / rate / payoff, so the
             # Horizon's domain and its milestone flags cannot pick it up.
             assert "loan_params" not in entry
-            assert entry.get("payoff_date") is None
-            assert entry["is_paid_off"] is False
+            assert "loan_figures" not in entry
 
             # And it raises no "paid off" milestone on the Horizon.
             horizon = data["net_worth"]["horizon"]
@@ -4846,9 +4852,16 @@ class TestARetiredLoanHasNoDebtLine:
                 account_data, date(2026, 3, 20),
             ) == (self._CLEARING_DOMAIN_END, self._CLEARING_PAYOFF, False)
 
-            # The same producer, reading the badging predicate instead.
+            # The same producer, reading the badging predicate instead.  The
+            # substitution is made on the seam's own frozen value object
+            # (``dataclasses.replace``), so the control exercises the real
+            # type rather than a dict shaped like it.
             for ad in account_data:
-                ad["is_retired"] = ad["is_paid_off"]
+                if "loan_figures" in ad:
+                    ad["loan_figures"] = replace(
+                        ad["loan_figures"],
+                        is_retired=ad["loan_figures"].is_paid_off,
+                    )
             assert _resolve_horizon_domain(
                 account_data, date(2026, 3, 20),
             ) == (self._FALLBACK_END, None, False), (
@@ -4909,7 +4922,11 @@ class TestARetiredLoanHasNoDebtLine:
             # FIRING CONTROL: the badging predicate keeps the retired loan in
             # the active set, so the user is reported NOT loan-free.
             for ad in account_data:
-                ad["is_retired"] = ad["is_paid_off"]
+                if "loan_figures" in ad:
+                    ad["loan_figures"] = replace(
+                        ad["loan_figures"],
+                        is_retired=ad["loan_figures"].is_paid_off,
+                    )
             assert _resolve_horizon_domain(
                 account_data, date(2026, 3, 20),
             ) == (self._FALLBACK_END, None, False)
@@ -5000,12 +5017,12 @@ class TestTheDebtFreeDateIsOneDerivation:
             assert by_name["Future Mortgage"]["current_balance"] == (
                 Decimal("0.00")
             )
-            assert by_name["Future Mortgage"]["is_originated"] is False
-            assert by_name["Future Mortgage"]["is_retired"] is False
-            assert by_name["Future Mortgage"]["payoff_date"] == (
+            assert by_name["Future Mortgage"]["loan_figures"].terms.is_originated is False
+            assert by_name["Future Mortgage"]["loan_figures"].is_retired is False
+            assert by_name["Future Mortgage"]["loan_figures"].payoff_date == (
                 self._MORTGAGE_PAYOFF
             )
-            assert by_name["Car Loan"]["payoff_date"] == self._CAR_PAYOFF
+            assert by_name["Car Loan"]["loan_figures"].payoff_date == self._CAR_PAYOFF
 
             # ONE derivation, and both surfaces read it.
             assert loan_payoff_outlook(account_data).all_clear_on == (
@@ -5176,4 +5193,48 @@ class TestTheDebtFreeDateIsOneDerivation:
             assert summary["total_debt"] == Decimal("12000.00")
             # It IS named, at its owed magnitude.
             assert summary["revolving_debt"] == Decimal("500.00")
+
+    def test_the_narrow_producer_reports_the_same_revolving_debt(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The two paths to the debt summary agree on EVERY key.
+
+        ``compute_debt_summary`` promises "identical figures to
+        ``compute_dashboard_data(...)['debt_summary']`` by construction", and
+        it kept that promise by projecting the same loans.  Plan step X-q3
+        added a key that is NOT about loans -- the revolving debt the payoff
+        date cannot speak for -- so a loans-only projection reported
+        ``$0.00`` there while the full build reported the real figure.
+        Nothing rendered the difference, which is what made it worth fixing:
+        two paths to one number that quietly disagree are the shape this arc
+        exists to remove.
+        """
+        with app.app_context():
+            # Pylint: ``import-outside-toplevel`` -- test-local helpers,
+            # matching this module's convention of importing where used.
+            from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
+                create_account_of_type, create_loan_account,
+            )
+            create_loan_account(
+                seed_user, db.session, name="Car Loan",
+                principal=Decimal("12000.00"), rate=Decimal("0.05000"),
+                term=24, origination_date=date(2026, 1, 1),
+                anchor_period=seed_periods[0],
+            )
+            create_account_of_type(
+                seed_user, db.session, "Credit Card", "Rewards Card",
+                anchor_balance=Decimal("-500.00"),
+            )
+            db.session.commit()
+            user_id = seed_user["user"].id
+
+            full = savings_dashboard_service.compute_dashboard_data(
+                user_id,
+            )["debt_summary"]
+            narrow = savings_dashboard_service.compute_debt_summary(user_id)
+
+            assert narrow["revolving_debt"] == Decimal("500.00")
+            assert narrow["revolving_debt"] == full["revolving_debt"]
+            # And every other key still agrees, which is the promise itself.
+            assert narrow == full
 

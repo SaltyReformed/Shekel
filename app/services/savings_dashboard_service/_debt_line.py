@@ -120,7 +120,9 @@ def debt_line_loans(account_data: list[dict]) -> list[dict]:
     property equity chart -- ``property_equity_chart.py:409`` filters
     ``SecuredLoanSeries`` on the same ``is_retired`` -- so this is one of two
     call sites of one PREDICATE, not a second definition of it.)  Scoped to
-    accounts carrying ``loan_params`` -- see the module docstring for why a
+    accounts carrying the seam's ``loan_figures`` -- which is exactly the
+    configured-loan set, since ``_project_one_account`` publishes the bundle
+    for a loan and for nothing else -- see the module docstring for why a
     revolving liability is not here and what would admit it.
 
     The predicate is the seam's
@@ -154,12 +156,12 @@ def debt_line_loans(account_data: list[dict]) -> list[dict]:
         account_data: The per-account projection dicts.
 
     Returns:
-        The loan dicts (those carrying ``loan_params``) that are not retired,
-        in *account_data* order.
+        The loan dicts (those carrying the seam's ``loan_figures``) that are
+        not retired, in *account_data* order.
     """
     return [
         ad for ad in account_data
-        if ad.get("loan_params") and not ad.get("is_retired")
+        if "loan_figures" in ad and not ad["loan_figures"].is_retired
     ]
 
 
@@ -180,15 +182,15 @@ def loan_payoff_outlook(account_data: list[dict]) -> LoanPayoffOutlook:
     their car loan ends.
 
     Args:
-        account_data: The per-account projection dicts (loans carry
-            ``loan_params``, ``payoff_date`` and ``is_retired``).
+        account_data: The per-account projection dicts (a configured loan
+            carries the seam's ``loan_figures``).
 
     Returns:
         The :class:`LoanPayoffOutlook` for this user.
     """
     payoffs: list[date] = []
     for loan_ad in debt_line_loans(account_data):
-        payoff = loan_ad.get("payoff_date")
+        payoff = loan_ad["loan_figures"].payoff_date
         if payoff is None:
             return LoanPayoffOutlook(all_clear_on=None, never_clears=True)
         payoffs.append(payoff)
@@ -224,7 +226,7 @@ def debt_without_payoff_model(account_data: list[dict]) -> Decimal:
     return sum(
         (
             abs(ad["current_balance"] or ZERO) for ad in account_data
-            if ad.get("is_liability") and not ad.get("loan_params")
+            if ad.get("is_liability") and "loan_figures" not in ad
         ),
         ZERO,
     )

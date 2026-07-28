@@ -339,8 +339,9 @@ def _compute_principal_paid_fraction(
     be included; a loan with no ``LoanParams`` row carries no
     ``original_principal`` and is likewise not a loan-ad here.  RETIRED
     loans, by contrast, remain active accounts and DO appear in
-    ``account_data`` carrying ``is_retired=True``, so the
-    all-loans-ever set is fully reachable.  The predicate is ``is_retired``
+    ``account_data`` carrying the seam's ``loan_figures`` with its
+    ``is_retired`` set, so the all-loans-ever set is fully
+    reachable.  The predicate is ``is_retired``
     and not ``is_paid_off`` as of plan step X-q: "this loan owes nothing" is
     the question this marker asks, and a loan retired by a lump-sum true-up
     answers it whether or not the ledger can BADGE it.  A loan the user has
@@ -364,7 +365,7 @@ def _compute_principal_paid_fraction(
         is clamped to ``0`` so the marker never renders to the left of the
         rail), or ``None`` when the user has no loans at all.
     """
-    loan_ads = [ad for ad in account_data if ad.get("loan_params")]
+    loan_ads = [ad for ad in account_data if "loan_figures" in ad]
 
     total_original = Decimal("0.00")
     total_current = Decimal("0.00")
@@ -379,7 +380,7 @@ def _compute_principal_paid_fraction(
         # marker's one design invariant below: the fraction would COLLAPSE from
         # 66.67% to 0% on closing day, when the mortgage's balance steps from
         # $0.00 to $200,000.
-        if not ad["is_originated"]:
+        if not ad["loan_figures"].terms.is_originated:
             continue
         # ALL loans ever: every loan-ad contributes its original
         # principal to the denominator.  A RETIRED loan contributes
@@ -395,7 +396,7 @@ def _compute_principal_paid_fraction(
         # predicate), which is why this is a vocabulary fix and not a
         # behaviour change.
         total_original += ad["loan_params"].original_principal
-        if ad["is_retired"]:
+        if ad["loan_figures"].is_retired:
             continue
         current = ad["current_balance"] or Decimal("0.00")
         total_current += max(current, Decimal("0.00"))
@@ -430,7 +431,7 @@ def _accumulate_loan_debt(
     chart reads as well.
 
     Args:
-        loan_ads: Per-account dicts that carry a ``loan_params`` key
+        loan_ads: Per-account dicts that carry the seam's ``loan_figures``
             (the loan subset of ``_compute_account_projections`` output).
         escrow_map: Dict mapping account_id to list of EscrowLine (with versions).
 
@@ -452,8 +453,8 @@ def _accumulate_loan_debt(
         # reflects the rate the loan is actually accruing at today --
         # for a changed ARM the in-effect rate, not the stale origination
         # value the dropped column had drifted from.
-        rate = ad["current_rate"]
-        monthly_pi = ad["monthly_payment"]
+        rate = ad["loan_figures"].terms.current_rate
+        monthly_pi = ad["loan_figures"].terms.monthly_payment
 
         # Include escrow (property tax, insurance) for PITI total, resolved to
         # today's active version per line via the shared as-of function.
@@ -477,8 +478,8 @@ def _compute_debt_summary(
     """Compute aggregate debt metrics across the user's loan accounts.
 
     Uses per-account data already computed by _compute_account_projections:
-    ``monthly_payment``, ``current_rate``, ``current_balance`` and
-    ``loan_params`` directly, and ``is_retired`` / ``payoff_date`` through
+    ``current_balance`` and ``loan_params`` directly, the payment and rate off
+    the seam's ``loan_figures`` bundle (plan step X-r), and the payoff through
     :func:`~.._debt_line.loan_payoff_outlook`.  Escrow components are loaded
     separately and included in the monthly total so DTI reflects PITI
     (principal, interest, taxes, insurance).
@@ -504,7 +505,7 @@ def _compute_debt_summary(
         so a user whose only liability is a card has no payoff caption to
         qualify, which is why the ``revolving_debt`` caveat rides here.
     """
-    loan_ads = [ad for ad in account_data if ad.get("loan_params")]
+    loan_ads = [ad for ad in account_data if "loan_figures" in ad]
     if not loan_ads:
         return None
 

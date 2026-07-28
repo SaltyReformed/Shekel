@@ -150,8 +150,8 @@ def _resolve_horizon_domain(
     the date either way, which is the ruling's other half.
 
     Args:
-        account_data: The per-account projection dicts (loans carry
-            ``loan_params``, ``payoff_date``, and ``is_retired``).
+        account_data: The per-account projection dicts (a configured loan
+            carries the seam's ``loan_figures``).
         today: The producer's as-of date.
 
     Returns:
@@ -576,7 +576,7 @@ def _structural_milestones(
         return []
     result: list[dict] = []
     for ad in debt_line_loans(account_data):
-        payoff = ad.get("payoff_date")
+        payoff = ad["loan_figures"].payoff_date
         if payoff is not None and frame.today < payoff < debt_free_date:
             result.append({
                 "date": payoff,

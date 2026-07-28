@@ -193,10 +193,10 @@ def _project_one_account(acct, ctx, balance_maps):
 
     Returns:
         A dict with keys: account, current_balance, projected,
-        needs_setup, is_retired, is_paid_off, is_originated, is_liability,
-        plus optional type-specific params (interest_params /
-        investment_params / loan_params + monthly_payment + current_rate +
-        payoff_date).
+        needs_setup, is_liability, plus optional type-specific params
+        (interest_params / investment_params / loan_params) and, for a
+        configured loan, ``loan_figures`` -- the seam's own
+        :class:`~app.services.balance_at.LoanFigures`, carried WHOLE.
     """
     kind = classify_account(acct)
     acct_interest_params = ctx.params.interest_params_map.get(acct.id)
@@ -234,26 +234,6 @@ def _project_one_account(acct, ctx, balance_maps):
         "current_balance": current_bal,
         "projected": projected,
         "needs_setup": needs_setup,
-        # The two loan-done predicates are BOTH published, because they answer
-        # different questions and a consumer holding only one has to make the
-        # other up.  ``is_retired`` is "this loan has no debt line" (originated,
-        # and its folded events owe nothing); ``is_paid_off`` is that PLUS a
-        # confirmed payment -- a badging rule, so a lump-sum payoff recorded as
-        # a balance true-up reads False here while owing $0.00.  See
-        # ``LoanFigures.is_retired`` / ``.is_paid_off``, which state the split
-        # and the $197,049.32 defect that collapsing it produced.  This dict
-        # carried only the badging one until plan step X-o, so the Horizon's
-        # debt-free question -- a debt-LINE question -- was asked with the
-        # congratulation predicate (finding B-16).
-        "is_retired": loan_result.figures.is_retired if loan_result else False,
-        "is_paid_off": loan_result.figures.is_paid_off if loan_result else False,
-        # A loan the user has configured but not yet BORROWED owes $0.00 today,
-        # and a consumer that reads that zero as "this debt is repaid" reports
-        # the opposite of the truth (the debt track counted an unclosed
-        # mortgage as 100% paid).  See ``LoanFigures.is_originated``.
-        "is_originated": (
-            loan_result.figures.terms.is_originated if loan_result else True
-        ),
         # Category-keyed liability flag (the id-based canonical classifier),
         # so the cockpit cell balance can take the danger token the group
         # subtotal, chip, and bar segment already do -- one quantity, one
@@ -266,12 +246,24 @@ def _project_one_account(acct, ctx, balance_maps):
         ad["investment_params"] = acct_investment_params
     if acct_loan_params:
         ad["loan_params"] = acct_loan_params
-        ad["monthly_payment"] = loan_result.figures.terms.monthly_payment
-        # DH-#56: the loan's current rate (resolver-derived) replaces the
-        # retired ``LoanParams.interest_rate`` column read on the /savings
-        # debt card and in the weighted-average-rate metric.
-        ad["current_rate"] = loan_result.figures.terms.current_rate
-        ad["payoff_date"] = loan_result.figures.payoff_date
+        # The seam's value object, carried WHOLE (plan step X-r).  This dict
+        # used to FLATTEN it, field by field: five copies -- ``is_paid_off``,
+        # ``is_originated``, ``monthly_payment``, ``current_rate``,
+        # ``payoff_date`` -- and six as of plan step X-o, which added
+        # ``is_retired`` as a sixth deliberately so the live defect did not
+        # wait on this refactor.  Until X-o that missing sixth field WAS
+        # finding B-16: nothing failed, because a consumer cannot miss a key
+        # that was never there, so the Horizon asked the nearest question the
+        # dict could answer and reported a retired loan as debt the user still
+        # carried.
+        #
+        # ``_types._LoanAccountResult`` composes ``LoanFigures`` for exactly
+        # this reason one layer down -- "the copy silently went stale the
+        # moment the seam grew ``is_originated``", and "a bundle that must be
+        # hand-synchronised with the seam it mirrors is the seam's fence with
+        # a hole in it".  This is that ruling applied where the copy actually
+        # happened.  A field the seam grows now arrives here by construction.
+        ad["loan_figures"] = loan_result.figures
     return ad
 
 
