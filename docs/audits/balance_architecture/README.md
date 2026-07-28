@@ -47,8 +47,8 @@ and two loaders orphaned by them -- so **1,347 production lines and 4,937 test l
 arc set out to replace is now gone from the tree rather than merely unwired: a non-loan balance is
 ONE event replay, a loan is its `positions()` fold, and there is no third answer left to pick.
 
-**With X-g4 the whole of X-g is DONE**, and its header is ticked with the last of its four commits
-(rule 6's convention for a decomposed step). The ledger tail that step left is closed too: N-43,
+**With X-g4 the whole of X-g is DONE**, and its header is ticked with the last of the ten commits
+its four decomposed steps took (rule 6's convention for a decomposed step). The ledger tail that step left is closed too: N-43,
 N-46, N-78 and N-95 were resolved BY `17c57cde` while still reading "OPEN" against a ticked owner,
 and they are now in the archive's closed register -- the exact class plan step X-h's gate exists to
 make impossible, found by hand one more time.
@@ -130,14 +130,16 @@ live caller and were DELETED at plan step **X-g4b** (`17c57cde`). The full recor
    render) and an impurity (a historical read models contributions at TODAY's gross). Plan step
    **X-i**.
 
-7. **One question, two producers -- on the debt-free date this time.** `/savings` derives "when is
-   this user debt-free" twice from one `account_data`: the cockpit caption selects loans by their
-   BALANCE, the Horizon chart's flag by the debt-line predicate, and they part on a mortgage that
-   has not closed yet (**19 years** apart on the developer's own data). Plan step **X-q**.
+7. **A producer publishes what nothing reads, and a template reads what nothing publishes.** The
+   Horizon returns `is_loan_free` and `horizon_end` that no serializer emits, and
+   `compute_net_worth_horizon` is a public export with zero `app/` callers (N-100); the archived
+   list's "Paid Off" badge asked for a key its own producer never builds, so it could not render
+   (N-102). Plan step **X-q2**. *(This root's larger half -- the debt-free date derived twice, 19
+   years apart -- CLOSED at X-q1 on 2026-07-27.)*
 
-**Nine more steps carry what the seven roots above do not name**, each owning findings the
-2026-07-27 triage grouped by root: X-o, X-r, X-h, X-k, X-m, X-n, X-p, plus E2's two. (X-q is root 7
-above, so it is not counted again here.) Section 5 has them in execution order; Section 6 records who
+**Eight more steps carry what the seven roots above do not name**, each owning findings the
+2026-07-27 triage grouped by root: X-h, X-i, X-j, X-k, X-l, X-m, X-n, X-p, plus E2's two. (X-q2 is
+root 7 above, so it is not counted again here; X-o, X-q1, X-q3 and X-r have SHIPPED.) Section 5 has them in execution order; Section 6 records who
 owns every open finding, with no row unowned.
 
 ## 2. What is already shipped and correct (the foundation this plan builds on)
@@ -583,8 +585,9 @@ its decomposed ID -- append-only, and never renumbered for readability. **Ruling
 then folded its CONTENT into `X-g4b`**, so the exception now costs no commit of its own: the entry
 stays where it is, its content is what X-g4b carries, and its box ticks with X-g4b's hash. The live
 order from here is
-**X-o -> X-q -> X-r -> X-h -> X-i -> X-j -> X-k -> X-l -> X-m -> X-n -> X-d -> X-e -> X-f -> X-p ->
-E2** (X-g4a and X-g4b, which used to open this line, have SHIPPED) (X-h .. X-k added 2026-07-27 by ruling R-AO, X-l .. X-p the same day by R-AQ, and
+**X-q2 -> X-h -> X-i -> X-j -> X-k -> X-l -> X-m -> X-n -> X-d -> X-e -> X-f -> X-p ->
+E2** (X-g4a, X-g4b, X-o, X-q1 and X-q3 and X-r, which used to open this line, have SHIPPED; X-q2 is
+the only leaf of X-q still open) (X-h .. X-k added 2026-07-27 by ruling R-AO, X-l .. X-p the same day by R-AQ, and
 X-q / X-r the same day by R-AV / R-AW out of X-o's trace; they
 appear on this page in EXECUTION order, which is why X-o precedes X-h and X-p follows X-f -- the
 alphabet has never been this page's order, exactly as X-g running before X-d already showed);
