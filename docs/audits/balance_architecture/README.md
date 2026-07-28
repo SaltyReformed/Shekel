@@ -1264,11 +1264,13 @@ preconditions cite entries in that file.
 
 - [x] **X-h** `test(balance): four controls that cannot fail are not controls` -- **SHIPPED dev
   2026-07-28 in its five commits** (`6337606e` B-17, `7d61c67f` N-94, `8e739298` N-45, `86c38e28`
-  N-65, and the gate). **NO production
+  N-65, `6b1373ab` the gate; the header ticks with the last, rule 6's convention for a decomposed
+  step). **NO production
   change, so the baseline provably cannot move.** Closes **B-17**, **N-45**, **N-65**, **N-94**
   (ruling R-AO). One root: Section 7.3 requires every guard carry a negative control shown to fire,
   and these four cannot fire. B-17 asserts `_metrics` behaviour on an `_ad` dict the TEST builds, so
-  changing the production builder at `_projections.py:241-243` leaves it green; **N-94**'s per-kind
+  changing the production builder leaves it green (**its `_projections.py:241-243` citation was
+  already STALE when this was written -- see AS BUILT below**); **N-94**'s per-kind
   injection lock compares every surface against the fixture's ASSERTED value, which no surface has
   returned since plan step X-g2b gave the anchor period its own accrual (ruling R-Y), so it raises
   with the patch and without it; **N-45** passes only because a sibling test class registers a
