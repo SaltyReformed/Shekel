@@ -53,12 +53,15 @@ N-46, N-78 and N-95 were resolved BY `17c57cde` while still reading "OPEN" again
 and they are now in the archive's closed register -- the exact class plan step X-h's gate exists to
 make impossible, found by hand one more time.
 
-**NEXT: X-o, then X-q and X-r**, then the steps after them in the order Section 5 lists. X-o is a
-one-predicate fix to a LIVE defect on a rendered screen and depends on nothing. **X-o's trace opened
-the other two** (rulings R-AV / R-AW): the debt-free date has a SECOND producer that the predicate
-fix does not merge -- measured 19 years apart on the developer's own data, 28 on an independent
-fixture -- and B-16's ROOT is that the per-account projection dict re-flattens the seam's
-`LoanFigures` field by field and dropped the one field the debt-line question needed.
+**X-o, X-q1 and X-q3 are DONE**, shipped 2026-07-27 (`68c22fa0`, `3b7823e1`, `bad97e6a`). X-o's
+trace opened the other two steps (rulings R-AV / R-AW) and its own review opened a third finding:
+the debt-free date had a SECOND producer the predicate fix does not merge (measured **19 years**
+apart on the developer's own data and **28** on an independent fixture), the caption claimed more
+than the derivation covers, and B-16's ROOT is that the per-account projection dict re-flattened the
+seam's `LoanFigures` field by field and dropped the one field the debt-line question needed.
+`/savings` now derives "when is this user debt-free" ONCE, and says it covers loans.
+
+**NEXT: X-r**, then X-q2, then the steps after them in the order Section 5 lists.
 
 ---
 
@@ -520,6 +523,17 @@ that.
 | **R-AV** (answered 2026-07-27, as recommended) | **X-o ships the predicate alone; the second debt-free producer gets its OWN step, X-q, and both are built now.**  The trace found that `/savings` derives the debt-free date twice from one `account_data` -- `_metrics._compute_debt_summary` for the cockpit caption (membership: the loan's BALANCE) and `_horizon._resolve_horizon_domain` for the chart flag (membership: the debt-line predicate) -- and that fixing B-16's predicate does not merge them: they still disagree on a NOT-YET-ORIGINATED loan, measured at **`2029-02-22` caption against `2048-12-01` chart** on the developer's own mortgage rewritten into that state, and at **`2028-03-01` against `2056-06-01`** on an independent fixture built by X-o's adversarial review.  Two commits, not one: X-o moves no figure on any data and X-q1 moves a rendered caption, and mixing them makes a caption slip read as a predicate slip -- the b1/b2/b3 line this arc has now split on five times.  **Rejected: recording X-q for a later session** (rule 7 -- a measured contradiction on a rendered screen is sequenced, never deferred, and the trace that measured it is the cheapest context it will ever have) **and one combined commit** (above) | X-o, X-q |
 | **R-AW** (answered 2026-07-27, as recommended) | **The per-account projection dict carries the seam's `LoanFigures`, and the six flat copies go -- in its OWN commit, AFTER the defect is fixed.**  B-16's root is not the predicate at the call site, it is that `_project_one_account` re-flattens a value object field by field and dropped the one field the debt-line question needed.  A dropped copy cannot fail loudly: the consumer simply asks the nearest question the dict can answer.  The ruling that closes it already exists ONE LAYER DOWN -- `_types._LoanAccountResult` composes `LoanFigures` precisely because "the copy silently went stale the moment the seam grew `is_originated`" (`_types.py:107-111`; `_loan_figures.py:130-131` states the same rule from the seam's side) -- so this applies a decided rule rather than taking a new one.  Ordering: X-o first (one line, the live defect, depends on nothing), then the bundle, so the fix does not wait behind a refactor that touches two Jinja templates where a missed attribute renders EMPTY instead of raising.  **Rejected: adding `is_retired` and stopping** (the next field the seam grows is dropped the same way, silently) **and doing the bundle first** (the defect waits on it) | X-o, X-r |
 
+### Answered (developer ruling, 2026-07-27: X-q's two forks, both as recommended)
+
+**Both were put to the developer BEFORE any X-q code was written**, which is what the X-q entry's
+own text required. Each carries what the trace measured, not what the shape of the problem
+suggested.
+
+| # | ruling | consumed by |
+|---|---|---|
+| **R-AX** (answered 2026-07-27, as recommended) | **"Debt-free" stays LOAN-ONLY, and the surfaces say so.**  The derivation covers accounts with a payoff MODEL -- amortizing loans -- while the Horizon's own liability band sums a revolving Credit Card the seam holds FLAT at its owed magnitude.  A flat balance never reaches zero, so a card can carry no payoff date, and including it under today's model would mean nobody carrying a card balance ever gets a date at all: honest and useless.  So the figure is unchanged and the CAPTION narrows to what it measures -- "Loans paid off <mon>", "All loans paid off" on the chart flag, plus "excludes `$X` revolving" when a liability with no payoff model carries a balance.  A card that can carry a REAL payoff date is the credit-card arc's work (`docs/plans/implementation_plan_credit_card.md`), and `_debt_line` is where it would be admitted.  Rejected: including revolving debt as it is modelled today (poisons the date for the state most users are in), and building the card paydown model inside X-q (a feature with its own UI and its own trace, overlapping an arc that already exists) | X-q3 |
+| **R-AY** (answered 2026-07-27, as recommended) | **A payoff date that is already PAST is reported, and the chart falls back.**  `plan_payoff_date` returns the DUE date the balance first folds to zero, and an overdue-but-still-projected installment that clears the loan folds behind today; `_metrics` counted it in its `max()` while `_horizon` filtered it out -- one question, two rules, which is the defect X-q exists to end.  The outlook reports what the fold says, because it is a fact about the loan's plan; the Horizon then falls back to its fixed window for AXIS SIZING only, since `_milestone_axis_x` clamps a past target to index `0.0` and would plant the flag on "Today".  The user is NOT loan-free in that state, and the rule this replaced said they were.  Rejected: future-dates-only (the caption stops reporting a date the fold can state, and "no date" then covers two different situations) and a third rendered state ("Debt-free Feb 2026 (payment overdue)": most informative, but a new value-object state and a new string in two templates for a case that needs an overdue unpaid installment to reach) | X-q1 |
+
 ### Answered (developer ruling, 2026-07-26: X-g's five forks, all as recommended)
 
 **The trace ran first and no code was written for it** -- the step's own stated first action. Each
@@ -972,8 +986,8 @@ preconditions cite entries in that file.
   is the condition X-e's question ("a reconciled cache or it is nothing") needs in order to be
   answerable at all.
 
-- [ ] **X-o** `fix(savings): the debt-line question uses the debt-line predicate` -- closes
-  **B-16**. **Sequenced FIRST of the new steps because it is a LIVE defect on a rendered screen and
+- [x] **X-o** `fix(savings): the debt-line question uses the debt-line predicate` -- **SHIPPED
+  dev 2026-07-27 (`68c22fa0`)**, closing **B-16**. **Sequenced FIRST of the new steps because it is a LIVE defect on a rendered screen and
   the fix is one predicate**; it depends on nothing and nothing depends on it.
 
   `LoanFigures` states the contract at `_loan_figures.py:176-177` -- "Use `is_retired` to decide
@@ -1077,21 +1091,49 @@ preconditions cite entries in that file.
   Including revolving debt means nobody carrying a card ever gets a date (a flat balance never
   reaches zero), which is honest and possibly useless; excluding it means the caption means "loan
   free" and should probably say so. Options, costs and a recommendation go to the developer BEFORE
-  any code, on the X-g / X-g4 precedent.
+  any code, on the X-g / X-g4 precedent. **RULED 2026-07-27 (R-AX, as recommended): the derivation
+  stays loan-only and the SURFACES say so**, which is plan step X-q3 below.
 
   **Decomposed on the arc's own line, because one half moves a rendered figure and the other cannot:**
 
-  * [ ] **X-q1 THE DERIVATION** -- one debt-free outlook, both surfaces read it. MOVES the caption in
-    the not-yet-originated shape, so it carries its own fixture, its own firing control (the old
-    balance rule, substituted, must produce the wrong date) and its own sign-off. It also decides
-    what a payoff date in the PAST means: `plan_payoff_date` returns a DUE date and an
-    overdue-but-projected installment that clears the loan folds at a past one, which `_metrics`
-    counts in its `max()` and `_horizon` filters out -- one question, two rules, again.
-  * [ ] **X-q2 THE SURFACE** -- the horizon publishes what is read (**N-100**). `is_loan_free` and
+  * [x] **X-q1 THE DERIVATION** -- **SHIPPED dev 2026-07-27 (`3b7823e1`)**: one debt-free outlook
+    (`_debt_line.loan_payoff_outlook`, a three-state `LoanPayoffOutlook`), both surfaces read it.
+    The not-yet-originated shape now reads `2048-12-01` on both where the caption said
+    `2029-02-22`. **Two behaviour changes beyond the fix, both stated because neither is obvious**:
+    `has_unclearing_debt` widens (a not-yet-originated loan whose plan never clears it can now
+    poison the date), and a payoff date already in the PAST now reads `is_loan_free=False` where
+    the per-loan filter it replaced read the empty list as "no loans" and reported a borrower with
+    an uncleared loan as loan-free. The developer's ruling on the past date: the outlook REPORTS it
+    and the Horizon falls back for AXIS SIZING only, because `_milestone_axis_x` clamps a past
+    target to index `0.0` and would plant the flag on "Today". Two predicates that could not fire
+    were deleted rather than re-pointed (`_loan_ad_current_principal`'s `is_paid_off` arm, and
+    `_compute_principal_paid_fraction`'s move to `is_retired`, bit-identical in every state).
+    Its adversarial review found six real defects in the first draft -- a docstring naming the
+    wrong clamp end, the `$900,000` incident attributed to the wrong mechanism, two money
+    assertions read back off the producer, and the past-payoff branch shipping with NO test -- all
+    fixed rather than reworded.
+  * [x] **X-q3 THE CAPTION** -- **SHIPPED dev 2026-07-27 (`bad97e6a`)**, closing **N-99** under
+    ruling R-AX. The date is derived over the debts that HAVE a payoff model, so the surfaces say
+    that: `Debt-free <mon>` -> `Loans paid off <mon>` on the cockpit footer, `No debt-free date at
+    current payments` -> `No loan payoff date at current payments`, `debt-free <mon>` -> `loans
+    paid off <mon>` on the dashboard debt track, and the Horizon's flag `Debt-free` -> `All loans
+    paid off` (the machine `kind` is unchanged). `_debt_line.debt_without_payoff_model` sums the
+    owed magnitude of every liability that is NOT an amortizing loan -- `abs()`, matching the
+    net-worth reducer, because a card is anchored owed-as-NEGATIVE -- and the footer names it
+    ("excludes `$500.00` revolving"). Three existing assertions changed WITH the labels, which is
+    the developer confirming the expected behaviour changed rather than a test edited to pass.
+    Ships out of execution order (before X-q2) because it is the caption half of X-q1's own
+    ruling and the two read one derivation.
+  * [ ] **X-q2 THE SURFACE** -- the horizon publishes what is read (**N-100**), and the archived
+    list reads what is published (**N-102**). `is_loan_free` and
     `horizon_end` are producer outputs `_serialize_horizon` does not emit and no template reads, and
     `savings_dashboard_service.compute_net_worth_horizon` is a PUBLIC export with zero `app/`
     callers, alive on 10 test call sites in one file. Same class as N-85 / N-96 in the seam. No behaviour: the
-    proof is that the rendered payload is byte-identical.
+    proof is that the rendered payload is byte-identical. **N-102 is the same mismatch pointing the
+    other way** and it is why this step is not purely a deletion: the archived-accounts list's
+    dicts carry `account` and `current_balance` only, so its "Paid Off" badge could never render --
+    X-r deleted the dead branch, and whether an archived paid-off loan SHOULD be badged, at the
+    cost of resolving loans for a historical list, is this step's fork.
 
 - [ ] **X-r** `refactor(savings): the projection dict carries the seam's figures, not six copies` --
   closes **N-101** (ruling R-AW, 2026-07-27). **NO behaviour change**, and it is B-16's ROOT rather
@@ -1109,9 +1151,12 @@ preconditions cite entries in that file.
   and this step applies it where the copy actually happens.
 
   The dict carries `ad["loan_figures"]` (the seam's own value) and the six flat keys go. Consumers to
-  re-point, all read at the trace: `_metrics.py` (`:282`, `:362`, `:371`, `:427`, `:428`, `:452`),
-  `_horizon.py` (`_debt_line_loans`, the milestone loop), `savings/_cockpit.html` (`:157`, `:182`,
-  `:188`, `:189`) and `savings/dashboard.html` (`:223`), plus **14 test sites in two files at
+  re-point, **re-read 2026-07-27 after X-q moved two of them**: `_metrics.py` (the originated and
+  retired tests in `_compute_principal_paid_fraction`, and the rate / payment reads in
+  `_accumulate_loan_debt`), `_debt_line.py` (`debt_line_loans` and `loan_payoff_outlook`, which is
+  where the `is_retired` and `payoff_date` reads moved at X-q1), `_horizon.py` (the milestone
+  loop), `savings/_cockpit.html` (`:157`, `:182`, `:188`, `:189`) and `savings/dashboard.html`
+  (`:223`), plus **14 test sites in two files at
   `d1c218c2`** (`test_savings_dashboard_service.py` and `test_balance_at.py`) and the **two more X-o
   adds** in its firing controls -- 16 to read, never sed. **Jinja is
   where the risk is**, not Python: an undefined attribute renders as empty rather than raising, so
@@ -1610,7 +1655,7 @@ meantime without deciding that first**, or the classification is written and the
 ## 6. The findings ledger
 
 **Only UNRESOLVED findings are here, and every one of them has an OWNER** (Section 9 rule 6). The
-CLOSED registers are in the two as-built records: the 14 that Phase X's shipped steps closed are in
+CLOSED registers are in the two as-built records: the 17 that Phase X's shipped steps closed are in
 `archive/cash_arc_as_built_2026-07-27.md` Section 3, and the 75 the LOAN arc closed are in
 `archive/loan_arc_as_built_2026-07-26.md` Section 7. IDs keep their names, so a reference to any
 finding resolves in whichever file holds it. Unfinished work stays HERE whichever half of the arc it
@@ -1667,16 +1712,14 @@ nothing reads) and **N-101** (the projection dict re-flattens `LoanFigures`, whi
 
 | id | finding (one line) | worst measured | status | closed by |
 |---|---|---|---|---|
-| B-16 | **The /savings horizon asks the debt-line question with the CONGRATULATION predicate.** `LoanFigures` states the contract at `_loan_figures.py:176-177` -- "Use `is_retired` to decide whether a loan has a debt line; use `is_paid_off` to decide whether to CONGRATULATE the user" -- and `_horizon.py:144` (which loans are ACTIVE for the debt-free date) and `:561` (which payoff milestones to plot) both ask the debt-line question with `is_paid_off`. `is_paid_off` is strictly narrower: it also requires at least one CONFIRMED payment, a badging guard against a degenerate `$0` opening anchor. So a loan retired by a lump-sum balance TRUE-UP with no payment rows reads `is_retired=True, is_paid_off=False`, stays in the horizon's ACTIVE set, and -- being retired -- has `payoff_date is None`, which fires the "an ACTIVE loan with no payoff never clears" branch: **no debt-free date at all, and the user reported not loan-free, on a loan that owes nothing.** The same misconfiguration class produced the `$197,049.32` equity-chart defect `_loan_figures.py:178-184` cites | the debt-free milestone suppressed entirely; not yet measured in dollars | **OPEN -- RE-VERIFIED against the code 2026-07-26** (the trim). Its old status ("latent -- collapses at C3b/C4") was WRONG: both steps shipped and both call sites are live. Not fixed here: it is a loan-surface predicate swap with its own control to write **TRIAGED 2026-07-27 (ruling R-AO): genuine RESIDUE.** A single independent surface -- a loan-figures predicate swap with its own control -- sharing a root with no other row, so 'own commit' here means triaged and independent rather than unread. **RE-TRIAGED 2026-07-27 (ruling R-AQ): there is no deferred category, and the R-AO pass under-triaged this as residue). It is a LIVE defect on a rendered screen -- re-verified at `_horizon.py:144` and `:563` on this date -- with a stated contract, a one-line fix and an obvious control, so it is DONE FIRST, at plan step X-o.** | X-o |
 | B-17 | **The debt-track `is_originated` guard proves where the value comes FROM and never that production puts it there -- the N-63 / N-67 class, third instance.** `test_balance_at.py:3583-3592` builds its OWN `_ad` dict with `"is_originated": figures.terms.is_originated` and asserts `_metrics` behaviour on it. Production builds that dict at `_projections.py:241-243`, with the same expression PLUS a `loan_result is None` fallback of `True` the test's dict has no branch for. Change the production key to `False`, to `is_retired`, or drop it, and the test stays GREEN -- it never executes the builder. The value's source is proven; the WIRING is not | the debt track counting an unclosed mortgage as 100% paid (the defect the flag was added to stop) | **OPEN -- RE-VERIFIED 2026-07-26** (the trim). Its old status ("flag deleted at C3b") was WRONG: `is_originated` is live on `LoanFigures.terms`, read through that dict at `_metrics.py:362`. The fix is the Section 8 rule N-63 wrote: assert the CALL, or assert behaviour through the real builder **TRIAGED 2026-07-27 (ruling R-AO): to X-h**, with the three other controls that cannot fire. | X-h |
 | FU-1 / F1 | **The Van Loan's one unexplained true-up STEP -- an operator question, not a code fix.** RE-SCOPED 2026-07-25 on a fresh PROD clone: the duplicate same-day anchors the finding named are DEV-CLONE pollution (created 2026-07-07 during arc development), not production. Prod's account 8 carries exactly THREE anchors (origination 2023-02-14 `$32,402.45`, user_trueup 2026-05-22 `$17,020.47`, user_trueup 2026-06-23 `$15,663.59`) and an audit trail of 6 INSERTs / 0 UPDATE / 0 DELETE -- the shape was never there, so it was not silently repaired either. What DOES remain: the 2026-06-23 true-up moves the balance `$905.33` beyond what the recorded payment explains (after the 06-22 installment's `$451.55` principal the walk stands at `$16,568.92`; the anchor asserts `$15,663.59`). That is a user ASSERTION, which the architecture treats as authoritative by design, not a defect -- the Mortgage's own 2026-05-22 true-up reconciles to the cent (`$177,829.83` == the walk after two payments), so the machinery is not suspect | `$905.33` against the servicer's statement | **OPEN -- awaiting the OPERATOR.** Whether the `$905.33` matches the servicer's statement is a question only you can answer; it blocks nothing, and the ledger is self-consistent under E1a's assert either way. Converted from a Phase F step to a finding at the 2026-07-26 trim, because it is a question and not a commit | operator (unchanged by the R-AO triage) |
 | FU-3 | Standing overpayment resolves at today for any as-of | -- | latent **RE-VERIFIED 2026-07-27** and it is the X-i class, not a C-phase note: `_resolution.py:294` calls `loan_standing_extra_for_account(account.id)`, which resolves through `recurring_transfer_query.py:72-76` off the CURRENT template row with no as-of, inside a resolution the context pins an `as_of` for. **TRIAGED 2026-07-27 (ruling R-AO): to X-i2.** | X-i2 |
 | N-96 | **`balance_at.interest_by_period_for_account` is a public seam entry with ZERO `app/` callers.** AST-verified 2026-07-27 during X-g4b's review: the account-detail route reads `interest_projection_for_account`, and nothing reads this. `__init__.py` states as fact that it and `debt_schedule_rows` are "the two non-balance seam entries the out-of-cluster consumers (the account-detail route, the savings orchestrator) read" -- true of the second, FALSE of the first. Same class as the `calculate_interest` orphan X-g4b deleted, but it pre-dates that step rather than being created by it, so it was reported and not swept | a public seam entry no screen can reach, described as one two screens read | **OPEN -- found 2026-07-27** by X-g4b's adversarial review, AST-verified, deliberately NOT fixed in that commit (out of its scope, CLAUDE.md rule 6) | X-e |
 | N-97 | **`app/utils/dates.py:314` cites `balance_resolver.daily_cash_balance_series` as a live consumer of `attribution_date`.** That producer was deleted at plan step X-c2b3 (the calendar's per-day line is the fold sampled at every day). The rule the sentence states -- one attribution rule shared by the calendar's day cells and the balance line's steps, so a flow's cell and its step land on the same day -- is STILL TRUE and load-bearing; only its named example is gone. Found 2026-07-27 in X-g4b's sweep, outside that step's 26-site scope | a present-tense claim naming a producer deleted a month earlier, in the docstring of the rule two surfaces share | **OPEN -- found 2026-07-27**, reported not fixed (pre-dates X-g4b) | X-p |
-| N-98 (X-o trace) | **The debt-free date has TWO producers over ONE `account_data`, with different membership rules, rendered on ONE page.** `_metrics._compute_debt_summary` feeds the cockpit's `Debt-free <month>` caption (`_cockpit.html:259`) and the dashboard debt track (`_tracks.html:91`), selecting loans with `_loan_ad_current_principal` (`_metrics.py:282`: skip when `current_balance <= 0`); `_horizon._resolve_horizon_domain` feeds the chart's `Debt-free` flag and its x-axis, selecting with the debt-line predicate. They part on a NOT-YET-ORIGINATED loan -- it owes `$0.00` today, so the balance rule drops a mortgage whose whole 30-year line is ahead of it. This is finding B-16's THIRD call site; B-16's own row cites only the two in `_horizon`, which is why closing it does not close this | caption **`2029-02-22`** against chart **`2048-12-01`** (19 years) on the developer's own Mortgage rewritten into the not-yet-closed state; **`2028-03-01`** against **`2056-06-01`** (28 years) on an independent two-loan fixture | **OPEN -- found 2026-07-27** by X-o's trace and independently by its adversarial review, measured on both databases' shape, deliberately NOT fixed in X-o (that commit moves no figure anywhere; this one moves a rendered caption) | X-q1 |
-| N-99 (X-o trace review) | **"Debt-free" ignores revolving debt.** Both debt-free producers select accounts carrying `loan_params`, so a Credit Card -- which the seam holds FLAT because it has no forward model, and which the Horizon's own `_liability_band` sums into the chart -- cannot affect the date. A user carrying a card balance is flagged Debt-free on the date their last LOAN clears, on a chart whose liability band never reaches zero. A design fork, not a bug to fix silently: including revolving debt means nobody carrying a card ever gets a date | not measured in dollars; the developer carries no card balance today | **OPEN -- found 2026-07-27** by X-o's adversarial review, which caught the new `_debt_line_loans` helper over-claiming its scope in prose. The helper's docstring now states the gap; the CHOICE is X-q1's fork and goes to the developer before any code | X-q1 |
 | N-100 (X-o trace) | **The Horizon producer publishes three things nothing reads.** `build_horizon` returns `is_loan_free` and `horizon_end`, and `_serialize_horizon` (`routes/savings.py:113-132`) emits neither -- it maps `labels` / `net` / `composition` / `milestones` / `current_index` and drops the rest; no template or JS names either. `savings_dashboard_service.compute_net_worth_horizon` is a PUBLIC export with ZERO `app/` callers, alive on 10 test call sites in one file (AST-counted, not grepped). Same class as N-85 / N-96 in the seam: dead surface kept honest by its own tests. It matters here because B-16's entry claimed the user was "told they are not loan-free", and the flag that would tell them reaches no screen | -- | **OPEN -- found 2026-07-27** by X-o's trace, which needed the claim checked before repeating it | X-q2 |
 | N-101 (X-o trace) | **The per-account projection dict re-flattens `LoanFigures` field by field, and B-16 is what a dropped field looks like.** `_projections._project_one_account` copies `is_paid_off`, `is_originated`, `monthly_payment`, `current_rate` and `payoff_date` out of the seam's value object; `is_retired` was never copied, so the Horizon asked the nearest question the dict could answer. Nothing can fail on a key that was never there. `_types._LoanAccountResult` already composes `LoanFigures` for exactly this reason ONE LAYER DOWN -- "the copy silently went stale the moment the seam grew `is_originated`" -- so the rule is decided and only its application is missing | the B-16 defect itself; X-o adds a sixth copy rather than removing the pattern | **OPEN -- found 2026-07-27** by X-o's trace. X-o publishes `is_retired` as a sixth flat key deliberately (ruling R-AW): the live defect does not wait behind a refactor that touches two Jinja templates | X-r |
+| N-102 (X-r review) | **The archived-accounts list's "Paid Off" badge could never render, and X-r deleted the branch.** `_data._load_archived_accounts` builds its dicts with `account` and `current_balance` ONLY -- by design, since an archived account gets no engine or seam call -- so `savings/dashboard.html`'s `{% if ad.is_paid_off ... %}` was a guard against a shape the producer cannot make. It read as coverage and was not, which is Section 8's own lesson in a template. The branch is DELETED (a badge nobody can see is not a feature); whether an archived paid-off loan SHOULD be badged, at the cost of resolving loans for a historical list, is the open half | a badge silently absent for every archived loan, forever | **OPEN -- found 2026-07-27** by X-r's adversarial review while re-pointing the flat keys; the dead branch is gone, the FEATURE question is not answered | X-q2 |
 | cash D4 | Anchor column vs history table: divergence detected, only logged | latent | latent | X-e (widened 2026-07-27) |
 | N-4 (A1) | Pay-period reset re-anchors EVERY kind, refreshing loan cash-anchor rows (balance-preserving `stage_anchor_true_up` inside the reset's deferred-FK transaction; same-value, not user-supplied) | -- | **OPEN** -- residue of the archived B-15 (a kind-blind true-up wrote a CASH anchor onto a LOAN; both real loans carried such rows), whose mechanism closed at A1 while these two writers did not | X-e (widened 2026-07-27; see also N-73) |
 | N-5 (A1) | Account-create factory writes an origination cash anchor for every kind -- a loan created with a balance seeds the column at birth (entangled with loan onboarding) | -- | **OPEN** -- residue of the archived B-15, as above: the mechanism that RENDERED the wrong anchor closed at A1, the writers that create one did not | X-e (widened 2026-07-27; see also N-73) |
