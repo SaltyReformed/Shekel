@@ -30,8 +30,9 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
-from app.services.net_worth_account_data import is_liability_account
 from app.services.savings_dashboard_service._types import (
+    AccountProjection,
+    LoanDetail,
     _LoanAccountResult,
     _SeamBatches,
 )
@@ -155,9 +156,11 @@ def _compute_loan_account(acct, acct_loan_params, ctx):
     because two producers happened to agree.
 
     **The caller's already-loaded ``LoanParams`` rides into the result** (plan
-    step X-s2, finding N-105) so the projection dict writes ``loan_params`` and
-    ``loan_figures`` from ONE value under ONE condition, instead of writing one
-    of them from a second lookup that a different module's filter decides.
+    step X-s2, finding N-105) so the projection carries the figures and the
+    terms row from ONE value under ONE condition, instead of taking one of them
+    from a second lookup that a different module's filter decides.  Since plan
+    step X-t1 the two are a single :class:`~.._types.LoanDetail` field, so the
+    condition is the field's existence and there is nothing left to disagree.
 
     Args:
         acct: The loan Account instance.
@@ -168,7 +171,8 @@ def _compute_loan_account(acct, acct_loan_params, ctx):
             the resolution).
 
     Returns:
-        A :class:`_LoanAccountResult`, or ``None`` when the seam does not
+        A :class:`~.._types._LoanAccountResult` -- the seam balance plus the
+        :class:`~.._types.LoanDetail` -- or ``None`` when the seam does not
         resolve the account as a configured loan.
     """
     figures = balance_at.loan_figures(acct, ctx.balance_ctx)
@@ -178,8 +182,7 @@ def _compute_loan_account(acct, acct_loan_params, ctx):
         current_balance=balance_at.balance_at(
             acct, ctx.balance_ctx, ctx.balance_ctx.as_of,
         ),
-        figures=figures,
-        params=acct_loan_params,
+        detail=LoanDetail(figures=figures, params=acct_loan_params),
     )
 
 
@@ -240,8 +243,9 @@ def _project_one_account(acct, ctx, batches):
     because ``_data._load_loan_params_and_escrow`` filters a SUBSET of what
     ``loan_loaders.load_loan_params`` returns, an invariant held in two other
     modules neither of which knows this dereference depends on it.  The result
-    now carries the params, so both loan keys are written from one value under
-    one condition.
+    now carries the params, so both loan facts are written from one value under
+    one condition -- and since plan step X-t1 they are ONE FIELD, so a consumer
+    cannot re-open the question either.
 
     Args:
         acct: The Account instance.
@@ -253,11 +257,10 @@ def _project_one_account(acct, ctx, batches):
             read as an empty map.
 
     Returns:
-        A dict with keys: account, current_balance, projected,
-        needs_setup, is_liability, plus optional type-specific params
-        (interest_params / investment_params / loan_params) and, for a
-        configured loan, ``loan_figures`` -- the seam's own
-        :class:`~app.services.balance_at.LoanFigures`, carried WHOLE.
+        The account's :class:`~.._types.AccountProjection` -- THE shape every
+        consumer of this package reads.  It was an untyped dict whose optional
+        KEYS were its type discriminator until plan step X-t1 (finding N-111);
+        that class's docstring carries the two defects the container cost.
     """
     kind = classify_account(acct)
     acct_interest_params = ctx.params.interest_params_map.get(acct.id)
@@ -292,42 +295,35 @@ def _project_one_account(acct, ctx, batches):
         ctx.params.loan_params_map.get(acct.id), acct_investment_params,
     )
 
-    ad = {
-        "account": acct,
-        "current_balance": current_bal,
-        "projected": projected,
-        "needs_setup": needs_setup,
-        # Category-keyed liability flag (the id-based canonical classifier),
-        # so the cockpit cell balance can take the danger token the group
-        # subtotal, chip, and bar segment already do -- one quantity, one
-        # treatment (polish audit P-AC4).
-        "is_liability": is_liability_account(acct),
-    }
-    if acct_interest_params:
-        ad["interest_params"] = acct_interest_params
-    if acct_investment_params:
-        ad["investment_params"] = acct_investment_params
-    if loan_result is not None:
-        ad["loan_params"] = loan_result.params
-        # The seam's value object, carried WHOLE (plan step X-r).  This dict
-        # used to FLATTEN it, field by field: five copies -- ``is_paid_off``,
+    return AccountProjection(
+        account=acct,
+        current_balance=current_bal,
+        projected=projected,
+        needs_setup=needs_setup,
+        # An absent parameter row is ``None``, never a missing attribute: the
+        # dict this replaced omitted the KEY, so "does this account have an APY"
+        # and "is this account a loan" were both spelled as key membership, and
+        # a consumer that mistyped one got a silent Jinja ``Undefined`` rather
+        # than a failure (plan step X-t1, finding N-111).  The maps already
+        # answer ``None`` for an account with no row, so the value passes
+        # straight through -- the dict's truthiness test is gone with it, per the
+        # coding standard's "a zero balance is not a missing balance".
+        interest_params=acct_interest_params,
+        investment_params=acct_investment_params,
+        # The loan half as ONE value under ONE condition.  The dict wrote two
+        # keys here, and the seam's ``LoanFigures`` was FLATTENED into it field
+        # by field before plan step X-r: five copies -- ``is_paid_off``,
         # ``is_originated``, ``monthly_payment``, ``current_rate``,
         # ``payoff_date`` -- and six as of plan step X-o, which added
-        # ``is_retired`` as a sixth deliberately so the live defect did not
-        # wait on this refactor.  Until X-o that missing sixth field WAS
-        # finding B-16: nothing failed, because a consumer cannot miss a key
-        # that was never there, so the Horizon asked the nearest question the
-        # dict could answer and reported a retired loan as debt the user still
-        # carried.
-        #
-        # ``_types._LoanAccountResult`` composes ``LoanFigures`` for exactly
-        # this reason one layer down -- "the copy silently went stale the
-        # moment the seam grew ``is_originated``", and "a bundle that must be
-        # hand-synchronised with the seam it mirrors is the seam's fence with
-        # a hole in it".  This is that ruling applied where the copy actually
-        # happened.  A field the seam grows now arrives here by construction.
-        ad["loan_figures"] = loan_result.figures
-    return ad
+        # ``is_retired`` as a sixth deliberately so the live defect did not wait
+        # on this refactor.  Until X-o that missing sixth field WAS finding
+        # B-16: nothing failed, because a consumer cannot miss a key that was
+        # never there, so the Horizon asked the nearest question the dict could
+        # answer and reported a retired loan as debt the user still carried.
+        # ``LoanDetail`` composes the seam's value for that reason, so a field
+        # the seam grows arrives at every consumer by construction.
+        loan=loan_result.detail if loan_result is not None else None,
+    )
 
 
 def _compute_account_projections(accounts, ctx):
@@ -345,7 +341,8 @@ def _compute_account_projections(accounts, ctx):
             maps.
 
     Returns:
-        A list of per-account dicts (see :func:`_project_one_account`).
+        A list of :class:`~.._types.AccountProjection` values, one per account
+        in *accounts* order (see :func:`_project_one_account`).
     """
     batches = _seam_batches(accounts, ctx)
     return [_project_one_account(acct, ctx, batches) for acct in accounts]

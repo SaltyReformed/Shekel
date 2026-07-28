@@ -36,16 +36,18 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
-# The asset/liability rule and the net-worth account-data builder live in
-# the shared adapter so every net-worth surface -- these today figures, the
-# trend below, and the Horizon band in ``_horizon`` -- classifies an account
-# one way; ``_is_liability_account`` keeps its local name (this module's
-# other net-worth helpers call it) as an alias over the one definition.
-from app.services.net_worth_account_data import (
-    is_liability_account as _is_liability_account,
-    to_net_worth_account_data,
-)
+# The net-worth account-data builder lives in the shared adapter, which also
+# owns the asset/liability rule every net-worth surface classifies through --
+# these today figures (via
+# :attr:`~.._types.AccountProjection.is_liability`, which IS that classifier),
+# the trend below, and the Horizon band in ``_horizon``.  The classifier's own
+# name is no longer imported here: plan step X-t1 moved the today reduction onto
+# the projection's property, and an alias whose only remaining uses were
+# docstrings is a name that reads as a call site and is not one (finding N-63's
+# class).
+from app.services.net_worth_account_data import to_net_worth_account_data
 from app.services.savings_dashboard_service._metrics import _sum_liquid_balances
+from app.services.savings_dashboard_service._types import AccountProjection
 
 ZERO = Decimal("0.00")
 
@@ -60,19 +62,27 @@ _LIABILITY_BAND = "liability"
 _COMPOSITION_BANDS = _ASSET_BANDS + (_LIABILITY_BAND,)
 
 
-def compute_net_worth_today(account_data: list[dict]) -> dict:
+def compute_net_worth_today(account_data: list[AccountProjection]) -> dict:
     """Compute the today net-worth figures from the projected account data.
 
     Reduces over each account's ``current_balance`` -- the entries-aware
     resolver figure already in ``account_data`` (E-25), NOT the raw
     ``current_anchor_balance`` cache -- so this hero agrees with the
     per-tile balances the same page renders.  Assets add their balance;
-    liabilities (classified by :func:`_is_liability_account`) accumulate
-    their POSITIVE magnitude into ``total_liabilities``.  Net worth is
-    ``total_assets - total_liabilities``.
+    liabilities accumulate their POSITIVE magnitude into
+    ``total_liabilities``.  Net worth is ``total_assets - total_liabilities``.
+
+    The liability question is the projection's own
+    :attr:`~.._types.AccountProjection.is_liability` (plan step X-t1, finding
+    N-111).  It used to re-derive it here from the account, while the grid cell
+    beside it read a STORED key on the same projection -- one rule asked two
+    ways over one set of balances, which is the shape this arc keeps finding.
+    The property IS
+    :func:`app.services.net_worth_account_data.is_liability_account`, so the
+    classifier is unchanged and the answer cannot differ.
 
     Args:
-        account_data: Per-account dicts from
+        account_data: Per-account projections from
             ``_compute_account_projections`` (each carrying ``account``
             and ``current_balance``).
 
@@ -83,8 +93,8 @@ def compute_net_worth_today(account_data: list[dict]) -> dict:
     total_assets = ZERO
     total_liabilities = ZERO
     for ad in account_data:
-        balance = ad["current_balance"] or ZERO
-        if _is_liability_account(ad["account"]):
+        balance = ad.current_balance or ZERO
+        if ad.is_liability:
             total_liabilities += abs(balance)
         else:
             total_assets += balance

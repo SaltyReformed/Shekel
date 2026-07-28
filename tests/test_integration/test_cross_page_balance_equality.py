@@ -283,13 +283,13 @@ def _savings_value(ctx):
     data = savings_dashboard_service.compute_dashboard_data(ctx["user_id"])
     matches = [
         ad for ad in data["account_data"]
-        if ad["account"].id == ctx["account_id"]
+        if ad.account.id == ctx["account_id"]
     ]
     assert len(matches) == 1, (
         f"/savings account_data did not surface exactly one entry "
         f"for account_id={ctx['account_id']}: matched {len(matches)}"
     )
-    return matches[0]["current_balance"]
+    return matches[0].current_balance
 
 
 def _accounts_checking_value(ctx):
@@ -850,7 +850,7 @@ def _match_account_data(dashboard_data, account_id):
     """
     matches = [
         ad for ad in dashboard_data["account_data"]
-        if ad["account"].id == account_id
+        if ad.account.id == account_id
     ]
     assert len(matches) == 1, (
         f"/savings account_data did not surface exactly one entry for "
@@ -878,7 +878,7 @@ def _savings_tile_value(ctx):
     reader serves every kind's ``savings`` surface.
     """
     data = savings_dashboard_service.compute_dashboard_data(ctx["user_id"])
-    return _match_account_data(data, ctx["account_id"])["current_balance"]
+    return _match_account_data(data, ctx["account_id"]).current_balance
 
 
 def _trend_assets_value(ctx):
@@ -1536,10 +1536,10 @@ class TestSecuredHomeEquityEquality:
             )
             prop_tile = _match_account_data(
                 dashboard, ctx["property_account_id"],
-            )["current_balance"]
+            ).current_balance
             mortgage_tile = _match_account_data(
                 dashboard, ctx["mortgage_account_id"],
-            )["current_balance"]
+            ).current_balance
             # The loan-detail balance is the seam scalar the page renders
             # (plan step C4; the resolver bundle carries no balance since D2a).
             loan_detail = balance_at.balance_at(

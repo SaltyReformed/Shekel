@@ -31,7 +31,7 @@ from app.models.savings_goal import SavingsGoal
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
-from app.services import balance_at
+from app.services import balance_at, savings_dashboard_service
 from app.services.balance_at import BalanceContext
 
 from tests._test_helpers import (
@@ -3807,6 +3807,68 @@ class TestCockpitSection:
             resp = auth_client.get("/savings/cockpit")
             assert resp.status_code == 302
             assert resp.headers["Location"].endswith("/savings")
+
+    def test_a_loan_cell_renders_its_caption_and_a_cash_cell_does_not(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The loan caption RENDERS, and only for the loan (plan step X-t1).
+
+        The projection became a value object with a ``loan`` field that always
+        EXISTS (``None`` for a non-loan), so every template predicate on it had
+        to move from ``is defined`` to ``is not none``.  Getting that wrong is
+        SILENT: Jinja renders an attribute on ``None`` -- and a mistyped
+        attribute name -- as empty rather than raising, so the page still
+        returns 200 with the caption simply gone (finding N-111 measured two of
+        three template typos degrading that way).
+
+        So this asserts the rendered FIGURES, not the absence of an exception:
+        the loan's monthly payment and its rate reach the page, and the cash
+        account's cell carries no payment caption at all.
+
+        **Both failure modes were planted and measured** (X-t1): reverting the
+        caption predicate to ``is defined`` reaches ``ad.loan.figures`` on the
+        cash account -- ``'None' has no attribute 'figures'``, a 500 -- and
+        mistyping the payment path raises inside the ``money`` macro rather
+        than blanking, because a filter or macro call FORCES the value where a
+        bare ``{{ ... }}`` would swallow it.  The status assertion catches the
+        first and the figure assertions catch the second.
+        """
+        with app.app_context():
+            loan = _create_small_loan(seed_user)
+            db.session.commit()
+            resp = auth_client.get(
+                "/savings/cockpit", headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 200
+            body = resp.data.decode()
+
+            # The loan's own figures, read off the SAME producer the page
+            # renders, so this cannot go stale against an amortization change.
+            data = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            loan_ad = next(
+                ad for ad in data["account_data"] if ad.account.id == loan.id
+            )
+            payment = loan_ad.loan.figures.terms.monthly_payment
+            assert payment > Decimal("0.00"), (
+                "the fixture loan has no monthly payment, so the caption "
+                "assertion below would pass on an empty render"
+            )
+            assert "Monthly Payment" in body
+            assert f"${payment:,.2f}" in body
+            # The rate caption, formatted as the template formats it
+            # (``"%.3f"|format(rate|to_percent)``): 5.000% for this loan.
+            rate_pct = loan_ad.loan.figures.terms.current_rate * Decimal("100")
+            assert f"{rate_pct:.3f}%" in body
+
+            # The cash cell: no loan caption anywhere in ITS cell.  Sliced from
+            # the account-name anchor to the end of that cell so a loan caption
+            # elsewhere on the page cannot satisfy it.
+            cash_id = seed_user["account"].id
+            cash_cell = body.split(f'id="acct-balance-{cash_id}"')[1]
+            cash_cell = cash_cell.split("</div>\n    </div>")[0]
+            assert "Monthly Payment" not in cash_cell
 
 
 class TestCockpitBalance:

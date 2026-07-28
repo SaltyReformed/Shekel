@@ -4,14 +4,19 @@
    (savings/_cockpit.html) and standalone by savings.cockpit_balance (the
    Cancel / Escape and 409-retry revert target).
 
-   Context: account (Account), current_balance (Decimal | None -- the
-   resolver as-of-today balance the card shows; None when no current
-   period resolves a figure, rendered as a non-editable dash),
-   is_liability (bool -- the account's category is LIABILITY, so the
-   figure takes the danger token the group subtotal / chip / bar segment
-   already do; keyed on category, never the figure's sign -- polish audit
-   P-AC4).  Both render paths (the grid include and the standalone
-   savings.cockpit_balance revert) pass is_liability.
+   Context: ad -- ONE AccountProjection (the service value object), carrying
+   ad.account, ad.current_balance (Decimal | None -- the resolver as-of-today
+   balance the card shows; None when no current period resolves a figure,
+   rendered as a non-editable dash) and ad.is_liability (the account's
+   category is LIABILITY, so the figure takes the danger token the group
+   subtotal / chip / bar segment already do; keyed on category, never the
+   figure's sign -- polish audit P-AC4).
+
+   Both render paths pass the SAME object (plan step X-t1, finding N-111):
+   the grid loop's own ``ad``, and the ``savings.cockpit_balance`` revert's
+   ``compute_account_balance_cell`` return.  The revert used to copy three
+   fields into a dict of its own, so this contract was stated in three places
+   and held because the copies agreed.
 
    Contract (mirrors the dashboard hero dashboard/_pulse_balance.html, but
    account-scoped because the cockpit is multi-card):
@@ -33,24 +38,24 @@
    loan page's own true-up, so the cash anchor editor is never offered --
    the PATCH would be refused with 422.  Branches on the
    has_amortization boolean column, never a type-name string. #}
-{% if current_balance is none %}
+{% if ad.current_balance is none %}
 <div class="acct-card__num font-mono">--</div>
-{% elif account.account_type.has_amortization %}
-<div class="acct-card__num font-mono{% if current_balance < 0 %} acct-card__num--neg{% endif %}{% if is_liability %} acct-card__num--liability{% endif %}">
-  {{ money(current_balance) }}
+{% elif ad.account.account_type.has_amortization %}
+<div class="acct-card__num font-mono{% if ad.current_balance < 0 %} acct-card__num--neg{% endif %}{% if ad.is_liability %} acct-card__num--liability{% endif %}">
+  {{ money(ad.current_balance) }}
 </div>
 {% else %}
-<div id="acct-balance-{{ account.id }}"
-     class="acct-card__num acct-card__num--edit font-mono{% if current_balance < 0 %} acct-card__num--neg{% endif %}{% if is_liability %} acct-card__num--liability{% endif %}"
-     hx-get="{{ url_for('accounts.anchor_form', account_id=account.id, revert='accounts') }}"
+<div id="acct-balance-{{ ad.account.id }}"
+     class="acct-card__num acct-card__num--edit font-mono{% if ad.current_balance < 0 %} acct-card__num--neg{% endif %}{% if ad.is_liability %} acct-card__num--liability{% endif %}"
+     hx-get="{{ url_for('accounts.anchor_form', account_id=ad.account.id, revert='accounts') }}"
      hx-target="this"
      hx-swap="outerHTML"
      role="button"
      tabindex="0"
      data-keyboard-activate
-     aria-label="{{ account.name }} balance: {{ money(current_balance, cents=false) }}. Click to edit."
+     aria-label="{{ ad.account.name }} balance: {{ money(ad.current_balance, cents=false) }}. Click to edit."
      title="Click to update balance">
-  {{ money(current_balance) }}
+  {{ money(ad.current_balance) }}
   <i class="bi bi-pencil-square acct-card__edit-icon" aria-hidden="true"></i>
 </div>
 {% endif %}

@@ -60,7 +60,10 @@ from app.services.savings_dashboard_service._metrics import (
 from app.services.savings_dashboard_service._projections import (
     _compute_account_projections,
 )
-from app.services.savings_dashboard_service._types import _ProjectionContext
+from app.services.savings_dashboard_service._types import (
+    AccountProjection,
+    _ProjectionContext,
+)
 
 if TYPE_CHECKING:
     from app.services.paycheck_calculator import PaycheckBreakdown
@@ -106,7 +109,7 @@ def _build_projection_context(
 
 
 def _debt_summary_with_dti(
-    account_data: list[dict],
+    account_data: list[AccountProjection],
     escrow_map: dict[int, list],
     current_breakdown: PaycheckBreakdown | None,
 ) -> DebtSummary | None:
@@ -124,9 +127,9 @@ def _debt_summary_with_dti(
     two.
 
     Args:
-        account_data: Per-account dicts from
+        account_data: Per-account projections from
             ``_compute_account_projections`` (any mix -- the debt
-            summary reads only the entries carrying ``loan_params``).
+            summary reads only the entries carrying a ``loan`` detail).
         escrow_map: account_id -> list of EscrowLine with versions (PITI).
         current_breakdown: The engine ``PaycheckBreakdown`` for the
             current period, or ``None`` with no salary configured.
@@ -150,7 +153,9 @@ def _debt_summary_with_dti(
 
 def _project_debt_accounts(
     user_id: int, balance_ctx: BalanceContext | None = None,
-) -> tuple[_DashboardCoreData, _AccountParams, list[dict]] | None:
+) -> tuple[
+    _DashboardCoreData, _AccountParams, list[AccountProjection]
+] | None:
     """Load + project the user's DEBT accounts for the debt producers.
 
     The single home for the load-core -> load-params -> filter-to-loans ->
@@ -190,7 +195,7 @@ def _project_debt_accounts(
     Returns:
         ``(core, params, account_data)`` -- the loaded core data, the
         account-parameter maps (carrying the ``escrow_map`` the debt
-        summary needs), and the per-loan-account projection dicts.
+        summary needs), and the per-loan-account projections.
         ``None`` when the user has no loan accounts with params, mirroring
         ``_compute_debt_summary``'s no-loan ``None`` inside the full build.
     """
@@ -372,7 +377,7 @@ def compute_goal_progress(
 
 def compute_account_balance_cell(
     user_id: int, account_id: int,
-) -> dict | None:
+) -> AccountProjection | None:
     """Compute one active account's cockpit balance cell.
 
     The narrow producer behind ``savings.cockpit_balance`` -- the GET
@@ -380,9 +385,7 @@ def compute_account_balance_cell(
     Cancel / Escape (``accounts._anchor_revert_url`` maps ``revert=accounts``
     here, mirroring how ``revert=dashboard`` maps to
     ``dashboard.balance_section``).  It re-renders
-    ``savings/_cockpit_balance.html`` for a single account, so it returns
-    that partial's contract: the ``account`` and its resolver
-    ``current_balance``.
+    ``savings/_cockpit_balance.html`` for a single account.
 
     SSOT with the grid: it runs the SAME load -> param-load -> project
     pipeline ``compute_dashboard_data`` runs, through the shared
@@ -392,6 +395,14 @@ def compute_account_balance_cell(
     A Cancel therefore restores the exact number the card grid showed,
     never a divergent recompute.
 
+    **It returns the projection ITSELF** (plan step X-t1, finding N-111).  It
+    used to copy three of its fields into a dict of its own, so the partial's
+    contract was stated in three places -- here, the grid's ``{% with %}``
+    include, and the partial's header comment -- and the SSOT promise above
+    held because those copies agreed rather than because both paths render one
+    value.  The partial now reads the same object the grid loop hands it, so
+    the revert and the cell it replaces cannot diverge by construction.
+
     Args:
         user_id: Integer ID of the current user (the owner; the caller has
             already verified ownership of *account_id* via the route's
@@ -399,9 +410,7 @@ def compute_account_balance_cell(
         account_id: Integer ID of the account whose balance cell to render.
 
     Returns:
-        A dict ``{"account": Account, "current_balance": Decimal | None,
-        "is_liability": bool}`` (the ``_cockpit_balance.html`` contract, so a
-        reverted liability cell keeps the danger ink), or ``None`` when
+        The account's :class:`~.._types.AccountProjection`, or ``None`` when
         *account_id* is not among the user's active accounts (e.g. it was
         archived between page load and the revert), which the caller turns
         into a 404.
@@ -418,12 +427,7 @@ def compute_account_balance_cell(
     # Route through the shared projection (which batch-builds the seam maps)
     # restricted to the one account, so the Cancel revert restores the exact
     # number the card grid showed.
-    account_dict = _compute_account_projections([acct], ctx)[0]
-    return {
-        "account": acct,
-        "current_balance": account_dict["current_balance"],
-        "is_liability": account_dict["is_liability"],
-    }
+    return _compute_account_projections([acct], ctx)[0]
 
 
 def _build_trend_window(
@@ -486,7 +490,7 @@ def _compute_card_sparklines(
 def _compute_net_worth_section(
     core: _DashboardCoreData,
     params: _AccountParams,
-    account_data: list[dict],
+    account_data: list[AccountProjection],
     user_id: int,
 ) -> dict:
     """Assemble the cockpit's net-worth region, sparklines, and Horizon range.
@@ -518,9 +522,8 @@ def _compute_net_worth_section(
     Args:
         core: The loaded :class:`_DashboardCoreData`.
         params: The batch-loaded :class:`_AccountParams`.
-        account_data: The per-account projection dicts already computed for
-            the page (the today figures + the asset / liability horizon
-            bands).
+        account_data: The per-account projections already computed for the
+            page (the today figures + the asset / liability horizon bands).
         user_id: The current user's id (for the Horizon range's /retirement
             engine reuse).
 
@@ -557,7 +560,7 @@ def _compute_net_worth_section(
 
 def _compute_cockpit_grid_section(
     core: _DashboardCoreData,
-    account_data: list[dict],
+    account_data: list[AccountProjection],
 ) -> dict:
     """Assemble the cockpit's account-grid context (Loop B Phase 2).
 
@@ -572,11 +575,11 @@ def _compute_cockpit_grid_section(
         core: The loaded :class:`_DashboardCoreData` (its ``accounts`` feed
             the equity resolver; its ``scenario`` supplies the loan
             resolver's scenario id, or ``None`` with no baseline scenario).
-        account_data: The per-account projection dicts already computed for
-            the page (the grouping and subtotal source).
+        account_data: The per-account projections already computed for the
+            page (the grouping and subtotal source).
 
     Returns:
-        dict with ``grouped_accounts`` (category label -> projection dicts),
+        dict with ``grouped_accounts`` (category label -> projections),
         ``group_subtotals`` (category label -> ``Decimal`` balance
         subtotal), and ``property_equity`` (list of ``{account, equity}`` for
         each Property account).
@@ -654,8 +657,9 @@ def compute_dashboard_data(user_id):
     # ── Template helpers ────────────────────────────────────────
     # Liquid accounts appear in the savings goal form dropdown.
     savings_accounts = [
-        ad["account"] for ad in account_data
-        if ad["account"].account_type and ad["account"].account_type.is_liquid
+        ad.account for ad in account_data
+        if ad.account.account_type is not None
+        and ad.account.account_type.is_liquid
     ]
 
     # ── Debt summary and DTI ───────────────────────────────────

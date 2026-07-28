@@ -53,6 +53,8 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
+from app.services.savings_dashboard_service._types import AccountProjection
+
 ZERO = Decimal("0.00")
 
 
@@ -129,18 +131,20 @@ class LoanPayoffOutlook:
         return self.all_clear_on is None and not self.never_clears
 
 
-def debt_line_loans(account_data: list[dict]) -> list[dict]:
-    """Return the AMORTIZING loan dicts that still have a DEBT LINE.
+def debt_line_loans(
+    account_data: list[AccountProjection],
+) -> list[AccountProjection]:
+    """Return the AMORTIZING loan projections that still have a DEBT LINE.
 
     THE one "which loans still have a line ahead of them" selection IN THIS
     PACKAGE.  (The seam answers the same question over its own shape for the
     property equity chart -- ``property_equity_chart.py:409`` filters
     ``SecuredLoanSeries`` on the same ``is_retired`` -- so this is one of two
     call sites of one PREDICATE, not a second definition of it.)  Scoped to
-    accounts carrying the seam's ``loan_figures`` -- which is exactly the
-    configured-loan set, since ``_project_one_account`` publishes the bundle
-    for a loan and for nothing else -- see the module docstring for why a
-    revolving liability is not here and what would admit it.
+    accounts carrying a :class:`~.._types.LoanDetail` -- which is exactly the
+    configured-loan set, since ``_project_one_account`` fills that field for a
+    loan and for nothing else -- see the module docstring for why a revolving
+    liability is not here and what would admit it.
 
     The predicate is the seam's
     :attr:`~app.services.balance_at.LoanFigures.is_retired` -- the loan has
@@ -170,19 +174,21 @@ def debt_line_loans(account_data: list[dict]) -> list[dict]:
     ``is_retired``'s origination half separates from a debt that is gone.
 
     Args:
-        account_data: The per-account projection dicts.
+        account_data: The per-account projections.
 
     Returns:
-        The loan dicts (those carrying the seam's ``loan_figures``) that are
-        not retired, in *account_data* order.
+        The loan projections (those carrying a ``loan`` detail) that are not
+        retired, in *account_data* order.
     """
     return [
         ad for ad in account_data
-        if "loan_figures" in ad and not ad["loan_figures"].is_retired
+        if ad.loan is not None and not ad.loan.figures.is_retired
     ]
 
 
-def loan_payoff_outlook(account_data: list[dict]) -> LoanPayoffOutlook:
+def loan_payoff_outlook(
+    account_data: list[AccountProjection],
+) -> LoanPayoffOutlook:
     """Return when the user's last debt-line loan clears.
 
     THE one derivation of the debt-free date, read by the cockpit caption, the
@@ -199,15 +205,15 @@ def loan_payoff_outlook(account_data: list[dict]) -> LoanPayoffOutlook:
     their car loan ends.
 
     Args:
-        account_data: The per-account projection dicts (a configured loan
-            carries the seam's ``loan_figures``).
+        account_data: The per-account projections (a configured loan carries a
+            :class:`~.._types.LoanDetail`).
 
     Returns:
         The :class:`LoanPayoffOutlook` for this user.
     """
     payoffs: list[date] = []
     for loan_ad in debt_line_loans(account_data):
-        payoff = loan_ad["loan_figures"].payoff_date
+        payoff = loan_ad.loan.figures.payoff_date
         if payoff is None:
             return LoanPayoffOutlook(all_clear_on=None, never_clears=True)
         payoffs.append(payoff)
@@ -216,7 +222,9 @@ def loan_payoff_outlook(account_data: list[dict]) -> LoanPayoffOutlook:
     )
 
 
-def debt_without_payoff_model(account_data: list[dict]) -> Decimal:
+def debt_without_payoff_model(
+    account_data: list[AccountProjection],
+) -> Decimal:
     """Return the owed magnitude of the debt no payoff date can cover.
 
     The figure that makes the caption HONEST rather than merely narrow
@@ -233,8 +241,8 @@ def debt_without_payoff_model(account_data: list[dict]) -> Decimal:
     reports what is owed, not a signed balance.
 
     Args:
-        account_data: The per-account projection dicts (each carrying
-            ``is_liability`` and ``current_balance``).
+        account_data: The per-account projections (each answering
+            ``is_liability`` and carrying a ``current_balance``).
 
     Returns:
         The total owed on liabilities with no payoff model, ``0.00`` when
@@ -242,8 +250,8 @@ def debt_without_payoff_model(account_data: list[dict]) -> Decimal:
     """
     return sum(
         (
-            abs(ad["current_balance"] or ZERO) for ad in account_data
-            if ad.get("is_liability") and "loan_figures" not in ad
+            abs(ad.current_balance or ZERO) for ad in account_data
+            if ad.is_liability and ad.loan is None
         ),
         ZERO,
     )

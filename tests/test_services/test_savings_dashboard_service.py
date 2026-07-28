@@ -10,6 +10,8 @@ from dataclasses import replace
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 
+import pytest
+
 from app import ref_cache
 from app.enums import (
     AcctTypeEnum,
@@ -26,6 +28,33 @@ from app.models.scenario import Scenario
 from app.services import balance_at, savings_dashboard_service, pay_period_service
 from app.services import account_service
 from app.services.balance_at import BalanceContext
+from app.services.savings_dashboard_service._types import AccountProjection
+
+
+def _projection(account, current_balance):
+    """Build an :class:`AccountProjection` for the pure reducer unit tests.
+
+    The reducers below (the net-worth today figures, the group subtotals) read
+    an account and a balance and nothing else, so their fixtures are a stand-in
+    account plus one figure.  Constructed through the REAL frozen type rather
+    than a dict arranged to look like it (plan step X-t1, finding N-111): a
+    test that builds its own shape stays green when production changes the one
+    it builds, which is finding B-17's lesson paid on this very package.
+
+    Args:
+        account: The stand-in account (its ``account_type.category_id`` drives
+            the liability classification the reducer reads).
+        current_balance: The account's balance today, or ``None``.
+
+    Returns:
+        The :class:`AccountProjection` the reducers consume.
+    """
+    return AccountProjection(
+        account=account,
+        current_balance=current_balance,
+        projected={},
+        needs_setup=False,
+    )
 
 
 class TestComputeDashboardData:
@@ -78,22 +107,28 @@ class TestComputeDashboardData:
                 seed_user["user"].id
             )
             acct_names = [
-                ad["account"].name for ad in result["account_data"]
+                ad.account.name for ad in result["account_data"]
             ]
             assert "Checking" in acct_names
 
     def test_account_has_current_balance(
         self, app, db, seed_user, seed_periods
     ):
-        """Each account_data entry has a current_balance key."""
+        """Every projection carries a current_balance of the declared type.
+
+        The membership half of this assertion is gone with the dict (plan step
+        X-t1): every field of an ``AccountProjection`` exists by construction,
+        so "does the key exist" is no longer a question a test can ask or a
+        consumer can get wrong.  What remains -- and what the key check never
+        covered -- is the TYPE: a ``Decimal`` or the deliberate ``None``.
+        """
         with app.app_context():
             result = savings_dashboard_service.compute_dashboard_data(
                 seed_user["user"].id
             )
             for ad in result["account_data"]:
-                assert "current_balance" in ad
                 assert isinstance(
-                    ad["current_balance"], (Decimal, type(None))
+                    ad.current_balance, (Decimal, type(None))
                 )
 
 
@@ -111,7 +146,7 @@ class TestGroupAccountsByCategory:
             grouped = result["grouped_accounts"]
             assert "asset" in grouped
             asset_names = [
-                ad["account"].name for ad in grouped["asset"]
+                ad.account.name for ad in grouped["asset"]
             ]
             assert "Checking" in asset_names
 
@@ -140,7 +175,7 @@ class TestGroupAccountsByCategory:
             )
             grouped = result["grouped_accounts"]
             asset_names = [
-                ad["account"].name for ad in grouped.get("asset", [])
+                ad.account.name for ad in grouped.get("asset", [])
             ]
             assert "Emergency Fund" in asset_names
 
@@ -850,9 +885,9 @@ class TestPaidOffFlag:
             )
             loan_ad = next(
                 ad for ad in result["account_data"]
-                if ad["account"].id == acct.id
+                if ad.account.id == acct.id
             )
-            assert loan_ad["loan_figures"].is_paid_off is True
+            assert loan_ad.loan.figures.is_paid_off is True
 
     def test_paid_off_false_no_confirmed_payments(
         self, app, db, seed_user, seed_periods,
@@ -866,9 +901,9 @@ class TestPaidOffFlag:
             )
             loan_ad = next(
                 ad for ad in result["account_data"]
-                if ad["account"].id == acct.id
+                if ad.account.id == acct.id
             )
-            assert loan_ad["loan_figures"].is_paid_off is False
+            assert loan_ad.loan.figures.is_paid_off is False
 
     def test_paid_off_false_partial_confirmed_payments(
         self, app, db, seed_user, seed_periods,
@@ -903,9 +938,9 @@ class TestPaidOffFlag:
             )
             loan_ad = next(
                 ad for ad in result["account_data"]
-                if ad["account"].id == acct.id
+                if ad.account.id == acct.id
             )
-            assert loan_ad["loan_figures"].is_paid_off is False
+            assert loan_ad.loan.figures.is_paid_off is False
 
     def test_paid_off_false_projected_only(
         self, app, db, seed_user, seed_periods,
@@ -942,9 +977,9 @@ class TestPaidOffFlag:
             )
             loan_ad = next(
                 ad for ad in result["account_data"]
-                if ad["account"].id == acct.id
+                if ad.account.id == acct.id
             )
-            assert loan_ad["loan_figures"].is_paid_off is False
+            assert loan_ad.loan.figures.is_paid_off is False
 
     def test_paid_off_false_for_non_loan_account(
         self, app, db, seed_user, seed_periods,
@@ -957,9 +992,9 @@ class TestPaidOffFlag:
             # The seed user's checking account is non-amortizing.
             checking_ad = next(
                 ad for ad in result["account_data"]
-                if ad["account"].name == "Checking"
+                if ad.account.name == "Checking"
             )
-            assert "loan_figures" not in checking_ad
+            assert checking_ad.loan is None
 
     def test_paid_off_false_no_loan_params(
         self, app, db, seed_user, seed_periods,
@@ -992,9 +1027,9 @@ class TestPaidOffFlag:
             )
             loan_ad = next(
                 ad for ad in result["account_data"]
-                if ad["account"].id == acct.id
+                if ad.account.id == acct.id
             )
-            assert "loan_figures" not in loan_ad
+            assert loan_ad.loan is None
 
 
 class TestPaidOffReadsTheLedgerNotTheReplay:
@@ -1090,11 +1125,11 @@ class TestPaidOffReadsTheLedgerNotTheReplay:
             )
             loan_ad = next(
                 ad for ad in result["account_data"]
-                if ad["account"].id == acct.id
+                if ad.account.id == acct.id
             )
             # The ledger booked the real principal: nothing is owed.
-            assert loan_ad["current_balance"] == Decimal("0.00")
-            assert loan_ad["loan_figures"].is_paid_off is True
+            assert loan_ad.current_balance == Decimal("0.00")
+            assert loan_ad.loan.figures.is_paid_off is True
 
     def test_short_paid_loan_never_vanishes_from_total_debt(
         self, app, db, seed_user, seed_periods_today,
@@ -1140,16 +1175,16 @@ class TestPaidOffReadsTheLedgerNotTheReplay:
             )
             loan_ad = next(
                 ad for ad in result["account_data"]
-                if ad["account"].id == acct.id
+                if ad.account.id == acct.id
             )
             # The ledger still owes, so the loan is NOT paid off ...
-            assert loan_ad["current_balance"] > Decimal("0.00")
-            assert loan_ad["loan_figures"].is_paid_off is False
+            assert loan_ad.current_balance > Decimal("0.00")
+            assert loan_ad.loan.figures.is_paid_off is False
             # ... and it therefore still counts toward the debt card's total.
             assert result["debt_summary"] is not None
             assert (
                 result["debt_summary"].total_debt
-                >= loan_ad["current_balance"]
+                >= loan_ad.current_balance
             )
 
 
@@ -1213,7 +1248,7 @@ class TestArchivedAccounts:
                 seed_user["user"].id,
             )
             active_names = [
-                ad["account"].name for ad in result["account_data"]
+                ad.account.name for ad in result["account_data"]
             ]
             assert "Hidden Savings" not in active_names
 
@@ -1251,10 +1286,10 @@ class TestArchivedAccounts:
             result = savings_dashboard_service.compute_dashboard_data(
                 seed_user["user"].id,
             )
-            ad = result["archived_accounts"][0]
-            assert "current_balance" in ad
-            assert ad["current_balance"] == Decimal("3000.00")
-            assert "projected" not in ad
+            archived_row = result["archived_accounts"][0]
+            assert "current_balance" in archived_row
+            assert archived_row["current_balance"] == Decimal("3000.00")
+            assert "projected" not in archived_row
 
 
 # ── Debt Summary Tests (Commit 5.12-1) ────────────────────────────────
@@ -2540,10 +2575,10 @@ class TestCanonicalProducerRouting:
             )
             checking_ad = next(
                 ad for ad in result["account_data"]
-                if ad["account"].id == seed_user["account"].id
+                if ad.account.id == seed_user["account"].id
             )
-            assert checking_ad["current_balance"] == Decimal("160.00")
-            assert checking_ad["current_balance"] == grid_current_balance
+            assert checking_ad.current_balance == Decimal("160.00")
+            assert checking_ad.current_balance == grid_current_balance
 
     def test_savings_hysa_entry_aware(
         self, app, db, seed_user, seed_periods_today,
@@ -2625,7 +2660,7 @@ class TestCanonicalProducerRouting:
             )
             hysa_ad = next(
                 ad for ad in result["account_data"]
-                if ad["account"].id == hysa.id
+                if ad.account.id == hysa.id
             )
 
             # base = 614.29 - max(500 - 45.71 - 0, 0)
@@ -2636,8 +2671,8 @@ class TestCanonicalProducerRouting:
             # 614.29 - 500.00 = 114.29.  We require strictly greater
             # than 114.29 + interest noise (a 100x margin from the
             # 45.71 gap) to lock the entry-aware semantics:
-            assert hysa_ad["current_balance"] > Decimal("159.00")
-            assert hysa_ad["current_balance"] < Decimal("161.00")
+            assert hysa_ad.current_balance > Decimal("159.00")
+            assert hysa_ad.current_balance < Decimal("161.00")
 
     def test_savings_no_entries_unchanged(
         self, app, db, seed_user, seed_periods_today,
@@ -2685,13 +2720,13 @@ class TestCanonicalProducerRouting:
             )
             checking_ad = next(
                 ad for ad in result["account_data"]
-                if ad["account"].id == seed_user["account"].id
+                if ad.account.id == seed_user["account"].id
             )
             # 614.29 - max(500 - 0 - 0, 0) = 614.29 - 500.00 = 114.29.
             # Identical to the pre-Commit-6 value for this no-entries
             # case; the formula reduces to ``effective_amount`` when
             # the entry buckets are all zero.
-            assert checking_ad["current_balance"] == Decimal("114.29")
+            assert checking_ad.current_balance == Decimal("114.29")
 
 
 # ── F-21 / Commit 19: Loan period-balance dispatcher ──────────────
@@ -3511,7 +3546,7 @@ class TestNetWorthProducerEdgeCases:
         )
         account = SimpleNamespace(account_type=acct_type)
         today = compute_net_worth_today([
-            {"account": account, "current_balance": Decimal("500.00")},
+            _projection(account, Decimal("500.00")),
         ])
         assert today["total_assets"] == Decimal("0.00")
         assert today["total_liabilities"] == Decimal("500.00")
@@ -3533,7 +3568,7 @@ class TestNetWorthProducerEdgeCases:
         acct_type = SimpleNamespace(category_id=-999, is_liquid=True)
         account = SimpleNamespace(account_type=acct_type)
         today = compute_net_worth_today([
-            {"account": account, "current_balance": Decimal("750.00")},
+            _projection(account, Decimal("750.00")),
         ])
         assert today["net_worth"] == Decimal("750.00")
         assert today["total_assets"] == Decimal("750.00")
@@ -3558,8 +3593,8 @@ class TestNetWorthProducerEdgeCases:
         funded = SimpleNamespace(account_type=acct_type)
         empty = SimpleNamespace(account_type=acct_type)
         today = compute_net_worth_today([
-            {"account": funded, "current_balance": Decimal("600.00")},
-            {"account": empty, "current_balance": Decimal("0.00")},
+            _projection(funded, Decimal("600.00")),
+            _projection(empty, Decimal("0.00")),
         ])
         # 600.00 + 0.00 = 600.00 (the zero account is summed, not absent).
         assert today["net_worth"] == Decimal("600.00")
@@ -3684,8 +3719,8 @@ class TestNetWorthComposition:
             current = series["current_index"]
 
             k401_balance = next(
-                ad["current_balance"] for ad in data["account_data"]
-                if ad["account"].id == k401.id
+                ad.current_balance for ad in data["account_data"]
+                if ad.account.id == k401.id
             )
             # The 401(k) is the only retirement account, so the retirement
             # band at the current period IS its balance -- proving it is not
@@ -4178,14 +4213,16 @@ class TestGroupSubtotals:
         """
         # pylint: disable=import-outside-toplevel
         from collections import OrderedDict
+        from types import SimpleNamespace
         from app.services.savings_dashboard_service._display import (
             _compute_group_subtotals,
         )
         grouped = OrderedDict([(
             "asset",
             [
-                {"current_balance": Decimal("600.00")},
-                {"current_balance": None},
+                _projection(SimpleNamespace(account_type=None),
+                            Decimal("600.00")),
+                _projection(SimpleNamespace(account_type=None), None),
             ],
         )])
         subtotals = _compute_group_subtotals(grouped)
@@ -4394,16 +4431,16 @@ class TestAccountBalanceCell:
 
             full = savings_dashboard_service.compute_dashboard_data(user_id)
             grid_balance = next(
-                ad["current_balance"] for ad in full["account_data"]
-                if ad["account"].id == acct_id
+                ad.current_balance for ad in full["account_data"]
+                if ad.account.id == acct_id
             )
 
             cell = savings_dashboard_service.compute_account_balance_cell(
                 user_id, acct_id,
             )
             assert cell is not None
-            assert cell["account"].id == acct_id
-            assert cell["current_balance"] == grid_balance
+            assert cell.account.id == acct_id
+            assert cell.current_balance == grid_balance
 
     def test_cell_none_for_foreign_account(
         self, app, db, seed_user, seed_second_user,
@@ -4459,7 +4496,7 @@ class TestAccountBalanceCell:
                 seed_user["user"].id, loan.id,
             )
             assert cell is not None
-            assert cell["is_liability"] is True
+            assert cell.is_liability is True
 
     def test_cell_flags_asset_as_non_liability(
         self, app, db, seed_user, seed_periods_today,
@@ -4475,7 +4512,7 @@ class TestAccountBalanceCell:
                 seed_user["user"].id, seed_user["account"].id,
             )
             assert cell is not None
-            assert cell["is_liability"] is False
+            assert cell.is_liability is False
 
 
 class TestOneResolutionPerLoanPerReadPass:
@@ -4576,7 +4613,7 @@ class TestTypeDriftedLoanParamsRow:
     ``account_type_id`` (``accounts/crud.py``), nothing deletes the params row on
     a type change, so a Mortgage re-typed to Credit Card KEEPS its ``LoanParams``.
     ``followup_horizon_loan_predicate_split.md`` proposed that the Horizon's
-    domain / milestones (which read ``ad["loan_params"]``) would then disagree
+    domain / milestones (which read ``ad.loan.params``) would then disagree
     with its liability band (which asks the canonical classifier), drawing a
     payoff flag on a debt line that never retires.
 
@@ -4612,13 +4649,13 @@ class TestTypeDriftedLoanParamsRow:
                 seed_user["user"].id,
             )
             entry = next(
-                ad for ad in data["account_data"] if ad["account"].id == acct_id
+                ad for ad in data["account_data"] if ad.account.id == acct_id
             )
 
             # No loan fields: the tile shows no payment / rate / payoff, so the
             # Horizon's domain and its milestone flags cannot pick it up.
-            assert "loan_params" not in entry
-            assert "loan_figures" not in entry
+            assert entry.loan is None
+            assert entry.loan is None
 
             # And it raises no "paid off" milestone on the Horizon.
             horizon = data["net_worth"]["horizon"]
@@ -4669,17 +4706,17 @@ class TestNoBaselineDegradesEveryKindTheSameWay:
                 seed_user["user"].id,
             )
 
-            by_id = {ad["account"].id: ad for ad in data["account_data"]}
-            # The loan: no seam read happened, so no figures and no balance.
-            assert "loan_figures" not in by_id[loan_id]
-            assert "loan_params" not in by_id[loan_id]
-            assert by_id[loan_id]["current_balance"] is None
-            assert by_id[loan_id]["projected"] == {}
+            by_id = {ad.account.id: ad for ad in data["account_data"]}
+            # The loan: no seam read happened, so no loan detail (which carries
+            # both the figures and the params) and no balance.
+            assert by_id[loan_id].loan is None
+            assert by_id[loan_id].current_balance is None
+            assert by_id[loan_id].projected == {}
             # The cash account: the arm that was already guarded, unchanged --
             # the assertion that makes this "the same way" and not merely "not
             # an exception".
-            assert by_id[cash_id]["current_balance"] is None
-            assert by_id[cash_id]["projected"] == {}
+            assert by_id[cash_id].current_balance is None
+            assert by_id[cash_id].projected == {}
             # And with no loan figures anywhere, the debt card has no loans to
             # summarise rather than a half-built one.
             assert data["debt_summary"] is None
@@ -4810,6 +4847,129 @@ class TestUnclearingDebtHasNoDebtFreeDate:
                 "a borrower carrying a loan that never pays off was reported "
                 "loan-free"
             )
+
+
+class TestTheProjectionShape:
+    """The per-account projection is a value object, and its shape is pinned.
+
+    Plan step X-t1, finding N-111.  ``_project_one_account`` returned an
+    untyped dict with five required keys and four optional ones, and KEY
+    MEMBERSHIP was the type discriminator: ``"loan_figures" in ad`` meant "this
+    account is a loan".  Two measured defects came out of that container --
+    B-16 (a retired loan reported as debt still owed, because the dict copied
+    the seam's ``LoanFigures`` field by field and dropped the one field the
+    question needed) and N-98 (19 years of contradiction between two surfaces
+    on one page).
+
+    These pin what the container now guarantees.  A future step that
+    re-flattens the loan half, or re-stores a value the projection can derive,
+    fails here.
+    """
+
+    def test_the_field_set_is_exactly_what_consumers_read(self):
+        """The projection's fields are pinned, and the loan half is ONE of them.
+
+        The analogue of the Horizon's published-key pin: a field added without
+        a consumer, or the loan detail re-flattened into parallel
+        ``loan_figures`` / ``loan_params`` fields (the shape plan step X-s2 had
+        to unpick at the seam-batch layer), fails this literal.
+        """
+        # pylint: disable=import-outside-toplevel
+        from dataclasses import fields
+        assert {f.name for f in fields(AccountProjection)} == {
+            "account", "current_balance", "projected", "needs_setup",
+            "interest_params", "investment_params", "loan",
+        }
+
+    def test_it_is_frozen_and_a_mistyped_field_raises(self, app, db, seed_user):
+        """A projection cannot be mutated, and an unknown field is an error.
+
+        Frozen because every consumer on the page reads the SAME object: the
+        grid cell, the hero reduction, the debt summary, the Horizon bands and
+        the goal balances.  One of them rewriting a figure the others have
+        already read is the class of defect this arc exists to remove, and
+        ``dataclasses.FrozenInstanceError`` makes it impossible rather than
+        merely uncustomary.
+
+        The second arm is the dict's real cost: ``ad["loan_figures"]`` on a
+        cash account raised ``KeyError`` while ``ad.get("loan_figures")``
+        answered ``None`` and Jinja's ``ad.loan_figures`` answered
+        ``Undefined`` -- three spellings, one of them silent.  There is now one
+        answer and it is loud.
+        """
+        # pylint: disable=import-outside-toplevel
+        from dataclasses import FrozenInstanceError
+        from types import SimpleNamespace
+        with app.app_context():
+            projection = _projection(
+                SimpleNamespace(account_type=None), Decimal("1.00"),
+            )
+            with pytest.raises(FrozenInstanceError):
+                projection.current_balance = Decimal("2.00")
+            with pytest.raises(AttributeError):
+                _ = projection.loan_figures
+
+    def test_the_liability_flag_is_derived_not_stored(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """``is_liability`` IS the classifier, for a loan and for cash.
+
+        It was a STORED key, and the page asked the same rule two ways over one
+        set of balances: the grid cell read the stored flag while
+        ``compute_net_worth_today`` -- summing the very balances those cells
+        show -- re-derived it from the account.  Derived, they cannot differ.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.services.net_worth_account_data import is_liability_account
+        with app.app_context():
+            loan = _create_small_loan(seed_user, db.session, name="Van")
+            db.session.commit()
+
+            data = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            by_id = {ad.account.id: ad for ad in data["account_data"]}
+            assert by_id[loan.id].is_liability is True
+            assert by_id[seed_user["account"].id].is_liability is False
+            # And it is the classifier itself, not a copy that agrees today.
+            for ad in data["account_data"]:
+                assert ad.is_liability == is_liability_account(ad.account)
+
+
+def _with_badging_predicate(account_data):
+    """Rebuild *account_data* with ``is_retired`` set to the BADGING predicate.
+
+    The shared firing control for the two tests below: it substitutes
+    ``is_paid_off`` for ``is_retired`` on every loan projection, so a producer
+    that asks the debt-LINE question with the CONGRATULATION predicate answers
+    differently and the control fires.
+
+    Every level is rebuilt through ``dataclasses.replace`` on the real frozen
+    types -- the projection, its ``LoanDetail``, and the seam's own
+    ``LoanFigures`` -- so the control exercises the production shapes rather
+    than dicts arranged to look like them (finding B-17's lesson; the
+    projection became a frozen value at plan step X-t1, and rewriting it in
+    place is no longer possible even if a test wanted to).
+
+    Args:
+        account_data: The per-account projections from
+            ``compute_dashboard_data``.
+
+    Returns:
+        A new list, same order, with the loan projections substituted.
+    """
+    return [
+        ad if ad.loan is None else replace(
+            ad,
+            loan=replace(
+                ad.loan,
+                figures=replace(
+                    ad.loan.figures, is_retired=ad.loan.figures.is_paid_off,
+                ),
+            ),
+        )
+        for ad in account_data
+    ]
 
 
 class TestARetiredLoanHasNoDebtLine:
@@ -4983,17 +5143,11 @@ class TestARetiredLoanHasNoDebtLine:
             ) == (self._CLEARING_DOMAIN_END, self._CLEARING_PAYOFF)
 
             # The same producer, reading the badging predicate instead.  The
-            # substitution is made on the seam's own frozen value object
-            # (``dataclasses.replace``), so the control exercises the real
-            # type rather than a dict shaped like it.
-            for ad in account_data:
-                if "loan_figures" in ad:
-                    ad["loan_figures"] = replace(
-                        ad["loan_figures"],
-                        is_retired=ad["loan_figures"].is_paid_off,
-                    )
+            # substitution is made through ``dataclasses.replace`` on the real
+            # frozen types at all three levels, so the control exercises the
+            # production shapes rather than dicts arranged to look like them.
             assert _resolve_horizon_domain(
-                account_data, date(2026, 3, 20),
+                _with_badging_predicate(account_data), date(2026, 3, 20),
             ) == (self._FALLBACK_END, None), (
                 "the control does not fire: the badging predicate produced the "
                 "same domain as the debt-line predicate, so this fixture "
@@ -5063,19 +5217,14 @@ class TestARetiredLoanHasNoDebtLine:
             # the active set, and a retired loan has no forward payoff to date
             # -- so the user is reported NOT loan-free, on a loan they have
             # already cleared.
-            for ad in account_data:
-                if "loan_figures" in ad:
-                    ad["loan_figures"] = replace(
-                        ad["loan_figures"],
-                        is_retired=ad["loan_figures"].is_paid_off,
-                    )
-            assert loan_payoff_outlook(account_data).is_loan_free is False, (
+            badged = _with_badging_predicate(account_data)
+            assert loan_payoff_outlook(badged).is_loan_free is False, (
                 "the control does not fire: the badging predicate reported the "
                 "same loan-free state as the debt-line predicate, so this "
                 "fixture cannot tell them apart"
             )
             assert _resolve_horizon_domain(
-                account_data, date(2026, 3, 20),
+                badged, date(2026, 3, 20),
             ) == (self._FALLBACK_END, None)
 
 
@@ -5156,21 +5305,21 @@ class TestTheDebtFreeDateIsOneDerivation:
             )
             account_data = data["account_data"]
             by_name = {
-                ad["account"].name: ad for ad in account_data
-                if ad.get("loan_params")
+                ad.account.name: ad for ad in account_data
+                if ad.loan is not None
             }
             # The preconditions that make the fixture discriminating: the
             # mortgage owes nothing today and is NOT retired -- its whole line
             # is ahead of it -- and it clears far later than the car loan.
-            assert by_name["Future Mortgage"]["current_balance"] == (
+            assert by_name["Future Mortgage"].current_balance == (
                 Decimal("0.00")
             )
-            assert by_name["Future Mortgage"]["loan_figures"].terms.is_originated is False
-            assert by_name["Future Mortgage"]["loan_figures"].is_retired is False
-            assert by_name["Future Mortgage"]["loan_figures"].payoff_date == (
+            assert by_name["Future Mortgage"].loan.figures.terms.is_originated is False
+            assert by_name["Future Mortgage"].loan.figures.is_retired is False
+            assert by_name["Future Mortgage"].loan.figures.payoff_date == (
                 self._MORTGAGE_PAYOFF
             )
-            assert by_name["Car Loan"]["loan_figures"].payoff_date == self._CAR_PAYOFF
+            assert by_name["Car Loan"].loan.figures.payoff_date == self._CAR_PAYOFF
 
             # ONE derivation, and both surfaces read it.
             assert loan_payoff_outlook(account_data).all_clear_on == (
@@ -5228,8 +5377,8 @@ class TestTheDebtFreeDateIsOneDerivation:
             )["account_data"]
             owed_today = [
                 ad for ad in account_data
-                if ad.get("loan_params")
-                and (ad["current_balance"] or Decimal("0.00")) > Decimal("0.00")
+                if ad.loan is not None
+                and (ad.current_balance or Decimal("0.00")) > Decimal("0.00")
             ]
             assert loan_payoff_outlook(owed_today).all_clear_on == (
                 self._CAR_PAYOFF

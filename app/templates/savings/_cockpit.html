@@ -154,11 +154,17 @@
         {% if ad.needs_setup %}
         <span class="badge bg-warning text-dark">Setup Required</span>
         {% endif %}
-        {# The seam's own value object, carried whole since plan step X-r.
-           The per-field copies it replaced are the shape that DROPPED
-           ``is_retired`` before plan step X-o added it back as a sixth copy
-           -- finding B-16, and the reason the copying itself went. #}
-        {% if ad.loan_figures is defined and ad.loan_figures.is_paid_off %}
+        {# The seam's own value object, carried whole since plan step X-r,
+           inside the projection's ONE loan field since X-t1.  The per-field
+           copies it replaced are the shape that DROPPED ``is_retired`` before
+           plan step X-o added it back as a sixth copy -- finding B-16, and the
+           reason the copying itself went.
+
+           ``is not none``, never ``is defined``: the field always EXISTS now,
+           so a defined-test would be true for every account and the cash cells
+           would dereference ``None`` -- which Jinja renders as empty rather
+           than raising, the silent-degradation hazard finding N-111 measured. #}
+        {% if ad.loan is not none and ad.loan.figures.is_paid_off %}
         <span class="badge bg-success">Paid Off</span>
         {% endif %}
       </div>
@@ -170,9 +176,11 @@
          that REPLACES it (input + Save / Cancel) is also lifted above the
          cell's .stretched-link overlay and stays clickable. #}
       <div class="acct-cell__balance">
-        {% with account=ad.account, current_balance=ad.current_balance, is_liability=ad.is_liability %}
+        {# The partial reads this loop's own ``ad`` -- the same
+           AccountProjection the revert endpoint renders it with (plan step
+           X-t1), so the two paths cannot state the cell's contract
+           differently. #}
         {% include "savings/_cockpit_balance.html" %}
-        {% endwith %}
       </div>
 
       {# One caption line: type + rate, the loan payment or the projected
@@ -182,15 +190,15 @@
       <div class="acct-cell__cap">
         <span>
           {{ ad.account.account_type.name if ad.account.account_type else '--' }}
-          {%- if ad.interest_params is defined and ad.interest_params %} &middot; APY {{ "%.2f"|format(ad.interest_params.apy|to_percent) }}%{% endif -%}
-          {%- if ad.loan_figures is defined %} &middot; {{ "%.3f"|format(ad.loan_figures.terms.current_rate|to_percent) }}%{% endif -%}
-          {%- if ad.investment_params is defined and ad.investment_params %} &middot; Return {{ "%.2f"|format(ad.investment_params.assumed_annual_return|to_percent) }}%{% endif -%}
+          {%- if ad.interest_params is not none %} &middot; APY {{ "%.2f"|format(ad.interest_params.apy|to_percent) }}%{% endif -%}
+          {%- if ad.loan is not none %} &middot; {{ "%.3f"|format(ad.loan.figures.terms.current_rate|to_percent) }}%{% endif -%}
+          {%- if ad.investment_params is not none %} &middot; Return {{ "%.2f"|format(ad.investment_params.assumed_annual_return|to_percent) }}%{% endif -%}
           {%- if ad.account.asset_appreciation_params %} &middot; Appr {{ "%.2f"|format(ad.account.asset_appreciation_params.annual_appreciation_rate|to_percent) }}%{% endif -%}
         </span>
-        {% if ad.loan_figures is defined %}
+        {% if ad.loan is not none %}
         <span>
-          Monthly Payment <span class="font-mono">{{ money(ad.loan_figures.terms.monthly_payment) }}</span>
-          {%- if ad.loan_figures.payoff_date is not none %} &middot; payoff {{ ad.loan_figures.payoff_date.strftime('%b %Y') }}{% endif %}
+          Monthly Payment <span class="font-mono">{{ money(ad.loan.figures.terms.monthly_payment) }}</span>
+          {%- if ad.loan.figures.payoff_date is not none %} &middot; payoff {{ ad.loan.figures.payoff_date.strftime('%b %Y') }}{% endif %}
         </span>
         {% elif ad.projected %}
         {% set last_proj = ad.projected.items() | list | last %}

@@ -403,17 +403,22 @@ def cockpit_balance(account_id):
     owned, or archived between page load and the revert), satisfying the
     404-for-both security rule.  Non-HTMX requests redirect to the
     dashboard page.
+
+    The partial is rendered with the SAME value the grid loop passes it (plan
+    step X-t1): the producer returns the account's ``AccountProjection``, so
+    the reverted cell and the cell it replaces read one object rather than two
+    dicts that have to agree.
     """
     if not request.headers.get("HX-Request"):
         return redirect(url_for("savings.dashboard"))
 
-    cell = savings_dashboard_service.compute_account_balance_cell(
+    projection = savings_dashboard_service.compute_account_balance_cell(
         current_user.id, account_id,
     )
-    if cell is None:
+    if projection is None:
         abort(404)
 
-    return render_template("savings/_cockpit_balance.html", **cell)
+    return render_template("savings/_cockpit_balance.html", ad=projection)
 
 
 @savings_bp.route("/savings/goals/new", methods=["GET"])

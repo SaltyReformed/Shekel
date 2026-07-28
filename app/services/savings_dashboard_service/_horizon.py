@@ -38,10 +38,10 @@ The today point (index 0) is each band's real today balance, so the horizon
 net at index 0 equals the net-worth hero and the ``2 years`` series' current
 point by construction.
 
-No Flask imports; every function takes plain data (the loaded core data,
-the projected account dicts, the id-based category map) and returns plain
-``Decimal`` / ``dict`` data the route serializes at the presentation
-boundary.
+No Flask imports; every function takes plain data (the loaded core data, the
+per-account :class:`~.._types.AccountProjection` values, the id-based category
+map) and returns plain ``Decimal`` / ``dict`` data the route serializes at the
+presentation boundary.
 """
 
 from dataclasses import dataclass
@@ -64,6 +64,7 @@ from app.services.savings_dashboard_service._net_worth import (
     _LIABILITY_BAND,
     ZERO,
 )
+from app.services.savings_dashboard_service._types import AccountProjection
 
 if TYPE_CHECKING:
     from app.services.savings_dashboard_service._types import _DashboardCoreData
@@ -137,7 +138,7 @@ class _HorizonFrame:
 
 
 def _resolve_horizon_domain(
-    account_data: list[dict], today: date,
+    account_data: list[AccountProjection], today: date,
 ) -> tuple[date, date | None]:
     """Resolve the horizon domain end and the debt-free flag's date.
 
@@ -175,8 +176,8 @@ def _resolve_horizon_domain(
     R-AW deleted from the projection dict one layer down.
 
     Args:
-        account_data: The per-account projection dicts (a configured loan
-            carries the seam's ``loan_figures``).
+        account_data: The per-account projections (a configured loan carries a
+            :class:`~.._types.LoanDetail`).
         today: The producer's as-of date.
 
     Returns:
@@ -410,7 +411,7 @@ def _horizon_growth_rate(account, kind: AccountProjectionKind) -> Decimal:
 
 
 def _asset_bands(
-    account_data: list[dict],
+    account_data: list[AccountProjection],
     category_by_account_id: dict[int, str],
     frame: _HorizonFrame,
 ) -> dict[str, list[Decimal]]:
@@ -426,7 +427,7 @@ def _asset_bands(
     :func:`_liability_band`, so they are skipped here.
 
     Args:
-        account_data: The per-account projection dicts (the ``current_balance``
+        account_data: The per-account projections (the ``current_balance``
             seeds each account's growth).
         category_by_account_id: Each account's id-based category key.
         frame: The horizon time frame.
@@ -437,11 +438,11 @@ def _asset_bands(
     """
     bands = {"asset": _zero_series(frame), "other": _zero_series(frame)}
     for ad in account_data:
-        account = ad["account"]
+        account = ad.account
         band = category_by_account_id.get(account.id)
         if band not in bands:
             continue
-        today_value = ad["current_balance"] or ZERO
+        today_value = ad.current_balance or ZERO
         rate = _horizon_growth_rate(account, classify_account(account))
         rows = growth_engine.project_balance(
             current_balance=today_value,
@@ -456,7 +457,7 @@ def _asset_bands(
 
 
 def _liability_band(
-    account_data: list[dict],
+    account_data: list[AccountProjection],
     core: "_DashboardCoreData",
     frame: _HorizonFrame,
 ) -> list[Decimal]:
@@ -480,10 +481,10 @@ def _liability_band(
     liability's ledger-confirmed current balance by construction.
 
     Args:
-        account_data: The per-account projection dicts (each carrying
-            ``account``, ``is_liability``, and ``current_balance`` -- the
-            already-resolved balance the hero renders, threaded into the seam
-            rather than re-resolved).
+        account_data: The per-account projections (each carrying an
+            ``account``, answering ``is_liability``, and carrying the
+            ``current_balance`` -- the already-resolved balance the hero
+            renders, threaded into the seam rather than re-resolved).
         core: The loaded dashboard core data (its ``scenario`` scopes the loan
             resolver; ``None`` is a valid no-baseline state the seam handles by
             holding every liability flat).
@@ -498,18 +499,18 @@ def _liability_band(
         positive owed total per point).
     """
     band = _zero_series(frame)
-    liability_ads = [ad for ad in account_data if ad.get("is_liability")]
+    liability_ads = [ad for ad in account_data if ad.is_liability]
     if not liability_ads:
         return band
 
     owed_by_account = balance_at.liability_owed_at_dates(
-        [ad["account"] for ad in liability_ads],
+        [ad.account for ad in liability_ads],
         core.balance_ctx,
         frame.sample_dates,
-        {ad["account"].id: ad["current_balance"] for ad in liability_ads},
+        {ad.account.id: ad.current_balance for ad in liability_ads},
     )
     for ad in liability_ads:
-        _add_into(band, owed_by_account[ad["account"].id])
+        _add_into(band, owed_by_account[ad.account.id])
     return band
 
 
@@ -563,7 +564,7 @@ def _format_net_milestone(amount: Decimal) -> str:
 
 
 def _structural_milestones(
-    account_data: list[dict],
+    account_data: list[AccountProjection],
     debt_free_date: date | None,
     frame: _HorizonFrame,
 ) -> list[dict]:
@@ -585,7 +586,7 @@ def _structural_milestones(
     rules agreeing.
 
     Args:
-        account_data: The per-account projection dicts.
+        account_data: The per-account projections.
         debt_free_date: The last future loan payoff, or ``None``.
         frame: The horizon time frame (its ``today`` bounds the payoffs).
 
@@ -597,11 +598,11 @@ def _structural_milestones(
         return []
     result: list[dict] = []
     for ad in debt_line_loans(account_data):
-        payoff = ad["loan_figures"].payoff_date
+        payoff = ad.loan.figures.payoff_date
         if payoff is not None and frame.today < payoff < debt_free_date:
             result.append({
                 "date": payoff,
-                "label": f"{ad['account'].name} paid off",
+                "label": f"{ad.account.name} paid off",
             })
     # The label says what the date MEASURES (plan step X-q3, finding N-99):
     # the derivation behind it covers amortizing loans, the only debts with a
@@ -650,7 +651,7 @@ def _net_crossing_milestones(
 
 
 def _build_milestones(
-    account_data: list[dict],
+    account_data: list[AccountProjection],
     net: list[Decimal],
     debt_free_date: date | None,
     frame: _HorizonFrame,
@@ -663,7 +664,7 @@ def _build_milestones(
     date for the chart's left-to-right layout.
 
     Args:
-        account_data: The per-account projection dicts.
+        account_data: The per-account projections.
         net: The net-worth series over ``frame.sample_dates``.
         debt_free_date: The last future loan payoff, or ``None``.
         frame: The horizon time frame.
@@ -692,7 +693,7 @@ def _build_milestones(
 def _assemble_composition(
     user_id: int,
     core: "_DashboardCoreData",
-    account_data: list[dict],
+    account_data: list[AccountProjection],
     category_by_account_id: dict[int, str],
     frame: _HorizonFrame,
 ) -> dict[str, list[Decimal]]:
@@ -706,7 +707,7 @@ def _assemble_composition(
     Args:
         user_id: The authenticated user's id.
         core: The loaded dashboard core data.
-        account_data: The per-account projection dicts.
+        account_data: The per-account projections.
         category_by_account_id: Each account's id-based category key.
         frame: The horizon time frame.
 
@@ -730,7 +731,7 @@ def _assemble_composition(
 def build_horizon(
     user_id: int,
     core: "_DashboardCoreData",
-    account_data: list[dict],
+    account_data: list[AccountProjection],
     category_by_account_id: dict[int, str],
 ) -> dict | None:
     """Build the long-horizon annual net-worth composition + milestones.
@@ -769,7 +770,7 @@ def build_horizon(
         user_id: The authenticated user's id (for the /retirement engine
             reuse).
         core: The loaded dashboard core data.
-        account_data: The per-account projection dicts from
+        account_data: The per-account projections from
             ``_compute_account_projections``.
         category_by_account_id: Each account's id-based category key from
             :func:`~app.services.savings_dashboard_service._display.category_key_by_account_id`.

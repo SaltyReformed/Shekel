@@ -28,6 +28,7 @@ from app.services.savings_dashboard_service._debt_line import (
     debt_without_payoff_model,
     loan_payoff_outlook,
 )
+from app.services.savings_dashboard_service._types import AccountProjection
 from app.services.tax_config_service import load_tax_configs
 from app.utils.money import MONTHS_PER_YEAR, PAY_PERIODS_PER_YEAR, round_money
 
@@ -146,11 +147,11 @@ class DebtSummary:
     dti: DtiMetrics | None
 
 
-def _sum_liquid_balances(account_data):
+def _sum_liquid_balances(account_data: list[AccountProjection]) -> Decimal:
     """Sum the current balances of liquid accounts for the emergency fund.
 
     Args:
-        account_data: List of per-account dicts from
+        account_data: The per-account projections from
             ``_compute_account_projections``.
 
     Returns:
@@ -158,8 +159,9 @@ def _sum_liquid_balances(account_data):
     """
     total_savings = Decimal("0.00")
     for ad in account_data:
-        if ad["account"].account_type and ad["account"].account_type.is_liquid:
-            total_savings += ad["current_balance"] or Decimal("0.00")
+        acct_type = ad.account.account_type
+        if acct_type is not None and acct_type.is_liquid:
+            total_savings += ad.current_balance or Decimal("0.00")
     return total_savings
 
 
@@ -370,8 +372,8 @@ def _compute_avg_monthly_expenses(
     return max(historical, floor)
 
 
-def _loan_ad_current_principal(ad: dict) -> Decimal | None:
-    """Return a loan account dict's contributing current balance, or None.
+def _loan_ad_current_principal(ad: AccountProjection) -> Decimal | None:
+    """Return a loan projection's contributing current balance, or None.
 
     The single definition of "which loan accounts contribute to the debt
     summary's owed-today aggregates" (its ``total_debt``,
@@ -402,8 +404,8 @@ def _loan_ad_current_principal(ad: dict) -> Decimal | None:
     contrast, is owed-today, which is exactly what this predicate scopes.
 
     Args:
-        ad: A per-account dict carrying ``current_balance`` (a loan entry
-            from ``_compute_account_projections``).
+        ad: A per-account projection carrying ``current_balance`` (a loan
+            entry from ``_compute_account_projections``).
 
     Returns:
         The loan's seam-derived current balance as a positive ``Decimal``
@@ -414,14 +416,14 @@ def _loan_ad_current_principal(ad: dict) -> Decimal | None:
     # figure as the loan card; replaces the previous read of the
     # non-authoritative ``LoanParams.current_principal`` column that
     # produced F-008's stored-vs-engine divergence.
-    principal = ad["current_balance"] or Decimal("0.00")
+    principal = ad.current_balance or Decimal("0.00")
     if principal <= Decimal("0.00"):
         return None
     return principal
 
 
 def _compute_principal_paid_fraction(
-    account_data: list[dict],
+    account_data: list[AccountProjection],
 ) -> Decimal | None:
     """Aggregate fraction of original principal paid across ALL loans ever.
 
@@ -451,7 +453,7 @@ def _compute_principal_paid_fraction(
     be included; a loan with no ``LoanParams`` row carries no
     ``original_principal`` and is likewise not a loan-ad here.  RETIRED
     loans, by contrast, remain active accounts and DO appear in
-    ``account_data`` carrying the seam's ``loan_figures`` with its
+    ``account_data`` carrying a ``loan`` detail whose seam figures have
     ``is_retired`` set, so the all-loans-ever set is fully
     reachable.  The predicate is ``is_retired``
     and not ``is_paid_off`` as of plan step X-q: "this loan owes nothing" is
@@ -467,9 +469,9 @@ def _compute_principal_paid_fraction(
     fully paid-off loan set returns ``Decimal("1")``, not ``None``.
 
     Args:
-        account_data: Per-account dicts from
+        account_data: Per-account projections from
             ``_compute_account_projections`` (any mix -- only entries
-            carrying ``loan_params`` are read).
+            carrying a ``loan`` detail are read).
 
     Returns:
         The principal-paid fraction as a ``Decimal`` in ``[0, 1]`` (a
@@ -477,7 +479,7 @@ def _compute_principal_paid_fraction(
         is clamped to ``0`` so the marker never renders to the left of the
         rail), or ``None`` when the user has no loans at all.
     """
-    loan_ads = [ad for ad in account_data if "loan_figures" in ad]
+    loan_ads = [ad for ad in account_data if ad.loan is not None]
 
     total_original = Decimal("0.00")
     total_current = Decimal("0.00")
@@ -492,7 +494,7 @@ def _compute_principal_paid_fraction(
         # marker's one design invariant below: the fraction would COLLAPSE from
         # 66.67% to 0% on closing day, when the mortgage's balance steps from
         # $0.00 to $200,000.
-        if not ad["loan_figures"].terms.is_originated:
+        if not ad.loan.figures.terms.is_originated:
             continue
         # ALL loans ever: every loan-ad contributes its original
         # principal to the denominator.  A RETIRED loan contributes
@@ -507,10 +509,10 @@ def _compute_principal_paid_fraction(
         # so the ``max(current, 0)`` below adds exactly nothing on either
         # predicate), which is why this is a vocabulary fix and not a
         # behaviour change.
-        total_original += ad["loan_params"].original_principal
-        if ad["loan_figures"].is_retired:
+        total_original += ad.loan.params.original_principal
+        if ad.loan.figures.is_retired:
             continue
-        current = ad["current_balance"] or Decimal("0.00")
+        current = ad.current_balance or Decimal("0.00")
         total_current += max(current, Decimal("0.00"))
 
     if total_original <= Decimal("0.00"):
@@ -525,13 +527,13 @@ def _compute_principal_paid_fraction(
 
 
 def _accumulate_loan_debt(
-    loan_ads: list[dict], escrow_map: dict[int, list],
+    loan_ads: list[AccountProjection], escrow_map: dict[int, list],
 ) -> tuple[Decimal, Decimal, Decimal]:
     """Sum the owed-today debt metrics across the loans that still owe.
 
-    Walks the per-account loan dicts, skipping any whose seam-derived current
-    balance is zero or negative, and accumulates the running totals the debt
-    summary reports.
+    Walks the per-account loan projections, skipping any whose seam-derived
+    current balance is zero or negative, and accumulates the running totals the
+    debt summary reports.
 
     **It no longer collects payoff dates** (plan step X-q).  It used to derive
     the debt-free date inside this loop, over the loans that owe money TODAY --
@@ -543,8 +545,8 @@ def _accumulate_loan_debt(
     chart reads as well.
 
     Args:
-        loan_ads: Per-account dicts that carry the seam's ``loan_figures``
-            (the loan subset of ``_compute_account_projections`` output).
+        loan_ads: Per-account projections that carry a ``loan`` detail (the
+            loan subset of ``_compute_account_projections`` output).
         escrow_map: Dict mapping account_id to list of EscrowLine (with versions).
 
     Returns:
@@ -565,12 +567,12 @@ def _accumulate_loan_debt(
         # reflects the rate the loan is actually accruing at today --
         # for a changed ARM the in-effect rate, not the stale origination
         # value the dropped column had drifted from.
-        rate = ad["loan_figures"].terms.current_rate
-        monthly_pi = ad["loan_figures"].terms.monthly_payment
+        rate = ad.loan.figures.terms.current_rate
+        monthly_pi = ad.loan.figures.terms.monthly_payment
 
         # Include escrow (property tax, insurance) for PITI total, resolved to
         # today's active version per line via the shared as-of function.
-        lines = escrow_map.get(ad["account"].id, [])
+        lines = escrow_map.get(ad.account.id, [])
         monthly_escrow = escrow_calculator.escrow_monthly_as_of(
             lines, date.today(),
         )
@@ -584,7 +586,7 @@ def _accumulate_loan_debt(
 
 
 def _compute_debt_summary(
-    account_data: list[dict],
+    account_data: list[AccountProjection],
     escrow_map: dict[int, list],
     gross_biweekly: Decimal,
 ) -> DebtSummary | None:
@@ -597,8 +599,9 @@ def _compute_debt_summary(
     was answerable only by reading the modules in call order.
 
     Uses per-account data already computed by _compute_account_projections:
-    ``current_balance`` and ``loan_params`` directly, the payment and rate off
-    the seam's ``loan_figures`` bundle (plan step X-r), and the payoff through
+    ``current_balance`` directly, the original principal, payment and rate off
+    the ``loan`` detail's contract row and seam figures (plan steps X-r /
+    X-t1), and the payoff through
     :func:`~.._debt_line.loan_payoff_outlook`.  Escrow components are loaded
     separately and included in the monthly total so DTI reflects PITI
     (principal, interest, taxes, insurance).
@@ -614,7 +617,7 @@ def _compute_debt_summary(
     flattened into fields, which is ruling R-AW; see :class:`DebtSummary`.
 
     Args:
-        account_data: List of per-account dicts from
+        account_data: The per-account projections from
             _compute_account_projections.
         escrow_map: Dict mapping account_id to list of EscrowLine (with versions).
         gross_biweekly: The engine-derived gross biweekly pay the DTI block is
@@ -626,7 +629,7 @@ def _compute_debt_summary(
         exist -- so a user whose only liability is a card has no payoff caption
         to qualify, which is why the ``revolving_debt`` caveat rides here.
     """
-    loan_ads = [ad for ad in account_data if "loan_figures" in ad]
+    loan_ads = [ad for ad in account_data if ad.loan is not None]
     if not loan_ads:
         return None
 

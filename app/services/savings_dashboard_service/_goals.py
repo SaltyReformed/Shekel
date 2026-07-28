@@ -81,7 +81,8 @@ def _goal_account_balance(account_data, account_id):
     """Return the current balance of the account backing a savings goal.
 
     Args:
-        account_data: List of per-account dicts from
+        account_data: The per-account
+            :class:`~.._types.AccountProjection` values from
             ``_compute_account_projections``.
         account_id: The goal's backing account id.
 
@@ -91,8 +92,8 @@ def _goal_account_balance(account_data, account_id):
         archived and excluded from projections).
     """
     for ad in account_data:
-        if ad["account"].id == account_id:
-            return ad["current_balance"] or Decimal("0.00")
+        if ad.account.id == account_id:
+            return ad.current_balance or Decimal("0.00")
     return Decimal("0.00")
 
 
@@ -196,7 +197,8 @@ def _compute_goal_progress(user_id, account_data, all_periods, net_biweekly_pay,
 
     Args:
         user_id: Integer ID of the current user.
-        account_data: List of per-account dicts from _compute_account_projections.
+        account_data: The per-account projections from
+            _compute_account_projections.
         all_periods: All pay periods for the user.
         net_biweekly_pay: Current net biweekly pay (Decimal).  Used to
             resolve income-relative goal targets.

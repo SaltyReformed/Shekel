@@ -222,7 +222,7 @@ class TestSavingsDashboardProjection:
             )
             entry = next(
                 ad for ad in data["account_data"]
-                if ad["account"].id == acct.id
+                if ad.account.id == acct.id
             )
             # The tile adopts the model-from-anchor value: the canonical
             # net-worth kernel's appreciation map at the current period (read
@@ -240,12 +240,12 @@ class TestSavingsDashboardProjection:
                 seed_periods_today,
                 ContributionInputs.absent(),
             )
-            assert entry["current_balance"] == modeled_map[current_period.id]
-            assert entry["current_balance"] > Decimal("400000.00")
-            assert isinstance(entry["projected"], dict)
+            assert entry.current_balance == modeled_map[current_period.id]
+            assert entry.current_balance > Decimal("400000.00")
+            assert isinstance(entry.projected, dict)
             # The params row exists, so no "needs setup" affordance fires --
             # the regression the classifier fix guards against.
-            assert entry["needs_setup"] is False
+            assert entry.needs_setup is False
 
 
 # ``TestNetWorthNetting`` stood here.  It asserted that a Property nets
