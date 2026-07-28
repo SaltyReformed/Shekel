@@ -46,9 +46,12 @@ def _load_dashboard_core_data(user_id, balance_ctx=None):
         balance_ctx: An existing
             :class:`~app.services.balance_at.BalanceContext` to reuse, or
             ``None`` to build one for this pass.  A caller that has already
-            started a read pass (the budget dashboard's tracks section runs three
-            savings producers back to back) passes its own so all of them share
-            ONE set of loan resolutions.
+            started a read pass (the budget dashboard's tracks section runs TWO
+            savings producers back to back -- it ran three until plan step X-u
+            deleted the second debt one) passes its own so all of them share
+            ONE set of loan resolutions.  Sharing the CONTEXT is not sharing the
+            LOADS: each producer still calls this function, which is finding
+            N-115.
 
     Returns:
         A :class:`_DashboardCoreData` with active accounts (ordered for

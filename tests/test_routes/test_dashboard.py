@@ -695,6 +695,47 @@ class TestDashboardTracks:
             # the rail marker's data attribute.
             assert "data-rail-pct=" in html
 
+    def test_debt_rail_renders_the_percent_not_the_raw_fraction(
+        self, app, auth_client, seed_user, seed_periods_today, db,
+    ):
+        """The rail renders 60%, not 0.6 -- the scaled value, not the field.
+
+        Plan step X-u made ``principal_paid_fraction`` a ``DebtSummary`` field,
+        and the route's ``_DebtTrackView`` carries the summary WHOLE beside the
+        percent it scales from it.  So the template can now reach the figure two
+        ways, and only one of them is renderable: ``.principal_paid_pct`` is the
+        0-100 float the rail positions from, while ``.summary
+        .principal_paid_fraction`` is the ``Decimal`` in ``[0, 1]``.
+
+        The existing marker test cannot tell them apart -- its fixture's
+        fraction is exactly 0, which renders "0% paid" either way.  This one
+        trues a $1,000.00 loan down to a known $400.00, so the fraction is
+        (1000.00 - 400.00) / 1000.00 = 0.6 and the honest rail reads
+        **60% paid** where a template reading the raw field would read "1% paid"
+        (``"{:.0f}".format(0.6)``) and position the marker at 0.6% of the rail.
+        """
+        # pylint: disable=import-outside-toplevel
+        from tests._test_helpers import create_loan_account, insert_trueup_event
+
+        with app.app_context():
+            acct = create_loan_account(
+                seed_user, db.session, name="Trued Auto Loan",
+            )
+            insert_trueup_event(acct.loan_params, Decimal("400.00"))
+            db.session.commit()
+
+            resp = auth_client.get("/dashboard")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            # The fixture really is at $400.00 of $1,000.00, so the fraction is
+            # 0.6 -- not the 0 the sibling test's fixture produces.
+            assert 'track__pos-num font-mono">$400.00' in html
+            assert "60% paid" in html
+            assert 'data-rail-pct="60.0' in html
+            # And the raw fraction is NOT what reached the rail.
+            assert "1% paid" not in html
+            assert 'data-rail-pct="0.6"' not in html
+
     def test_debt_track_renders_its_dti_badge_and_tooltip(
         self, app, auth_client, seed_user, seed_periods_today, db,
     ):

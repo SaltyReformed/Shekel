@@ -13,17 +13,35 @@ proof.  This dumps the layer that step actually changes:
   outlook and DTI block, the net-worth today figures, the 2-year series with
   its composition bands, the whole Horizon range with its milestones, and the
   sparklines;
-* all four NARROW producers (debt summary, principal-paid fraction, goal
-  progress, and the per-account cockpit balance cell for every account);
+* the NARROW producers (debt summary, goal progress, and the per-account
+  cockpit balance cell for every account) plus the principal-paid fraction,
+  which was a narrow producer of its own until plan step X-u;
 * the ROUTE's serialized ``data-chart`` payload (the float boundary);
 * ``dashboard_pulse_service.compute_tracks_section`` -- the debt track that
-  composes the summary.
+  carries the summary.
 
-**NORMALIZED across the intended shape change** (plan step X-t1 turns the
-per-account projection dict into a frozen ``AccountProjection`` carrying a
-nested loan value): every reader here is dict-or-attribute tolerant and the
-loan half is flattened to the same two keys either way, so the deliberate
-change cannot hide an accidental one.
+**NORMALIZED across the intended shape changes**, so a deliberate diff cannot
+hide an accidental one.  Two so far, and each is a place where this ONE file
+has to produce the same blob on the old tree and the new one:
+
+* plan step X-t1 turned the per-account projection dict into a frozen
+  ``AccountProjection`` carrying a nested loan value -- every reader here is
+  dict-or-attribute tolerant and the loan half flattens to the same two keys
+  either way;
+* plan step X-u made the principal-paid fraction a ``DebtSummary`` field and
+  deleted both the ``compute_debt_principal_progress`` producer and the
+  ``DebtTrack`` wrapper -- so the fraction is read through
+  :func:`_principal_fraction` / :func:`_narrow_fraction` / :func:`_full_build_fraction`,
+  and the tracks section's ``debt`` normalizes whether it is the summary or a
+  wrapper around it.
+
+**A NORMALIZATION SHIM IS DELETED BY THE STEP AFTER THE ONE THAT NEEDED IT.**
+Each of the above adds a branch that can never be taken on the current tree, and
+they accumulate: X-v and X-w change these same producers, and a file whose
+readers all tolerate three dead shapes is one that can no longer answer this
+harness's own question (Section 7.2 -- can it SEE the code under test?).  So the
+X-t1 tolerance goes when X-v ships, the X-u tolerance when X-w does, and this
+paragraph goes with the last of them.
 
 **Usage** (from the repository root)::
 
@@ -168,7 +186,15 @@ def _outlook(outlook):
 
 
 def _debt_summary(summary):
-    """Every field of the debt summary, its outlook and its DTI block."""
+    """The debt summary's money fields, its outlook and its DTI block.
+
+    Deliberately NOT ``principal_paid_fraction``: plan step X-u added it, so a
+    tree without it would dump ``null`` here and the intended shape change would
+    read as a figure change.  It is dumped instead through the three top-level
+    keys that carry it on BOTH trees -- ``narrow_principal_fraction``,
+    ``full_build_principal_fraction`` and the tracks section's own copy -- which
+    is where a real change to it shows up.
+    """
     if summary is None:
         return None
     dti = _get(summary, "dti")
@@ -249,6 +275,49 @@ def _goal(datum):
     }
 
 
+def _principal_fraction(summary):
+    """The principal-paid fraction of one summary, wherever this tree keeps it.
+
+    Plan step X-u makes it a ``DebtSummary`` field; before it, the only producer
+    of it was ``compute_debt_principal_progress`` and the summary had no such
+    attribute.  Reading it tolerantly is what lets THIS FILE run against both
+    trees and produce the same blob for the same data -- the X-t1 normalization
+    one step over, and the reason the deliberate shape change cannot mask an
+    accidental figure change.
+    """
+    return _get(summary, "principal_paid_fraction")
+
+
+def _narrow_fraction(user_id, narrow_summary):
+    """The narrow producers' principal-paid fraction, whichever exists here.
+
+    Takes the already-computed narrow summary rather than fetching its own.
+    It DID fetch its own until X-u's adversarial review counted the calls: this
+    file measures finding N-109 (one render, two identical debt pipelines) and
+    was running ``compute_debt_summary`` twice per user dump to do it.
+    """
+    legacy = getattr(
+        savings_dashboard_service, "compute_debt_principal_progress", None,
+    )
+    if legacy is not None:
+        return legacy(user_id)
+    return _principal_fraction(narrow_summary)
+
+
+def _full_build_fraction(user_id, summary, narrow_summary):
+    """The full ``/savings`` build's principal-paid fraction, tolerantly.
+
+    Post-X-u the full build's own ``debt_summary`` carries it; pre-X-u nothing
+    on that path computed one, so the narrow figure stands in.  A summary that
+    HAS the attribute is authoritative even when the value is ``None`` (the
+    reachable no-loan-has-originated state), which is why this tests for the
+    attribute rather than for a truthy value.
+    """
+    if summary is not None and hasattr(summary, "principal_paid_fraction"):
+        return summary.principal_paid_fraction
+    return _narrow_fraction(user_id, narrow_summary)
+
+
 def _tracks(section):
     """The budget dashboard's tracks section (the debt track's composition)."""
     if section is None:
@@ -257,11 +326,12 @@ def _tracks(section):
     for key, value in sorted(section.items()):
         if key == "debt":
             debt = value
+            # Pre-X-u ``debt`` is a ``DebtTrack`` wrapping the summary; post-X-u
+            # it IS the summary.  Both normalize to the same two entries.
+            summary = _get(debt, "summary") if debt is not None else None
             out[key] = None if debt is None else {
-                "summary": _debt_summary(_get(debt, "summary")),
-                "principal_paid_fraction": _money(
-                    _get(debt, "principal_paid_fraction"),
-                ),
+                "summary": _debt_summary(summary if summary is not None else debt),
+                "principal_paid_fraction": _money(_principal_fraction(debt)),
             }
         elif key == "goals":
             out[key] = [
@@ -290,6 +360,8 @@ def _dump_user(user_id):
     """Every figure the savings package answers for one user."""
     data = savings_dashboard_service.compute_dashboard_data(user_id)
     account_data = data["account_data"]
+    # ONE narrow debt build per user, shared by the two keys that read it.
+    narrow_summary = savings_dashboard_service.compute_debt_summary(user_id)
     return {
         "account_data": [_projection(ad) for ad in account_data],
         "grouped_accounts": {
@@ -344,13 +416,22 @@ def _dump_user(user_id):
                 _serialize_sparklines(data["sparklines"]).items(),
             )
         },
-        # The four narrow producers, each answering over its own restricted
+        # The narrow producers, each answering over its own restricted
         # load -- the "identical figures by construction" promise, measured.
-        "narrow_debt_summary": _debt_summary(
-            savings_dashboard_service.compute_debt_summary(user_id),
-        ),
+        # There were four until plan step X-u deleted the second debt one.
+        "narrow_debt_summary": _debt_summary(narrow_summary),
         "narrow_principal_fraction": _money(
-            savings_dashboard_service.compute_debt_principal_progress(user_id),
+            _narrow_fraction(user_id, narrow_summary),
+        ),
+        # The FULL build's fraction: post-X-u a field of the ``debt_summary``
+        # above, pre-X-u a figure no full-build producer computed at all -- so
+        # on the old tree this reads the narrow value, which is what the two
+        # paths are asserted to share
+        # (``TestDebtSummary::test_narrow_producer_matches_full_dashboard``
+        # compares the whole value object).  Without this key the merged
+        # field would reach ``/savings`` unmeasured by this harness.
+        "full_build_principal_fraction": _money(
+            _full_build_fraction(user_id, data["debt_summary"], narrow_summary),
         ),
         "narrow_goal_progress": [
             _goal(datum)

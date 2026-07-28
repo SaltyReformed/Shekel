@@ -1660,25 +1660,68 @@ class TestDebtSummary:
             assert ds.total_monthly_payments > pi_only
 
 
-class TestDebtPrincipalProgress:
-    """Tests for ``compute_debt_principal_progress`` (Loop B B-1).
+class TestPrincipalPaidFraction:
+    """Tests for ``DebtSummary.principal_paid_fraction`` (Loop B B-1, X-u).
 
-    The narrow producer behind the dashboard's debt track marker: the
-    aggregate fraction of original loan principal paid down so far.  Per
+    The debt track marker's figure: the aggregate fraction of original loan
+    principal paid down so far.  Per
     the 2026-06-12 ruling (``dashboard_card_audit.md`` Rebuild decisions
     item 4) it sums over ALL loans ever originated -- paid-off loans stay
     in both the numerator and the denominator -- so the fraction is
     monotonic, reaches exactly ``1`` at full payoff, and stays there.
-    ``original_principal`` is a NOT NULL, ``> 0`` column, so any loan
-    supplies the denominator; the ONLY ``None`` case is no loans at all.
+
+    It was its own narrow producer (``compute_debt_principal_progress``) until
+    plan step X-u, which folded it into the summary that the same consumer
+    already reads: one dashboard render was running the whole load -> params ->
+    project pipeline TWICE, once per debt producer (finding N-109).  These
+    tests read the summary field, which is what the dashboard reads.
+
+    ``original_principal`` is a NOT NULL, ``> 0`` column, so any ORIGINATED
+    loan supplies the denominator.  "No loans at all" is not a case here --
+    there is no summary to carry the field then, which
+    ``TestDebtSummary::test_narrow_producer_none_when_no_loans`` already pins.
     """
 
-    def test_none_when_no_loans(self, app, db, seed_user, seed_periods):
-        """No loan accounts -> the fraction is None (no marker drawn)."""
+    def test_fraction_none_when_every_loan_is_unborrowed(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A configured-but-unclosed loan -> a summary whose fraction is None.
+
+        The REACHABLE state in which the summary exists and the fraction does
+        not, which the dashboard rail renders bare.  A mortgage originating
+        2026-04-15 under this module's frozen 2026-03-20 today has not been
+        borrowed: it owes ``$0.00``, its whole debt line is ahead of it, and
+        ``_compute_principal_paid_fraction`` puts it in NEITHER sum -- so the
+        denominator is zero and the honest answer is "no progress to report",
+        not ``0%`` (which would say the borrower has repaid none of a debt they
+        do not yet have) and not ``100%``.
+
+        ``dashboard/_tracks.html`` claimed until plan step X-u that no-loans was
+        the only reachable case for a bare rail; this is the case that claim
+        missed, and the summary is non-``None`` here precisely because the loan
+        DOES have a payoff date to caption.
+        """
+        from app.enums import AcctTypeEnum  # pylint: disable=import-outside-toplevel
+        from tests._test_helpers import create_loan_account  # pylint: disable=import-outside-toplevel
+
         with app.app_context():
-            assert savings_dashboard_service.compute_debt_principal_progress(
+            create_loan_account(
+                seed_user, db.session, name="Closing In April",
+                principal=Decimal("200000.00"), rate=Decimal("0.05000"),
+                term=360, origination_date=date(2026, 4, 15), payment_day=1,
+                account_type=AcctTypeEnum.MORTGAGE,
+                anchor_period=seed_periods[0],
+            )
+
+            summary = savings_dashboard_service.compute_debt_summary(
                 seed_user["user"].id,
-            ) is None
+            )
+            # The fixture really is in that state: a loan with a debt line
+            # ahead of it that owes nothing today.
+            assert summary is not None
+            assert summary.total_debt == Decimal("0.00")
+            assert summary.payoff_outlook.all_clear_on is not None
+            assert summary.principal_paid_fraction is None
 
     def test_fraction_present_for_a_loan(self, app, db, seed_user, seed_periods):
         """A loan -> a Decimal fraction that reconciles with the debt summary.
@@ -1696,11 +1739,7 @@ class TestDebtPrincipalProgress:
             summary = savings_dashboard_service.compute_debt_summary(
                 seed_user["user"].id,
             )
-            fraction = (
-                savings_dashboard_service.compute_debt_principal_progress(
-                    seed_user["user"].id,
-                )
-            )
+            fraction = summary.principal_paid_fraction
             assert isinstance(fraction, Decimal)
             assert Decimal("0") <= fraction <= Decimal("1")
             # Reconcile against the debt summary's current balance.
@@ -1727,12 +1766,10 @@ class TestDebtPrincipalProgress:
             insert_trueup_event(acct.loan_params, Decimal("1000.00"))
             db.session.commit()
 
-            fraction = (
-                savings_dashboard_service.compute_debt_principal_progress(
-                    seed_user["user"].id,
-                )
+            summary = savings_dashboard_service.compute_debt_summary(
+                seed_user["user"].id,
             )
-            assert fraction == Decimal("0")
+            assert summary.principal_paid_fraction == Decimal("0")
 
     def test_fraction_one_when_all_loans_paid_off(
         self, app, db, seed_user, seed_periods,
@@ -1744,9 +1781,12 @@ class TestDebtPrincipalProgress:
         and its full $1,000.00 original principal to the denominator, so:
             (1000.00 - 0.00) / 1000.00 = 1.
         The fraction reaches 1 at full payoff and is NOT None -- None is
-        reserved for the no-loans-at-all case.  ``compute_debt_summary``
+        reserved for the no-loan-has-originated case.  The SAME summary
         still reports total_debt $0.00 (active-loans-only), so the two
-        surfaces deliberately disagree on which loans count.
+        figures on ONE value object deliberately disagree on which loans count:
+        that is the property plan step X-u had to preserve when it merged the
+        two producers, and it is asserted on one object here rather than across
+        two calls.
         """
         # pylint: disable=import-outside-toplevel
         from app import ref_cache as rc
@@ -1779,15 +1819,10 @@ class TestDebtPrincipalProgress:
             )
             assert summary is not None
             assert summary.total_debt == Decimal("0.00")
-            # ... but the principal-paid fraction is exactly 1: the paid-off
-            # loan keeps its full original principal in both sums.
-            fraction = (
-                savings_dashboard_service.compute_debt_principal_progress(
-                    seed_user["user"].id,
-                )
-            )
-            # (1000.00 - 0.00) / 1000.00 = 1.
-            assert fraction == Decimal("1")
+            # ... but the principal-paid fraction on the SAME summary is
+            # exactly 1: the paid-off loan keeps its full original principal in
+            # both sums.  (1000.00 - 0.00) / 1000.00 = 1.
+            assert summary.principal_paid_fraction == Decimal("1")
 
     def test_fraction_monotonic_one_paid_one_partial(
         self, app, db, seed_user, seed_periods,
@@ -1840,11 +1875,9 @@ class TestDebtPrincipalProgress:
             insert_trueup_event(partial.loan_params, Decimal("400.00"))
             db.session.commit()
 
-            fraction = (
-                savings_dashboard_service.compute_debt_principal_progress(
-                    seed_user["user"].id,
-                )
-            )
+            fraction = savings_dashboard_service.compute_debt_summary(
+                seed_user["user"].id,
+            ).principal_paid_fraction
             # (orig_A + orig_B - balance_B) / (orig_A + orig_B)
             # = (1000.00 + 1000.00 - 400.00) / (1000.00 + 1000.00)
             # = 1600.00 / 2000.00 = 0.8.
@@ -1854,6 +1887,171 @@ class TestDebtPrincipalProgress:
             )
             assert fraction == expected
             assert fraction == Decimal("0.8")
+
+
+class TestDebtSummaryMembershipRules:
+    """ONE summary, THREE loan sets -- the control plan step X-u needed.
+
+    Ruling R-BI declined to merge the principal-paid producer into the debt
+    summary inside plan step X-s3 on one ground: the two answer over DIFFERENT
+    membership rules, and merging them re-opens the question ruling X-q settled
+    at a measured cost of 19 years (finding N-98, where a debt-free caption
+    derived over the owed-today set reported the date the OTHER loans finish).
+    X-u merged them anyway, having first measured that both rules are REDUCERS
+    over one projection rather than two loan sets -- and this is the fixture
+    that would catch a merge that re-decided either one.
+
+    Three loans, chosen so the three sets are pairwise DIFFERENT:
+
+    * **A, owing** -- $1,000.00 originated 2026-01-01, trued up to a known
+      $400.00.  In owed-today AND in all-loans-ever AND on the debt line.
+    * **B, retired** -- $1,000.00 originated 2026-01-01, trued up to $0.00.
+      OUT of owed-today (it owes nothing) and OFF the debt line (retired), but
+      IN all-loans-ever, contributing its full principal as repaid.
+    * **C, unborrowed** -- a $200,000.00 mortgage originating 2026-04-15,
+      after this module's frozen 2026-03-20 today.  OUT of owed-today and OUT
+      of all-loans-ever (nothing of it has been repaid because none of it has
+      been borrowed), but ON the debt line, whose whole 30 years are ahead.
+
+    So owed-today is ``{A}``, all-loans-ever is ``{A, B}``, and the debt line
+    is ``{A, C}``.  No two rules can be swapped for each other without a
+    figure below moving.
+    """
+
+    AUTO = Decimal("1000.00")
+    MORTGAGE = Decimal("200000.00")
+    OWING_BALANCE = Decimal("400.00")
+
+    def _three_loans(self, seed_user, db_session, periods):
+        """Build the owing / retired / unborrowed triple.  Returns all three."""
+        # pylint: disable=import-outside-toplevel
+        from app.enums import AcctTypeEnum
+        from tests._test_helpers import create_loan_account, insert_trueup_event
+
+        owing = create_loan_account(
+            seed_user, db_session, name="Owing Auto",
+            principal=self.AUTO, rate=Decimal("0.05000"),
+            term=24, origination_date=date(2026, 1, 1), payment_day=1,
+            account_type=AcctTypeEnum.AUTO_LOAN, anchor_period=periods[0],
+        )
+        retired = create_loan_account(
+            seed_user, db_session, name="Retired Auto",
+            principal=self.AUTO, rate=Decimal("0.05000"),
+            term=24, origination_date=date(2026, 1, 1), payment_day=1,
+            account_type=AcctTypeEnum.AUTO_LOAN, anchor_period=periods[0],
+        )
+        unborrowed = create_loan_account(
+            seed_user, db_session, name="Closing In April",
+            principal=self.MORTGAGE, rate=Decimal("0.05000"),
+            term=360, origination_date=date(2026, 4, 15), payment_day=1,
+            account_type=AcctTypeEnum.MORTGAGE, anchor_period=periods[0],
+        )
+        insert_trueup_event(owing.loan_params, self.OWING_BALANCE)
+        insert_trueup_event(retired.loan_params, Decimal("0.00"))
+        db_session.commit()
+        return owing, retired, unborrowed
+
+    def test_one_summary_answers_three_membership_rules(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Each figure counts its own loans, and no two count the same ones.
+
+        The arithmetic, all three rules on one :class:`DebtSummary`:
+
+        * ``total_debt`` is owed-today ``{A}``: $400.00.  B owes nothing and
+          C has not been borrowed, so both are skipped by
+          ``_loan_ad_current_principal``.
+        * ``total_monthly_payments`` is the SAME owed-today set, which is what
+          makes it the discriminating figure here: A's payment on $1,000.00 is
+          under $50/mo, while C's alone on $200,000.00 at 5% for 360 months is
+          about $1,073/mo.  A rule that counted C would be off by an order of
+          magnitude.
+        * ``principal_paid_fraction`` is all-loans-ever ``{A, B}``:
+          (1000.00 + 1000.00 - 400.00) / (1000.00 + 1000.00) = 0.8.  Counting C
+          would read (202000.00 - 400.00) / 202000.00 = 0.998; counting only
+          the owed-today set would read (1000.00 - 400.00) / 1000.00 = 0.6.
+        * ``payoff_outlook`` is the debt line ``{A, C}``: the LATEST payoff, so
+          past 2028 -- A's 24-month term from 2026-01-01 ends in 2027 even
+          before its true-up shortens it, so only C can put the date there.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.services.savings_dashboard_service._debt_line import (
+            debt_line_loans,
+        )
+
+        with app.app_context():
+            owing, retired, unborrowed = self._three_loans(
+                seed_user, db.session, seed_periods,
+            )
+            bctx = BalanceContext.build(seed_user["user"].id)
+
+            # Premises about the FIXTURE, read from the seam directly and for
+            # ALL THREE loans: a fixture that silently built three identical
+            # loans would pass every assertion below for the wrong reason (the
+            # X-t5 lesson -- a new fixture is a new control and it can be born
+            # dead; this block claimed three loans and read one until X-u's own
+            # adversarial review counted them).
+            owing_figures = balance_at.loan_figures(owing, bctx)
+            assert owing_figures.terms.is_originated is True
+            assert owing_figures.is_retired is False
+            assert balance_at.balance_at(
+                owing, bctx, bctx.as_of,
+            ) == self.OWING_BALANCE
+
+            # B: originated and retired -- owes nothing, off the debt line.
+            retired_figures = balance_at.loan_figures(retired, bctx)
+            assert retired_figures.terms.is_originated is True
+            assert retired_figures.is_retired is True
+            assert balance_at.balance_at(
+                retired, bctx, bctx.as_of,
+            ) == Decimal("0.00")
+
+            # C: not borrowed -- owes nothing for the OTHER reason, and its
+            # whole debt line is ahead of it.
+            unborrowed_figures = balance_at.loan_figures(unborrowed, bctx)
+            assert unborrowed_figures.terms.is_originated is False
+            assert unborrowed_figures.is_retired is False
+            assert balance_at.balance_at(
+                unborrowed, bctx, bctx.as_of,
+            ) == Decimal("0.00")
+            # The two zero balances are the same number for different reasons,
+            # which is the whole hazard the three rules exist to separate.
+
+            summary = savings_dashboard_service.compute_debt_summary(
+                seed_user["user"].id,
+            )
+            assert summary is not None
+
+            # Owed-today {A}.
+            assert summary.total_debt == self.OWING_BALANCE
+            # Owed-today again, and the figure that separates it from the debt
+            # line: only A's payment is in here.
+            assert summary.total_monthly_payments == (
+                owing_figures.terms.monthly_payment
+            )
+            assert summary.total_monthly_payments < Decimal("50.00")
+
+            # All-loans-ever {A, B}: B's full principal counts as repaid, C is
+            # in neither sum.
+            expected_fraction = (
+                (self.AUTO + self.AUTO - self.OWING_BALANCE)
+                / (self.AUTO + self.AUTO)
+            )
+            assert summary.principal_paid_fraction == expected_fraction
+            assert summary.principal_paid_fraction == Decimal("0.8")
+
+            # The debt line {A, C}: two loans, and the date is C's.
+            assert summary.payoff_outlook.never_clears is False
+            assert summary.payoff_outlook.all_clear_on > date(2028, 1, 1)
+
+            # And the set itself, so the assertion above cannot pass because
+            # some OTHER loan happens to date that late.
+            full = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )["account_data"]
+            assert {
+                ad.account.name for ad in debt_line_loans(full)
+            } == {"Owing Auto", "Closing In April"}
 
 
 class TestDTI:
@@ -4664,12 +4862,19 @@ class TestOneResolutionPerLoanPerReadPass:
     def test_tracks_section_resolves_each_loan_once(
         self, app, db, seed_user, seed_periods_today, monkeypatch,
     ):
-        """The dashboard's tracks section shares ONE pass across its 3 producers.
+        """The dashboard's tracks section shares ONE pass across its producers.
 
-        ``compute_tracks_section`` runs the goal, debt-summary, and
-        principal-progress producers back to back.  Each used to start its own
-        read pass, so a two-loan user paid for six resolutions; they now share one
+        ``compute_tracks_section`` runs the goal and debt-summary producers back
+        to back -- three producers until plan step X-u deleted the
+        principal-progress one (finding N-109).  Each used to start its own read
+        pass, so a two-loan user paid for six resolutions; they now share one
         context.
+
+        The CONTEXT is shared; the LOADS behind it are not, which is finding
+        N-115 and is what this test does NOT assert -- it counts loan
+        resolutions, and a duplicate ``_load_dashboard_core_data`` resolves no
+        loan.  ``TestTracksDebt::test_one_render_projects_the_debt_accounts_once``
+        is the one that counts pipelines.
         """
         with app.app_context():
             loan = _create_small_loan(seed_user, db.session, name="Tracks Loan")

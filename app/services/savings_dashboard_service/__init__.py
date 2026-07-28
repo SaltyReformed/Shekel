@@ -55,15 +55,16 @@ Module map:
   engine, per-account growth params, and the loan resolver schedules.
 * :mod:`app.services.savings_dashboard_service._orchestrator` --
   ``compute_dashboard_data`` (the full-page entry point),
-  ``compute_debt_summary`` (the narrow debt-card producer behind the
-  dashboard's debt track; deep-hunt #82),
-  ``compute_debt_principal_progress`` (the narrow principal-paid fraction
-  producer behind the dashboard's debt track marker; Loop B B-1),
+  ``compute_debt_summary`` (the narrow debt producer behind the
+  dashboard's debt track, rail marker included; deep-hunt #82, Loop B B-1),
   ``compute_goal_progress`` (the narrow savings-goal producer behind the
   dashboard's savings tracks), and ``compute_account_balance_cell`` (the
   narrow per-account producer behind the cockpit's inline-edit Cancel /
   Escape revert, ``savings.cockpit_balance``).  The dashboard tracks
   consumers all live in ``dashboard_pulse_service.compute_tracks_section``.
+  There were TWO debt producers until plan step X-u (ruling R-BS, finding
+  N-109) and the tracks section called both, so one render ran the debt
+  pipeline twice; the marker's fraction is a ``DebtSummary`` field now.
 """
 
 # Re-export the public entry points so consumers that
@@ -72,10 +73,13 @@ Module map:
 # them without an edit.
 #
 # ``DebtSummary`` is re-exported for the same reason (plan step X-s3): it
-# crosses this package's boundary -- ``dashboard_pulse_service`` composes one
-# into its debt track and the dashboard route annotates it -- so naming it here
-# is what keeps those two consumers off ``_metrics`` directly, which the W9910
-# package-privacy checker forbids.
+# crosses this package's boundary, so naming it here is what keeps its consumer
+# off ``_metrics`` directly, which the W9910 package-privacy checker forbids.
+# There were TWO such consumers until plan step X-u: ``dashboard_pulse_service``
+# named the type to annotate the ``DebtTrack`` wrapper it composed, and X-u
+# deleted both the wrapper and that import.  ONE is left -- the dashboard
+# route's ``_DebtTrackView`` annotation (``app/routes/dashboard.py``) -- and one
+# live consumer is all this line has ever needed.
 #
 # ONLY that one.  The first draft of this block also exported ``DtiMetrics``
 # and ``LoanPayoffOutlook``, and X-s3's adversarial review found neither had a
@@ -87,7 +91,6 @@ from app.services.savings_dashboard_service._metrics import DebtSummary
 from app.services.savings_dashboard_service._orchestrator import (
     compute_account_balance_cell,
     compute_dashboard_data,
-    compute_debt_principal_progress,
     compute_debt_summary,
     compute_goal_progress,
 )
@@ -96,7 +99,6 @@ __all__ = [
     "DebtSummary",
     "compute_account_balance_cell",
     "compute_dashboard_data",
-    "compute_debt_principal_progress",
     "compute_debt_summary",
     "compute_goal_progress",
 ]

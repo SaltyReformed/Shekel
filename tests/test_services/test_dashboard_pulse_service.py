@@ -9,8 +9,9 @@ Terminal Road dashboard rebuild:
     end-balance chart + threshold, the full-horizon trough, the still-due
     totals on the locked B4 bases, and the current period's due-soon rows.
   * ``compute_tracks_section`` and ``_track_goal_datum``: the savings-goal
-    metro tracks (trajectory passthrough) and the debt track (debt summary
-    + honest principal-paid fraction).
+    metro tracks (trajectory passthrough) and the debt track (the debt
+    summary, which since plan step X-u carries the principal-paid fraction
+    that a second producer used to compute).
 
 The module-level autouse fixture (``test_services/conftest.py``) freezes
 ``date.today()`` to 2026-03-20, which falls in ``seed_periods[5]`` (the
@@ -1437,7 +1438,13 @@ class TestTracksGoals:
 
 
 class TestTracksDebt:
-    """The debt track: debt summary + honest principal-paid fraction."""
+    """The debt track: the /savings debt summary, passed through whole.
+
+    It was a ``DebtTrack`` pairing that summary with a fraction from a SECOND
+    narrow producer until plan step X-u (finding N-109); the fraction is a
+    ``DebtSummary`` field now and this tier adds nothing to what the producer
+    answered.
+    """
 
     def test_no_debt_returns_none(self, app, seed_user, seed_periods, db):
         """No loan accounts -> debt is None (no track rendered)."""
@@ -1447,10 +1454,10 @@ class TestTracksDebt:
             )
             assert tracks["debt"] is None
 
-    def test_debt_track_carries_summary_and_fraction(
+    def test_debt_track_is_the_summary_whole(
         self, app, seed_user, seed_periods, db,
     ):
-        """A loan -> debt summary plus a principal_paid_fraction Decimal.
+        """A loan -> the very DebtSummary /savings renders, fraction included.
 
         A $1,000.00 auto loan originated 2026-01-01 at 5% for 24 months.
         By the frozen today (2026-03-20) confirmed payments have reduced
@@ -1471,14 +1478,15 @@ class TestTracksDebt:
             )
             debt = tracks["debt"]
             assert debt is not None
-            # The summary is CARRIED WHOLE (plan step X-s3), not copied field
-            # by field: the track composes the very value ``/savings`` renders,
-            # so a field the summary grows arrives here by construction rather
-            # than by someone remembering to copy it.  Asserted as VALUE
-            # equality against the producer -- a frozen dataclass compares on
-            # every field, so a track that dropped or altered one fails here,
-            # where a "these three keys are present" check passed while the
-            # dict silently lost the outlook's third state (finding N-104).
+            # The summary is PASSED THROUGH (plan steps X-s3, X-u), never
+            # copied field by field and no longer wrapped: the track IS the
+            # value ``/savings`` renders, so a field the summary grows arrives
+            # here by construction rather than by someone remembering to copy
+            # it.  Asserted as VALUE equality against the producer -- a frozen
+            # dataclass compares on every field, so a tier that dropped or
+            # altered one fails here, where a "these three keys are present"
+            # check passed while the dict silently lost the outlook's third
+            # state (finding N-104).
             #
             # Measured limit, stated rather than left implied: this fixture
             # carries no revolving liability and no salary, so ``revolving_debt``
@@ -1486,7 +1494,7 @@ class TestTracksDebt:
             # substitution there would not be discriminating.  The firing
             # control therefore plants its defect in ``total_debt``, which the
             # fixture does populate.
-            assert debt.summary == savings_dashboard_service.compute_debt_summary(
+            assert debt == savings_dashboard_service.compute_debt_summary(
                 seed_user["user"].id,
             )
             # The honest fraction is present and is a Decimal in [0, 1].
@@ -1498,7 +1506,7 @@ class TestTracksDebt:
             # $1,000.00), so:
             #   fraction == (1000.00 - total_debt) / 1000.00.
             expected = (
-                (Decimal("1000.00") - debt.summary.total_debt) / Decimal("1000.00")
+                (Decimal("1000.00") - debt.total_debt) / Decimal("1000.00")
             )
             assert fraction == expected
 
@@ -1525,9 +1533,55 @@ class TestTracksDebt:
                 seed_user["user"].id,
             )
             debt = tracks["debt"]
-            assert debt.summary.total_debt == Decimal("1000.00")
+            assert debt.total_debt == Decimal("1000.00")
             # No principal paid yet -> fraction is exactly 0.
             assert debt.principal_paid_fraction == Decimal("0")
+
+    def test_one_render_projects_the_debt_accounts_once(
+        self, app, seed_user, seed_periods, db, monkeypatch,
+    ):
+        """ONE tracks render runs the debt projection ONCE (finding N-109).
+
+        The guard for the redundancy plan step X-u deleted, written against
+        the pipeline rather than against the clock: two debt producers each ran
+        ``_load_dashboard_core_data`` -> ``_load_account_params`` ->
+        ``_compute_account_projections`` over the same loans, so a render paid
+        for two full projections and three seam-batch builds (measured at 2 and
+        3 on the developer's own data, and at 2 and 3 on the prod-shape clone).
+
+        The fixture has a loan and NO savings goals, so
+        ``compute_goal_progress`` returns early without projecting anything and
+        every projection this counts is the debt one.  A wall-clock or
+        SQL-count assertion would be a flaky proxy for the same fact; the call
+        count is the fact.
+
+        Shown FIRING: restoring the second producer's call makes this read 2.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.services.savings_dashboard_service import _orchestrator
+
+        calls = []
+        original = _orchestrator._compute_account_projections
+
+        def _counting(accounts, ctx):
+            calls.append([acct.id for acct in accounts])
+            return original(accounts, ctx)
+
+        with app.app_context():
+            loan = create_loan_account(seed_user, db.session, name="Once Loan")
+            monkeypatch.setattr(
+                _orchestrator, "_compute_account_projections", _counting,
+            )
+
+            tracks = dashboard_pulse_service.compute_tracks_section(
+                seed_user["user"].id,
+            )
+
+            # The render really did produce the debt track (an empty result
+            # would satisfy a bare count of zero).
+            assert tracks["debt"] is not None
+            assert len(calls) == 1
+            assert loan.id in calls[0]
 
 
 # ── Tracks: income-relative goal pace passthrough ───────────────────

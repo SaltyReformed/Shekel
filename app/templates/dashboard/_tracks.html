@@ -3,7 +3,7 @@
    without leaving the dashboard moves these figures).
 
    Context contract (dashboard.page): dashboard_pulse_service
-   .compute_tracks_section, with its ``debt`` track MAPPED by the route to
+   .compute_tracks_section, with its ``debt`` summary MAPPED by the route to
    a _DebtTrackView (X-s3 -- the route no longer adds a key to the
    producer's object; it returns a new one):
 
@@ -11,16 +11,31 @@
        current_balance, target_amount, target_date, pace,
        projected_completion_date, required_monthly, monthly_contribution}]
      tracks.debt: a route-layer _DebtTrackView | None -- .summary (the
-       savings package's DebtSummary value object, carried WHOLE) and
-       .principal_paid_pct (the fraction scaled to 0-100, float, or None
-       when the user has no loans)
+       savings package's DebtSummary value object, passed through WHOLE) and
+       .principal_paid_pct (that summary's principal_paid_fraction scaled to
+       0-100, float, or None when no loan has originated)
+
+   X-u / finding N-109: the producer used to hand up a DebtTrack pairing the
+   summary with a fraction a SECOND full debt projection computed; the fraction
+   is a DebtSummary field now. Which of the two spellings this template may
+   position from is stated once, at _DebtTrackView in app/routes/dashboard.py.
+   The guard for it is behavioural, not static -- test_dashboard.py
+   ::test_debt_rail_renders_the_percent_not_the_raw_fraction renders a 0.6
+   fixture, where the right spelling reads "60% paid" and the wrong one "1%".
+   A grep-for-the-name gate is not available here: this comment names the raw
+   field twice, and a static guard cannot tell code from prose (the N-63 class).
 
    Rail mechanics: fill width via data-progress-pct (progress_bar.js),
    marker/label position via data-rail-pct (dashboard_pulse.js). The
    debt marker uses the ALL-LOANS-EVER monotonic basis (developer
-   ruling 2026-06-12); when principal_paid_pct is None (no loans is the
-   only reachable case while debt is non-None via summary -- defensive)
-   the rail renders bare, and the hero column still carries the figure.
+   ruling 2026-06-12); when principal_paid_pct is None the rail renders
+   bare, and the hero column still carries the figure. That state is
+   REACHABLE and was mis-documented here as defensive-only until X-u: a
+   borrower whose every loan is configured but not yet BORROWED has a debt
+   line, a payoff date and a summary, and has repaid nothing of nothing --
+   so the denominator is zero and there is no honest position to mark
+   (test_savings_dashboard_service.py::TestPrincipalPaidFraction
+   ::test_fraction_none_when_every_loan_is_unborrowed).
 
    Hierarchy (D10 ruling 2026-07-09): the CURRENT position is the hero
    figure, the destination is its caption, and the rail label carries

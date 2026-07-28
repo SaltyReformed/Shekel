@@ -4325,14 +4325,20 @@ class TestUpcomingLoanDoesNotCorruptTheSurfaces:
         builder that publishes the dict in production
         (``_projections._project_one_account``) never ran: change what IT
         publishes and the test stayed green, proving where the value comes FROM
-        while never proving production puts it there.  ``compute_debt_principal_progress``
-        is the entry the budget dashboard's pulse actually calls
-        (``dashboard_pulse_service.py:831``), and it runs the whole chain --
+        while never proving production puts it there.  ``compute_debt_summary``
+        is the entry the budget dashboard's tracks section actually calls, and
+        it runs the whole chain --
         load core data, load params, project every account through the real
         builder, then reduce.  The firing control this repair was shown against:
         forcing ``is_originated=True`` into the builder's published figures makes
         this read ``0.666...`` and fail, where the hand-built version could not
         see the change at all.
+
+        The entry it names changed at plan step X-u (finding N-109), which
+        deleted the ``compute_debt_principal_progress`` producer this read
+        through and made the fraction a ``DebtSummary`` field; the chain it
+        exercises is the same one, and the repair's whole point -- that the
+        production builder RUNS -- is unaffected.
         """
         # pylint: disable=import-outside-toplevel
         from app.services import savings_dashboard_service
@@ -4358,12 +4364,12 @@ class TestUpcomingLoanDoesNotCorruptTheSurfaces:
             # marker that counted the mortgage would read 2/3, not 0.
             assert resolved_loan(auto, bctx).params.original_principal == self.AUTO
 
-            fraction = savings_dashboard_service.compute_debt_principal_progress(
+            summary = savings_dashboard_service.compute_debt_summary(
                 seed_user["user"].id,
             )
             # The auto loan is originated and never paid: 0 of 100,000 repaid.
             # The mortgage is in NEITHER sum -- it has not been borrowed.
-            assert fraction == Decimal("0")
+            assert summary.principal_paid_fraction == Decimal("0")
 
     def test_property_chart_keeps_a_mortgage_that_closes_next_month(
         self, app, db, seed_user, seed_periods,
