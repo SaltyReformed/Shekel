@@ -4318,46 +4318,48 @@ class TestUpcomingLoanDoesNotCorruptTheSurfaces:
         It also broke the marker's one design invariant -- monotonicity.  On
         closing day the mortgage's balance steps $0 -> $200,000 and the fraction
         would COLLAPSE from 66.67% to 0%.
+
+        **It asserts through the PRODUCTION producer, which is finding B-17's
+        repair** (plan step X-h).  It used to hand-build the per-account dict
+        ``_compute_principal_paid_fraction`` reads and assert on that, so the
+        builder that publishes the dict in production
+        (``_projections._project_one_account``) never ran: change what IT
+        publishes and the test stayed green, proving where the value comes FROM
+        while never proving production puts it there.  ``compute_debt_principal_progress``
+        is the entry the budget dashboard's pulse actually calls
+        (``dashboard_pulse_service.py:831``), and it runs the whole chain --
+        load core data, load params, project every account through the real
+        builder, then reduce.  The firing control this repair was shown against:
+        forcing ``is_originated=True`` into the builder's published figures makes
+        this read ``0.666...`` and fail, where the hand-built version could not
+        see the change at all.
         """
         # pylint: disable=import-outside-toplevel
-        from app.services.savings_dashboard_service._metrics import (
-            _compute_principal_paid_fraction,
-        )
+        from app.services import savings_dashboard_service
 
         with app.app_context():
             periods = seed_periods
             auto, mortgage = self._both_loans(seed_user, db.session, periods)
             bctx = BalanceContext.build(seed_user["user"].id)
 
-            def _ad(acct):
-                # This dict is hand-built, which is finding B-17: the
-                # production builder (``_project_one_account``) is never
-                # executed here, so a change to what IT publishes cannot fail
-                # this test.  Plan step X-h owns the repair.  Plan step X-q
-                # MEASURED the cost of the pattern -- moving
-                # ``_compute_principal_paid_fraction`` onto ``is_retired``
-                # raised ``KeyError`` here, because the copy was one field
-                # behind the builder it mirrors -- and plan step X-r removed
-                # the copying: the dict now carries the SEAM's own
-                # ``LoanFigures``, the same object production publishes, so
-                # the only divergence left is that this test builds the dict
-                # instead of calling the builder.
-                return {
-                    "loan_params": resolved_loan(acct, bctx).params,
-                    "current_balance": balance_at.balance_at(
-                        acct, bctx, bctx.as_of),
-                    "loan_figures": balance_at.loan_figures(acct, bctx),
-                }
+            # The fixture really is in the hazardous state: an unclosed mortgage
+            # owing $0.00 that is neither retired nor paid off, beside a real
+            # originated loan.  Read from the seam directly -- these are premises
+            # about the FIXTURE, not about the dict under test.
+            assert balance_at.balance_at(mortgage, bctx, bctx.as_of) == Decimal(
+                "0.00",
+            )
+            mortgage_figures = balance_at.loan_figures(mortgage, bctx)
+            assert mortgage_figures.is_retired is False
+            assert mortgage_figures.is_paid_off is False
+            assert mortgage_figures.terms.is_originated is False
+            assert balance_at.loan_figures(auto, bctx).terms.is_originated is True
+            # Non-tautological denominator: the two principals differ, so a
+            # marker that counted the mortgage would read 2/3, not 0.
+            assert resolved_loan(auto, bctx).params.original_principal == self.AUTO
 
-            # The fixture really is in the hazardous state.
-            assert _ad(mortgage)["current_balance"] == Decimal("0.00")
-            assert _ad(mortgage)["loan_figures"].is_retired is False
-            assert _ad(mortgage)["loan_figures"].is_paid_off is False
-            assert _ad(mortgage)["loan_figures"].terms.is_originated is False
-            assert _ad(auto)["loan_figures"].terms.is_originated is True
-
-            fraction = _compute_principal_paid_fraction(
-                [_ad(auto), _ad(mortgage)],
+            fraction = savings_dashboard_service.compute_debt_principal_progress(
+                seed_user["user"].id,
             )
             # The auto loan is originated and never paid: 0 of 100,000 repaid.
             # The mortgage is in NEITHER sum -- it has not been borrowed.
