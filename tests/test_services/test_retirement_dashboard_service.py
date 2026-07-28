@@ -420,18 +420,38 @@ class TestRetirementProjectionEntryAware:
             ``_project_retirement_accounts`` path that this commit
             touches.
 
-        Hand arithmetic (CRIT-01 / F-009 / R-1):
+        Hand arithmetic (CRIT-01 / F-009 / R-1) for the CASH BASIS:
 
           cleared_debit   = 45.71
           uncleared_debit = 0
           sum_credit      = 0
           checking_impact = max(500.00 - 45.71 - 0, 0) = 454.29
-          current_balance = 50,000.00 + 0 - 454.29 = 49,545.71
+          cash basis      = 50,000.00 + 0 - 454.29 = 49,545.71
 
         Pre-Commit-8 the projection's ``current_balance`` was
-        50,000 - 500 = 49,500.00 via the silent-degrade seam.  Both
-        the canonical producer value AND the projection's
-        ``current_balance`` MUST equal Decimal("49545.71").
+        50,000 - 500 = 49,500.00 via the silent-degrade seam.
+
+        **The projection is no longer EQUAL to that basis, and this test used
+        to assert it was.**  Ruling R-Y (plan step X-g2b) gives the anchor
+        period its own accrual, so an INVESTMENT account is worth more than the
+        number last typed into it from the day after it was typed -- the same
+        divergence ``TestInvestmentCrossPageEquality`` and
+        ``TestPropertyCrossPageEquality`` already state for their kinds.  On a
+        clean $50,000 anchor at 7%/yr, measured: ``$0.00`` the day before the
+        assertion, ``+$9.27`` the day of it, and ``+$92.77`` at the period end
+        the per-period map answers at.
+
+        It passed before only because the anchor row's ``created_at`` came from
+        the DATABASE clock, which ``freeze_today`` did not reach -- so the
+        assertion was stamped four months PAST the end of its own seeded window
+        and the replay had nothing inside the window to accrue from (finding
+        N-65).  With the database clock frozen too, the anchor is dated inside
+        its own period and the tile carries the accrual it should.
+
+        So the basis is asserted as the hand-computed figure it has always
+        been, and the projection is asserted against the SEAM's own modelled
+        map -- strictly above the basis, which is what would fail if a surface
+        fell back to the cash producer.
         """
         with app.app_context():
             user = seed_user["user"]
@@ -498,9 +518,13 @@ class TestRetirementProjectionEntryAware:
             # anchor-forward producer this asserted against; that view is the
             # same fold the modelled replay folds beneath its accrual, so the
             # basis under test is genuinely the one the tile is built on.
+            ctx = BalanceContext.build(user.id)
             basis = balance_at.cash_balance_map(
-                acct, BalanceContext.build(user.id), seed_periods_today,
+                acct, ctx, seed_periods_today,
             )
+            # CRIT-01 / F-009 / R-1: 50000 - max(500 - 45.71, 0)
+            #                      = 50000 - 454.29 = 49,545.71.
+            # Pre-Commit-8 this was 49,500.00.
             assert basis[current_period.id] == Decimal("49545.71")
 
             result = retirement_dashboard_service.compute_gap_data(user.id)
@@ -508,11 +532,15 @@ class TestRetirementProjectionEntryAware:
             target = next(
                 p for p in projections if p["account"].id == acct.id
             )
-            # CRIT-01 / F-009 / R-1: 50000 - max(500 - 45.71, 0)
-            #                      = 50000 - 454.29 = 49,545.71.
-            # Pre-Commit-8 this was 49,500.00.
-            assert target["current_balance"] == Decimal("49545.71")
-            assert target["current_balance"] == basis[current_period.id]
+            # The projection reads the MODELLED map, which folds ruling R-Y's
+            # anchor-period accrual over the cash basis above.  Read once from
+            # the seam so this cannot drift from the producer it locks, exactly
+            # as the per-kind cross-page classes do.
+            modelled = balance_at.balance_map(acct, ctx, seed_periods_today)
+            assert target["current_balance"] == modelled[current_period.id]
+            # And the accrual is really there: a surface that fell back to the
+            # cash producer would land ON the basis, not above it.
+            assert target["current_balance"] > basis[current_period.id]
 
 
 class TestRetirementAnchorInPastModeledHeadlineDatedSeed:

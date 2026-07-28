@@ -1849,9 +1849,25 @@ class TestPostedLoanBalanceSums:
         """Freeze today after the seed window so every fixture is deterministic.
 
         2027-01-01 sits after the Jan-May 2026 seed periods and the 2026-12-31
-        ``_AS_OF``, so the genesis walk is eligible for every loan built here and
-        no assertion depends on the wall clock.  Class-scoped, so only these tests
-        freeze -- the split / anchor tests above keep the real clock.
+        ``_AS_OF``, so the genesis walk is eligible for every loan built here.
+        Class-scoped, so only these tests freeze -- the split / anchor tests
+        above keep the real clock.
+
+        **The "no assertion depends on the wall clock" this docstring used to
+        claim was FALSE, and finding N-65's structural fix is what proved it.**
+        Six tests here settled their payment with no explicit date, so ``paid_at``
+        came from the DATABASE clock -- untouched by ``freeze_today``, which
+        patches Python only.  The real clock happens to fall before ``_AS_OF``,
+        so the payment landed inside the window and the assertions held.  Under a
+        frozen database clock the settle lands on 2027-01-01, ONE DAY past
+        ``_AS_OF``, and the payment is correctly excluded: the balance reads
+        ``100000.00`` instead of ``99500.00``.  Which means these six would have
+        gone red by themselves on 2027-01-01 with no code change at all.
+
+        Every settle in this class therefore passes ``settled_on=`` explicitly,
+        stating the date the test always meant.  No expected figure moved --
+        ``paid_at`` bounds a posting's VISIBILITY (``entry_date <= as_of``) and
+        never its split, which the pay period decides.
         """
         freeze_today(monkeypatch, _FROZEN_TODAY)
 
@@ -1899,6 +1915,7 @@ class TestPostedLoanBalanceSums:
             loan = _make_loan(seed_user)
             _settle_payment(
                 seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
+                settled_on=seed_periods[_P1].start_date,
             )
             db.session.commit()
 
@@ -1924,6 +1941,7 @@ class TestPostedLoanBalanceSums:
             loan = _make_loan(seed_user)
             _settle_payment(
                 seed_user, loan, seed_periods[_P1], Decimal("1500.00"),
+                settled_on=seed_periods[_P1].start_date,
             )
             db.session.commit()
 
@@ -1949,7 +1967,10 @@ class TestPostedLoanBalanceSums:
             for period in (
                 seed_periods[_P1], seed_periods[_P2], seed_periods[_P3],
             ):
-                _settle_payment(seed_user, loan, period, Decimal("1000.00"))
+                _settle_payment(
+                    seed_user, loan, period, Decimal("1000.00"),
+                    settled_on=period.start_date,
+                )
             db.session.commit()
 
             assert posted_loan_balance_at(
@@ -1973,6 +1994,7 @@ class TestPostedLoanBalanceSums:
             loan = _make_loan(seed_user)
             _settle_payment(
                 seed_user, loan, seed_periods[_P1], Decimal("100500.00"),
+                settled_on=seed_periods[_P1].start_date,
             )
             db.session.commit()
 
@@ -2002,6 +2024,7 @@ class TestPostedLoanBalanceSums:
             loan = _make_loan(seed_user)
             _settle_payment(
                 seed_user, loan, seed_periods[_P1], Decimal("150000.00"),
+                settled_on=seed_periods[_P1].start_date,
             )
             db.session.commit()
 
@@ -2145,6 +2168,7 @@ class TestPostedLoanBalanceSums:
             loan = _make_loan(seed_user)
             _settle_payment(
                 seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
+                settled_on=seed_periods[_P1].start_date,
             )
             db.session.commit()
 
