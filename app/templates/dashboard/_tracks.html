@@ -88,8 +88,10 @@
       <span class="track__pos-num font-mono">{{ money(tracks.debt.total_debt) }}</span>
       <span class="track__pos-sub">
         to $0
+        {#- X-q3 / N-99: the date covers amortizing loans, which are the debts
+            that have a payoff model; it is captioned as what it measures. -#}
         {%- if tracks.debt.projected_debt_free_date %} &middot;
-        debt-free {{ tracks.debt.projected_debt_free_date.strftime('%b %Y') }}
+        loans paid off {{ tracks.debt.projected_debt_free_date.strftime('%b %Y') }}
         {%- endif -%}
       </span>
     </div>

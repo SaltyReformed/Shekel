@@ -48,6 +48,9 @@ No Flask imports: plain data in, plain data out.
 
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal
+
+ZERO = Decimal("0.00")
 
 
 @dataclass(frozen=True)
@@ -191,4 +194,37 @@ def loan_payoff_outlook(account_data: list[dict]) -> LoanPayoffOutlook:
         payoffs.append(payoff)
     return LoanPayoffOutlook(
         all_clear_on=max(payoffs) if payoffs else None, never_clears=False,
+    )
+
+
+def debt_without_payoff_model(account_data: list[dict]) -> Decimal:
+    """Return the owed magnitude of the debt no payoff date can cover.
+
+    The figure that makes the caption HONEST rather than merely narrow
+    (developer ruling on finding N-99, plan step X-q3).  Every liability that
+    is not an amortizing loan has no forward model -- the seam holds it FLAT
+    at its current owed magnitude, so it never reaches zero -- and is
+    therefore invisible to :func:`loan_payoff_outlook`.  A user carrying a
+    revolving card balance would otherwise read "Loans paid off Jun 2056" on a
+    page whose own liability band never touches zero, with nothing saying why.
+
+    The magnitude is ``abs()``, matching the net-worth reducer's convention
+    (``_net_worth._sum_net_worth_totals`` accumulates ``abs(balance)`` into
+    the liability total): a Credit Card is anchored owed-as-NEGATIVE, and this
+    reports what is owed, not a signed balance.
+
+    Args:
+        account_data: The per-account projection dicts (each carrying
+            ``is_liability`` and ``current_balance``).
+
+    Returns:
+        The total owed on liabilities with no payoff model, ``0.00`` when
+        there are none.
+    """
+    return sum(
+        (
+            abs(ad["current_balance"] or ZERO) for ad in account_data
+            if ad.get("is_liability") and not ad.get("loan_params")
+        ),
+        ZERO,
     )

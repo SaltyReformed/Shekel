@@ -583,8 +583,15 @@ def _structural_milestones(
                 "label": f"{ad['account'].name} paid off",
                 "kind": "payoff",
             })
+    # The label says what the date MEASURES (plan step X-q3, finding N-99):
+    # the derivation behind it covers amortizing loans, the only debts with a
+    # payoff model, and a revolving balance on the same chart's liability band
+    # never reaches zero.  The ``kind`` is the machine key the serializer and
+    # the flag plugin carry and is unchanged.
     result.append({
-        "date": debt_free_date, "label": "Debt-free", "kind": "debt_free",
+        "date": debt_free_date,
+        "label": "All loans paid off",
+        "kind": "debt_free",
     })
     return result
 

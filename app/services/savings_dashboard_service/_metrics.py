@@ -23,6 +23,7 @@ from app.services import (
     paycheck_calculator,
 )
 from app.services.savings_dashboard_service._debt_line import (
+    debt_without_payoff_model,
     loan_payoff_outlook,
 )
 from app.services.tax_config_service import load_tax_configs
@@ -498,8 +499,10 @@ def _compute_debt_summary(
 
     Returns:
         Dict with keys: total_debt, total_monthly_payments,
-        weighted_avg_rate, projected_debt_free_date, has_unclearing_debt.
-        Returns None if no loan accounts with params exist.
+        weighted_avg_rate, projected_debt_free_date, has_unclearing_debt,
+        revolving_debt.  Returns None if no loan accounts with params exist --
+        so a user whose only liability is a card has no payoff caption to
+        qualify, which is why the ``revolving_debt`` caveat rides here.
     """
     loan_ads = [ad for ad in account_data if ad.get("loan_params")]
     if not loan_ads:
@@ -530,6 +533,12 @@ def _compute_debt_summary(
         # at current payment", plan C8d).  The outlook tells the two apart --
         # that is what its third state exists for.
         "has_unclearing_debt": outlook.never_clears,
+        # What the payoff date CANNOT speak for (plan step X-q3, finding
+        # N-99): every liability with no forward model -- today, a revolving
+        # card -- is invisible to the derivation, so the caption says so
+        # instead of implying the user is out of debt on a date that only
+        # covers their loans.
+        "revolving_debt": debt_without_payoff_model(account_data),
     }
 
 

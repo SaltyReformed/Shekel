@@ -3939,7 +3939,14 @@ class TestNetWorthHorizon:
     def test_debt_free_milestone_at_payoff(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """A loan yields exactly one 'Debt-free' flag at the debt-free date."""
+        """A loan yields exactly one payoff-complete flag at that date.
+
+        The label reads "All loans paid off" as of plan step X-q3 (developer
+        ruling on finding N-99): the date behind it covers amortizing loans,
+        the only debts with a payoff model, and a revolving balance on the
+        same chart's liability band never reaches zero.  The ``kind`` is the
+        machine key and is deliberately unchanged.
+        """
         with app.app_context():
             periods = seed_periods_today
             _add_mortgage_account(seed_user, periods[0].id, Decimal("240000.00"))
@@ -3955,7 +3962,7 @@ class TestNetWorthHorizon:
             ]
             assert len(debt_free) == 1
             assert debt_free[0]["date"] == payoff
-            assert debt_free[0]["label"] == "Debt-free"
+            assert debt_free[0]["label"] == "All loans paid off"
 
     def test_net_crossing_milestone(
         self, app, db, seed_user, seed_periods_today,
@@ -5119,4 +5126,54 @@ class TestTheDebtFreeDateIsOneDerivation:
                 "a borrower whose loans have not cleared was reported "
                 "loan-free, or the axis was sized to a past date"
             )
+
+    def test_a_revolving_balance_is_named_beside_the_date(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A card the payoff date cannot cover is reported, not implied away.
+
+        Developer ruling on finding N-99 (plan step X-q3): the derivation
+        stays over the debts that HAVE a payoff model, and the surfaces say
+        so.  A revolving Credit Card has no forward model -- the seam holds it
+        FLAT at its owed magnitude, so it never reaches zero -- and it is
+        invisible to :func:`.._debt_line.loan_payoff_outlook`.  Without the
+        caveat a borrower reads a payoff month on a page whose own liability
+        band never touches zero.
+
+        The card is anchored OWED-AS-NEGATIVE, which is the app's convention
+        (``TestNegativelyAnchoredLiability``), and the caveat reports the
+        magnitude -- the same ``abs`` the net-worth liability total takes.
+        """
+        with app.app_context():
+            # Pylint: ``import-outside-toplevel`` -- test-local helper,
+            # matching this module's convention of importing where used.
+            from tests._test_helpers import (  # pylint: disable=import-outside-toplevel
+                create_account_of_type, create_loan_account,
+            )
+            create_loan_account(
+                seed_user, db.session, name="Car Loan",
+                principal=Decimal("12000.00"), rate=Decimal("0.05000"),
+                term=24, origination_date=date(2026, 1, 1),
+                anchor_period=seed_periods[0],
+            )
+            create_account_of_type(
+                seed_user, db.session, "Credit Card", "Rewards Card",
+                anchor_balance=Decimal("-500.00"),
+            )
+            db.session.commit()
+
+            summary = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )["debt_summary"]
+
+            # The card is NOT in the payoff derivation and does NOT poison it
+            # -- that is the ruling, not an accident.
+            assert summary["projected_debt_free_date"] == (
+                self._CAR_PAYOFF
+            )
+            assert summary["has_unclearing_debt"] is False
+            # And it is not in the loan money aggregates either.
+            assert summary["total_debt"] == Decimal("12000.00")
+            # It IS named, at its owed magnitude.
+            assert summary["revolving_debt"] == Decimal("500.00")
 

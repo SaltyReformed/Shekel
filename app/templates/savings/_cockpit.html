@@ -256,13 +256,20 @@
   <div class="acct-group__foot">
     <span>Monthly <span class="font-mono">{{ money(debt_summary.total_monthly_payments) }}</span></span>
     <span>Avg rate <span class="font-mono">{{ "%.2f"|format(debt_summary.weighted_avg_rate|to_percent) }}%</span></span>
+    {# X-q3 / finding N-99: the date covers the debts that HAVE a payoff model
+       -- amortizing loans -- so it is captioned as what it measures.  A
+       revolving balance has no forward model (the seam holds it flat), so it
+       can never reach zero and is named separately rather than implied away. #}
     {% if debt_summary.projected_debt_free_date %}
-    <span>Debt-free <span class="font-mono">{{ debt_summary.projected_debt_free_date.strftime('%b %Y') }}</span></span>
+    <span>Loans paid off <span class="font-mono">{{ debt_summary.projected_debt_free_date.strftime('%b %Y') }}</span></span>
     {% elif debt_summary.has_unclearing_debt %}
-    {# C8d/C8f: a loan that never clears at its current payment has no debt-free
+    {# C8d/C8f: a loan that never clears at its current payment has no payoff
        date, and saying so beats omitting the line -- the same treatment its own
        detail page gives the condition. #}
-    <span class="text-warning">No debt-free date at current payments</span>
+    <span class="text-warning">No loan payoff date at current payments</span>
+    {% endif %}
+    {% if debt_summary.revolving_debt > 0 %}
+    <span class="text-muted">excludes <span class="font-mono">{{ money(debt_summary.revolving_debt) }}</span> revolving</span>
     {% endif %}
     {% if debt_summary.dti_ratio is not none %}
     <span>DTI <span class="font-mono">{{ debt_summary.dti_ratio }}%</span> {{ dti_badge(debt_summary.dti_label) }}</span>

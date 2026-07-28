@@ -655,8 +655,10 @@ class TestDashboardTracks:
 
         The D10 ruling (2026-07-09) INVERTED the track's presentation:
         the CURRENT total debt is now the hero figure (``track__pos-num``),
-        the destination is its caption ("to $0 . debt-free <Mon YYYY>"),
-        and the rail's here-label carries only the percent ("N% paid").
+        the destination is its caption ("to $0 . loans paid off <Mon YYYY>",
+        worded that way as of plan step X-q3 -- the date covers the debts
+        that HAVE a payoff model), and the rail's here-label carries only the
+        percent ("N% paid").
         The old anatomy (a "$X left" rail mid-label under a "$0" hero) is
         retired; the word "left" no longer appears in the track.
 
@@ -685,7 +687,7 @@ class TestDashboardTracks:
             assert 'track__pos-num font-mono">$1,000.00' in html
             # D10 caption: the destination, then the projected arrival.
             assert "to $0" in html
-            assert "debt-free" in html
+            assert "loans paid off" in html
             # D10 rail label: only the percent -- exactly 0% with no
             # payments recorded against the $1,000.00 principal.
             assert "0% paid" in html

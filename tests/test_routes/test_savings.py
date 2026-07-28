@@ -3120,8 +3120,42 @@ class TestDebtSummaryDisplay:
             assert resp.status_code == 200
             html = resp.data.decode()
             assert "Avg rate" in html
-            assert "Debt-free" in html
+            # X-q3 / N-99: the caption says what the date measures -- the
+            # payoff of the debts that HAVE a payoff model.
+            assert "Loans paid off" in html
             assert "Payoff Strategies" in html
+
+    def test_a_revolving_balance_is_captioned_beside_the_payoff_date(
+        self, app, auth_client, seed_user, seed_periods, db,
+    ):
+        """The rendered footer names the debt the payoff date cannot cover.
+
+        Plan step X-q3, finding N-99.  The date is derived over amortizing
+        loans -- the only debts with a payoff model -- so a Credit Card, which
+        the seam holds FLAT at its owed magnitude and which therefore never
+        reaches zero, is invisible to it.  The page says both: when the loans
+        are paid off, and what that does not speak for.
+        """
+        # pylint: disable=import-outside-toplevel
+        from tests._test_helpers import (
+            create_account_of_type, create_loan_account,
+        )
+
+        with app.app_context():
+            create_loan_account(seed_user, db.session, name="Auto Loan")
+            create_account_of_type(
+                seed_user, db.session, "Credit Card", "Rewards Card",
+                anchor_balance=Decimal("-500.00"),
+            )
+            db.session.commit()
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "Loans paid off" in html
+            assert "excludes" in html
+            assert "$500.00" in html
+            assert "revolving" in html
 
     def test_dashboard_no_debt_summary_when_no_loans(
         self, app, auth_client, seed_user, seed_periods,
