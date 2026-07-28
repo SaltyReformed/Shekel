@@ -98,11 +98,20 @@ def _serialize_horizon(horizon: dict | None) -> dict | None:
     ``None`` (the user has no pay periods) passes straight through so the
     client hides the range.
 
+    **It consumes every key the producer publishes, and that is a contract
+    rather than a coincidence** (plan step X-q2, finding N-100): each key is
+    subscripted here, so a producer output nothing renders cannot exist without
+    failing ``TestHorizonSerialization.test_every_published_key_is_read``, which
+    removes each key in turn and requires this to raise.  ``build_horizon``
+    published ``horizon_end`` and ``is_loan_free`` for months with no consumer
+    anywhere -- deleted at X-q2, along with the narrow producer that carried
+    them to nobody.
+
     Args:
         horizon: The ``net_worth["horizon"]`` dict from
             :func:`~app.services.savings_dashboard_service._horizon.build_horizon`
             (``dates`` / ``net`` / ``composition`` / ``milestones`` /
-            ``current_index``), or ``None``.
+            ``current_index`` -- its complete key set), or ``None``.
 
     Returns:
         A dict ``{"labels", "net", "composition", "milestones",

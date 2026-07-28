@@ -121,8 +121,8 @@ class _HorizonFrame:
 
 def _resolve_horizon_domain(
     account_data: list[dict], today: date,
-) -> tuple[date, date | None, bool]:
-    """Resolve the horizon domain end, debt-free date, and loan-free flag.
+) -> tuple[date, date | None]:
+    """Resolve the horizon domain end and the debt-free flag's date.
 
     The domain runs to the payoff of the user's last debt-line loan plus one
     year, rounded up to that year's end (so the final sample lands on a year
@@ -143,11 +143,19 @@ def _resolve_horizon_domain(
     installment that clears the loan folds at a past DUE date, developer ruling
     at plan step X-q -- and this falls back to the fixed
     :data:`_LOAN_FREE_HORIZON_YEARS`-year window for it, exactly as it does
-    when there is no date at all.  **The user is NOT loan-free in that state
-    and this now says so**: the rule it replaced dropped past payoffs per loan
-    and then read the empty list as "no loans", so a borrower with an overdue
-    installment was reported loan-free.  The caption on the same page reports
-    the date either way, which is the ruling's other half.
+    when there is no date at all.  The caption on the same page reports the
+    date either way, which is the ruling's other half.
+
+    **This answers what the AXIS needs and nothing else** (plan step X-q2,
+    finding N-100).  The three states the ``None`` date covers -- no loans at
+    all, a loan that never clears, and a payoff already behind us -- belong to
+    :class:`~.._debt_line.LoanPayoffOutlook`, which is where they are derived;
+    the cockpit footer beside this chart renders the same distinction, though
+    it reaches it through the two fields ``_metrics`` copies out of the outlook
+    rather than through the outlook itself (finding N-104).  This returned a
+    third ``is_loan_free`` element until X-q2; nothing ever read it, and a
+    producer republishing another module's derived property is the copy ruling
+    R-AW deleted from the projection dict one layer down.
 
     Args:
         account_data: The per-account projection dicts (a configured loan
@@ -155,19 +163,15 @@ def _resolve_horizon_domain(
         today: The producer's as-of date.
 
     Returns:
-        ``(horizon_end, debt_free_date, is_loan_free)`` -- the year-end
-        domain end, the last FUTURE payoff date (``None`` when loan-free, when
-        a debt-line loan never clears, and when the only payoff is already
-        past), and whether the user has no loan debt line at all.  Those
-        ``None`` cases differ in ``is_loan_free``: a borrower whose loan never
-        pays off is NOT loan-free, and the caller must not caption them as
-        debt-free.
+        ``(horizon_end, debt_free_date)`` -- the year-end domain end, and the
+        last FUTURE payoff date (``None`` when loan-free, when a debt-line loan
+        never clears, and when the only payoff is already past; a caller that
+        must tell those apart reads the outlook, not this).
     """
     outlook = loan_payoff_outlook(account_data)
-    fallback = date(today.year + _LOAN_FREE_HORIZON_YEARS, 12, 31)
     if outlook.all_clear_on is None or outlook.all_clear_on <= today:
-        return fallback, None, outlook.is_loan_free
-    return date(outlook.all_clear_on.year + 1, 12, 31), outlook.all_clear_on, False
+        return date(today.year + _LOAN_FREE_HORIZON_YEARS, 12, 31), None
+    return date(outlook.all_clear_on.year + 1, 12, 31), outlook.all_clear_on
 
 
 def _build_sample_dates(today: date, horizon_end: date) -> list[date]:
@@ -586,8 +590,11 @@ def _structural_milestones(
     # The label says what the date MEASURES (plan step X-q3, finding N-99):
     # the derivation behind it covers amortizing loans, the only debts with a
     # payoff model, and a revolving balance on the same chart's liability band
-    # never reaches zero.  The ``kind`` is the machine key the serializer and
-    # the flag plugin carry and is unchanged.
+    # never reaches zero.  The ``kind`` is the machine key, unchanged -- it
+    # keys this module's own tests and is carried through the serializer;
+    # the client's flag plugin reads only ``x`` and ``label``
+    # (``net_worth_cockpit.js:388-414``), which plan step X-q2's review
+    # corrected here and recorded as finding N-104.
     result.append({
         "date": debt_free_date,
         "label": "All loans paid off",
@@ -716,6 +723,28 @@ def build_horizon(
     construction (:func:`_net_series`), and index 0 is each band's real today
     balance (so the horizon starts at the net-worth hero).
 
+    **Every key here is one the presentation boundary reads** (plan step X-q2,
+    finding N-100): :func:`app.routes.savings._serialize_horizon` consumes all
+    five and the client's chart renders them.  It published ``horizon_end`` and
+    ``is_loan_free`` as well until X-q2, and no serializer, template or script
+    named either -- ``horizon_end`` because it is ``dates[-1]`` by construction
+    (the domain end is always the last annual sample, so it was one fact under
+    two keys), and ``is_loan_free`` because it is
+    :attr:`~.._debt_line.LoanPayoffOutlook.is_loan_free`, whose three-state
+    distinction the cockpit footer on this same page renders from the same
+    derivation.  A key added here that no consumer reads is the defect this
+    step closed; the contract is pinned by ``TestHorizonSerialization``, which
+    removes each key in turn and requires the serializer to break.
+
+    **The contract stops at this dict's own keys, and the rest is recorded
+    rather than claimed** (finding N-104): the milestone dicts inside it carry
+    a ``date`` and a ``kind`` the client reads no more than it read the two
+    keys deleted here, and the property named above now has no ``app/`` reader
+    at all -- because ``_metrics`` copies the outlook's two STORED fields into
+    the debt-summary dict and the footer re-derives the third in Jinja, which
+    is ruling R-AW's pattern one package over.  Both are the same root as
+    N-100 and neither is in this step, whose proof is a byte-identical payload.
+
     Args:
         user_id: The authenticated user's id (for the /retirement engine
             reuse).
@@ -726,20 +755,18 @@ def build_horizon(
             :func:`~app.services.savings_dashboard_service._display.category_key_by_account_id`.
 
     Returns:
-        A dict with ``dates`` (the sample dates), ``current_index`` (always
-        ``0`` -- the whole horizon is forward from today), ``composition``
-        (the ``{band: [Decimal, ...]}`` map over :data:`_COMPOSITION_BANDS`),
-        ``net`` (the trajectory), ``milestones`` (the ``{date, label, kind}``
-        flags), ``horizon_end``, and ``is_loan_free``.  ``None`` when the
+        A dict with ``dates`` (the sample dates, whose last element is the
+        domain end), ``current_index`` (always ``0`` -- the whole horizon is
+        forward from today), ``composition`` (the ``{band: [Decimal, ...]}``
+        map over :data:`_COMPOSITION_BANDS`), ``net`` (the trajectory), and
+        ``milestones`` (the ``{date, label, kind}`` flags).  ``None`` when the
         user has no pay periods (no axis to project over).
     """
     if not core.all_periods:
         return None
 
     today = core.balance_ctx.as_of
-    horizon_end, debt_free_date, is_loan_free = _resolve_horizon_domain(
-        account_data, today,
-    )
+    horizon_end, debt_free_date = _resolve_horizon_domain(account_data, today)
     frame = _HorizonFrame(
         today=today,
         horizon_end=horizon_end,
@@ -759,6 +786,4 @@ def build_horizon(
         "composition": composition,
         "net": net,
         "milestones": milestones,
-        "horizon_end": horizon_end,
-        "is_loan_free": is_loan_free,
     }

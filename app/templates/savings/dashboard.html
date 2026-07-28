@@ -217,16 +217,27 @@
           <div class="card-body text-muted">
             <div class="d-flex justify-content-between align-items-start">
               <div>
-                {# No "Paid Off" badge here: the archived list's dicts carry
-                   ``account`` and ``current_balance`` ONLY
-                   (``_data._load_archived_accounts``, which deliberately runs
-                   no engine or seam call for a historical account), so the
-                   badge's condition could never be true.  Plan step X-r
-                   deleted the branch rather than re-pointing it at the seam's
-                   figures: a guard against an impossible shape reads as
-                   coverage and is not.  Whether an archived paid-off loan
-                   SHOULD be badged -- at the cost of resolving loans for the
-                   archived list -- is finding N-102. #}
+                {# No "Paid Off" badge here, and that is DECIDED rather than
+                   open (developer ruling, plan step X-q2, closing finding
+                   N-102).  The badge the live cell carries
+                   (``savings/_cockpit.html``) reads the seam's
+                   ``is_paid_off``, which the seam defines as the
+                   CONGRATULATION predicate -- and the moment to congratulate
+                   is the live list when the loan clears, not the drawer a user
+                   opens to unarchive or permanently delete.  So the archived
+                   dicts stay ``account`` + ``current_balance`` and this list
+                   runs no engine or seam call.  Plan step X-r deleted the
+                   branch that used to sit here, which tested a key
+                   ``_data._load_archived_accounts`` has never built.
+
+                   ``Last Balance`` below is the ``current_anchor_balance``
+                   COLUMN, and for an amortizing loan it is not a balance at
+                   all: ``anchor_service.AmortizingAccountAnchorError`` says so
+                   in terms ("a loan's balance is never
+                   ``accounts.current_anchor_balance``") and the cash true-up
+                   door refuses the kind, so nothing keeps the column true for
+                   a loan.  Finding N-103 (plan step X-e) carries the
+                   measurements and the option space. #}
                 <h6 class="card-title mb-1">
                   <i class="bi bi-archive me-1"></i>
                   {{ ad.account.name }}

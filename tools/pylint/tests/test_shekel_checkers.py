@@ -619,9 +619,17 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
             self.checker.visit_functiondef(node)
 
     def test_ignores_public_function_in_consumer_module(self) -> None:
-        """A consumer's own public functions are not the fence's business."""
+        """A consumer's own public functions are not the fence's business.
+
+        The name and module are a REAL pair (``_horizon.build_horizon``), not a
+        plausible-looking one: this fixture named ``compute_net_worth_horizon``
+        against ``_horizon`` until plan step X-q2, and that function lived in
+        ``_orchestrator`` and has since been deleted -- a synthetic fixture
+        drifts silently because nothing resolves it.
+        """
         node = self._function_def(
-            "def compute_net_worth_horizon(user_id):\n    return {}\n",
+            "def build_horizon(user_id, core, account_data, category):\n"
+            "    return {}\n",
             "app.services.savings_dashboard_service._horizon",
         )
         with self.assertNoMessages():

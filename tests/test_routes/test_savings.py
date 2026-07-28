@@ -3486,6 +3486,47 @@ class TestHorizonSerialization:
         from app.routes.savings import _serialize_horizon
         assert _serialize_horizon(None) is None
 
+    def test_every_published_key_is_read(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Every key the producer publishes is one this serializer consumes.
+
+        The route's half of the contract plan step X-q2 established, and it is
+        a MUTATION rather than a literal: each key is removed from a REAL
+        producer payload in turn and the serializer must break on it.  A key a
+        future step adds without a consumer therefore fails here, where a list
+        of expected names would have passed -- which is finding N-100's own
+        history, since ``horizon_end`` and ``is_loan_free`` shipped for months
+        as producer outputs no serializer, template or script ever named.
+
+        The producer's half (the key set itself) is
+        ``test_savings_dashboard_service.TestNetWorthHorizon
+        .test_publishes_only_the_keys_the_page_reads``.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.routes.savings import _serialize_horizon
+        from app.services import savings_dashboard_service
+        with app.app_context():
+            horizon = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )["net_worth"]["horizon"]
+            assert horizon is not None
+            # The unmutated payload serializes, so a failure below is the
+            # missing key and never a broken fixture.
+            assert _serialize_horizon(horizon) is not None
+
+            for key in sorted(horizon):
+                partial = {
+                    name: value for name, value in horizon.items()
+                    if name != key
+                }
+                with pytest.raises(KeyError) as excinfo:
+                    _serialize_horizon(partial)
+                # The REMOVED key must be the one that raised: a bare
+                # ``raises(KeyError)`` would accept an incidental miss from
+                # some later refactor and go on reading as proof.
+                assert excinfo.value.args[0] == key
+
 
 class TestMilestoneAxisX:
     """Tests for the milestone fractional-index helper (P-AC1 Loop B P2).

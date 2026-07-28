@@ -3657,11 +3657,22 @@ class TestNetWorthComposition:
 class TestNetWorthHorizon:
     """Tests for the long-horizon annual net-worth producer (P-AC1 Loop B P1).
 
-    ``compute_net_worth_horizon`` builds an annual net-worth composition +
+    ``build_horizon`` builds an annual net-worth composition +
     net-trajectory series to the horizon domain (last loan payoff + 1 year, or
     a fixed decade for a loan-free user), reusing the /retirement engine for
     the retirement / investment bands, per-account growth params for the asset
     band, and the loan resolver schedules for the liability band.
+
+    **Read through ``compute_dashboard_data``, the only path production has**
+    (plan step X-q2, finding N-100).  These tests called
+    ``compute_net_worth_horizon``, a narrow producer with ZERO ``app/`` callers
+    -- an AST census found its 10 call sites were all in this file -- so the
+    suite was grading a second producer no screen reached while the page read
+    the horizon out of the full build.  The narrow producer is deleted; the
+    horizon is read where the route reads it.  The one exception is the
+    no-pay-periods test below, which calls ``build_horizon`` directly because
+    the state it needs -- a user with an empty period list -- is upstream of
+    the build rather than inside it.
     """
 
     def test_none_without_periods(self, app, db, seed_user):
@@ -3681,30 +3692,27 @@ class TestNetWorthHorizon:
             )
             assert build_horizon(seed_user["user"].id, core, [], {}) is None
 
-    def test_dashboard_data_carries_horizon_matching_standalone(
+    def test_publishes_only_the_keys_the_page_reads(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """compute_dashboard_data carries the horizon == the standalone producer.
+        """Every published key is one the route's serializer consumes (N-100).
 
-        The /savings page reads the horizon out of the ONE dashboard build (no
-        second load per request); it must equal the standalone narrow producer
-        since both route through ``build_horizon`` -- the full-build
-        ``account_data`` (all accounts) and the standalone's (non-engine only)
-        yield the same horizon, since the asset / liability bands filter
-        ``account_data`` and the engine loads its own accounts.
+        The producer's side of the contract plan step X-q2 established; the
+        route's side -- each key removed in turn must break
+        ``_serialize_horizon`` -- is
+        ``test_savings.TestHorizonSerialization.test_every_published_key_is_read``.
+        Pinned as a literal here so a key added without a consumer fails a test
+        rather than living on as a producer output no screen reaches, which is
+        what ``horizon_end`` and ``is_loan_free`` did until X-q2.
         """
         with app.app_context():
-            periods = seed_periods_today
-            _add_mortgage_account(seed_user, periods[0].id, Decimal("240000.00"))
-            uid = seed_user["user"].id
-
-            wired = savings_dashboard_service.compute_dashboard_data(
-                uid,
+            horizon = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
             )["net_worth"]["horizon"]
-            standalone = savings_dashboard_service.compute_net_worth_horizon(uid)
 
-            assert wired is not None
-            assert wired == standalone
+            assert set(horizon) == {
+                "dates", "current_index", "composition", "net", "milestones",
+            }
 
     def test_loan_free_uses_fixed_decade_window(
         self, app, db, seed_user, seed_periods_today,
@@ -3712,17 +3720,17 @@ class TestNetWorthHorizon:
         """A user with no loans gets the fixed 10-year forward window.
 
         The domain end is December 31 of ``today.year + 10``; index 0 is today
-        (the "Today" marker), and the final sample is the domain end.
+        (the "Today" marker), and it is the LAST sample -- the domain end is
+        ``dates[-1]`` by construction, which is why plan step X-q2 deleted the
+        second ``horizon_end`` key that restated it.
         """
         with app.app_context():
-            horizon = savings_dashboard_service.compute_net_worth_horizon(
+            horizon = savings_dashboard_service.compute_dashboard_data(
                 seed_user["user"].id,
-            )
+            )["net_worth"]["horizon"]
             assert horizon is not None
-            assert horizon["is_loan_free"] is True
-            assert horizon["horizon_end"] == date(date.today().year + 10, 12, 31)
             assert horizon["dates"][0] == date.today()
-            assert horizon["dates"][-1] == horizon["horizon_end"]
+            assert horizon["dates"][-1] == date(date.today().year + 10, 12, 31)
             assert horizon["current_index"] == 0
 
     def test_today_point_equals_net_worth_hero(
@@ -3751,7 +3759,7 @@ class TestNetWorthHorizon:
             hero = savings_dashboard_service.compute_dashboard_data(
                 uid,
             )["net_worth"]
-            horizon = savings_dashboard_service.compute_net_worth_horizon(uid)
+            horizon = hero["horizon"]
 
             asset_bands = ("asset", "retirement", "investment", "other")
             asset0 = sum(
@@ -3835,7 +3843,7 @@ class TestNetWorthHorizon:
             hero = savings_dashboard_service.compute_dashboard_data(
                 uid,
             )["net_worth"]
-            horizon = savings_dashboard_service.compute_net_worth_horizon(uid)
+            horizon = hero["horizon"]
             liability = horizon["composition"]["liability"]
 
             # Checking $1,000 + Savings $4,000 assets, $3,000 card liability:
@@ -3845,8 +3853,9 @@ class TestNetWorthHorizon:
             # The card is in the band at index 0 and holds flat (no schedule).
             assert liability[0] == Decimal("3000.00")
             assert liability[-1] == Decimal("3000.00")
-            # A card-only horizon has no payoff, so the fixed decade is used.
-            assert horizon["is_loan_free"] is True
+            # A card carries no payoff model, so the domain is the fixed
+            # loan-free decade -- the card neither sets nor poisons it.
+            assert horizon["dates"][-1] == date(date.today().year + 10, 12, 31)
 
     def test_composition_reconciles_to_net_each_point(
         self, app, db, seed_user, seed_periods_today,
@@ -3862,9 +3871,9 @@ class TestNetWorthHorizon:
             )
             _add_mortgage_account(seed_user, periods[0].id, Decimal("240000.00"))
 
-            horizon = savings_dashboard_service.compute_net_worth_horizon(
+            horizon = savings_dashboard_service.compute_dashboard_data(
                 seed_user["user"].id,
-            )
+            )["net_worth"]["horizon"]
             comp = horizon["composition"]
             asset_bands = ("asset", "retirement", "investment", "other")
             for k in range(len(horizon["net"])):
@@ -3894,12 +3903,16 @@ class TestNetWorthHorizon:
             )
             uid = seed_user["user"].id
 
-            horizon = savings_dashboard_service.compute_net_worth_horizon(uid)
+            horizon = savings_dashboard_service.compute_dashboard_data(
+                uid,
+            )["net_worth"]["horizon"]
 
             all_periods = pay_period_service.get_all_periods(uid)
             current = pay_period_service.get_current_period(uid)
+            # The domain end is the last annual sample (plan step X-q2 deleted
+            # the second key that restated it).
             ctx = retirement_projection.build_projection_context(
-                uid, all_periods, current, horizon["horizon_end"], None, None,
+                uid, all_periods, current, horizon["dates"][-1], None, None,
             )
             projections = retirement_projection.project_retirement_accounts(ctx)
             expected = sum(
@@ -3931,14 +3944,14 @@ class TestNetWorthHorizon:
             )
             uid = seed_user["user"].id
 
-            payoff = savings_dashboard_service.compute_dashboard_data(
-                uid,
-            )["debt_summary"]["projected_debt_free_date"]
-            horizon = savings_dashboard_service.compute_net_worth_horizon(uid)
+            data = savings_dashboard_service.compute_dashboard_data(uid)
+            payoff = data["debt_summary"]["projected_debt_free_date"]
+            horizon = data["net_worth"]["horizon"]
             liability = horizon["composition"]["liability"]
 
-            assert horizon["is_loan_free"] is False
-            assert horizon["horizon_end"].year == payoff.year + 1
+            # A payoff-sized domain is the loan-bearing state: the fixed
+            # loan-free decade would not land on the payoff year plus one.
+            assert horizon["dates"][-1].year == payoff.year + 1
             assert liability[0] == Decimal("240000.00")
             assert liability[-1] == Decimal("0.00")
             assert liability[-1] < liability[0]
@@ -3959,10 +3972,9 @@ class TestNetWorthHorizon:
             _add_mortgage_account(seed_user, periods[0].id, Decimal("240000.00"))
             uid = seed_user["user"].id
 
-            payoff = savings_dashboard_service.compute_dashboard_data(
-                uid,
-            )["debt_summary"]["projected_debt_free_date"]
-            horizon = savings_dashboard_service.compute_net_worth_horizon(uid)
+            data = savings_dashboard_service.compute_dashboard_data(uid)
+            payoff = data["debt_summary"]["projected_debt_free_date"]
+            horizon = data["net_worth"]["horizon"]
 
             debt_free = [
                 m for m in horizon["milestones"] if m["kind"] == "debt_free"
@@ -3988,9 +4000,9 @@ class TestNetWorthHorizon:
                 seed_user, db.session, periods[0], Decimal("300000.00"),
             )
 
-            horizon = savings_dashboard_service.compute_net_worth_horizon(
+            horizon = savings_dashboard_service.compute_dashboard_data(
                 seed_user["user"].id,
-            )
+            )["net_worth"]["horizon"]
             assert horizon["net"][0] < Decimal("500000")
             assert horizon["net"][-1] >= Decimal("500000")
             crossings = [
@@ -4494,22 +4506,6 @@ class TestOneResolutionPerLoanPerReadPass:
 
             assert calls.count(loan_id) == 1
 
-    def test_horizon_resolves_each_loan_once(
-        self, app, db, seed_user, seed_periods_today, monkeypatch,
-    ):
-        """The standalone Horizon producer resolves each loan once (was 6 for 2)."""
-        with app.app_context():
-            loan = _create_small_loan(seed_user, db.session, name="Horizon Loan")
-            db.session.commit()
-            loan_id = loan.id
-
-            calls = self._count_resolutions(monkeypatch)
-            savings_dashboard_service.compute_net_worth_horizon(
-                seed_user["user"].id,
-            )
-
-            assert calls.count(loan_id) == 1
-
 
 class TestTypeDriftedLoanParamsRow:
     """An orphan ``LoanParams`` on a non-amortizing type is not treated as a loan.
@@ -4661,10 +4657,23 @@ class TestUnclearingDebtHasNoDebtFreeDate:
     def test_the_horizon_is_not_loan_free(
         self, app, db, seed_user, seed_periods,
     ):
-        """The Horizon plants no "Debt-free" flag and does not go loan-free."""
+        """The Horizon plants no "Debt-free" flag and does not go loan-free.
+
+        Two assertions on two producers, because plan step X-q2 put each fact
+        where it is derived.  The Horizon plants no flag -- its domain resolver
+        has no date to plant one at.  Whether the user is loan-free is the
+        OUTLOOK's, and the resolver used to republish it as a third tuple
+        element nothing read (finding N-100); a "no date" that means "a loan
+        never clears" and a "no date" that means "no loans" are what
+        :class:`~..._debt_line.LoanPayoffOutlook` exists to tell apart, and the
+        cockpit footer on the same page renders the difference.
+        """
         with app.app_context():
-            # Pylint: ``import-outside-toplevel`` -- the private producer under
-            # test, imported where used.
+            # Pylint: ``import-outside-toplevel`` -- the private producers
+            # under test, imported where used.
+            from app.services.savings_dashboard_service._debt_line import (  # pylint: disable=import-outside-toplevel
+                loan_payoff_outlook,
+            )
             from app.services.savings_dashboard_service._horizon import (  # pylint: disable=import-outside-toplevel
                 _resolve_horizon_domain,
             )
@@ -4673,13 +4682,15 @@ class TestUnclearingDebtHasNoDebtFreeDate:
             data = savings_dashboard_service.compute_dashboard_data(
                 seed_user["user"].id,
             )
-            _end, debt_free, is_loan_free = _resolve_horizon_domain(
+            _end, debt_free = _resolve_horizon_domain(
                 data["account_data"], date(2026, 3, 20),
             )
             assert debt_free is None
-            assert is_loan_free is False, (
-                "a borrower carrying a loan that never pays off was handed the "
-                "loan-free horizon window"
+            assert loan_payoff_outlook(
+                data["account_data"],
+            ).is_loan_free is False, (
+                "a borrower carrying a loan that never pays off was reported "
+                "loan-free"
             )
 
 
@@ -4805,7 +4816,7 @@ class TestARetiredLoanHasNoDebtLine:
             )
             assert _resolve_horizon_domain(
                 data["account_data"], date(2026, 3, 20),
-            ) == (self._CLEARING_DOMAIN_END, self._CLEARING_PAYOFF, False)
+            ) == (self._CLEARING_DOMAIN_END, self._CLEARING_PAYOFF)
 
             horizon = data["net_worth"]["horizon"]
             assert {
@@ -4850,7 +4861,7 @@ class TestARetiredLoanHasNoDebtLine:
             # The fixed producer, on unmodified data.
             assert _resolve_horizon_domain(
                 account_data, date(2026, 3, 20),
-            ) == (self._CLEARING_DOMAIN_END, self._CLEARING_PAYOFF, False)
+            ) == (self._CLEARING_DOMAIN_END, self._CLEARING_PAYOFF)
 
             # The same producer, reading the badging predicate instead.  The
             # substitution is made on the seam's own frozen value object
@@ -4864,7 +4875,7 @@ class TestARetiredLoanHasNoDebtLine:
                     )
             assert _resolve_horizon_domain(
                 account_data, date(2026, 3, 20),
-            ) == (self._FALLBACK_END, None, False), (
+            ) == (self._FALLBACK_END, None), (
                 "the control does not fire: the badging predicate produced the "
                 "same domain as the debt-line predicate, so this fixture "
                 "cannot tell them apart"
@@ -4881,19 +4892,26 @@ class TestARetiredLoanHasNoDebtLine:
 
         **This one pins a producer CONTRACT, not a rendered figure, and the
         distinction is stated so the coverage is not over-read.**  With a
-        single retired loan both predicates return the same ``horizon_end``
-        (the fallback window) and the same ``debt_free_date`` (``None``), so
-        the sample dates, both series and the milestone list are identical
-        either way; the ONLY value that discriminates is ``is_loan_free``,
-        which ``_serialize_horizon`` does not emit and no template reads
-        (finding N-100).  It is worth fixing and pinning ahead of a consumer
-        -- a producer that reports "still in debt" for a borrower who owes
-        nothing is wrong whether or not a screen has asked yet -- and it is
-        not evidence that anything on screen changed.
+        single retired loan the Horizon's domain resolver returns the same
+        answer either way -- the fallback window and no date -- so the sample
+        dates, both series and the milestone list are identical whichever
+        predicate is used, and the assertion below records that rather than
+        claiming a chart moved.
+
+        **The discriminating value is the OUTLOOK's ``is_loan_free``, and it is
+        asserted where it is derived** (plan step X-q2).  The resolver
+        republished it as a third tuple element until then, which is finding
+        N-100 -- so this test was asserting the state of a copy nothing read.
+        The copy is gone; the fact is not, and a producer that reports "still
+        in debt" for a borrower who owes nothing is wrong whether or not a
+        screen has asked yet.  The cockpit footer is the screen that asks.
         """
         with app.app_context():
-            # Pylint: ``import-outside-toplevel`` -- the private producer under
-            # test, imported where used.
+            # Pylint: ``import-outside-toplevel`` -- the private producers
+            # under test, imported where used.
+            from app.services.savings_dashboard_service._debt_line import (  # pylint: disable=import-outside-toplevel
+                loan_payoff_outlook,
+            )
             from app.services.savings_dashboard_service._horizon import (  # pylint: disable=import-outside-toplevel
                 _resolve_horizon_domain,
             )
@@ -4915,21 +4933,31 @@ class TestARetiredLoanHasNoDebtLine:
                 seed_user["user"].id,
             )
             account_data = data["account_data"]
+            assert loan_payoff_outlook(account_data).is_loan_free is True
+            # The chart is unmoved either way, and that is the point of the
+            # note above: the axis has no payoff to size itself on.
             assert _resolve_horizon_domain(
                 account_data, date(2026, 3, 20),
-            ) == (self._FALLBACK_END, None, True)
+            ) == (self._FALLBACK_END, None)
 
             # FIRING CONTROL: the badging predicate keeps the retired loan in
-            # the active set, so the user is reported NOT loan-free.
+            # the active set, and a retired loan has no forward payoff to date
+            # -- so the user is reported NOT loan-free, on a loan they have
+            # already cleared.
             for ad in account_data:
                 if "loan_figures" in ad:
                     ad["loan_figures"] = replace(
                         ad["loan_figures"],
                         is_retired=ad["loan_figures"].is_paid_off,
                     )
+            assert loan_payoff_outlook(account_data).is_loan_free is False, (
+                "the control does not fire: the badging predicate reported the "
+                "same loan-free state as the debt-line predicate, so this "
+                "fixture cannot tell them apart"
+            )
             assert _resolve_horizon_domain(
                 account_data, date(2026, 3, 20),
-            ) == (self._FALLBACK_END, None, False)
+            ) == (self._FALLBACK_END, None)
 
 
 class TestTheDebtFreeDateIsOneDerivation:
@@ -5033,7 +5061,7 @@ class TestTheDebtFreeDateIsOneDerivation:
             )
             assert _resolve_horizon_domain(
                 account_data, date(2026, 3, 20),
-            ) == (date(2057, 12, 31), self._MORTGAGE_PAYOFF, False)
+            ) == (date(2057, 12, 31), self._MORTGAGE_PAYOFF)
             assert {
                 (m["kind"], m["date"]) for m in data["net_worth"]["horizon"][
                     "milestones"
@@ -5115,6 +5143,14 @@ class TestTheDebtFreeDateIsOneDerivation:
         payoffs per loan and then read the empty list as "no loans at all",
         so it returned ``is_loan_free=True`` for a borrower whose loan had
         not cleared.
+
+        **Plan step X-q2 made that answer unreachable from here rather than
+        merely correct.**  The resolver no longer returns a loan-free flag at
+        all, and the outlook that does own one takes no reader ``today`` to
+        filter payoffs on -- so a reader's clock can size an axis and can
+        decide whether a flag is drawable, and it can no longer decide whether
+        the borrower is out of debt.  Both assertions below are therefore about
+        different producers on purpose.
         """
         with app.app_context():
             # Pylint: ``import-outside-toplevel`` -- the private producers
@@ -5137,11 +5173,14 @@ class TestTheDebtFreeDateIsOneDerivation:
             assert loan_payoff_outlook(account_data).all_clear_on == (
                 self._MORTGAGE_PAYOFF
             ), "the outlook reports the date whatever the reader's clock"
+            assert loan_payoff_outlook(account_data).is_loan_free is False, (
+                "a borrower whose loans have not cleared was reported loan-free"
+            )
             assert _resolve_horizon_domain(
                 account_data, after_everything,
-            ) == (date(2070, 12, 31), None, False), (
-                "a borrower whose loans have not cleared was reported "
-                "loan-free, or the axis was sized to a past date"
+            ) == (date(2070, 12, 31), None), (
+                "the axis was sized to a past date, or the flag was kept for "
+                "``_milestone_axis_x`` to clamp onto Today"
             )
 
     def test_a_revolving_balance_is_named_beside_the_date(

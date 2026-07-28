@@ -49,7 +49,6 @@ Module map:
   engine, per-account growth params, and the loan resolver schedules.
 * :mod:`app.services.savings_dashboard_service._orchestrator` --
   ``compute_dashboard_data`` (the full-page entry point),
-  ``compute_net_worth_horizon`` (the narrow ``Horizon``-range producer),
   ``compute_debt_summary`` (the narrow debt-card producer behind the
   dashboard's debt track; deep-hunt #82),
   ``compute_debt_principal_progress`` (the narrow principal-paid fraction
@@ -71,7 +70,6 @@ from app.services.savings_dashboard_service._orchestrator import (
     compute_debt_principal_progress,
     compute_debt_summary,
     compute_goal_progress,
-    compute_net_worth_horizon,
 )
 
 __all__ = [
@@ -80,5 +78,4 @@ __all__ = [
     "compute_debt_principal_progress",
     "compute_debt_summary",
     "compute_goal_progress",
-    "compute_net_worth_horizon",
 ]

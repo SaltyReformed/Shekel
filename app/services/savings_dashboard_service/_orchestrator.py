@@ -1,13 +1,21 @@
 """
 Shekel Budget App -- Savings Dashboard: orchestrator.
 
-Two public entry points.  ``compute_dashboard_data`` loads the core
-data, runs the per-account projections, computes goal progress, the
+``compute_dashboard_data`` is the full-page entry point: it loads the
+core data, runs the per-account projections, computes goal progress, the
 emergency-fund metrics, and the debt summary / DTI, and assembles the
-render-template context dict.  ``compute_debt_summary`` is the narrow
-producer behind the budget dashboard's debt card (deep-hunt #82): the
-same loaders, projection dispatch, and debt/DTI rule, restricted to
-the loan accounts the debt summary reads.  No Flask imports.
+render-template context dict.  Beside it are the NARROW producers, each
+running the same loaders and projection dispatch restricted to the
+accounts one consumer reads -- ``compute_debt_summary`` and
+``compute_debt_principal_progress`` behind the budget dashboard's debt
+track (deep-hunt #82, Loop B B-1), ``compute_goal_progress`` behind its
+savings tracks, and ``compute_account_balance_cell`` behind the cockpit's
+inline-edit revert.  **Every one of them has a live caller**: a narrow
+producer nothing calls is a second answer to a question with no question
+behind it, which is why ``compute_net_worth_horizon`` was deleted at plan
+step X-q2 (finding N-100) rather than kept for a consumer that never
+arrived -- ``/savings`` reads the Horizon range out of the ONE
+``compute_dashboard_data`` build.  No Flask imports.
 """
 
 from __future__ import annotations
@@ -23,10 +31,7 @@ from app.services.savings_dashboard_service._data import (
     _load_archived_accounts,
     _load_dashboard_core_data,
 )
-from app.services.savings_dashboard_service._horizon import (
-    _ENGINE_BANDS,
-    build_horizon,
-)
+from app.services.savings_dashboard_service._horizon import build_horizon
 from app.services.savings_dashboard_service._net_worth import (
     build_account_net_worth_maps,
     build_trend_periods,
@@ -38,7 +43,6 @@ from app.services.savings_dashboard_service._net_worth import (
 from app.services.savings_dashboard_service._display import (
     _compute_group_subtotals,
     _group_accounts_by_category,
-    account_category_key,
     category_key_by_account_id,
 )
 from app.services.savings_dashboard_service._goals import (
@@ -71,9 +75,13 @@ def _build_projection_context(
 ) -> _ProjectionContext:
     """Assemble the request-scoped projection context from loaded data.
 
-    One definition of the core-data -> context mapping shared by both
-    public entry points so the full dashboard build and the narrow debt
-    producer cannot project against different inputs.
+    One definition of the core-data -> context mapping shared by every entry
+    point that projects -- the full dashboard build and the three narrow
+    producers (:func:`compute_debt_summary` /
+    :func:`compute_debt_principal_progress` through
+    :func:`_project_debt_accounts`, :func:`compute_goal_progress`, and
+    :func:`compute_account_balance_cell`) -- so no two of them can project
+    against different inputs.
 
     Args:
         core: The :class:`_DashboardCoreData` from
@@ -166,7 +174,7 @@ def _project_debt_accounts(
     the full ``/savings`` build reports the real figure.  Nothing rendered the
     difference -- only the cockpit footer reads that key -- which is exactly
     the kind of silent divergence between two paths to one number this arc
-    exists to remove.  Found by plan step X-r''''s adversarial review.
+    exists to remove.  Found by plan step X-r's adversarial review.
 
     Args:
         user_id: Integer ID of the current user.
@@ -357,54 +365,6 @@ def compute_goal_progress(
         user_id, account_data, core.all_periods, net_biweekly_pay,
         active_goals,
     )
-
-
-def compute_net_worth_horizon(user_id: int) -> dict | None:
-    """Compute the cockpit's long-horizon annual net-worth series (P-AC1).
-
-    The narrow producer behind the Net Worth Cockpit's ``Horizon`` range: an
-    annual net-worth composition + net-trajectory series out to the last loan
-    payoff plus a year (a loan-free user gets a fixed forward decade), plus
-    the milestone flags (loan payoffs, debt-free, ``$500k`` net crossings).
-    Loads the same core data, account-type params, and per-account
-    projections ``compute_dashboard_data`` runs (so the horizon's today point
-    equals the page's net-worth hero), classifies each account by the shared
-    id-based category key, and delegates to
-    :func:`~app.services.savings_dashboard_service._horizon.build_horizon` --
-    which reuses the /retirement engine for the retirement / investment
-    bands, per-account growth params for the asset band, and the loan
-    resolver schedules for the liability band.
-
-    Args:
-        user_id: Integer ID of the current user.
-
-    Returns:
-        The horizon series dict (see
-        :func:`~app.services.savings_dashboard_service._horizon.build_horizon`),
-        or ``None`` when the user has no pay periods (no axis to project
-        over).
-    """
-    core = _load_dashboard_core_data(user_id)
-    if not core.all_periods:
-        return None
-    # Classify every account (the category key needs only the account type,
-    # never a balance), then project ONLY the accounts the asset + liability
-    # bands read.  The retirement / investment bands come from the
-    # /retirement engine, which projects those accounts itself; projecting
-    # them here too would build their balance_at maps a second time this
-    # request (a redundant producer call), so they are excluded from the
-    # per-account projection while still classified for the engine bands.
-    category = {
-        acct.id: account_category_key(acct) for acct in core.accounts
-    }
-    non_engine_accounts = [
-        acct for acct in core.accounts
-        if category[acct.id] not in _ENGINE_BANDS
-    ]
-    params = _load_account_params(non_engine_accounts)
-    ctx = _build_projection_context(core, params)
-    account_data = _compute_account_projections(non_engine_accounts, ctx)
-    return build_horizon(user_id, core, account_data, category)
 
 
 def compute_account_balance_cell(

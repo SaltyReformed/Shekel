@@ -36,9 +36,12 @@ can have no payoff date -- while the Horizon's liability band still sums it
 into the chart.  Including it under today's model would mean nobody carrying a
 card balance ever gets a date; the ruling is to keep the derivation over the
 debts that HAVE a payoff model and to caption the result as what it measures.
-**The captions are plan step X-q3 and are NOT done here** -- at this commit
-both surfaces still say "Debt-free", so N-99 stays open with X-q3 as its
-owner; this module's scope is the derivation the captions will describe.
+**Those captions SHIPPED at plan step X-q3** (`bad97e6a`, closing finding
+N-99): the cockpit footer reads "Loans paid off <mon>" and names the revolving
+balance it excludes, the dashboard debt track reads "loans paid off <mon>", and
+the Horizon's flag reads "All loans paid off" -- the machine ``kind`` stayed
+"debt_free".  :func:`debt_without_payoff_model` below is what the footer's
+caveat sums.
 A card that can carry a real payoff date is the credit-card arc's work
 (``docs/plans/implementation_plan_credit_card.md``), and this module is where
 it would be admitted.
@@ -63,9 +66,10 @@ class LoanPayoffOutlook:
     rather than a nullable date.  A bare ``None`` collapses the last two, and
     a consumer that cannot tell them apart either captions a borrower as
     debt-free or stays silent where it owes them a warning: the cockpit renders
-    all three (`_cockpit.html:259-265`, a date, a warning, or nothing) and the
-    dashboard debt track renders only the date, which is a display decision
-    that this value at least makes visible rather than structural.
+    all three (`_cockpit.html:267-274`, a date, a warning, or nothing -- the
+    line numbers re-pinned at plan step X-q2, X-q3's caption having moved them)
+    and the dashboard debt track renders only the date, which is a display
+    decision that this value at least makes visible rather than structural.
 
     **The $900,000 incident is a DIFFERENT defect and is not this one** -- it
     was skip-and-max, and :func:`loan_payoff_outlook` is where it is refused.
@@ -105,6 +109,17 @@ class LoanPayoffOutlook:
         the other two: no date AND nothing unclearing means there was nothing
         to date.  A borrower whose loan never pays off is NOT loan-free, and a
         caller must not caption them as such.
+
+        **Neither is a borrower whose only payoff is already behind them**, and
+        that is the answer this replaced: the Horizon's domain resolver used to
+        drop past payoffs loan by loan and then read the empty list as "no
+        loans", so an overdue borrower was reported loan-free (plan step X-q1,
+        developer ruling R-AY).  It cannot be re-expressed here, because this
+        takes no reader ``today`` to filter on -- a past payoff is a date like
+        any other, and only the CHART, which cannot draw a flag left of its own
+        origin, has a reason to care where it falls.  Plan step X-q2 deleted
+        the resolver's republished copy of this value, so there is no second
+        place for the question to be answered from a clock again.
 
         Returns:
             ``True`` only when :func:`debt_line_loans` was empty.
