@@ -695,6 +695,54 @@ class TestDashboardTracks:
             # the rail marker's data attribute.
             assert "data-rail-pct=" in html
 
+    def test_debt_track_renders_its_dti_badge_and_tooltip(
+        self, app, auth_client, seed_user, seed_periods_today, db,
+    ):
+        """The debt track's DTI badge and tooltip reach the page.
+
+        Plan step X-s3 re-pointed both from ``tracks.debt.dti_ratio`` /
+        ``dti_label`` to ``tracks.debt.summary.dti.ratio`` / ``.label``, and
+        X-s3's adversarial review measured that NOTHING covered them: the whole
+        of this module passed with the badge and tooltip silently gone, because
+        Jinja is on the default ``Undefined`` (no ``StrictUndefined``), so a
+        wrong attribute path renders nothing rather than raising.  The
+        ``/savings`` twin of this block was covered; this one was not.
+
+        $78,000 / 26 = $3,000 gross biweekly -> $3,000 * 26 / 12 = $6,500
+        gross monthly.  A $1,000 auto loan at 5% over 24 months carries a
+        $43.87 monthly P&I, so DTI = 43.87 / 6500 * 100 = 0.7% -- 'healthy',
+        which is the badge, and the figure the title attribute carries.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.models.ref import FilingStatus
+        from app.models.salary_profile import SalaryProfile
+        from tests._test_helpers import create_loan_account
+
+        with app.app_context():
+            create_loan_account(
+                seed_user, db.session, name="Auto Loan",
+                principal=Decimal("1000.00"), rate=Decimal("0.05000"),
+                term=24,
+            )
+            db.session.add(SalaryProfile(
+                user_id=seed_user["user"].id,
+                scenario_id=seed_user["scenario"].id,
+                filing_status_id=db.session.query(FilingStatus).first().id,
+                name="DTI Salary",
+                annual_salary=Decimal("78000.00"),
+                state_code="NC",
+            ))
+            db.session.commit()
+
+            resp = auth_client.get("/dashboard")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            # The tooltip carries the PITI total and the ratio, glued together
+            # so a stray "0.7%" elsewhere cannot satisfy it.
+            assert 'title="paying $43.87/mo -- DTI 0.7%"' in html
+            # The band badge, from the label property derived off that ratio.
+            assert "Healthy" in html
+
     def test_no_goals_no_debt_tracks_absent(
         self, app, auth_client, seed_user, seed_periods_today,
     ):

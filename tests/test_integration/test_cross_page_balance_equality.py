@@ -80,6 +80,10 @@ from app.services import (
 from app.services.balance_at import _kernel as net_worth_kernel
 from app.services.balance_at import BalanceContext
 from app.services.balance_at._resolution import resolved_loan
+from app.services.savings_dashboard_service._net_worth import (
+    _ASSET_BANDS,
+    _LIABILITY_BAND,
+)
 
 
 # ── Parameter matrix (cases 1..5 of the plan's Commit 11 spec) ─────
@@ -878,19 +882,33 @@ def _savings_tile_value(ctx):
 
 
 def _trend_assets_value(ctx):
-    """Read the net-worth trend's ``assets`` lane at the current index."""
+    """Sum the net-worth trend's ASSET bands at the current index.
+
+    The producer published a parallel ``assets`` total until plan step X-s1
+    deleted it: it was the sum of these bands by construction (one per-period
+    sum feeds both), and once the chart payload stopped carrying it across it
+    had no ``app/`` reader at all.  Summing the bands here reads the figure
+    from where it is actually derived, so this oracle now compares the other
+    pages against the series the chart really draws.
+    """
     series = _net_worth_series(ctx)
-    return series["assets"][series["current_index"]]
+    index = series["current_index"]
+    return sum(
+        (series["composition"][band][index] for band in _ASSET_BANDS),
+        Decimal("0.00"),
+    )
 
 
 def _trend_liabilities_value(ctx):
-    """Read the net-worth trend's ``liabilities`` lane at the current index.
+    """Read the net-worth trend's LIABILITY band at the current index.
 
-    ``liabilities[i]`` is the positive magnitude ``abs(balance)``, so for an
-    isolated loan it equals the loan's current balance directly.
+    The band is the positive magnitude ``abs(balance)``, so for an isolated
+    loan it equals the loan's current balance directly.  It was also published
+    as a parallel ``liabilities`` total until plan step X-s1 deleted that copy
+    (see :func:`_trend_assets_value`).
     """
     series = _net_worth_series(ctx)
-    return series["liabilities"][series["current_index"]]
+    return series["composition"][_LIABILITY_BAND][series["current_index"]]
 
 
 def _loan_detail_value(ctx):

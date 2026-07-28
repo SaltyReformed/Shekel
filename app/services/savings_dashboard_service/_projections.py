@@ -15,6 +15,11 @@ loan's context and anchor facts and run ``resolve_loan`` twice per loan (once
 for the tile, once for a ``date.max`` "ever paid off" probe); both reads now
 come from the context, which resolves each loan exactly once for the whole
 render.  No Flask imports.
+
+**Every seam read this module makes happens in :func:`_seam_batches`** (plan
+step X-s2), so the per-account assembly below touches the seam nowhere: the two
+doors -- the batched balance maps and the per-loan resolution -- are opened in
+one place, behind one no-baseline predicate, in one shape.
 """
 
 from collections import OrderedDict
@@ -26,44 +31,78 @@ from app.services.account_projection import (
     classify_account,
 )
 from app.services.net_worth_account_data import is_liability_account
-from app.services.savings_dashboard_service._types import _LoanAccountResult
+from app.services.savings_dashboard_service._types import (
+    _LoanAccountResult,
+    _SeamBatches,
+)
 from app.utils.period_projections import project_balance_horizons
 
 
-def _account_balance_maps(accounts, ctx):
-    """Build the balance_at seam maps for the NON-LOAN accounts in ONE batch.
+def _seam_batches(accounts, ctx):
+    """Build every balance-seam read the projection loop consumes, in ONE pass.
 
-    The per-account tile loop reads each non-loan balance out of this single
-    dict instead of calling the seam once per account.  ``build_maps``
-    assembles the seam's inputs (debt schedules, investment params,
-    deductions, and the engine gross-biweekly) ONCE over the whole set, so
-    the paycheck-engine gross fetch and the input queries do NOT scale with
-    the account count -- the N+1 avoidance ``build_maps`` exists for.  Loans
-    are excluded: the loan tile reads the resolver directly
-    (:func:`_compute_loan_account`), never the seam.
+    This build has exactly TWO doors into the :mod:`app.services.balance_at`
+    seam -- the per-kind balance maps for the non-loan accounts, and the
+    per-loan resolution -- and this is where both are opened, so the loop below
+    reaches the seam nowhere itself.  ``build_maps`` assembles the seam's inputs
+    (debt schedules, investment params, deductions, and the engine
+    gross-biweekly) ONCE over the whole set, so the paycheck-engine gross fetch
+    and the input queries do NOT scale with the account count -- the N+1
+    avoidance ``build_maps`` exists for.  The loans are batched beside it rather
+    than resolved inside the loop for the same reason: two doors of one shape,
+    opened in one place.
 
-    Returns an empty dict when there is no baseline scenario (the seam raises
-    on a ``None`` scenario by contract, so this caller owns the legitimate
-    empty state) -- every non-loan tile then degrades to its anchor balance.
+    **The no-baseline rule is stated once for THIS projection's two doors**
+    (plan step X-s2, ruling R-BF, finding N-105).  The seam raises on a ``None``
+    scenario by contract, and its own guard says a caller that legitimately
+    handles that state must guard BEFORE calling; this build guarded at the map
+    door only, so a user with no baseline got four kinds of blank balance and a
+    ``ValueError`` from the fifth -- the loan arm reaching ``require_scenario``
+    through ``loan_figures`` -> ``memoized_payoff``.
+
+    **What that does NOT mean, stated because the first draft of this docstring
+    claimed it and was wrong** (caught by X-s2's adversarial review): the rule
+    is not stated once in the PACKAGE.  Three more copies carry it, each in a
+    producer this step does not touch --
+    :func:`~.._net_worth.build_account_net_worth_maps` (the guard at
+    ``_net_worth.py:150``), :func:`~.._orchestrator._build_trend_window`
+    (``_orchestrator.py:454``), and
+    :func:`app.services.dashboard_pulse_service.compute_pulse_section`
+    (``dashboard_pulse_service.py:157``).  Hoisting all four to the build entry
+    is the fix and it is finding **N-107**, owned by plan step **X-t**.  A new
+    seam call added inside this module's per-account loop would likewise escape
+    -- nothing mechanical prevents it, since W9909 / W9910 gate imports and
+    module identity, never call sites.
 
     Args:
-        accounts: The accounts being projected (loans are filtered out).
-        ctx: The shared :class:`_ProjectionContext` (its ``scenario`` and
-            ``all_periods`` feed the seam).
+        accounts: The accounts being projected (any mix of kinds).
+        ctx: The shared :class:`_ProjectionContext` (its ``balance_ctx``,
+            ``all_periods`` and ``params.loan_params_map`` feed the seam).
 
     Returns:
-        ``{account_id: OrderedDict period_id -> Decimal}`` for the non-loan
-        accounts that have a map; an account the seam omits (no anchor
-        period) is simply absent.
+        The :class:`_SeamBatches` for this projection -- empty on both maps
+        when there is no baseline scenario, which is the legitimate empty state
+        every tile then degrades through.
     """
     if ctx.balance_ctx.scenario is None:
-        return {}
-    non_loan_accounts = [
-        acct for acct in accounts
-        if acct.id not in ctx.params.loan_params_map
-    ]
-    return balance_at.build_maps(
-        non_loan_accounts, ctx.balance_ctx, ctx.all_periods,
+        return _SeamBatches(balance_maps={}, loan_results={})
+
+    loan_results = {}
+    non_loan_accounts = []
+    for acct in accounts:
+        acct_loan_params = ctx.params.loan_params_map.get(acct.id)
+        if acct_loan_params is None:
+            non_loan_accounts.append(acct)
+            continue
+        loan_result = _compute_loan_account(acct, acct_loan_params, ctx)
+        if loan_result is not None:
+            loan_results[acct.id] = loan_result
+
+    return _SeamBatches(
+        balance_maps=balance_at.build_maps(
+            non_loan_accounts, ctx.balance_ctx, ctx.all_periods,
+        ),
+        loan_results=loan_results,
     )
 
 
@@ -93,7 +132,7 @@ def _current_balance_from_map(balances, acct, ctx):
     return balances.get(ctx.current_period.id)
 
 
-def _compute_loan_account(acct, ctx):
+def _compute_loan_account(acct, acct_loan_params, ctx):
     """Resolve current balance, payment, rate, and payoff for a loan.
 
     BOTH reads go through the :mod:`app.services.balance_at` seam, and both hit
@@ -115,14 +154,22 @@ def _compute_loan_account(acct, ctx):
     net-worth contribution are the same number BY CONSTRUCTION rather than
     because two producers happened to agree.
 
+    **The caller's already-loaded ``LoanParams`` rides into the result** (plan
+    step X-s2, finding N-105) so the projection dict writes ``loan_params`` and
+    ``loan_figures`` from ONE value under ONE condition, instead of writing one
+    of them from a second lookup that a different module's filter decides.
+
     Args:
         acct: The loan Account instance.
+        acct_loan_params: The account's already-loaded
+            :class:`~app.models.loan_params.LoanParams` row, carried through to
+            the result.
         ctx: The shared :class:`_ProjectionContext` (its ``balance_ctx`` owns
             the resolution).
 
     Returns:
-        A :class:`_LoanAccountResult`, or ``None`` when the account is not a
-        configured loan (no ``LoanParams``).
+        A :class:`_LoanAccountResult`, or ``None`` when the seam does not
+        resolve the account as a configured loan.
     """
     figures = balance_at.loan_figures(acct, ctx.balance_ctx)
     if figures is None:
@@ -132,6 +179,7 @@ def _compute_loan_account(acct, ctx):
             acct, ctx.balance_ctx, ctx.balance_ctx.as_of,
         ),
         figures=figures,
+        params=acct_loan_params,
     )
 
 
@@ -168,28 +216,41 @@ def _compute_needs_setup(
     return False
 
 
-def _project_one_account(acct, ctx, balance_maps):
+def _project_one_account(acct, ctx, batches):
     """Compute the projection dict for a single account.
 
-    Every non-loan account reads its balance from the one
-    :mod:`app.services.balance_at` seam, via the pre-built *balance_maps*
-    batch: the current-period balance and the 3 / 6 / 12-month horizons both
-    come from that single per-kind map (cash and interest unchanged from the
-    prior entries-aware producer; an investment and an appreciating property
-    now report the model-from-anchor value the net-worth trend and year-end
-    summary already use).  A loan tile instead reads the loan resolver
-    directly -- a rich-primitive consumer for its current balance, payment,
-    rate, and payoff -- and shows no projected horizons, so it is absent from
-    *balance_maps* (the seam is never consulted for a loan, avoiding a second
-    resolution of the same loan).
+    Pure assembly over the prebuilt *batches*: this function reaches the
+    :mod:`app.services.balance_at` seam nowhere itself, which is what lets
+    :func:`_seam_batches` own the no-baseline rule for every kind at once.
+    Every non-loan account reads its balance out of the batch's per-kind map --
+    the current-period balance and the 3 / 6 / 12-month horizons both come from
+    that single map (cash and interest unchanged from the prior entries-aware
+    producer; an investment and an appreciating property now report the
+    model-from-anchor value the net-worth trend and year-end summary already
+    use).  A loan tile instead reads the batch's resolved
+    :class:`~.._types._LoanAccountResult` -- a rich-primitive consumer for its
+    current balance, payment, rate, and payoff -- and shows no projected
+    horizons, so it is absent from the balance maps (the seam is never
+    consulted twice for one loan).
+
+    **The account being a loan is asked ONCE** (plan step X-s2, finding
+    N-105).  This function used to branch on ``loan_result is not None`` and
+    then re-test the same fact as ``if acct_loan_params:`` before dereferencing
+    ``loan_result.figures`` -- two predicates for one condition, agreeing only
+    because ``_data._load_loan_params_and_escrow`` filters a SUBSET of what
+    ``loan_loaders.load_loan_params`` returns, an invariant held in two other
+    modules neither of which knows this dereference depends on it.  The result
+    now carries the params, so both loan keys are written from one value under
+    one condition.
 
     Args:
         acct: The Account instance.
         ctx: The shared :class:`_ProjectionContext`.
-        balance_maps: ``{account_id: balance map}`` from
-            :func:`_account_balance_maps` -- the batch-built seam maps for the
-            non-loan accounts.  A loan, and a non-loan account the seam omits
-            (no anchor period), are absent and read as an empty map.
+        batches: The :class:`~.._types._SeamBatches` from
+            :func:`_seam_batches` -- every seam read this projection makes,
+            built once for the whole set.  A loan, and a non-loan account the
+            seam omits (no anchor period), are absent from ``balance_maps`` and
+            read as an empty map.
 
     Returns:
         A dict with keys: account, current_balance, projected,
@@ -200,12 +261,9 @@ def _project_one_account(acct, ctx, balance_maps):
     """
     kind = classify_account(acct)
     acct_interest_params = ctx.params.interest_params_map.get(acct.id)
-    acct_loan_params = ctx.params.loan_params_map.get(acct.id)
     acct_investment_params = ctx.params.investment_params_map.get(acct.id)
 
-    loan_result = (
-        _compute_loan_account(acct, ctx) if acct_loan_params else None
-    )
+    loan_result = batches.loan_results.get(acct.id)
 
     if loan_result is not None:
         # Loan tile: both figures come from the seam (see
@@ -218,15 +276,20 @@ def _project_one_account(acct, ctx, balance_maps):
         # Every non-loan kind reads its per-period balance map out of the one
         # batch the seam already built, then picks the current balance and the
         # horizons out of that single map.
-        balances = balance_maps.get(acct.id) or OrderedDict()
+        balances = batches.balance_maps.get(acct.id) or OrderedDict()
         current_bal = _current_balance_from_map(balances, acct, ctx)
         projected = project_balance_horizons(
             ctx.current_period, ctx.all_periods, balances,
         )
 
+    # "Does this account still need its params row" is a DIFFERENT question
+    # from "did it resolve as a loan", and it must stay answerable for an
+    # AMORTIZING account that has no ``LoanParams`` at all -- which is exactly
+    # the state it reports.  So it reads the map, where the resolution above
+    # reads the batch.
     needs_setup = _compute_needs_setup(
-        acct, kind, acct_interest_params, acct_loan_params,
-        acct_investment_params,
+        acct, kind, acct_interest_params,
+        ctx.params.loan_params_map.get(acct.id), acct_investment_params,
     )
 
     ad = {
@@ -244,8 +307,8 @@ def _project_one_account(acct, ctx, balance_maps):
         ad["interest_params"] = acct_interest_params
     if acct_investment_params:
         ad["investment_params"] = acct_investment_params
-    if acct_loan_params:
-        ad["loan_params"] = acct_loan_params
+    if loan_result is not None:
+        ad["loan_params"] = loan_result.params
         # The seam's value object, carried WHOLE (plan step X-r).  This dict
         # used to FLATTEN it, field by field: five copies -- ``is_paid_off``,
         # ``is_originated``, ``monthly_payment``, ``current_rate``,
@@ -270,10 +333,10 @@ def _project_one_account(acct, ctx, balance_maps):
 def _compute_account_projections(accounts, ctx):
     """Compute balance projections for each account.
 
-    Builds the non-loan balance maps ONCE via :func:`_account_balance_maps`
-    (so the seam's input assembly -- including the paycheck-engine gross
-    fetch -- runs a single time for the whole set, not once per account),
-    then projects each account against that shared batch.
+    Makes every balance-seam read ONCE via :func:`_seam_batches` (so the seam's
+    input assembly -- including the paycheck-engine gross fetch -- runs a single
+    time for the whole set, not once per account, and each loan resolves once),
+    then assembles each account's dict against that shared batch.
 
     Args:
         accounts: List of Account model instances.
@@ -284,7 +347,5 @@ def _compute_account_projections(accounts, ctx):
     Returns:
         A list of per-account dicts (see :func:`_project_one_account`).
     """
-    balance_maps = _account_balance_maps(accounts, ctx)
-    return [
-        _project_one_account(acct, ctx, balance_maps) for acct in accounts
-    ]
+    batches = _seam_batches(accounts, ctx)
+    return [_project_one_account(acct, ctx, batches) for acct in accounts]

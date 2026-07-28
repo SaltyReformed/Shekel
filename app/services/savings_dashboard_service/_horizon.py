@@ -79,6 +79,23 @@ _MILESTONE_NET_STEP = Decimal("500000")
 _ONE_MILLION = Decimal("1000000")
 _ONE_THOUSAND = Decimal("1000")
 
+# The debt-free flag's label, named here because a milestone's label is now its
+# only handle (plan step X-s1, ruling R-BC).  The per-loan payoff label is
+# interpolated inline at its one site rather than given a constant of its own:
+# it has no second reader to keep in step, and a named constant with one use is
+# the speculative shape this step exists to remove.  Note the two collide by
+# construction -- "<name> paid off" equals this string for an account named
+# "All loans" -- so a consumer telling them apart matches this one EXACTLY
+# (finding N-110).  A milestone dict carried a
+# machine ``kind`` until X-s1; nothing in ``app/`` read it -- the serializer
+# copied it into the payload and the client's flag plugin never looked at it --
+# so it was a published key with no consumer, which is finding N-100's own
+# defect one level down.  Deleting it leaves the label as the identity, and a
+# label a test matches on must come from HERE rather than be re-typed at the
+# assertion: plan step X-q3 renamed the debt-free flag ("Debt-free" -> the
+# string below) and a hand-typed copy in a test would have gone silently stale.
+_DEBT_FREE_MILESTONE_LABEL = "All loans paid off"
+
 # The most milestone flags the chart's two staggered lanes stay readable
 # with (P-AC1 ruling: "flag count capped for lane readability").  The cap
 # bounds the net-worth crossings -- the only unbounded set, since a very
@@ -585,20 +602,14 @@ def _structural_milestones(
             result.append({
                 "date": payoff,
                 "label": f"{ad['account'].name} paid off",
-                "kind": "payoff",
             })
     # The label says what the date MEASURES (plan step X-q3, finding N-99):
     # the derivation behind it covers amortizing loans, the only debts with a
     # payoff model, and a revolving balance on the same chart's liability band
-    # never reaches zero.  The ``kind`` is the machine key, unchanged -- it
-    # keys this module's own tests and is carried through the serializer;
-    # the client's flag plugin reads only ``x`` and ``label``
-    # (``net_worth_cockpit.js:388-414``), which plan step X-q2's review
-    # corrected here and recorded as finding N-104.
+    # never reaches zero.
     result.append({
         "date": debt_free_date,
-        "label": "All loans paid off",
-        "kind": "debt_free",
+        "label": _DEBT_FREE_MILESTONE_LABEL,
     })
     return result
 
@@ -632,7 +643,6 @@ def _net_crossing_milestones(
                     result.append({
                         "date": frame.sample_dates[k],
                         "label": _format_net_milestone(multiple),
-                        "kind": "net_crossing",
                     })
                     break
         multiple += _MILESTONE_NET_STEP
@@ -659,7 +669,17 @@ def _build_milestones(
         frame: The horizon time frame.
 
     Returns:
-        The milestone dicts (``{date, label, kind}``), ascending by date.
+        The milestone dicts (``{date, label}``), ascending by date.
+
+    Note:
+        **Both keys are CONSUMED by the presentation boundary** (plan step
+        X-s1, finding N-104): ``date`` positions the flag on the annual axis
+        (:func:`app.routes.savings._milestone_axis_x`) and ``label`` is the
+        chip's text.  There was a third, a machine ``kind``, which the
+        serializer copied into the payload and the client's flag plugin never
+        read -- so the same remove-a-key-and-require-a-crash guard that pins
+        the horizon dict now reaches these dicts too, rather than stopping one
+        level above them.
     """
     structural = _structural_milestones(account_data, debt_free_date, frame)
     crossings = _net_crossing_milestones(net, frame)
@@ -736,14 +756,14 @@ def build_horizon(
     step closed; the contract is pinned by ``TestHorizonSerialization``, which
     removes each key in turn and requires the serializer to break.
 
-    **The contract stops at this dict's own keys, and the rest is recorded
-    rather than claimed** (finding N-104): the milestone dicts inside it carry
-    a ``date`` and a ``kind`` the client reads no more than it read the two
-    keys deleted here, and the property named above now has no ``app/`` reader
-    at all -- because ``_metrics`` copies the outlook's two STORED fields into
-    the debt-summary dict and the footer re-derives the third in Jinja, which
-    is ruling R-AW's pattern one package over.  Both are the same root as
-    N-100 and neither is in this step, whose proof is a byte-identical payload.
+    **The contract now reaches one level DOWN as well** (plan step X-s1,
+    finding N-104): the milestone dicts inside ``milestones`` carried a machine
+    ``kind`` the client read no more than it read the two keys X-q2 deleted, so
+    a dead key rode inside a live one where the guard could not see it.  X-s1
+    deleted it at both ends and the guard now removes each MILESTONE key in
+    turn as well, which is why this producer's contract is "every key, at every
+    level, is subscripted by the serializer" rather than "every top-level key
+    is".
 
     Args:
         user_id: The authenticated user's id (for the /retirement engine
@@ -759,7 +779,7 @@ def build_horizon(
         domain end), ``current_index`` (always ``0`` -- the whole horizon is
         forward from today), ``composition`` (the ``{band: [Decimal, ...]}``
         map over :data:`_COMPOSITION_BANDS`), ``net`` (the trajectory), and
-        ``milestones`` (the ``{date, label, kind}`` flags).  ``None`` when the
+        ``milestones`` (the ``{date, label}`` flags).  ``None`` when the
         user has no pay periods (no axis to project over).
     """
     if not core.all_periods:

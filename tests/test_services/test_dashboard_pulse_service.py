@@ -36,7 +36,7 @@ from app.models.ref import AccountType
 from app.models.savings_goal import SavingsGoal
 from app.models.transaction import Transaction
 from app.services import account_service, dashboard_pulse_service, transfer_service
-from app.services import balance_at, pay_period_service
+from app.services import balance_at, pay_period_service, savings_dashboard_service
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
     add_anchor_history as _add_anchor_history,
@@ -1471,12 +1471,26 @@ class TestTracksDebt:
             )
             debt = tracks["debt"]
             assert debt is not None
-            # The summary fields survive (delegated to compute_debt_summary).
-            assert "total_debt" in debt
-            assert "total_monthly_payments" in debt
-            assert "projected_debt_free_date" in debt
+            # The summary is CARRIED WHOLE (plan step X-s3), not copied field
+            # by field: the track composes the very value ``/savings`` renders,
+            # so a field the summary grows arrives here by construction rather
+            # than by someone remembering to copy it.  Asserted as VALUE
+            # equality against the producer -- a frozen dataclass compares on
+            # every field, so a track that dropped or altered one fails here,
+            # where a "these three keys are present" check passed while the
+            # dict silently lost the outlook's third state (finding N-104).
+            #
+            # Measured limit, stated rather than left implied: this fixture
+            # carries no revolving liability and no salary, so ``revolving_debt``
+            # and ``dti`` sit at their empty values on BOTH sides and a
+            # substitution there would not be discriminating.  The firing
+            # control therefore plants its defect in ``total_debt``, which the
+            # fixture does populate.
+            assert debt.summary == savings_dashboard_service.compute_debt_summary(
+                seed_user["user"].id,
+            )
             # The honest fraction is present and is a Decimal in [0, 1].
-            fraction = debt["principal_paid_fraction"]
+            fraction = debt.principal_paid_fraction
             assert isinstance(fraction, Decimal)
             assert Decimal("0") <= fraction <= Decimal("1")
             # Reconcile with the summary: fraction uses the SAME current
@@ -1484,7 +1498,7 @@ class TestTracksDebt:
             # $1,000.00), so:
             #   fraction == (1000.00 - total_debt) / 1000.00.
             expected = (
-                (Decimal("1000.00") - debt["total_debt"]) / Decimal("1000.00")
+                (Decimal("1000.00") - debt.summary.total_debt) / Decimal("1000.00")
             )
             assert fraction == expected
 
@@ -1511,9 +1525,9 @@ class TestTracksDebt:
                 seed_user["user"].id,
             )
             debt = tracks["debt"]
-            assert debt["total_debt"] == Decimal("1000.00")
+            assert debt.summary.total_debt == Decimal("1000.00")
             # No principal paid yet -> fraction is exactly 0.
-            assert debt["principal_paid_fraction"] == Decimal("0")
+            assert debt.principal_paid_fraction == Decimal("0")
 
 
 # ── Tracks: income-relative goal pace passthrough ───────────────────

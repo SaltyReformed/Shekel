@@ -7,6 +7,7 @@ modules so each helper takes a small, cohesive argument list rather than
 a long positional parameter list.
 """
 
+from collections import OrderedDict
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -95,7 +96,7 @@ class _ProjectionContext:
 
 @dataclass(frozen=True)
 class _LoanAccountResult:
-    """One loan account's balance, plus the seam's rich figures for it.
+    """One loan account's balance, its params, and the seam's rich figures.
 
     What ``_compute_loan_account`` returns, so it hands back one cohesive value
     instead of a positional tuple.  The loan tile renders the current balance,
@@ -110,13 +111,62 @@ class _LoanAccountResult:
     hand-synchronised with the seam it mirrors is the seam's fence with a hole in
     it, so the duplication is not merely untidy.
 
+    **It carries the account's ``LoanParams`` for the same reason** (plan step
+    X-s2, finding N-105): the projection dict publishes ``loan_params`` beside
+    ``loan_figures``, and reading them from two places -- this result and a
+    second lookup in ``_ProjectionContext.params.loan_params_map`` -- is what
+    lets one be present while the other is not.  Existing here means "this
+    account resolved as a configured loan", so the two keys are written from ONE
+    value under ONE condition.
+
     Attributes:
         current_balance: The seam's balance-at-today for the loan
             (:func:`app.services.balance_at.balance_at`).
         figures: The seam's :class:`~app.services.balance_at.LoanFigures` -- the
             rich, non-balance detail (payment, rate, payoff, and whether the loan
             is retired or not yet borrowed).
+        params: The account's :class:`~app.models.loan_params.LoanParams` row --
+            the loan's contract terms, which ``_compute_principal_paid_fraction``
+            reads for ``original_principal``.
     """
 
     current_balance: Decimal
     figures: LoanFigures
+    params: LoanParams
+
+
+@dataclass(frozen=True)
+class _SeamBatches:
+    """Every :mod:`app.services.balance_at` read the projection loop consumes.
+
+    Built ONCE per projection by :func:`.._projections._seam_batches` and read
+    per account inside the loop, so :func:`.._projections._project_one_account`
+    is pure assembly over prebuilt inputs and reaches the seam nowhere itself.
+
+    **That is what lets ONE predicate cover both of this projection's seam
+    doors** (plan step X-s2, ruling R-BF, finding N-105).  The seam raises on a
+    ``None`` scenario by contract and expects its callers to guard BEFORE
+    calling (``balance_at._context.require_scenario``); the projection reaches
+    it two ways -- the per-kind balance maps and the per-loan resolution -- and
+    only the first was guarded, so four account kinds degraded to a blank
+    balance while the fifth raised ``ValueError`` four lines later.  Both now
+    sit behind one predicate in :func:`.._projections._seam_batches`.
+
+    The PACKAGE still states that rule in three more places (finding N-107);
+    see that function's docstring for where, and for why hoisting them is a
+    different step's work.
+
+    Attributes:
+        balance_maps: ``{account_id: period_id -> Decimal}`` from
+            :func:`app.services.balance_at.build_maps`, for the NON-loan
+            accounts the seam answers for.  An account the seam omits (no
+            anchor period) is simply absent.
+        loan_results: ``{account_id: _LoanAccountResult}`` for the accounts that
+            resolved as configured loans.  Membership IS "this account is a
+            loan for this projection": an account with a ``LoanParams`` row the
+            seam cannot resolve is in neither map and reads as a non-loan with
+            no balance.
+    """
+
+    balance_maps: dict[int, OrderedDict]
+    loan_results: dict[int, _LoanAccountResult]

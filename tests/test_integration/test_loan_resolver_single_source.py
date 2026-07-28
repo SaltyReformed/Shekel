@@ -230,13 +230,13 @@ def _savings_debt_card_total_debt(user_id):
     """Return the total_debt figure rendered by the /savings debt card.
 
     Drives the same ``savings_dashboard_service.compute_dashboard_data``
-    helper the route calls, then reads ``debt_summary["total_debt"]``
+    helper the route calls, then reads ``debt_summary.total_debt``
     -- the Decimal that backs the "Total Debt" tile.
     """
     data = savings_dashboard_service.compute_dashboard_data(user_id)
     summary = data["debt_summary"]
     assert summary is not None, "Expected at least one loan account"
-    return summary["total_debt"]
+    return summary.total_debt
 
 
 # -- C15-1 / C15-6 fixed-rate cross-surface tests --------------------------

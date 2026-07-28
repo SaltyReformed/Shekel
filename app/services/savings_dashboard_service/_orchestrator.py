@@ -50,7 +50,7 @@ from app.services.savings_dashboard_service._goals import (
     _load_active_goals,
 )
 from app.services.savings_dashboard_service._metrics import (
-    _apply_dti_metrics,
+    DebtSummary,
     _compute_avg_monthly_expenses,
     _compute_debt_summary,
     _compute_principal_paid_fraction,
@@ -109,13 +109,19 @@ def _debt_summary_with_dti(
     account_data: list[dict],
     escrow_map: dict[int, list],
     current_breakdown: PaycheckBreakdown | None,
-) -> dict | None:
-    """Compute the debt summary and apply the DTI metrics to it.
+) -> DebtSummary | None:
+    """Resolve the engine gross and build the debt summary from it.
 
     The single home for the debt-card rule, shared by the full
     dashboard build and the narrow :func:`compute_debt_summary`
     producer so the /savings page and the budget dashboard's debt card
     cannot drift onto different figures.
+
+    Its remaining job is the BREAKDOWN -> gross unwrapping (plan step X-s3):
+    the DTI block is no longer applied to a finished summary but built with it
+    inside :func:`~.._metrics._compute_debt_summary`, which is what makes the
+    summary a value constructed in one place rather than a dict mutated across
+    two.
 
     Args:
         account_data: Per-account dicts from
@@ -126,23 +132,20 @@ def _debt_summary_with_dti(
             current period, or ``None`` with no salary configured.
 
     Returns:
-        The debt-summary dict with the DTI keys applied, or ``None``
-        when no loan accounts with params exist.
+        The :class:`~.._metrics.DebtSummary`, or ``None`` when no loan
+        accounts with params exist.
     """
-    debt_summary = _compute_debt_summary(account_data, escrow_map)
-    if debt_summary is not None:
-        # MED-06 / F-032: ``gross_biweekly`` is the raise-aware engine
-        # output for the current period (``calculate_paycheck`` ->
-        # ``PaycheckBreakdown.earnings.gross_biweekly``), NOT the off-engine
-        # ``annual_salary / pay_periods`` recompute the DTI block read
-        # pre-Commit-26.  ``_apply_dti_metrics`` performs the
-        # biweekly -> monthly normalization on this engine-derived input.
-        gross_biweekly = (
-            current_breakdown.earnings.gross_biweekly if current_breakdown is not None
-            else Decimal("0.00")
-        )
-        _apply_dti_metrics(debt_summary, gross_biweekly)
-    return debt_summary
+    # MED-06 / F-032: ``gross_biweekly`` is the raise-aware engine output for
+    # the current period (``calculate_paycheck`` ->
+    # ``PaycheckBreakdown.earnings.gross_biweekly``), NOT the off-engine
+    # ``annual_salary / pay_periods`` recompute the DTI block read
+    # pre-Commit-26.  ``_metrics._dti_metrics`` performs the
+    # biweekly -> monthly normalization on this engine-derived input.
+    gross_biweekly = (
+        current_breakdown.earnings.gross_biweekly if current_breakdown is not None
+        else Decimal("0.00")
+    )
+    return _compute_debt_summary(account_data, escrow_map, gross_biweekly)
 
 
 def _project_debt_accounts(
@@ -210,7 +213,7 @@ def _project_debt_accounts(
 
 def compute_debt_summary(
     user_id: int, balance_ctx: BalanceContext | None = None,
-) -> dict | None:
+) -> DebtSummary | None:
     """Compute only the debt summary + DTI for the budget dashboard card.
 
     The narrow producer behind the dashboard's debt track
@@ -234,7 +237,7 @@ def compute_debt_summary(
             :func:`_project_debt_accounts`).
 
     Returns:
-        The debt-summary dict with the DTI keys applied, or ``None``
+        The :class:`~.._metrics.DebtSummary`, or ``None``
         when the user has no loan accounts with params (the early
         return mirrors ``_compute_debt_summary``'s no-loan ``None``
         inside the full build, and additionally skips the per-account

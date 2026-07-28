@@ -7,6 +7,7 @@ the canonical current-period paycheck breakdown producer, and the liquid
 balance sum that feeds the emergency fund.  No Flask imports.
 """
 
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -23,6 +24,7 @@ from app.services import (
     paycheck_calculator,
 )
 from app.services.savings_dashboard_service._debt_line import (
+    LoanPayoffOutlook,
     debt_without_payoff_model,
     loan_payoff_outlook,
 )
@@ -32,6 +34,116 @@ from app.utils.money import MONTHS_PER_YEAR, PAY_PERIODS_PER_YEAR, round_money
 _RATE_PLACES = Decimal("0.00001")
 _DTI_HEALTHY_THRESHOLD = Decimal("36")
 _DTI_HIGH_THRESHOLD = Decimal("43")
+
+
+@dataclass(frozen=True)
+class DtiMetrics:
+    """The debt-to-income block -- present as a whole, or absent as a whole.
+
+    ONE nullable field replacing three parallel ones (plan step X-s3, ruling
+    R-BD, finding N-106).  ``dti_ratio``, ``dti_label`` and
+    ``gross_monthly_income`` were three keys written together in one branch and
+    set to ``None`` together in the other, so "the user has no income data" was
+    a state spelled three ways -- and read as three predicates across two
+    templates (the cockpit footer tested ``dti_ratio``, the dashboard debt
+    track tested ``dti_ratio`` for its tooltip and ``dti_label`` for its
+    badge).  A ``DtiMetrics | None`` makes the half-populated combination
+    unrepresentable and leaves the consumers ONE thing to ask.
+
+    **ONE stored fact**, and the band label is a :attr:`label` property over
+    it.  Storing a value that is a pure function of another field is how a
+    summary comes to contradict itself, and this package already had the
+    answer -- see that property.
+
+    It carried ``gross_monthly_income`` too, the engine-derived denominator,
+    and X-s3's own adversarial review found it had ZERO ``app/`` readers
+    (AST-verified; no template renders it either) -- an input already spent
+    computing :attr:`ratio`, which is byte-for-byte the reason plan step X-s1
+    refused to carry a milestone's ``date`` into the chart payload.  Applying
+    this step's own thesis to this step's own new code deleted it (developer
+    ruling, 2026-07-28).  The biweekly -> monthly conversion it used to pin
+    directly stays pinned through the ratio: :attr:`ratio` is
+    ``total_monthly_payments / gross_monthly``, and the numerator is asserted
+    on its own, so a wrong gross still shows.
+
+    Attributes:
+        ratio: Monthly debt payments as a PERCENT of gross monthly income,
+            quantized to one decimal place (e.g. ``Decimal("34.2")``).
+    """
+
+    ratio: Decimal
+
+    @property
+    def label(self) -> str:
+        """The health band this ratio falls in: healthy / moderate / high.
+
+        DERIVED, not stored, so it cannot contradict :attr:`ratio` -- the same
+        reason :attr:`~.._debt_line.LoanPayoffOutlook.is_loan_free` is a
+        property ("derived rather than stored so it cannot contradict the other
+        two"), and the same reason ruling R-AZ deleted the Horizon's stored copy
+        of that value one step earlier.  Storing it would let a future edit set
+        a ratio of 50% beside a 'healthy' badge, and nothing would catch it.
+
+        Returns:
+            ``'healthy'``, ``'moderate'`` or ``'high'`` per
+            :func:`_get_dti_label`'s thresholds.
+        """
+        return _get_dti_label(self.ratio)
+
+
+@dataclass(frozen=True)
+class DebtSummary:
+    """The debt card's figures: what is owed, what it costs, and when it ends.
+
+    THE shape of the debt summary, stated ONCE (plan step X-s3, ruling R-BD,
+    finding N-106).  It was a dict assembled across four modules -- six keys
+    here, three more mutated in by the DTI applier, a tenth added by a copy in
+    ``dashboard_pulse_service``, an eleventh mutated in by the dashboard route
+    -- so no single place said what a consumer could read, and the contract
+    lived in a comment at the top of ``dashboard/_tracks.html`` because there
+    was nowhere else to put it.
+
+    **It CARRIES the payoff outlook rather than copying fields out of it**
+    (ruling R-AW, applied where the copy happened).  The dict flattened
+    :class:`~.._debt_line.LoanPayoffOutlook`'s two STORED fields and dropped
+    the derived third, so ``is_loan_free`` -- the state that says "every loan
+    you have is paid off" -- had no reader anywhere in ``app/`` and the cockpit
+    footer re-derived it as a Jinja fall-through that renders nothing.  That is
+    the same defect X-r deleted from the per-account projection dict one
+    package over: a consumer bundle mirroring a value object field by field
+    goes stale the moment the value object grows, and here it had already gone
+    stale by omission.
+
+    **Two questions, two membership rules, and both are honest.** The money
+    figures are owed-TODAY and sum over the loans whose balance is positive;
+    :attr:`payoff_outlook` answers a question about the debt LINE and includes
+    a loan that has not been borrowed yet.  See :func:`_compute_debt_summary`.
+
+    Attributes:
+        total_debt: Principal owed today across the loans that still owe.
+        total_monthly_payments: PITI across the same loans -- the seam's
+            monthly principal + interest plus each loan's escrow resolved to
+            today.
+        weighted_avg_rate: The principal-weighted average of the loans'
+            CURRENT rates (an ARM contributes its in-effect rate), as a
+            fraction quantized to five places; ``0.00000`` when nothing is
+            owed.
+        payoff_outlook: The seam-derived
+            :class:`~.._debt_line.LoanPayoffOutlook`, carried WHOLE -- the one
+            derivation the Horizon chart's flag and axis read as well.
+        revolving_debt: The owed magnitude of every liability with no payoff
+            model (today, a revolving card), which the payoff date cannot
+            speak for and the caption therefore names (plan step X-q3).
+        dti: The :class:`DtiMetrics` block, or ``None`` when the user has no
+            income data to compute it from.
+    """
+
+    total_debt: Decimal
+    total_monthly_payments: Decimal
+    weighted_avg_rate: Decimal
+    payoff_outlook: LoanPayoffOutlook
+    revolving_debt: Decimal
+    dti: DtiMetrics | None
 
 
 def _sum_liquid_balances(account_data):
@@ -474,8 +586,15 @@ def _accumulate_loan_debt(
 def _compute_debt_summary(
     account_data: list[dict],
     escrow_map: dict[int, list],
-) -> dict | None:
+    gross_biweekly: Decimal,
+) -> DebtSummary | None:
     """Compute aggregate debt metrics across the user's loan accounts.
+
+    THE one construction site for :class:`DebtSummary` (plan step X-s3): every
+    field, including the DTI block, is set here.  The DTI keys used to be
+    MUTATED in afterwards by a separate applier, so the object a template read
+    was never fully built anywhere and "which fields does a debt summary have"
+    was answerable only by reading the modules in call order.
 
     Uses per-account data already computed by _compute_account_projections:
     ``current_balance`` and ``loan_params`` directly, the payment and rate off
@@ -491,19 +610,21 @@ def _compute_debt_summary(
     :func:`~.._debt_line.loan_payoff_outlook`, the ONE derivation the Horizon
     chart's flag reads as well.  Deriving the date here, over the owed-today
     set, is what put a 19-year contradiction between this caption and that
-    flag on one page (finding N-98).
+    flag on one page (finding N-98).  The outlook is carried WHOLE rather than
+    flattened into fields, which is ruling R-AW; see :class:`DebtSummary`.
 
     Args:
         account_data: List of per-account dicts from
             _compute_account_projections.
         escrow_map: Dict mapping account_id to list of EscrowLine (with versions).
+        gross_biweekly: The engine-derived gross biweekly pay the DTI block is
+            computed from; ``0.00`` when the user has no salary data, which is
+            what makes :attr:`DebtSummary.dti` ``None``.
 
     Returns:
-        Dict with keys: total_debt, total_monthly_payments,
-        weighted_avg_rate, projected_debt_free_date, has_unclearing_debt,
-        revolving_debt.  Returns None if no loan accounts with params exist --
-        so a user whose only liability is a card has no payoff caption to
-        qualify, which is why the ``revolving_debt`` caveat rides here.
+        The :class:`DebtSummary`, or ``None`` if no loan accounts with params
+        exist -- so a user whose only liability is a card has no payoff caption
+        to qualify, which is why the ``revolving_debt`` caveat rides here.
     """
     loan_ads = [ad for ad in account_data if "loan_figures" in ad]
     if not loan_ads:
@@ -520,27 +641,29 @@ def _compute_debt_summary(
     else:
         weighted_avg_rate = Decimal("0.00000")
 
-    outlook = loan_payoff_outlook(loan_ads)
-
-    return {
-        "total_debt": round_money(total_debt),
-        "total_monthly_payments": round_money(total_monthly),
-        "weighted_avg_rate": weighted_avg_rate,
-        "projected_debt_free_date": outlook.all_clear_on,
-        # Why the date is absent, which the caller must SAY rather than simply
-        # omit: a debt-line loan that never clears at its current payment is a
-        # different state from "every loan is already retired", and the loan
-        # detail page already names it in words on the same condition ("No payoff
-        # at current payment", plan C8d).  The outlook tells the two apart --
-        # that is what its third state exists for.
-        "has_unclearing_debt": outlook.never_clears,
+    total_monthly_payments = round_money(total_monthly)
+    return DebtSummary(
+        total_debt=round_money(total_debt),
+        total_monthly_payments=total_monthly_payments,
+        weighted_avg_rate=weighted_avg_rate,
+        # The seam-derived outlook, carried WHOLE (ruling R-AW).  Flattening it
+        # dropped ``is_loan_free`` -- "every loan you have is paid off" -- and a
+        # consumer cannot miss a field that was never copied, so the cockpit
+        # footer fell through that state in silence for as long as the copy
+        # existed.  Its other two states are the ones the caller must SAY rather
+        # than omit: a debt-line loan that never clears at its current payment is
+        # a different fact from having no loans left, and the loan detail page
+        # already names it in words on the same condition ("No payoff at current
+        # payment", plan C8d).
+        payoff_outlook=loan_payoff_outlook(loan_ads),
         # What the payoff date CANNOT speak for (plan step X-q3, finding
         # N-99): every liability with no forward model -- today, a revolving
         # card -- is invisible to the derivation, so the caption says so
         # instead of implying the user is out of debt on a date that only
         # covers their loans.
-        "revolving_debt": debt_without_payoff_model(account_data),
-    }
+        revolving_debt=debt_without_payoff_model(account_data),
+        dti=_dti_metrics(total_monthly_payments, gross_biweekly),
+    )
 
 
 def _get_dti_label(dti_pct: Decimal) -> str:
@@ -562,35 +685,38 @@ def _get_dti_label(dti_pct: Decimal) -> str:
     return "moderate"
 
 
-def _apply_dti_metrics(debt_summary, gross_biweekly):
-    """Populate the debt summary's DTI fields from gross biweekly pay.
+def _dti_metrics(
+    total_monthly_payments: Decimal, gross_biweekly: Decimal,
+) -> DtiMetrics | None:
+    """Derive the DTI block from monthly debt payments and gross biweekly pay.
 
-    Mutates ``debt_summary`` in place, adding ``dti_ratio``,
-    ``dti_label``, and ``gross_monthly_income``.  The biweekly -> monthly
-    conversion factor (``PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR``) is a
-    structural property of the 26-period pay schedule (Shekel is a
-    biweekly app), applied to the engine-derived gross (MED-06 / F-032);
-    it is a "genuine flat conversion" in the sense Commit 26 calls out,
-    not a raise-dropping shortcut.  When ``gross_biweekly`` is zero (no
-    income data), all three fields are set to ``None`` so the template
-    distinguishes "no income source" from a real zero (E-12).
+    A PURE function returning the whole block or ``None`` (plan step X-s3,
+    ruling R-BD).  It used to MUTATE a debt-summary dict, writing three keys in
+    one branch and three ``None`` s in the other -- so the "no income data"
+    state was spelled three times and read as three predicates by two
+    templates, and the summary object was never fully constructed in any one
+    place.
+
+    The biweekly -> monthly conversion factor (``PAY_PERIODS_PER_YEAR /
+    MONTHS_PER_YEAR``) is a structural property of the 26-period pay schedule
+    (Shekel is a biweekly app), applied to the engine-derived gross (MED-06 /
+    F-032); it is a "genuine flat conversion" in the sense Commit 26 calls out,
+    not a raise-dropping shortcut.
 
     Args:
-        debt_summary: The debt-summary dict to populate, in place.
-        gross_biweekly: Engine-derived gross biweekly pay (Decimal).
+        total_monthly_payments: The debt summary's PITI total.
+        gross_biweekly: Engine-derived gross biweekly pay.
+
+    Returns:
+        The :class:`DtiMetrics`, or ``None`` when ``gross_biweekly`` is zero --
+        no income source, which a consumer must distinguish from a real zero
+        ratio (E-12).
     """
-    if gross_biweekly > Decimal("0.00"):
-        gross_monthly = round_money(
-            gross_biweekly * PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR
-        )
-        dti_ratio = (
-            debt_summary["total_monthly_payments"]
-            / gross_monthly * Decimal("100")
-        ).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
-        debt_summary["dti_ratio"] = dti_ratio
-        debt_summary["dti_label"] = _get_dti_label(dti_ratio)
-        debt_summary["gross_monthly_income"] = gross_monthly
-    else:
-        debt_summary["dti_ratio"] = None
-        debt_summary["dti_label"] = None
-        debt_summary["gross_monthly_income"] = None
+    if gross_biweekly <= Decimal("0.00"):
+        return None
+    gross_monthly = round_money(
+        gross_biweekly * PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR
+    )
+    return DtiMetrics(ratio=(
+        total_monthly_payments / gross_monthly * Decimal("100")
+    ).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP))

@@ -8,7 +8,7 @@ independently of the Flask route layer.
 
 from dataclasses import replace
 from datetime import date
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from app import ref_cache
 from app.enums import (
@@ -22,6 +22,7 @@ from app.models.account import Account
 from app.models.ref import AccountType, FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.models.savings_goal import SavingsGoal
+from app.models.scenario import Scenario
 from app.services import balance_at, savings_dashboard_service, pay_period_service
 from app.services import account_service
 from app.services.balance_at import BalanceContext
@@ -1147,7 +1148,7 @@ class TestPaidOffReadsTheLedgerNotTheReplay:
             # ... and it therefore still counts toward the debt card's total.
             assert result["debt_summary"] is not None
             assert (
-                result["debt_summary"]["total_debt"]
+                result["debt_summary"].total_debt
                 >= loan_ad["current_balance"]
             )
 
@@ -1284,16 +1285,16 @@ class TestDebtSummary:
         The equivalence contract behind the narrow producer: with a loan
         account, a salary profile, AND the seed user's non-loan accounts
         present, the loan-only projection run must produce exactly the
-        dict the full ``compute_dashboard_data`` build emits -- every
-        money figure (total_debt, total_monthly_payments,
-        weighted_avg_rate, projected_debt_free_date) AND the three DTI
-        keys, since both route through the shared
+        :class:`~..._metrics.DebtSummary` the full ``compute_dashboard_data``
+        build emits -- every money figure, the payoff outlook, the revolving
+        caveat and the DTI block, since both route through the shared
         ``_debt_summary_with_dti``.  The salary makes the DTI leg
         non-vacuous: $78,000 / 26 = $3,000 gross biweekly -> $6,500
-        gross monthly, so ``gross_monthly_income`` / ``dti_ratio`` /
-        ``dti_label`` are live Decimals on both sides, not None == None.
-        Dict equality (not per-key spot checks) so a future key added to
-        one path but not the other fails here.
+        gross monthly, so the block is a live value on both sides rather than
+        None == None.  WHOLE-VALUE equality (not per-field spot checks) so a
+        future field populated on one path but not the other fails here -- a
+        frozen dataclass compares on every field, which is the property that
+        made this assertion survive the dict's retirement at plan step X-s3.
         """
         with app.app_context():
             filing = db.session.query(FilingStatus).first()
@@ -1315,8 +1316,15 @@ class TestDebtSummary:
                 seed_user["user"].id,
             )
             assert full is not None
-            # The DTI leg is live, not the vacuous None == None.
-            assert full["gross_monthly_income"] == Decimal("6500.00")
+            # The DTI leg is live, not the vacuous None == None.  $78,000 / 26
+            # = $3,000 biweekly -> $3,000 * 26 / 12 = $6,500 monthly, so the
+            # ratio is the PITI total over $6,500 -- which pins the engine
+            # denominator without the summary storing it (plan step X-s3).
+            assert full.dti is not None
+            assert full.dti.ratio == (
+                full.total_monthly_payments / Decimal("6500.00")
+                * Decimal("100")
+            ).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
             assert narrow == full
 
     def test_narrow_producer_none_when_no_loans(
@@ -1349,11 +1357,11 @@ class TestDebtSummary:
             )
             ds = result["debt_summary"]
             assert ds is not None
-            assert ds["total_debt"] == Decimal("1000.00")
+            assert ds.total_debt == Decimal("1000.00")
             # weighted_avg_rate = single loan's rate = 0.05000
-            assert ds["weighted_avg_rate"] == Decimal("0.05000")
-            assert ds["total_monthly_payments"] > Decimal("0.00")
-            assert ds["projected_debt_free_date"] is not None
+            assert ds.weighted_avg_rate == Decimal("0.05000")
+            assert ds.total_monthly_payments > Decimal("0.00")
+            assert ds.payoff_outlook.all_clear_on is not None
 
     def test_debt_summary_multiple_loans_weighted_rate(
         self, app, db, seed_user, seed_periods,
@@ -1393,10 +1401,10 @@ class TestDebtSummary:
                 seed_user["user"].id,
             )
             ds = result["debt_summary"]
-            assert ds["total_debt"] == Decimal("225000.00")
+            assert ds.total_debt == Decimal("225000.00")
             # Hand-calc: (200000*0.065 + 25000*0.049) / 225000
             #          = 14225 / 225000 = 0.063222...
-            assert ds["weighted_avg_rate"] == Decimal("0.06322")
+            assert ds.weighted_avg_rate == Decimal("0.06322")
 
     def test_debt_summary_excludes_paid_off(
         self, app, db, seed_user, seed_periods,
@@ -1445,7 +1453,7 @@ class TestDebtSummary:
             )
             ds = result["debt_summary"]
             # Only the active $2,000 loan contributes.
-            assert ds["total_debt"] == Decimal("2000.00")
+            assert ds.total_debt == Decimal("2000.00")
 
     def test_debt_summary_all_paid_off(
         self, app, db, seed_user, seed_periods,
@@ -1486,10 +1494,10 @@ class TestDebtSummary:
             )
             ds = result["debt_summary"]
             assert ds is not None
-            assert ds["total_debt"] == Decimal("0.00")
-            assert ds["total_monthly_payments"] == Decimal("0.00")
-            assert ds["weighted_avg_rate"] == Decimal("0.00000")
-            assert ds["projected_debt_free_date"] is None
+            assert ds.total_debt == Decimal("0.00")
+            assert ds.total_monthly_payments == Decimal("0.00")
+            assert ds.weighted_avg_rate == Decimal("0.00000")
+            assert ds.payoff_outlook.all_clear_on is None
 
     def test_debt_summary_missing_params(
         self, app, db, seed_user, seed_periods,
@@ -1526,7 +1534,7 @@ class TestDebtSummary:
             ds = result["debt_summary"]
             assert ds is not None
             # Only the parameterized loan contributes.
-            assert ds["total_debt"] == Decimal("1000.00")
+            assert ds.total_debt == Decimal("1000.00")
 
     def test_debt_free_date_is_latest(
         self, app, db, seed_user, seed_periods,
@@ -1562,11 +1570,11 @@ class TestDebtSummary:
             ds = result["debt_summary"]
             # The mortgage payoff is decades away; auto loan is < 2 years.
             # Debt-free date should be the mortgage's later payoff.
-            assert ds["projected_debt_free_date"] is not None
+            assert ds.payoff_outlook.all_clear_on is not None
             # The auto loan payoff is within ~21 months of origination
             # (Jan 2026 + 21 months ~ Oct 2027).  The mortgage payoff is
             # 360 months from Jan 2024 ~ Jan 2054.  Debt-free = mortgage.
-            assert ds["projected_debt_free_date"].year > 2030
+            assert ds.payoff_outlook.all_clear_on.year > 2030
 
     def test_debt_summary_includes_escrow(
         self, app, db, seed_user, seed_periods,
@@ -1607,14 +1615,14 @@ class TestDebtSummary:
             ds = result["debt_summary"]
             # P&I for a $200K, 6.5%, 360-month loan is ~$1,264.
             # With $600/month escrow, total should exceed $1,800.
-            assert ds["total_monthly_payments"] > Decimal("1800.00")
+            assert ds.total_monthly_payments > Decimal("1800.00")
             # Verify escrow is included: total > P&I alone.
             from app.services import amortization_engine as ae
             pi_only = ae.calculate_monthly_payment(
                 Decimal("200000.00"), Decimal("0.06500"),
                 ae.calculate_remaining_months(date(2024, 1, 1), 360),
             )
-            assert ds["total_monthly_payments"] > pi_only
+            assert ds.total_monthly_payments > pi_only
 
 
 class TestDebtPrincipalProgress:
@@ -1662,7 +1670,7 @@ class TestDebtPrincipalProgress:
             assert Decimal("0") <= fraction <= Decimal("1")
             # Reconcile against the debt summary's current balance.
             expected = (
-                (Decimal("1000.00") - summary["total_debt"]) / Decimal("1000.00")
+                (Decimal("1000.00") - summary.total_debt) / Decimal("1000.00")
             )
             assert fraction == expected
 
@@ -1735,7 +1743,7 @@ class TestDebtPrincipalProgress:
                 seed_user["user"].id,
             )
             assert summary is not None
-            assert summary["total_debt"] == Decimal("0.00")
+            assert summary.total_debt == Decimal("0.00")
             # ... but the principal-paid fraction is exactly 1: the paid-off
             # loan keeps its full original principal in both sums.
             fraction = (
@@ -1816,14 +1824,18 @@ class TestDebtPrincipalProgress:
 class TestDTI:
     """Tests for debt-to-income ratio computation.
 
-    DTI = total_monthly_payments / gross_monthly_income * 100.
+    DTI = total_monthly_payments / gross_monthly * 100.
     Gross monthly = gross_biweekly * 26 / 12 (biweekly, not semi-monthly).
     """
 
     def test_dti_no_salary(
         self, app, db, seed_user, seed_periods,
     ):
-        """C-5.12-6: Loans exist but no salary profile yields dti_ratio=None."""
+        """C-5.12-6: Loans exist but no salary profile yields no DTI block.
+
+        The whole block is absent, not three fields set to ``None`` (plan step
+        X-s3): "no income source" is ONE state and is now spelled once.
+        """
         with app.app_context():
             _create_small_loan(seed_user, db.session)
 
@@ -1832,8 +1844,7 @@ class TestDTI:
             )
             ds = result["debt_summary"]
             assert ds is not None
-            assert ds["dti_ratio"] is None
-            assert ds["dti_label"] is None
+            assert ds.dti is None
 
     def test_dti_with_salary(
         self, app, db, seed_user, seed_periods,
@@ -1864,10 +1875,18 @@ class TestDTI:
                 seed_user["user"].id,
             )
             ds = result["debt_summary"]
-            assert ds["dti_ratio"] is not None
-            assert isinstance(ds["dti_ratio"], Decimal)
-            assert ds["dti_label"] == "healthy"
-            assert ds["gross_monthly_income"] == Decimal("6500.00")
+            assert ds.dti is not None
+            assert isinstance(ds.dti.ratio, Decimal)
+            assert ds.dti.label == "healthy"
+            # The $6,500 denominator, pinned through the ratio: $78,000 / 26 =
+            # $3,000 biweekly -> $3,000 * 26 / 12 = $6,500 monthly.  The gross
+            # is not stored on the value object (plan step X-s3 -- an input
+            # already spent, with no app/ reader), so the assertion divides by
+            # it instead of reading it back.
+            assert ds.dti.ratio == (
+                ds.total_monthly_payments / Decimal("6500.00")
+                * Decimal("100")
+            ).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
 
     def test_dti_zero_debt(
         self, app, db, seed_user, seed_periods,
@@ -1912,8 +1931,9 @@ class TestDTI:
                 seed_user["user"].id,
             )
             ds = result["debt_summary"]
-            assert ds["dti_ratio"] == Decimal("0.0")
-            assert ds["dti_label"] == "healthy"
+            assert ds.dti is not None
+            assert ds.dti.ratio == Decimal("0.0")
+            assert ds.dti.label == "healthy"
 
     def test_dti_thresholds(self, app):
         """C-5.12-7 / C-5.12-14 / C-5.12-15: DTI threshold boundary values.
@@ -2001,7 +2021,6 @@ class TestDTIRaiseAware:
         (verified by sibling debt-summary tests) over the new
         denominator, quantized to one decimal place.
         """
-        from decimal import ROUND_HALF_UP  # pylint: disable=import-outside-toplevel
         from app.models.salary_raise import SalaryRaise  # pylint: disable=import-outside-toplevel
         from app.models.ref import RaiseType  # pylint: disable=import-outside-toplevel
 
@@ -2046,20 +2065,20 @@ class TestDTIRaiseAware:
             ds = result["debt_summary"]
 
             # MED-06 / F-032: engine-derived gross_monthly is $8,926.67.
-            # Off-engine pre-fix value was $8,666.67 (raise dropped);
-            # see class docstring for the arithmetic.
-            assert ds["gross_monthly_income"] == Decimal("8926.67")
-
-            # DTI ratio is recomputed against the corrected denominator.
+            # Off-engine pre-fix value was $8,666.67 (raise dropped); see the
+            # class docstring for the arithmetic.  The denominator is pinned by
+            # the ratio identity below rather than read off the value object,
+            # which no longer stores it (plan step X-s3) -- and the identity is
+            # the stronger pin, since the off-engine $8,666.67 would fail it.
             # total_monthly_payments is the engine-derived monthly P&I
             # from _create_small_loan ($1,000 @ 5% for 24mo); we
             # consume it as an input here so the test pins behaviour
             # without re-deriving the amortization engine's output.
             expected_dti = (
-                ds["total_monthly_payments"] / Decimal("8926.67")
+                ds.total_monthly_payments / Decimal("8926.67")
                 * Decimal("100")
             ).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
-            assert ds["dti_ratio"] == expected_dti
+            assert ds.dti.ratio == expected_dti
 
     def test_dti_no_raise_unchanged(
         self, app, db, seed_user, seed_periods,
@@ -2078,7 +2097,6 @@ class TestDTIRaiseAware:
         bites on this salary), so the fix is provably a no-op for the
         majority case where no scheduled raise applies.
         """
-        from decimal import ROUND_HALF_UP  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
             filing = db.session.query(FilingStatus).first()
@@ -2098,13 +2116,14 @@ class TestDTIRaiseAware:
                 seed_user["user"].id,
             )
             ds = result["debt_summary"]
-            assert ds["gross_monthly_income"] == Decimal("6500.00")
-            # DTI ratio matches the pre-fix calculation (no regression).
+            # DTI ratio matches the pre-fix calculation (no regression), and
+            # dividing by $6,500 is what pins the denominator now that the
+            # value object does not store it (plan step X-s3).
             expected_dti = (
-                ds["total_monthly_payments"] / Decimal("6500.00")
+                ds.total_monthly_payments / Decimal("6500.00")
                 * Decimal("100")
             ).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
-            assert ds["dti_ratio"] == expected_dti
+            assert ds.dti.ratio == expected_dti
 
     def test_dti_uses_paycheck_producer_no_flat_factor(self):
         """C26-3: Verification gate that the DTI block does not reach
@@ -2293,13 +2312,18 @@ class TestDTIRaiseAware:
                 seed_user["user"].id,
             )
             ds = result["debt_summary"]
-            # Engine-derived gross_monthly (see class + test docstring).
-            assert ds["gross_monthly_income"] == Decimal("4291.67")
+            # Engine-derived gross_monthly is $4,291.67 (see class + test
+            # docstring); pinned through the ratio, since plan step X-s3
+            # stopped storing the denominator on the value object.
+            assert ds.dti.ratio == (
+                ds.total_monthly_payments / Decimal("4291.67")
+                * Decimal("100")
+            ).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
             # Small loan P&I is well under 36% of $4,291.67, so the
             # band is 'healthy' under the engine denominator.
-            assert ds["dti_label"] == "healthy"
+            assert ds.dti.label == "healthy"
             # And the ratio is strictly less than 36 (boundary check).
-            assert ds["dti_ratio"] < Decimal("36.0")
+            assert ds.dti.ratio < Decimal("36.0")
 
 
 # ── Commit 6: canonical entries-aware producer routing ─────────────
@@ -2921,8 +2945,11 @@ class TestNetWorthSeries:
             # history tail (indices 0-3) + forward (indices 4-9) = 10 points
             assert len(series["periods"]) == 10
             assert len(series["net"]) == 10
-            assert len(series["assets"]) == 10
-            assert len(series["liabilities"]) == 10
+            # The parallel ``assets`` / ``liabilities`` totals were deleted at
+            # plan step X-s1 (one fact under two keys); the bands they summed
+            # carry the same length.
+            assert len(series["composition"]["asset"]) == 10
+            assert len(series["composition"]["liability"]) == 10
             # current period (index 4) sits at position 4: 4 history points
             # precede it (indices 0, 1, 2, 3).
             assert series["current_index"] == 4
@@ -2934,12 +2961,16 @@ class TestNetWorthSeries:
     def test_net_equals_assets_minus_liabilities_each_point(
         self, app, db, seed_user, seed_periods,
     ):
-        """series net[i] == assets[i] - liabilities[i] for every point.
+        """series net[i] == sum(asset bands)[i] - liability band[i], every point.
 
         Holds even with a mortgage whose amortization drives the
-        liability series down period by period: the asset-plus /
+        liability band down period by period: the asset-plus /
         liability-minus split shares one sum with the net reduction.
         """
+        # pylint: disable=import-outside-toplevel
+        from app.services.savings_dashboard_service._net_worth import (
+            _ASSET_BANDS,
+        )
         with app.app_context():
             _add_savings_account(
                 seed_user, seed_periods[0].id, Decimal("4000.00"),
@@ -2954,8 +2985,17 @@ class TestNetWorthSeries:
 
             assert len(series["net"]) > 0
             for i in range(len(series["net"])):
+                # ``net`` is the asset bands less the liability band.  It was
+                # asserted against the parallel ``assets`` / ``liabilities``
+                # totals until plan step X-s1 deleted those -- they were the
+                # same sums under a second name, so this reads them from the
+                # bands the chart actually draws.
                 assert series["net"][i] == (
-                    series["assets"][i] - series["liabilities"][i]
+                    sum(
+                        (series["composition"][b][i] for b in _ASSET_BANDS),
+                        Decimal("0.00"),
+                    )
+                    - series["composition"]["liability"][i]
                 )
 
     def test_series_liability_band_holds_a_negative_balance_magnitude(
@@ -2998,10 +3038,9 @@ class TestNetWorthSeries:
                 seed_user["user"].id
             )["net_worth"]["series"]
 
-            assert len(series["liabilities"]) > 0
-            for i in range(len(series["liabilities"])):
+            assert len(series["composition"]["liability"]) > 0
+            for i in range(len(series["composition"]["liability"])):
                 # abs(-500.00) = 500.00 at every point (the card holds flat).
-                assert series["liabilities"][i] == Decimal("500.00")
                 assert series["composition"]["liability"][i] == Decimal(
                     "500.00",
                 )
@@ -3441,8 +3480,9 @@ class TestNetWorthProducerEdgeCases:
         series = compute_net_worth_series([], [], {})
         assert series["periods"] == []
         assert series["net"] == []
-        assert series["assets"] == []
-        assert series["liabilities"] == []
+        # ``assets`` / ``liabilities`` deleted at plan step X-s1; the key set
+        # is pinned below, so their return would fail here.
+        assert set(series) == {"periods", "net", "composition"}
         # Every composition band is present but empty (no periods to sum).
         assert series["composition"] == {band: [] for band in _COMPOSITION_BANDS}
 
@@ -3610,10 +3650,12 @@ class TestNetWorthComposition:
                 )
                 # asset-side bands sum to the asset total; the liability band
                 # is the liability total; net is their difference.
-                assert asset_side == series["assets"][i]
-                assert comp["liability"][i] == series["liabilities"][i]
+                # The bands ARE the totals: the parallel ``assets`` /
+                # ``liabilities`` lanes this used to reconcile against were
+                # deleted at plan step X-s1 for being that same sum under a
+                # second key, so what remains is the identity itself.
                 assert series["net"][i] == (
-                    series["assets"][i] - series["liabilities"][i]
+                    asset_side - comp["liability"][i]
                 )
 
     def test_bands_place_each_account_in_its_category(
@@ -3945,7 +3987,7 @@ class TestNetWorthHorizon:
             uid = seed_user["user"].id
 
             data = savings_dashboard_service.compute_dashboard_data(uid)
-            payoff = data["debt_summary"]["projected_debt_free_date"]
+            payoff = data["debt_summary"].payoff_outlook.all_clear_on
             horizon = data["net_worth"]["horizon"]
             liability = horizon["composition"]["liability"]
 
@@ -3964,24 +4006,45 @@ class TestNetWorthHorizon:
         The label reads "All loans paid off" as of plan step X-q3 (developer
         ruling on finding N-99): the date behind it covers amortizing loans,
         the only debts with a payoff model, and a revolving balance on the
-        same chart's liability band never reaches zero.  The ``kind`` is the
-        machine key and is deliberately unchanged.
+        same chart's liability band never reaches zero.
+
+        **The label is now the flag's IDENTITY** (plan step X-s1, ruling
+        R-BC): the machine ``kind`` beside it reached no consumer -- the
+        serializer copied it into the payload and the client's flag plugin
+        never read it -- so it is gone from both ends, and this asserts the
+        milestone's whole key set here rather than only at the top level.  The
+        expected label is imported from the producer, not re-typed: X-q3
+        renamed this very string, and a hand-typed copy would have gone stale
+        without failing.
         """
+        # pylint: disable=import-outside-toplevel
+        from app.services.savings_dashboard_service._horizon import (
+            _DEBT_FREE_MILESTONE_LABEL,
+        )
         with app.app_context():
             periods = seed_periods_today
             _add_mortgage_account(seed_user, periods[0].id, Decimal("240000.00"))
             uid = seed_user["user"].id
 
             data = savings_dashboard_service.compute_dashboard_data(uid)
-            payoff = data["debt_summary"]["projected_debt_free_date"]
+            payoff = data["debt_summary"].payoff_outlook.all_clear_on
             horizon = data["net_worth"]["horizon"]
 
             debt_free = [
-                m for m in horizon["milestones"] if m["kind"] == "debt_free"
+                m for m in horizon["milestones"]
+                if m["label"] == _DEBT_FREE_MILESTONE_LABEL
             ]
             assert len(debt_free) == 1
             assert debt_free[0]["date"] == payoff
-            assert debt_free[0]["label"] == "All loans paid off"
+            # The wording itself, pinned ONCE (this is the only place it is
+            # spelled out); every other consumer reads the constant.
+            assert _DEBT_FREE_MILESTONE_LABEL == "All loans paid off"
+            # The milestone's complete key set -- the producer's half of the
+            # nested contract whose route half is
+            # ``test_savings.TestHorizonSerialization
+            # .test_every_published_key_is_read``.
+            for milestone in horizon["milestones"]:
+                assert set(milestone) == {"date", "label"}
 
     def test_net_crossing_milestone(
         self, app, db, seed_user, seed_periods_today,
@@ -4006,8 +4069,7 @@ class TestNetWorthHorizon:
             assert horizon["net"][0] < Decimal("500000")
             assert horizon["net"][-1] >= Decimal("500000")
             crossings = [
-                m for m in horizon["milestones"]
-                if m["kind"] == "net_crossing" and m["label"] == "Net $500k"
+                m for m in horizon["milestones"] if m["label"] == "Net $500k"
             ]
             assert len(crossings) == 1
 
@@ -4562,9 +4624,65 @@ class TestTypeDriftedLoanParamsRow:
             horizon = data["net_worth"]["horizon"]
             assert horizon is not None
             assert not [
-                m for m in horizon["milestones"]
-                if m["kind"] == "payoff" and "Drifted" in m["label"]
+                m for m in horizon["milestones"] if "Drifted" in m["label"]
             ]
+
+
+class TestNoBaselineDegradesEveryKindTheSameWay:
+    """A user with no baseline scenario gets blank balances, never an exception.
+
+    Plan step X-s2 (ruling R-BF, finding N-105).  The balance seam raises on a
+    ``None`` scenario by contract and requires its callers to guard BEFORE
+    calling (``balance_at._context.require_scenario``: "callers that
+    legitimately handle the no-baseline case keep their own guard ... this is
+    the defensive backstop").  This build has two doors into the seam and
+    guarded only one: the non-loan map builder returned ``{}`` while the loan
+    arm four lines later reached ``require_scenario`` through ``loan_figures``
+    -> ``memoized_payoff`` and raised, so ONE account kind 500'd the whole
+    ``/savings`` page in a state the other four rendered.
+
+    Unreachable in production -- ``auth_service.register_user`` writes a
+    baseline at sign-up and no route deletes or un-baselines one -- which is
+    precisely why it needed a test: nothing else would ever have executed it.
+    """
+
+    def test_a_loan_degrades_like_every_other_kind(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """No baseline: the loan tile renders blank instead of raising.
+
+        The discriminating fixture is a loan BESIDE the seeded cash account:
+        without the loan the build never opens the second door, so any
+        implementation passes.  Both tiles must come back with no balance --
+        which is what "one rule, both doors" means here -- and the loan must
+        carry neither ``loan_params`` nor ``loan_figures``, since the seam that
+        would have produced its figures was never asked.
+        """
+        with app.app_context():
+            loan = _create_small_loan(seed_user, db.session, name="No Baseline")
+            scenario = db.session.get(Scenario, seed_user["scenario"].id)
+            scenario.is_baseline = False
+            db.session.commit()
+            loan_id, cash_id = loan.id, seed_user["account"].id
+
+            data = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+
+            by_id = {ad["account"].id: ad for ad in data["account_data"]}
+            # The loan: no seam read happened, so no figures and no balance.
+            assert "loan_figures" not in by_id[loan_id]
+            assert "loan_params" not in by_id[loan_id]
+            assert by_id[loan_id]["current_balance"] is None
+            assert by_id[loan_id]["projected"] == {}
+            # The cash account: the arm that was already guarded, unchanged --
+            # the assertion that makes this "the same way" and not merely "not
+            # an exception".
+            assert by_id[cash_id]["current_balance"] is None
+            assert by_id[cash_id]["projected"] == {}
+            # And with no loan figures anywhere, the debt card has no loans to
+            # summarise rather than a half-built one.
+            assert data["debt_summary"] is None
 
 
 class TestUnclearingDebtHasNoDebtFreeDate:
@@ -4620,12 +4738,12 @@ class TestUnclearingDebtHasNoDebtFreeDate:
             )
             summary = data["debt_summary"]
             assert summary is not None
-            assert summary["total_debt"] > Decimal("0.00")
-            assert summary["projected_debt_free_date"] is None, (
+            assert summary.total_debt > Decimal("0.00")
+            assert summary.payoff_outlook.all_clear_on is None, (
                 "the cockpit reports a debt-free date while a loan on the same "
                 "page never pays off"
             )
-            assert summary["has_unclearing_debt"] is True
+            assert summary.payoff_outlook.never_clears is True
 
     def test_a_clearing_loan_beside_it_does_not_supply_the_date(
         self, app, db, seed_user, seed_periods,
@@ -4652,7 +4770,7 @@ class TestUnclearingDebtHasNoDebtFreeDate:
             data = savings_dashboard_service.compute_dashboard_data(
                 seed_user["user"].id,
             )
-            assert data["debt_summary"]["projected_debt_free_date"] is None
+            assert data["debt_summary"].payoff_outlook.all_clear_on is None
 
     def test_the_horizon_is_not_loan_free(
         self, app, db, seed_user, seed_periods,
@@ -4792,6 +4910,7 @@ class TestARetiredLoanHasNoDebtLine:
             # Pylint: ``import-outside-toplevel`` -- the private producer under
             # test, imported where used.
             from app.services.savings_dashboard_service._horizon import (  # pylint: disable=import-outside-toplevel
+                _DEBT_FREE_MILESTONE_LABEL,
                 _resolve_horizon_domain,
             )
             retired, clearing = self._two_loans(
@@ -4820,8 +4939,8 @@ class TestARetiredLoanHasNoDebtLine:
 
             horizon = data["net_worth"]["horizon"]
             assert {
-                (m["kind"], m["date"]) for m in horizon["milestones"]
-            } >= {("debt_free", self._CLEARING_PAYOFF)}
+                (m["label"], m["date"]) for m in horizon["milestones"]
+            } >= {(_DEBT_FREE_MILESTONE_LABEL, self._CLEARING_PAYOFF)}
 
             # And the caption on the same page agrees, which is the point:
             # the debt summary always read the real date here (it selects on
@@ -4830,7 +4949,7 @@ class TestARetiredLoanHasNoDebtLine:
             # (``_debt_line.loan_payoff_outlook``), so this asserts an
             # agreement that is now structural; the shape that proves the
             # merge is ``TestTheDebtFreeDateIsOneDerivation``.
-            assert data["debt_summary"]["projected_debt_free_date"] == (
+            assert data["debt_summary"].payoff_outlook.all_clear_on == (
                 self._CLEARING_PAYOFF
             )
 
@@ -5025,6 +5144,7 @@ class TestTheDebtFreeDateIsOneDerivation:
                 loan_payoff_outlook,
             )
             from app.services.savings_dashboard_service._horizon import (  # pylint: disable=import-outside-toplevel
+                _DEBT_FREE_MILESTONE_LABEL,
                 _resolve_horizon_domain,
             )
             self._car_now_and_mortgage_later(
@@ -5056,17 +5176,17 @@ class TestTheDebtFreeDateIsOneDerivation:
             assert loan_payoff_outlook(account_data).all_clear_on == (
                 self._MORTGAGE_PAYOFF
             )
-            assert data["debt_summary"]["projected_debt_free_date"] == (
+            assert data["debt_summary"].payoff_outlook.all_clear_on == (
                 self._MORTGAGE_PAYOFF
             )
             assert _resolve_horizon_domain(
                 account_data, date(2026, 3, 20),
             ) == (date(2057, 12, 31), self._MORTGAGE_PAYOFF)
             assert {
-                (m["kind"], m["date"]) for m in data["net_worth"]["horizon"][
+                (m["label"], m["date"]) for m in data["net_worth"]["horizon"][
                     "milestones"
                 ]
-            } >= {("debt_free", self._MORTGAGE_PAYOFF)}
+            } >= {(_DEBT_FREE_MILESTONE_LABEL, self._MORTGAGE_PAYOFF)}
 
             # The MONEY figures keep the owed-today set: the mortgage is not
             # borrowed, so it owes nothing and pays nothing this month.  Pinned
@@ -5074,8 +5194,8 @@ class TestTheDebtFreeDateIsOneDerivation:
             # settled payment at the frozen clock, so the fold is still its
             # $12,000.00 opening anchor, and its level payment is
             # 12000 * r(1+r)^24 / ((1+r)^24 - 1) at r = 0.05/12 = $526.46.
-            assert data["debt_summary"]["total_debt"] == Decimal("12000.00")
-            assert data["debt_summary"]["total_monthly_payments"] == (
+            assert data["debt_summary"].total_debt == Decimal("12000.00")
+            assert data["debt_summary"].total_monthly_payments == (
                 Decimal("526.46")
             )
 
@@ -5224,14 +5344,14 @@ class TestTheDebtFreeDateIsOneDerivation:
 
             # The card is NOT in the payoff derivation and does NOT poison it
             # -- that is the ruling, not an accident.
-            assert summary["projected_debt_free_date"] == (
+            assert summary.payoff_outlook.all_clear_on == (
                 self._CAR_PAYOFF
             )
-            assert summary["has_unclearing_debt"] is False
+            assert summary.payoff_outlook.never_clears is False
             # And it is not in the loan money aggregates either.
-            assert summary["total_debt"] == Decimal("12000.00")
+            assert summary.total_debt == Decimal("12000.00")
             # It IS named, at its owed magnitude.
-            assert summary["revolving_debt"] == Decimal("500.00")
+            assert summary.revolving_debt == Decimal("500.00")
 
     def test_the_narrow_producer_reports_the_same_revolving_debt(
         self, app, db, seed_user, seed_periods,
@@ -5272,8 +5392,8 @@ class TestTheDebtFreeDateIsOneDerivation:
             )["debt_summary"]
             narrow = savings_dashboard_service.compute_debt_summary(user_id)
 
-            assert narrow["revolving_debt"] == Decimal("500.00")
-            assert narrow["revolving_debt"] == full["revolving_debt"]
+            assert narrow.revolving_debt == Decimal("500.00")
+            assert narrow.revolving_debt == full.revolving_debt
             # And every other key still agrees, which is the promise itself.
             assert narrow == full
 

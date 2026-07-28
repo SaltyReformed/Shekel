@@ -263,20 +263,40 @@
     {# X-q3 / finding N-99: the date covers the debts that HAVE a payoff model
        -- amortizing loans -- so it is captioned as what it measures.  A
        revolving balance has no forward model (the seam holds it flat), so it
-       can never reach zero and is named separately rather than implied away. #}
-    {% if debt_summary.projected_debt_free_date %}
-    <span>Loans paid off <span class="font-mono">{{ debt_summary.projected_debt_free_date.strftime('%b %Y') }}</span></span>
-    {% elif debt_summary.has_unclearing_debt %}
+       can never reach zero and is named separately rather than implied away.
+
+       X-s3 / ruling R-BE: all THREE states of the seam's payoff outlook are
+       rendered here, read off the value object the summary carries whole.  The
+       third -- every loan retired -- used to fall through this chain in
+       silence, because the summary copied the outlook's two stored fields and
+       dropped its derived ``is_loan_free`` (finding N-104). #}
+    {% if debt_summary.payoff_outlook.all_clear_on is not none %}
+    <span>Loans paid off <span class="font-mono">{{ debt_summary.payoff_outlook.all_clear_on.strftime('%b %Y') }}</span></span>
+    {% elif debt_summary.payoff_outlook.never_clears %}
     {# C8d/C8f: a loan that never clears at its current payment has no payoff
        date, and saying so beats omitting the line -- the same treatment its own
        detail page gives the condition. #}
     <span class="text-warning">No loan payoff date at current payments</span>
+    {% elif debt_summary.payoff_outlook.is_loan_free %}
+    {# The congratulation, in the same words the Horizon chart's flag uses
+       (ruling R-AX), so the app says one thing one way.  Reachable only for a
+       user who HAS loan accounts and whose every loan is retired: with no
+       loans at all the summary is None and this whole footer is absent. #}
+    <span class="text-success">All loans paid off</span>
     {% endif %}
     {% if debt_summary.revolving_debt > 0 %}
     <span class="text-muted">excludes <span class="font-mono">{{ money(debt_summary.revolving_debt) }}</span> revolving</span>
     {% endif %}
-    {% if debt_summary.dti_ratio is not none %}
-    <span>DTI <span class="font-mono">{{ debt_summary.dti_ratio }}%</span> {{ dti_badge(debt_summary.dti_label) }}</span>
+    {# ONE predicate for the DTI block (X-s3 / finding N-106): the ratio and
+       the band label are populated together or absent together, so they are
+       one nullable value object rather than parallel keys.  ``is not none``
+       and not truthiness, per the coding standard -- and MEASURED here: a
+       mistyped attribute renders as Jinja ``Undefined``, which is FALSY, so
+       ``{% if dti %}`` drops the whole block on a 200 while ``is not none``
+       passes the guard and raises on the read below.  Silent beats loud
+       nowhere in this app. #}
+    {% if debt_summary.dti is not none %}
+    <span>DTI <span class="font-mono">{{ debt_summary.dti.ratio }}%</span> {{ dti_badge(debt_summary.dti.label) }}</span>
     {% else %}
     <span>DTI N/A (no salary profile)</span>
     {% endif %}

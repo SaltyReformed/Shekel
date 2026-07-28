@@ -66,10 +66,12 @@ class LoanPayoffOutlook:
     rather than a nullable date.  A bare ``None`` collapses the last two, and
     a consumer that cannot tell them apart either captions a borrower as
     debt-free or stays silent where it owes them a warning: the cockpit renders
-    all three (`_cockpit.html:267-274`, a date, a warning, or nothing -- the
-    line numbers re-pinned at plan step X-q2, X-q3's caption having moved them)
-    and the dashboard debt track renders only the date, which is a display
-    decision that this value at least makes visible rather than structural.
+    all three (`_cockpit.html:273-286` -- a date, a warning, or "All loans paid
+    off"; the line numbers re-pinned at plan step X-s3, whose ruling R-BE gave
+    the third state its caption, X-q2 and X-q3 having re-pinned them before
+    that) and the dashboard debt track renders only the date, which is a
+    display decision that this value at least makes visible rather than
+    structural.
 
     **The $900,000 incident is a DIFFERENT defect and is not this one** -- it
     was skip-and-max, and :func:`loan_payoff_outlook` is where it is refused.

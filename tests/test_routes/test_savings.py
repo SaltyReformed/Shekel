@@ -3159,6 +3159,62 @@ class TestDebtSummaryDisplay:
             assert "$500.00" in html
             assert "revolving" in html
 
+    def test_a_borrower_whose_loans_are_all_retired_is_told_so(
+        self, app, auth_client, seed_user, seed_periods, db,
+    ):
+        """The footer's THIRD state renders: "All loans paid off".
+
+        Plan step X-s3, ruling R-BE, finding N-104.  The seam's
+        :class:`~app.services.savings_dashboard_service.LoanPayoffOutlook` has
+        three states and the footer rendered two: a date, or "no payoff date at
+        current payments".  The third -- every loan the borrower holds is
+        retired -- fell through the chain in SILENCE, because the debt summary
+        copied the outlook's two stored fields and dropped its derived
+        ``is_loan_free``, so the template had nothing to branch on.  The
+        summary now carries the outlook whole and this is the state's first
+        reader anywhere in ``app/``.
+
+        The loan is retired the way the app's own true-up UI retires one -- a
+        recorded balance true-up to ``$0.00`` with no payment rows -- which is
+        the shape that reads ``is_retired`` without ``is_paid_off`` (finding
+        B-16's fixture, reused deliberately).  The two states this must NOT be
+        confused with are asserted absent: a payoff DATE, and the unclearing
+        warning.
+        """
+        # pylint: disable=import-outside-toplevel
+        from tests._test_helpers import insert_trueup_event, loan_params_for
+
+        with app.app_context():
+            loan = create_loan_account(
+                seed_user, db.session, name="Only Loan",
+                principal=Decimal("12000.00"), rate=Decimal("0.05000"),
+                term=24, origination_date=date(2026, 1, 1),
+                anchor_period=seed_periods[0],
+            )
+            insert_trueup_event(
+                loan_params_for(db.session, loan.id), Decimal("0.00"),
+            )
+            db.session.commit()
+
+            # The precondition that makes the fixture discriminating: the loan
+            # owes nothing and is NOT badged, so it is retired without being
+            # "paid off" in the confirmed-payment sense.
+            ctx = BalanceContext.build(seed_user["user"].id)
+            figures = balance_at.loan_figures(loan, ctx)
+            assert figures.is_retired is True
+            assert figures.is_paid_off is False
+
+            resp = auth_client.get("/savings")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            # The footer is present at all (this user HAS a loan account), and
+            # it renders the congratulation rather than nothing.
+            assert "Avg rate" in html
+            assert "All loans paid off" in html
+            # And not either of the other two states.
+            assert "Loans paid off " not in html
+            assert "No loan payoff date at current payments" not in html
+
     def test_the_loan_cell_renders_its_rate_payment_and_payoff(
         self, app, auth_client, seed_user, seed_periods, db,
     ):
@@ -3372,23 +3428,22 @@ class TestDashboardNetWorthContext:
             )
             chart = json.loads(context["net_worth_chart_json"])
 
-            # The prior keys stay (so the current chart script keeps working)
-            # plus the two additive P-AC1 fields.
+            # The payload carries only what net_worth_cockpit.js reads (plan
+            # step X-s1, finding N-104): the top-level ``assets`` /
+            # ``liabilities`` totals it used to ship reach no consumer, since
+            # ``selectRange`` never names them and the stacked bands already
+            # ARE those totals -- asserted below against the PRODUCER series,
+            # which keeps both keys for the cross-page equality oracle.
             assert set(chart.keys()) == {
-                "labels", "net", "assets", "liabilities", "current_index",
-                "composition", "horizon",
+                "labels", "net", "current_index", "composition", "horizon",
             }
             series = context["net_worth"]["series"]
             n = len(series["periods"])
             assert n > 0
             assert len(chart["labels"]) == n
             assert len(chart["net"]) == n
-            assert len(chart["assets"]) == n
-            assert len(chart["liabilities"]) == n
             # float boundary: every value is a float, not a Decimal/str.
             assert all(isinstance(v, float) for v in chart["net"])
-            assert all(isinstance(v, float) for v in chart["assets"])
-            assert all(isinstance(v, float) for v in chart["liabilities"])
             # Flat $5,000 net worth at every trend point -> 5000.0.
             assert chart["net"][0] == 5000.0
             # current_index (the solid/dashed boundary) passes straight
@@ -3397,8 +3452,12 @@ class TestDashboardNetWorthContext:
             assert isinstance(chart["current_index"], int)
             assert 0 <= chart["current_index"] <= n
 
-            # The 2-year composition: each band a float list of length n, the
-            # asset-side bands summing to the assets total at every point.
+            # The 2-year composition: each band a float list of length n, and
+            # the bands reconciling to ``net`` at every point.  The payload's
+            # ``assets`` / ``liabilities`` totals were deleted at X-s1, and so
+            # were the producer's -- they were the same per-period sums under a
+            # second key -- so the reconciliation is against ``net``, the one
+            # total that survives because the client draws it.
             comp = chart["composition"]
             asset_bands = ("asset", "retirement", "investment", "other")
             for band in (*asset_bands, "liability"):
@@ -3406,8 +3465,8 @@ class TestDashboardNetWorthContext:
                 assert all(isinstance(v, float) for v in comp[band])
             for i in range(n):
                 asset_side = sum(comp[band][i] for band in asset_bands)
-                assert asset_side == chart["assets"][i]
-                assert comp["liability"][i] == chart["liabilities"][i]
+                assert asset_side - comp["liability"][i] == chart["net"][i]
+                assert chart["net"][i] == float(series["net"][i])
 
             # The horizon range: a float net series that starts at the hero
             # ($5,000), plus composition bands + milestone list.
@@ -3438,8 +3497,10 @@ class TestHorizonSerialization:
 
     ``_serialize_horizon`` is the float boundary for the horizon range: it
     maps the producer's ``Decimal`` band series + net trajectory to floats,
-    the annual dates to ``%b %Y`` labels, and each milestone's ``date`` to an
-    ISO string.
+    the annual dates to ``%b %Y`` labels, and each milestone to its chip
+    ``label`` plus the fractional axis position ``x`` its ``date`` is spent
+    computing (plan step X-s1 -- the ISO ``date`` and the machine ``kind`` this
+    used to carry reached no client reader).
     """
 
     def test_maps_decimals_dates_and_milestones(self):
@@ -3455,8 +3516,7 @@ class TestHorizonSerialization:
                 "liability": [Decimal("192941.56"), Decimal("190000.00")],
             },
             "milestones": [
-                {"date": date(2048, 12, 1), "label": "Debt-free",
-                 "kind": "debt_free"},
+                {"date": date(2048, 12, 1), "label": "Debt-free"},
             ],
             "current_index": 0,
         }
@@ -3470,15 +3530,22 @@ class TestHorizonSerialization:
         assert all(
             isinstance(v, float) for v in out["composition"]["liability"]
         )
-        # The milestone serializes its ISO date, label, and kind, plus a
-        # fractional axis position ``x``.  Its date (2048) is beyond the two
-        # sample dates (ending 2026-12-31), so ``x`` clamps to the last
-        # index (1.0) -- the flag pins to the right edge.
-        assert out["milestones"] == [
-            {"date": "2048-12-01", "label": "Debt-free", "kind": "debt_free",
-             "x": 1.0},
-        ]
+        # The milestone serializes its chip ``label`` plus a fractional axis
+        # position ``x``, and nothing else (plan step X-s1): the producer's
+        # ``date`` is SPENT here computing ``x`` and the client never reads a
+        # date.  This one (2048) is beyond the two sample dates (ending
+        # 2026-12-31), so ``x`` clamps to the last index (1.0) -- the flag pins
+        # to the right edge.
+        assert out["milestones"] == [{"label": "Debt-free", "x": 1.0}]
         assert out["current_index"] == 0
+        # The serializer's OWN key set, pinned.  The mutation guard beside this
+        # proves every key the PRODUCER publishes is consumed; it says nothing
+        # about a key the serializer invents, so re-adding ``horizon_end`` --
+        # the exact key plan step X-q2 deleted -- would otherwise pass every
+        # test in this class.  Found by X-s's adversarial review.
+        assert set(out) == {
+            "labels", "net", "composition", "milestones", "current_index",
+        }
 
     def test_none_passes_through(self):
         """A ``None`` horizon (no pay periods) serializes to ``None``."""
@@ -3499,14 +3566,45 @@ class TestHorizonSerialization:
         history, since ``horizon_end`` and ``is_loan_free`` shipped for months
         as producer outputs no serializer, template or script ever named.
 
-        The producer's half (the key set itself) is
-        ``test_savings_dashboard_service.TestNetWorthHorizon
-        .test_publishes_only_the_keys_the_page_reads``.
+        **It descends into the MILESTONE dicts too** (plan step X-s1, finding
+        N-104).  Stopping at the top level is how the milestones' machine
+        ``kind`` survived X-q2's certification: a dead key riding inside a live
+        one, invisible to a guard that only removes top-level names.
+
+        **The fixture carries BOTH milestone builders' output, and that took
+        two corrections** (X-s's adversarial review).  A loan-free fixture
+        publishes an EMPTY milestone list, so the descent would iterate nothing
+        and pass while proving nothing -- hence the loan, and hence the count
+        asserted before the loop rather than trusted (finding N-69's shape).
+        With only the loan the list holds STRUCTURAL flags alone, so a key that
+        just ``_net_crossing_milestones`` emits was still invisible.  The loan
+        is therefore MORTGAGE-shaped (360 months): the horizon runs to its
+        payoff plus a year, which is the axis length a ``$500k`` crossing needs
+        room on -- a 24-month loan gives a ~3-year window the 401(k) cannot
+        grow across, measured.  Both counts are asserted below for the same
+        reason the first one is.
+
+        The producer's half is two tests, because the two key sets are pinned
+        where each has a non-vacuous fixture:
+        ``TestNetWorthHorizon.test_publishes_only_the_keys_the_page_reads``
+        pins the TOP-LEVEL set (its loan-free fixture publishes no milestone at
+        all, so the nested set cannot be asserted there), and
+        ``TestNetWorthHorizon.test_debt_free_milestone_at_payoff`` pins the
+        MILESTONE set over a fixture that plants one.
         """
         # pylint: disable=import-outside-toplevel
         from app.routes.savings import _serialize_horizon
         from app.services import savings_dashboard_service
+        from tests._test_helpers import make_investment_account
         with app.app_context():
+            _create_small_loan(
+                seed_user, name="Mortgage",
+                principal=Decimal("200000.00"), term=360,
+            )
+            make_investment_account(
+                seed_user, db.session, seed_periods[0], Decimal("300000.00"),
+            )
+            db.session.commit()
             horizon = savings_dashboard_service.compute_dashboard_data(
                 seed_user["user"].id,
             )["net_worth"]["horizon"]
@@ -3525,6 +3623,47 @@ class TestHorizonSerialization:
                 # The REMOVED key must be the one that raised: a bare
                 # ``raises(KeyError)`` would accept an incidental miss from
                 # some later refactor and go on reading as proof.
+                assert excinfo.value.args[0] == key
+
+            # The nested arm, on the same rule.  The loan's payoff is in the
+            # future, so the producer plants at least the debt-free flag.
+            assert horizon["milestones"], (
+                "the fixture published no milestones, so the nested arm below "
+                "would pass without removing anything"
+            )
+            # BOTH builders contributed, so the union below is a union of two
+            # key sets and not one restated.  Told apart by what only a
+            # crossing carries -- a "Net $" label -- since the machine ``kind``
+            # that used to distinguish them is what X-s1 deleted.
+            crossings = [
+                m for m in horizon["milestones"]
+                if m["label"].startswith("Net $")
+            ]
+            assert crossings, (
+                "the fixture published no net-crossing milestone, so a key "
+                "only that builder emits would be invisible below"
+            )
+            assert len(crossings) < len(horizon["milestones"]), (
+                "the fixture published no STRUCTURAL milestone beside them"
+            )
+            # The UNION of every milestone's keys, not the first one's: the
+            # structural flags and the net-worth crossings are built by two
+            # different functions, so a key only one of them emits is invisible
+            # to a probe that reads ``milestones[0]`` -- and the structural flag
+            # sorts first here.  Found by X-s's adversarial review.
+            milestone_keys = set()
+            for milestone in horizon["milestones"]:
+                milestone_keys |= set(milestone)
+            for key in sorted(milestone_keys):
+                stripped = [
+                    {
+                        name: value for name, value in milestone.items()
+                        if name != key
+                    }
+                    for milestone in horizon["milestones"]
+                ]
+                with pytest.raises(KeyError) as excinfo:
+                    _serialize_horizon({**horizon, "milestones": stripped})
                 assert excinfo.value.args[0] == key
 
 

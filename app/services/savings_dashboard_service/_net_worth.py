@@ -435,14 +435,21 @@ def compute_net_worth_series(
 
     Reads each trend period's id out of the pre-built dense maps (built
     over ALL periods by :func:`build_account_net_worth_maps`) and produces
-    parallel ``net`` / ``assets`` / ``liabilities`` series, the per-category
-    ``composition`` split (P-AC1 Loop B P1), and the period descriptors the
-    route serializes.  ``net[i]`` equals ``assets[i] - liabilities[i]`` for
-    every ``i`` by construction, and ``assets[i]`` equals the sum of the
-    asset-side ``composition`` bands while ``liabilities[i]`` equals the
-    ``composition["liability"]`` band -- the split and the totals share one
-    per-period sum (:func:`_sum_composition_at_period`), so they cannot
-    drift.
+    the ``net`` series, the per-category ``composition`` split (P-AC1 Loop B
+    P1), and the period descriptors the route serializes.
+
+    **It published ``assets`` and ``liabilities`` as well, and plan step X-s1
+    deleted them** (finding N-104's residue).  They were one fact under two
+    keys: the split and the totals came from ONE per-period sum
+    (:func:`_sum_composition_at_period`), so ``assets[i]`` was by construction
+    the sum of the asset-side ``composition`` bands and ``liabilities[i]`` was
+    the ``composition["liability"]`` band.  The chart payload carried both
+    across to a client that reads neither, and once X-s1 stopped copying them
+    the producer keys had ZERO ``app/`` readers (AST-verified) -- the shape
+    rulings R-AZ ("one fact under two keys") and R-BA ("dead surface kept
+    honest by its own tests") each deleted once already.  A consumer that wants
+    the totals sums the bands, which is what every reader now does; ``net[i]``
+    still equals that difference by construction.
 
     The ``trend_periods`` window (from :func:`build_trend_periods`) is the
     honest history tail followed by the full forward projection; this
@@ -466,17 +473,14 @@ def compute_net_worth_series(
             driving the per-category ``composition`` split.
 
     Returns:
-        dict with ``periods`` (list of ``{end_date, period_index}``),
-        ``net``, ``assets``, ``liabilities`` (parallel ``Decimal`` lists,
-        one entry per trend period), and ``composition`` (a
-        ``{band: [Decimal, ...]}`` map over :data:`_COMPOSITION_BANDS`, each
+        dict with ``periods`` (list of ``{end_date, period_index}``), ``net``
+        (a ``Decimal`` list, one entry per trend period), and ``composition``
+        (a ``{band: [Decimal, ...]}`` map over :data:`_COMPOSITION_BANDS`, each
         band's series parallel to ``periods``).  The orchestrator adds
         ``current_index`` (the solid/dashed boundary) to this dict.
     """
     periods: list[dict] = []
     net: list[Decimal] = []
-    assets: list[Decimal] = []
-    liabilities: list[Decimal] = []
     composition: dict[str, list[Decimal]] = {
         band: [] for band in _COMPOSITION_BANDS
     }
@@ -492,16 +496,12 @@ def compute_net_worth_series(
             "period_index": period.period_index,
         })
         net.append(period_assets - period_liabilities)
-        assets.append(period_assets)
-        liabilities.append(period_liabilities)
         for band in _COMPOSITION_BANDS:
             composition[band].append(sums[band])
 
     return {
         "periods": periods,
         "net": net,
-        "assets": assets,
-        "liabilities": liabilities,
         "composition": composition,
     }
 

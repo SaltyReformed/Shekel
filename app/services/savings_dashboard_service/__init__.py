@@ -21,7 +21,7 @@ Module map:
 
 * :mod:`app.services.savings_dashboard_service._types` -- the
   request-scoped / per-account bundle dataclasses (``_DashboardCoreData``,
-  ``_ProjectionContext``, ``_LoanAccountResult``).
+  ``_ProjectionContext``, ``_LoanAccountResult``, ``_SeamBatches``).
 * :mod:`app.services.savings_dashboard_service._data` -- batch data
   loaders (accounts / scenario / periods / transactions, the
   account-type parameter maps, archived accounts).
@@ -64,6 +64,20 @@ Module map:
 # ``from app.services import savings_dashboard_service`` (notably
 # ``app/routes/savings.py`` and ``dashboard_service``) resolve
 # them without an edit.
+#
+# ``DebtSummary`` is re-exported for the same reason (plan step X-s3): it
+# crosses this package's boundary -- ``dashboard_pulse_service`` composes one
+# into its debt track and the dashboard route annotates it -- so naming it here
+# is what keeps those two consumers off ``_metrics`` directly, which the W9910
+# package-privacy checker forbids.
+#
+# ONLY that one.  The first draft of this block also exported ``DtiMetrics``
+# and ``LoanPayoffOutlook``, and X-s3's adversarial review found neither had a
+# single importer anywhere -- their in-package users take them from
+# ``_debt_line`` / ``_metrics`` directly.  Exporting a name against a consumer
+# that might one day want it is the defect this very step deletes elsewhere;
+# a future outside consumer adds its own line here, with a caller to point at.
+from app.services.savings_dashboard_service._metrics import DebtSummary
 from app.services.savings_dashboard_service._orchestrator import (
     compute_account_balance_cell,
     compute_dashboard_data,
@@ -73,6 +87,7 @@ from app.services.savings_dashboard_service._orchestrator import (
 )
 
 __all__ = [
+    "DebtSummary",
     "compute_account_balance_cell",
     "compute_dashboard_data",
     "compute_debt_principal_progress",

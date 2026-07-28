@@ -29,9 +29,11 @@ extracting cohesive dashboard concerns into their own modules.
 Pure aggregation service -- no Flask imports, no database writes.
 """
 
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from itertools import groupby
+from typing import TYPE_CHECKING
 
 from app.extensions import db
 from app.models.account import Account
@@ -52,7 +54,47 @@ from app.services.entry_service import compute_remaining
 from app.utils.dates import to_display_date
 from app.utils.money import round_money
 
+if TYPE_CHECKING:
+    from app.services.savings_dashboard_service import DebtSummary
+
 _ZERO = Decimal("0")
+
+
+@dataclass(frozen=True)
+class DebtTrack:
+    """The dashboard debt track: the debt summary plus its rail position.
+
+    A COMPOSITION rather than an extended copy (plan step X-s3, ruling R-BD,
+    finding N-106).  This producer used to ``dict(debt)`` the summary and add a
+    key to the copy, and the dashboard route then mutated THAT to add a
+    presentation percent -- so the object ``dashboard/_tracks.html`` reads was
+    assembled across three modules and described in none of them (its contract
+    lived in a comment at the top of the template).  Carrying the summary whole
+    is the same rule ``DebtSummary`` itself applies to the payoff outlook: a
+    field the summary grows arrives here by construction.
+
+    The ``DebtSummary`` annotation is a ``TYPE_CHECKING`` forward reference on
+    purpose: :func:`compute_tracks_section` imports
+    ``savings_dashboard_service`` INSIDE the function because that package
+    pulls the heaviest service import chain here (+27 modules, measured), and
+    naming the type at module scope would load it on every import of this
+    module and undo that.
+
+    Attributes:
+        summary: The
+            :class:`~app.services.savings_dashboard_service.DebtSummary` --
+            the same value ``/savings`` renders, so the two screens cannot
+            drift onto different figures.
+        principal_paid_fraction: The honest all-loans-ever principal-paid
+            fraction in ``[0, 1]``, or ``None`` when no per-loan original
+            principal is available (the rail then renders no marker).  It is a
+            FRACTION here, not a percent: the 0-100 scaling and the
+            ``Decimal -> float`` cast are presentation and happen at the
+            route's serialization boundary.
+    """
+
+    summary: "DebtSummary"
+    principal_paid_fraction: Decimal | None
 
 # The projected end-balance chart shows the current period plus the next
 # 12 (~6 months at biweekly cadence -- the developer's normal grid
@@ -788,12 +830,12 @@ def compute_tracks_section(user_id: int) -> dict:
       * ``goals`` -- one dict per active goal, reshaped from
         ``savings_dashboard_service.compute_goal_progress`` into the metro
         track contract (see :func:`_track_goal_datum`).
-      * ``debt`` -- the debt summary from
-        ``savings_dashboard_service.compute_debt_summary`` with an added
-        ``principal_paid_fraction`` (the honest principal-paid fraction,
-        or ``None`` when no per-loan original principal is available; the
-        UI renders no positional marker in that case).  ``None`` when the
-        user has no loan accounts.
+      * ``debt`` -- a :class:`DebtTrack`: the
+        ``savings_dashboard_service.compute_debt_summary`` value CARRIED
+        WHOLE, plus ``principal_paid_fraction`` (the honest principal-paid
+        fraction, or ``None`` when no per-loan original principal is
+        available; the UI renders no positional marker in that case).
+        ``None`` when the user has no loan accounts.
 
     No exception is caught here: the producers this delegates to are the
     same code the /savings route runs without a guard, so a
@@ -807,7 +849,7 @@ def compute_tracks_section(user_id: int) -> dict:
 
     Returns:
         A dict with keys ``goals`` (a list, possibly empty) and ``debt``
-        (a dict or ``None``).
+        (a :class:`DebtTrack` or ``None``).
     """
     # Pylint: ``import-outside-toplevel`` -- Deferred: savings_dashboard_service
     # pulls the heaviest service import chain (+27 modules, measured); loaded only
@@ -824,14 +866,17 @@ def compute_tracks_section(user_id: int) -> dict:
     )
     goals = [_track_goal_datum(gd) for gd in goal_data]
 
-    debt = savings_dashboard_service.compute_debt_summary(user_id, balance_ctx)
-    if debt is not None:
-        debt = dict(debt)
-        debt["principal_paid_fraction"] = (
+    summary = savings_dashboard_service.compute_debt_summary(
+        user_id, balance_ctx,
+    )
+    debt = None if summary is None else DebtTrack(
+        summary=summary,
+        principal_paid_fraction=(
             savings_dashboard_service.compute_debt_principal_progress(
                 user_id, balance_ctx,
             )
-        )
+        ),
+    )
 
     return {"goals": goals, "debt": debt}
 
