@@ -4065,12 +4065,19 @@ class TestNetWorthHorizon:
             payoff = data["debt_summary"].payoff_outlook.all_clear_on
             horizon = data["net_worth"]["horizon"]
 
+            # Identified by the (label, date) PAIR, never the label alone
+            # (plan step X-t4, finding N-110): a per-loan flag reads
+            # "<account name> paid off", which equals this label exactly for an
+            # account a user names "All loans".  The pair is unique by
+            # construction -- a per-loan flag fires only STRICTLY BEFORE the
+            # debt-free date -- and the collision itself is covered by
+            # ``TestAMilestoneLabelCanCollide`` below.
             debt_free = [
                 m for m in horizon["milestones"]
                 if m["label"] == _DEBT_FREE_MILESTONE_LABEL
+                and m["date"] == payoff
             ]
             assert len(debt_free) == 1
-            assert debt_free[0]["date"] == payoff
             # The wording itself, pinned ONCE (this is the only place it is
             # spelled out); every other consumer reads the constant.
             assert _DEBT_FREE_MILESTONE_LABEL == "All loans paid off"
@@ -4124,6 +4131,82 @@ class TestNetWorthHorizon:
         assert _format_net_milestone(Decimal("1500000")) == "Net $1.5M"
         assert _format_net_milestone(Decimal("10000000")) == "Net $10M"
         assert _format_net_milestone(Decimal("2500000")) == "Net $2.5M"
+
+
+class TestAMilestoneLabelCanCollide:
+    """Two flags may share a label, and the chart draws both (plan step X-t4).
+
+    Finding N-110.  Plan step X-s1 deleted the machine ``kind`` from the
+    milestone dicts because nothing in ``app/`` read it -- the serializer copied
+    it into the payload and the client's flag plugin never looked at it -- which
+    left the LABEL as a flag's only handle.  The debt-free flag reads "All loans
+    paid off" and a per-loan flag reads ``f"{account.name} paid off"``, so a
+    user who names an account "All loans" makes the two strings equal.
+
+    **Ruled (developer, 2026-07-28): the label IS the identity, and a duplicate
+    is a display outcome rather than a defect.**  Two flags at two dates are two
+    true statements; the producer must never DROP one to keep labels unique,
+    because a silently missing flag is the worse failure.  What the finding
+    actually broke was a TEST that counted flags by matching the string, and the
+    fix is to identify a flag by the ``(label, date)`` pair -- unique by
+    construction, since a per-loan flag fires only strictly before the debt-free
+    date.
+
+    This pins the ruling so it is a predicate rather than prose: a future step
+    that de-duplicates by label, or drops the colliding per-loan flag, fails
+    here.
+    """
+
+    def test_an_account_named_all_loans_yields_two_identical_labels(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """The colliding account's flag and the debt-free flag BOTH survive.
+
+        A 24-month loan literally named "All loans" pays off years before a
+        30-year mortgage, so the producer emits its per-loan flag ("All loans
+        paid off") AND the debt-free flag at the mortgage's payoff -- the same
+        string, twice, at two dates.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.services.savings_dashboard_service._horizon import (
+            _DEBT_FREE_MILESTONE_LABEL,
+        )
+        with app.app_context():
+            colliding = _create_small_loan(
+                seed_user, db.session, name="All loans",
+            )
+            _add_mortgage_account(
+                seed_user, seed_periods_today[0].id, Decimal("240000.00"),
+                origination_date=date.today(),
+            )
+            db.session.commit()
+
+            data = savings_dashboard_service.compute_dashboard_data(
+                seed_user["user"].id,
+            )
+            milestones = data["net_worth"]["horizon"]["milestones"]
+            payoff = data["debt_summary"].payoff_outlook.all_clear_on
+
+            # Precondition: the fixture really does collide -- the per-loan
+            # label is built from the account name and equals the constant.
+            assert f"{colliding.name} paid off" == _DEBT_FREE_MILESTONE_LABEL
+
+            same_label = [
+                m for m in milestones
+                if m["label"] == _DEBT_FREE_MILESTONE_LABEL
+            ]
+            assert len(same_label) == 2, (
+                "the producer dropped or merged a flag to keep labels unique; "
+                "a user's own payoff flag is not a duplicate to be pruned"
+            )
+            # Two DISTINCT dates, and the later one is the debt-free flag.
+            dates = sorted(m["date"] for m in same_label)
+            assert dates[0] < dates[1]
+            assert dates[1] == payoff
+            # The (label, date) pair is what identifies a flag, and it stays
+            # unique across every milestone the chart draws.
+            pairs = [(m["label"], m["date"]) for m in milestones]
+            assert len(set(pairs)) == len(pairs)
 
 
 class TestGroupSubtotals:

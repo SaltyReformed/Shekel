@@ -3634,7 +3634,11 @@ class TestHorizonSerialization:
             # BOTH builders contributed, so the union below is a union of two
             # key sets and not one restated.  Told apart by what only a
             # crossing carries -- a "Net $" label -- since the machine ``kind``
-            # that used to distinguish them is what X-s1 deleted.
+            # that used to distinguish them is what X-s1 deleted.  A label is
+            # user-collidable in general (finding N-110, ruled acceptable at
+            # plan step X-t4: identify a flag by its ``(label, date)`` pair),
+            # but this fixture names its own accounts, so the prefix separates
+            # the two builders here.
             crossings = [
                 m for m in horizon["milestones"]
                 if m["label"].startswith("Net $")

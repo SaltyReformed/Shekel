@@ -84,10 +84,7 @@ _ONE_THOUSAND = Decimal("1000")
 # only handle (plan step X-s1, ruling R-BC).  The per-loan payoff label is
 # interpolated inline at its one site rather than given a constant of its own:
 # it has no second reader to keep in step, and a named constant with one use is
-# the speculative shape this step exists to remove.  Note the two collide by
-# construction -- "<name> paid off" equals this string for an account named
-# "All loans" -- so a consumer telling them apart matches this one EXACTLY
-# (finding N-110).  A milestone dict carried a
+# the speculative shape this step exists to remove.  A milestone dict carried a
 # machine ``kind`` until X-s1; nothing in ``app/`` read it -- the serializer
 # copied it into the payload and the client's flag plugin never looked at it --
 # so it was a published key with no consumer, which is finding N-100's own
@@ -95,6 +92,18 @@ _ONE_THOUSAND = Decimal("1000")
 # label a test matches on must come from HERE rather than be re-typed at the
 # assertion: plan step X-q3 renamed the debt-free flag ("Debt-free" -> the
 # string below) and a hand-typed copy in a test would have gone silently stale.
+#
+# **The two labels CAN collide, and that is ruled acceptable** (developer,
+# 2026-07-28, finding N-110): "<name> paid off" equals this string exactly for
+# an account a user names "All loans".  Two flags at two dates are two true
+# statements and the chart draws both; DROPPING one to keep labels unique would
+# hide a real payoff, which is the worse failure.  What a collision breaks is a
+# consumer that identifies a flag by its label ALONE -- so identify one by the
+# ``(label, date)`` PAIR, which is unique by construction because a per-loan
+# flag fires only strictly before the debt-free date.  Pinned by
+# ``TestAMilestoneLabelCanCollide``; re-adding a machine ``kind`` was rejected
+# on the same ground X-s3 deleted ``DtiMetrics.gross_monthly_income``: a field
+# whose only consumer is a test is a field with no consumer.
 _DEBT_FREE_MILESTONE_LABEL = "All loans paid off"
 
 # The most milestone flags the chart's two staggered lanes stay readable
