@@ -61,7 +61,11 @@ than the derivation covers, and B-16's ROOT is that the per-account projection d
 seam's `LoanFigures` field by field and dropped the one field the debt-line question needed.
 `/savings` now derives "when is this user debt-free" ONCE, and says it covers loans.
 
-**NEXT: X-r**, then X-q2, then the steps after them in the order Section 5 lists.
+**X-r is DONE too** (`1204a99e`): the projection dict carries the seam's `LoanFigures` whole, so
+the copy that dropped `is_retired` cannot recur -- a field the seam grows now arrives at every
+consumer by construction.
+
+**NEXT: X-q2**, then the steps after it in the order Section 5 lists.
 
 ---
 
@@ -1135,9 +1139,21 @@ preconditions cite entries in that file.
     X-r deleted the dead branch, and whether an archived paid-off loan SHOULD be badged, at the
     cost of resolving loans for a historical list, is this step's fork.
 
-- [ ] **X-r** `refactor(savings): the projection dict carries the seam's figures, not six copies` --
-  closes **N-101** (ruling R-AW, 2026-07-27). **NO behaviour change**, and it is B-16's ROOT rather
-  than another of its symptoms.
+- [x] **X-r** `refactor(savings): the projection dict carries the seam's figures` -- **SHIPPED dev
+  2026-07-27 (`1204a99e`)**, closing **N-101** (ruling R-AW). **NO figure moved**, and it is B-16's
+  ROOT rather than another of its symptoms.
+
+  **What it also carried, because its own review found it and rule 4 leaves no third option:**
+  X-q3's `revolving_debt` had broken `compute_debt_summary`'s "identical figures by construction"
+  promise -- the narrow producer projected LOANS only, so the one key that is about the debt that is
+  NOT a loan read `$0.00` there while the full build reported the real figure. Nothing rendered the
+  difference, which is what made it worth fixing rather than noting. `_project_loan_accounts` is now
+  `_project_debt_accounts` and projects the liabilities too; a test asserts the two paths agree on
+  EVERY key and fails against the old restriction. **Two of this step's own claims were proved
+  wrong by the same review and fixed**: a payment assertion a different site on the same page
+  satisfied (measured by mutation -- rendering the RATE in the payment slot kept it green), and a
+  docstring whose account of the Jinja hazard was inverted (the money and date sites RAISE; the
+  badge guard is the one that degrades silently, and it was already covered).
 
   `_projections._project_one_account` flattens `LoanFigures` into the per-account dict field by
   field -- `is_paid_off`, `is_originated`, `monthly_payment`, `current_rate`, `payoff_date`, and
@@ -1655,7 +1671,7 @@ meantime without deciding that first**, or the classification is written and the
 ## 6. The findings ledger
 
 **Only UNRESOLVED findings are here, and every one of them has an OWNER** (Section 9 rule 6). The
-CLOSED registers are in the two as-built records: the 17 that Phase X's shipped steps closed are in
+CLOSED registers are in the two as-built records: the 18 that Phase X's shipped steps closed are in
 `archive/cash_arc_as_built_2026-07-27.md` Section 3, and the 75 the LOAN arc closed are in
 `archive/loan_arc_as_built_2026-07-26.md` Section 7. IDs keep their names, so a reference to any
 finding resolves in whichever file holds it. Unfinished work stays HERE whichever half of the arc it
@@ -1718,7 +1734,6 @@ nothing reads) and **N-101** (the projection dict re-flattens `LoanFigures`, whi
 | N-96 | **`balance_at.interest_by_period_for_account` is a public seam entry with ZERO `app/` callers.** AST-verified 2026-07-27 during X-g4b's review: the account-detail route reads `interest_projection_for_account`, and nothing reads this. `__init__.py` states as fact that it and `debt_schedule_rows` are "the two non-balance seam entries the out-of-cluster consumers (the account-detail route, the savings orchestrator) read" -- true of the second, FALSE of the first. Same class as the `calculate_interest` orphan X-g4b deleted, but it pre-dates that step rather than being created by it, so it was reported and not swept | a public seam entry no screen can reach, described as one two screens read | **OPEN -- found 2026-07-27** by X-g4b's adversarial review, AST-verified, deliberately NOT fixed in that commit (out of its scope, CLAUDE.md rule 6) | X-e |
 | N-97 | **`app/utils/dates.py:314` cites `balance_resolver.daily_cash_balance_series` as a live consumer of `attribution_date`.** That producer was deleted at plan step X-c2b3 (the calendar's per-day line is the fold sampled at every day). The rule the sentence states -- one attribution rule shared by the calendar's day cells and the balance line's steps, so a flow's cell and its step land on the same day -- is STILL TRUE and load-bearing; only its named example is gone. Found 2026-07-27 in X-g4b's sweep, outside that step's 26-site scope | a present-tense claim naming a producer deleted a month earlier, in the docstring of the rule two surfaces share | **OPEN -- found 2026-07-27**, reported not fixed (pre-dates X-g4b) | X-p |
 | N-100 (X-o trace) | **The Horizon producer publishes three things nothing reads.** `build_horizon` returns `is_loan_free` and `horizon_end`, and `_serialize_horizon` (`routes/savings.py:113-132`) emits neither -- it maps `labels` / `net` / `composition` / `milestones` / `current_index` and drops the rest; no template or JS names either. `savings_dashboard_service.compute_net_worth_horizon` is a PUBLIC export with ZERO `app/` callers, alive on 10 test call sites in one file (AST-counted, not grepped). Same class as N-85 / N-96 in the seam: dead surface kept honest by its own tests. It matters here because B-16's entry claimed the user was "told they are not loan-free", and the flag that would tell them reaches no screen | -- | **OPEN -- found 2026-07-27** by X-o's trace, which needed the claim checked before repeating it | X-q2 |
-| N-101 (X-o trace) | **The per-account projection dict re-flattens `LoanFigures` field by field, and B-16 is what a dropped field looks like.** `_projections._project_one_account` copies `is_paid_off`, `is_originated`, `monthly_payment`, `current_rate` and `payoff_date` out of the seam's value object; `is_retired` was never copied, so the Horizon asked the nearest question the dict could answer. Nothing can fail on a key that was never there. `_types._LoanAccountResult` already composes `LoanFigures` for exactly this reason ONE LAYER DOWN -- "the copy silently went stale the moment the seam grew `is_originated`" -- so the rule is decided and only its application is missing | the B-16 defect itself; X-o adds a sixth copy rather than removing the pattern | **OPEN -- found 2026-07-27** by X-o's trace. X-o publishes `is_retired` as a sixth flat key deliberately (ruling R-AW): the live defect does not wait behind a refactor that touches two Jinja templates | X-r |
 | N-102 (X-r review) | **The archived-accounts list's "Paid Off" badge could never render, and X-r deleted the branch.** `_data._load_archived_accounts` builds its dicts with `account` and `current_balance` ONLY -- by design, since an archived account gets no engine or seam call -- so `savings/dashboard.html`'s `{% if ad.is_paid_off ... %}` was a guard against a shape the producer cannot make. It read as coverage and was not, which is Section 8's own lesson in a template. The branch is DELETED (a badge nobody can see is not a feature); whether an archived paid-off loan SHOULD be badged, at the cost of resolving loans for a historical list, is the open half | a badge silently absent for every archived loan, forever | **OPEN -- found 2026-07-27** by X-r's adversarial review while re-pointing the flat keys; the dead branch is gone, the FEATURE question is not answered | X-q2 |
 | cash D4 | Anchor column vs history table: divergence detected, only logged | latent | latent | X-e (widened 2026-07-27) |
 | N-4 (A1) | Pay-period reset re-anchors EVERY kind, refreshing loan cash-anchor rows (balance-preserving `stage_anchor_true_up` inside the reset's deferred-FK transaction; same-value, not user-supplied) | -- | **OPEN** -- residue of the archived B-15 (a kind-blind true-up wrote a CASH anchor onto a LOAN; both real loans carried such rows), whose mechanism closed at A1 while these two writers did not | X-e (widened 2026-07-27; see also N-73) |
