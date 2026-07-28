@@ -150,7 +150,34 @@ behind a `//` comment satisfied the arm written to catch it), and nine stale or 
 **R-BK..R-BR**; findings **N-112**, **N-113** and **N-114** opened, owned by the new steps **X-v**
 and **X-w**.
 
-**NEXT: X-u**, then the steps after it in the order Section 5 lists.
+**X-u is DONE** (2026-07-28), in two commits: `70c5cf39` (the rulings, first) and `e2cdc589` (the
+merge). One dashboard render ran the debt pipeline twice; `principal_paid_fraction` is a
+`DebtSummary` field now, and the second producer, the `DebtTrack` wrapper and the shared
+`_project_debt_accounts` helper went together. **Measured on both databases**: projections per
+render 2 -> 1, seam batches 3 -> 2, SQL 92 -> 83 and 84 -> 75. No figure moves on either harness.
+**The membership question ruling R-BI was careful about was answered by measurement, not argument**
+-- the two rules are reducers over ONE list, so the merge moved neither predicate, and the
+three-loan control that would catch one was shown firing all three ways it could go wrong.
+
+**Its two adversarial reviews earned their cost a NINTH time, and both found the same top defect
+independently: six citations of a ruling that did not exist.** The code cited `R-BS` for the
+developer's four forks while Section 4 still ended at R-BR -- X-q2's exact class, committed in a
+step being careful about everything else. It is fixed structurally rather than by renaming: the
+rulings now land in their OWN commit BEFORE the code that cites them, which is a practice this arc
+did not have (X-s cited R-BD one commit early; X-t's code cited no ruling at all). The reviews also
+found the step's own safety sentence false of exactly one reducer -- `debt_without_payoff_model`
+takes `account_data`, not `loan_ads`, because its job is the liabilities that are NOT loans, so
+there are **four** membership rules and not three -- a producer count of four where three remain,
+and five stale sentences in files the step had not opened. **One finding opened: N-115**, owner
+**X-i1**, whose input tier is widened to cover it.
+
+**Two lessons paid here and recorded in Section 8**: a ruling id is a citation like any other, so
+the ruling ships first; and the ledger's own row count is now a GATE arm, whose first draft was a
+control that could not fire -- it required `rows**` where the document writes `rows.**`, matched
+the live file nowhere, and passed a planted defect until it was exercised against the real
+document.
+
+**NEXT: X-v**, then the steps after it in the order Section 5 lists.
 
 ---
 
@@ -774,9 +801,9 @@ its decomposed ID -- append-only, and never renumbered for readability. **Ruling
 then folded its CONTENT into `X-g4b`**, so the exception now costs no commit of its own: the entry
 stays where it is, its content is what X-g4b carries, and its box ticks with X-g4b's hash. The live
 order from here is
-**X-u -> X-v -> X-w -> X-i -> X-j -> X-k -> X-l -> X-m -> X-n -> X-d -> X-e -> X-f -> X-p ->
-E2** (X-g4a, X-g4b, X-o, all three X-q leaves, X-r, X-h, X-s and X-t, which used to open this line,
-have SHIPPED; **X-v** and **X-w** were appended 2026-07-28 out of X-t's own measurement and its
+**X-v -> X-w -> X-i -> X-j -> X-k -> X-l -> X-m -> X-n -> X-d -> X-e -> X-f -> X-p ->
+E2** (X-g4a, X-g4b, X-o, all three X-q leaves, X-r, X-h, X-s, X-t and X-u, which used to open this
+line, have SHIPPED; **X-v** and **X-w** were appended 2026-07-28 out of X-t's own measurement and its
 two adversarial reviews) (X-h .. X-k added 2026-07-27 by ruling R-AO, X-l .. X-p the same day by R-AQ,
 X-q / X-r the same day by R-AV / R-AW out of X-o's trace, and X-s the same day out of X-q2's two
 adversarial reviews -- sequenced after X-h on X-h's own ground, since the controls X-h repairs are
@@ -1699,7 +1726,7 @@ preconditions cite entries in that file.
     behind a `//` comment satisfied the arm that exists to catch it; and nine stale or INVENTED
     citations, including `_net_worth._sum_net_worth_totals`, which has never existed in any commit.
 
-- [ ] **X-u** `refactor(savings): one debt projection per render` -- closes **N-109** (rulings
+- [x] **X-u** `refactor(savings): one debt projection per render` (`70c5cf39`, `e2cdc589`) -- closes **N-109** (rulings
   **R-BS** / **R-BT** / **R-BU** / **R-BV**, which reverse R-BI on evidence R-BI did not have).
   `compute_tracks_section` runs `_project_debt_accounts` TWICE and the seam-batch builder
   THREE times per dashboard render, because the two narrow debt producers each run the
@@ -2272,10 +2299,12 @@ row, whose owner read `Section 5, Phase E2`; it is now `E2-0 / E2-n`, the phase'
 steps. Every other owner was already live, which is what the three hand-passes above bought and
 what nothing now has to buy again.
 
-**The ledger stands at 41 rows.** That sentence read `38` against a 40-row table until 2026-07-28,
-drift left by a step that updated the rows and not the prose about them -- so it is a GATE arm now
-(`stated_count_violation`) rather than a number somebody remembers to edit, on the same ground rule 6
-is a gate. Correcting it by hand is exactly what had already been done.
+**The ledger stands at 40 rows** (41 when plan step X-u opened N-115, less N-109 which X-u closed).
+**This sentence is checked by the gate**, and it needed to be: it read `38` against a 40-row table
+until 2026-07-28 -- drift left by an earlier step that updated the rows and not the prose about
+them. `stated_count_violation` makes it a predicate rather than a number somebody remembers to
+edit, on the same ground rule 6 is a gate; correcting it by hand is exactly what had already been
+done, and is what drifted.
 
 | id | finding (one line) | worst measured | status | closed by |
 |---|---|---|---|---|
@@ -2316,7 +2345,6 @@ is a gate. Correcting it by hand is exactly what had already been done.
 | N-93 (X-g3b review) | **Every grid render entry now pays the modelled contribution load, including the one that reads none of it.** Plan step X-g3b made `grid_balance_view` load the account's real `ContributionInputs`, which for an INVESTMENT costs an investment-params query, a deductions query and a full paycheck-engine run: measured best-of-five on both databases at `2.7 -> 14.8 ms` (an APPRECIATING asset `2.7 -> 3.7 ms`; PLAIN and INTEREST inside run-to-run noise). The grid has FOUR render entries and each pays it. **The sharpest sub-case is `subtotal_rows`**, which resolves the whole modelled fold to render three rows that read only `income` / `expense` / `net` -- and plan step X-g3a's own entry declined to hand that endpoint an `accrual_label` because "handing it a label would add a context variable nothing reads", which is the same argument one level cheaper. It also compounds finding N-89: `income_service.get_current_gross_biweekly` loads the pay-period calendar (`income_service.py:127`) on top of the route's own load and `contribution_events`', so a modelled grid render loads it THREE times where N-89 recorded two, and one `balanceChanged` firing `balance_row` + `subtotal_rows` costs ~6 loads and 2 engine runs | `~12 ms` per modelled grid render entry; 1 extra calendar load per modelled read on top of N-89's | **recorded, NOT fixed.** The load itself is not waste -- it is what the INVESTMENT kind's return is modelled FROM (ruling R-AJ (a)), so it cannot be gated away without reinstating the defect X-g3b removed. What is addressable is the per-pass repetition, and that is findings N-89 / N-92's shared fix (a context memo), plus a narrower view record for `subtotal_rows` if that endpoint's cost is ever measured to matter **TRIAGED 2026-07-27 (ruling R-AO): to X-i1.** | X-i1 |
 | N-86 (X-g2b review) | **The `/investment` limit CARD and the projection beside it read two different YTD boundaries, and only one of them is a function of the window.** `_compute_limit_info` renders `ytd_contributions` (the total THROUGH the current period -- what the user has actually put in this year), while `growth_engine.project_balance`'s `ytd_contributions_start` must hold exactly the periods the projection's window EXCLUDES. Those coincide only when the window opens past the current period, which is the case on this surface after ruling R-AF and is NOT the case on either of `retirement_projection`'s axes. X-g2b resolves the projection's half once, beside the window it depends on (`_context._projection_ytd`), so the two call sites cannot disagree; what is recorded is that the app now carries TWO correct YTD boundaries whose difference is invisible in the rendered figures. The durable version is for the engine to take the axis and derive the boundary itself, which is the same "one derivation" argument ruling R-AF made for the seed | `$1,000.00` of annual-limit room per period of divergence, compounded over the horizon -- the defect this finding's fix closed, measured on a `$23,500` limit at `$1,000`/period with today in the year's 15th period. `$0.00` on today's data: no real investment account has a contribution feed | **recorded, NOT fixed** -- the boundary is correct on both surfaces today and pinned in both directions by `TestTheAnnualLimitSeedFollowsTheWindow`. It is recorded because a THIRD projection surface would have to know the rule to get it right, and knowing a rule is what this arc replaces with structure **TRIAGED 2026-07-27 (ruling R-AO): genuine RESIDUE.** Correct on both surfaces today and pinned in both directions; its durable fix is inside the growth ENGINE's axis, which no remaining step touches. **RE-TRIAGED 2026-07-27 (ruling R-AQ): there is no deferred category: to X-m.** 'Correct on both surfaces today' is a statement about how many surfaces exist; the row's own text says a THIRD would have to KNOW the rule, and knowing a rule is what this arc replaces with structure. X-m has the engine derive the boundary from the axis it is handed, and `ytd_contributions_start` leaves the signature. | X-m |
 
-| N-109 (X-s3 review) | **One dashboard tracks render runs the debt projection TWICE and the seam-batch builder THREE times.** Measured on the developer's own data by spying the call: `compute_tracks_section` calls `compute_debt_summary` and `compute_debt_principal_progress`, and each runs `_project_debt_accounts` in full -- load core data, load account params, build the projection -- over the SAME loan set, both derived from the same `account_data`. It is N-72's redundancy half in a second place. The fix the review proposes is to make `principal_paid_fraction` a `DebtSummary` field, which deletes `DebtTrack`, the second narrow producer and the duplicate pass in one move | `$0.00`; one redundant full debt projection per dashboard render, and two producers that must keep agreeing on which loans count | **OPEN**, opened 2026-07-28 by X-s3's adversarial design review. Not fixed there (ruling R-BI): the two producers answer over different membership rules, and merging them re-opens the question X-q settled at a measured 19-year cost | X-u |
 | N-112 (X-t2 trace) | **The balance seam's no-baseline precondition is spelled out at 18 call sites, and 12 of them remain.** Plan step X-t2 gave the rule ONE home (`BalanceContext.has_baseline`, which `require_scenario` itself now raises on) and converted the six sites on the `/savings` + dashboard-tracks path, deleting two of them outright. The rest still write `ctx.scenario is None` themselves: `routes/grid.py:154` and `:714`, `calendar_service.py:276` and `:326`, `dashboard_service.py:108`, `loan_recurrence_sync.py:267`, `investment_dashboard_service/_context.py:164` / `:189` / `:259`, `_chart.py:162`, `_orchestrator.py:67`, and `accounts/detail.py`. **A rename is NOT the fix and that is why this is a step rather than a sweep**: X-t2 found two copies in ONE region answering the same state with different degraded values (an empty map list beside a trend window that built its axis anyway), which a rename preserves. Each site's degraded VALUE has to be read. **The count is a floor**: `_metrics._recent_settled_expenses_monthly` guarded the same state as `if not (current_period and scenario)` -- invisible to a search for `scenario is None`, and found only because X-t5 was re-reading the file -- so the census wants an AST pass, which is Section 8's own lesson one axis over | `$0.00` today (the state is unreachable in production: `auth_service.py:707` writes a baseline at sign-up and no route deletes one). The cost is that 12 sites each decide a degraded value alone, which is how two of them came to disagree | **OPEN**, opened 2026-07-28 by plan step X-t2's census. Born with an owner (rule 6) | X-v |
 | N-113 (X-t review) | **The no-baseline hero reports `$0.00` over balances that are all `None`.** `compute_net_worth_today` sums `current_balance or ZERO`, so a user whose every balance the app cannot answer is told their net worth, assets and liabilities are exactly zero. Plan step X-t2 deleted the fabricated flat-$0 CHART on that reasoning and left the fabricated SCALAR above it, then pinned it with a test -- which X-t's design review named as turning residue into a contract. Whether the hero should read `--` (and what the chips and the legend do beside it) is a DISPLAY ruling, not a fix to make inside a review-residue commit (ruling R-BR); the test now says at the assertion that it pins today's answer rather than endorsing it | `$0.00`, and unreachable in production for the same reason as N-112. The cost is a page that states three figures it cannot know | **OPEN**, opened 2026-07-28 by X-t's adversarial design review. Born with an owner (rule 6) | X-v |
 | N-114 (X-t1 review) | **The liability rule is single-sourced on the projection and STILL stored in the dense-map dict beside it.** `net_worth_account_data.to_net_worth_account_data:97` writes `is_liability` into an untyped `{account_id, balances, is_liability}` dict that `_net_worth._sum_composition_at_period:221` reads, on the SAME render where `AccountProjection.is_liability` is now derived -- so X-t1's claim that "there is now one" spelling is true of the projection and false of the page. Both call `is_liability_account` today, so the figure risk is latent rather than live; what is live is that a future refinement landing on the property leaves the trend and the sparklines on the old classification, with the hero and the chart's today point disagreeing and every test that reads one of them staying green. It is the same untyped-container class N-111 closed, one module over, and the row that X-t's thesis ("which shapes are guaranteed and which are merely tested") points at next -- alongside the archived-account rows, whose `current_balance` is `Account.current_anchor_balance` (which finding N-103 says is not a loan's balance at all) and which shared the cockpit projection's loop-variable name until X-t5 renamed it | `$0.00` today; the measured cost of the LAST container in this class was B-16 and N-98 | **OPEN**, opened 2026-07-28 by X-t's adversarial design review. Born with an owner (rule 6) | X-w |
@@ -2472,6 +2500,26 @@ is a gate. Correcting it by hand is exactly what had already been done.
   `var ASSET_BANDS = ["asset", "retirement", "investment"  // "other" dropped` passed the arm whose
   whole purpose is that case. The hole was found by calling the helper on a planted string --
   something the gate's own author could have done in a minute and did not.
+* **A RULING ID IS A CITATION, SO THE RULING SHIPS FIRST.** X-u's code cited `R-BS` six times
+  across five files for the four forks the developer had just ruled, while Section 4 still ended at
+  R-BR -- both adversarial reviewers found it independently and neither could resolve it. The arc
+  had no practice here and both available precedents were wrong in different directions: X-s's code
+  commit cited R-BD one commit before the ledger recorded it, and X-t's code commits cited no
+  ruling at all, so the forks it was built on were unfindable from the code. The fix is ordering,
+  not wording: **the rulings land in their own `docs(balance):` commit BEFORE the code**, and the
+  tick-and-close commit follows the code as rule 2 requires. A citation that resolves nowhere is
+  worse than a stale line number, because the reader looking it up is the one about to re-decide
+  the thing it ruled.
+* **A GATE'S PATTERN MUST BE EXERCISED AGAINST THE ARTIFACT IT GRADES, not against a synthetic
+  twin.** X-u made Section 6's "**The ledger stands at N rows**" sentence a gate arm, because it had
+  drifted to 38 against a 40-row table. The first draft required `rows**`; the live document writes
+  `rows.**`, with the period inside the emphasis. So the pattern matched the ledger NOWHERE, the arm
+  read that as "no count is claimed", and a planted 38-against-41 passed clean -- while the
+  synthetic control, written without the period, passed too and proved nothing. Found only by
+  planting the defect in the REAL file. This is X-t3's lesson (`A STATIC GATE MUST BE EXERCISED,
+  NOT READ`) one step later and one axis over: there the arm read the wrong THING, here it read the
+  right thing in the wrong SPELLING. Every gate over prose now carries an arm asserting its pattern
+  still MATCHES the live document, or it can go vacuous in silence.
 * Documents rot in days here. This file is the only one allowed to rot, and every edit re-dates
   it.
 
