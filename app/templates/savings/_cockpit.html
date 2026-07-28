@@ -95,13 +95,15 @@
             aria-label="Net worth stream: asset composition above zero, liabilities below, net-worth trajectory through the middle"></canvas>
   </div>
   {# Legend: each present category band + its today subtotal, then a
-     line-sample for the net-worth trajectory.  Band order matches the
-     stack (asset groups up the ramp, then liabilities); the swatch colors
-     are the same --nw-band-* tokens the chart reads.  Every figure is
-     producer-computed (group_subtotals + the net-worth hero), never in JS. #}
-  {% set nw_band_order = ['asset', 'retirement', 'investment', 'other', 'liability'] %}
+     line-sample for the net-worth trajectory.  The band order IS the
+     producer's composition map -- the very series the chart stacks -- rather
+     than a fourth hand-written copy of the band vocabulary (plan step X-t3,
+     finding N-108), so a band the chart draws can never be missing from the
+     legend beside it.  The swatch colors are the same --nw-band-* tokens the
+     chart reads.  Every figure is producer-computed (group_subtotals + the
+     net-worth hero), never in JS. #}
   <div class="nw-legend">
-    {% for band_key in nw_band_order if band_key in group_subtotals %}
+    {% for band_key in net_worth.series.composition if band_key in group_subtotals %}
     <span class="nw-legend__item">
       <span class="nw-legend__swatch nw-legend__swatch--{{ band_key }}"></span>
       {{ category_labels.get(band_key, band_key|title) }}

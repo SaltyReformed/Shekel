@@ -46,19 +46,30 @@ from app.services.account_projection import (
 # docstrings is a name that reads as a call site and is not one (finding N-63's
 # class).
 from app.services.net_worth_account_data import to_net_worth_account_data
+from app.services.savings_dashboard_service._display import _CATEGORY_ORDER
 from app.services.savings_dashboard_service._metrics import _sum_liquid_balances
 from app.services.savings_dashboard_service._types import AccountProjection
 
 ZERO = Decimal("0.00")
 
-# The net-worth composition bands, keyed by the cockpit category
-# (:func:`~app.services.savings_dashboard_service._display.account_category_key`).
-# The asset-side bands sum to the asset total, the liability band is the
-# liability total, and net worth is their difference -- so the composition
-# split reconciles to the ``assets`` / ``liabilities`` / ``net`` totals by
+# The net-worth composition bands: the cockpit CATEGORIES, split into the
+# asset side and the one liability band.  The asset-side bands sum to the asset
+# total, the liability band is the liability total, and net worth is their
+# difference -- so the composition split reconciles to the ``net`` total by
 # construction (P-AC1 Loop B P1).
-_ASSET_BANDS = ("asset", "retirement", "investment", "other")
+#
+# DERIVED from the display vocabulary rather than restated (plan step X-t3,
+# finding N-108).  A band IS a category key
+# (:func:`~app.services.savings_dashboard_service._display.account_category_key`
+# assigns one per account), so listing them again here made the same vocabulary
+# answerable two ways in one package -- and a band this producer sums that the
+# grid does not group by would put money in a chart with no card behind it.
+# The categories themselves come from :class:`~app.enums.AcctCategoryEnum` plus
+# the ``other`` fall-through; see ``_display._CATEGORY_ORDER``.
 _LIABILITY_BAND = "liability"
+_ASSET_BANDS = tuple(
+    key for key in _CATEGORY_ORDER if key != _LIABILITY_BAND
+)
 _COMPOSITION_BANDS = _ASSET_BANDS + (_LIABILITY_BAND,)
 
 

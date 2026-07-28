@@ -21,6 +21,16 @@ ZERO = Decimal("0.00")
 # (:class:`~app.enums.AcctCategoryEnum`) exhaust every account that carries a
 # ``category_id``, so this order also enumerates every band the net-worth
 # composition can produce.
+#
+# **It is THE band vocabulary, and the net-worth producer now derives from it**
+# (plan step X-t3, finding N-108): ``_net_worth._ASSET_BANDS`` is this tuple
+# minus the liability key.  The two are the same set by construction rather
+# than by two lists agreeing, so a category added here cannot ship a chart band
+# with no grid group behind it.  The ORDER differs on purpose -- this one is the
+# grid's card order, the composition's is the chart's stack order -- and only
+# the SET is shared.  The presentation homes that cannot import it (the chart
+# script, the cockpit template's microcopy, the CSS band tokens) are held to
+# this set by ``test_net_worth_band_vocabulary.py``.
 _CATEGORY_ORDER = ("asset", "liability", "retirement", "investment", "other")
 
 # The four real categories paired with their display keys, in the order the
