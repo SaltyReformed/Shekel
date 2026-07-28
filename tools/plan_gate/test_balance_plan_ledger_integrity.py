@@ -20,10 +20,22 @@ N-46 at ``X-c2c4``.  That is three hand-passes in two days finding the same
 class, and the document's own Section 8 says a safety that is a predicate is
 not a safety -- this one was not even a predicate.
 
-Reading a repository file by path and asserting on its text is an established
-shape here: ``test_template_no_money_arithmetic.py`` and
-``test_posting_ref_seed_parity.py`` both do it, and both run in CI on every PR
-exactly as this does.
+**It lives in ``tools/`` and not in ``tests/``, and that is what makes it a
+gate rather than a habit.**  Under ``tests/`` it inherited the autouse ``db``
+fixture -- so grading a markdown file needed a running PostgreSQL -- and it ran
+only when someone chose to run the full suite, or at PR time.  Since pull
+requests here open at the END of an arc, that is a dozen steps after a stale
+owner appears, which is roughly when the hand-passes found the last four.  A
+gate whose own trigger depends on discipline is the thing this file exists to
+replace.
+
+It now sits in the database-free tier the custom pylint checkers already use
+(``tools/pylint/tests``, run as ``pytest <dir> -c /dev/null``): a pre-commit
+hook scoped to the plan document and to this file, so EDITING THE LEDGER is
+what runs it, plus the same CI step that runs the checker tests.  Reading a
+repository file by path and asserting on its text is an established shape here
+-- ``test_template_no_money_arithmetic.py`` and ``test_posting_ref_seed_parity.py``
+both do it.
 
 **The parser is strict on purpose.**  Every failure mode below was measured
 against the ledger as it actually stands, because each of them would make a
@@ -70,7 +82,12 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-PLAN_PATH = Path("docs/audits/balance_architecture/README.md")
+#: Anchored on this file rather than on the working directory, so the gate
+#: grades the same document however it is invoked.
+PLAN_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "docs" / "audits" / "balance_architecture" / "README.md"
+)
 
 #: Headings that bound the two sections this gate reads.  Matched on the
 #: numbered prefix, which is stable: the document renumbers nothing.

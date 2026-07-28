@@ -1319,7 +1319,18 @@ preconditions cite entries in that file.
 
   It is not a new pattern here: `tests/test_integration/test_template_no_money_arithmetic.py` and
   `tests/test_models/test_posting_ref_seed_parity.py` already read repo files by path and assert on
-  their text, and this runs in CI on every PR like they do. **Its firing control is free and must be
+  their text. **Where it RUNS was corrected on the developer's question, 2026-07-28, and the
+  question was the right one:** shipped under `tests/`, it fired only on a full-suite run and at PR
+  time -- and pull requests here open at the END of an arc, a dozen steps after a stale owner
+  appears, which is about when the hand-passes found the last four. A gate whose own trigger depends
+  on someone choosing to run the suite is the discipline it exists to replace. It now lives in the
+  database-free tier the custom checkers already use (`tools/plan_gate`, `pytest <dir> -c
+  /dev/null`), with a pre-commit hook scoped to THIS DOCUMENT and to the gate file, so editing the
+  ledger is what runs it -- at commit time, before anything is pushed. Under `tests/` it also
+  inherited the autouse `db` fixture and needed PostgreSQL running to grade a text file; it now
+  takes `0.04s` and no database, which is what makes a commit-time hook possible at all. Verified by
+  planting one row against a ticked step: `git commit` exits 1, HEAD does not move, and the message
+  names the row and the shipped owner. **Its firing control is free and must be
   shown: point one row at a ticked step and watch it fail.** Written against the ledger AS IT NOW
   STANDS it also catches two more stale owners this triage found by hand -- **N-46** (owner cited
   `X-c2b3`, which is ticked) and **N-73** (cited `X-g2b`, ticked) -- both corrected in this same

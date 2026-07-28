@@ -184,6 +184,7 @@ jobs:
       - name: Test and apply custom pylint checkers
         run: |
           pytest tools/pylint/tests -c /dev/null -q
+          pytest tools/plan_gate -c /dev/null -q
           pylint tests/ --disable=all --enable=shekel-decimal-from-float --disable=unknown-option-value,bad-option-value --output-format=colorized
 
       # ── 5c. Cross-tree duplicate-code (app/ + scripts/ combined) ─
