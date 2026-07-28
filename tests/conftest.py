@@ -596,6 +596,7 @@ from app.models.ref import (
 from app.services import account_service
 from app.services.auth_service import hash_password
 from tests._test_helpers import (
+    bind_db_clock_rewriter,
     create_loan_account,
     insert_trueup_event,
     make_appreciating_account,
@@ -684,9 +685,21 @@ def setup_database(app):
     the whole per-session DB rather than table-by-table -- faster
     and less brittle than the previous ``drop_all`` + per-schema
     cascade.
+
+    It also binds the frozen-clock statement rewriter to the engine
+    (finding N-65, balance plan step X-h).  **Here, and not lazily when a
+    test first flushes**: binding on first flush made the rewriter's
+    installation depend on some earlier test in the same worker process
+    having flushed ORM state under a frozen clock, so a frozen test whose
+    only writes were bulk ``query.update(...)`` silently got the real wall
+    clock.  Same test, same assertion, opposite result depending on
+    scheduling -- a fail-OPEN gate.  The listener is inert until a test
+    freezes, so binding it before any test runs costs nothing and removes
+    the order dependence.
     """
     with app.app_context():
         _refresh_ref_cache_and_jinja_globals(app)
+        bind_db_clock_rewriter(_db.engine)
     yield
 
 

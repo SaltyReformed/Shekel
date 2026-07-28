@@ -541,6 +541,14 @@ class TestRetirementProjectionEntryAware:
             # And the accrual is really there: a surface that fell back to the
             # cash producer would land ON the basis, not above it.
             assert target["current_balance"] > basis[current_period.id]
+            # PINNED to the figure, not only to the producer.  The two
+            # assertions above are a WIRING identity and an inequality: both
+            # survive a wrong RATE, which plan step X-h's adversarial review
+            # demonstrated by injecting a 10x return and watching this test
+            # stay green.  49,545.71 accruing 7%/yr from the 2026-03-20
+            # assertion to the current period's end (2026-03-29, 10 days --
+            # $9.27/day at this balance) is 49,637.72.
+            assert target["current_balance"] == Decimal("49637.72")
 
 
 class TestRetirementAnchorInPastModeledHeadlineDatedSeed:

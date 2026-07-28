@@ -273,44 +273,59 @@ def freeze_today(monkeypatch, target_date, modules=None):
 #: and never need removing.
 _FROZEN_DB_CLOCK = None
 
-#: ``mapper class -> attribute names whose INSERT value comes from NOW()``,
-#: DERIVED from the mapped columns rather than listed.  Populated lazily and
-#: never invalidated: a model's column defaults do not change at runtime.
+#: Monotonic counter for :meth:`_FrozenDbClock.stamp`, held at MODULE scope so
+#: it survives a re-freeze.  It used to live on the clock instance, and
+#: ``freeze_today`` builds a new instance every call -- measured across the
+#: suite: 133 re-freezes, 27 of them after stamps had already been issued.  No
+#: two of those re-froze to the same civil date, so nothing tied; a test that
+#: did would have produced exactly the ``ORDER BY created_at DESC`` coin flip
+#: the microsecond step exists to prevent.
+_DB_CLOCK_ISSUED = 0
+
+#: ``mapper class -> (attribute name, stamp kind)`` for every column whose
+#: INSERT value comes from the database clock.  DERIVED from the mapped columns
+#: rather than listed.  Populated lazily and never invalidated: a model's
+#: column defaults do not change at runtime.
 _DB_CLOCK_INSERT_ATTRS = {}
 
 #: Guard so the ``Session`` listener is attached exactly once per process.
 _DB_CLOCK_LISTENERS_INSTALLED = False
 
-#: Engines the statement rewriter is already attached to.  A class-level
-#: ``Engine`` listener does NOT reach an engine that already exists -- measured
-#: while building this: ``event.contains(Engine, ...)`` reported True while the
-#: live engine's own dispatch did not hold the listener, and it silently never
-#: ran -- and the app's engine is built by the session-scoped fixture long
-#: before the first test freezes its clock.  So each engine is bound the first
-#: time a frozen test flushes through it.  Weak, so a discarded engine is not
-#: pinned in memory.
+#: Engines the statement rewriter is bound to.  Weak, so a discarded engine is
+#: not pinned in memory.
 _DB_CLOCK_BOUND_ENGINES = weakref.WeakSet()
 
-#: A statement asking PostgreSQL what time it is.  ``now()`` is the spelling
-#: this schema uses; ``current_timestamp`` is the same question in the other
-#: dialect-standard spelling, matched so the rule tests the QUESTION and not
-#: one way of writing it.
+#: A statement asking PostgreSQL what time it is, in each spelling this schema
+#: can produce, so the rule tests the QUESTION and not one way of writing it.
+#: ``now()`` and ``current_timestamp`` yield an instant; ``current_date`` yields
+#: a DATE and must be answered with one (``transaction_entries.entry_date``).
 #:
 #: Each alternative carries only the word boundary it can actually have.  The
-#: first draft wrapped BOTH in ``\b...\b`` and matched nothing at all: the
+#: first draft wrapped the group in ``\b...\b`` and matched nothing at all: the
 #: group's last character is ``)``, and the next character in real SQL is ``,``
 #: or a space -- two non-word characters, so the trailing ``\b`` can never
 #: assert.  It was a rule that could not fire, and it was caught only because
 #: it was MADE to fire on demand rather than reasoned about.
 _DB_CLOCK_CALL_RX = re.compile(
-    r"\bnow\s*\(\s*\)|\bcurrent_timestamp\b", re.IGNORECASE,
+    r"\bnow\s*\(\s*\)|\bcurrent_timestamp\b|\bcurrent_date\b", re.IGNORECASE,
 )
 
+#: The same question as :data:`_DB_CLOCK_CALL_RX`, asked of a ``server_default``
+#: written as raw SQL text rather than as a SQLAlchemy function.
+#: ``transaction_entries.entry_date`` is ``db.text("CURRENT_DATE")``, which is a
+#: ``TextClause`` and therefore invisible to an ``isinstance(..., now)`` test --
+#: the gap this arm closes (found by plan step X-h's adversarial review, which
+#: caught the row landing on the real wall date while its siblings were frozen).
+_DB_CLOCK_TEXT_DEFAULT_RX = _DB_CLOCK_CALL_RX
+
 #: Statement kinds the rewriter leaves alone.  DDL legitimately mentions
-#: ``now()`` -- it is how the NOT NULL defaults are DECLARED -- and the schema
-#: build is not the subject of a frozen test.
+#: ``now()`` -- it is how the NOT NULL defaults are DECLARED -- and rewriting a
+#: ``CREATE TABLE`` would bake a frozen instant into the SCHEMA.  ``DO`` is here
+#: because this app's audit and posting infrastructure ships ``DO $$ ... $$``
+#: blocks (``audit_infrastructure.py``, ``posting_infrastructure.py``).
 _DB_CLOCK_EXEMPT_VERBS = frozenset(
-    {"CREATE", "ALTER", "DROP", "COMMENT", "SET", "GRANT", "REVOKE", "TRUNCATE"},
+    {"CREATE", "ALTER", "DROP", "COMMENT", "SET", "GRANT", "REVOKE", "TRUNCATE",
+     "DO"},
 )
 
 
@@ -323,35 +338,49 @@ class _FrozenDbClock:
     a deterministic fixture into a coin flip.  Each stamp is therefore one
     microsecond past the last, which preserves the order rows were written in
     while leaving every one of them on the frozen civil DATE.
+
+    The counter is :data:`_DB_CLOCK_ISSUED`, at module scope, so a re-freeze
+    inside one test cannot reissue an instant this process has already used.
     """
 
     def __init__(self, instant):
         """Store the base instant every stamp is measured from."""
         self._instant = instant
-        self._issued = 0
 
     def stamp(self):
         """Return the next instant: the frozen one, plus one microsecond."""
-        self._issued += 1
-        return self._instant + _real_timedelta(microseconds=self._issued)
+        global _DB_CLOCK_ISSUED  # pylint: disable=global-statement
+        _DB_CLOCK_ISSUED += 1
+        return self._instant + _real_timedelta(microseconds=_DB_CLOCK_ISSUED)
 
 
 def _db_clock_insert_attrs(model_class):
-    """Return the attribute names whose INSERT value comes from ``NOW()``.
+    """Return ``(attribute, is_date)`` for every clock-defaulted column.
 
     DERIVED from SQLAlchemy's own mapper rather than listed by hand, which is
     the whole point: the app has 61 columns whose INSERT value comes from a
-    ``NOW()`` server default (measured 2026-07-27), and a hand-written list of
-    61 entries is a copy that goes stale the first time someone adds a model.
-    A bundle hand-synchronised with the thing it mirrors is the same defect
-    plan step X-r deleted from ``_projections``.
+    ``NOW()`` server default plus one from a ``CURRENT_DATE`` text default
+    (measured 2026-07-28), and a hand-written list of 62 entries is a copy that
+    goes stale the first time someone adds a model.  A bundle hand-synchronised
+    with the thing it mirrors is the same defect plan step X-r deleted from
+    ``_projections``.
+
+    **Both spellings of a default are read**, because the app uses both: a
+    SQLAlchemy ``now()`` function, and raw SQL text (``db.text("CURRENT_DATE")``
+    on ``transaction_entries.entry_date``).  An ``isinstance(..., now)`` test
+    alone is blind to the second, which is how that column kept landing on the
+    real wall date while every timestamp beside it was frozen.
+
+    ``is_date`` carries the column's TYPE, because a ``DATE`` column must be
+    answered with a date: handing it an instant is a different value, not a
+    formatting detail.
 
     Args:
         model_class: A mapped model class taken off a session's unit of work.
 
     Returns:
-        A tuple of attribute names PostgreSQL would fill if the INSERT omitted
-        them.
+        A tuple of ``(attribute name, is_date)`` pairs PostgreSQL would fill if
+        the INSERT omitted them.
     """
     cached = _DB_CLOCK_INSERT_ATTRS.get(model_class)
     if cached is not None:
@@ -359,33 +388,44 @@ def _db_clock_insert_attrs(model_class):
     # Pylint: ``import-outside-toplevel`` -- this module imports no app or ORM
     # symbols at top level (its collection-time-safety convention).
     # pylint: disable=import-outside-toplevel
-    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy import Date, DateTime, inspect as sa_inspect
+    from sqlalchemy.sql.elements import TextClause
     from sqlalchemy.sql.functions import now as sa_now
 
-    resolved = tuple(
-        prop.key
-        for prop in sa_inspect(model_class).column_attrs
-        if prop.columns[0].server_default is not None
-        and isinstance(getattr(prop.columns[0].server_default, "arg", None), sa_now)
-    )
+    resolved = []
+    for prop in sa_inspect(model_class).column_attrs:
+        column = prop.columns[0]
+        default = column.server_default
+        if default is None:
+            continue
+        arg = getattr(default, "arg", None)
+        is_clock = isinstance(arg, sa_now) or (
+            isinstance(arg, TextClause)
+            and _DB_CLOCK_TEXT_DEFAULT_RX.search(str(arg)) is not None
+        )
+        if not is_clock:
+            continue
+        is_date = isinstance(column.type, Date) and not isinstance(
+            column.type, DateTime,
+        )
+        resolved.append((prop.key, is_date))
+    resolved = tuple(resolved)
     _DB_CLOCK_INSERT_ATTRS[model_class] = resolved
     return resolved
 
 
 def _stamp_omitted_db_defaults(session, _flush_context, _instances):
-    """Fill the ``NOW()``-defaulted columns an INSERT would otherwise omit.
+    """Fill the clock-defaulted columns an INSERT would otherwise omit.
 
     The first of finding N-65's two mechanisms, and the one the statement
     rewriter below CANNOT cover: a column left unset is simply absent from the
-    INSERT, so PostgreSQL applies its ``DEFAULT NOW()`` and the clock call
-    never appears in any SQL text to rewrite.  ``AccountAnchorHistory.created_at``
-    -- the column N-65 names -- is exactly this shape.
+    INSERT, so PostgreSQL applies its ``DEFAULT NOW()`` (or ``DEFAULT
+    CURRENT_DATE``) and the clock call never appears in any SQL text to
+    rewrite.  ``AccountAnchorHistory.created_at`` -- the column N-65 names --
+    is exactly this shape.
 
-    Every ``NOW()`` column of one row takes the SAME stamp, so ``created_at ==
+    Every clock column of one row takes the SAME stamp, so ``created_at ==
     updated_at`` on insert, exactly as the database would have written them.
-
-    It binds the rewriter to this session's engine on the way past, which is
-    the first moment a live engine is reachable (:data:`_DB_CLOCK_BOUND_ENGINES`).
 
     Args:
         session: The flushing :class:`~sqlalchemy.orm.Session`.
@@ -394,18 +434,37 @@ def _stamp_omitted_db_defaults(session, _flush_context, _instances):
     """
     if _FROZEN_DB_CLOCK is None:
         return
-    _bind_db_clock_rewriter(session)
     for obj in list(session.new):
         attrs = _db_clock_insert_attrs(type(obj))
         if not attrs:
             continue
         stamp = _FROZEN_DB_CLOCK.stamp()
-        for attr in attrs:
+        for attr, is_date in attrs:
             # ``__dict__`` rather than ``getattr``: an unset column is simply
             # absent from it, and reading through the instrumented attribute
             # would emit a load for a value that does not exist yet.
             if obj.__dict__.get(attr) is None:
-                setattr(obj, attr, stamp)
+                setattr(obj, attr, stamp.date() if is_date else stamp)
+
+
+def _db_clock_literal(match, stamp):
+    """Return the SQL literal that answers one matched clock call.
+
+    A ``current_date`` call yields a DATE and is answered with one; ``now()``
+    and ``current_timestamp`` yield an instant.  Answering a date question with
+    a timestamp would change the value's TYPE in the statement, which is a
+    different defect from the one being fixed.
+
+    Args:
+        match: The regex match for the clock call.
+        stamp: The frozen instant to answer with.
+
+    Returns:
+        A PostgreSQL literal, typed to match the call it replaces.
+    """
+    if match.group(0).lower().startswith("current_date"):
+        return f"DATE '{stamp.date().isoformat()}'"
+    return f"TIMESTAMPTZ '{stamp.isoformat()}'"
 
 
 def _rewrite_db_clock_calls(
@@ -435,9 +494,11 @@ def _rewrite_db_clock_calls(
     Every occurrence in one statement takes the same instant, so a row's
     ``created_at`` and ``updated_at`` do not disagree by a microsecond.
 
-    DDL is exempt: DECLARING a ``DEFAULT now()`` column is not asking the time.
-    Bound parameters are untouched -- the rewrite is on the statement TEXT, and
-    a value that happens to read ``now()`` travels as a parameter, never as SQL.
+    DDL is exempt: DECLARING a ``DEFAULT now()`` column is not asking the time,
+    and rewriting a ``CREATE TABLE`` would bake a frozen instant into the
+    SCHEMA.  Bound parameters are untouched -- the rewrite is on the statement
+    TEXT, and a value that happens to read ``now()`` travels as a parameter,
+    never as SQL.
 
     Args:
         _conn: The DBAPI connection wrapper (unused).
@@ -449,8 +510,8 @@ def _rewrite_db_clock_calls(
 
     Returns:
         ``(statement, parameters)`` -- the statement with every clock call
-        replaced by a literal, or the original pair when there is nothing to
-        rewrite.
+        replaced by a typed literal, or the original pair when there is nothing
+        to rewrite.
     """
     if _FROZEN_DB_CLOCK is None:
         return statement, parameters
@@ -459,55 +520,75 @@ def _rewrite_db_clock_calls(
         return statement, parameters
     if not _DB_CLOCK_CALL_RX.search(statement):
         return statement, parameters
-    literal = f"TIMESTAMPTZ '{_FROZEN_DB_CLOCK.stamp().isoformat()}'"
-    return _DB_CLOCK_CALL_RX.sub(literal, statement), parameters
+    stamp = _FROZEN_DB_CLOCK.stamp()
+    return (
+        _DB_CLOCK_CALL_RX.sub(
+            lambda match: _db_clock_literal(match, stamp), statement,
+        ),
+        parameters,
+    )
 
 
-def _bind_db_clock_rewriter(session):
-    """Attach the statement rewriter to the engine this session flushes through.
+def bind_db_clock_rewriter(engine):
+    """Attach the statement rewriter to *engine*, once per engine.
 
-    Done lazily rather than once against the ``Engine`` CLASS because a
-    class-level engine listener does not reach an engine that already exists,
-    and the app's engine is built by the session-scoped fixture long before any
-    test freezes its clock.  Measured while building this: the class-level
-    registration reported present while the live engine's own dispatch did not
-    hold the listener, and it silently never ran -- a fail-OPEN gate, the shape
-    this plan refuses everywhere else.
+    **Called from the session-scoped ``setup_database`` fixture, before any
+    test runs**, and that timing is the whole point.  It used to be called
+    lazily from the flush listener, which made the rewriter's INSTALLATION
+    depend on some earlier ORM flush having happened under a frozen clock in
+    the same worker process -- so a frozen test whose only writes were bulk
+    ``query.update(...)`` never bound it and silently got the real wall clock.
+    Measured by plan step X-h's adversarial review, same test, same assertion:
+
+        fresh process                     -> updated_at 2026-07-28 (WRONG)
+        after another test had flushed     -> updated_at 2026-03-20 (right)
+
+    A fail-OPEN gate whose result depends on test ORDER, which is the exact
+    class the sibling commit deleted from the checker suite (finding N-45).
+    Binding eagerly removes the dependency: the listener is always attached and
+    reads the frozen clock at call time, so it is inert until a test freezes.
+
+    A class-level ``Engine`` listener is NOT an alternative: it does not reach
+    an engine that already exists -- measured, ``event.contains(Engine, ...)``
+    reported True while the live engine's own dispatch did not hold the
+    listener and it never ran.
 
     Args:
-        session: The flushing :class:`~sqlalchemy.orm.Session`.
+        engine: The :class:`~sqlalchemy.engine.Engine` the suite writes through.
     """
     # Pylint: ``import-outside-toplevel`` -- see :func:`_db_clock_insert_attrs`.
     # pylint: disable=import-outside-toplevel
     from sqlalchemy import event
 
-    bind = session.get_bind()
-    if bind in _DB_CLOCK_BOUND_ENGINES:
+    if engine in _DB_CLOCK_BOUND_ENGINES:
         return
     event.listen(
-        bind, "before_cursor_execute", _rewrite_db_clock_calls, retval=True,
+        engine, "before_cursor_execute", _rewrite_db_clock_calls, retval=True,
     )
-    _DB_CLOCK_BOUND_ENGINES.add(bind)
+    _DB_CLOCK_BOUND_ENGINES.add(engine)
 
 
 def _freeze_db_clock(monkeypatch, target_date):
     """Make the DATABASE's clock agree with the clock the test just froze.
 
     The structural half of finding N-65 (balance plan step X-h).  Freezing
-    ``date.today()`` alone leaves PostgreSQL's ``now()`` untouched, and the
-    database answers it in three places: 61 columns take their INSERT value
-    from a ``NOW()`` server default, 23 of those re-stamp on UPDATE, and
-    ``status_seam`` assigns ``db.func.now()`` to ``Transaction.paid_at``
-    outright.  So a fixture that settled a row "now" stamped it months outside
-    the pay periods the test seeded, and the balance fold -- which dates every
-    event -- replayed it outside the window entirely.  Nothing noticed while
-    the shipping producers read the LATEST anchor row and ignored its date; the
-    fold made the instant load-bearing.
+    ``date.today()`` alone leaves PostgreSQL's clock untouched, and the
+    database answers it in four places: 61 columns take their INSERT value from
+    a ``NOW()`` server default, one from a ``CURRENT_DATE`` text default, 23 of
+    them re-stamp on UPDATE, and ``status_seam`` assigns ``db.func.now()`` to
+    ``Transaction.paid_at`` outright.  So a fixture that settled a row "now"
+    stamped it months outside the pay periods the test seeded, and the balance
+    fold -- which dates every event -- replayed it outside the window entirely.
+    Nothing noticed while the shipping producers read the LATEST anchor row and
+    ignored its date; the fold made the instant load-bearing.
 
     Two mechanisms cover it, and each covers what the other structurally
     cannot: :func:`_stamp_omitted_db_defaults` for a default that never appears
     in any SQL, and :func:`_rewrite_db_clock_calls` for every call that does --
-    including the bulk updates no session listener can see.
+    including the bulk updates no session listener can see.  The rewriter is
+    bound eagerly by the ``setup_database`` fixture
+    (:func:`bind_db_clock_rewriter`), never lazily, so neither mechanism
+    depends on the other having run.
 
     The instant is :func:`settle_instant_on`'s, which is this suite's existing
     primitive for "a deterministic instant on this civil day" -- noon UTC, the
@@ -521,17 +602,9 @@ def _freeze_db_clock(monkeypatch, target_date):
     would stamp inconsistent instants -- so the fix belongs in the harness, not
     in the models.
 
-    The flush listener binds to the SQLAlchemy ``Session`` CLASS once per
-    process; the rewriter attaches to each engine the first time a frozen test
-    flushes through it (:func:`_bind_db_clock_rewriter` records why it cannot
-    be a class-level engine listener).  Both read the module-level frozen clock
-    at call time, so they are inert in an unfrozen test and never need removing
-    -- which matters because ``monkeypatch`` can revert an attribute but cannot
-    detach an event listener.
-
     Stated boundary: a timestamp written by a database TRIGGER (the
     ``system.audit_log`` rows) still comes from the real clock, because the
-    trigger's own ``now()`` is never rendered into a statement this sees.  No
+    trigger's own clock call is never rendered into a statement this sees.  No
     balance producer reads those rows, and freezing them would take a
     ``search_path`` override that fails OPEN the moment anything resets the
     path.

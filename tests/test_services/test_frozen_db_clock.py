@@ -2,9 +2,10 @@
 
 ``tests/test_services`` freezes ``date.today()`` to 2026-03-20, inside the
 ``seed_periods`` window.  PostgreSQL's clock was untouched, and it answers in
-three places: 61 columns take their INSERT value from a ``NOW()`` server
-default, 23 of those re-stamp on UPDATE, and ``status_seam`` assigns
-``db.func.now()`` to ``Transaction.paid_at`` outright.  So a fixture that
+FOUR places: 61 columns take their INSERT value from a ``NOW()`` server
+default, one (``transaction_entries.entry_date``) from a raw-text
+``CURRENT_DATE`` default, 23 of them re-stamp on UPDATE, and ``status_seam``
+assigns ``db.func.now()`` to ``Transaction.paid_at`` outright.  So a fixture that
 settled a row "now" stamped it at the real wall clock -- months outside the
 periods the test seeded -- and the balance fold, which dates every event,
 replayed it outside the window entirely.  Nothing noticed while the shipping
@@ -24,10 +25,15 @@ never against the helper's own bookkeeping.
 from datetime import date, timedelta
 from decimal import Decimal
 
+from sqlalchemy import event
+
+from app.extensions import db as _db
 from app.models.account import AccountAnchorHistory
 from app.models.transaction import Transaction
+from app.models.transaction_entry import TransactionEntry
 from tests._test_helpers import (
     _db_clock_insert_attrs,
+    _rewrite_db_clock_calls,
     create_settled_cash_transaction,
     override_anchor,
 )
@@ -40,23 +46,36 @@ class TestTheDatabaseClockIsTheTestClock:
     """A row the DATABASE timestamps lands on the day the test froze."""
 
     def test_the_omitted_default_columns_are_derived_not_listed(self):
-        """Premise: the derivation actually finds the column N-65 names.
+        """Premise: the derivation finds every clock default, in both spellings.
 
         Asserted first and separately because every behavioural assertion in
         this class is vacuous if the derivation returns nothing -- a stamping
         rule that covers no columns would leave every timestamp to the database
         and still pass a test that only checked "no crash".
         """
-        anchor_attrs = _db_clock_insert_attrs(AccountAnchorHistory)
+        anchor_attrs = dict(_db_clock_insert_attrs(AccountAnchorHistory))
         assert "created_at" in anchor_attrs, (
             "AccountAnchorHistory.created_at is the NOW() server default "
             f"finding N-65 names; derivation found {anchor_attrs!r}"
         )
-        assert "created_at" in _db_clock_insert_attrs(Transaction)
+        assert anchor_attrs["created_at"] is False  # an instant, not a date
+        txn_attrs = dict(_db_clock_insert_attrs(Transaction))
+        assert "created_at" in txn_attrs
         # ``paid_at`` is NOT a column default -- it is an assignment inside the
         # status seam -- so it must NOT appear here.  That it is frozen anyway
         # is what the settle test below proves, through the other mechanism.
-        assert "paid_at" not in _db_clock_insert_attrs(Transaction)
+        assert "paid_at" not in txn_attrs
+        # The RAW-TEXT spelling: ``entry_date`` defaults to
+        # ``db.text("CURRENT_DATE")``, a TextClause, so an
+        # ``isinstance(..., now)`` test alone is blind to it -- which is how it
+        # kept landing on the real wall date while every timestamp beside it
+        # was frozen (found by plan step X-h's adversarial review).  And it is
+        # a DATE column, so it must be stamped with a date.
+        entry_attrs = dict(_db_clock_insert_attrs(TransactionEntry))
+        assert entry_attrs.get("entry_date") is True, (
+            "transaction_entries.entry_date is a CURRENT_DATE text default on a "
+            f"DATE column; derivation found {entry_attrs!r}"
+        )
 
     def test_a_server_defaulted_instant_lands_on_the_frozen_day(
         self, app, db, seed_user, seed_periods,
@@ -175,6 +194,82 @@ class TestTheDatabaseClockIsTheTestClock:
                 f"a bulk UPDATE stamped {moved.updated_at!r}, not the frozen "
                 f"{FROZEN_DATE!r} -- the statement rewriter did not reach it"
             )
+
+    def test_the_rewriter_is_bound_before_any_test_flushes(self, app):
+        """The rewriter's INSTALLATION must not depend on test order.
+
+        It used to be bound lazily, from inside the flush listener, so a frozen
+        test whose only writes were bulk ``query.update(...)`` never installed
+        it and silently got the real wall clock.  Measured by plan step X-h's
+        adversarial review, same test and same assertion:
+
+            fresh process                  -> updated_at 2026-07-28  (WRONG)
+            after another test had flushed -> updated_at 2026-03-20  (right)
+
+        It is bound by the session-scoped ``setup_database`` fixture instead,
+        so this holds at the first statement of the first test.
+        """
+        with app.app_context():
+            assert event.contains(
+                _db.engine, "before_cursor_execute", _rewrite_db_clock_calls,
+            ), "the frozen-clock rewriter is not bound to the engine"
+
+    def test_a_raw_text_date_default_is_frozen_too(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """``entry_date`` defaults to ``CURRENT_DATE`` and must be frozen.
+
+        The fourth mechanism, and the one an ``isinstance(..., now)``
+        derivation is structurally blind to: the default is
+        ``db.text("CURRENT_DATE")``, a ``TextClause``.  It is also a ``DATE``
+        column, so it must be answered with a DATE -- handing it an instant is
+        a different value, not a formatting detail.  Found by plan step X-h's
+        adversarial review, from PostgreSQL's own error DETAIL on a row whose
+        timestamps were frozen and whose ``entry_date`` was not.
+        """
+        with app.app_context():
+            txn = create_settled_cash_transaction(
+                seed_user, db.session, seed_periods[5], Decimal("30.00"),
+                name="N-65: raw text default",
+            )
+            entry = TransactionEntry(
+                transaction_id=txn.id,
+                user_id=seed_user["user"].id,
+                amount=Decimal("5.00"),
+                description="N-65: no explicit entry_date",
+            )
+            db.session.add(entry)
+            db.session.commit()
+
+            db.session.expire(entry)
+            assert entry.entry_date == FROZEN_DATE, (
+                f"entry_date is {entry.entry_date!r}, not the frozen "
+                f"{FROZEN_DATE!r} -- a raw-text clock default escaped"
+            )
+
+    def test_ddl_is_not_rewritten(self):
+        """Declaring a ``DEFAULT now()`` column is not asking the time.
+
+        The exemption is load-bearing and never fires in the suite by
+        construction (the schema is built from a template before any test), so
+        it is pinned here directly: rewriting a ``CREATE TABLE`` would bake a
+        frozen instant into the SCHEMA, which is a worse defect than the one
+        being fixed.  ``DO $$ ... $$`` is exempt for the same reason -- this
+        app ships audit and posting infrastructure as anonymous blocks.
+        """
+        ddl = "CREATE TABLE t (created_at timestamptz NOT NULL DEFAULT now())"
+        assert _rewrite_db_clock_calls(
+            None, None, ddl, {}, None, False,
+        )[0] == ddl
+        block = "DO $$ BEGIN PERFORM now(); END $$"
+        assert _rewrite_db_clock_calls(
+            None, None, block, {}, None, False,
+        )[0] == block
+        # And a real UPDATE is still rewritten, so the exemption is not
+        # swallowing everything.
+        dml = "UPDATE budget.transactions SET updated_at=now() WHERE id = 1"
+        rewritten = _rewrite_db_clock_calls(None, None, dml, {}, None, False)[0]
+        assert "now()" not in rewritten and "TIMESTAMPTZ '" in rewritten
 
     def test_rows_written_in_sequence_keep_their_order(
         self, app, db, seed_user, seed_periods,
