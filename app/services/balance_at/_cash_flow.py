@@ -1,88 +1,148 @@
 """Balance-at-T seam -- the CASH-FLOW view (no per-kind dispatch).
 
-The single-account cash-flow surfaces -- the budget grid, the obligations
-panel, the calendar, the checking detail page -- read an account's pure
+The single-account cash-flow surfaces -- the budget grid, the dashboard pulse,
+the analytics calendar, the cash detail page -- read an account's pure
 transaction running-balance, NOT its kind-correct balance (see the package
 docstring's "Two views, one seam").  These three entries are the seam's only
-fence-compliant way to obtain that view: thin pass-throughs to the canonical
-entries-aware producers, so a cash-flow surface never reaches a balance
-producer directly.
+way to obtain that view.
+
+**All three are one fold read at three grains** (plan step X-c2b2).  A period
+map, a scalar at a date, and a day-by-day series are the SAME running total
+(:mod:`app.services.balance_at._cash_fold`) sampled at period ends, at one
+date, and at every date -- so they cannot disagree.  Before the cutover they
+were three producers: the map carried an anchor forward over still-Projected
+rows only, the scalar re-walked to a date with its own entry-date window, and
+the daily series distributed the same rows over days -- and on the real
+Checking account the scalar and the series stood ``$15.96`` apart on the day
+before this commit (``$246.36`` at the worst day of the current period, finding
+cash D2), while both dropped every row settled after the last balance assertion
+(``$2,108.15`` invisible at that instant, finding cash D1) and answered a
+pre-anchor date by fabricating today's balance or omitting the period entirely
+(finding cash D3 / B-18).  One total fold subsumes all three.
 """
 
 from collections import OrderedDict
-from datetime import date
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from app.models.account import Account
 from ._context import BalanceContext
 
-from . import _cash_engine, _daily_series
+from . import _cash_fold
 from ._inputs import _require_scenario
+
+_ONE_DAY = timedelta(days=1)
+
+
+def _require_civil_date(entry: str, **dates: object) -> None:
+    """Refuse anything that is not exactly a civil :class:`datetime.date`.
+
+    **A ``datetime`` is refused, and that is the whole reason this is a
+    function.**  ``datetime`` SUBCLASSES ``date``, so the obvious
+    ``isinstance(value, date)`` accepts one -- the guard reads like a type
+    check and is not one.  The fold's step boundaries are civil dates, so a
+    ``datetime`` reaching them dies inside ``bisect_right`` with
+    ``'<' not supported between instances of 'datetime.datetime' and
+    'datetime.date'``: a real failure, but one whose traceback names a
+    bisect rather than the caller's argument, three layers from the mistake.
+
+    It is expressed as "a date that is NOT a datetime" rather than an exact
+    type test, because the suite's ``freeze_today`` clock hands the producers
+    its own ``date`` SUBCLASS -- a legitimate civil date that an exact test
+    would reject, turning a guard against one wrong type into a guard against
+    every subclass.
+
+    Saying the type this precisely also states the contract these entries
+    hold: a balance is asked for on a DAY.  An instant is the walk's concern
+    (the assertion partition), never a valuation date's.
+
+    Args:
+        entry: The seam entry's name, for the message.
+        **dates: The argument name -> value pairs to check, in order.
+
+    Raises:
+        TypeError: On the first value that is not exactly a ``date``.
+    """
+    for label, value in dates.items():
+        if not isinstance(value, date) or isinstance(value, datetime):
+            raise TypeError(
+                f"{entry} expects a civil datetime.date for {label}, "
+                f"got {type(value).__name__} {value!r}"
+            )
 
 
 def cash_balance_map(
-    account: Account,
-    ctx: BalanceContext,
-    periods: list,
-    *,
-    amount_overrides: "dict[int, Decimal] | None" = None,
-) -> _cash_engine.BalanceResult:
+    account: Account, ctx: BalanceContext, periods: list,
+) -> "OrderedDict[int, Decimal]":
     """Return one account's cash-flow running balance across *periods*.
 
     The cash-flow view: the account's projected end balance per period as a
-    pure transaction running-balance (the anchor carried forward by each
-    period's Projected, entry-aware net), with NO per-kind dispatch.  This
-    is what the single-account cash-flow surfaces show -- the budget grid,
-    the obligations cash-flow panel, and the checking detail page -- where
-    the balance row must reconcile with the account's own transaction rows
-    and subtotal row on the same screen.
+    pure transaction running-balance, with NO per-kind dispatch.  This is what
+    the single-account cash-flow surfaces show -- the dashboard pulse chart and
+    the cash detail page -- where the balance row must reconcile with the
+    account's own transaction rows and subtotal row on the same screen.
+
+    **The budget grid was on this list until plan step X-g3b and is not any
+    more** (ruling R-W): it reads :func:`~app.services.balance_at.grid_balance_view`,
+    which answers a modelled account its MODELLED balance.  A reader that wants
+    "what does the grid show" must call that entry -- for a modelled kind the
+    two now answer differently by design, and this one would look right while
+    proving nothing.
 
     Contrast with :func:`~app.services.balance_at.balance_map`, the
     KIND-CORRECT view: for an interest-bearing (HYSA), loan, investment, or
     property account ``balance_map`` dispatches to that kind's engine (accruing
     interest, walking an amortization schedule, compounding growth /
-    appreciation) -- which is what the net-worth surfaces want, but would
-    break a cash-flow surface.  Accruing interest into the grid's balance
-    row while its subtotal row stays transaction-based would violate the
-    grid's ``balances[p] - balances[p-1] == subtotals[p].net`` invariant,
-    and the grid account is not always cash (``resolve_grid_account`` can
-    return any kind).  So these surfaces ask for the cash-flow balance of
-    whatever account they are pointed at, regardless of its kind.
+    appreciation) -- which is what the net-worth surfaces want, and what a
+    cash-flow surface can only carry if the modelled movement is EXPLAINED on
+    screen beside it.  The reason this entry once gave -- "accruing interest
+    into the grid's balance row while its subtotal row stays transaction-based
+    would leave a balance change the rows on screen cannot explain" -- was
+    answered rather than overruled: ruling R-K put the explaining rows there
+    (the accrual and the contribution), so the grid moved to the modelled
+    balance at plan step X-g3b.  The surfaces still on THIS entry have no such
+    rows, so they ask for the cash-flow balance of whatever account they are
+    pointed at, regardless of its kind.
 
-    Delegates to :func:`~app.services.balance_at._cash_engine.balances_for` -- the
-    canonical entries-aware producer -- and returns its
-    :class:`~app.services.balance_at._cash_engine.BalanceResult` verbatim, so the
-    caller also gets the ``stale_anchor_warning`` flag the grid surfaces in
-    its banner (a data-quality signal ABOUT the projection, not a balance,
-    so it rides on the result rather than becoming a separate seam concern).
+    **The one kind they are never pointed at is AMORTIZING, and that is a
+    gate rather than a coincidence.**  A loan's balance is not a
+    transaction sum (finding B-3), so every resolver feeding these entries
+    refuses one at the source: ``resolve_grid_account`` since ruling D4 /
+    plan step A1 (grid, dashboard, pulse), ``resolve_analytics_account``
+    since plan step X-a1 (the calendar -- finding N-38), and the cash
+    detail page's own ``_cash_detail_wrong_type`` 404.  These producers
+    therefore stay TOTAL and kind-blind by design, and no screen can ask
+    them a question only ``balance_at.balance_at`` can answer.
 
-    ``amount_overrides`` passes straight through to ``balances_for`` (the
-    grid threads its pre-built live projected-income map here); ``None``
-    (the default) lets the producer build its own, byte-identical to the
-    prior direct call.
+    **EVERY requested period is in the result** (plan step X-c2b2).  The
+    retired producer projected forward from the anchor and omitted every
+    pre-anchor period, so a caller had to treat a missing key as "no balance";
+    the fold replays every assertion, so a past period answers with the balance
+    in force THEN.  Callers that skipped missing keys are unaffected -- there
+    are none left to skip.
 
     Args:
         account: The account whose cash-flow balance to project.  Its
-            ``user_id`` scopes the producer; its kind is NOT consulted.
+            ``user_id`` scopes the live salary override; its kind is NOT
+            consulted (ruling R-J).
         ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
-        periods: The pay periods to project over, ordered by
-            ``period_index`` (must include the anchor period; pre-anchor
-            periods are omitted from the result by the producer).
-        amount_overrides: Optional ``{transaction_id: Decimal}`` live
-            projected-net map (the grid threads its pre-built map here).
+            Its ``as_of`` is the reader's NOW -- what decides a still-projected
+            row cannot already have happened (ruling R-G) -- NOT a valuation
+            date; each period is valued at its own ``end_date``.
+        periods: The pay periods to project over, in display order.  They need
+            not be contiguous and need not start at the account's anchor.
 
     Returns:
-        The :class:`~app.services.balance_at._cash_engine.BalanceResult`: the
-        period_id -> Decimal balance map plus the ``stale_anchor_warning``
-        flag.
+        ``OrderedDict`` period_id -> cent-quantized ``Decimal``, in the order
+        *periods* was given.
 
     Raises:
         ValueError: When ``scenario`` is None -- callers that resolve a
             nullable baseline must guard first.
     """
     _require_scenario(ctx)
-    return _cash_engine.balances_for(
-        account, ctx.scenario.id, periods, amount_overrides=amount_overrides,
+    return _cash_fold.cash_period_balances(
+        account, ctx.scenario.id, ctx.as_of, periods,
     )
 
 
@@ -92,36 +152,44 @@ def cash_balance_at(
     """Return one account's cash-flow balance as of a calendar date *as_of*.
 
     The scalar cash-flow view -- the date-precise counterpart of
-    :func:`cash_balance_map`.  Delegates to
-    :func:`~app.services.balance_at._cash_engine.balance_as_of_date`, which sums
-    the account's Projected, entry-aware transaction rows up to *as_of*
-    (intra-period precise: entries dated after *as_of* are excluded).  Used
-    by the calendar's month-end balance, which must reconcile with the day
-    cells it renders for the same month.
+    :func:`cash_balance_map`, and literally the same fold read at one date, so
+    ``cash_balance_at(account, ctx, P.end_date)`` equals
+    ``cash_balance_map(account, ctx, [... P ...])[P.id]`` by construction rather
+    than by a test.  Used by the calendar's month-end balance, which must
+    reconcile with the day cells it renders for the same month.
 
     Like :func:`cash_balance_map`, this does NOT dispatch by kind: it is
     the cash-flow balance of whatever account the surface points at (the
     calendar's account can be any kind via an explicit ``account_id``).
     The KIND-CORRECT scalar is :func:`~app.services.balance_at.balance_at`.
 
+    **Two dates, deliberately distinct.**  ``ctx.as_of`` is the reader's NOW --
+    the floor ruling R-G clamps a still-projected row's landing day up to --
+    while *as_of* is the VALUATION date, which may be long past (a historical
+    read) or far future (a projection).  A past valuation date now answers with
+    the balance the account really held then, replayed from its assertions,
+    rather than with today's balance fabricated backwards (finding B-18).
+
     Args:
         account: The account to value.  Its kind is NOT consulted.
         ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
-            (its scenario scopes the producer).
+            (its scenario scopes the fold; its ``as_of`` is the reader's NOW).
         as_of: The calendar date to value the account at.
 
     Returns:
-        The ``Decimal`` cash-flow balance at *as_of*, quantized to cents by
-        the producer.
+        The cent-quantized ``Decimal`` cash-flow balance at *as_of*.
 
     Raises:
         ValueError: When ``scenario`` is None -- callers that resolve a
             nullable baseline must guard first.
-        TypeError: When ``as_of`` is not a :class:`datetime.date` (raised by
-            the underlying producer).
+        TypeError: When ``as_of`` is not a civil :class:`datetime.date` -- a
+            ``datetime`` INCLUDED (see :func:`_require_civil_date`).
     """
     _require_scenario(ctx)
-    return _cash_engine.balance_as_of_date(account, ctx.scenario.id, as_of)
+    _require_civil_date("cash_balance_at", as_of=as_of)
+    return _cash_fold.fold_cash_balances(
+        account, ctx.scenario.id, ctx.as_of, [as_of],
+    )[as_of]
 
 
 def cash_daily_balance_series(
@@ -129,18 +197,23 @@ def cash_daily_balance_series(
     ctx: BalanceContext,
     first_day: date,
     last_day: date,
-    *,
-    amount_overrides: "dict[int, Decimal] | None" = None,
 ) -> "OrderedDict[date, Decimal]":
     """Return one account's projected end-of-day cash-flow balance per day.
 
-    The daily-granularity cash-flow view -- the running-balance counterpart
-    of the period-flat :func:`cash_balance_at`.  Delegates to
-    :func:`app.services.balance_at._daily_series.build_daily_series`, which walks
-    each calendar day in ``[first_day, last_day]`` as a true checkbook
-    balance that steps on that day's projected, period-clamped, entry-aware
-    flows and reconciles with the grid at every period end
-    (``series[P.end_date] == cash_balance_at(account, scenario, P.end_date)``).
+    The daily-granularity cash-flow view -- the same fold as
+    :func:`cash_balance_at`, sampled at every day of the range instead of one,
+    which is what makes the calendar's running-balance line reconcile with the
+    other CASH-basis surfaces at every period end (the grid left that set at
+    plan step X-g3b, and the calendar can be pointed at a modelled account by
+    explicit ``account_id`` -- finding N-87 records the divergence)::
+
+        series[P.end_date] == cash_balance_at(account, ctx, P.end_date)
+
+    That identity used to be a claim two producers had to keep true (the series
+    distributed a period's still-Projected rows over their attribution days
+    while the scalar re-walked to the date through a different entry-date
+    window, and they measured ``$15.96`` apart on the real Checking account);
+    it is now a property of reading one running total twice.
 
     Like :func:`cash_balance_at` this does NOT dispatch by kind: it is the
     cash-flow balance of whatever account the surface points at (the
@@ -151,12 +224,9 @@ def cash_daily_balance_series(
         account: The account to project.  Its kind is NOT consulted; must be
             session-attached.
         ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
-            (its scenario scopes the producer).
+            (its scenario scopes the fold; its ``as_of`` is the reader's NOW).
         first_day: Inclusive first calendar day of the range.
         last_day: Inclusive last calendar day of the range.
-        amount_overrides: Optional ``{transaction_id: Decimal}`` live
-            projected-net map, forwarded to the producer (built there when
-            None, so income is live by default).
 
     Returns:
         An ``OrderedDict`` mapping each calendar ``date`` in the inclusive
@@ -166,11 +236,24 @@ def cash_daily_balance_series(
     Raises:
         ValueError: When ``scenario`` is None -- callers that resolve a
             nullable baseline must guard first.
-        TypeError: When ``first_day`` / ``last_day`` are not
-            :class:`datetime.date`.
+        TypeError: When ``first_day`` / ``last_day`` are not civil
+            :class:`datetime.date` values -- a ``datetime`` INCLUDED (see
+            :func:`_require_civil_date`).
     """
     _require_scenario(ctx)
-    return _daily_series.build_daily_series(
-        account, ctx.scenario.id, first_day, last_day,
-        amount_overrides=amount_overrides,
+    _require_civil_date(
+        "cash_daily_balance_series", first_day=first_day, last_day=last_day,
     )
+    if last_day < first_day:
+        return OrderedDict()
+
+    days: list[date] = []
+    day = first_day
+    while day <= last_day:
+        days.append(day)
+        day += _ONE_DAY
+
+    folded = _cash_fold.fold_cash_balances(
+        account, ctx.scenario.id, ctx.as_of, days,
+    )
+    return OrderedDict((day, folded[day]) for day in days)

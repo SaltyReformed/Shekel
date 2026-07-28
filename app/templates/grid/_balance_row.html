@@ -1,71 +1,120 @@
-{# Projected End Balance -- the only sticky footer row.
+{# Projected End Balance and the rows that explain it -- the sticky footer.
    Returned by the balance-row HTMX endpoint.  Replaces the entire
    <tfoot> when balanceChanged fires.  The self-referencing hx-get /
    hx-trigger / hx-swap attributes keep the refresh cycle alive.
 
-   Total Income, Total Expenses, and Net Cash Flow are now inline
-   subtotal rows in the <tbody> (added in Tasks 13-14).
+   Total Income, Total Expenses, and Net Cash Flow are inline subtotal
+   rows in the <tbody> (added in Tasks 13-14).
 
-   The stale-anchor warning banner is kept current via an out-of-band
-   swap of the #stale-anchor-warning wrapper -- emitted ONLY on the
-   HTMX response (oob=true), never on the initial page-load include
-   (grid.html already renders the wrapper there; an OOB swap on the
-   include would have no target to swap into).  This is how a desktop
-   mark-done that creates the stale-anchor condition surfaces the banner
-   without the old full page reload.
+   Ruling R-O seats the whole "how this balance is reached" chain here, in
+   one visual block: Timing & true-ups, then Contributions, then the modelled
+   return, then Projected End Balance.  Reading top to bottom from the Net Cash
+   Flow row above, that is the identity
 
-   PARSER CONSTRAINT (load-bearing): the OOB <div> below MUST stay
-   encapsulated in a <template> element.  htmx parses every partial
-   response inside a <template> wrapper; per the HTML5 tree-construction
-   spec a bare non-table element at the top level flips the parser from
-   the "in template" to the "in body" insertion mode, where the
-   following <tfoot>/<tr>/<td> start tags are silently DROPPED -- the
-   balance row swaps in as loose unstyled text and, because the
-   replacement carries no hx-trigger, the refresh cycle dies until the
-   next full page load.  htmx's swap pipeline scans nested <template>
-   elements for hx-swap-oob content and removes the wrapper, so the
-   encapsulated banner still swaps out-of-band while the <tfoot> stays
-   the first top-level element and parses intact.  Do not "simplify"
-   the wrapper away; tests/test_routes/test_grid.py pins this shape.
+       balance[p] - balance[p-1]
+           == net[p] + reconciliation[p] + contribution[p] + accrual[p]
 
-   Expected context: periods, balances, account, num_periods,
-   start_offset, low_balance_threshold, stale_anchor_warning, oob.
-   increments -- (optional) dict[period_id -> Decimal] per-period interest
-   accrual; when non-empty (INTEREST grid account) the read-only Interest
-   row renders above Projected End Balance.
+   and it holds because all five figures are one GridColumn -- one valued row
+   set grouped two ways plus its two modelled tiers -- rather than separate
+   producers a test keeps in step (ruling R-K).
+
+   ROW ORDER is the MODEL's own (ruling R-AH): a contribution lands on its pay
+   period's start_date and the day's accrual is then taken on the balance that
+   day ENDS holding, so the money is contributed and then earns.  Addition is
+   commutative and the identity holds either way; reading order is not.
+
+   The two modelled tiers are TWO rows rather than one sum, and that is the
+   ruling too: a single summed row can render POSITIVE on an account that lost
+   money (measured on the real Empower 401(k) at a -10.5% return, the market
+   takes -$7,366.83 while payroll puts in +$9,624.27, so one row would show
+   +$2,257.44).  ``/investment`` already renders the same two tiers apart, for
+   the reason its producer states -- "they answer different questions: what the
+   market did, and what the user put in".
+
+   All three explanatory rows are CONDITIONAL on the same rule, decided once in
+   the seam (GridBalanceView.row_flags, ruling R-O): present for the whole
+   visible window when at least one visible column carries a non-zero value,
+   showing its own figure in every column of that window.  The template only
+   reads the flag; it never decides visibility itself, because the same rule
+   governs four different windows.
+
+   The stale-anchor warning banner this partial used to swap out-of-band is
+   GONE (plan step X-c2b2), and with it this template's whole ``oob`` branch --
+   including the <template> wrapper the HTML5 parser needed so the banner
+   <div> could not flip the insertion mode and silently drop the <tfoot>.  The
+   banner warned that settled rows existed after the anchor and the projection
+   might therefore be wrong; the balance is now a fold that counts those rows
+   from the day they moved, so there is nothing left to warn about and nothing
+   left to swap.
+
+   Expected context: periods, columns, row_flags, accrual_label, account,
+   num_periods, start_offset, low_balance_threshold.
+     columns   -- dict[period_id -> GridColumn]; a period absent from it
+                  (only the user-with-no-accounts empty view) renders "--" for
+                  the balance and blanks for the explanatory rows.
+     row_flags -- GridRowFlags for THIS window (.reconciliation /
+                  .contribution / .accrual).
+     accrual_label -- the modelled-return row's per-kind heading, resolved in
+                  the route from classify_account (ruling R-AI): "Interest" on
+                  an HYSA, "Growth" on a 401(k), "Appreciation" on a house.
 #}
-{% if oob %}
-<template>
-  <div id="stale-anchor-warning" hx-swap-oob="true">
-    {% include "grid/_stale_anchor_warning.html" %}
-  </div>
-</template>
-{% endif %}
 <tfoot id="grid-summary"
        hx-get="{{ url_for('grid.balance_row', periods=num_periods|default(periods|length), offset=start_offset|default(0), account_id=account.id) if account else url_for('grid.balance_row', periods=num_periods|default(periods|length), offset=start_offset|default(0)) }}"
        hx-trigger="balanceChanged from:body"
        hx-swap="outerHTML"
        aria-live="polite"
        aria-atomic="true">
-  {% from "grid/_grid_row_macros.html" import mstart %}
+  {% from "grid/_grid_row_macros.html" import mstart, accrual_class, accrual_money %}
   {% from "_money_macros.html" import money %}
-  {# Read-only accrual row -- the interest the projected balance earns that
-     the transaction rows do not explain.  Rendered ONLY when ``increments``
-     is non-empty, which the balance-at seam populates exclusively for an
-     INTEREST grid account; for every other kind it is empty and this row is
-     omitted.  By construction balances[p] - balances[p-1] == subtotals[p].net
-     + increments[p], so the three rows reconcile to the cent.  Sits directly
-     above Projected End Balance so the Net Cash Flow -> Interest -> Balance
-     chain reads top to bottom. #}
-  {% if increments %}
-  <tr class="accrual-row interest-row">
+  {# Read-only remainder row (ruling R-O) -- money budgeted to this column
+     that moved in another, money that moved here but is budgeted elsewhere,
+     and the balance assertions made inside the period.  What the Total
+     Income / Total Expenses rows structurally cannot say about the balance
+     change. #}
+  {% if row_flags.reconciliation %}
+  <tr class="accrual-row reconciliation-row">
     <td class="sticky-col">
-      <i class="bi bi-percent" aria-hidden="true"></i> Interest
+      <i class="bi bi-arrow-left-right" aria-hidden="true"></i> Timing &amp; true-ups
     </td>
     {% for period in periods %}
-      {% set inc = increments.get(period.id) %}
+      {% set col = columns.get(period.id) %}
       <td class="text-end font-mono{{ mstart(periods, loop.index0) }}">
-        {% if inc is not none %}{{ money(inc, cents=false) }}{% endif %}
+        {% if col is not none %}{{ money(col.reconciliation, cents=false) }}{% endif %}
+      </td>
+    {% endfor %}
+  </tr>
+  {% endif %}
+  {# Read-only Contributions row -- what the account's payroll puts into it,
+     employee plus employer.  Only an INVESTMENT account has such a feed
+     (``_asset_contributions.contribution_events`` returns [] for every other
+     kind), so this row can never appear on an HYSA or a Property. #}
+  {% if row_flags.contribution %}
+  <tr class="accrual-row modelled-contribution-row">
+    <td class="sticky-col">
+      <i class="bi bi-plus-circle" aria-hidden="true"></i> Contributions
+    </td>
+    {% for period in periods %}
+      {% set col = columns.get(period.id) %}
+      <td class="text-end font-mono{{ mstart(periods, loop.index0) }}">
+        {% if col is not none %}{{ money(col.contribution) }}{% endif %}
+      </td>
+    {% endfor %}
+  </tr>
+  {% endif %}
+  {# Read-only modelled-return row -- the growth the projected balance earns
+     that the transaction rows do not explain, labelled per kind by the route
+     (ruling R-AI).  A column always carries a Decimal here: the field is total
+     since plan step X-g3a, so there is no per-cell "is not none" beside the
+     flag -- a guard against a shape the producer cannot be in. #}
+  {% if row_flags.accrual %}
+  <tr class="accrual-row modelled-accrual-row">
+    <td class="sticky-col">
+      <i class="bi bi-percent" aria-hidden="true"></i> {{ accrual_label }}
+    </td>
+    {% for period in periods %}
+      {% set col = columns.get(period.id) %}
+      <td class="text-end font-mono{{ mstart(periods, loop.index0) }}{% if col is not none %}{{ accrual_class(col.accrual) }}{% endif %}">
+        {% if col is not none %}{{ accrual_money(col.accrual) }}{% endif %}
       </td>
     {% endfor %}
   </tr>
@@ -75,7 +124,8 @@
       <i class="bi bi-bank"></i> Projected End Balance
     </td>
     {% for period in periods %}
-      {% set bal = balances.get(period.id) %}
+      {% set col = columns.get(period.id) %}
+      {% set bal = col.balance if col is not none else none %}
       <td class="text-end font-mono{{ mstart(periods, loop.index0) }} {% if bal is not none and bal < 0 %}balance-negative{% elif bal is not none and bal < low_balance_threshold %}balance-low{% endif %}">
         {% if bal is not none %}
           {% if bal < 0 %}<i class="bi bi-exclamation-triangle-fill" aria-hidden="true" title="Negative balance"></i> {% elif bal < low_balance_threshold %}<i class="bi bi-exclamation-circle" aria-hidden="true" title="Low balance"></i> {% endif %}

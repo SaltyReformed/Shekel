@@ -40,7 +40,7 @@ import pathlib
 import statistics
 import time
 from contextlib import contextmanager
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from urllib.parse import urlparse, urlunparse
 
@@ -596,11 +596,13 @@ from app.models.ref import (
 from app.services import account_service
 from app.services.auth_service import hash_password
 from tests._test_helpers import (
+    bind_db_clock_rewriter,
     create_loan_account,
     insert_trueup_event,
     make_appreciating_account,
     make_investment_account,
     posted_loan_balance_at,
+    restamp_opening_assertion,
 )
 
 
@@ -683,9 +685,21 @@ def setup_database(app):
     the whole per-session DB rather than table-by-table -- faster
     and less brittle than the previous ``drop_all`` + per-schema
     cascade.
+
+    It also binds the frozen-clock statement rewriter to the engine
+    (finding N-65, balance plan step X-h).  **Here, and not lazily when a
+    test first flushes**: binding on first flush made the rewriter's
+    installation depend on some earlier test in the same worker process
+    having flushed ORM state under a frozen clock, so a frozen test whose
+    only writes were bulk ``query.update(...)`` silently got the real wall
+    clock.  Same test, same assertion, opposite result depending on
+    scheduling -- a fail-OPEN gate.  The listener is inert until a test
+    freezes, so binding it before any test runs costs nothing and removes
+    the order dependence.
     """
     with app.app_context():
         _refresh_ref_cache_and_jinja_globals(app)
+        bind_db_clock_rewriter(_db.engine)
     yield
 
 
@@ -1012,6 +1026,32 @@ def seed_user(app, db):
     }
 
 
+def _pin_opening_to(db, account, anchor_period):
+    """Pin ``account``'s OPENING assertion to *anchor_period*'s first day.
+
+    The cross-page fixtures keep the ``seed_user`` bootstrap period and then
+    append their own anchor override, so unlike the ``seed_periods*`` fixtures
+    they never reach :func:`_drop_seed_user_bootstrap`'s re-stamp.  Without
+    this the opening keeps ``create_account``'s WALL-CLOCK instant, which falls
+    INSIDE the fixture's anchor month and therefore AFTER the override the
+    fixture writes at that month's start -- so the cash walk replays the
+    $1,000.00 origination LAST and it silently supersedes the balance the
+    fixture just asserted.  (The shipping producers never saw it: they read the
+    newest row and ignored its date.)
+
+    Args:
+        db: The SQLAlchemy ``db`` fixture.
+        account: The account whose opening to pin.
+        anchor_period: The period the fixture is about to anchor against.
+    """
+    restamp_opening_assertion(
+        db.session, account,
+        datetime.combine(
+            anchor_period.start_date, time.min, tzinfo=timezone.utc,
+        ),
+    )
+
+
 def _drop_seed_user_bootstrap(db, seed_user, account, new_anchor_period):
     """Replace ``seed_user``'s bootstrap pay period with the supplied new
     anchor and renumber the user's remaining periods to start at 0.
@@ -1056,9 +1096,22 @@ def _drop_seed_user_bootstrap(db, seed_user, account, new_anchor_period):
     # survive the cascade-delete (the rows would otherwise be wiped
     # by the AccountAnchorHistory.pay_period_id CASCADE FK).
     from app.models.account import AccountAnchorHistory  # pylint: disable=import-outside-toplevel
+    # The row's INSTANT moves with its period, not just its FK.  The account
+    # factory stamps the opening with the WALL CLOCK, while the suites freeze
+    # today inside their own seeded range -- so an unrestamped opening sorts
+    # AFTER every controlled assertion a test writes, which silently inverts
+    # which row the cash fold treats as the opening (ruling R-I books the
+    # FIRST assertion into its seed and keeps every later one as a reset).
+    # Pinning it to the new anchor period's first day is the production shape:
+    # an account opened on day one of the period it is anchored to.
     db.session.query(AccountAnchorHistory).filter_by(
         account_id=account.id, pay_period_id=bootstrap_id,
-    ).update({"pay_period_id": new_anchor_period.id})
+    ).update({
+        "pay_period_id": new_anchor_period.id,
+        "created_at": datetime.combine(
+            new_anchor_period.start_date, time.min, tzinfo=timezone.utc,
+        ),
+    })
     db.session.flush()
     # Step 2: delete the bootstrap row.
     db.session.query(PayPeriod).filter_by(id=bootstrap_id).delete()
@@ -1197,9 +1250,9 @@ def _build_cross_page_calendar_periods(db, user):
 
     Monthly (not biweekly) periods are deliberate: the anchor period's
     ``end_date`` IS a calendar month-end, so the C9-3 boundary invariant of
-    :func:`balance_resolver.balance_as_of_date` makes the calendar surface's
-    projected month-end balance equal the resolver's anchor-period balance
-    for the same data.  The anchor being the month containing today also
+    the seam's :func:`app.services.balance_at.cash_balance_at` makes the
+    calendar surface's projected month-end balance equal the anchor-period
+    balance for the same data.  The anchor being the month containing today also
     lets ``pay_period_service.get_current_period`` land on it with no
     date-mock plumbing.
 
@@ -1297,18 +1350,15 @@ def _neutralize_seed_checking(db, seed_user, anchor_period):
     # imported at conftest top (every fixture builds accounts via the
     # canonical factory); load it lazily, as seed_cross_page_account does.
     # pylint: disable=import-outside-toplevel
-    from app.models.account import Account, AccountAnchorHistory
+    from app.models.account import Account
+    from tests._test_helpers import override_anchor
 
     account = db.session.get(Account, seed_user["account"].id)
-    db.session.add(AccountAnchorHistory(
-        account_id=account.id,
-        pay_period_id=anchor_period.id,
-        anchor_balance=Decimal("0.00"),
+    _pin_opening_to(db, account, anchor_period)
+    override_anchor(
+        db.session, account, anchor_period, Decimal("0.00"),
         notes="per-kind cross-page fixture: neutralize seed checking to $0",
-    ))
-    account.current_anchor_balance = Decimal("0.00")
-    account.current_anchor_period_id = anchor_period.id
-    db.session.flush()
+    )
 
 
 @pytest.fixture()
@@ -1330,9 +1380,9 @@ def seed_cross_page_account(app, db, seed_user):
         ``[today.year - 1, today.year + 1]``.  Monthly (not biweekly)
         periods are chosen deliberately so the anchor period's
         ``end_date`` IS a calendar month-end -- the C9-3 boundary
-        invariant of :func:`balance_resolver.balance_as_of_date` then
-        guarantees the calendar surface's projected month-end balance
-        equals the resolver's anchor-period balance for the same data.
+        invariant of the seam's :func:`app.services.balance_at.cash_balance_at`
+        then guarantees the calendar surface's projected month-end balance
+        equals the anchor-period balance for the same data.
         Without that alignment a mid-period month-end would silently make
         the calendar surface look like a divergence even when the
         underlying math agrees, defeating the cross-page lock.
@@ -1373,8 +1423,9 @@ def seed_cross_page_account(app, db, seed_user):
         booleans as the entries-aware reduction's discriminants.
     """
     # pylint: disable=import-outside-toplevel
-    from app.models.account import Account, AccountAnchorHistory
+    from app.models.account import Account
     from app.models.transaction_entry import TransactionEntry
+    from tests._test_helpers import override_anchor
 
     def _build(
         anchor_balance: Decimal,
@@ -1415,16 +1466,11 @@ def seed_cross_page_account(app, db, seed_user):
         # instance whose attribute assignments are guaranteed to
         # mark the row dirty for the next flush.
         account = db.session.get(Account, seed_user["account"].id)
-        history = AccountAnchorHistory(
-            account_id=account.id,
-            pay_period_id=anchor_period.id,
-            anchor_balance=anchor_balance,
+        _pin_opening_to(db, account, anchor_period)
+        override_anchor(
+            db.session, account, anchor_period, anchor_balance,
             notes="seed_cross_page_account: HIGH-01 lock anchor override",
         )
-        db.session.add(history)
-        account.current_anchor_balance = anchor_balance
-        account.current_anchor_period_id = anchor_period.id
-        db.session.flush()
 
         # Single Projected envelope expense in the anchor period.
         # ``is_envelope=True`` is what makes the entries-aware
@@ -1750,11 +1796,16 @@ def cross_page_property_ctx(db, seed_user):
 
     Builds the shared period grid, neutralises the seed_user Checking to
     $0, then creates ONE Property whose user-set market value is V =
-    $400,000, anchored at the current period.  Anchor == current means the
-    flat carry and the forward appreciation coincide at today, so the
-    /savings tile, the home-equity market value, the year-end asset
-    aggregate, and the net-worth trend all read V.  Returns a ctx dict
-    mirroring ``seed_cross_page_account`` plus ``V``.
+    $400,000, anchored at the current period.
+
+    **Anchor == current no longer means the surfaces read V** (plan step X-g2b,
+    ruling R-Y): the anchor period earns its own days now, where the shipped
+    producer split on ``period_index > anchor_idx`` and served that period from
+    a flat carry.  What the surfaces must still agree on is the VALUE, whatever
+    it is -- which is what the cross-page classes assert, and what makes them a
+    wiring lock rather than a figure pin.  Returns a ctx dict mirroring
+    ``seed_cross_page_account`` plus ``V``, the ASSERTED value the modelled one
+    is measured against.
     """
     user = seed_user["user"]
     scenario = seed_user["scenario"]
@@ -1787,11 +1838,13 @@ def cross_page_investment_ctx(db, seed_user):
     Builds the shared period grid, neutralises the seed_user Checking to
     $0, then creates ONE 401(k) whose balance is V = $100,000, anchored at
     the current period, with no employer match and no contribution feed.
-    Anchor == current with no current-period contribution means the
-    /savings tile, the investment dashboard, the year-end asset aggregate,
-    and the net-worth trend all read the anchor balance V (the growth
-    projection re-applies nothing at the anchor period itself).  Returns a
-    ctx dict mirroring ``seed_cross_page_account`` plus ``V``.
+    Anchor == current used to mean every surface read the anchor balance V,
+    because the growth projection skipped the anchor period entirely.  **Ruling
+    R-Y gives that period its own days** (plan step X-g2b), so the surfaces read
+    V plus that growth; what they must still do is agree, which is what the
+    consuming test asserts -- reading the expected figure from the seam and
+    pinning it strictly above V.  Returns a ctx dict mirroring
+    ``seed_cross_page_account`` plus ``V``, the ASSERTED balance.
     """
     user = seed_user["user"]
     scenario = seed_user["scenario"]
@@ -1832,9 +1885,9 @@ def cross_page_investment_past_anchor_ctx(db, seed_user):
     net-worth-trend surfaces read the modeled value, and the reroute makes the
     tile adopt the modeled value the other kernel surfaces already report.
 
-    Contrast ``cross_page_investment_ctx`` (anchor == current), where the flat
-    carry and the projection coincide so every surface reads ``V0`` and there
-    is no divergence to lock.
+    Contrast ``cross_page_investment_ctx`` (anchor == current), where the
+    divergence is only that period's own growth (ruling R-Y) rather than a whole
+    anchor-to-today span.
 
     The seed_user Checking is neutralised to $0 so the AGGREGATE surfaces
     (year-end net worth, the savings net-worth trend) reflect the investment
@@ -1888,8 +1941,12 @@ def cross_page_secured_ctx(db, seed_user):
     $250,000 today, linked via ``mortgage.collateral_account_id =
     property.id`` so the property's ``secured_loans`` backref lists the
     mortgage.  The relationship under test: market value (PV) minus total
-    secured debt (MC) is the equity, which must equal the year-end
-    net-worth aggregate and the trend's net at the current period.  Returns
+    secured debt (MC) is the equity, on the equity producer's own basis.
+
+    **Since plan step X-g2b the /savings tile reads the MODELLED property value
+    while that producer still reads the ``current_anchor_balance`` cache
+    column** (finding N-83, scheduled for its own commit), so the consuming test
+    asserts the two differ by exactly that gap rather than matching.  Returns
     PV, MC, and both account handles plus the standard period keys.
     """
     # Pylint: ``import-outside-toplevel`` -- Account / LoanParams are loaded

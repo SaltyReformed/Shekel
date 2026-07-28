@@ -1,13 +1,28 @@
 """
 Shekel Budget App -- Savings Dashboard: orchestrator.
 
-Two public entry points.  ``compute_dashboard_data`` loads the core
-data, runs the per-account projections, computes goal progress, the
+``compute_dashboard_data`` is the full-page entry point: it loads the
+core data, runs the per-account projections, computes goal progress, the
 emergency-fund metrics, and the debt summary / DTI, and assembles the
-render-template context dict.  ``compute_debt_summary`` is the narrow
-producer behind the budget dashboard's debt card (deep-hunt #82): the
-same loaders, projection dispatch, and debt/DTI rule, restricted to
-the loan accounts the debt summary reads.  No Flask imports.
+render-template context dict.  Beside it are the NARROW producers, each
+running the same loaders and projection dispatch restricted to the
+accounts one consumer reads -- ``compute_debt_summary`` behind the budget
+dashboard's debt track (deep-hunt #82, Loop B B-1),
+``compute_goal_progress`` behind its
+savings tracks, and ``compute_account_balance_cell`` behind the cockpit's
+inline-edit revert.  **Every one of them has a live caller**: a narrow
+producer nothing calls is a second answer to a question with no question
+behind it, which is why ``compute_net_worth_horizon`` was deleted at plan
+step X-q2 (finding N-100) rather than kept for a consumer that never
+arrived -- ``/savings`` reads the Horizon range out of the ONE
+``compute_dashboard_data`` build.
+
+**And each narrow producer answers ONE question for ONE consumer**, which is
+what plan step X-u restored (ruling R-BS, finding N-109): there were two debt
+producers, both for the same debt track, so the dashboard ran this module's
+load -> params -> project pipeline twice per render and two docstrings promised
+they would keep agreeing on which loans count.  The second one's figure is a
+field of the first one's value object now.  No Flask imports.
 """
 
 from __future__ import annotations
@@ -17,15 +32,13 @@ from typing import TYPE_CHECKING
 
 from app.services import balance_at, savings_goal_service
 from app.services.balance_at import BalanceContext
+from app.services.net_worth_account_data import is_liability_account
 from app.services.savings_dashboard_service._data import (
     _load_account_params,
     _load_archived_accounts,
     _load_dashboard_core_data,
 )
-from app.services.savings_dashboard_service._horizon import (
-    _ENGINE_BANDS,
-    build_horizon,
-)
+from app.services.savings_dashboard_service._horizon import build_horizon
 from app.services.savings_dashboard_service._net_worth import (
     build_account_net_worth_maps,
     build_trend_periods,
@@ -37,7 +50,6 @@ from app.services.savings_dashboard_service._net_worth import (
 from app.services.savings_dashboard_service._display import (
     _compute_group_subtotals,
     _group_accounts_by_category,
-    account_category_key,
     category_key_by_account_id,
 )
 from app.services.savings_dashboard_service._goals import (
@@ -45,17 +57,19 @@ from app.services.savings_dashboard_service._goals import (
     _load_active_goals,
 )
 from app.services.savings_dashboard_service._metrics import (
-    _apply_dti_metrics,
+    DebtSummary,
     _compute_avg_monthly_expenses,
     _compute_debt_summary,
-    _compute_principal_paid_fraction,
     _get_current_paycheck_breakdown,
     _sum_liquid_balances,
 )
 from app.services.savings_dashboard_service._projections import (
     _compute_account_projections,
 )
-from app.services.savings_dashboard_service._types import _ProjectionContext
+from app.services.savings_dashboard_service._types import (
+    AccountProjection,
+    _ProjectionContext,
+)
 
 if TYPE_CHECKING:
     from app.services.paycheck_calculator import PaycheckBreakdown
@@ -70,9 +84,11 @@ def _build_projection_context(
 ) -> _ProjectionContext:
     """Assemble the request-scoped projection context from loaded data.
 
-    One definition of the core-data -> context mapping shared by both
-    public entry points so the full dashboard build and the narrow debt
-    producer cannot project against different inputs.
+    One definition of the core-data -> context mapping shared by every entry
+    point that projects -- the full dashboard build and the three narrow
+    producers (:func:`compute_debt_summary`, :func:`compute_goal_progress`, and
+    :func:`compute_account_balance_cell`) -- so no two of them can project
+    against different inputs.
 
     Args:
         core: The :class:`_DashboardCoreData` from
@@ -97,96 +113,51 @@ def _build_projection_context(
 
 
 def _debt_summary_with_dti(
-    account_data: list[dict],
+    account_data: list[AccountProjection],
     escrow_map: dict[int, list],
     current_breakdown: PaycheckBreakdown | None,
-) -> dict | None:
-    """Compute the debt summary and apply the DTI metrics to it.
+) -> DebtSummary | None:
+    """Resolve the engine gross and build the debt summary from it.
 
     The single home for the debt-card rule, shared by the full
     dashboard build and the narrow :func:`compute_debt_summary`
     producer so the /savings page and the budget dashboard's debt card
     cannot drift onto different figures.
 
+    Its remaining job is the BREAKDOWN -> gross unwrapping (plan step X-s3):
+    the DTI block is no longer applied to a finished summary but built with it
+    inside :func:`~.._metrics._compute_debt_summary`, which is what makes the
+    summary a value constructed in one place rather than a dict mutated across
+    two.
+
     Args:
-        account_data: Per-account dicts from
+        account_data: Per-account projections from
             ``_compute_account_projections`` (any mix -- the debt
-            summary reads only the entries carrying ``loan_params``).
+            summary reads only the entries carrying a ``loan`` detail).
         escrow_map: account_id -> list of EscrowLine with versions (PITI).
         current_breakdown: The engine ``PaycheckBreakdown`` for the
             current period, or ``None`` with no salary configured.
 
     Returns:
-        The debt-summary dict with the DTI keys applied, or ``None``
-        when no loan accounts with params exist.
+        The :class:`~.._metrics.DebtSummary`, or ``None`` when no loan
+        accounts with params exist.
     """
-    debt_summary = _compute_debt_summary(account_data, escrow_map)
-    if debt_summary is not None:
-        # MED-06 / F-032: ``gross_biweekly`` is the raise-aware engine
-        # output for the current period (``calculate_paycheck`` ->
-        # ``PaycheckBreakdown.earnings.gross_biweekly``), NOT the off-engine
-        # ``annual_salary / pay_periods`` recompute the DTI block read
-        # pre-Commit-26.  ``_apply_dti_metrics`` performs the
-        # biweekly -> monthly normalization on this engine-derived input.
-        gross_biweekly = (
-            current_breakdown.earnings.gross_biweekly if current_breakdown is not None
-            else Decimal("0.00")
-        )
-        _apply_dti_metrics(debt_summary, gross_biweekly)
-    return debt_summary
-
-
-def _project_loan_accounts(
-    user_id: int, balance_ctx: BalanceContext | None = None,
-) -> tuple[_DashboardCoreData, _AccountParams, list[dict]] | None:
-    """Load + project the user's loan accounts for the debt producers.
-
-    The single home for the load-core -> load-params -> filter-to-loans ->
-    early-``None`` -> build-context -> project pipeline that both narrow
-    debt producers (:func:`compute_debt_summary` and
-    :func:`compute_debt_principal_progress`) run verbatim.  Pylint's
-    cross-module ``duplicate-code`` cannot see same-module duplication, so
-    sharing this here is what keeps the two producers from drifting onto
-    different loan sets or projection inputs -- the docstrings' promise
-    that the debt summary's current balance and the principal-paid marker
-    "can never disagree on which loans count" is enforced by both reading
-    one projection of one loan set, not by two copies staying in sync.
-
-    Restricts the projection to the loan accounts (those with a
-    ``LoanParams`` row); per-account projections are independent, so the
-    restriction cannot change any projected figure versus the full build.
-
-    Args:
-        user_id: Integer ID of the current user.
-        balance_ctx: An existing read pass's
-            :class:`~app.services.balance_at.BalanceContext` to share, or
-            ``None`` to start one.  The budget dashboard's tracks section runs
-            two of these producers back to back, so it passes ONE context and
-            each loan is resolved once for the pair, not once per producer.
-
-    Returns:
-        ``(core, params, account_data)`` -- the loaded core data, the
-        account-parameter maps (carrying the ``escrow_map`` the debt
-        summary needs), and the per-loan-account projection dicts.
-        ``None`` when the user has no loan accounts with params, mirroring
-        ``_compute_debt_summary``'s no-loan ``None`` inside the full build.
-    """
-    core = _load_dashboard_core_data(user_id, balance_ctx)
-    params = _load_account_params(core.accounts)
-    loan_accounts = [
-        acct for acct in core.accounts if acct.id in params.loan_params_map
-    ]
-    if not loan_accounts:
-        return None
-
-    ctx = _build_projection_context(core, params)
-    account_data = _compute_account_projections(loan_accounts, ctx)
-    return core, params, account_data
+    # MED-06 / F-032: ``gross_biweekly`` is the raise-aware engine output for
+    # the current period (``calculate_paycheck`` ->
+    # ``PaycheckBreakdown.earnings.gross_biweekly``), NOT the off-engine
+    # ``annual_salary / pay_periods`` recompute the DTI block read
+    # pre-Commit-26.  ``_metrics._dti_metrics`` performs the
+    # biweekly -> monthly normalization on this engine-derived input.
+    gross_biweekly = (
+        current_breakdown.earnings.gross_biweekly if current_breakdown is not None
+        else Decimal("0.00")
+    )
+    return _compute_debt_summary(account_data, escrow_map, gross_biweekly)
 
 
 def compute_debt_summary(
     user_id: int, balance_ctx: BalanceContext | None = None,
-) -> dict | None:
+) -> DebtSummary | None:
     """Compute only the debt summary + DTI for the budget dashboard card.
 
     The narrow producer behind the dashboard's debt track
@@ -194,32 +165,68 @@ def compute_debt_summary(
     efficiency/SRP half).  Identical figures to
     ``compute_dashboard_data(user_id)["debt_summary"]`` by construction:
     it runs the same loaders and the same per-account projection
-    dispatch -- restricted to the accounts the debt summary reads (those
-    with a ``LoanParams`` row; per-account projections are independent,
-    so the restriction cannot change any projected figure), via the shared
-    :func:`_project_loan_accounts` -- and routes through the shared
+    dispatch -- restricted to the accounts the debt summary reads (its loans, plus
+    the other liabilities its ``revolving_debt`` figure names; per-account
+    projections are independent, so the restriction cannot change any
+    projected figure) -- and routes through the shared
     :func:`_debt_summary_with_dti`.  What it skips is the dashboard-only
     work: every non-loan account's projection, goal progress, the
     emergency-fund metrics, account grouping, and the archived-account
     list.
 
+    **It is the ONLY debt producer, as of plan step X-u** (ruling R-BS, finding
+    N-109).  There were two, and the tracks section called both, so ONE
+    dashboard render ran this load -> params -> project pipeline TWICE over the
+    same loans -- measured at 2 projections and 3 seam batches per render on the
+    developer's own data.  The second one existed to carry the principal-paid
+    fraction, which is now a field of the summary this one already builds.  The
+    pipeline they shared lived in a ``_project_debt_accounts`` helper whose whole
+    rationale was that two producers must not drift onto different loan sets;
+    with one producer that rationale is gone, so it is inlined here and the
+    three narrow producers left in this module read alike again -- the helper
+    was the asymmetry, not the DRY.
+
+    **The restriction to LIABILITY accounts is not an optimization detail.**
+    It was loans ONLY until plan step X-r's adversarial review:
+    ``debt_without_payoff_model`` sums the liabilities that are NOT loans, so
+    over a loans-only projection it always read ``$0.00`` here while the full
+    ``/savings`` build reported the real figure -- the silent divergence between
+    two paths to one number this arc exists to remove.
+
     Args:
         user_id: Integer ID of the current user.
-        balance_ctx: An optional shared read-pass context (see
-            :func:`_project_loan_accounts`).
+        balance_ctx: An existing read pass's
+            :class:`~app.services.balance_at.BalanceContext` to share, or
+            ``None`` to start one.  The budget dashboard's tracks section runs
+            this beside :func:`compute_goal_progress`, so it passes ONE context
+            and each loan is resolved once for the pair.
 
     Returns:
-        The debt-summary dict with the DTI keys applied, or ``None``
+        The :class:`~.._metrics.DebtSummary`, or ``None``
         when the user has no loan accounts with params (the early
         return mirrors ``_compute_debt_summary``'s no-loan ``None``
         inside the full build, and additionally skips the per-account
         projections and the breakdown's paycheck-engine call -- the
         debt summary needs neither).
     """
-    projected = _project_loan_accounts(user_id, balance_ctx)
-    if projected is None:
+    core = _load_dashboard_core_data(user_id, balance_ctx)
+    params = _load_account_params(core.accounts)
+    if not any(acct.id in params.loan_params_map for acct in core.accounts):
+        # No loans: the summary is ``None`` (a user whose only liability is a
+        # card has no payoff caption to qualify and no principal to progress),
+        # so nothing is projected at all.  This is a CHEAP SUFFICIENT condition
+        # for ``_compute_debt_summary``'s own no-loan ``None`` -- an account
+        # with a ``LoanParams`` row that the seam does not resolve as a loan
+        # gets past here and is answered ``None`` there -- not a second
+        # statement of it.
         return None
-    core, params, account_data = projected
+    debt_accounts = [
+        acct for acct in core.accounts
+        if acct.id in params.loan_params_map or is_liability_account(acct)
+    ]
+
+    ctx = _build_projection_context(core, params)
+    account_data = _compute_account_projections(debt_accounts, ctx)
 
     current_breakdown = _get_current_paycheck_breakdown(
         user_id, core.all_periods, core.current_period,
@@ -227,54 +234,6 @@ def compute_debt_summary(
     return _debt_summary_with_dti(
         account_data, params.escrow_map, current_breakdown,
     )
-
-
-def compute_debt_principal_progress(
-    user_id: int, balance_ctx: BalanceContext | None = None,
-) -> Decimal | None:
-    """Compute the aggregate fraction of original loan principal paid off.
-
-    The narrow producer behind the budget dashboard's debt track marker
-    (Loop B B-1): it runs the same loaders and per-account projection
-    dispatch :func:`compute_debt_summary` uses -- the shared
-    :func:`_project_loan_accounts` pipeline restricted to the loan
-    accounts -- and routes through the shared
-    :func:`_compute_principal_paid_fraction`.
-
-    Unlike the debt summary's active-loans-only ``total_debt``, the
-    fraction sums over ALL loans ever originated that the pipeline
-    surfaces -- reachably, every non-archived loan account with a
-    ``LoanParams`` row, INCLUDING paid-off ones (locked 2026-06-12 in
-    ``docs/design/dashboard_card_audit.md``, Rebuild decisions item 4).  A
-    paid-off loan keeps its original principal in both the numerator and
-    the denominator, so the marker is monotonic: it can only rise, reaches
-    exactly ``1`` when every loan is paid off, and never jumps backward as
-    a single loan retires.  The two surfaces deliberately scope different
-    loan sets -- the displayed balance is active-only, the progress marker
-    is all-loans-ever.
-
-    ``original_principal`` is a NOT NULL, ``> 0`` column on
-    :class:`~app.models.loan_params.LoanParams`, so a real loan always
-    supplies the denominator; the fraction is honest principal progress,
-    never a time-elapsed proxy.
-
-    Args:
-        user_id: Integer ID of the current user.
-        balance_ctx: An optional shared read-pass context (see
-            :func:`_project_loan_accounts`).
-
-    Returns:
-        The principal-paid fraction as a ``Decimal`` in ``[0, 1]``, or
-        ``None`` ONLY when the user has no loan accounts at all (the
-        :func:`_project_loan_accounts` early return).  A fully paid-off
-        loan set returns ``Decimal("1")``, not ``None``.  The UI renders
-        no marker for ``None``.
-    """
-    projected = _project_loan_accounts(user_id, balance_ctx)
-    if projected is None:
-        return None
-    _core, _params, account_data = projected
-    return _compute_principal_paid_fraction(account_data)
 
 
 def compute_goal_progress(
@@ -299,14 +258,14 @@ def compute_goal_progress(
     Card 5): income-relative goals (``target_amount`` NULL by design) now
     resolve their target via ``resolve_goal_target`` instead of rendering
     ``$0.00 / 0%``, and the balance basis is the entries-aware resolver
-    balance (``account_data[...]["current_balance"]``) rather than the
+    balance (each projection's ``current_balance``) rather than the
     raw stored ``current_anchor_balance``.  So this card and the /savings
     page report the same numbers for the same goal.
 
     Args:
         user_id: Integer ID of the current user.
         balance_ctx: An optional shared read-pass context (see
-            :func:`_project_loan_accounts`).
+            :func:`compute_debt_summary`).
 
     Returns:
         A list of per-goal progress dicts (see
@@ -342,57 +301,9 @@ def compute_goal_progress(
     )
 
 
-def compute_net_worth_horizon(user_id: int) -> dict | None:
-    """Compute the cockpit's long-horizon annual net-worth series (P-AC1).
-
-    The narrow producer behind the Net Worth Cockpit's ``Horizon`` range: an
-    annual net-worth composition + net-trajectory series out to the last loan
-    payoff plus a year (a loan-free user gets a fixed forward decade), plus
-    the milestone flags (loan payoffs, debt-free, ``$500k`` net crossings).
-    Loads the same core data, account-type params, and per-account
-    projections ``compute_dashboard_data`` runs (so the horizon's today point
-    equals the page's net-worth hero), classifies each account by the shared
-    id-based category key, and delegates to
-    :func:`~app.services.savings_dashboard_service._horizon.build_horizon` --
-    which reuses the /retirement engine for the retirement / investment
-    bands, per-account growth params for the asset band, and the loan
-    resolver schedules for the liability band.
-
-    Args:
-        user_id: Integer ID of the current user.
-
-    Returns:
-        The horizon series dict (see
-        :func:`~app.services.savings_dashboard_service._horizon.build_horizon`),
-        or ``None`` when the user has no pay periods (no axis to project
-        over).
-    """
-    core = _load_dashboard_core_data(user_id)
-    if not core.all_periods:
-        return None
-    # Classify every account (the category key needs only the account type,
-    # never a balance), then project ONLY the accounts the asset + liability
-    # bands read.  The retirement / investment bands come from the
-    # /retirement engine, which projects those accounts itself; projecting
-    # them here too would build their balance_at maps a second time this
-    # request (a redundant producer call), so they are excluded from the
-    # per-account projection while still classified for the engine bands.
-    category = {
-        acct.id: account_category_key(acct) for acct in core.accounts
-    }
-    non_engine_accounts = [
-        acct for acct in core.accounts
-        if category[acct.id] not in _ENGINE_BANDS
-    ]
-    params = _load_account_params(non_engine_accounts)
-    ctx = _build_projection_context(core, params)
-    account_data = _compute_account_projections(non_engine_accounts, ctx)
-    return build_horizon(user_id, core, account_data, category)
-
-
 def compute_account_balance_cell(
     user_id: int, account_id: int,
-) -> dict | None:
+) -> AccountProjection | None:
     """Compute one active account's cockpit balance cell.
 
     The narrow producer behind ``savings.cockpit_balance`` -- the GET
@@ -400,9 +311,7 @@ def compute_account_balance_cell(
     Cancel / Escape (``accounts._anchor_revert_url`` maps ``revert=accounts``
     here, mirroring how ``revert=dashboard`` maps to
     ``dashboard.balance_section``).  It re-renders
-    ``savings/_cockpit_balance.html`` for a single account, so it returns
-    that partial's contract: the ``account`` and its resolver
-    ``current_balance``.
+    ``savings/_cockpit_balance.html`` for a single account.
 
     SSOT with the grid: it runs the SAME load -> param-load -> project
     pipeline ``compute_dashboard_data`` runs, through the shared
@@ -412,6 +321,14 @@ def compute_account_balance_cell(
     A Cancel therefore restores the exact number the card grid showed,
     never a divergent recompute.
 
+    **It returns the projection ITSELF** (plan step X-t1, finding N-111).  It
+    used to copy three of its fields into a dict of its own, so the partial's
+    contract was stated in three places -- here, the grid's ``{% with %}``
+    include, and the partial's header comment -- and the SSOT promise above
+    held because those copies agreed rather than because both paths render one
+    value.  The partial now reads the same object the grid loop hands it, so
+    the revert and the cell it replaces cannot diverge by construction.
+
     Args:
         user_id: Integer ID of the current user (the owner; the caller has
             already verified ownership of *account_id* via the route's
@@ -419,9 +336,7 @@ def compute_account_balance_cell(
         account_id: Integer ID of the account whose balance cell to render.
 
     Returns:
-        A dict ``{"account": Account, "current_balance": Decimal | None,
-        "is_liability": bool}`` (the ``_cockpit_balance.html`` contract, so a
-        reverted liability cell keeps the danger ink), or ``None`` when
+        The account's :class:`~.._types.AccountProjection`, or ``None`` when
         *account_id* is not among the user's active accounts (e.g. it was
         archived between page load and the revert), which the caller turns
         into a 404.
@@ -438,12 +353,7 @@ def compute_account_balance_cell(
     # Route through the shared projection (which batch-builds the seam maps)
     # restricted to the one account, so the Cancel revert restores the exact
     # number the card grid showed.
-    account_dict = _compute_account_projections([acct], ctx)[0]
-    return {
-        "account": acct,
-        "current_balance": account_dict["current_balance"],
-        "is_liability": account_dict["is_liability"],
-    }
+    return _compute_account_projections([acct], ctx)[0]
 
 
 def _build_trend_window(
@@ -457,6 +367,12 @@ def _build_trend_window(
     ONLY the gate; the dense-map build assembles its own inside the
     :mod:`app.services.balance_at` seam.
 
+    **It carries no no-baseline guard of its own** (plan step X-t2, finding
+    N-107): its one caller owns that rule for the whole region, so this is
+    reached with a baseline and calls the seam unconditionally.  The guard it
+    used to hold silently answered the question a different way from the map
+    builder beside it.
+
     Args:
         core: The loaded core data (accounts, scenario, periods).
         params: The batch-loaded params (its loan-params map selects the
@@ -469,12 +385,9 @@ def _build_trend_window(
     loan_accounts = [
         acct for acct in core.accounts if acct.id in params.loan_params_map
     ]
-    debt_schedules = (
-        balance_at.debt_schedule_rows(loan_accounts, core.balance_ctx)
-        if core.balance_ctx.scenario is not None else {}
-    )
     return build_trend_periods(
-        core.accounts, core.all_periods, core.current_period, debt_schedules,
+        core.accounts, core.all_periods, core.current_period,
+        balance_at.debt_schedule_rows(loan_accounts, core.balance_ctx),
     )
 
 
@@ -506,7 +419,7 @@ def _compute_card_sparklines(
 def _compute_net_worth_section(
     core: _DashboardCoreData,
     params: _AccountParams,
-    account_data: list[dict],
+    account_data: list[AccountProjection],
     user_id: int,
 ) -> dict:
     """Assemble the cockpit's net-worth region, sparklines, and Horizon range.
@@ -535,12 +448,27 @@ def _compute_net_worth_section(
     (:func:`~app.services.savings_dashboard_service._horizon.build_horizon`
     returns ``None`` then).
 
+    **This is the ONE no-baseline door for the whole region** (plan step X-t2,
+    finding N-107).  Every seam read below it -- the dense maps, the trend
+    window's loan schedules, the sparklines and the Horizon's bands -- is
+    reachable only with a baseline, so the rule is stated HERE and the three
+    producers below simply call the seam.  It was stated in each of them
+    instead, and two of those copies degraded DIFFERENTLY: the map builder
+    returned an empty list (a $0 trend drawn over a real window) while the trend
+    window still built its axis.  A user with no baseline has no balance the app
+    can answer, so the honest region is the today figures over an empty series
+    and no Horizon at all -- which is exactly the state the no-pay-periods path
+    already renders, so the template and the client need no new branch.
+
+    The empty series is BUILT by :func:`compute_net_worth_series` over an empty
+    window rather than written out as a literal here, so the degraded shape
+    cannot drift from the real one.
+
     Args:
         core: The loaded :class:`_DashboardCoreData`.
         params: The batch-loaded :class:`_AccountParams`.
-        account_data: The per-account projection dicts already computed for
-            the page (the today figures + the asset / liability horizon
-            bands).
+        account_data: The per-account projections already computed for the
+            page (the today figures + the asset / liability horizon bands).
         user_id: The current user's id (for the Horizon range's /retirement
             engine reuse).
 
@@ -554,6 +482,11 @@ def _compute_net_worth_section(
     """
     today = compute_net_worth_today(account_data)
     category = category_key_by_account_id(account_data)
+
+    if not core.balance_ctx.has_baseline:
+        empty_series = compute_net_worth_series([], [], category)
+        empty_series["current_index"] = 0
+        return {**today, "series": empty_series, "horizon": None}, {}
 
     account_maps = build_account_net_worth_maps(
         core.accounts, core.balance_ctx, core.all_periods,
@@ -577,7 +510,7 @@ def _compute_net_worth_section(
 
 def _compute_cockpit_grid_section(
     core: _DashboardCoreData,
-    account_data: list[dict],
+    account_data: list[AccountProjection],
 ) -> dict:
     """Assemble the cockpit's account-grid context (Loop B Phase 2).
 
@@ -592,11 +525,11 @@ def _compute_cockpit_grid_section(
         core: The loaded :class:`_DashboardCoreData` (its ``accounts`` feed
             the equity resolver; its ``scenario`` supplies the loan
             resolver's scenario id, or ``None`` with no baseline scenario).
-        account_data: The per-account projection dicts already computed for
-            the page (the grouping and subtotal source).
+        account_data: The per-account projections already computed for the
+            page (the grouping and subtotal source).
 
     Returns:
-        dict with ``grouped_accounts`` (category label -> projection dicts),
+        dict with ``grouped_accounts`` (category label -> projections),
         ``group_subtotals`` (category label -> ``Decimal`` balance
         subtotal), and ``property_equity`` (list of ``{account, equity}`` for
         each Property account).
@@ -674,8 +607,9 @@ def compute_dashboard_data(user_id):
     # ── Template helpers ────────────────────────────────────────
     # Liquid accounts appear in the savings goal form dropdown.
     savings_accounts = [
-        ad["account"] for ad in account_data
-        if ad["account"].account_type and ad["account"].account_type.is_liquid
+        ad.account for ad in account_data
+        if ad.account.account_type is not None
+        and ad.account.account_type.is_liquid
     ]
 
     # ── Debt summary and DTI ───────────────────────────────────

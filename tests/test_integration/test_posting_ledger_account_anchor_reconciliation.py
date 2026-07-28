@@ -102,6 +102,7 @@ from tests._test_helpers import (
     ledger_net,
     linked_ledger_account,
     load_migration_module,
+    restamp_opening_assertion,
 )
 
 
@@ -354,6 +355,33 @@ def _entries_violating_balance() -> list[tuple[int, Decimal, int]]:
 # ---------------------------------------------------------------------------
 # Sweep assertions (production-wide, run after each scenario's mutations)
 # ---------------------------------------------------------------------------
+
+
+def _opening_correction_count(account_id: int, scenario_id: int) -> int:
+    """Count an account's posted OPENING correction entries in one scenario.
+
+    Read independently of the producer (a join from the account's LINKED
+    ledger to the ``account_opening`` journal entries), so a test can assert
+    that a reconcile wrote NOTHING new rather than that it produced the right
+    number -- the difference between "the skip still works" and "the answer is
+    right", which the sibling assertions cover.
+    """
+    linked = linked_ledger_account(_db.session, account_id)
+    entry_ids = (
+        _db.session.query(Posting.journal_entry_id)
+        .filter(Posting.ledger_account_id == linked.id)
+    )
+    return (
+        _db.session.query(JournalEntry)
+        .filter(
+            JournalEntry.scenario_id == scenario_id,
+            JournalEntry.source_kind_id == ref_cache.posting_source_id(
+                PostingSourceEnum.ACCOUNT_OPENING,
+            ),
+            JournalEntry.id.in_(entry_ids),
+        )
+        .count()
+    )
 
 
 def _assert_account_anchors_reconcile(scenario_id: int) -> None:
@@ -1052,6 +1080,131 @@ class TestZeroDeltaBooksNothing:
 
 class TestScenarioAndOwnerIsolation:
     """Corrections and sources never bleed across scenarios or owners."""
+
+    def test_a_settle_in_a_fresh_scenario_mints_that_scenarios_opening(
+        self, app, db, seed_user,
+    ):
+        """A scenario's FIRST activity on an account opens that ledger.
+
+        A scenario becomes live for an account the moment an entry first lands
+        on its linked ledger there.  The account-global sync only visits
+        scenarios that are ALREADY live, so the emission that makes a scenario
+        live is the one that has to mint its corrections -- and the
+        effect-time self-heal skipped it, because it tested only whether a
+        posted correction had gone STALE and a brand-new scenario has none to
+        stale.
+
+        Hand-computed, in the shape production would reach it: Checking opened
+        2026-01-02 at $1,000.00, a fresh scenario, one $70.00 expense settled
+        2026-03-03 -- two months AFTER the opening, so the change rides on top
+        of every assertion and the staleness arm correctly declines.  The
+        scenario's linked ledger must read 1000 - 70 = $930.00.  Before the
+        fix it read ``-$70.00``: the activity alone, with the opening and its
+        equity twin both missing, which is why the trial balance still closed
+        while the account's balance was wrong by its entire opening.
+
+        Latent rather than live today -- production creates baseline scenarios
+        only, and a baseline carries its corrections from account-create time
+        -- so this is the guard for the scenario-clone feature that would
+        otherwise ship on top of it.
+        """
+        with app.app_context():
+            checking = seed_user["account"]
+            opened = datetime(2026, 1, 2, 9, tzinfo=timezone.utc)
+            restamp_opening_assertion(db.session, checking, opened)
+            db.session.commit()
+
+            whatif = Scenario(
+                user_id=seed_user["user"].id, name="What-if",
+                is_baseline=False,
+            )
+            db.session.add(whatif)
+            db.session.commit()
+
+            create_settled_cash_transaction(
+                seed_user, db.session, seed_user["bootstrap_period"],
+                Decimal("70.00"), account=checking, scenario=whatif,
+                paid_at=datetime(2026, 3, 3, 12, tzinfo=timezone.utc),
+            )
+            db.session.commit()
+
+            assert posting_service.account_posting_total(
+                checking.id, whatif.id,
+            ) == Decimal("930.00")
+            # The baseline is untouched by the fresh scenario's activity.
+            assert posting_service.account_posting_total(
+                checking.id, seed_user["scenario"].id,
+            ) == Decimal("1000.00")
+            _assert_account_anchors_reconcile(whatif.id)
+            _assert_account_anchors_reconcile(seed_user["scenario"].id)
+
+    def test_a_settle_that_rides_on_top_does_not_rewalk_an_opened_ledger(
+        self, app, db, seed_user, monkeypatch,
+    ):
+        """The skip survives: an ordinary settle re-derives nothing.
+
+        The non-vacuity twin of the test above.  The fix widened the
+        self-heal's fire condition, so this pins that it did not widen it to
+        "always": a settle in a scenario that already carries its corrections,
+        dated after every assertion, must not walk the account at all.
+
+        **It counts the CALL, not the effect, and it has to.**  The reconcile
+        is idempotent -- running it here writes nothing either way -- so an
+        assertion about entries cannot tell a skipped walk from a performed
+        one, and a test that claimed to pin the skip while asserting entry
+        counts would pass with the skip deleted.  The spy delegates, so the
+        ledger still reconciles and the sibling assertions below are real.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.services.account_posting_service import _sync
+
+        with app.app_context():
+            checking = seed_user["account"]
+            opened = datetime(2026, 1, 2, 9, tzinfo=timezone.utc)
+            restamp_opening_assertion(db.session, checking, opened)
+            db.session.commit()
+            scenario_id = seed_user["scenario"].id
+
+            # First settle: the scenario is already open (the baseline carries
+            # its corrections from account-create time), so this must skip.
+            real = _sync.sync_account_anchor_postings
+            calls: list[tuple[int, int]] = []
+
+            def _spy(account_id, sync_scenario_id):
+                calls.append((account_id, sync_scenario_id))
+                real(account_id, sync_scenario_id)
+
+            monkeypatch.setattr(
+                _sync, "sync_account_anchor_postings", _spy,
+            )
+            create_settled_cash_transaction(
+                seed_user, db.session, seed_user["bootstrap_period"],
+                Decimal("40.00"), account=checking,
+                paid_at=datetime(2026, 3, 3, 12, tzinfo=timezone.utc),
+            )
+            db.session.commit()
+
+            assert calls == [], (
+                "an on-top settle in an already-opened scenario walked the "
+                f"account anyway: {calls}"
+            )
+            # ...and a settle dated BEFORE the assertion still fires, so the
+            # staleness arm is not what was disabled.
+            create_settled_cash_transaction(
+                seed_user, db.session, seed_user["bootstrap_period"],
+                Decimal("25.00"), account=checking,
+                paid_at=datetime(2025, 12, 1, 12, tzinfo=timezone.utc),
+            )
+            db.session.commit()
+            assert (checking.id, scenario_id) in calls
+
+            # The opening ABSORBS the pre-assertion settle (nothing rides on
+            # top of it) while the on-top one reduces the balance:
+            # 1000 - 40 = $960.00.
+            assert posting_service.account_posting_total(
+                checking.id, scenario_id,
+            ) == Decimal("960.00")
+            _assert_account_anchors_reconcile(scenario_id)
 
     def test_scenarios_reconcile_independently(self, app, db, seed_user):
         """Checking's opening + sources reconcile per scenario, never bleeding.

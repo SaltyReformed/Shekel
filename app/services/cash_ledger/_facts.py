@@ -7,8 +7,10 @@ and nothing that folds them:
   * :class:`AnchorPoint` / :func:`resolve_anchor` -- the user's balance
     ASSERTION, read from the dated ``AccountAnchorHistory`` source of truth
     (E-19).  A stored fact, not a computed projection.
-  * :func:`load_balance_transactions` -- the account's balance-contributing
-    transaction rows, with ``entries`` eager-loaded.
+  * :func:`planned_cash_rows` -- the account's still-PROJECTED
+    balance-contributing rows, unwindowed: the PLAN, which the seam's cash fold
+    dates and values (ruling R-G) because a plan's effective date depends on the
+    reader's as-of and this leaf reads no clock.
 
 The loan analog is :mod:`app.services.loan_ledger._events`: both answer "what
 happened, and in what order", never "what is the balance at T" -- which is the
@@ -37,13 +39,16 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import joinedload, selectinload
 
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
-from app.utils.balance_predicates import balance_contributing_clause
+from app.utils.balance_predicates import (
+    balance_contributing_clause,
+    is_projected_clause,
+)
 from app.utils.log_events import (
     BUSINESS,
     EVT_ANCHOR_CACHE_RECONCILED,
@@ -129,16 +134,28 @@ def resolve_anchor(account: Account, scenario_id: int) -> AnchorPoint:
             scenario-scoped at the storage tier -- so the anchor
             returned is identical across scenarios for the same
             account.  The parameter is kept in the signature for two
-            reasons: API symmetry with the
-            ``balances_for(account, scenario_id, periods)`` producer
-            that does need scenario for transaction filtering, and
-            forward compatibility with a possible future per-scenario
-            anchor override.  The value is included in the
+            reasons: API symmetry with the row loaders beside it
+            (``planned_cash_rows`` / ``settled_cash_facts``), which DO
+            need the scenario to filter transactions, and forward
+            compatibility with a possible future per-scenario anchor
+            override.  It cited the anchor-forward ``balances_for``
+            producer until plan step X-g4b deleted it; the symmetry
+            argument is unchanged, only its example is.  The value is included in the
             reconciliation log payload so a future scenario-scoped
             divergence is traceable.
 
     Returns:
         :class:`AnchorPoint` -- balance, period, and as-of-date.
+
+    **Ties break on ``id``, the way the WALK breaks them.**  Two assertions
+    can share an instant (a same-second true-up, or any fixture that stamps
+    both), and ``created_at DESC`` alone then returns whichever row the plan
+    happens to yield -- so the resolver could name one row as "latest" while
+    :func:`app.services.cash_ledger.merge_anchor_and_cash_events` (which
+    orders ``(created_at, id)``) replays the other one last.  One question
+    answered two ways by a query-plan artifact, silently swapping which
+    balance is authoritative.  Ordering by ``id`` second makes the two agree
+    by construction.
 
     Raises:
         RuntimeError: When no ``AccountAnchorHistory`` row exists for
@@ -149,7 +166,10 @@ def resolve_anchor(account: Account, scenario_id: int) -> AnchorPoint:
     latest: AccountAnchorHistory | None = (
         db.session.query(AccountAnchorHistory)
         .filter_by(account_id=account.id)
-        .order_by(AccountAnchorHistory.created_at.desc())
+        .order_by(
+            AccountAnchorHistory.created_at.desc(),
+            AccountAnchorHistory.id.desc(),
+        )
         .first()
     )
     if latest is None:
@@ -207,58 +227,125 @@ def resolve_anchor(account: Account, scenario_id: int) -> AnchorPoint:
     )
 
 
-def load_balance_transactions(
-    account: Account,
-    scenario_id: int,
-    period_ids: list[int],
+def planned_cash_rows(
+    account_id: int, scenario_id: int,
 ) -> list[Transaction]:
-    """Return the transactions that participate in a balance projection.
+    """Return an account's still-PROJECTED balance-contributing rows.
 
-    The single point where the producer's query lives.  Filters:
+    The PLAN half of the cash event stream, and the exact structural twin of
+    :func:`app.services.cash_ledger.settled_cash_facts` beside it: same account /
+    scenario scope, same shared eligibility gate, same eager loads, same absence
+    of a period window.  The two differ in their status narrowing (settled there,
+    Projected here) and in what they RETURN, and that second difference is the
+    ruling:
 
-      * ``account_id`` -- balance is per-account; never mix accounts.
-      * ``scenario_id`` -- balance is per-scenario.
-      * ``pay_period_id IN period_ids`` -- only the periods the caller
-        is projecting over.
-      * :func:`balance_contributing_clause` -- the centralized
-        ``is_deleted = FALSE AND status_id NOT IN (Credit, Cancelled)``
-        gate from ``app.utils.balance_predicates`` (E-15, Commit 2).
-        Using the shared clause here means the SQL filter and the
-        Python summation predicate cannot disagree.
+    * a SETTLED row can be dated by this leaf -- its instant is
+      ``COALESCE(paid_at, period start)``, a stored fact -- so ``_events`` returns
+      it valued and dated, as a
+      :class:`~app.services.cash_ledger.CashSourceFact`;
+    * a PROJECTED row cannot.  Its effective date is
+      ``max(its attribution date, as_of + 1 day)`` (ruling R-G: "a plan cannot
+      have already happened"), which is a function of the READER's as-of -- and
+      this package reads no clock, deliberately (a walk that read one made the
+      posted ledger a function of when the sync happened to run, the corruption
+      shape plan step A3 removed from the loan side).
 
-    The query MUST eager-load ``Transaction.entries`` so the
-    entries-aware reduction in
-    :func:`app.services.cash_ledger._amounts._entry_aware_amount`
-    applies unconditionally.  This is the structural fix for CRIT-01
-    / F-009: by owning the query, the producer guarantees the
-    selectinload that pre-remediation consumers each had to remember
-    to add themselves (and ``/savings``, ``/accounts``, calendar,
-    year-end, investment, and retirement collectively forgot to).
-    ``Transaction.status`` is already ``lazy='joined'`` on the model
-    so the joined load suffices; no extra ``selectinload(status)``
-    is needed and adding one would emit a redundant SELECT.
+    So this returns the rows THEMSELVES and the seam's cash fold owns the dating
+    and the valuation, exactly as the loan plan's PLANNED tier lives in
+    ``balance_at._plan`` rather than in ``loan_ledger`` (plan step C6a's ruling,
+    restated for cash).  That is also why it is a plain loader and not a
+    ``CashPlannedFact``: a fact type here would have to carry either no date (a
+    dataclass earning nothing over the row) or a clock-derived one (the thing the
+    ruling forbids).
+
+    **It takes no period window, for the same reason its settled twin does not.**
+    An argument a caller can get wrong is a defect, not a contract (plan
+    Section 8): the loan fold once TOOK the period list its visibility rule
+    needed, and the grid passing a WINDOW moved a balance by $150,000.00 (plan
+    step B1).  A fold over a windowed plan is a fold over a different account.
+
+    The eligibility gate is the shared
+    :func:`~app.utils.balance_predicates.balance_contributing_clause`
+    (``is_deleted = FALSE AND status_id NOT IN (Credit, Cancelled)``) composed
+    with :func:`~app.utils.balance_predicates.is_projected_clause` -- the SQL form
+    of the very ``is_projected`` predicate
+    :func:`~app.services.cash_ledger.sum_projected` re-applies when it values
+    these rows, so the loader and the reduction cannot disagree about which rows
+    are in the plan.  The status pair is redundant by construction (Projected is
+    neither Credit nor Cancelled) and composed anyway, so this loader and its
+    settled twin state "which rows exist at all" through one shared clause rather
+    than two hand-written filters.
 
     Args:
-        account: The :class:`~app.models.account.Account` to project.
-            Must be attached to ``db.session``.
-        scenario_id: The scenario the balance is being projected
-            under.
-        period_ids: Pay period ids the projection covers.  An empty
-            list yields an empty result (the empty-projection case;
-            the caller is expected to handle that upstream).
+        account_id: The account whose plan to load.
+        scenario_id: The budget scenario the rows live in.
 
     Returns:
-        ``list[Transaction]`` with ``entries`` eagerly populated.
+        ``list[Transaction]`` -- every still-Projected contributing row for the
+        account in the scenario, unordered (the fold groups them by day), with
+        ``entries`` and ``pay_period`` populated.
     """
-    if not period_ids:
-        return []
+    return _unwindowed_contributing_rows(
+        account_id, scenario_id, is_projected_clause(Transaction),
+    )
+
+
+def _unwindowed_contributing_rows(
+    account_id: int, scenario_id: int, status_clause,
+) -> list[Transaction]:
+    """Return an account's contributing rows in one scenario, narrowed by status.
+
+    The ONE unwindowed row load behind both halves of the cash event stream --
+    :func:`planned_cash_rows` above (still-Projected) and
+    :func:`app.services.cash_ledger.settled_cash_facts` (settled).  The two halves
+    partition the contributing set exactly: ``balance_contributing_clause``
+    admits Projected, Paid, Received and Settled, and the two callers narrow to
+    the first and the last three respectively.
+
+    Extracted when the second half was written and ``duplicate-code`` reported
+    the eight shared lines.  PRIVATE, and imported across sibling modules exactly
+    as ``_amounts._expense_amount`` already is: it is an implementation detail of
+    the two loaders, not a leaf surface a consumer should reach -- which is also
+    what keeps it out of the W9909 registry, structure doing what a fence entry
+    would otherwise have to.  Sharing it is not tidiness: the account / scenario
+    scope, the contributing gate, and BOTH eager loads are individually
+    load-bearing (a missing ``selectinload(entries)`` is the seam that shipped two
+    different balances for one row in CRIT-01 / F-009, and the fold reads
+    ``pay_period`` for its attribution clamp), so a second hand-written copy is
+    exactly where one of them would go missing on one half only.
+
+    **The status narrowing is a clause PARAMETER, and stays in SQL.**  Loading the
+    whole contributing set and partitioning in Python would be one query instead
+    of two, and is rejected: the Projected half is roughly two years of forward
+    projection, so a post-filter would eager-load entries for the whole horizon to
+    keep the ~130 settled rows the walk wants -- and the settled half has a
+    consumer (the walk, and at plan step X-d the posting writer) that never wants
+    the plan at all.
+
+    Args:
+        account_id: The account whose rows to load.
+        scenario_id: The budget scenario the rows live in.
+        status_clause: The caller's status narrowing as a SQLAlchemy boolean
+            expression over ``Transaction`` -- one of the shared builders in
+            :mod:`app.utils.balance_predicates`
+            (:func:`~app.utils.balance_predicates.is_projected_clause` for the
+            plan, ``status_id.in_(settled_status_ids())`` for the settled half),
+            never a literal written at the call site.
+
+    Returns:
+        ``list[Transaction]`` -- the matching rows, unordered, with ``entries``
+        and ``pay_period`` populated.
+    """
     return (
         db.session.query(Transaction)
-        .options(selectinload(Transaction.entries))
+        .options(
+            joinedload(Transaction.pay_period),
+            selectinload(Transaction.entries),
+        )
         .filter(
-            Transaction.account_id == account.id,
+            Transaction.account_id == account_id,
             Transaction.scenario_id == scenario_id,
-            Transaction.pay_period_id.in_(period_ids),
+            status_clause,
             balance_contributing_clause(),
         )
         .all()

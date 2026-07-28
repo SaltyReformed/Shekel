@@ -9,8 +9,9 @@ Terminal Road dashboard rebuild:
     end-balance chart + threshold, the full-horizon trough, the still-due
     totals on the locked B4 bases, and the current period's due-soon rows.
   * ``compute_tracks_section`` and ``_track_goal_datum``: the savings-goal
-    metro tracks (trajectory passthrough) and the debt track (debt summary
-    + honest principal-paid fraction).
+    metro tracks (trajectory passthrough) and the debt track (the debt
+    summary, which since plan step X-u carries the principal-paid fraction
+    that a second producer used to compute).
 
 The module-level autouse fixture (``test_services/conftest.py``) freezes
 ``date.today()`` to 2026-03-20, which falls in ``seed_periods[5]`` (the
@@ -36,7 +37,7 @@ from app.models.ref import AccountType
 from app.models.savings_goal import SavingsGoal
 from app.models.transaction import Transaction
 from app.services import account_service, dashboard_pulse_service, transfer_service
-from app.services import balance_at, pay_period_service
+from app.services import balance_at, pay_period_service, savings_dashboard_service
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
     add_anchor_history as _add_anchor_history,
@@ -122,11 +123,22 @@ class TestPulseHero:
             assert hero["period_end_date"] == seed_periods[_CURRENT_IDX].end_date
             assert hero["period_end_date"] == date(2026, 3, 26)
 
-    def test_hero_balance_is_as_of_today(self, app, seed_user, seed_periods, db):
-        """Hero balance equals balance_resolver.balance_as_of_date(today).
+    def test_hero_balance_is_the_current_periods_end(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """Hero balance is the current period's END, which is what it says.
 
-        With the seed account anchored at $1,000.00 and no transactions,
-        the as-of-today projected balance is exactly the anchor: $1,000.00.
+        ``_pulse.html`` labels ``#balance-display`` "End of this period", so the
+        figure is the hero's own period map at the current period -- and thus IS
+        the chart's first point rather than a second producer beside it.  It read
+        the as-of-TODAY scalar until plan step X-c2b2 (finding N-60): that was
+        legitimate only while the scalar was period-FLAT, and the fold made it
+        date-precise, so the two now differ by the whole unpaid remainder of the
+        current period.
+
+        With the seed account anchored at $1,000.00 and no transactions the two
+        coincide at exactly the anchor, $1,000.00 -- which is why this fixture
+        could not have caught the divergence and the label is what settles it.
         """
         with app.app_context():
             result = dashboard_pulse_service.compute_pulse_section(
@@ -1103,24 +1115,35 @@ class TestPulseDueSoonStations:
 
 
 class TestHeroChartIdentity:
-    """The hero balance coincides with the chart's first point.
+    """The hero balance IS the chart's first point, and the revert agrees.
 
-    With NO entries dated after today, the as-of-today balance (hero)
-    equals the current period's projected end balance (chart[0]) by
-    reservation semantics -- the data-value pass's locked identity that
-    Loop A's mockup data violated.
+    Both read the current period's entry in the SAME folded period map since
+    plan step X-c2b2, so their equality is structural rather than a
+    coincidence of reservation semantics -- which is why the assertion that
+    still earns its keep is the one against
+    ``dashboard_service.compute_balance_section``: the anchor-editor's revert
+    fragment renders the same ``#balance-display`` control from a SEPARATE
+    producer call, and that is the pair that can still drift.
+
+    (Before the cutover the hero was the as-of-TODAY scalar and the chart's
+    first point the period-END balance.  They coincided only because that
+    scalar was period-FLAT -- it summed the whole period's projected rows
+    whatever their dates -- so the identity this class was written for was
+    finding cash D2 holding the two together.  The template labels the figure
+    "End of this period"; the fold made the scalar date-precise, so the hero
+    moved to the date its own label promises.)
     """
 
     def test_hero_equals_first_chart_point_no_post_dated_entries(
         self, app, seed_user, seed_periods, db,
     ):
-        """Hero balance == chart points[0].balance with no post-dated entries.
+        """Hero balance == chart points[0].balance, and == the revert fragment.
 
         Seed account anchored $1,000.00.  Add a $300.00 projected expense
         and a $1,200.00 projected income in the current period, plus a
-        tracked envelope with an entry dated BEFORE today.  No entry is
-        dated after today, so the as-of-today reservation reduction sees
-        the whole current period and the two figures coincide.
+        tracked envelope with an entry dated BEFORE today.  The hero and the
+        chart's first point are one map entry; the revert fragment reaches
+        the same date through its own producer call, so all three must agree.
         """
         with app.app_context():
             current = seed_periods[_CURRENT_IDX]
@@ -1152,6 +1175,13 @@ class TestHeroChartIdentity:
             hero_balance = result["hero"]["balance"]
             first_point = result["chart"]["points"][0]["balance"]
             assert hero_balance == first_point
+            # The anchor-editor's revert fragment renders this same control
+            # from its own producer call -- the pair that can still drift.
+            # pylint: disable=import-outside-toplevel
+            from app.services import dashboard_service
+            assert dashboard_service.compute_balance_section(
+                seed_user["user"].id,
+            )["hero"]["balance"] == hero_balance
             # And the first chart point is the current period's end date.
             assert (
                 result["chart"]["points"][0]["end_date"]
@@ -1205,9 +1235,7 @@ class TestPulseCashFlowViewForAnyKindGridAccount:
             scenario = seed_user["scenario"]
             bctx = BalanceContext.build(seed_user["user"].id)
             current = seed_periods[_CURRENT_IDX]
-            cash = balance_at.cash_balance_map(
-                hysa, bctx, seed_periods,
-            ).balances
+            cash = balance_at.cash_balance_map(hysa, bctx, seed_periods)
             accrued = balance_at.balance_map(hysa, bctx, seed_periods)
 
             # The cash truth is hand-computable: anchor carried flat, no rows,
@@ -1410,7 +1438,13 @@ class TestTracksGoals:
 
 
 class TestTracksDebt:
-    """The debt track: debt summary + honest principal-paid fraction."""
+    """The debt track: the /savings debt summary, passed through whole.
+
+    It was a ``DebtTrack`` pairing that summary with a fraction from a SECOND
+    narrow producer until plan step X-u (finding N-109); the fraction is a
+    ``DebtSummary`` field now and this tier adds nothing to what the producer
+    answered.
+    """
 
     def test_no_debt_returns_none(self, app, seed_user, seed_periods, db):
         """No loan accounts -> debt is None (no track rendered)."""
@@ -1420,10 +1454,10 @@ class TestTracksDebt:
             )
             assert tracks["debt"] is None
 
-    def test_debt_track_carries_summary_and_fraction(
+    def test_debt_track_is_the_summary_whole(
         self, app, seed_user, seed_periods, db,
     ):
-        """A loan -> debt summary plus a principal_paid_fraction Decimal.
+        """A loan -> the very DebtSummary /savings renders, fraction included.
 
         A $1,000.00 auto loan originated 2026-01-01 at 5% for 24 months.
         By the frozen today (2026-03-20) confirmed payments have reduced
@@ -1444,12 +1478,27 @@ class TestTracksDebt:
             )
             debt = tracks["debt"]
             assert debt is not None
-            # The summary fields survive (delegated to compute_debt_summary).
-            assert "total_debt" in debt
-            assert "total_monthly_payments" in debt
-            assert "projected_debt_free_date" in debt
+            # The summary is PASSED THROUGH (plan steps X-s3, X-u), never
+            # copied field by field and no longer wrapped: the track IS the
+            # value ``/savings`` renders, so a field the summary grows arrives
+            # here by construction rather than by someone remembering to copy
+            # it.  Asserted as VALUE equality against the producer -- a frozen
+            # dataclass compares on every field, so a tier that dropped or
+            # altered one fails here, where a "these three keys are present"
+            # check passed while the dict silently lost the outlook's third
+            # state (finding N-104).
+            #
+            # Measured limit, stated rather than left implied: this fixture
+            # carries no revolving liability and no salary, so ``revolving_debt``
+            # and ``dti`` sit at their empty values on BOTH sides and a
+            # substitution there would not be discriminating.  The firing
+            # control therefore plants its defect in ``total_debt``, which the
+            # fixture does populate.
+            assert debt == savings_dashboard_service.compute_debt_summary(
+                seed_user["user"].id,
+            )
             # The honest fraction is present and is a Decimal in [0, 1].
-            fraction = debt["principal_paid_fraction"]
+            fraction = debt.principal_paid_fraction
             assert isinstance(fraction, Decimal)
             assert Decimal("0") <= fraction <= Decimal("1")
             # Reconcile with the summary: fraction uses the SAME current
@@ -1457,7 +1506,7 @@ class TestTracksDebt:
             # $1,000.00), so:
             #   fraction == (1000.00 - total_debt) / 1000.00.
             expected = (
-                (Decimal("1000.00") - debt["total_debt"]) / Decimal("1000.00")
+                (Decimal("1000.00") - debt.total_debt) / Decimal("1000.00")
             )
             assert fraction == expected
 
@@ -1484,9 +1533,55 @@ class TestTracksDebt:
                 seed_user["user"].id,
             )
             debt = tracks["debt"]
-            assert debt["total_debt"] == Decimal("1000.00")
+            assert debt.total_debt == Decimal("1000.00")
             # No principal paid yet -> fraction is exactly 0.
-            assert debt["principal_paid_fraction"] == Decimal("0")
+            assert debt.principal_paid_fraction == Decimal("0")
+
+    def test_one_render_projects_the_debt_accounts_once(
+        self, app, seed_user, seed_periods, db, monkeypatch,
+    ):
+        """ONE tracks render runs the debt projection ONCE (finding N-109).
+
+        The guard for the redundancy plan step X-u deleted, written against
+        the pipeline rather than against the clock: two debt producers each ran
+        ``_load_dashboard_core_data`` -> ``_load_account_params`` ->
+        ``_compute_account_projections`` over the same loans, so a render paid
+        for two full projections and three seam-batch builds (measured at 2 and
+        3 on the developer's own data, and at 2 and 3 on the prod-shape clone).
+
+        The fixture has a loan and NO savings goals, so
+        ``compute_goal_progress`` returns early without projecting anything and
+        every projection this counts is the debt one.  A wall-clock or
+        SQL-count assertion would be a flaky proxy for the same fact; the call
+        count is the fact.
+
+        Shown FIRING: restoring the second producer's call makes this read 2.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.services.savings_dashboard_service import _orchestrator
+
+        calls = []
+        original = _orchestrator._compute_account_projections
+
+        def _counting(accounts, ctx):
+            calls.append([acct.id for acct in accounts])
+            return original(accounts, ctx)
+
+        with app.app_context():
+            loan = create_loan_account(seed_user, db.session, name="Once Loan")
+            monkeypatch.setattr(
+                _orchestrator, "_compute_account_projections", _counting,
+            )
+
+            tracks = dashboard_pulse_service.compute_tracks_section(
+                seed_user["user"].id,
+            )
+
+            # The render really did produce the debt track (an empty result
+            # would satisfy a bare count of zero).
+            assert tracks["debt"] is not None
+            assert len(calls) == 1
+            assert loan.id in calls[0]
 
 
 # ── Tracks: income-relative goal pace passthrough ───────────────────

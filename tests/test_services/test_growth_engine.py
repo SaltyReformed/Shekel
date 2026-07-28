@@ -32,7 +32,8 @@ def _emp_type_id(member):
     The employer-params dict carries the type as a ref id under
     ``type_id`` (#38); ref_cache is initialized for every test by the
     autouse conftest fixtures, so these unit tests build the dict the
-    same way ``investment_projection._employer_params`` does.
+    same way ``investment_projection.employer_contribution_params``
+    does.
     """
     return ref_cache.employer_contribution_type_id(member)
 

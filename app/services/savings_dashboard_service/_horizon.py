@@ -38,10 +38,10 @@ The today point (index 0) is each band's real today balance, so the horizon
 net at index 0 equals the net-worth hero and the ``2 years`` series' current
 point by construction.
 
-No Flask imports; every function takes plain data (the loaded core data,
-the projected account dicts, the id-based category map) and returns plain
-``Decimal`` / ``dict`` data the route serializes at the presentation
-boundary.
+No Flask imports; every function takes plain data (the loaded core data, the
+per-account :class:`~.._types.AccountProjection` values, the id-based category
+map) and returns plain ``Decimal`` / ``dict`` data the route serializes at the
+presentation boundary.
 """
 
 from dataclasses import dataclass
@@ -54,12 +54,17 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
+from app.services.savings_dashboard_service._debt_line import (
+    debt_line_loans,
+    loan_payoff_outlook,
+)
 from app.services.savings_dashboard_service._net_worth import (
     _ASSET_BANDS,
     _COMPOSITION_BANDS,
     _LIABILITY_BAND,
     ZERO,
 )
+from app.services.savings_dashboard_service._types import AccountProjection
 
 if TYPE_CHECKING:
     from app.services.savings_dashboard_service._types import _DashboardCoreData
@@ -75,6 +80,32 @@ _MILESTONE_NET_STEP = Decimal("500000")
 _ONE_MILLION = Decimal("1000000")
 _ONE_THOUSAND = Decimal("1000")
 
+# The debt-free flag's label, named here because a milestone's label is now its
+# only handle (plan step X-s1, ruling R-BC).  The per-loan payoff label is
+# interpolated inline at its one site rather than given a constant of its own:
+# it has no second reader to keep in step, and a named constant with one use is
+# the speculative shape this step exists to remove.  A milestone dict carried a
+# machine ``kind`` until X-s1; nothing in ``app/`` read it -- the serializer
+# copied it into the payload and the client's flag plugin never looked at it --
+# so it was a published key with no consumer, which is finding N-100's own
+# defect one level down.  Deleting it leaves the label as the identity, and a
+# label a test matches on must come from HERE rather than be re-typed at the
+# assertion: plan step X-q3 renamed the debt-free flag ("Debt-free" -> the
+# string below) and a hand-typed copy in a test would have gone silently stale.
+#
+# **The two labels CAN collide, and that is ruled acceptable** (developer,
+# 2026-07-28, finding N-110): "<name> paid off" equals this string exactly for
+# an account a user names "All loans".  Two flags at two dates are two true
+# statements and the chart draws both; DROPPING one to keep labels unique would
+# hide a real payoff, which is the worse failure.  What a collision breaks is a
+# consumer that identifies a flag by its label ALONE -- so identify one by the
+# ``(label, date)`` PAIR, which is unique by construction because a per-loan
+# flag fires only strictly before the debt-free date.  Pinned by
+# ``TestAMilestoneLabelCanCollide``; re-adding a machine ``kind`` was rejected
+# on the same ground X-s3 deleted ``DtiMetrics.gross_monthly_income``: a field
+# whose only consumer is a test is a field with no consumer.
+_DEBT_FREE_MILESTONE_LABEL = "All loans paid off"
+
 # The most milestone flags the chart's two staggered lanes stay readable
 # with (P-AC1 ruling: "flag count capped for lane readability").  The cap
 # bounds the net-worth crossings -- the only unbounded set, since a very
@@ -83,9 +114,22 @@ _ONE_THOUSAND = Decimal("1000")
 # are always shown in full, filled first.
 _MILESTONE_CAP = 8
 
-# The two category bands the /retirement engine owns; the rest of the
-# accounts (asset / other / liability) are projected here.
+# The two category bands the /retirement engine owns.
 _ENGINE_BANDS = ("retirement", "investment")
+
+# The asset-side bands this module projects itself, from each account's own
+# growth parameter: everything the engine does NOT own.  DERIVED rather than
+# written out (plan step X-t5, out of X-t's adversarial design review), because
+# the union of the three band producers here -- engine, param-growth, liability
+# -- must EXHAUST the composition or the Horizon silently publishes a zero
+# series for the missing band while the ``2 years`` range beside it (which keys
+# off the category map) reports the real money.  That breaks this module's own
+# stated invariant, "the horizon net at index 0 equals the net-worth hero", with
+# nothing failing: the finding X-t3 gated across four languages, surviving in
+# the one language where it could be DERIVED instead.
+_PARAM_GROWTH_BANDS = tuple(
+    band for band in _ASSET_BANDS if band not in _ENGINE_BANDS
+)
 
 
 @dataclass(frozen=True)
@@ -116,48 +160,59 @@ class _HorizonFrame:
 
 
 def _resolve_horizon_domain(
-    account_data: list[dict], today: date,
-) -> tuple[date, date | None, bool]:
-    """Resolve the horizon domain end, debt-free date, and loan-free flag.
+    account_data: list[AccountProjection], today: date,
+) -> tuple[date, date | None]:
+    """Resolve the horizon domain end and the debt-free flag's date.
 
-    The domain runs to the last active loan payoff plus one year, rounded up
-    to that year's end (so the final sample lands on a year end).  Only
-    FUTURE payoffs of active (not paid-off) loans count; a user whose loans
-    are all retired or dated in the past is treated as loan-free and gets the
-    fixed :data:`_LOAN_FREE_HORIZON_YEARS`-year forward window.
+    The domain runs to the payoff of the user's last debt-line loan plus one
+    year, rounded up to that year's end (so the final sample lands on a year
+    end).  The payoff is NOT derived here: it is
+    :func:`~.._debt_line.loan_payoff_outlook`, the ONE derivation the cockpit
+    caption and the dashboard debt track read as well (plan step X-q), so the
+    flag this chart plants and the caption beside it cannot come from two
+    membership rules -- which is exactly how they came to be 19 years apart on
+    the developer's own data (finding N-98).
+
+    **This producer applies one rule of its own, and it is a RENDERING
+    constraint rather than a second opinion**: the axis is today-forward, so a
+    payoff that is not in the future cannot size a domain and cannot carry a
+    flag -- :func:`app.routes.savings._milestone_axis_x` clamps a target at or
+    before ``dates[0]`` to index ``0.0``, so the flag would be planted on the
+    "Today" sample rather than on the month the loan actually cleared.  The
+    outlook legitimately reports such a date -- an overdue-but-still-projected
+    installment that clears the loan folds at a past DUE date, developer ruling
+    at plan step X-q -- and this falls back to the fixed
+    :data:`_LOAN_FREE_HORIZON_YEARS`-year window for it, exactly as it does
+    when there is no date at all.  The caption on the same page reports the
+    date either way, which is the ruling's other half.
+
+    **This answers what the AXIS needs and nothing else** (plan step X-q2,
+    finding N-100).  The three states the ``None`` date covers -- no loans at
+    all, a loan that never clears, and a payoff already behind us -- belong to
+    :class:`~.._debt_line.LoanPayoffOutlook`, which is where they are derived;
+    the cockpit footer beside this chart renders the same distinction off the
+    :class:`~.._debt_line.LoanPayoffOutlook` the debt summary carries WHOLE
+    (plan step X-s3 closed finding N-104's field-by-field copy this sentence
+    used to describe; corrected at X-t5).  This returned a
+    third ``is_loan_free`` element until X-q2; nothing ever read it, and a
+    producer republishing another module's derived property is the copy ruling
+    R-AW deleted from the projection dict one layer down.
 
     Args:
-        account_data: The per-account projection dicts (loans carry
-            ``loan_params``, ``payoff_date``, and ``is_paid_off``).
+        account_data: The per-account projections (a configured loan carries a
+            :class:`~.._types.LoanDetail`).
         today: The producer's as-of date.
 
     Returns:
-        ``(horizon_end, debt_free_date, is_loan_free)`` -- the year-end
-        domain end, the last future payoff date (``None`` when loan-free OR
-        when an active loan never clears), and whether the user has no debt
-        line at all.  Those two ``None`` cases differ in ``is_loan_free``:
-        a borrower whose loan never pays off is NOT loan-free, and the
-        caller must not caption them as debt-free.
+        ``(horizon_end, debt_free_date)`` -- the year-end domain end, and the
+        last FUTURE payoff date (``None`` when loan-free, when a debt-line loan
+        never clears, and when the only payoff is already past; a caller that
+        must tell those apart reads the outlook, not this).
     """
-    active = [
-        ad for ad in account_data
-        if ad.get("loan_params") and not ad.get("is_paid_off")
-    ]
-    # An ACTIVE loan with no payoff never clears at its current payment (plan
-    # C8d), so there is no debt-free date at all -- and the user is emphatically
-    # not loan-free.  Skipping it would take ``max()`` over the loans that DO
-    # clear and plant a "Debt-free" milestone on a borrower who still owes; with
-    # every loan in that state it would fall through to the loan-free fallback
-    # window entirely.
-    if any(ad.get("payoff_date") is None for ad in active):
-        return date(today.year + _LOAN_FREE_HORIZON_YEARS, 12, 31), None, False
-    payoff_dates = [
-        ad["payoff_date"] for ad in active if ad["payoff_date"] > today
-    ]
-    debt_free_date = max(payoff_dates) if payoff_dates else None
-    if debt_free_date is not None:
-        return date(debt_free_date.year + 1, 12, 31), debt_free_date, False
-    return date(today.year + _LOAN_FREE_HORIZON_YEARS, 12, 31), None, True
+    outlook = loan_payoff_outlook(account_data)
+    if outlook.all_clear_on is None or outlook.all_clear_on <= today:
+        return date(today.year + _LOAN_FREE_HORIZON_YEARS, 12, 31), None
+    return date(outlook.all_clear_on.year + 1, 12, 31), outlook.all_clear_on
 
 
 def _build_sample_dates(today: date, horizon_end: date) -> list[date]:
@@ -287,12 +342,14 @@ def _retirement_investment_bands(
 
     The employer-contribution base is held CONSTANT (``employer_salary_basis``
     is ``None``), which is what the ruled oracle used and what every
-    net-worth consumer does -- the ``2 years`` band's investment growth
-    (``balance_at._investment._forward_project_rows`` ->
-    ``growth_engine.project_balance`` with no ``salary_basis``) keeps the
-    constant base too, so the Horizon retirement band and the ``2 years``
-    retirement band agree at their shared today point and share one growth
-    model.  Only the /retirement READINESS page grows the employer base with
+    net-worth consumer does.  **The two bands no longer share a growth MODEL**
+    (plan step X-g2b): the ``2 years`` band is the per-period balance map, which
+    is now the daily event replay, while this Horizon band still projects
+    forward through ``growth_engine`` -- ruling R-U keeps the engine for the
+    forward what-if and moves only the balance-at-T half.  What they share is
+    their TODAY point (both read the seam's modelled value there) and the
+    constant employer base, so the two ranges of one chart still meet where they
+    touch.  Only the /retirement READINESS page grows the employer base with
     the projected salary path (its own fork F3 refinement, documented at
     ``retirement_dashboard_service`` as "every other engine consumer keeps
     the constant base"); applying it here would diverge the Horizon range
@@ -377,13 +434,15 @@ def _horizon_growth_rate(account, kind: AccountProjectionKind) -> Decimal:
 
 
 def _asset_bands(
-    account_data: list[dict],
+    account_data: list[AccountProjection],
     category_by_account_id: dict[int, str],
     frame: _HorizonFrame,
 ) -> dict[str, list[Decimal]]:
-    """Project the asset and other bands from each account's growth param.
+    """Project the non-engine asset bands from each account's growth param.
 
-    Every asset-category (and degenerate "other") account is seeded from its
+    Every account whose band is in :data:`_PARAM_GROWTH_BANDS` -- the
+    asset-side categories the /retirement engine does not own, today ``asset``
+    and the degenerate ``other`` -- is seeded from its
     real today balance and compounded forward over the horizon axis at its
     own rate (:func:`_horizon_growth_rate`) through the one
     :func:`app.services.growth_engine.project_balance` formula: a Property
@@ -393,22 +452,22 @@ def _asset_bands(
     :func:`_liability_band`, so they are skipped here.
 
     Args:
-        account_data: The per-account projection dicts (the ``current_balance``
+        account_data: The per-account projections (the ``current_balance``
             seeds each account's growth).
         category_by_account_id: Each account's id-based category key.
         frame: The horizon time frame.
 
     Returns:
-        ``{"asset": [...], "other": [...]}`` -- each band's Decimal series
-        over ``frame.sample_dates``.
+        One Decimal series per :data:`_PARAM_GROWTH_BANDS` band over
+        ``frame.sample_dates`` (today: ``asset`` and ``other``).
     """
-    bands = {"asset": _zero_series(frame), "other": _zero_series(frame)}
+    bands = {band: _zero_series(frame) for band in _PARAM_GROWTH_BANDS}
     for ad in account_data:
-        account = ad["account"]
+        account = ad.account
         band = category_by_account_id.get(account.id)
         if band not in bands:
             continue
-        today_value = ad["current_balance"] or ZERO
+        today_value = ad.current_balance or ZERO
         rate = _horizon_growth_rate(account, classify_account(account))
         rows = growth_engine.project_balance(
             current_balance=today_value,
@@ -423,7 +482,7 @@ def _asset_bands(
 
 
 def _liability_band(
-    account_data: list[dict],
+    account_data: list[AccountProjection],
     core: "_DashboardCoreData",
     frame: _HorizonFrame,
 ) -> list[Decimal]:
@@ -447,10 +506,10 @@ def _liability_band(
     liability's ledger-confirmed current balance by construction.
 
     Args:
-        account_data: The per-account projection dicts (each carrying
-            ``account``, ``is_liability``, and ``current_balance`` -- the
-            already-resolved balance the hero renders, threaded into the seam
-            rather than re-resolved).
+        account_data: The per-account projections (each carrying an
+            ``account``, answering ``is_liability``, and carrying the
+            ``current_balance`` -- the already-resolved balance the hero
+            renders, threaded into the seam rather than re-resolved).
         core: The loaded dashboard core data (its ``scenario`` scopes the loan
             resolver; ``None`` is a valid no-baseline state the seam handles by
             holding every liability flat).
@@ -465,18 +524,18 @@ def _liability_band(
         positive owed total per point).
     """
     band = _zero_series(frame)
-    liability_ads = [ad for ad in account_data if ad.get("is_liability")]
+    liability_ads = [ad for ad in account_data if ad.is_liability]
     if not liability_ads:
         return band
 
     owed_by_account = balance_at.liability_owed_at_dates(
-        [ad["account"] for ad in liability_ads],
+        [ad.account for ad in liability_ads],
         core.balance_ctx,
         frame.sample_dates,
-        {ad["account"].id: ad["current_balance"] for ad in liability_ads},
+        {ad.account.id: ad.current_balance for ad in liability_ads},
     )
     for ad in liability_ads:
-        _add_into(band, owed_by_account[ad["account"].id])
+        _add_into(band, owed_by_account[ad.account.id])
     return band
 
 
@@ -530,20 +589,29 @@ def _format_net_milestone(amount: Decimal) -> str:
 
 
 def _structural_milestones(
-    account_data: list[dict],
+    account_data: list[AccountProjection],
     debt_free_date: date | None,
     frame: _HorizonFrame,
 ) -> list[dict]:
     """Build the loan-payoff and debt-free milestone flags.
 
-    One "paid off" flag per active loan that retires BEFORE the final one
+    One "paid off" flag per debt-line loan that retires BEFORE the final one
     (its payoff strictly precedes ``debt_free_date``), then one "Debt-free"
     flag at ``debt_free_date`` -- so the last loan's payoff is not
     double-flagged as both its own payoff and the debt-free moment.  Empty
     for a loan-free user (``debt_free_date`` is ``None``).
 
+    The loan selection is :func:`~.._debt_line.debt_line_loans`, the SAME one
+    the domain resolver's outlook folds, so a loan cannot size the axis while
+    being skipped by the flags on it -- or the reverse.  A loan that selection
+    drops is already retired, and a retired loan's ``payoff_date`` is ``None``
+    (there is no forward crossing left to date), so the flag loop's own
+    ``payoff is not None`` test would have excluded it too; sharing the
+    selection makes that a property of the construction rather than of two
+    rules agreeing.
+
     Args:
-        account_data: The per-account projection dicts.
+        account_data: The per-account projections.
         debt_free_date: The last future loan payoff, or ``None``.
         frame: The horizon time frame (its ``today`` bounds the payoffs).
 
@@ -554,19 +622,20 @@ def _structural_milestones(
     if debt_free_date is None:
         return []
     result: list[dict] = []
-    for ad in account_data:
-        payoff = ad.get("payoff_date")
-        if (ad.get("loan_params")
-                and payoff is not None
-                and not ad.get("is_paid_off")
-                and frame.today < payoff < debt_free_date):
+    for ad in debt_line_loans(account_data):
+        payoff = ad.loan.figures.payoff_date
+        if payoff is not None and frame.today < payoff < debt_free_date:
             result.append({
                 "date": payoff,
-                "label": f"{ad['account'].name} paid off",
-                "kind": "payoff",
+                "label": f"{ad.account.name} paid off",
             })
+    # The label says what the date MEASURES (plan step X-q3, finding N-99):
+    # the derivation behind it covers amortizing loans, the only debts with a
+    # payoff model, and a revolving balance on the same chart's liability band
+    # never reaches zero.
     result.append({
-        "date": debt_free_date, "label": "Debt-free", "kind": "debt_free",
+        "date": debt_free_date,
+        "label": _DEBT_FREE_MILESTONE_LABEL,
     })
     return result
 
@@ -600,7 +669,6 @@ def _net_crossing_milestones(
                     result.append({
                         "date": frame.sample_dates[k],
                         "label": _format_net_milestone(multiple),
-                        "kind": "net_crossing",
                     })
                     break
         multiple += _MILESTONE_NET_STEP
@@ -608,7 +676,7 @@ def _net_crossing_milestones(
 
 
 def _build_milestones(
-    account_data: list[dict],
+    account_data: list[AccountProjection],
     net: list[Decimal],
     debt_free_date: date | None,
     frame: _HorizonFrame,
@@ -621,13 +689,23 @@ def _build_milestones(
     date for the chart's left-to-right layout.
 
     Args:
-        account_data: The per-account projection dicts.
+        account_data: The per-account projections.
         net: The net-worth series over ``frame.sample_dates``.
         debt_free_date: The last future loan payoff, or ``None``.
         frame: The horizon time frame.
 
     Returns:
-        The milestone dicts (``{date, label, kind}``), ascending by date.
+        The milestone dicts (``{date, label}``), ascending by date.
+
+    Note:
+        **Both keys are CONSUMED by the presentation boundary** (plan step
+        X-s1, finding N-104): ``date`` positions the flag on the annual axis
+        (:func:`app.routes.savings._milestone_axis_x`) and ``label`` is the
+        chip's text.  There was a third, a machine ``kind``, which the
+        serializer copied into the payload and the client's flag plugin never
+        read -- so the same remove-a-key-and-require-a-crash guard that pins
+        the horizon dict now reaches these dicts too, rather than stopping one
+        level above them.
     """
     structural = _structural_milestones(account_data, debt_free_date, frame)
     crossings = _net_crossing_milestones(net, frame)
@@ -640,7 +718,7 @@ def _build_milestones(
 def _assemble_composition(
     user_id: int,
     core: "_DashboardCoreData",
-    account_data: list[dict],
+    account_data: list[AccountProjection],
     category_by_account_id: dict[int, str],
     frame: _HorizonFrame,
 ) -> dict[str, list[Decimal]]:
@@ -654,7 +732,7 @@ def _assemble_composition(
     Args:
         user_id: The authenticated user's id.
         core: The loaded dashboard core data.
-        account_data: The per-account projection dicts.
+        account_data: The per-account projections.
         category_by_account_id: Each account's id-based category key.
         frame: The horizon time frame.
 
@@ -678,7 +756,7 @@ def _assemble_composition(
 def build_horizon(
     user_id: int,
     core: "_DashboardCoreData",
-    account_data: list[dict],
+    account_data: list[AccountProjection],
     category_by_account_id: dict[int, str],
 ) -> dict | None:
     """Build the long-horizon annual net-worth composition + milestones.
@@ -691,30 +769,50 @@ def build_horizon(
     construction (:func:`_net_series`), and index 0 is each band's real today
     balance (so the horizon starts at the net-worth hero).
 
+    **Every key here is one the presentation boundary reads** (plan step X-q2,
+    finding N-100): :func:`app.routes.savings._serialize_horizon` consumes all
+    five and the client's chart renders them.  It published ``horizon_end`` and
+    ``is_loan_free`` as well until X-q2, and no serializer, template or script
+    named either -- ``horizon_end`` because it is ``dates[-1]`` by construction
+    (the domain end is always the last annual sample, so it was one fact under
+    two keys), and ``is_loan_free`` because it is
+    :attr:`~.._debt_line.LoanPayoffOutlook.is_loan_free`, whose three-state
+    distinction the cockpit footer on this same page renders from the same
+    derivation.  A key added here that no consumer reads is the defect this
+    step closed; the contract is pinned by ``TestHorizonSerialization``, which
+    removes each key in turn and requires the serializer to break.
+
+    **The contract now reaches one level DOWN as well** (plan step X-s1,
+    finding N-104): the milestone dicts inside ``milestones`` carried a machine
+    ``kind`` the client read no more than it read the two keys X-q2 deleted, so
+    a dead key rode inside a live one where the guard could not see it.  X-s1
+    deleted it at both ends and the guard now removes each MILESTONE key in
+    turn as well, which is why this producer's contract is "every key, at every
+    level, is subscripted by the serializer" rather than "every top-level key
+    is".
+
     Args:
         user_id: The authenticated user's id (for the /retirement engine
             reuse).
         core: The loaded dashboard core data.
-        account_data: The per-account projection dicts from
+        account_data: The per-account projections from
             ``_compute_account_projections``.
         category_by_account_id: Each account's id-based category key from
             :func:`~app.services.savings_dashboard_service._display.category_key_by_account_id`.
 
     Returns:
-        A dict with ``dates`` (the sample dates), ``current_index`` (always
-        ``0`` -- the whole horizon is forward from today), ``composition``
-        (the ``{band: [Decimal, ...]}`` map over :data:`_COMPOSITION_BANDS`),
-        ``net`` (the trajectory), ``milestones`` (the ``{date, label, kind}``
-        flags), ``horizon_end``, and ``is_loan_free``.  ``None`` when the
+        A dict with ``dates`` (the sample dates, whose last element is the
+        domain end), ``current_index`` (always ``0`` -- the whole horizon is
+        forward from today), ``composition`` (the ``{band: [Decimal, ...]}``
+        map over :data:`_COMPOSITION_BANDS`), ``net`` (the trajectory), and
+        ``milestones`` (the ``{date, label}`` flags).  ``None`` when the
         user has no pay periods (no axis to project over).
     """
     if not core.all_periods:
         return None
 
     today = core.balance_ctx.as_of
-    horizon_end, debt_free_date, is_loan_free = _resolve_horizon_domain(
-        account_data, today,
-    )
+    horizon_end, debt_free_date = _resolve_horizon_domain(account_data, today)
     frame = _HorizonFrame(
         today=today,
         horizon_end=horizon_end,
@@ -734,6 +832,4 @@ def build_horizon(
         "composition": composition,
         "net": net,
         "milestones": milestones,
-        "horizon_end": horizon_end,
-        "is_loan_free": is_loan_free,
     }

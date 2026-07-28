@@ -335,7 +335,7 @@ Section 4.
   **Loop B P1 BUILT 2026-07-12 (Opus; data producers plus route serialization; on dev).** One
   id-based category classifier (`_display.account_category_key`) now backs both the grid grouping
   and the split; `compute_net_worth_series` emits a reconciling `composition` band map.
-  `_horizon.build_horizon` (public `compute_net_worth_horizon`) builds the annual composition, net
+  `_horizon.build_horizon` (via `compute_dashboard_data`) builds the annual composition, net
   trajectory, and milestones: retirement/investment bands reuse the /retirement engine at a constant
   employer base (so they match the 2-year band and the ruled oracle), the asset band grows each
   account by its own param via one `project_balance` call, and the liability band covers every

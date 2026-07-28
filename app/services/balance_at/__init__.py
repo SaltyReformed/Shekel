@@ -9,57 +9,70 @@ data point; every new surface re-invented that boundary and shipped a bug
 at least once.  This package owns all four per-kind boundary rules in ONE
 place, documented and tested together (the documented-once contract):
 
-* **PLAIN / INTEREST (cash)** -- pre-anchor periods are OMITTED.  Cash
-  balances are materialized transaction sums carried forward from the
-  anchor period; flat-carrying them backward would fabricate balances the
-  account never had.
-* **AMORTIZING (loan)** -- ONE total producer, :func:`positions` (plan C3):
-  the FOLD of the loan's recorded events (anchors + settled payments -- the
+**There are TWO answers here, not five, and the five-bullet per-kind narrative
+this docstring used to carry was residue of a dispatch ladder that no longer
+exists** (finding N-95, deleted at plan step X-g4b).
+
+* **A configured LOAN** is its amortization :func:`positions` (plan C3): the
+  FOLD of the loan's recorded events (anchors + settled payments -- the
   complete record of the past, true-ups above all) for a date at or before the
   pass's as-of, and the forward PLAN fold (payment records, then contractual
   synthesis) after.  A date before any event folds to ``0.00`` (the loan does
   not exist yet), and a paid-off loan holds its folded ``0.00`` flat -- NEVER
   the loan's original principal (which made the liability leap down the moment
   the first payment landed).
-* **INVESTMENT** -- model-from-anchor: the anchor compounded forward at the
-  assumed return (plus contributions) for post-anchor periods, and
-  reverse-projected backward for pre-anchor periods.
-* **APPRECIATING (property)** -- the user-set market value compounds
-  forward at its annual rate; a manually-asserted valuation has no
-  historical basis to compound backward from, so pre-anchor periods
-  flat-carry the anchor value.
+* **EVERYTHING ELSE** is ONE event replay
+  (:mod:`app.services.balance_at._asset_fold`): the cash fold -- assertions,
+  settled rows and the still-projected plan -- plus an ACCRUAL tier that exists
+  only for an account whose own parameters model a return, and a CONTRIBUTION
+  tier only for one whose payroll funds it.  A checking account, an HYSA, a
+  brokerage and a Property are therefore not four dispatches; they are one
+  producer given different facts, which is what ruling R-AD deleted the ladder
+  to say.  Every period is answered: a past one reads the balance in force
+  THEN, and a period before the account's FIRST assertion reads that assertion
+  back-projected over the records it already contains (ruling R-I).
 
-The seam does NOT reimplement any of that math.  It assembles each
-account's inputs (its debt schedule, investment params, deductions, and the
-engine gross-biweekly) from the shared loaders and DELEGATES the per-kind
-dispatch -- to
-:func:`app.services.balance_at._kernel.build_account_balance_map` for every
-NON-loan kind, and to its own ``positions()`` fold for an AMORTIZING loan,
-whose producer sits ABOVE the kernel and so cannot be dispatched from inside
-it (plan step C3b3).  Centralising a dispatch that two consumers had each
-grown their own copy of is the whole point: a third copy is exactly the
-duplication this work exists to kill.
+The seam does NOT reimplement the growth math.  It loads each account's
+modelled-contribution feed (its investment params, its deductions and the
+engine gross-biweekly) from the shared loaders and hands it to the replay,
+whose rate resolver reads the one params row the account's kind carries.
+Centralising a dispatch that two consumers had each grown their own copy of is
+the whole point: a third copy is exactly the duplication this work exists to
+kill.
 
 **Five shapes, one seam.**
 
 * The KIND-CORRECT entries (:func:`balance_map`, :func:`build_maps`,
-  :func:`balance_at`, plus the investment projection-input accessors
-  :func:`investment_seed_map` / :func:`investment_growth_since_anchor`) dispatch
-  per account kind -- a HYSA accrues interest, a loan walks its amortization
-  schedule, an investment / property compounds -- the view the NET-WORTH
-  surfaces (the savings cockpit and the dashboards) want.  See
-  :mod:`._kind_correct`.
+  :func:`balance_at`, plus the growth decomposition
+  :func:`investment_growth_since_anchor`) answer "what is this account WORTH" --
+  a HYSA accrues interest, a loan walks its amortization schedule, an investment
+  / property compounds -- the view the NET-WORTH surfaces (the savings cockpit
+  and the dashboards) want.  Since plan step X-g2b they dispatch on ONE
+  question, not five: a configured loan is its ``positions()``, and every other
+  kind is one event replay whose modelled tiers exist only if the account's own
+  parameters put them there (ruling R-AD).  See :mod:`._kind_correct`.
+  ``investment_seed_map`` was a sixth entry here and is GONE (ruling R-AE): a
+  chart's pre-growth SEED existed only because the previous design could not
+  express "this account's balance at a DATE", so a caller now reads
+  :func:`balance_at` the day before its projection window opens and there is
+  nothing to keep in step.
 * The CASH-FLOW entries (:func:`cash_balance_map`, :func:`cash_balance_at`,
   :func:`cash_daily_balance_series`) always return the account's pure
   transaction running-balance with NO kind dispatch -- the view the
-  single-account cash-flow surfaces (grid, obligations, calendar, checking
-  detail) need, where the balance must reconcile with the on-screen transaction
+  single-account cash-flow surfaces (dashboard pulse, calendar, cash detail)
+  need, where the balance must reconcile with the on-screen transaction
   rows, and where the account is NOT guaranteed cash
-  (``resolve_grid_account`` can point at any kind, so accruing interest into the
-  grid balance row while its subtotal stays transaction-based would break
-  ``balances[p] - balances[p-1] == subtotals[p].net``).  See :mod:`._cash_flow`,
-  and :mod:`._grid` for the kind-aware :func:`grid_balance_view` that layers an
-  INTEREST account's accrual back on for the grid.
+  (``resolve_grid_account`` can point at any kind).  A modelled return may
+  reach such a surface only where a ROW explains it, which is ruling R-K's
+  ``balance[p] - balance[p-1]
+  == net[p] + reconciliation[p] + contribution[p] + accrual[p]`` -- whose
+  FOURTH term is ruling R-AH's correction: a modelled asset has TWO modelled
+  tiers, and on the real Empower 401(k) the CONTRIBUTION is the larger of them,
+  so the three-term form breaks on 53 of 59 real period pairs.  The GRID has
+  those rows and left this family at plan step X-g3b; see :mod:`._grid` for
+  :func:`grid_balance_view`, which answers every kind its modelled balance.
+  See :mod:`._cash_flow` for the entries the pulse, the calendar and the cash
+  detail page still read.
 * The LIABILITY entry (:func:`liability_owed_at_dates`) answers every debt's
   owed magnitude at a list of FORWARD calendar dates in one resolution pass --
   the shape a long-horizon liability band needs, which neither the period-keyed
@@ -99,11 +112,22 @@ over, the LOAN leaves it composes the loan shapes from (``loan_resolver`` /
 ``loan_ledger`` / ``loan_loaders`` / ``loan_payment_service`` /
 ``amortization_engine``), and the models -- never a consumer package.  **Plan
 step D1d moved ALL of the balance PRODUCERS INSIDE this package as private
-submodules**, so the fence is one package boundary: the CASH chain
-(``_cash_engine`` = ``balances_for`` / ``balance_as_of_date``, ``_calculator`` =
-the pure carry-forward walk, ``_daily_series`` = the per-day distribution) and
-the NET-WORTH chain (``_kernel`` = the per-kind balance dispatch, ``_investment``
-= the growth / appreciation sub-chain).  **Plan step D-ctx then moved the read
+submodules**, so the fence is one package boundary.  **Plan steps X-c2b2 and
+X-g2b then replaced every one of them with TWO folds** -- ``_cash_fold`` for
+cash and ``_asset_fold``, which is that fold plus the modelled tiers, for every
+non-loan kind -- and plan step **X-g4b deleted the replaced producers whole**:
+``_cash_engine`` (the anchor-forward roll-up), ``_calculator`` (the pure
+carry-forward walk it delegated to), ``_investment`` (the growth / appreciation
+three-source merge) and ``_interest`` (the modelled accrual layered over a
+finished base map, whose one surviving predicate folded into
+``_asset_fold._modelled_return``).  Deleted alongside them at X-c2b3: the
+per-day producer ``_daily_series`` whole (the calendar's running-balance line is
+the fold sampled at every day of its range), the date-precise scalar
+``balance_as_of_date`` with its prefix walk, and the ``BalanceResult``
+wrapper -- whose ``stale_anchor_warning`` field the fold makes unrepresentable,
+a settled row after the last assertion now MOVING the balance rather than
+warning that it might not have (findings cash D1 / D2, N-50).
+**Plan step D-ctx then moved the read
 pass's resolution CONTEXT in too** (``_context`` = ``BalanceContext`` /
 ``require_scenario``, re-exported below as the seam's public read-pass handle):
 it sits at the internal DAG's FLOOR, importing only the outer loan leaves it
@@ -120,16 +144,16 @@ completeness scope DELETE rather than shrink or travel.  ``_kernel``'s ``debt_sc
 seam entries the out-of-cluster consumers (the account-detail route, the savings
 orchestrator) read.  ``property_equity_chart`` and ``home_equity_service`` import
 FROM here, not the other way round.  Inside the package the direction is
-``_grid -> {_cash_flow, _kind_correct} -> _inputs``,
-``{_cash_flow, _kind_correct} -> _cash_engine -> _calculator``,
-``_cash_flow -> _daily_series -> _cash_engine``,
-``{_inputs, _positions, _loan_interest} -> _kernel -> {_calculator, _cash_engine,
-_investment}``, ``_kind_correct -> _investment -> _cash_engine``,
+``_grid -> {_asset_fold, _cash_fold, _inputs}``,
+``{_cash_flow, _kind_correct} -> _cash_fold -> _fold``,
+``{_inputs, _positions, _loan_interest} -> _kernel -> _asset_fold ->
+{_asset_contributions, _cash_fold}``, ``_kind_correct -> {_asset_fold,
+_inputs}``,
 ``_liability -> _inputs``, ``_secured_debt -> {_loan_figures, _positions,
 _inputs}``, and ``_loan_figures -> _positions -> _plan`` (the figures' payoff is
-the fold to zero, plan step C8d) -- a DAG with ``_calculator`` / ``_cash_engine``
-/ ``_investment`` at the producer floor, so no module imports a sibling that
-imports it back.  Every loan producer also imports ``_resolution`` for the read
+the fold to zero, plan step C8d) -- a DAG with ``_fold`` at the producer floor,
+so no module imports a sibling that imports it back.  Every loan producer also
+imports ``_resolution`` for the read
 pass's ONE whole-loan read; ``_resolution`` imports only ``_context`` among its
 siblings, plus ``_confirmed_view`` for the confirmed seed it threads into every
 resolution (plan step E1d-b); ``_confirmed_view`` imports ``_context`` and
@@ -162,24 +186,27 @@ from ._cash_flow import (
 )
 from ._confirmed_view import confirmed_view
 from ._context import BalanceContext, require_scenario
-from ._grid import GridBalanceView, _accruing_grid_view, grid_balance_view
+from ._grid import (
+    GridBalanceView,
+    GridColumn,
+    GridRowFlags,
+    empty_grid_view,
+    grid_balance_view,
+)
 from ._inputs import (
     ZERO,
-    _account_balance_map,
-    _AssembledInputs,
-    _assemble_inputs,
-    _require_scenario,
+    _contribution_inputs_for_account,
 )
 from ._kernel import (
     debt_schedule_rows,
     interest_by_period_for_account,
+    interest_projection_for_account,
 )
 from ._kind_correct import (
     balance_at,
     balance_map,
     build_maps,
     investment_growth_since_anchor,
-    investment_seed_map,
 )
 from ._liability import liability_owed_at_dates
 from ._loan_figures import (
@@ -210,26 +237,45 @@ from ._secured_debt import (
 # The seam's public surface, re-exported so every consumer's existing
 # ``balance_at.<entry>`` attribute access keeps working unchanged after the
 # module -> package split.  The underscore-prefixed names are
-# internal-but-tested (``tests/test_services/test_balance_at.py`` reaches
-# ``balance_at._assemble_inputs`` / ``._AssembledInputs`` /
-# ``._account_balance_map`` / ``._accruing_grid_view`` to pin the assembly and
-# accrual contracts directly); they are listed here so the re-export is
-# explicit rather than an unused import.
+# internal-but-tested: ``tests/test_services/test_income_service.py`` reaches
+# ``balance_at._contribution_inputs_for_account`` to pin the raise-aware gross at the
+# seam's own loading point.  It is the ONLY private name here with an outside
+# reader.
+# They are listed here so the re-export is explicit rather than an unused
+# import.
+#
+# **The list named the wrong test file and the wrong count** (plan step
+# X-g3b-0, which corrected it while deleting two of the three names).  It said
+# ``test_balance_at.py`` reached ``._assemble_inputs`` / ``._AssembledInputs`` /
+# ``._account_balance_map`` "to pin the assembly contract directly".  That file
+# reached NONE of them; the only reader of any was
+# ``test_income_service.py``, and only of ``._assemble_inputs``.  The first two
+# names were deleted with the bundle, and ``._account_balance_map`` went with
+# them rather than staying exported for a reader that does not exist -- it is
+# imported directly by the one module that dispatches through it.
+# ``._require_scenario`` was dropped in the same commit and for the same reason:
+# no reader outside this package ever reached it.  The seam modules that want it
+# import it directly -- four of them under this name from ``._inputs``, and
+# ``._plan`` / ``._positions`` as ``require_scenario`` from ``._context``, which
+# is the same guard under the name it is defined with.  (Its underlying ``require_scenario`` stays
+# public below -- that is the seam's documented read-pass handle, and a
+# different name with a real audience.)  ``._accruing_balances`` was a fourth until plan step
+# X-c2b2 deleted it: the grid's Interest row IS the accrual map ``_interest``
+# returns, not the difference of two independently-computed balance maps
+# (finding N-52).
 __all__ = [
     "ZERO",
     "BalanceContext",
     "GridBalanceView",
+    "GridColumn",
+    "GridRowFlags",
     "LoanFigures",
     "LoanTerms",
     "SecuredLoanSeries",
     "TIER_CONFIRMED",
     "TIER_ESTIMATED",
     "TIER_PROJECTED",
-    "_AssembledInputs",
-    "_account_balance_map",
-    "_accruing_grid_view",
-    "_assemble_inputs",
-    "_require_scenario",
+    "_contribution_inputs_for_account",
     "balance_at",
     "balance_map",
     "build_maps",
@@ -238,10 +284,11 @@ __all__ = [
     "cash_daily_balance_series",
     "confirmed_view",
     "debt_schedule_rows",
+    "empty_grid_view",
     "grid_balance_view",
     "interest_by_period_for_account",
+    "interest_projection_for_account",
     "investment_growth_since_anchor",
-    "investment_seed_map",
     "liability_owed_at_dates",
     "loan_figures",
     "loan_terms",

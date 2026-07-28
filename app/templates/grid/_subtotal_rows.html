@@ -27,13 +27,18 @@
        <tbody> is emitted as a plain section here (no hx-swap-oob),
        because the OOB target does not exist until the page is built.
 
-   The figures are computed in the route with Decimal and passed in via
-   ``subtotals``; this template only displays them.
+   The figures are computed in the balance-at seam with Decimal and passed
+   in via ``columns``; this template only displays them.  They are the SAME
+   GridColumn records the sticky footer's balance row reads, which is what
+   makes ``balance[p] - balance[p-1] == net[p] + reconciliation[p] +
+   interest[p]`` a property of one row set rather than an agreement between
+   producers (ruling R-K).
 
    Expected context (* required):
      periods *    -- the visible PayPeriod slice.
-     subtotals *  -- dict keyed by period.id, each with .income /
-                     .expense / .net Decimals.
+     columns *    -- dict[period_id -> GridColumn], each with .income /
+                     .expense / .net Decimals.  A period absent from it
+                     renders blank cells.
      num_periods  -- visible column count, for the self-refresh url.
      start_offset -- window offset, for the self-refresh url.
      account      -- the grid Account (None for the zero-accounts edge),
@@ -49,7 +54,7 @@
 {% from "grid/_grid_row_macros.html" import mstart %}
 {% set _refresh_url = url_for('grid.subtotal_rows', periods=num_periods|default(periods|length), offset=start_offset|default(0), account_id=account.id) if account else url_for('grid.subtotal_rows', periods=num_periods|default(periods|length), offset=start_offset|default(0)) %}
 
-{%- macro income_tbody(periods, subtotals, refresh_url) -%}
+{%- macro income_tbody(periods, columns, refresh_url) -%}
 <tbody id="grid-subtotals-income"
        hx-get="{{ refresh_url }}"
        hx-trigger="balanceChanged from:body"
@@ -60,16 +65,16 @@
   <tr class="subtotal-row subtotal-row-income">
     <th class="sticky-col row-label fw-bold">Total Income</th>
     {% for period in periods %}
-      {% set val = subtotals[period.id].income %}
+      {% set col = columns.get(period.id) %}
       <td class="text-end font-mono fw-bold{{ mstart(periods, loop.index0) }}">
-        {% if val is not none %}{{ money(val, cents=false) }}{% endif %}
+        {% if col is not none %}{{ money(col.income, cents=false) }}{% endif %}
       </td>
     {% endfor %}
   </tr>
 </tbody>
 {%- endmacro -%}
 
-{%- macro expense_tbody(periods, subtotals, oob) -%}
+{%- macro expense_tbody(periods, columns, oob) -%}
 <tbody id="grid-subtotals-expense"
        {% if oob %}hx-swap-oob="true"{% endif %}
        aria-live="polite"
@@ -78,9 +83,9 @@
   <tr class="subtotal-row subtotal-row-expense">
     <th class="sticky-col row-label fw-bold">Total Expenses</th>
     {% for period in periods %}
-      {% set val = subtotals[period.id].expense %}
+      {% set col = columns.get(period.id) %}
       <td class="text-end font-mono fw-bold{{ mstart(periods, loop.index0) }}">
-        {% if val is not none %}{{ money(val, cents=false) }}{% endif %}
+        {% if col is not none %}{{ money(col.expense, cents=false) }}{% endif %}
       </td>
     {% endfor %}
   </tr>
@@ -89,8 +94,9 @@
   <tr class="net-cash-flow-row">
     <th class="sticky-col row-label fw-bold">Net Cash Flow</th>
     {% for period in periods %}
-      {% set net = subtotals[period.id].net %}
-      <td class="text-end font-mono fw-bold {{ 'balance-negative' if net < 0 else '' }}{{ mstart(periods, loop.index0) }}">
+      {% set col = columns.get(period.id) %}
+      {% set net = col.net if col is not none else none %}
+      <td class="text-end font-mono fw-bold {{ 'balance-negative' if net is not none and net < 0 else '' }}{{ mstart(periods, loop.index0) }}">
         {% if net is not none %}
           {% if net < 0 %}<i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i> {% endif %}
           {{ money(net, cents=false) }}
@@ -102,10 +108,10 @@
 {%- endmacro -%}
 
 {% if oob %}
-  {{ income_tbody(periods, subtotals, _refresh_url) }}
-  {{ expense_tbody(periods, subtotals, True) }}
+  {{ income_tbody(periods, columns, _refresh_url) }}
+  {{ expense_tbody(periods, columns, True) }}
 {% elif section == "income" %}
-  {{ income_tbody(periods, subtotals, _refresh_url) }}
+  {{ income_tbody(periods, columns, _refresh_url) }}
 {% else %}
-  {{ expense_tbody(periods, subtotals, False) }}
+  {{ expense_tbody(periods, columns, False) }}
 {% endif %}

@@ -20,7 +20,7 @@ from html import unescape
 import pytest
 
 from app import ref_cache
-from app.enums import StatusEnum, TxnTypeEnum
+from app.enums import AcctTypeEnum, StatusEnum, TxnTypeEnum
 from app.models.transaction import Transaction
 from app.services import account_service
 
@@ -314,6 +314,51 @@ class TestCalendarTab:
                 headers={"HX-Request": "true"},
             )
             assert resp.status_code == 404
+
+    def test_calendar_tab_404_for_amortizing_account(
+        self, app, db, auth_client, seed_user, seed_periods,
+    ):
+        """X-a1 (route): ``?account_id=<loan>`` 404s instead of rendering.
+
+        Finding N-38: the calendar's balance line and month-end figure
+        are the seam's CASH-FLOW view, which sums the account's own
+        transaction rows.  Pointed at a loan it answered with a
+        cash-basis figure that ignores interest -- measured on a dev
+        clone, ``$531.94`` for a Van Loan owing ``$15,663.59``.  The
+        resolver now refuses an amortizing account (ruling D4's gate,
+        extended to the surface its enumeration missed), and the route
+        maps the unresolvable account to a 404 exactly as it does for a
+        cross-owner id.
+
+        No monkeypatch: this drives the REAL resolver with a real loan
+        account, so it fails if the kind gate is removed.
+        """
+        with app.app_context():
+            loan = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=ref_cache.acct_type_id(
+                        AcctTypeEnum.MORTGAGE,
+                    ),
+                    name="Mortgage",
+                    anchor_balance=Decimal("0"),
+                ),
+            )
+            db.session.add(loan)
+            db.session.commit()
+            loan_id = loan.id
+
+            resp = auth_client.get(
+                f"/analytics/calendar?account_id={loan_id}",
+                headers={"HX-Request": "true"},
+            )
+            assert resp.status_code == 404
+
+            year_resp = auth_client.get(
+                f"/analytics/calendar?view=year&account_id={loan_id}",
+                headers={"HX-Request": "true"},
+            )
+            assert year_resp.status_code == 404
 
     def test_calendar_tab_year_view_404_when_account_unresolvable(
         self, app, auth_client, seed_user, monkeypatch,
@@ -1369,35 +1414,35 @@ class TestCalendarFlowStrip:
     def test_flow_strip_low_trough_warning_cells(self, app, auth_client, seed_user, seed_periods, db):
         """A low-but-positive trough renders the WARNING chip and cells.
 
-        Hand-computed: anchor $1,000.00; one projected $600.00 expense due
-        Jan 5 (inside period Jan 2-15).  End-of-day balances: Jan 1-4 =
-        $1,000.00; Jan 5-31 = 1000 - 600 = $400.00.  The trough is Jan 5
-        (0-based index 4) at $400.00 -- below the default $500 threshold
-        but positive, so under the D11 ruling (the calendar adopts the
-        grid's thresholds: danger only for a NEGATIVE balance, the caution
-        token for low-but-positive) the Month trough chip takes the
-        warning variant, the below-threshold day cells take the low hero
-        class, and neither danger class renders.  January 2026 is wholly
-        past, so no modeled tilde renders anywhere.
+        Hand-computed: anchor $1,000.00; one $600.00 expense SETTLED on Jan 5
+        (inside period Jan 2-15).  End-of-day balances: Jan 1-4 = $1,000.00;
+        Jan 5-31 = 1000 - 600 = $400.00.  The trough is Jan 5 (0-based index 4)
+        at $400.00 -- below the default $500 threshold but positive, so under
+        the D11 ruling (the calendar adopts the grid's thresholds: danger only
+        for a NEGATIVE balance, the caution token for low-but-positive) the
+        Month trough chip takes the warning variant, the below-threshold day
+        cells take the low hero class, and neither danger class renders.
+        January 2026 is wholly past, so no modeled tilde renders anywhere.
+
+        **The row is SETTLED rather than projected, and that is the shape a
+        past month has** (plan step X-c2b2).  A settled row moves the line from
+        the day its money moved, which is finding cash D1 closed; a row still
+        marked Projected in a past month has not happened, so ruling R-G lands
+        it at ``as_of + 1`` and January stays flat -- the honest answer for a
+        bill nobody paid, and one that pins no trough.
         """
         with app.app_context():
-            from app import ref_cache
-            from app.enums import StatusEnum, TxnTypeEnum
-            from app.models.transaction import Transaction
-            from datetime import date
+            from datetime import date, datetime, time, timezone
             from decimal import Decimal
+            from tests._test_helpers import create_settled_cash_transaction
 
-            txn = Transaction(
-                account_id=seed_user["account"].id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            create_settled_cash_transaction(
+                seed_user, db.session, seed_periods[0], Decimal("600.00"),
                 name="Trough Expense",
-                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                estimated_amount=Decimal("600.00"),
-                due_date=date(2026, 1, 5),
+                paid_at=datetime.combine(
+                    date(2026, 1, 5), time(12, 0), tzinfo=timezone.utc,
+                ),
             )
-            db.session.add(txn)
             db.session.commit()
 
             resp = auth_client.get(
@@ -1426,33 +1471,30 @@ class TestCalendarFlowStrip:
     def test_flow_strip_negative_trough_danger_cells(self, app, auth_client, seed_user, seed_periods, db):
         """A negative trough renders the DANGER chip and cells.
 
-        Hand-computed: anchor $1,000.00; one projected $1,600.00 expense
-        due Jan 5 (inside period Jan 2-15).  End-of-day balances: Jan 1-4
+        Hand-computed: anchor $1,000.00; one $1,600.00 expense SETTLED on
+        Jan 5 (inside period Jan 2-15).  End-of-day balances: Jan 1-4
         = $1,000.00; Jan 5-31 = 1000 - 1600 = -$600.00.  The trough is
         Jan 5 (0-based index 4) at -$600.00 -- a true negative money
         state, so the Month trough chip takes the danger variant and the
         negative day cells take the danger hero class (D11: danger is
         reserved for negative).  Jan 1-4 stay healthy at $1,000.00, so
         the low/warning classes do not render.
+
+        Settled rather than projected, for the reason the sibling test above
+        documents: a past month's line moves on what actually happened.
         """
         with app.app_context():
-            from app import ref_cache
-            from app.enums import StatusEnum, TxnTypeEnum
-            from app.models.transaction import Transaction
-            from datetime import date
+            from datetime import date, datetime, time, timezone
             from decimal import Decimal
+            from tests._test_helpers import create_settled_cash_transaction
 
-            txn = Transaction(
-                account_id=seed_user["account"].id,
-                pay_period_id=seed_periods[0].id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            create_settled_cash_transaction(
+                seed_user, db.session, seed_periods[0], Decimal("1600.00"),
                 name="Overdraft Expense",
-                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-                estimated_amount=Decimal("1600.00"),
-                due_date=date(2026, 1, 5),
+                paid_at=datetime.combine(
+                    date(2026, 1, 5), time(12, 0), tzinfo=timezone.utc,
+                ),
             )
-            db.session.add(txn)
             db.session.commit()
 
             resp = auth_client.get(

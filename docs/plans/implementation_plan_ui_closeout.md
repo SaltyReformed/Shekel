@@ -49,7 +49,7 @@ The overhaul plan's status table stops at 2026-07-03. Complete since then:
    **Loop B P1 BUILT 2026-07-12 (Opus; data producers plus route serialization; on dev).**
    `_display.account_category_key` is now the one id-based classifier the grid grouping and the
    composition split share; `compute_net_worth_series` emits a reconciling `composition` band map;
-   `_horizon.build_horizon` (public `compute_net_worth_horizon`) builds the annual composition, net
+   `_horizon.build_horizon` (via `compute_dashboard_data`) builds the annual composition, net
    trajectory, and milestones, reusing the /retirement engine (constant employer base), per-account
    growth params, and the loan schedules (via the new fenced `net_worth_kernel.loan_owed_at_dates`).
    The horizon wires into `compute_dashboard_data` and `savings._serialize_net_worth_chart` emits

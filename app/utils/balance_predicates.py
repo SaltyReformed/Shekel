@@ -71,8 +71,6 @@ integer IDs from ``ref_cache``. The status display string is never
 consulted; the C2-8 test asserts this property mechanically against the
 module source.
 """
-from datetime import date
-
 from sqlalchemy import and_
 
 from app import ref_cache
@@ -398,67 +396,3 @@ def balance_contributing_clause():
         Transaction.is_deleted.is_(False),
         Transaction.status_id.notin_(balance_excluded_status_ids()),
     )
-
-
-def account_period_scope_clause(
-    account_id: int, scenario_id: int, period_ids: list[int],
-):
-    """Return a clause scoping rows to one account's live periods.
-
-    The shared SQL form of the "this account's non-deleted rows for this
-    scenario over these periods" filter prefix: ``account_id`` ==,
-    ``scenario_id`` ==, ``pay_period_id IN period_ids``, and
-    ``is_deleted IS FALSE``.  Unlike :func:`balance_contributing_clause`
-    it does NOT drop Credit / Cancelled rows -- callers that need the
-    full row set (the net-worth kernel's interest-balance and settled-net
-    queries, whose downstream consumers apply their own status logic)
-    compose this prefix and add only the scope they share, instead of
-    repeating the four-line filter literal at each query site.
-
-    Args:
-        account_id: The account the rows belong to.
-        scenario_id: The scenario the rows belong to.
-        period_ids: The pay period ids to scope to.
-
-    Returns:
-        A SQLAlchemy ``and_`` clause equivalent to ``account_id = :a AND
-        scenario_id = :s AND pay_period_id IN :p AND is_deleted IS FALSE``,
-        suitable for ``query.filter(...)`` on a select rooted at
-        ``Transaction``.
-    """
-    return and_(
-        Transaction.account_id == account_id,
-        Transaction.scenario_id == scenario_id,
-        Transaction.pay_period_id.in_(period_ids),
-        Transaction.is_deleted.is_(False),
-    )
-
-
-def attribution_year(due_date: date | None, period_start: date) -> int:
-    """Return the calendar year a dated budget event is attributed to.
-
-    The single definition of the year-end report's calendar-year
-    attribution rule: ``COALESCE(due_date, period_start).year`` -- the
-    explicit due date when present, else the owning pay period's start
-    date.  This is the year-bucket form of the same due-date-wins
-    precedence the calendar and daily-series producers apply to a date
-    range (an undated row falls back to its period), so a boundary-period
-    event -- a December pay period carrying a January due_date -- lands
-    in the same calendar year on every surface that uses it.
-
-    Shared by the year-end spending section (settled expense
-    ``Transaction`` rows) and the transfers section (parent ``Transfer``
-    rows) so the two cannot drift on which year a boundary-period event
-    belongs to (#61): the same event's expense shadow and parent transfer
-    are attributed identically.
-
-    Args:
-        due_date: The event's explicit due date, or None.
-        period_start: The owning pay period's ``start_date`` -- the
-            fallback used when ``due_date`` is None.
-
-    Returns:
-        The calendar year (int) the event is attributed to.
-    """
-    attr_date = due_date if due_date is not None else period_start
-    return attr_date.year

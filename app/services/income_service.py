@@ -16,7 +16,7 @@ Pre-fix, six call sites read the off-engine quantity:
 - ``year_end_summary_service._load_salary_gross_biweekly``
 - ``retirement_dashboard_service.compute_gap_data`` (projected-salary path)
 - ``retirement_projection.load_projection_batch``
-- ``investment_dashboard_service._salary_gross_biweekly``
+- ``investment_dashboard_service._context._load_projection_context``
 
 For users with applicable raises, those quantities drifted from the
 paycheck engine's per-period gross by the raise factor -- the audit's

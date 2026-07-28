@@ -26,7 +26,8 @@ from app.models.transfer_template import TransferTemplate
 from app.models.savings_goal import SavingsGoal
 from app.models.ref import AccountType, Status, TransactionType
 from app.services.auth_service import hash_password
-from app.services.balance_at import _calculator as balance_calculator
+from app.services import balance_at
+from app.services.balance_at import BalanceContext
 from app.services import account_service
 
 
@@ -508,11 +509,20 @@ class TestBalanceWithTransfers:
             .all()
         )
 
-        balances, _ = balance_calculator.calculate_balances(
-            anchor_balance=Decimal("1000.00"),
-            anchor_period_id=seed_periods[0].id,
-            periods=seed_periods,
-            transactions=shadow_txns,
+        # Read what the app RENDERS (plan step X-g4b re-pointed these off the
+        # deleted anchor-forward walk).  The fold LOADS the account's rows
+        # itself rather than being handed a hand-picked subset -- an argument a
+        # caller can get wrong is a defect, not a contract -- and the account
+        # holds nothing but this transfer's shadow, so the figures are
+        # unchanged.  ``as_of`` is pinned inside period 0 because ruling R-G
+        # clamps a still-Projected row forward past a reader's own now.
+        assert shadow_txns
+        balances = balance_at.cash_balance_map(
+            account,
+            BalanceContext.build(
+                seed_user["user"].id, as_of=seed_periods[0].start_date,
+            ),
+            seed_periods,
         )
 
         # Period 0 (anchor): 1000
@@ -549,11 +559,20 @@ class TestBalanceWithTransfers:
             .all()
         )
 
-        balances, _ = balance_calculator.calculate_balances(
-            anchor_balance=Decimal("1000.00"),
-            anchor_period_id=seed_periods[0].id,
-            periods=seed_periods,
-            transactions=shadow_txns,
+        # Read what the app RENDERS (plan step X-g4b re-pointed these off the
+        # deleted anchor-forward walk).  The fold LOADS the account's rows
+        # itself rather than being handed a hand-picked subset -- an argument a
+        # caller can get wrong is a defect, not a contract -- and the account
+        # holds nothing but this transfer's shadow, so the figures are
+        # unchanged.  ``as_of`` is pinned inside period 0 because ruling R-G
+        # clamps a still-Projected row forward past a reader's own now.
+        assert shadow_txns
+        balances = balance_at.cash_balance_map(
+            account,
+            BalanceContext.build(
+                seed_user["user"].id, as_of=seed_periods[0].start_date,
+            ),
+            seed_periods,
         )
 
         assert balances[seed_periods[1].id] == Decimal("1300.00")
@@ -592,11 +611,20 @@ class TestBalanceWithTransfers:
             .all()
         )
 
-        balances, _ = balance_calculator.calculate_balances(
-            anchor_balance=Decimal("1000.00"),
-            anchor_period_id=seed_periods[0].id,
-            periods=seed_periods,
-            transactions=shadow_txns,
+        # Read what the app RENDERS (plan step X-g4b re-pointed these off the
+        # deleted anchor-forward walk).  The fold LOADS the account's rows
+        # itself rather than being handed a hand-picked subset -- an argument a
+        # caller can get wrong is a defect, not a contract -- and the account
+        # holds nothing but this transfer's shadow, so the figures are
+        # unchanged.  ``as_of`` is pinned inside period 0 because ruling R-G
+        # clamps a still-Projected row forward past a reader's own now.
+        assert shadow_txns
+        balances = balance_at.cash_balance_map(
+            account,
+            BalanceContext.build(
+                seed_user["user"].id, as_of=seed_periods[0].start_date,
+            ),
+            seed_periods,
         )
 
         # Cancelled transfer shadows should not reduce balance.

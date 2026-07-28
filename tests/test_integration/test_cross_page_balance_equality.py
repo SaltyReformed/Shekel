@@ -16,8 +16,9 @@ configuration with a Projected envelope expense carrying any
 combination of cleared / uncleared / credit entries, every balance-
 rendering surface MUST return the identical Decimal:
 
-  1. Grid                    -- ``GET /grid`` + canonical producer
-                                ``balance_resolver.balances_for``.
+  1. Grid                    -- ``GET /grid`` + the seam's cash-flow entry
+                                ``balance_at.cash_balance_map`` (the FOLD since
+                                plan step X-c2b2).
   2. /savings                 -- ``savings_dashboard_service`` +
                                 ``GET /savings``.
   3. /accounts cash detail    -- the balance ``GET /accounts/<id>/details``
@@ -41,18 +42,19 @@ by a same-period credit), and uncleared-floor (the
 ``max(estimated - cleared_debit - sum_credit, uncleared_debit)``
 floor that no cleared/credit drift can squeeze below).
 
-The subtotal-reconciliation assertion (test
-``test_subtotal_reconciles_on_all_pages``) closes Q-10 / E-25's
-same-formula invariant: ``balance[anchor] - balance[anchor - 1] ==
-period_subtotal(anchor).net`` to the penny.  When this fails the
-grid's subtotal row and balance row have re-grown the F-002 Pair C /
-F-004 same-page divergence (the inline ``sum(... effective_amount
-...)`` loop the pre-Commit-10 grid had).
+The subtotal-reconciliation assertion
+(:class:`TestSubtotalReconciliation`) closes Q-10 / E-25's same-formula
+invariant on ruling R-K's basis: for one ``GridColumn`` per period,
+``balance[p] - balance[p-1] == net[p] + reconciliation[p]`` to the penny, with
+the remainder pinned per case as the fixture's own true-up.  When this fails the
+grid's subtotal rows and balance row have re-grown the F-002 Pair C / F-004
+same-page divergence (the inline ``sum(... effective_amount ...)`` loop the
+pre-Commit-10 grid had).
 
 The seam-injection negative-control test
 ``test_invariant_fails_if_seam_reintroduced`` proves the lock is
 load-bearing, not a coincidence: monkey-patching one consumer to
-bypass ``balance_resolver`` and report ``effective_amount`` directly
+bypass the balance-at seam and report ``effective_amount`` directly
 makes the cross-page equality assertion fail, which is the failure
 mode the developer needs to see in CI before a regression ships.
 
@@ -69,20 +71,31 @@ import pytest
 from app.services import (
     balance_at,
     calendar_service,
-    cash_ledger,
     dashboard_service,
     home_equity_service,
     investment_dashboard_service,
+    pay_period_service,
     savings_dashboard_service,
 )
 from app.services.balance_at import _kernel as net_worth_kernel
-from app.services.balance_at import _cash_engine as balance_resolver
 from app.services.balance_at import BalanceContext
 from app.services.balance_at._resolution import resolved_loan
+from app.services.savings_dashboard_service._net_worth import (
+    _ASSET_BANDS,
+    _LIABILITY_BAND,
+)
 
 
 # ── Parameter matrix (cases 1..5 of the plan's Commit 11 spec) ─────
 
+
+# The ``seed_user`` factory's origination anchor for the checking account
+# (``conftest`` creates it with ``anchor_balance=Decimal("1000.00")``).
+# ``seed_cross_page_account`` leaves that assertion in place and APPENDS the
+# case's own, so the difference between the two is a true-up that lands in the
+# anchor period -- which ruling R-K's Reconciliation row carries and
+# ``TestSubtotalReconciliation`` pins per case.
+_FACTORY_ORIGINATION_BALANCE = Decimal("1000.00")
 
 # Each case is a dict so pytest's ``ids=`` parametrize hook can label
 # tests by the case's stable short name.  Every Decimal here is built
@@ -206,19 +219,40 @@ def _bctx(ctx):
 def _grid_value(ctx):
     """Read the grid surface's balance for the anchor period.
 
-    The grid route renders ``balance_result.balances[period.id]`` per
-    visible-period cell, where ``balance_result`` now comes from the seam's
-    cash-flow entry ``balance_at.cash_balance_map`` (Level-1 Commit 8).
-    Reading through that SAME seam entry -- not the raw ``balances_for``
-    producer beneath it -- keeps this surface reader on the production path,
-    so a regression in the seam's cash view (not just the producer) is caught
-    here, and the reader is no longer a byte-identical twin of the
-    ``balances_for`` calls in the per-kind locks.
+    Through ``balance_at.grid_balance_view`` -- the entry the grid ROUTE calls
+    (``routes/grid.py:_build_grid_view``) -- so this reader is on the production
+    path rather than one producer beneath it.
+
+    **It read ``cash_balance_map`` until plan step X-g3b**, which was harmless
+    only while the two agreed.  They agree for a PLAIN account by construction
+    (a cash account models no return, so the replay resolves no tier and its
+    columns ARE its cash fold, measured unmoved on 60 of 60 columns for every
+    real PLAIN account on both databases), and this module's cash matrix is
+    PLAIN -- but for a modelled kind they now answer differently BY DESIGN
+    (ruling R-W), and a reader on the wrong one would prove nothing about the
+    grid while looking like it did.  One reader, on the entry the route uses,
+    for the cash matrix and both modelled locks below.
     """
-    result = balance_at.cash_balance_map(
+    view = balance_at.grid_balance_view(
         ctx["account"], _bctx(ctx), ctx["all_periods"],
     )
-    return result.balances[ctx["anchor_period"].id]
+    return view.columns[ctx["anchor_period"].id].balance
+
+
+def _grid_current_period_value(ctx):
+    """Read the grid's balance for the CURRENT period.
+
+    The modelled per-kind locks below compare every surface at the current
+    period (``_modelled_current_balance``), where the cash matrix compares at
+    the anchor -- so the grid needs a reader at each convention rather than one
+    that silently answers the wrong column.  Both go through the same
+    ``grid_balance_view`` entry the route calls; only the column differs.
+    """
+    view = balance_at.grid_balance_view(
+        ctx["account"], _bctx(ctx), ctx["all_periods"],
+    )
+    current = pay_period_service.get_current_period(ctx["user_id"])
+    return view.columns[current.id].balance
 
 
 def _dashboard_value(ctx):
@@ -227,10 +261,13 @@ def _dashboard_value(ctx):
     After the Terminal Road rebuild the dashboard's headline balance is
     the pulse hero, served by ``compute_balance_section`` (the narrow
     producer the anchor-edit revert fragment also renders); its
-    ``hero["balance"]`` is the same ``balance_as_of_date`` figure the
-    page's ``_pulse_balance.html`` renders verbatim.  The fixture pins
-    today inside the anchor period, so this as-of-today balance equals the
-    resolver's anchor-period balance.
+    ``hero["balance"]`` is the figure the page's ``_pulse_balance.html``
+    renders verbatim.  Since plan step X-c2b2 it is the hero's own period map at
+    the CURRENT period -- so it IS the chart's first point rather than a second
+    producer that has to agree with it (finding N-60: the label promises the
+    period's END, and the fold made the as-of-today scalar diverge from it by
+    the unpaid remainder of the period).  The fixture pins today inside the
+    anchor period, so this equals the anchor-period balance.
     """
     data = dashboard_service.compute_balance_section(ctx["user_id"])
     return data["hero"]["balance"]
@@ -246,13 +283,13 @@ def _savings_value(ctx):
     data = savings_dashboard_service.compute_dashboard_data(ctx["user_id"])
     matches = [
         ad for ad in data["account_data"]
-        if ad["account"].id == ctx["account_id"]
+        if ad.account.id == ctx["account_id"]
     ]
     assert len(matches) == 1, (
         f"/savings account_data did not surface exactly one entry "
         f"for account_id={ctx['account_id']}: matched {len(matches)}"
     )
-    return matches[0]["current_balance"]
+    return matches[0].current_balance
 
 
 def _accounts_checking_value(ctx):
@@ -295,8 +332,10 @@ def _accounts_checking_value(ctx):
 def _calendar_value(ctx):
     """Read the calendar surface's ``projected_end_balance`` for the anchor month.
 
-    The calendar service projects via :func:`balance_resolver.balance_as_of_date`
-    at the calendar month-end.  The fixture makes
+    The calendar service projects via the seam's
+    :func:`app.services.balance_at.cash_balance_at` at the calendar month-end --
+    the same fold read at one date (``balance_as_of_date``, the producer it
+    called before plan step X-c2b2, is deleted).  The fixture makes
     ``anchor_period.end_date`` the last day of its calendar month, so
     the C9-3 boundary invariant guarantees the calendar's
     ``projected_end_balance`` equals the resolver's anchor-period
@@ -470,17 +509,26 @@ class TestCrossPageBalanceEquality:
 
 
 class TestSubtotalReconciliation:
-    """Period subtotal net equals balance delta on every parameter case.
+    """The grid column's rows reconcile to its balance on every parameter case.
 
-    E-25 / Q-10 / F-002 Pair C: the same entries-aware formula drives
-    both the per-period subtotal and the balance carry-forward, so the
-    period-to-period balance delta must equal the subtotal's ``net`` to
+    E-25 / Q-10 / F-002 Pair C: ONE valued row set drives both the per-period
+    subtotal rows and the balance row, so the period-to-period balance delta
+    must equal the column's net plus ruling R-K's remainder plus the accrual, to
     the penny.  Before Commit 10 the grid's inline ``sum(...
     effective_amount ...)`` subtotal loop violated this whenever a
     Projected envelope expense carried cleared entries -- the subtotal
     row reported $500 while the balance row reflected the entries-aware
     $454.29 reduction.  This test fires the moment a future edit
     re-grows that divergence.
+
+    **Read off ONE ``GridBalanceView`` since plan step X-c2b3.**  It differenced
+    ``_cash_engine.balances_for`` against ``cash_ledger.period_subtotal``, and
+    both deleted -- the balance replaced by the fold at X-c2b2, the subtotal by
+    ``cash_period_view``, which is R-K's basis and carries the remainder term the
+    old two-producer form had no name for.  The identity's SHAPE therefore
+    changed with it: what a subtotal counts is no longer "the unpaid rows" but
+    "every row attributed here", and what the balance counts is money that
+    MOVED, so the two reconcile through a named remainder rather than exactly.
     """
 
     @pytest.mark.parametrize(
@@ -492,30 +540,35 @@ class TestSubtotalReconciliation:
         seed_cross_page_account,
         case,
     ):
-        """C11-5: ``balance[anchor] - balance[anchor - 1] == subtotal[anchor].net``.
+        """C11-5: ``balance[p] - balance[p-1] == net[p] + reconciliation[p]``.
 
-        For each case, compute the resolver's balances for the period
-        list, compute the canonical period subtotal for the anchor
-        period, and assert the delta equals the subtotal net.  Pre-
-        anchor balance for an asset checking account with no income
-        before the anchor is the anchor balance itself (the resolver
-        does not project backward; balances_for only emits the anchor
-        period and forward, but the test uses the resolver's
-        per-period helper directly to ensure parity).
+        For each case, read ONE grid view over the whole period list and
+        reconcile the anchor period's column against its predecessor's, then the
+        post-anchor period's against the anchor's.
 
-        Because the resolver does not emit pre-anchor periods, the
-        delta is computed against the anchor period and the period
-        immediately AFTER it (post-anchor): both are projected, the
-        post-anchor period carries forward the anchor period balance
-        with no transactions added, so the delta is zero and the
-        post-anchor period subtotal net must also be zero.  This is
-        the no-transaction reconciliation step.
+        The post-anchor period carries NO transactions of its own, so its net is
+        exactly zero and its balance equals the anchor period's -- the
+        no-transaction reconciliation step, and the case that would catch a
+        remainder quietly absorbing a mis-grouped row.
 
-        Additionally, the in-anchor-period reconciliation
-        ``anchor_balance - balance[anchor] == subtotal[anchor].net``
-        is asserted: the anchor is the seed value, and the producer's
-        post-projection result minus that seed must equal the period's
-        net activity by definition.
+        **The anchor period's remainder is the fixture's own TRUE-UP, and
+        pinning its exact value is what keeps the identity from being
+        untestable.**  ``seed_cross_page_account`` leaves the ``seed_user``
+        factory's ``$1,000.00`` origination assertion in place and appends a
+        SECOND one at the case's ``anchor_balance`` (latest-wins, E-19), both
+        landing in the anchor period.  The opening books nothing in its own
+        period, so the re-assertion's correction --
+        ``anchor_balance - $1,000.00`` -- is money that moved through the column
+        with no row to explain it: exactly what ruling R-K's Reconciliation row
+        exists to show, here on five different anchor balances.  Asserting it as
+        a computed figure rather than letting it fall out of the identity is
+        Section 7.2's rule: a remainder read as a residual makes the identity
+        arithmetically true, and would silently absorb a mis-grouped row.
+
+        The POST-anchor period carries neither an assertion nor a row, so its
+        remainder and its net are both exactly zero -- the case that would catch
+        a remainder leaking forward.  A PLAIN account accrues nothing, asserted
+        on both columns.
         """
         with app.app_context():
             ctx = seed_cross_page_account(
@@ -524,62 +577,89 @@ class TestSubtotalReconciliation:
                 entries=case["entries"],
             )
 
-            balance_result = balance_resolver.balances_for(
-                ctx["account"], ctx["scenario_id"], ctx["all_periods"],
-            )
-            subtotal = cash_ledger.period_subtotal(
-                ctx["account"], ctx["scenario_id"], ctx["anchor_period"],
-            )
+            columns = balance_at.grid_balance_view(
+                ctx["account"], _bctx(ctx), ctx["all_periods"],
+            ).columns
 
-            anchor_balance = case["anchor_balance"]
-            projected_balance = balance_result.balances[ctx["anchor_period"].id]
-
-            # The anchor seed minus the producer's projected balance
-            # equals the net activity that period (income - expense).
-            # For a Projected expense with no income the activity is
-            # ``-period_subtotal.net``: subtotal.net = income - expense
-            # is negative when expense > 0, and balance moves DOWN by
-            # ``expense`` from the seed.  Therefore:
-            #     anchor - balance == expense - income == -net
-            #     balance - anchor == net.
-            anchor_to_balance_delta = projected_balance - anchor_balance
-            assert anchor_to_balance_delta == subtotal.net, (
-                f"case {case['id']!r}: anchor-to-anchor-balance delta "
-                f"{anchor_to_balance_delta!r} != period_subtotal.net "
-                f"{subtotal.net!r}.  The producer's balance and subtotal "
-                f"disagree on the entries-aware formula -- the F-002 "
-                f"Pair C / F-004 same-page divergence has re-grown."
-            )
-
-            # Post-anchor carry-forward: the next period has zero
-            # transactions of its own, so its subtotal net is zero
-            # and its projected balance equals the anchor period
-            # balance.
-            anchor_idx_in_list = next(
+            anchor_idx = next(
                 i for i, p in enumerate(ctx["all_periods"])
                 if p.id == ctx["anchor_period"].id
             )
-            assert anchor_idx_in_list + 1 < len(ctx["all_periods"]), (
+            assert anchor_idx > 0, (
+                "fixture invariant: the anchor period must have a predecessor "
+                "to difference against"
+            )
+            assert anchor_idx + 1 < len(ctx["all_periods"]), (
                 "fixture invariant: anchor period must not be the last "
                 "period in the projected window"
             )
-            next_period = ctx["all_periods"][anchor_idx_in_list + 1]
-            next_balance = balance_result.balances[next_period.id]
-            next_subtotal = cash_ledger.period_subtotal(
-                ctx["account"], ctx["scenario_id"], next_period,
+            prior_period = ctx["all_periods"][anchor_idx - 1]
+            next_period = ctx["all_periods"][anchor_idx + 1]
+
+            anchor_column = columns[ctx["anchor_period"].id]
+            next_column = columns[next_period.id]
+
+            # The anchor column's remainder IS the fixture's re-assertion: the
+            # factory's $1,000.00 origination corrected to the case's anchor.
+            expected_trueup = (
+                case["anchor_balance"] - _FACTORY_ORIGINATION_BALANCE
             )
-            forward_delta = next_balance - projected_balance
-            assert forward_delta == next_subtotal.net, (
+            assert anchor_column.reconciliation == expected_trueup, (
+                f"case {case['id']!r}: anchor column remainder "
+                f"{anchor_column.reconciliation!r} != the fixture's true-up "
+                f"{expected_trueup!r} "
+                f"({case['anchor_balance']!r} asserted over the factory's "
+                f"{_FACTORY_ORIGINATION_BALANCE!r} origination).  R-K's "
+                f"Reconciliation row exists to carry exactly this."
+            )
+            # The post-anchor period has neither an assertion nor a row, so
+            # nothing can leak into its remainder.
+            assert next_column.reconciliation == Decimal("0.00"), (
+                f"case {case['id']!r}: post-anchor column has a "
+                f"{next_column.reconciliation!r} remainder, but no assertion "
+                f"and no row is attributed to it"
+            )
+            for label, column in (
+                ("anchor", anchor_column), ("next", next_column),
+            ):
+                assert column.accrual == Decimal("0.00"), (
+                    f"case {case['id']!r}: {label} column carries an accrual "
+                    f"({column.accrual!r}) on a PLAIN account"
+                )
+                assert column.contribution == Decimal("0.00"), (
+                    f"case {case['id']!r}: {label} column carries a modelled "
+                    f"contribution ({column.contribution!r}) on a PLAIN account"
+                )
+
+            anchor_delta = (
+                anchor_column.balance - columns[prior_period.id].balance
+            )
+            assert anchor_delta == (
+                anchor_column.net + anchor_column.reconciliation
+            ), (
+                f"case {case['id']!r}: anchor-period balance delta "
+                f"{anchor_delta!r} != net {anchor_column.net!r} + "
+                f"reconciliation {anchor_column.reconciliation!r}.  The "
+                f"balance row and the subtotal rows disagree on the "
+                f"entries-aware formula -- the F-002 Pair C / F-004 same-page "
+                f"divergence has re-grown."
+            )
+
+            forward_delta = next_column.balance - anchor_column.balance
+            assert forward_delta == (
+                next_column.net + next_column.reconciliation
+            ), (
                 f"case {case['id']!r}: post-anchor balance delta "
-                f"{forward_delta!r} != next-period subtotal.net "
-                f"{next_subtotal.net!r} -- carry-forward broken"
+                f"{forward_delta!r} != net {next_column.net!r} + "
+                f"reconciliation {next_column.reconciliation!r} "
+                f"-- carry-forward broken"
             )
             # And with no transactions in the post-anchor period the
             # net is exactly zero, locking the empty-period case.
-            assert next_subtotal.net == Decimal("0.00"), (
+            assert next_column.net == Decimal("0.00"), (
                 f"case {case['id']!r}: post-anchor period has no "
-                f"transactions but period_subtotal.net = "
-                f"{next_subtotal.net!r}; expected 0.00"
+                f"transactions but its net is {next_column.net!r}; "
+                f"expected 0.00"
             )
 
 
@@ -590,7 +670,7 @@ class TestSeamInjectionLock:
     """The cross-page lock catches a real seam re-introduction.
 
     HIGH-01's value comes from the lock bites when a consumer
-    bypasses ``balance_resolver``.  This test PROVES the lock is real
+    bypasses the balance-at seam.  This test PROVES the lock is real
     -- it monkey-patches one consumer to short-circuit to a divergent
     Decimal and asserts that
     :class:`TestCrossPageBalanceEquality.test_all_surfaces_equal`'s
@@ -770,7 +850,7 @@ def _match_account_data(dashboard_data, account_id):
     """
     matches = [
         ad for ad in dashboard_data["account_data"]
-        if ad["account"].id == account_id
+        if ad.account.id == account_id
     ]
     assert len(matches) == 1, (
         f"/savings account_data did not surface exactly one entry for "
@@ -798,23 +878,37 @@ def _savings_tile_value(ctx):
     reader serves every kind's ``savings`` surface.
     """
     data = savings_dashboard_service.compute_dashboard_data(ctx["user_id"])
-    return _match_account_data(data, ctx["account_id"])["current_balance"]
+    return _match_account_data(data, ctx["account_id"]).current_balance
 
 
 def _trend_assets_value(ctx):
-    """Read the net-worth trend's ``assets`` lane at the current index."""
+    """Sum the net-worth trend's ASSET bands at the current index.
+
+    The producer published a parallel ``assets`` total until plan step X-s1
+    deleted it: it was the sum of these bands by construction (one per-period
+    sum feeds both), and once the chart payload stopped carrying it across it
+    had no ``app/`` reader at all.  Summing the bands here reads the figure
+    from where it is actually derived, so this oracle now compares the other
+    pages against the series the chart really draws.
+    """
     series = _net_worth_series(ctx)
-    return series["assets"][series["current_index"]]
+    index = series["current_index"]
+    return sum(
+        (series["composition"][band][index] for band in _ASSET_BANDS),
+        Decimal("0.00"),
+    )
 
 
 def _trend_liabilities_value(ctx):
-    """Read the net-worth trend's ``liabilities`` lane at the current index.
+    """Read the net-worth trend's LIABILITY band at the current index.
 
-    ``liabilities[i]`` is the positive magnitude ``abs(balance)``, so for an
-    isolated loan it equals the loan's current balance directly.
+    The band is the positive magnitude ``abs(balance)``, so for an isolated
+    loan it equals the loan's current balance directly.  It was also published
+    as a parallel ``liabilities`` total until plan step X-s1 deleted that copy
+    (see :func:`_trend_assets_value`).
     """
     series = _net_worth_series(ctx)
-    return series["liabilities"][series["current_index"]]
+    return series["composition"][_LIABILITY_BAND][series["current_index"]]
 
 
 def _loan_detail_value(ctx):
@@ -901,13 +995,20 @@ _LOAN_SURFACE_READERS = {
     "net_worth_trend": _trend_liabilities_value,
     "schedule_table": _loan_schedule_table_value,
 }
+# The GRID joins both modelled locks at plan step X-g3b (ruling R-W): it renders
+# the modelled balance for every kind now, so it is a surface these figures must
+# agree on rather than one holding a deliberate cash-basis gap.  It reads through
+# ``_grid_value``, which calls ``grid_balance_view`` -- NOT ``cash_balance_map``,
+# which after that step answers a modelled account differently by design.
 _PROPERTY_SURFACE_READERS = {
     "savings": _savings_tile_value,
+    "grid": _grid_current_period_value,
     "property_detail": _property_detail_value,
     "net_worth_trend": _trend_assets_value,
 }
 _INVESTMENT_SURFACE_READERS = {
     "savings": _savings_tile_value,
+    "grid": _grid_current_period_value,
     "investment_dashboard": _investment_dashboard_value,
     "net_worth_trend": _trend_assets_value,
 }
@@ -1187,33 +1288,76 @@ class TestLoanCrossPageEquality:
             )
 
 
-class TestPropertyCrossPageEquality:
-    """Every property surface reports the same market value V.
+def _modelled_current_balance(ctx) -> Decimal:
+    """Return the account's modelled balance at the current period, from the seam.
 
-    A single isolated appreciating Property (market value V, anchored at the
-    current period so the flat carry and the appreciation projection
-    coincide at today) must report V identically on the /savings tile, the
+    The independent oracle the cross-page classes compare their surfaces
+    against since plan step X-g2b.  It used to be the fixture's asserted V,
+    which worked only while an account anchored in the current period earned
+    nothing in it -- the state ruling R-Y deleted.  Reading it once HERE, from
+    the seam's own per-period map, keeps the classes what they are: a lock that
+    every surface reaches ONE figure, by three different paths.
+    """
+    balance_ctx = BalanceContext.build(ctx["user_id"])
+    current = pay_period_service.get_current_period(ctx["user_id"])
+    return balance_at.balance_map(
+        ctx["account"], balance_ctx, ctx["all_periods"],
+    )[current.id]
+
+
+class TestPropertyCrossPageEquality:
+    """Every property surface reports the same MODELLED market value.
+
+    A single isolated appreciating Property (asserted value V, anchored at the
+    current period) must report ONE figure on the /savings tile, the
     home-equity market value (total_debt zero -- no secured loans), the
     year-end asset aggregate, and the net-worth trend's assets at today.
+
+    **The figure is no longer V, and one surface has not followed yet** (plan
+    step X-g2b).  Ruling R-Y gives the anchor period its own appreciation, so a
+    Property is worth more than the number last typed into it from the day after
+    that number was typed.  The cockpit tile and the net-worth trend both read
+    the modelled map and must agree to the cent.  The property DETAIL page still
+    reads ``Account.current_anchor_balance`` -- the cache column -- which is
+    finding **N-83**, recorded and scheduled for its own commit alongside plan
+    step X-e rather than fixed inside a money-moving cutover.
+
+    That gap is asserted EXPLICITLY below rather than papered over: it is the
+    asserted V exactly, and it is strictly below the modelled figure.  So it
+    cannot drift silently, and N-83's own commit FAILS here and has to update
+    this class -- which is what a recorded finding should cost its resolver.
     """
 
     def test_all_surfaces_equal(
         self, app, cross_page_property_ctx, auth_client,
     ):
-        """Every property surface returns V at today.
+        """Every property surface returns the SAME modelled value at today.
 
-        V = $400,000, anchored at the current period.  The /savings tile,
-        the home-equity market value, the year-end asset aggregate, and the
-        net-worth trend assets all read V.
+        The expected figure is read once from the seam and compared against all
+        three surfaces, each of which reaches it by a different path (the
+        cockpit's projection service, the home-equity producer, the net-worth
+        trend).  It is asserted strictly above the asserted V, which is what
+        would fail if any surface fell back to the cache column.
         """
         with app.app_context():
             ctx = cross_page_property_ctx
-            expected = ctx["V"]
+            expected = _modelled_current_balance(ctx)
+            assert expected > ctx["V"], (
+                "the anchor period must earn its own days (ruling R-Y)"
+            )
             surface_values = {
                 name: reader(ctx)
                 for name, reader in _PROPERTY_SURFACE_READERS.items()
             }
-            _assert_surfaces_equal(surface_values, expected, "property kind")
+            # The two SEAM-fed surfaces agree to the cent.
+            _assert_surfaces_equal(
+                {k: v for k, v in surface_values.items()
+                 if k != "property_detail"},
+                expected, "property kind",
+            )
+            # The property detail page is still on the cache column (N-83).
+            assert surface_values["property_detail"] == ctx["V"]
+            assert surface_values["property_detail"] < expected
 
             resp = auth_client.get(f"/accounts/{ctx['account_id']}/property")
             assert resp.status_code == 200, (
@@ -1223,13 +1367,16 @@ class TestPropertyCrossPageEquality:
 
 
 class TestInvestmentCrossPageEquality:
-    """Every investment surface reports the same balance V.
+    """Every investment surface reports the same MODELLED balance.
 
-    A single isolated Investment (balance V, anchored at the current period
-    with no current-period contribution, so the growth projection re-applies
-    nothing at the anchor period) must report V identically on the /savings
-    tile, the investment dashboard, the year-end asset aggregate, and the
-    net-worth trend's assets at today.
+    A single isolated Investment (asserted balance V, anchored at the current
+    period with no current-period contribution) must report ONE figure on the
+    /savings tile, the investment dashboard, the year-end asset aggregate, and
+    the net-worth trend's assets at today.
+
+    **The figure is no longer V** (plan step X-g2b, ruling R-Y): the anchor
+    period earns its own days, so an account anchored in it is worth more than
+    the number last typed into it.
 
     Scope note: at anchor==current all four surfaces legitimately resolve
     through the same base producer (the resolver's current-period balance),
@@ -1246,15 +1393,18 @@ class TestInvestmentCrossPageEquality:
     def test_all_surfaces_equal(
         self, app, cross_page_investment_ctx, auth_client,
     ):
-        """Every investment surface returns V at today.
+        """Every investment surface returns the SAME modelled balance.
 
         V = $100,000, anchored at the current period with no contribution.
-        The /savings tile, the investment dashboard, the year-end asset
-        aggregate, and the net-worth trend assets all read V.
+        The expected figure is read once from the seam and compared against
+        each surface, which reach it by three different paths; it is asserted
+        strictly above V, so a surface that fell back to the asserted number
+        would fail rather than agree by accident.
         """
         with app.app_context():
             ctx = cross_page_investment_ctx
-            expected = ctx["V"]
+            expected = _modelled_current_balance(ctx)
+            assert expected > ctx["V"]  # ruling R-Y: the anchor period accrues
             surface_values = {
                 name: reader(ctx)
                 for name, reader in _INVESTMENT_SURFACE_READERS.items()
@@ -1354,14 +1504,29 @@ class TestSecuredHomeEquityEquality:
     def test_equity_relationship(self, app, cross_page_secured_ctx):
         """market_value == PV, total_debt == MC, equity == PV - MC everywhere.
 
-        PV = $400,000, MC = $250,000, so equity = $150,000.  The home-equity
-        producer's market_value / total_debt / equity reconcile to the
-        /savings tiles, the loan-detail balance, the year-end aggregate, and
-        the net-worth trend net.
+        PV = $400,000 ASSERTED, MC = $250,000.  The home-equity producer's
+        market_value / total_debt / equity reconcile to the /savings tiles, the
+        loan-detail balance, the year-end aggregate, and the net-worth trend
+        net.
+
+        **The property leg is still the ASSERTED PV** (finding N-83): the equity
+        producer reads ``Account.current_anchor_balance``, where the cockpit tile
+        beside it reads the modelled map that ruling R-Y moved.  The gap is
+        asserted explicitly so it cannot drift, and it is N-83's own commit that
+        closes it.  The DEBT leg is untouched and still pins MC exactly -- a
+        loan's balance is its schedule, which no part of this step moves, and
+        that half is the standing regression gate.
         """
         with app.app_context():
             ctx = cross_page_secured_ctx
             pv, mc = ctx["PV"], ctx["MC"]
+            # Finding N-83: the cockpit tile has moved to the modelled value
+            # and this producer has not, so they are knowingly apart here.
+            assert _modelled_current_balance({
+                "user_id": ctx["property_account"].user_id,
+                "account": ctx["property_account"],
+                "all_periods": ctx["all_periods"],
+            }) > pv
             equity = home_equity_service.resolve_home_equity(
                 ctx["property_account"],
                 BalanceContext.build(ctx["property_account"].user_id),
@@ -1371,10 +1536,10 @@ class TestSecuredHomeEquityEquality:
             )
             prop_tile = _match_account_data(
                 dashboard, ctx["property_account_id"],
-            )["current_balance"]
+            ).current_balance
             mortgage_tile = _match_account_data(
                 dashboard, ctx["mortgage_account_id"],
-            )["current_balance"]
+            ).current_balance
             # The loan-detail balance is the seam scalar the page renders
             # (plan step C4; the resolver bundle carries no balance since D2a).
             loan_detail = balance_at.balance_at(
@@ -1383,10 +1548,18 @@ class TestSecuredHomeEquityEquality:
                 date.today(),
             )
 
-            # Property leg: market value == the property tile == PV.
-            assert equity.market_value == prop_tile == pv, (
+            # Property leg: the equity producer still reads the cache column,
+            # so it pins the ASSERTED PV, while the cockpit tile beside it now
+            # reads the modelled map (ruling R-Y).  Finding N-83 owns the gap;
+            # both halves are asserted so neither can drift and so N-83's own
+            # commit fails here.
+            assert equity.market_value == pv, (
                 f"property leg disagreed: market_value={equity.market_value!r}, "
-                f"savings_tile={prop_tile!r}, PV={pv!r}"
+                f"PV={pv!r}"
+            )
+            assert prop_tile > pv, (
+                f"the cockpit tile must carry the modelled value "
+                f"(tile={prop_tile!r}, asserted={pv!r})"
             )
             # Mortgage leg: total secured debt == the mortgage tile == the
             # loan-detail balance == MC.
@@ -1397,13 +1570,22 @@ class TestSecuredHomeEquityEquality:
                 f"savings_tile={mortgage_tile!r}, "
                 f"loan_detail={loan_detail!r}, MC={mc!r}"
             )
-            # Equity == trend net == PV - MC.
+            # Equity == PV - MC on the equity producer's own (cache-column)
+            # basis, and the TREND nets the modelled value against the same
+            # debt -- so the two differ by exactly the N-83 gap measured above,
+            # never by anything else.  Asserting the difference rather than the
+            # equality is what keeps this a lock while the finding is open.
             series = dashboard["net_worth"]["series"]
             trend_net = series["net"][series["current_index"]]
             # PV - MC = 400000.00 - 250000.00 = 150000.00.
-            assert equity.equity == trend_net == (pv - mc), (
+            assert equity.equity == (pv - mc), (
                 f"equity disagreed: equity={equity.equity!r}, "
-                f"trend_net={trend_net!r}, PV-MC={(pv - mc)!r}"
+                f"PV-MC={(pv - mc)!r}"
+            )
+            assert trend_net - equity.equity == prop_tile - pv, (
+                f"the trend and the equity card differ by something other than "
+                f"finding N-83's gap: trend_net={trend_net!r}, "
+                f"equity={equity.equity!r}, tile={prop_tile!r}, PV={pv!r}"
             )
 
 
@@ -1417,23 +1599,59 @@ class TestPerKindSeamInjectionLock:
     equality test that happened to read the same producer twice would still
     report green.  Parametrised over the three single-value kinds to stay
     DRY.
+
+    **It fired whether or not the injection landed, and that is finding N-94**
+    (repaired at plan step X-h).  It compared every surface against the
+    fixture's ASSERTED value -- ``ctx["V"]`` / ``ctx["C"]`` -- and since plan
+    step X-g2b gave the anchor period its own accrual (ruling R-Y) no modelled
+    surface returns that number.  Measured on the fixtures at the repair:
+
+    ======================  ==============  ==============  ================
+    kind                    asserted        modelled        blind?
+    ======================  ==============  ==============  ================
+    loan                    ``$200,000.00`` ``$200,000.00`` no
+    property                ``$400,000.00`` ``$401,005.45`` YES
+    investment              ``$100,000.00`` ``$100,576.29`` YES
+    ======================  ==============  ==============  ================
+
+    So two of three cases raised with the patch and without it, and the
+    name/value assertions then matched against the "All surface values: {...}"
+    dump rather than against the lock actually biting -- the shape Section 7.3
+    of the balance plan exists to prevent.
+
+    Two things repair it.  The comparand is now the seam's own modelled
+    current balance, read through :func:`_modelled_current_balance`, which is
+    the identical oracle the sibling positive tests use -- so this control can
+    never again drift from the figure those tests assert.  And each case
+    carries the surfaces its positive test EXCLUDES: the property kind's
+    ``property_detail`` still reads the cache column (finding N-83), so
+    including it would leave the unpatched set non-uniform for a reason that
+    has nothing to do with the injection.
+
+    The control for the control is asserted in the test itself: the UNPATCHED
+    set must pass before the patch is applied.  Without that premise a lock
+    that fires for any reason reads exactly like a lock that fires for the
+    right one.
     """
 
     _WRONG = Decimal("-99999.99")  # no fixture balance equals this
 
     # One per-kind negative-control case: (ctx fixture name, that kind's
-    # reader dict, the ctx key holding the true balance, the surface to
+    # reader dict, the surfaces its positive test excludes, the surface to
     # break).  Bundled into a single parametrize value so the test stays a
     # cohesive 5-argument method rather than threading four parallel
     # parametrize columns.
     @pytest.mark.parametrize(
         "spec",
         [
-            ("cross_page_loan_ctx", _LOAN_SURFACE_READERS, "C", "savings"),
-            ("cross_page_property_ctx", _PROPERTY_SURFACE_READERS, "V", "savings"),
+            ("cross_page_loan_ctx", _LOAN_SURFACE_READERS, (), "savings"),
+            (
+                "cross_page_property_ctx", _PROPERTY_SURFACE_READERS,
+                ("property_detail",), "savings",
+            ),
             (
                 "cross_page_investment_ctx", _INVESTMENT_SURFACE_READERS,
-                "V", "savings",
+                (), "savings",
             ),
         ],
         ids=["loan", "property", "investment"],
@@ -1446,23 +1664,37 @@ class TestPerKindSeamInjectionLock:
         must raise an AssertionError whose message names the patched surface
         and the wrong value -- proving the lock bites on a real
         single-surface regression, not a coincidence.
+
+        The unpatched set is asserted to PASS first (finding N-94): a control
+        that raises before the injection lands proves nothing about the
+        injection.
         """
-        ctx_fixture, readers, expected_key, patched_surface = spec
+        ctx_fixture, readers, excluded, patched_surface = spec
         ctx = request.getfixturevalue(ctx_fixture)
-        expected = ctx[expected_key]
         with app.app_context():
+            expected = _modelled_current_balance(ctx)
+
+            def _read(reader_dict):
+                """Read every surface this case locks, minus its known gaps."""
+                return {
+                    name: reader(ctx)
+                    for name, reader in reader_dict.items()
+                    if name not in excluded
+                }
+
+            # The control FOR the control: without the injection the lock is
+            # silent, so the raise below is caused by the patch and nothing
+            # else.
+            _assert_surfaces_equal(_read(readers), expected, ctx_fixture)
 
             def _broken_reader(_ctx):
                 """Return a deliberately wrong Decimal for the patched surface."""
                 return self._WRONG
 
             monkeypatch.setitem(readers, patched_surface, _broken_reader)
-            surface_values = {
-                name: reader(ctx) for name, reader in readers.items()
-            }
 
             with pytest.raises(AssertionError) as excinfo:
-                _assert_surfaces_equal(surface_values, expected, ctx_fixture)
+                _assert_surfaces_equal(_read(readers), expected, ctx_fixture)
 
             message = str(excinfo.value)
             assert repr(patched_surface) in message, (

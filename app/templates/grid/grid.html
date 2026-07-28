@@ -87,16 +87,6 @@
   </div>
 </div>
 
-{# Stale-anchor warning -- the wrapper renders ALWAYS (with a stable id)
-   so the balance-row HTMX response can keep it current via an
-   out-of-band swap on every balanceChanged: a desktop mark-done that
-   creates the condition surfaces the banner without the old full page
-   reload, and clearing the condition empties the wrapper.  The alert is
-   inside only when the condition holds.  See grid/_stale_anchor_warning.html. #}
-<div id="stale-anchor-warning">
-  {% include "grid/_stale_anchor_warning.html" %}
-</div>
-
 {# --- Desktop Grid (hidden on mobile) --- #}
 <div class="d-none d-md-block">
 <div class="table-responsive grid-wrapper grid-scroll-wrapper position-relative">

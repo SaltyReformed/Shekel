@@ -30,14 +30,16 @@ def _reject_overlapping_batch(existing_periods, new_starts):
     highest ``period_index`` values, so their start dates MUST fall after
     every existing period's COVERAGE, not merely after the latest existing
     start.  Otherwise ``period_index`` order stops matching calendar
-    order, and the balance engine -- which walks periods by index and
-    trusts that order to be chronological
-    (``balance_resolver.balance_as_of_date``, ``balances_for``) -- skips
-    the out-of-order period and silently drops its transactions from
-    as-of balances.  A start date that lands ON or WITHIN any existing
-    period's ``[start_date, end_date]`` span also produces overlapping
-    date ranges (two periods covering one day) and a nondeterministic
-    ``get_current_period``.
+    order.  The cash fold indexes a day's column by DATE
+    (``balance_at._cash_fold._PeriodSpans``, a bisect over sorted
+    ``start_date``) so it would place a flow in the wrong column rather than
+    skip it.  The index-ordered anchor-forward walks that used to SKIP such a
+    period outright -- silently dropping its transactions -- were deleted at
+    plan step X-g4b, so the date-keyed misplacement is now the only failure
+    mode, and it is the reason this batch is rejected rather than reshuffled.  A start date that
+    lands ON or WITHIN any existing period's ``[start_date, end_date]`` span
+    also produces overlapping date ranges (two periods covering one day) and a
+    nondeterministic ``get_current_period``.
 
     The bound is therefore the latest existing ``end_date``: the new batch
     must start strictly after the day the current schedule's coverage

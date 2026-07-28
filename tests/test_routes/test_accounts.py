@@ -31,7 +31,6 @@ from app.services import (
     cash_ledger,
     pay_period_service,
 )
-from app.services.balance_at import _calculator as balance_calculator
 from app.services.auth_service import hash_password
 
 
@@ -2802,10 +2801,18 @@ class TestCheckingDetail:
     def test_checking_detail_matches_grid_balance(
         self, app, auth_client, seed_user,
     ):
-        """Checking detail projections use the same balance calculator as the grid.
+        """The detail page's 3-month projection is the HAND-COMPUTED figure.
 
-        Calls calculate_balances() directly and verifies the detail page
-        displays the same value for the 3-month projection.
+        It used to derive its expected value by calling the balance producer
+        the route also called, which proved only that one function is
+        deterministic.  Plan step X-g4b deleted that producer and the
+        derivation with it: the figure below is arithmetic, so the page and the
+        seam must both be right rather than merely agree.
+
+        Hand-computed: a $5,000.00 opening assertion, then 26 periods each
+        carrying +$2,000.00 income and -$1,500.00 expense (net +$500.00).  The
+        3-month projection is period 6, six periods forward of the anchor:
+        ``5,000.00 + 6 x 500.00 = $8,000.00``.
         """
         with app.app_context():
             scenario = seed_user["scenario"]
@@ -2846,36 +2853,11 @@ class TestCheckingDetail:
                 ))
             db.session.commit()
 
-            # Call balance calculator directly (same function grid.py uses).
-            acct_transactions = (
-                db.session.query(Transaction)
-                .filter(
-                    Transaction.account_id == acct.id,
-                    Transaction.pay_period_id.in_([p.id for p in periods]),
-                    Transaction.scenario_id == scenario.id,
-                    Transaction.is_deleted.is_(False),
-                )
-                .all()
-            )
-
-            balances, _ = balance_calculator.calculate_balances(
-                anchor_balance=Decimal("5000.00"),
-                anchor_period_id=periods[0].id,
-                periods=periods,
-                transactions=acct_transactions,
-            )
-
-            # Get the 3-month balance from the calculator.
-            target_period = periods[6]
-            calc_balance = balances[target_period.id]
-
-            # Verify the detail page shows this exact value.
             resp = auth_client.get(f"/accounts/{acct.id}/details")
             assert resp.status_code == 200
 
             # The projection summary uses {:,.0f} format.
-            expected_str = "${:,.0f}".format(float(calc_balance))
-            assert expected_str.encode() in resp.data
+            assert b"$8,000" in resp.data
 
     def test_cash_detail_serves_plain_savings(
         self, app, auth_client, seed_user,
@@ -3021,7 +3003,6 @@ class TestCheckingDetail:
         """
         # Pylint: import-outside-toplevel -- deferred import is the file-wide
         # test convention.
-        from app.services.balance_at import _cash_engine as balance_resolver  # pylint: disable=import-outside-toplevel
         from app.utils.dates import to_display_date  # pylint: disable=import-outside-toplevel
         with app.app_context():
             periods = pay_period_service.generate_pay_periods(
@@ -3056,7 +3037,7 @@ class TestCheckingDetail:
 # by Commit 5, structurally closed by the canonical producer in Commit
 # 5) yielded $160.00 on the grid and $114.29 on /accounts for the
 # audit's symptom #1 / #5 tuple.  Commit 7 routes the checking detail
-# through ``balance_resolver.balances_for`` and resolves the anchor via
+# through the balance-at seam and resolves the anchor via
 # the dated ``AccountAnchorHistory`` SoT, so both divergence axes
 # (entries seam, NULL-anchor fork) close.  The NULL-anchor fork is
 # dead post-Commit-3 and was deleted rather than left unreachable.
@@ -3077,16 +3058,12 @@ def _override_account_anchor(db_session, account, pay_period, anchor_balance):
     later moves to a shared fixture remain a refactor rather than a
     contract change.
     """
-    history = AccountAnchorHistory(
-        account_id=account.id,
-        pay_period_id=pay_period.id,
-        anchor_balance=anchor_balance,
+    from tests._test_helpers import override_anchor  # pylint: disable=import-outside-toplevel
+
+    override_anchor(
+        db_session, account, pay_period, anchor_balance,
         notes="C7 symptom #5 test: anchor override",
     )
-    db_session.add(history)
-    db_session.flush()
-    account.current_anchor_balance = anchor_balance
-    account.current_anchor_period_id = pay_period.id
     db_session.commit()
 
 
@@ -3159,7 +3136,7 @@ def _add_cleared_debit_entry(db_session, *, txn, user_id, amount):
 
 
 class TestCheckingDetailCanonicalProducer:
-    """C7: /accounts checking detail routed through balance_resolver.
+    """C7: /accounts checking detail routed through the balance-at seam.
 
     Pins the symptom #5 fix: the per-account detail page now produces
     the same checking balance as the grid and /savings for the same
@@ -3189,13 +3166,21 @@ class TestCheckingDetailCanonicalProducer:
           checking_impact = max(500.00 - 45.71 - 0, 0) = 454.29
           anchor_period_balance = 614.29 + 0 - 454.29 = 160.00
 
-        Both the grid (already routed in Commit 5) and the /accounts
-        checking detail page (routed by Commit 7) MUST return
-        Decimal("160.00").  Pre-Commit-7 the checking detail page
-        reported the silent-degrade value Decimal("114.29") via the
-        unloaded-entries seam.
+        Both the grid and the /accounts checking detail page MUST return
+        Decimal("160.00") -- one seam entry, ``balance_at.cash_balance_map``,
+        read twice.  Pre-Commit-7 the checking detail page reported the
+        silent-degrade value Decimal("114.29") via the unloaded-entries seam.
+
+        The $160.00 survives the basis change at plan step X-c2b2 for a reason
+        this fixture makes plain: the account holds ONE asserted balance and the
+        only row is still PROJECTED, so the fold has the same assertion to
+        replay and the same entries-aware reservation to hold back.  The two
+        bases diverge only where money has SETTLED, and nothing here has.
         """
-        from app.services.balance_at import _cash_engine as balance_resolver  # pylint: disable=import-outside-toplevel
+        # Pylint: import-outside-toplevel -- module-scoped imports in this file
+        # are the route-test convention; the seam read is local to this case.
+        from app.services import balance_at  # pylint: disable=import-outside-toplevel
+        from app.services.balance_at import BalanceContext  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
             current_period = pay_period_service.get_current_period(
@@ -3223,14 +3208,20 @@ class TestCheckingDetailCanonicalProducer:
                 )
             db.session.commit()
 
-            # Grid value via the canonical producer (the grid already
-            # routes through ``balances_for`` post-Commit-5; replaying
-            # it here is "what does the grid show" without a route
-            # round-trip).
-            grid_result = balance_resolver.balances_for(
-                account, seed_user["scenario"].id, seed_periods_today,
-            )
-            grid_current_balance = grid_result.balances[current_period.id]
+            # Grid value via the seam entry the grid's balance row reads, so
+            # replaying it here is "what does the grid show" without a route
+            # round-trip.  It has been repointed TWICE for the same reason -- a
+            # guard that had stopped guarding (the N-63 shape): from
+            # ``_cash_engine.balances_for`` at plan step X-c2b2, and from
+            # ``cash_balance_map`` at X-g3b, where the grid stopped reading the
+            # cash view for a modelled account (ruling R-W).  This account is
+            # PLAIN, so the two agree by construction -- which is exactly the
+            # condition that made the previous spelling look harmless.
+            grid_current_balance = balance_at.grid_balance_view(
+                account,
+                BalanceContext.build(seed_user["user"].id),
+                seed_periods_today,
+            ).columns[current_period.id].balance
 
             # F-009 / CRIT-01: 614.29 - max(500 - 45.71 - 0, 0)
             #                = 614.29 - 454.29 = 160.00.
@@ -3470,31 +3461,44 @@ class TestCheckingDetailCanonicalProducer:
         Commit 11 of the main remediation) cannot catch a route-handler
         bypass of the canonical producer because its /accounts reader
         re-runs ``balance_at.cash_balance_map`` itself rather than parsing
-        the rendered HTML.  A regression that swaps the detail route to the
-        bare entries-blind producer ``balance_calculator.calculate_balances``
-        (re-opening the F-009 / CRIT-01 silent-degrade seam) would drift
-        silently through that lock.  This static guard closes the gap.
+        the rendered HTML.  A regression that swaps the detail route for a
+        hand-rolled balance loop would drift silently through that lock.  This
+        static guard closes the gap.
 
-        Updated for the Fable 5 cash-detail merge (Level-1 Commit 8 seam
-        preserved verbatim): the single ``cash_detail`` route reads plain
-        cash balances via the cash-flow entry
-        ``balance_at.cash_balance_map`` and interest-bearing balances via
-        the kind-correct ``balance_at.balance_map`` (plus the kernel's
-        ``interest_by_period_for_account`` for the earned-interest figure),
-        both of which delegate to the canonical entries-aware producers.
-        The route calls neither ``balance_resolver.balances_for`` nor any
-        ``balance_calculator`` producer for balances directly.
+        The single ``cash_detail`` route reads plain cash balances via the
+        cash-flow entry ``balance_at.cash_balance_map`` and interest-bearing
+        balances via ``balance_at.interest_projection_for_account``, which
+        returns the accrued balances AND the earned-interest map from ONE cash
+        fold.  It reaches no producer directly -- structurally since plan step
+        D3, W9910 forbidding any import of a seam-private module.
+
+        **Every arm matches the CALL, with its open paren, and that is the
+        whole reason this guard was rewritten** (plan finding N-63, promoted to
+        a Section 8 lesson: "a static guard that greps for a NAME cannot tell
+        code from prose").  Its second arm used to look for the bare name
+        ``balance_at.balance_map`` -- and plan step X-c2b2 replaced that call
+        with ``interest_projection_for_account``, leaving the string alive in
+        three docstrings, so the guard went on reporting the wiring intact while
+        what it locked had moved.  Measured on this tree before the fix: zero
+        call sites, three prose mentions, green.  The docstrings were corrected
+        with it.
 
         Three assertions:
-          1. ``balance_at.cash_balance_map`` must appear in the detail-route
-             file (positive: the plain-cash seam wiring is intact).
-          2. ``balance_at.balance_map`` must appear (positive: the
-             interest-bearing kind-correct seam wiring is intact).
-          3. ``balance_calculator.calculate_balances(`` (the bare
-             entries-blind producer) must NOT appear in the file -- the
-             open-paren anchors the substring to the bare function name,
-             so neither it nor a ``calculate_balances_with_interest(`` can
-             re-open the entries-blind seam.
+          1. ``balance_at.cash_balance_map(`` must appear (positive: the
+             plain-cash seam wiring is intact).
+          2. ``balance_at.interest_projection_for_account(`` must appear
+             (positive: the interest wiring is intact).
+          3. ``balance_at.balance_map(`` must NOT appear -- the whole-account
+             kind-correct map is the shape the page used before X-c2b2, and
+             reaching it beside the interest map is what made the page fold the
+             SAME account twice per render (finding N-64).  This arm is what
+             keeps that fix from silently regressing.
+
+        **A FOURTH arm forbade ``balance_calculator.calculate_balances(`` and
+        was deleted at plan step X-g4b, with the producer.**  Section 8's rule:
+        when the name a negative arm forbids no longer exists, the arm stops
+        being a guard and becomes a sentence that can never fail -- which reads
+        as coverage and is not.  It deletes WITH the name.
 
         File path note: the merged ``cash_detail`` route (and the
         ``checking_detail`` / ``interest_detail`` redirect stubs) live in
@@ -3506,25 +3510,29 @@ class TestCheckingDetailCanonicalProducer:
         accounts_source = Path(
             "app/routes/accounts/detail.py",
         ).read_text(encoding="utf-8")
-        assert "balance_at.cash_balance_map" in accounts_source, (
-            "app/routes/accounts/detail.py no longer calls "
-            "``balance_at.cash_balance_map`` -- regression on the "
+        assert "balance_at.cash_balance_map(" in accounts_source, (
+            "app/routes/accounts/detail.py no longer CALLS "
+            "``balance_at.cash_balance_map(`` -- regression on the "
             "balance-at seam contract.  Route the plain-cash balance "
             "computation through the seam's cash-flow entry instead of a "
             "hand-rolled loop or a direct producer call."
         )
-        assert "balance_at.balance_map" in accounts_source, (
-            "app/routes/accounts/detail.py no longer calls "
-            "``balance_at.balance_map`` -- regression on the balance-at "
-            "seam contract.  Route the interest-bearing kind-correct "
-            "balance computation through the seam instead of a direct "
-            "producer call."
+        assert (
+            "balance_at.interest_projection_for_account(" in accounts_source
+        ), (
+            "app/routes/accounts/detail.py no longer CALLS "
+            "``balance_at.interest_projection_for_account(`` -- regression on "
+            "the balance-at seam contract.  An interest account's accrued "
+            "balances and its earned-interest map must come from ONE seam "
+            "call, so the page cannot fold the account twice (N-64) or show a "
+            "chip that explains a balance change the chart does not."
         )
-        assert "balance_calculator.calculate_balances(" not in accounts_source, (
-            "app/routes/accounts/detail.py imports the bare entries-blind "
-            "``balance_calculator.calculate_balances`` -- this bypasses "
-            "the entries-aware reduction (F-009 / CRIT-01 fix).  Use the "
-            "``balance_at`` seam instead."
+        assert "balance_at.balance_map(" not in accounts_source, (
+            "app/routes/accounts/detail.py CALLS the whole-account "
+            "kind-correct ``balance_at.balance_map(`` -- that is the "
+            "pre-X-c2b2 shape, and calling it beside the interest map folds "
+            "the same account twice per render (N-64).  Read both halves from "
+            "``interest_projection_for_account`` instead."
         )
 
 
@@ -3746,10 +3754,13 @@ class TestCashDetailContext:
         """chart_json parses to the labeled float series with an int current_index.
 
         The series is every period that has a projected balance, in
-        ``period_index`` order.  The current period is period 0 (start
-        today) -- the FIRST period with a balance -- so ``current_index``
-        is 0, and the chart's first balance is the hero figure ($5,000.00)
-        at the ``float`` serialization boundary.
+        ``period_index`` order -- which since plan step X-c2b2 is EVERY period
+        the user has, because the fold answers a pre-anchor period with the
+        balance in force then instead of omitting it (finding cash D3).  The
+        chart therefore opens on the ``seed_user`` bootstrap period that
+        precedes this fixture's own range, carrying the account's opening
+        $5,000.00 back-projected flat (ruling R-I), and ``current_index`` is
+        the current period's position in that full list rather than 0.
         """
         # Pylint: import-outside-toplevel -- deferred import is the file-wide
         # test convention.
@@ -3767,8 +3778,17 @@ class TestCashDetailContext:
             assert all(isinstance(v, float) for v in chart["balance"])
             assert isinstance(chart["current_index"], int)
             assert 0 <= chart["current_index"] < n
-            # Current period is the first period with a balance.
-            assert chart["current_index"] == 0
+            # The current period's position in the user's FULL period list --
+            # one past the bootstrap period the chart now also draws.
+            all_periods = pay_period_service.get_all_periods(
+                seed_user["user"].id,
+            )
+            assert n == len(all_periods)
+            assert chart["current_index"] == [
+                p.id for p in all_periods
+            ].index(_periods[0].id) == 1
+            # Every period before the anchor holds the opening flat (R-I), so
+            # the series opens on the hero figure either way.
             assert chart["balance"][0] == 5000.0
 
     def test_anchor_as_of_is_event_date_not_period_start(
@@ -3787,7 +3807,6 @@ class TestCashDetailContext:
         """
         # Pylint: import-outside-toplevel -- deferred import is the file-wide
         # test convention.
-        from app.services.balance_at import _cash_engine as balance_resolver  # pylint: disable=import-outside-toplevel
         from app.utils.dates import to_display_date  # pylint: disable=import-outside-toplevel
         with app.app_context():
             checking_type = db.session.query(AccountType).filter_by(
@@ -3904,8 +3923,10 @@ class TestCashDetailContext:
                 account_id=acct.id,
             ).one()
             current = pay_period_service.get_current_period(seed_user["user"].id)
+            # pylint: disable=import-outside-toplevel
+            from app.services.balance_at import BalanceContext
             ibp = net_worth_kernel.interest_by_period_for_account(
-                acct, seed_user["scenario"], periods, params,
+                acct, BalanceContext.build(seed_user["user"].id), periods,
             )
             lo = current.period_index + 1
             hi = current.period_index + 26  # 26 biweekly periods = 1 year.

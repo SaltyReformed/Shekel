@@ -19,9 +19,15 @@ from there directly (e.g. tests use
 
 Module map:
 
-* :mod:`app.services.savings_dashboard_service._types` -- the
-  request-scoped / per-account bundle dataclasses (``_DashboardCoreData``,
-  ``_ProjectionContext``, ``_LoanAccountResult``).
+* :mod:`app.services.savings_dashboard_service._types` -- the value objects.
+  ``AccountProjection`` (with its ``LoanDetail``) is the per-account result
+  EVERY surface in this package reduces over and both cockpit templates render;
+  beside it are the request-scoped bundles (``_DashboardCoreData``,
+  ``_ProjectionContext``, ``_LoanAccountResult``, ``_SeamBatches``).
+  ``AccountProjection`` is deliberately NOT re-exported below: the route
+  receives one from ``compute_account_balance_cell`` and forwards it to a
+  template without naming the type, so it has no importer outside this package
+  -- the same test ``DebtSummary`` passes and ``DtiMetrics`` failed.
 * :mod:`app.services.savings_dashboard_service._data` -- batch data
   loaders (accounts / scenario / periods / transactions, the
   account-type parameter maps, archived accounts).
@@ -33,6 +39,11 @@ Module map:
 * :mod:`app.services.savings_dashboard_service._metrics` -- emergency-fund
   expenses, the debt summary + DTI, and the canonical paycheck-breakdown
   producer.
+* :mod:`app.services.savings_dashboard_service._debt_line` -- the ONE
+  derivation of "which loans still have a debt line" and "when does the last
+  of them end" (plan step X-q), read by both ``_metrics``' debt summary and
+  ``_horizon``'s domain and milestone flags, which each used to answer it
+  with a membership rule of their own.
 * :mod:`app.services.savings_dashboard_service._display` -- account
   grouping and the shared id-based category classifier.
 * :mod:`app.services.savings_dashboard_service._net_worth` -- the
@@ -44,36 +55,50 @@ Module map:
   engine, per-account growth params, and the loan resolver schedules.
 * :mod:`app.services.savings_dashboard_service._orchestrator` --
   ``compute_dashboard_data`` (the full-page entry point),
-  ``compute_net_worth_horizon`` (the narrow ``Horizon``-range producer),
-  ``compute_debt_summary`` (the narrow debt-card producer behind the
-  dashboard's debt track; deep-hunt #82),
-  ``compute_debt_principal_progress`` (the narrow principal-paid fraction
-  producer behind the dashboard's debt track marker; Loop B B-1),
+  ``compute_debt_summary`` (the narrow debt producer behind the
+  dashboard's debt track, rail marker included; deep-hunt #82, Loop B B-1),
   ``compute_goal_progress`` (the narrow savings-goal producer behind the
   dashboard's savings tracks), and ``compute_account_balance_cell`` (the
   narrow per-account producer behind the cockpit's inline-edit Cancel /
   Escape revert, ``savings.cockpit_balance``).  The dashboard tracks
   consumers all live in ``dashboard_pulse_service.compute_tracks_section``.
+  There were TWO debt producers until plan step X-u (ruling R-BS, finding
+  N-109) and the tracks section called both, so one render ran the debt
+  pipeline twice; the marker's fraction is a ``DebtSummary`` field now.
 """
 
 # Re-export the public entry points so consumers that
 # ``from app.services import savings_dashboard_service`` (notably
 # ``app/routes/savings.py`` and ``dashboard_service``) resolve
 # them without an edit.
+#
+# ``DebtSummary`` is re-exported for the same reason (plan step X-s3): it
+# crosses this package's boundary, so naming it here is what keeps its consumer
+# off ``_metrics`` directly, which the W9910 package-privacy checker forbids.
+# There were TWO such consumers until plan step X-u: ``dashboard_pulse_service``
+# named the type to annotate the ``DebtTrack`` wrapper it composed, and X-u
+# deleted both the wrapper and that import.  ONE is left -- the dashboard
+# route's ``_DebtTrackView`` annotation (``app/routes/dashboard.py``) -- and one
+# live consumer is all this line has ever needed.
+#
+# ONLY that one.  The first draft of this block also exported ``DtiMetrics``
+# and ``LoanPayoffOutlook``, and X-s3's adversarial review found neither had a
+# single importer anywhere -- their in-package users take them from
+# ``_debt_line`` / ``_metrics`` directly.  Exporting a name against a consumer
+# that might one day want it is the defect this very step deletes elsewhere;
+# a future outside consumer adds its own line here, with a caller to point at.
+from app.services.savings_dashboard_service._metrics import DebtSummary
 from app.services.savings_dashboard_service._orchestrator import (
     compute_account_balance_cell,
     compute_dashboard_data,
-    compute_debt_principal_progress,
     compute_debt_summary,
     compute_goal_progress,
-    compute_net_worth_horizon,
 )
 
 __all__ = [
+    "DebtSummary",
     "compute_account_balance_cell",
     "compute_dashboard_data",
-    "compute_debt_principal_progress",
     "compute_debt_summary",
     "compute_goal_progress",
-    "compute_net_worth_horizon",
 ]

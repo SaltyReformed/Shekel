@@ -72,6 +72,7 @@ from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import ledger_account_service, posting_reads
+from app.services.cash_ledger import settled_cash_leg
 from app.services.posting_reads import PostingError, _ledger_account_for
 from app.services._posting_write import (
     _MAX_DESCRIPTION_LENGTH,
@@ -370,69 +371,13 @@ def _transaction_entry_date(txn: Transaction) -> date:
     return _civil_settle_date(paid_at, txn.pay_period)
 
 
-def _credit_entry_sum(txn: Transaction) -> Decimal:
-    """Return the sum of a transaction's credit (credit-card) entry amounts.
-
-    The ``Sigma(credit entry amounts)`` term of the confirmed-cash-effect
-    formula (plan Section 1): an envelope's credit purchases are excluded from
-    the checking outflow because each posts its own CC Payback when that
-    payback settles (``credit_workflow``), so counting them here would
-    double-count against the payback.  A plain transaction has no entries, so
-    this is ``Decimal("0")`` and the effect collapses to ``effective_amount``.
-
-    Summed over the loaded ``entries`` relationship (the go-forward poster
-    already holds the transaction); the bulk oracle reader
-    :func:`settled_transaction_effect` computes the same sum in SQL.
-
-    Args:
-        txn: The transaction whose credit entries to sum.
-
-    Returns:
-        The sum of ``amount`` over the transaction's ``is_credit`` entries, as
-        a ``Decimal`` (``Decimal("0")`` when there are none).
-    """
-    return sum(
-        (entry.amount for entry in txn.entries if entry.is_credit),
-        Decimal("0"),
-    )
-
-
-def _signed_cash_leg(txn: Transaction) -> Decimal:
-    """Return the debit-positive cash-account leg for a settled transaction.
-
-    The plan's one formula (Section 1): the confirmed cash effect is
-    ``effective_amount - Sigma(credit entry amounts)``, signed ``+`` for income
-    (a debit: money entering the cash account) and ``-`` for an expense (a
-    credit: money leaving).  The sign follows the transaction *type*, never the
-    account class, so the leg is correct whether the cash account is an asset
-    (Checking) or a liability (a direct charge on a Credit Card account) --
-    identical to the transfer sign convention (see the module docstring).
-
-    For a plain transaction the credit-entry sum is zero, so the leg is
-    ``+/-effective_amount``.  For an envelope at settle ``effective_amount``
-    equals the sum of ALL entries (``compute_actual_from_entries`` set
-    ``actual_amount`` so), so ``effective - Sigma(credit)`` collapses to the sum
-    of the DEBIT entries -- the debit-only checking outflow (plan Decision D2),
-    with no branch on "is this an envelope".
-
-    Args:
-        txn: The settled transaction whose cash leg to compute.  The caller
-            posts only a settled, non-excluded row, so ``effective_amount`` is
-            its confirmed amount (not the zero an excluded/deleted row returns).
-
-    Returns:
-        The signed, debit-positive cash-account leg amount as a ``Decimal``.
-    """
-    net = txn.effective_amount - _credit_entry_sum(txn)
-    return net if txn.is_income else -net
-
-
 def _settled_target(txn: Transaction, owner_id: int) -> dict[int, Decimal]:
     """Return the debit-positive ledger target for a SETTLED transaction.
 
     The two-account map the ledger should net to once *txn* is settled:
     ``{cash_ledger_id: cash_leg, category_ledger_id: -cash_leg}``, summing to
-    zero by construction.  ``cash_leg`` is :func:`_signed_cash_leg`; the cash
+    zero by construction.  ``cash_leg`` is
+    :func:`app.services.cash_ledger.settled_cash_leg`; the cash
     account is the transaction's linked ledger account
     (:func:`_ledger_account_for`); the counter account is the per-category
     Income/Expense ledger account (or the per-(owner, class) Uncategorized
@@ -468,7 +413,7 @@ def _settled_target(txn: Transaction, owner_id: int) -> dict[int, Decimal]:
     category_ledger = ledger_account_service.get_or_create_category_ledger_account(
         owner_id, txn.category_id, ledger_class,
     )
-    cash_leg = _signed_cash_leg(txn)
+    cash_leg = settled_cash_leg(txn)
     return {cash_ledger.id: cash_leg, category_ledger.id: -cash_leg}
 
 
@@ -637,7 +582,8 @@ def sync_transaction_postings(
     differ from the target (:func:`_reconcile_periods`), then a no-op
     (returns ``[]``) on any repeat.  See the module docstring for the
     reconcile-to-target rationale and the debit-positive sign convention; see
-    :func:`_signed_cash_leg` for the ``effective - Sigma(credit)`` cash-effect
+    :func:`app.services.cash_ledger.settled_cash_leg` for the
+    ``effective - Sigma(credit)`` cash-effect
     formula.
 
     **Reconciles over the accounts, periods, AND entry dates the transaction

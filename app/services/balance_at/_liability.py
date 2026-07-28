@@ -18,15 +18,11 @@ from datetime import date
 from decimal import Decimal
 
 from app.models.account import Account
-from app.services.account_projection import (
-    AccountProjectionKind,
-    classify_account,
-)
 from ._context import BalanceContext
 
 from ._inputs import ZERO
 from ._positions import positions
-from ._resolution import resolved_loan
+from ._resolution import configured_loan
 
 
 def _spliced_owed_series(
@@ -144,8 +140,8 @@ def liability_owed_at_dates(
 
     Args:
         liabilities: The liability accounts to value (every one appears in the
-            result).  ``account_type`` must be loaded -- the canonical
-            :func:`~app.services.account_projection.classify_account` selects the
+            result).  ``account_type`` must be loaded --
+            :func:`._resolution.configured_loan` classifies it to select the
             amortizing subset.
         ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
             Its ``as_of`` is the present/future boundary AND the "now" its
@@ -188,12 +184,14 @@ def liability_owed_at_dates(
     owed_by_loan: dict[int, dict[date, Decimal]] = {}
     if ctx.scenario is not None and future_dates:
         for account in liabilities:
-            if classify_account(account) is not AccountProjectionKind.AMORTIZING:
-                continue
-            if resolved_loan(account, ctx) is None:
-                # No LoanParams: no forward model.  Omit it here so the flat-hold
-                # branch below carries it at its current owed magnitude -- the same
-                # no-forward-model rule the batch producer skipped it under.
+            if configured_loan(account, ctx) is None:
+                # Not an amortizing account, or one whose LoanParams were never
+                # entered: either way there is no forward model.  Omit it here so
+                # the flat-hold branch below carries it at its current owed
+                # magnitude -- the same no-forward-model rule the batch producer
+                # skipped it under.  The two halves used to be two guard clauses
+                # here, which made this the seam's THIRD spelling of "is this a
+                # configured loan?" (plan step X-g3b-0).
                 continue
             # Every date is strictly future (filtered above), so positions()
             # answers each from the forward PLAN fold (step C6b) -- the loan's

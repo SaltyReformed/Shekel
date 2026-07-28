@@ -10,9 +10,14 @@ import os
 import pathlib
 import re
 import sys
+import weakref
 
 from collections import namedtuple
-from datetime import date as _real_date, datetime as _real_datetime
+from datetime import (
+    date as _real_date,
+    datetime as _real_datetime,
+    timedelta as _real_timedelta,
+)
 from decimal import Decimal
 
 
@@ -255,6 +260,373 @@ def freeze_today(monkeypatch, target_date, modules=None):
             monkeypatch.setattr(f"{module_path}.datetime", _FrozenDateTime)
         except (AttributeError, TypeError):
             pass
+
+    _freeze_db_clock(monkeypatch, target_date)
+
+
+# ── the DATABASE half of the frozen clock (finding N-65) ──────────────
+
+#: The frozen instant every database-clock value is issued from, or ``None``
+#: when no test has frozen its clock.  Set through ``monkeypatch`` by
+#: :func:`freeze_today`, so it reverts with the test that set it, and read by
+#: the two listeners below -- which are therefore inert outside a frozen test
+#: and never need removing.
+_FROZEN_DB_CLOCK = None
+
+#: Monotonic counter for :meth:`_FrozenDbClock.stamp`, held at MODULE scope so
+#: it survives a re-freeze.  It used to live on the clock instance, and
+#: ``freeze_today`` builds a new instance every call -- measured across the
+#: suite: 133 re-freezes, 27 of them after stamps had already been issued.  No
+#: two of those re-froze to the same civil date, so nothing tied; a test that
+#: did would have produced exactly the ``ORDER BY created_at DESC`` coin flip
+#: the microsecond step exists to prevent.
+_DB_CLOCK_ISSUED = 0
+
+#: ``mapper class -> (attribute name, stamp kind)`` for every column whose
+#: INSERT value comes from the database clock.  DERIVED from the mapped columns
+#: rather than listed.  Populated lazily and never invalidated: a model's
+#: column defaults do not change at runtime.
+_DB_CLOCK_INSERT_ATTRS = {}
+
+#: Guard so the ``Session`` listener is attached exactly once per process.
+_DB_CLOCK_LISTENERS_INSTALLED = False
+
+#: Engines the statement rewriter is bound to.  Weak, so a discarded engine is
+#: not pinned in memory.
+_DB_CLOCK_BOUND_ENGINES = weakref.WeakSet()
+
+#: A statement asking PostgreSQL what time it is, in each spelling this schema
+#: can produce, so the rule tests the QUESTION and not one way of writing it.
+#: ``now()`` and ``current_timestamp`` yield an instant; ``current_date`` yields
+#: a DATE and must be answered with one (``transaction_entries.entry_date``).
+#:
+#: Each alternative carries only the word boundary it can actually have.  The
+#: first draft wrapped the group in ``\b...\b`` and matched nothing at all: the
+#: group's last character is ``)``, and the next character in real SQL is ``,``
+#: or a space -- two non-word characters, so the trailing ``\b`` can never
+#: assert.  It was a rule that could not fire, and it was caught only because
+#: it was MADE to fire on demand rather than reasoned about.
+_DB_CLOCK_CALL_RX = re.compile(
+    r"\bnow\s*\(\s*\)|\bcurrent_timestamp\b|\bcurrent_date\b", re.IGNORECASE,
+)
+
+#: The same question as :data:`_DB_CLOCK_CALL_RX`, asked of a ``server_default``
+#: written as raw SQL text rather than as a SQLAlchemy function.
+#: ``transaction_entries.entry_date`` is ``db.text("CURRENT_DATE")``, which is a
+#: ``TextClause`` and therefore invisible to an ``isinstance(..., now)`` test --
+#: the gap this arm closes (found by plan step X-h's adversarial review, which
+#: caught the row landing on the real wall date while its siblings were frozen).
+_DB_CLOCK_TEXT_DEFAULT_RX = _DB_CLOCK_CALL_RX
+
+#: Statement kinds the rewriter leaves alone.  DDL legitimately mentions
+#: ``now()`` -- it is how the NOT NULL defaults are DECLARED -- and rewriting a
+#: ``CREATE TABLE`` would bake a frozen instant into the SCHEMA.  ``DO`` is here
+#: because this app's audit and posting infrastructure ships ``DO $$ ... $$``
+#: blocks (``audit_infrastructure.py``, ``posting_infrastructure.py``).
+_DB_CLOCK_EXEMPT_VERBS = frozenset(
+    {"CREATE", "ALTER", "DROP", "COMMENT", "SET", "GRANT", "REVOKE", "TRUNCATE",
+     "DO"},
+)
+
+
+class _FrozenDbClock:
+    """The frozen instant, issued strictly increasing so write ORDER survives.
+
+    A flat instant would give every row in a test the identical timestamp, and
+    the app resolves an account's current anchor by ``ORDER BY created_at
+    DESC`` -- ties there are broken arbitrarily by PostgreSQL, which would turn
+    a deterministic fixture into a coin flip.  Each stamp is therefore one
+    microsecond past the last, which preserves the order rows were written in
+    while leaving every one of them on the frozen civil DATE.
+
+    The counter is :data:`_DB_CLOCK_ISSUED`, at module scope, so a re-freeze
+    inside one test cannot reissue an instant this process has already used.
+    """
+
+    def __init__(self, instant):
+        """Store the base instant every stamp is measured from."""
+        self._instant = instant
+
+    def stamp(self):
+        """Return the next instant: the frozen one, plus one microsecond."""
+        global _DB_CLOCK_ISSUED  # pylint: disable=global-statement
+        _DB_CLOCK_ISSUED += 1
+        return self._instant + _real_timedelta(microseconds=_DB_CLOCK_ISSUED)
+
+
+def _db_clock_insert_attrs(model_class):
+    """Return ``(attribute, is_date)`` for every clock-defaulted column.
+
+    DERIVED from SQLAlchemy's own mapper rather than listed by hand, which is
+    the whole point: the app has 61 columns whose INSERT value comes from a
+    ``NOW()`` server default plus one from a ``CURRENT_DATE`` text default
+    (measured 2026-07-28), and a hand-written list of 62 entries is a copy that
+    goes stale the first time someone adds a model.  A bundle hand-synchronised
+    with the thing it mirrors is the same defect plan step X-r deleted from
+    ``_projections``.
+
+    **Both spellings of a default are read**, because the app uses both: a
+    SQLAlchemy ``now()`` function, and raw SQL text (``db.text("CURRENT_DATE")``
+    on ``transaction_entries.entry_date``).  An ``isinstance(..., now)`` test
+    alone is blind to the second, which is how that column kept landing on the
+    real wall date while every timestamp beside it was frozen.
+
+    ``is_date`` carries the column's TYPE, because a ``DATE`` column must be
+    answered with a date: handing it an instant is a different value, not a
+    formatting detail.
+
+    Args:
+        model_class: A mapped model class taken off a session's unit of work.
+
+    Returns:
+        A tuple of ``(attribute name, is_date)`` pairs PostgreSQL would fill if
+        the INSERT omitted them.
+    """
+    cached = _DB_CLOCK_INSERT_ATTRS.get(model_class)
+    if cached is not None:
+        return cached
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app or ORM
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from sqlalchemy import Date, DateTime, inspect as sa_inspect
+    from sqlalchemy.sql.elements import TextClause
+    from sqlalchemy.sql.functions import now as sa_now
+
+    resolved = []
+    for prop in sa_inspect(model_class).column_attrs:
+        column = prop.columns[0]
+        default = column.server_default
+        if default is None:
+            continue
+        arg = getattr(default, "arg", None)
+        is_clock = isinstance(arg, sa_now) or (
+            isinstance(arg, TextClause)
+            and _DB_CLOCK_TEXT_DEFAULT_RX.search(str(arg)) is not None
+        )
+        if not is_clock:
+            continue
+        is_date = isinstance(column.type, Date) and not isinstance(
+            column.type, DateTime,
+        )
+        resolved.append((prop.key, is_date))
+    resolved = tuple(resolved)
+    _DB_CLOCK_INSERT_ATTRS[model_class] = resolved
+    return resolved
+
+
+def _stamp_omitted_db_defaults(session, _flush_context, _instances):
+    """Fill the clock-defaulted columns an INSERT would otherwise omit.
+
+    The first of finding N-65's two mechanisms, and the one the statement
+    rewriter below CANNOT cover: a column left unset is simply absent from the
+    INSERT, so PostgreSQL applies its ``DEFAULT NOW()`` (or ``DEFAULT
+    CURRENT_DATE``) and the clock call never appears in any SQL text to
+    rewrite.  ``AccountAnchorHistory.created_at`` -- the column N-65 names --
+    is exactly this shape.
+
+    Every clock column of one row takes the SAME stamp, so ``created_at ==
+    updated_at`` on insert, exactly as the database would have written them.
+
+    Args:
+        session: The flushing :class:`~sqlalchemy.orm.Session`.
+        _flush_context: SQLAlchemy's internal flush context (unused).
+        _instances: The deprecated instances argument (unused).
+    """
+    if _FROZEN_DB_CLOCK is None:
+        return
+    for obj in list(session.new):
+        attrs = _db_clock_insert_attrs(type(obj))
+        if not attrs:
+            continue
+        stamp = _FROZEN_DB_CLOCK.stamp()
+        for attr, is_date in attrs:
+            # ``__dict__`` rather than ``getattr``: an unset column is simply
+            # absent from it, and reading through the instrumented attribute
+            # would emit a load for a value that does not exist yet.
+            if obj.__dict__.get(attr) is None:
+                setattr(obj, attr, stamp.date() if is_date else stamp)
+
+
+def _db_clock_literal(match, stamp):
+    """Return the SQL literal that answers one matched clock call.
+
+    A ``current_date`` call yields a DATE and is answered with one; ``now()``
+    and ``current_timestamp`` yield an instant.  Answering a date question with
+    a timestamp would change the value's TYPE in the statement, which is a
+    different defect from the one being fixed.
+
+    Args:
+        match: The regex match for the clock call.
+        stamp: The frozen instant to answer with.
+
+    Returns:
+        A PostgreSQL literal, typed to match the call it replaces.
+    """
+    if match.group(0).lower().startswith("current_date"):
+        return f"DATE '{stamp.date().isoformat()}'"
+    return f"TIMESTAMPTZ '{stamp.isoformat()}'"
+
+
+def _rewrite_db_clock_calls(
+    _conn, _cursor, statement, parameters, _context, _executemany,
+):
+    """Answer every rendered clock call with the frozen instant.
+
+    The second of finding N-65's two mechanisms, and it is one rule covering
+    what would otherwise be three.  A clock call reaches the database three
+    ways, and only one of them is a column default:
+
+    * ``status_seam.apply_status_change`` ASSIGNS ``db.func.now()`` to
+      ``Transaction.paid_at`` so PostgreSQL evaluates it server-side -- the
+      column has no default at all, so no schema derivation can see it;
+    * a modified row's ``onupdate=NOW()`` columns render ``updated_at=now()``
+      into the UPDATE;
+    * a BULK update (``carry_forward_service``'s ``query.update(...)``) renders
+      the same thing while bypassing the ORM unit of work entirely, so no
+      session-level listener can reach it.
+
+    All three render the call into the SQL, so rewriting the SQL is the ONE
+    place that answers all three.  An earlier draft stamped the first two on
+    the mapped objects instead and left the third: the full suite reported 41
+    failures, every one of them a bulk UPDATE, which is how the third was found
+    rather than reasoned about.
+
+    Every occurrence in one statement takes the same instant, so a row's
+    ``created_at`` and ``updated_at`` do not disagree by a microsecond.
+
+    DDL is exempt: DECLARING a ``DEFAULT now()`` column is not asking the time,
+    and rewriting a ``CREATE TABLE`` would bake a frozen instant into the
+    SCHEMA.  Bound parameters are untouched -- the rewrite is on the statement
+    TEXT, and a value that happens to read ``now()`` travels as a parameter,
+    never as SQL.
+
+    Args:
+        _conn: The DBAPI connection wrapper (unused).
+        _cursor: The DBAPI cursor (unused).
+        statement: The SQL about to be executed.
+        parameters: Bound parameters, returned unchanged.
+        _context: The execution context (unused).
+        _executemany: Whether this is an executemany (unused).
+
+    Returns:
+        ``(statement, parameters)`` -- the statement with every clock call
+        replaced by a typed literal, or the original pair when there is nothing
+        to rewrite.
+    """
+    if _FROZEN_DB_CLOCK is None:
+        return statement, parameters
+    verb = statement.split(None, 1)
+    if verb and verb[0].upper() in _DB_CLOCK_EXEMPT_VERBS:
+        return statement, parameters
+    if not _DB_CLOCK_CALL_RX.search(statement):
+        return statement, parameters
+    stamp = _FROZEN_DB_CLOCK.stamp()
+    return (
+        _DB_CLOCK_CALL_RX.sub(
+            lambda match: _db_clock_literal(match, stamp), statement,
+        ),
+        parameters,
+    )
+
+
+def bind_db_clock_rewriter(engine):
+    """Attach the statement rewriter to *engine*, once per engine.
+
+    **Called from the session-scoped ``setup_database`` fixture, before any
+    test runs**, and that timing is the whole point.  It used to be called
+    lazily from the flush listener, which made the rewriter's INSTALLATION
+    depend on some earlier ORM flush having happened under a frozen clock in
+    the same worker process -- so a frozen test whose only writes were bulk
+    ``query.update(...)`` never bound it and silently got the real wall clock.
+    Measured by plan step X-h's adversarial review, same test, same assertion:
+
+        fresh process                     -> updated_at 2026-07-28 (WRONG)
+        after another test had flushed     -> updated_at 2026-03-20 (right)
+
+    A fail-OPEN gate whose result depends on test ORDER, which is the exact
+    class the sibling commit deleted from the checker suite (finding N-45).
+    Binding eagerly removes the dependency: the listener is always attached and
+    reads the frozen clock at call time, so it is inert until a test freezes.
+
+    A class-level ``Engine`` listener is NOT an alternative: it does not reach
+    an engine that already exists -- measured, ``event.contains(Engine, ...)``
+    reported True while the live engine's own dispatch did not hold the
+    listener and it never ran.
+
+    Args:
+        engine: The :class:`~sqlalchemy.engine.Engine` the suite writes through.
+    """
+    # Pylint: ``import-outside-toplevel`` -- see :func:`_db_clock_insert_attrs`.
+    # pylint: disable=import-outside-toplevel
+    from sqlalchemy import event
+
+    if engine in _DB_CLOCK_BOUND_ENGINES:
+        return
+    event.listen(
+        engine, "before_cursor_execute", _rewrite_db_clock_calls, retval=True,
+    )
+    _DB_CLOCK_BOUND_ENGINES.add(engine)
+
+
+def _freeze_db_clock(monkeypatch, target_date):
+    """Make the DATABASE's clock agree with the clock the test just froze.
+
+    The structural half of finding N-65 (balance plan step X-h).  Freezing
+    ``date.today()`` alone leaves PostgreSQL's clock untouched, and the
+    database answers it in four places: 61 columns take their INSERT value from
+    a ``NOW()`` server default, one from a ``CURRENT_DATE`` text default, 23 of
+    them re-stamp on UPDATE, and ``status_seam`` assigns ``db.func.now()`` to
+    ``Transaction.paid_at`` outright.  So a fixture that settled a row "now"
+    stamped it months outside the pay periods the test seeded, and the balance
+    fold -- which dates every event -- replayed it outside the window entirely.
+    Nothing noticed while the shipping producers read the LATEST anchor row and
+    ignored its date; the fold made the instant load-bearing.
+
+    Two mechanisms cover it, and each covers what the other structurally
+    cannot: :func:`_stamp_omitted_db_defaults` for a default that never appears
+    in any SQL, and :func:`_rewrite_db_clock_calls` for every call that does --
+    including the bulk updates no session listener can see.  The rewriter is
+    bound eagerly by the ``setup_database`` fixture
+    (:func:`bind_db_clock_rewriter`), never lazily, so neither mechanism
+    depends on the other having run.
+
+    The instant is :func:`settle_instant_on`'s, which is this suite's existing
+    primitive for "a deterministic instant on this civil day" -- noon UTC, the
+    same civil day in the display timezone, so the frozen date the test reads
+    from ``date.today()`` and the date the app RENDERS for these rows are the
+    same date.  Reusing it is deliberate: a second convention for the same
+    question is what this plan step exists to delete.
+
+    Production is unchanged, and deliberately so.  The database is the right
+    authority for a production timestamp -- two app workers with skewed clocks
+    would stamp inconsistent instants -- so the fix belongs in the harness, not
+    in the models.
+
+    Stated boundary: a timestamp written by a database TRIGGER (the
+    ``system.audit_log`` rows) still comes from the real clock, because the
+    trigger's own clock call is never rendered into a statement this sees.  No
+    balance producer reads those rows, and freezing them would take a
+    ``search_path`` override that fails OPEN the moment anything resets the
+    path.
+
+    Args:
+        monkeypatch: pytest's ``monkeypatch`` fixture, so the frozen clock
+            reverts with the test that set it.
+        target_date: The civil date the test froze ``date.today()`` to.
+    """
+    global _DB_CLOCK_LISTENERS_INSTALLED  # pylint: disable=global-statement
+    # Pylint: ``import-outside-toplevel`` -- see :func:`_db_clock_insert_attrs`.
+    # pylint: disable=import-outside-toplevel
+    from sqlalchemy import event
+    from sqlalchemy.orm import Session
+
+    if not _DB_CLOCK_LISTENERS_INSTALLED:
+        event.listen(Session, "before_flush", _stamp_omitted_db_defaults)
+        _DB_CLOCK_LISTENERS_INSTALLED = True
+    monkeypatch.setattr(
+        f"{__name__}._FROZEN_DB_CLOCK",
+        _FrozenDbClock(settle_instant_on(target_date)),
+    )
 
 
 def insert_origination_rate(loan_params, interest_rate):
@@ -873,9 +1245,9 @@ def create_savings_account(
     return account
 
 
-def create_hysa_account(
+def create_hysa_account(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     seed_user, db_session, anchor_period, balance,
-    apy=Decimal("0.05000"), name="HYSA",
+    apy=Decimal("0.05000"), name="HYSA", compounding=None,
 ):
     """Create an HYSA account (INTEREST) with InterestParams (default 5% APY daily).
 
@@ -890,6 +1262,22 @@ def create_hysa_account(
     classify INTEREST.  Commits before returning so the account is fully
     resolvable.
 
+    **The opening assertion is stamped at the anchor period's first day**
+    (via :func:`restamp_opening_assertion`).  Since plan step X-c2a, modelled
+    interest accrues only forward of an account's latest balance assertion
+    (ruling R-L), and ``account_service.create_account`` writes that row with
+    the WALL CLOCK.  A suite that freezes ``today`` inside its own
+    seeded period range -- ``tests/test_services`` freezes it to 2026-03-20 --
+    would otherwise build an account asserted months AFTER its own last pay
+    period, a state production cannot reach (a true-up files against
+    ``get_current_period``) and one in which the account accrues nothing
+    anywhere.  Pinning the instant to the period's own start makes the fixture
+    deterministic, reachable (an account opened on day 1 of its period), and
+    clock-independent, and it keeps every hand-computed interest figure in the
+    suites valid: the accrual window is then the full anchor period, exactly
+    what it was before the rule existed.  A test that needs a MID-period
+    assertion (the shape the rule exists for) restamps it itself.
+
     Args:
         seed_user: The ``seed_user`` fixture dict.
         db_session: The test ``db.session``.
@@ -901,9 +1289,22 @@ def create_hysa_account(
         apy: The annual percentage yield as a Decimal fraction (default
             ``Decimal("0.05000")`` for 5%).
         name: The account name (default ``"HYSA"``).
+        compounding: The :class:`~app.enums.CompoundingFrequencyEnum` member,
+            or ``None`` for DAILY.  Parameterised at plan step X-g4b: the
+            helper hardcoded DAILY, so no test anywhere ran a MONTHLY or
+            QUARTERLY account through a balance PRODUCER -- and the real Money
+            Market compounds MONTHLY, so a regression hardcoding the frequency
+            in the replay's rate resolver would have misspriced a live account
+            with the whole suite green.
 
     Returns:
         The created HYSA :class:`~app.models.account.Account`.
+
+    Pylint: ``too-many-arguments`` (7/5) / ``too-many-positional-arguments``
+    (7/5) -- a test FACTORY whose parameters are the account's independent
+    configurable facts (owner, session, anchor period, balance, rate,
+    name, compounding frequency); bundling them would put a
+    parameter object between every suite and its fixture.
     """
     # Pylint: ``import-outside-toplevel`` -- this module imports no app
     # symbols at top level (its collection-time-safety convention); load
@@ -931,9 +1332,12 @@ def create_hysa_account(
         account_id=account.id,
         apy=apy,
         compounding_frequency_id=ref_cache.compounding_frequency_id(
-            CompoundingFrequencyEnum.DAILY,
+            compounding or CompoundingFrequencyEnum.DAILY,
         ),
     ))
+    restamp_opening_assertion(
+        db_session, account, settle_instant_on(anchor_period.start_date),
+    )
     db_session.commit()
     return account
 
@@ -1651,7 +2055,7 @@ _UNSET_PAID_AT = object()
 
 
 def settle_instant_on(day):
-    """Return a deterministic settle instant on a given civil date (noon UTC).
+    """Return a deterministic event instant on a given civil date (noon UTC).
 
     A test-side helper for pinning a fixture's ``paid_at`` to a specific day
     without a wall-clock read -- pass it to :func:`create_settled_transfer` /
@@ -1662,8 +2066,13 @@ def settle_instant_on(day):
     Noon UTC is the same civil day in the display zone (Eastern), so the tax-year
     (display-tz) attribution lands on that day too.
 
+    It serves an ASSERTION instant too (:func:`restamp_opening_assertion`, which
+    :func:`create_hysa_account` uses to pin an account's opening): a settle and
+    an assertion are both events the balance layer dates by their UTC civil day,
+    so "a deterministic instant on this day" is one primitive, not two.
+
     Args:
-        day: The civil :class:`datetime.date` to settle on.
+        day: The civil :class:`datetime.date` to place the event on.
 
     Returns:
         A timezone-aware :class:`datetime.datetime` at noon UTC on *day*.
@@ -1713,6 +2122,59 @@ def seam_confirmed_view(loan_account_id, scenario_id, as_of):
         scenario=db.session.get(Scenario, scenario_id),
         as_of=as_of,
     ))
+
+
+def seam_cash_balance_at(account, scenario_id, as_of):
+    """Return what the SEAM says an account's cash balance is on a date.
+
+    :func:`app.services.balance_at.cash_balance_at` -- the cash FOLD sampled at
+    one date, and since plan step X-c2b2 the figure every cash-flow surface
+    renders.  Shared by the five pay-period CRUD suites, which need a balance
+    PROBE rather than a balance test: what they assert is that extending,
+    truncating, regenerating, resetting or topping up a schedule leaves the
+    projection marching correctly, and the balance is how they read that.
+
+    They probed ``_cash_engine.balance_as_of_date`` until plan step X-c2b3
+    deleted it.  Routing them here rather than at a replacement producer is the
+    point: a schedule-mutation suite should read the figure a SCREEN shows, so a
+    mutation that corrupts the projection fails these tests instead of passing
+    them against a producer no screen reads.
+
+    **The reader's NOW and the valuation date are DIFFERENT dates here, and
+    conflating them would silently zero every probe.**  ``cash_balance_at``
+    takes both: ``ctx.as_of`` is the reader's now -- the floor a still-projected
+    row's landing day is clamped UP to, because a plan cannot already have
+    happened (ruling R-G) -- while the trailing argument is the date being
+    valued.  Passing the valuation date as both would clamp every projected row
+    to ``valuation + 1`` and answer with the assertions alone.  So the now comes
+    from :meth:`BalanceContext.build`, which is the app's own default
+    (``date.today()`` inside ``balance_at._context``) and therefore the date a
+    ``freeze_today`` suite has patched -- a helper-local ``date.today()`` would
+    read the WALL clock instead, which is the N-65 / N-8 trap.
+
+    ``scenario_id`` is load-bearing rather than decorative: the context resolves
+    the BASELINE, so a caller probing any other scenario is refused here instead
+    of being answered about a scenario it did not write to.
+
+    Args:
+        account: The cash account to value (session-attached).
+        scenario_id: The scenario the caller wrote its rows under.  Must be the
+            user's baseline, which is what every current caller uses.
+        as_of: The calendar date to value at, a civil ``date``.
+
+    Returns:
+        The cent-quantized ``Decimal`` cash-flow balance at *as_of*.
+    """
+    # Pylint: import-outside-toplevel -- helper-local, matching this module's
+    # convention of importing app symbols inside the helper that needs them.
+    from app.services import balance_at  # pylint: disable=import-outside-toplevel
+
+    ctx = balance_at.BalanceContext.build(account.user_id)
+    assert ctx.scenario_id == scenario_id, (
+        f"seam_cash_balance_at probes the BASELINE scenario "
+        f"({ctx.scenario_id}), but was asked for {scenario_id}"
+    )
+    return balance_at.cash_balance_at(account, ctx, as_of)
 
 
 def create_transfer(
@@ -2101,12 +2563,23 @@ def create_envelope_txn(seed_user, db_session, period, name, estimated):
     return txn
 
 
-def add_entry(db_session, seed_user, txn, amount, entry_date):
-    """Attach one debit :class:`TransactionEntry` of ``amount`` to ``txn``.
+def add_entry(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    db_session, seed_user, txn, amount, entry_date,
+    *, is_credit=False, is_cleared=False, description="purchase",
+):
+    """Attach one :class:`TransactionEntry` of ``amount`` to ``txn``.
 
-    The shared single-debit-entry builder so the stereotyped entry
-    construction is not copied per suite (a duplicate-code finding).
-    Flushes; the caller commits.
+    The shared entry builder so the stereotyped entry construction is not
+    copied per suite (a duplicate-code finding).  Flushes; the caller commits.
+
+    **The three bucket flags are parameters (plan step X-c2c2a).**  It built a
+    DEBIT-only, uncleared entry until the per-row valuation tests moved to
+    ``test_cash_amounts.py``, which needs all three buckets of
+    ``cash_ledger._amounts._entry_checking_impact`` -- cleared debit, uncleared
+    debit, and credit.  Narrowness is why the helper had not displaced the
+    hand-rolled copies it exists to prevent: seven suites still define their own
+    ``_add_entry`` because this one could not express their shape.  Widening it
+    is additive; those suites are not touched here (scope).
 
     Args:
         db_session: The test ``db.session``.
@@ -2114,6 +2587,14 @@ def add_entry(db_session, seed_user, txn, amount, entry_date):
         txn: The parent :class:`~app.models.transaction.Transaction`.
         amount: The entry amount (Decimal).
         entry_date: The entry's ``entry_date``.
+        is_credit: True for a credit-card purchase, which never hits checking
+            directly (it leaves via the CC Payback sibling) and so only
+            REDUCES the reservation.
+        is_cleared: True when the purchase is already reflected in the
+            account's anchor balance, so it is subtracted from the
+            reservation rather than acting as its floor.
+        description: The entry description; the default suits a test that
+            does not assert on it.
     """
     # pylint: disable=import-outside-toplevel  -- same circular-dep
     # avoidance as the loan helpers above.
@@ -2123,17 +2604,19 @@ def add_entry(db_session, seed_user, txn, amount, entry_date):
         transaction_id=txn.id,
         user_id=seed_user["user"].id,
         amount=amount,
-        description="purchase",
+        description=description,
         entry_date=entry_date,
+        is_credit=is_credit,
+        is_cleared=is_cleared,
     ))
     db_session.flush()
 
 
-def add_txn(
+def add_txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     db_session, seed_user, period, name, amount,
     status_enum=None, is_income=False,
     due_date=None, category_key=None, is_deleted=False,
-    actual_amount=None,
+    actual_amount=None, account=None, scenario=None,
 ):
     """Create a projected (default) transaction on the seed user's account.
 
@@ -2160,6 +2643,11 @@ def add_txn(
             category, or ``None`` for no category.
         is_deleted: The soft-delete flag.
         actual_amount: The actual (tier-3) amount, or ``None``.
+        account: The :class:`~app.models.account.Account` the row lands on;
+            defaults to ``seed_user["account"]`` (the Checking account).
+        scenario: The :class:`~app.models.scenario.Scenario` the row lives in;
+            defaults to the seed user's baseline.  Pass a non-baseline scenario
+            to exercise multi-scenario isolation.
 
     Returns:
         The created :class:`~app.models.transaction.Transaction` (flushed).
@@ -2172,6 +2660,8 @@ def add_txn(
 
     if status_enum is None:
         status_enum = StatusEnum.PROJECTED
+    account = seed_user["account"] if account is None else account
+    scenario = seed_user["scenario"] if scenario is None else scenario
     type_id = (
         ref_cache.txn_type_id(TxnTypeEnum.INCOME)
         if is_income
@@ -2182,9 +2672,9 @@ def add_txn(
         cat_id = seed_user["categories"][category_key].id
 
     txn = Transaction(
-        account_id=seed_user["account"].id,
+        account_id=account.id,
         pay_period_id=period.id,
-        scenario_id=seed_user["scenario"].id,
+        scenario_id=scenario.id,
         status_id=ref_cache.status_id(status_enum),
         name=name,
         category_id=cat_id,
@@ -2237,6 +2727,200 @@ def add_anchor_history(db_session, account, period, balance, days_ago=0):
     db_session.add(entry)
     db_session.flush()
     return entry
+
+
+def override_anchor(db_session, account, period, balance, *, notes, at=None):
+    """Replace ``account``'s current anchor with ``balance`` on ``period``.
+
+    Appends an :class:`AccountAnchorHistory` row (the dated source of truth)
+    AND syncs the ``current_anchor_*`` cache columns, so the resolver's
+    cache-reconciliation log does not fire.  The shared form of the
+    ``_override_anchor`` helper five suites had each written for themselves --
+    a duplicate-code cluster that mattered once the fold made the row's INSTANT
+    load-bearing, because a fix applied to one copy would have left the other
+    four asserting against a state production cannot reach.
+
+    **The instant defaults to the period's first day**, and that default is the
+    point (plan step X-c2b2, the N-8 / X-c2a fixture shape a third time).
+    ``AccountAnchorHistory.created_at`` server-defaults to the WALL CLOCK,
+    while ``tests/test_services`` freezes today to 2026-03-20 -- so a row
+    written by a helper that did not stamp it was asserted MONTHS after its own
+    pay period, a state production cannot reach (a true-up files against
+    ``get_current_period``).  The shipping producers never noticed: they read
+    the LATEST row and ignored its date.  The fold replays every assertion on
+    the day it was made, so such a row lands past the end of the window and no
+    period ever sees the balance the test asserted.  Pinning it to the period's
+    own start makes the fixture deterministic, clock-independent, and shaped
+    like a true-up filed on day one of its period -- which keeps every
+    hand-computed figure in the suites valid unchanged.
+
+    A test that needs a MID-period assertion (the shape ruling R-L and the
+    walk's instant partition exist for) passes ``at`` explicitly.
+
+    Args:
+        db_session: The test ``db.session``.
+        account: The :class:`~app.models.account.Account` to re-anchor.
+        period: The :class:`~app.models.pay_period.PayPeriod` the new anchor is
+            recorded against; its ``start_date`` is the default instant.
+        balance: The new anchor balance (Decimal -- construct from a string).
+        notes: The row's ``notes`` text, so a failing suite can tell which
+            fixture wrote the assertion it is looking at.
+        at: Optional aware-UTC instant to stamp the row with, overriding the
+            period-start default.
+
+    Returns:
+        The created :class:`AccountAnchorHistory` row (flushed, not committed
+        -- the caller owns the transaction boundary).
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from datetime import datetime, time, timezone
+    from app.models.account import AccountAnchorHistory
+
+    history = AccountAnchorHistory(
+        account_id=account.id,
+        pay_period_id=period.id,
+        anchor_balance=balance,
+        notes=notes,
+        created_at=at if at is not None else datetime.combine(
+            period.start_date, time.min, tzinfo=timezone.utc,
+        ),
+    )
+    db_session.add(history)
+    db_session.flush()
+    account.current_anchor_balance = balance
+    account.current_anchor_period_id = period.id
+    db_session.flush()
+    return history
+
+
+def restamp_opening_assertion(db_session, account, at):
+    """Pin the factory-written OPENING assertion's instant to ``at``.
+
+    ``account_service.create_account`` writes the opening
+    :class:`~app.models.account.AccountAnchorHistory` row with a wall-clock
+    ``created_at``, which would sort AFTER every controlled instant a cash-ledger
+    test uses.  Re-stamping it makes the whole event stream deterministic.
+
+    The instant-precise counterpart of :func:`add_anchor_history` (which dates
+    relative to now, in whole days): the cash walk partitions settles against an
+    assertion by INSTANT, so its suites need second precision and an absolute
+    moment.  Shared rather than copied per suite -- the walk (plan step X-a) and
+    the fold (X-b) both build their streams this way.
+
+    Args:
+        db_session: The test ``db.session``.
+        account: The :class:`~app.models.account.Account` whose opening to pin.
+        at: The aware-UTC instant to stamp it with.
+
+    Returns:
+        The re-stamped :class:`AccountAnchorHistory` row (flushed).
+    """
+    return _restamp_assertion(db_session, account, at, newest=False)
+
+
+def restamp_latest_assertion(db_session, account, at):
+    """Pin the account's NEWEST assertion instant to ``at``.
+
+    The twin of :func:`restamp_opening_assertion` for a true-up written through
+    the production path (``anchor_service.stage_anchor_true_up``, which sets the
+    ``current_anchor_*`` cache AND appends the history row): that row also
+    carries a wall-clock ``created_at``, and since plan step X-c2a modelled
+    interest begins at the LATEST assertion's UTC civil day (ruling R-L), so a
+    suite that needs a controlled accrual window has to pin it.
+
+    It FLUSHES first rather than relying on autoflush: the caller has just
+    staged the true-up in the session, and resolving the row without flushing
+    would silently restamp the previous assertion instead -- a test helper
+    quietly pinning the wrong row is worse than one that fails.
+
+    Args:
+        db_session: The test ``db.session``.
+        account: The :class:`~app.models.account.Account` whose latest
+            assertion to pin.
+        at: The aware-UTC instant to stamp it with.
+
+    Returns:
+        The re-stamped :class:`AccountAnchorHistory` row (flushed).
+    """
+    return _restamp_assertion(db_session, account, at, newest=True)
+
+
+def _restamp_assertion(db_session, account, at, *, newest):
+    """Pin the oldest or newest assertion's instant -- the shared core.
+
+    One query with one ordering flag rather than two near-identical copies:
+    both wrappers answer "which stored assertion am I pinning", and the row
+    they resolve must be selected the same way
+    :func:`~app.services.cash_ledger.resolve_anchor` selects the latest
+    (``created_at`` then ``id``), or a same-instant pair would restamp a
+    different row than the producer reads.
+
+    Args:
+        db_session: The test ``db.session``.
+        account: The :class:`~app.models.account.Account` to pin.
+        at: The aware-UTC instant to stamp with.
+        newest: ``True`` for the latest assertion, ``False`` for the opening.
+
+    Returns:
+        The re-stamped :class:`AccountAnchorHistory` row (flushed).
+    """
+    # pylint: disable=import-outside-toplevel  -- same circular-dep
+    # avoidance as the loan helpers above.
+    from app.models.account import AccountAnchorHistory
+
+    db_session.flush()
+    order = (AccountAnchorHistory.created_at, AccountAnchorHistory.id)
+    if newest:
+        order = tuple(column.desc() for column in order)
+    row = (
+        db_session.query(AccountAnchorHistory)
+        .filter_by(account_id=account.id)
+        .order_by(*order)
+        .first()
+    )
+    row.created_at = at
+    db_session.flush()
+    return row
+
+
+def append_balance_assertion(db_session, account, period, balance, at):
+    """Append one balance ASSERTION (a true-up) at a pinned instant.
+
+    The instant-precise true-up builder the cash-ledger suites share.  See
+    :func:`restamp_opening_assertion` for why the instant (not the day) is the
+    thing being pinned.
+
+    The row is inserted and then re-stamped, because ``created_at`` carries a
+    server default that the INSERT would otherwise fill with the wall clock.
+
+    Args:
+        db_session: The test ``db.session``.
+        account: The :class:`~app.models.account.Account` asserting.
+        period: The :class:`~app.models.pay_period.PayPeriod` the assertion is
+            filed against.
+        balance: The asserted balance (str or Decimal-coercible).
+        at: The aware-UTC assertion instant.
+
+    Returns:
+        The inserted :class:`AccountAnchorHistory` row (flushed).
+    """
+    # pylint: disable=import-outside-toplevel  -- same circular-dep
+    # avoidance as the loan helpers above.
+    from app.models.account import AccountAnchorHistory
+
+    row = AccountAnchorHistory(
+        account_id=account.id,
+        pay_period_id=period.id,
+        anchor_balance=Decimal(str(balance)),
+        notes="test assertion",
+    )
+    db_session.add(row)
+    db_session.flush()
+    row.created_at = at
+    db_session.flush()
+    return row
 
 
 def _pp_assert_structure(periods, user_id):
@@ -2466,6 +3150,17 @@ def make_appreciating_account(seed_user, db_session, anchor_period, balance, rat
     rate so the account classifies APPRECIATING.  Commits before
     returning so the account is fully resolvable.
 
+    **The opening assertion is stamped at the anchor period's first day**
+    (via :func:`restamp_opening_assertion`) -- finding N-77, fixed at plan step
+    X-g2a for the reason :func:`create_hysa_account` was at X-c2a, and read
+    there for the full argument.  ``account_service.create_account`` writes that
+    row with the WALL CLOCK, and from plan step X-g2b a Property's appreciation
+    accrues only forward of its LATEST assertion (ruling R-Y), so an unpinned
+    opening is the newest assertion, lands past the suite's seeded horizon, and
+    the account then appreciates NOTHING anywhere -- a state production cannot
+    reach.  A test that needs a MID-period or later assertion restamps it
+    itself, exactly as the interest suites do.
+
     Args:
         seed_user: The ``seed_user`` fixture dict.
         db_session: The test ``db.session``.
@@ -2505,6 +3200,9 @@ def make_appreciating_account(seed_user, db_session, anchor_period, balance, rat
     db_session.add(AssetAppreciationParams(
         account_id=account.id, annual_appreciation_rate=rate,
     ))
+    restamp_opening_assertion(
+        db_session, account, settle_instant_on(anchor_period.start_date),
+    )
     db_session.commit()
     return account
 
@@ -2522,6 +3220,14 @@ def make_investment_account(
     ``InvestmentParams`` row (7% assumed annual return) so the account
     classifies INVESTMENT.  Commits before returning so the account is
     fully resolvable.
+
+    **The opening assertion is stamped at the anchor period's first day**
+    (via :func:`restamp_opening_assertion`) -- finding N-77, fixed at plan step
+    X-g2a; see :func:`make_appreciating_account` beside it and
+    :func:`create_hysa_account` for the full argument.  From plan step X-g2b an
+    investment's growth accrues only forward of its LATEST assertion (ruling
+    R-Y), and the factory writes that row with the WALL CLOCK, so an unpinned
+    opening leaves the account growing nowhere.
 
     Args:
         seed_user: The ``seed_user`` fixture dict.
@@ -2573,6 +3279,9 @@ def make_investment_account(
         employer_match_percentage=match_pct,
         employer_match_cap_percentage=match_cap_pct,
     ))
+    restamp_opening_assertion(
+        db_session, account, settle_instant_on(anchor_period.start_date),
+    )
     db_session.commit()
     return account
 

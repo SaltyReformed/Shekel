@@ -35,13 +35,13 @@ refuses an amortizing account outright.
 """
 
 from dataclasses import dataclass
-from datetime import date, datetime, time, timezone
+from datetime import datetime
 from decimal import Decimal
 
 from app import ref_cache
 from app.enums import PostingSourceEnum
 from app.extensions import db
-from app.models.account import Account, AccountAnchorHistory
+from app.models.account import Account
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
@@ -51,43 +51,14 @@ from app.services.account_projection import (
     classify_account,
 )
 from app.services.posting_reads import PostingError, _ledger_account_for
+from app.services.cash_ledger import (
+    CashAnchorFact,
+    attribution_instant,
+    cash_anchor_facts,
+)
+from app.utils.dates import utc_day_start_instant
 
 _ZERO_MONEY = Decimal("0.00")
-
-
-@dataclass(frozen=True)
-class AccountAnchorFact:
-    """One anchor assertion of a non-loan account's real balance.
-
-    Wraps one :class:`~app.models.account.AccountAnchorHistory` row as a
-    plain fact the walk and the reconcile consume.  The rows are ordered by
-    ``(created_at, id)`` -- the same latest-``created_at`` chronology
-    ``cash_ledger.resolve_anchor`` reads, with ``id`` as the
-    deterministic tie-breaker -- and the FIRST row is the account's OPENING
-    (the origination row ``account_service.create_account`` appends);
-    every later row is a user TRUE-UP.
-
-    Attributes:
-        account_id: The ``budget.accounts`` id the assertion belongs to.
-        anchor_balance: The asserted real-money balance, ledger-native sign
-            (an owed-as-negative liability anchor stays negative; the walk
-            never branches on account class, exactly like the engine).
-        pay_period_id: The history row's pay period -- the NOT NULL period
-            the correction entry is attributed to (R2: the period of what
-            it corrects).
-        asserted_at: The assertion instant -- the row's ``created_at``
-            normalized to an aware-UTC ``datetime``.  Sources attributed on
-            or before this instant are already inside the asserted balance.
-        is_opening: True for the account's first history row (the OPENING);
-            False for a TRUE-UP.  Selects the correction's journal source
-            and posting kind.
-    """
-
-    account_id: int
-    anchor_balance: Decimal
-    pay_period_id: int
-    asserted_at: datetime
-    is_opening: bool
 
 
 @dataclass(frozen=True)
@@ -102,7 +73,8 @@ class AccountAnchorCorrection:
     books nothing (a fresh $0 account mints no entries and no equity row).
 
     Attributes:
-        anchor: The :class:`AccountAnchorFact` this correction books for.
+        anchor: The :class:`~app.services.cash_ledger.CashAnchorFact` this
+            correction books for.
         ledger_before: The walked ledger total JUST BEFORE this assertion
             resets it -- the prior corrections' cumulative effect plus every
             source net attributed on or before this instant.
@@ -110,85 +82,8 @@ class AccountAnchorCorrection:
             pre-anchor settled history.
     """
 
-    anchor: AccountAnchorFact
+    anchor: CashAnchorFact
     ledger_before: Decimal
-
-
-def _as_utc_instant(instant: datetime) -> datetime:
-    """Return *instant* as an aware-UTC ``datetime``.
-
-    The instant-level counterpart of
-    :func:`app.utils.dates.utc_civil_date`, sharing its
-    convention: an aware value converts to UTC, a naive value is assumed
-    UTC (every ``timestamptz`` in this app is stored UTC).  Normalizing
-    every attribution and assertion instant through this one helper makes
-    the walk's ``<=`` partition comparisons well-defined (Python refuses to
-    compare naive and aware datetimes).
-
-    Args:
-        instant: A stored ``created_at`` / ``paid_at`` instant.
-
-    Returns:
-        The aware-UTC equivalent of *instant*.
-    """
-    if instant.tzinfo is None:
-        return instant.replace(tzinfo=timezone.utc)
-    return instant.astimezone(timezone.utc)
-
-
-def _period_start_instant(start_date: date) -> datetime:
-    """Return a pay period's start date as a midnight-UTC instant.
-
-    The attribution fallback for a source with no recorded ``paid_at`` (a
-    historical settle recorded before the ``paid_at`` sync, or ledger
-    residue attributed by its entry's period): the period's ``start_date``
-    at 00:00 UTC, the earliest instant of the storage-timezone civil day --
-    the instant analogue of the ``COALESCE(paid_at, start_date)`` rule the
-    entry-date helpers apply.
-
-    Args:
-        start_date: The pay period's ``start_date``.
-
-    Returns:
-        The aware-UTC midnight instant of *start_date*.
-    """
-    return datetime.combine(start_date, time.min, tzinfo=timezone.utc)
-
-
-def _anchor_facts(account_id: int) -> list[AccountAnchorFact]:
-    """Return an account's anchor assertions as facts, in assertion order.
-
-    Loads every :class:`~app.models.account.AccountAnchorHistory` row for
-    the account ordered by ``(created_at, id)`` -- so the latest fact is the
-    row ``cash_ledger.resolve_anchor`` resolves, with ``id`` breaking a
-    (practically unreachable) same-instant tie deterministically -- and
-    marks the first row as the OPENING.  The balance routes through
-    ``Decimal(str(...))`` per the project's Decimal-construction rule.
-
-    Args:
-        account_id: The account whose anchor history to load.
-
-    Returns:
-        The account's :class:`AccountAnchorFact` list, chronological; empty
-        only for an account with no history rows (unreachable in production
-        -- migration ``cfb15e782f86`` + the account factory guarantee one).
-    """
-    rows = (
-        db.session.query(AccountAnchorHistory)
-        .filter_by(account_id=account_id)
-        .order_by(AccountAnchorHistory.created_at, AccountAnchorHistory.id)
-        .all()
-    )
-    return [
-        AccountAnchorFact(
-            account_id=account_id,
-            anchor_balance=Decimal(str(row.anchor_balance)),
-            pay_period_id=row.pay_period_id,
-            asserted_at=_as_utc_instant(row.created_at),
-            is_opening=(index == 0),
-        )
-        for index, row in enumerate(rows)
-    ]
 
 
 def _linked_net_rows(
@@ -283,10 +178,7 @@ def _transaction_source_instants(
         .all()
     )
     instants = {
-        transaction_id: (
-            _as_utc_instant(paid_at) if paid_at is not None
-            else _period_start_instant(start_date)
-        )
+        transaction_id: attribution_instant(paid_at, start_date)
         for transaction_id, paid_at, start_date in dated
     }
     missing = set(nets) - set(instants)
@@ -359,10 +251,7 @@ def _transfer_source_instants(
         .all()
     )
     instants = {
-        transfer_id: (
-            _as_utc_instant(paid_at) if paid_at is not None
-            else _period_start_instant(start_date)
-        )
+        transfer_id: attribution_instant(paid_at, start_date)
         for transfer_id, paid_at, start_date in dated
     }
     if len(dated) != len(instants):
@@ -439,7 +328,7 @@ def _residue_source_instants(
         .all()
     )
     return [
-        (_period_start_instant(start_date), nets[pay_period_id])
+        (utc_day_start_instant(start_date), nets[pay_period_id])
         for pay_period_id, start_date in dated
     ]
 
@@ -530,7 +419,7 @@ def walk_account_ledger(
             f"amortizing loan (loans book their anchor corrections through "
             f"the loan posting package, never the account walk)"
         )
-    facts = _anchor_facts(account_id)
+    facts = cash_anchor_facts(account_id)
     if not facts:
         return []
     linked = _ledger_account_for(account_id)

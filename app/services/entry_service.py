@@ -41,6 +41,7 @@ from app.utils.balance_predicates import (
 # predicate keeps both the helper accessible and the public
 # function signatures stable.
 from app.utils.balance_predicates import is_credit as txn_is_credit
+from app.utils.dates import display_today
 from app.utils.entry_partition import partition_entries
 from app.utils.log_events import (
     BUSINESS,
@@ -165,7 +166,9 @@ class EntryDetails:
     Fields:
         amount:      Positive Decimal for the purchase amount.
         description: Store name or brief note (1--200 chars).
-        entry_date:  Date of the purchase.
+        entry_date:  Date the purchase HAPPENED.  Backdating is ordinary; a
+            date after the user's today is refused (ruling R-M, see
+            :func:`_reject_future_entry_date`).
         is_credit:   Whether this was paid with a credit card.
     """
 
@@ -173,6 +176,59 @@ class EntryDetails:
     description: str
     entry_date: date
     is_credit: bool = False
+
+
+def _reject_future_entry_date(entry_date: date) -> None:
+    """Refuse an entry dated after the user's today (ruling R-M).
+
+    The ONE statement of "a purchase entry records a purchase that HAPPENED",
+    shared by both write doors (:func:`create_entry` and :func:`update_entry`)
+    so the boundary cannot hold on one and not the other -- the same
+    both-doors-one-derivation shape ruling R-C's origination guard uses.
+
+    **Why the source and not the reader** (plan
+    ``docs/audits/balance_architecture/README.md``, ruling R-M).  A future entry
+    is not merely odd data: it moves a rendered balance.  The projection holds
+    back ``max(estimated - cleared_debit - credit, uncleared_debit)`` for a
+    still-projected envelope, so an entry dated ahead changes today's balance in
+    EITHER direction depending only on its credit flag -- measured on the live
+    Groceries envelope (``$780.00`` budgeted, ``$60.55`` held back): a
+    ``$150.00`` future debit takes the reservation to ``$150.00`` through the
+    ``max()`` floor (``-$89.45`` on the balance), while the same amount ticked
+    CC takes it to ``$0.00`` (``+$60.55``).  Refusing it here is what lets the
+    reservation's ``as_of`` window -- the parameter the calendar passes and the
+    grid does not, which is the divergence itself -- be DELETED at plan step
+    X-c2 rather than ruled: with no entry dated after any reader's now, the
+    window provably drops nothing.
+
+    Backdating stays fully allowed, and is used: a purchase logged days after it
+    happened, or one dated into the previous pay period, is ordinary (the real
+    2026-05-21 Groceries row carries entries from 05-18).  A purchase you have
+    not made yet is the envelope's remaining BUDGET, which the row already
+    models.
+
+    The comparison is against :func:`~app.utils.dates.display_today` -- the
+    user's wall-clock date, not the server's UTC one -- because ``entry_date``
+    is a civil date the user types on their own clock.  Judging it in UTC would
+    refuse a legitimate same-day entry for the hours the two frames disagree.
+
+    Args:
+        entry_date: The civil date the caller wants the entry to carry.
+
+    Raises:
+        ValidationError: When *entry_date* is after the user's today.  The
+            message carries both dates so the surface can show what was
+            rejected and what the boundary was.
+    """
+    today = display_today()
+    if entry_date > today:
+        raise ValidationError(
+            f"A purchase entry records a purchase that has already happened, "
+            f"so its date cannot be in the future: {entry_date.isoformat()} "
+            f"is after today ({today.isoformat()}).  Log the purchase when it "
+            f"happens; money you have not spent yet is already held back by "
+            f"this row's remaining budget."
+        )
 
 
 def create_entry(
@@ -249,6 +305,11 @@ def create_entry(
             "Entry-capable transactions handle credit at the entry level."
         )
 
+    # Content guard, after the ownership and transaction guards so a
+    # non-owner still gets the 404 rather than a validation message that
+    # confirms the row exists (ruling R-M; see _reject_future_entry_date).
+    _reject_future_entry_date(details.entry_date)
+
     entry = TransactionEntry(
         transaction_id=transaction_id,
         user_id=user_id,
@@ -316,6 +377,12 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
     owner_id = resolve_owner_id(user_id)
     if entry.transaction.pay_period.user_id != owner_id:
         raise NotFoundError(f"Entry {entry_id} not found.")
+
+    # The same boundary the create door applies, and only when the caller is
+    # actually moving the date -- a partial update that leaves ``entry_date``
+    # alone must not be refused for a value it is not setting (ruling R-M).
+    if "entry_date" in valid_updates:
+        _reject_future_entry_date(valid_updates["entry_date"])
 
     for field, value in valid_updates.items():
         setattr(entry, field, value)

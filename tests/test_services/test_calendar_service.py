@@ -19,7 +19,8 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 import pytest
 
-from app.services import calendar_service
+from app.services import balance_at, calendar_service
+from app.services.balance_at import BalanceContext
 from app.services.balance_at import _context as resolution_context
 from app.services.calendar_service import (
     CalendarAccountNotResolvableError,
@@ -27,7 +28,6 @@ from app.services.calendar_service import (
     _detect_third_paycheck_months,
     _is_infrequent,
 )
-from app.services.cash_ledger import period_subtotal
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -583,49 +583,57 @@ class TestMonthEndBalance:
 
         Anchor balance = $1000 (seed_user).
         seed_periods are 10 biweekly starting 2026-01-02 so:
-          Period 0: Jan 2 -- Jan 15 (anchor)
-          Period 1: Jan 16 -- Jan 29
-          Period 2: Jan 30 -- Feb 12  (contains Jan 31)
-        Post-Commit-9 (HIGH-02 / W-277): the month-end balance is
-        ``balance_as_of_date(2026-01-31)``, which projects forward
-        through the period CONTAINING Jan 31 (period 2), not the
-        pre-Commit-9 "last period whose end_date <= Jan 31"
-        (period 1).  Period 2 has no transactions here so the
-        projected balance carries forward unchanged from period 1's
+          Period 6: Mar 27 -- Apr 9
+          Period 7: Apr 10 -- Apr 23
+          Period 8: Apr 24 -- May 7  (contains Apr 30)
+        The month-end balance is the seam's cash-flow scalar at
+        ``2026-04-30``, which projects forward through the period
+        CONTAINING Apr 30 (period 8), not the "last period whose end_date <=
+        Apr 30" (period 7).  Period 8 has no transactions here so the
+        projected balance carries forward unchanged from period 7's
         4000.00, which keeps this assertion valid; the next test
-        proves the producer steps into period 2 when it has data.
+        proves the producer steps into period 8 when it has data.
 
-        Period 0 (anchor): 1000 + 2000 - 500 = 2500.
-        Period 1:          2500 + 2000 - 500 = 4000.
-        Period 2:          4000 + 0 - 0      = 4000  (no txns)
-        Month-end (Jan 31, falls in period 2): 4000.00.
+        Period 6: 1000 + 2000 - 500 = 2500.
+        Period 7: 2500 + 2000 - 500 = 4000.
+        Period 8: 4000 + 0 - 0      = 4000  (no txns)
+        Month-end (Apr 30, falls in period 8): 4000.00.
+
+        **The flows are seeded AFTER the suite's frozen today (2026-03-20)
+        deliberately** (plan step X-c2b2, ruling R-G).  A still-Projected row
+        whose date has passed lands at ``max(its date, as_of + 1 day)`` -- a
+        plan cannot have already happened -- so a January-dated projected bill
+        read in March contributes to March, not to January, and a January
+        month-end would correctly read the anchor flat.  Dating the fixture
+        forward is what makes each row land on its own day and keeps the
+        hand arithmetic above the arithmetic the producer actually performs.
         """
         with app.app_context():
-            p0 = seed_periods[0]
-            p1 = seed_periods[1]
+            p6 = seed_periods[6]
+            p7 = seed_periods[7]
 
             _add_transaction(
-                db.session, seed_user, p0, "Pay 1", "2000.00",
-                is_income=True, due_date=date(2026, 1, 2),
+                db.session, seed_user, p6, "Pay 1", "2000.00",
+                is_income=True, due_date=date(2026, 4, 1),
             )
             _add_transaction(
-                db.session, seed_user, p0, "Rent", "500.00",
-                due_date=date(2026, 1, 5),
+                db.session, seed_user, p6, "Rent", "500.00",
+                due_date=date(2026, 4, 5),
             )
             _add_transaction(
-                db.session, seed_user, p1, "Pay 2", "2000.00",
-                is_income=True, due_date=date(2026, 1, 16),
+                db.session, seed_user, p7, "Pay 2", "2000.00",
+                is_income=True, due_date=date(2026, 4, 13),
             )
             _add_transaction(
-                db.session, seed_user, p1, "Util", "500.00",
-                due_date=date(2026, 1, 20),
+                db.session, seed_user, p7, "Util", "500.00",
+                due_date=date(2026, 4, 20),
             )
             db.session.commit()
 
             result = calendar_service.get_month_detail(
                 user_id=seed_user["user"].id,
                 year=2026,
-                month=1,
+                month=4,
             )
             assert result.projected_end_balance == Decimal("4000.00")
 
@@ -638,59 +646,61 @@ class TestMonthEndBalance:
         pay period whose ``end_date <= last_day_of_month`` and
         returned that period's end balance, missing the contribution
         of the period that straddles the month boundary.
-        Post-Commit-9 the month-end balance flows through
-        ``balance_as_of_date``, which projects through the period
-        CONTAINING the target date.
+        Post-Commit-9 the month-end balance flows through the seam's
+        ``balance_at.cash_balance_at``, which values the target DATE itself
+        (the cash fold sampled there) rather than a period boundary near it.
 
         seed_periods:
-          Period 1: Jan 16 -- Jan 29
-          Period 2: Jan 30 -- Feb 12  (contains Jan 31)
+          Period 7: Apr 10 -- Apr 23
+          Period 8: Apr 24 -- May 7  (contains Apr 30)
 
         Setup loads income/expense in BOTH periods so the
-        pre-Commit-9 path (which would stop after period 1) and the
-        post-Commit-9 path (which includes period 2) produce
-        distinct values; the assertion locks the correct one.
+        pre-Commit-9 path (which would stop after period 7) and the
+        post-Commit-9 path (which includes period 8) produce
+        distinct values; the assertion locks the correct one.  The month is
+        forward of the suite's frozen today for the reason the previous test
+        documents (ruling R-G).
 
         Hand arithmetic (no entries, formula collapses to
         effective_amount; statuses are Projected so the
         balance-contributing predicate includes them):
-          Period 0 (anchor, 1000.00):  1000 + 0 - 0 = 1000
-          Period 1:                    1000 + 1500 - 200 = 2300
-          Period 2:                    2300 + 1500 - 200 = 3600
+          Anchor (1000.00):  1000
+          Period 7:          1000 + 1500 - 200 = 2300
+          Period 8:          2300 + 1500 - 200 = 3600
 
-        Pre-Commit-9 would have returned 2300.00 (period 1 end);
+        Pre-Commit-9 would have returned 2300.00 (period 7 end);
         post-Commit-9 must return 3600.00.  Re-pinned per
         HIGH-02 / W-277.
         """
         with app.app_context():
-            p1 = seed_periods[1]
-            p2 = seed_periods[2]
-            assert p1.end_date == date(2026, 1, 29)
-            assert p2.start_date == date(2026, 1, 30)
-            assert p2.end_date == date(2026, 2, 12)
+            p7 = seed_periods[7]
+            p8 = seed_periods[8]
+            assert p7.end_date == date(2026, 4, 23)
+            assert p8.start_date == date(2026, 4, 24)
+            assert p8.end_date == date(2026, 5, 7)
 
             _add_transaction(
-                db.session, seed_user, p1, "Mid-Jan Pay", "1500.00",
-                is_income=True, due_date=date(2026, 1, 16),
+                db.session, seed_user, p7, "Mid-Apr Pay", "1500.00",
+                is_income=True, due_date=date(2026, 4, 13),
             )
             _add_transaction(
-                db.session, seed_user, p1, "Mid-Jan Bill", "200.00",
-                due_date=date(2026, 1, 20),
+                db.session, seed_user, p7, "Mid-Apr Bill", "200.00",
+                due_date=date(2026, 4, 17),
             )
             _add_transaction(
-                db.session, seed_user, p2, "Late-Jan Pay", "1500.00",
-                is_income=True, due_date=date(2026, 1, 30),
+                db.session, seed_user, p8, "Late-Apr Pay", "1500.00",
+                is_income=True, due_date=date(2026, 4, 24),
             )
             _add_transaction(
-                db.session, seed_user, p2, "Late-Jan Bill", "200.00",
-                due_date=date(2026, 1, 30),
+                db.session, seed_user, p8, "Late-Apr Bill", "200.00",
+                due_date=date(2026, 4, 24),
             )
             db.session.commit()
 
             result = calendar_service.get_month_detail(
                 user_id=seed_user["user"].id,
                 year=2026,
-                month=1,
+                month=4,
             )
             # 1000 + (1500-200) + (1500-200) = 3600.00.
             # Pre-Commit-9 returned 2300.00 -- HIGH-02 / W-277.
@@ -1149,23 +1159,44 @@ class TestBalanceContributingPredicate:
             names = sorted(e.name for e in result.day_entries[5])
             assert names == ["Projected Bill", "Settled Bill"]
 
-    def test_c10_3_grid_period_subtotal_projected_only(
+    def test_c10_3_grid_period_subtotal_excludes_cancelled_and_credit(
         self, app, seed_user, seed_periods, db,
     ):
-        """F-3 / W-065 C10-3: grid period subtotal stays Projected-only.
+        """F-3 / W-065 C10-3: Cancelled and Credit never reach the grid column.
 
         Same fixture as C10-2 (Projected $500 + Settled $200 +
-        Cancelled $100 + Credit $50 on Jan 5).  The grid period
-        subtotal is sourced from
-        ``cash_ledger.period_subtotal``, whose ``sum_projected``
-        helper gates on ``is_projected(txn)`` -- so only the
-        Projected $500 expense contributes; Settled, Cancelled, and
-        Credit are all excluded.  Hand arithmetic: 500.00.
+        Cancelled $100 + Credit $50 on Jan 5).
 
-        The two surfaces intentionally diverge: calendar day total
-        for the same day is 700.00 (C10-2), grid period subtotal
-        for the same period is 500.00 (this test).  This divergence
-        is the locked Choice-2 design from the follow-up plan.
+        **Ruling R-K changed what a subtotal COUNTS, and this test's figure
+        moved with it** (plan step X-c2b2; the read moved to the shipped
+        ``GridColumn`` when plan step X-c2b3 deleted
+        ``cash_ledger.period_subtotal``).  The retired subtotal was
+        Projected-ONLY -- it gated every row through ``is_projected``, so a row
+        that had actually been PAID contributed nothing and a past column read
+        ``$0.00`` while thousands of dollars moved through it (finding N-41).
+        The grid column now counts every row attributed to the period: a settled
+        row at its confirmed cash leg, a projected row at its entries-aware
+        reservation.
+
+        Hand arithmetic on the new basis:
+
+            Projected $500, no entries -> reservation      500.00
+            Settled $200 (actual 200.00), no credit entries
+              -> settled_cash_leg = 200.00 - 0             200.00
+            Cancelled $100 -> neither projected nor settled  0.00
+            Credit $50     -> neither projected nor settled  0.00
+                                                          -------
+            expense                                        700.00
+
+        So the exclusion this test locks is the CANCELLED / CREDIT pair, which
+        R-K did not touch: they are excluded from the projected half by
+        ``is_projected`` and from the settled half by the settled-status
+        narrowing in SQL.  The old "locked Choice-2 divergence" between the
+        calendar day total (700.00, C10-2) and this column is gone -- both count
+        the settled row now.  That agreement is this FIXTURE's, not a general
+        identity: every row here sits in one period on one day, while the
+        calendar places a chip on its budget attribution date and steps its
+        balance on the day the money moved (finding N-58).
         """
         with app.app_context():
             p0 = seed_periods[0]
@@ -1191,15 +1222,15 @@ class TestBalanceContributingPredicate:
             )
             db.session.commit()
 
-            sub = period_subtotal(
+            column = balance_at.grid_balance_view(
                 seed_user["account"],
-                seed_user["scenario"].id,
-                p0,
-            )
-            # Projected-only: 500.00.  Diverges intentionally from
-            # the calendar day total of 700.00 in C10-2.
-            assert sub.expense == Decimal("500.00")
-            assert sub.income == Decimal("0.00")
+                BalanceContext.build(seed_user["user"].id),
+                [p0],
+            ).columns[p0.id]
+            # 500.00 reservation + 200.00 confirmed cash leg; the Cancelled
+            # $100 and the Credit $50 contribute nothing to either half.
+            assert column.expense == Decimal("700.00")
+            assert column.income == Decimal("0.00")
 
     def test_c10_4_regression_lock_predicate_drop_visible(
         self, app, seed_user, seed_periods, db, monkeypatch,
@@ -1381,39 +1412,48 @@ class TestCalendarDailyView:
     """The month's daily running-balance projection (DailyView).
 
     Uses the standard ``seed_periods`` scenario (biweekly from 2026-01-02,
-    anchor = period 0 at $1000).  January flows: Rent -500 due 01-05, Salary
-    +2000 due 01-09 (period 0); Car -800 due 01-20, Salary +2000 due 01-23
-    (period 1).  The hand-computed running balance is 01-05 500, 01-09 2500,
-    01-15 2500, 01-20 1700, 01-23 3700, 01-29 3700; the month trough is $500
+    anchor = period 0 at $1000).  April flows: Rent -500 due 04-05, Salary
+    +2000 due 04-09 (period 6); Car -800 due 04-20, Salary +2000 due 04-23
+    (period 7).  The hand-computed running balance is 04-05 500, 04-09 2500,
+    04-15 2500, 04-20 1700, 04-23 3700, 04-30 3700; the month trough is $500
     on the 5th.
+
+    **April, not January, because a plan cannot have already happened**
+    (ruling R-G, wired at plan step X-c2b2).  The suite freezes today to
+    2026-03-20, and a still-Projected row dated before that lands at
+    ``as_of + 1 day`` rather than on its own date -- so a January month would
+    draw a FLAT line at the anchor, which is the honest answer (none of those
+    bills was ever recorded as paid) but pins no ramp arithmetic.  Dating the
+    flows forward of the frozen today keeps every hand-computed figure below
+    exactly what it was and makes each land on its own day.
     """
 
-    def _seed_january(self, db, seed_user, seed_periods):
-        p0, p1 = seed_periods[0], seed_periods[1]
+    def _seed_april(self, db, seed_user, seed_periods):
+        p6, p7 = seed_periods[6], seed_periods[7]
         _add_transaction(
-            db.session, seed_user, p0, "Rent", "500.00",
-            due_date=date(2026, 1, 5),
+            db.session, seed_user, p6, "Rent", "500.00",
+            due_date=date(2026, 4, 5),
         )
         _add_transaction(
-            db.session, seed_user, p0, "Salary", "2000.00",
-            is_income=True, due_date=date(2026, 1, 9),
+            db.session, seed_user, p6, "Salary", "2000.00",
+            is_income=True, due_date=date(2026, 4, 9),
         )
         _add_transaction(
-            db.session, seed_user, p1, "Car", "800.00",
-            due_date=date(2026, 1, 20),
+            db.session, seed_user, p7, "Car", "800.00",
+            due_date=date(2026, 4, 20),
         )
         _add_transaction(
-            db.session, seed_user, p1, "Salary", "2000.00",
-            is_income=True, due_date=date(2026, 1, 23),
+            db.session, seed_user, p7, "Salary", "2000.00",
+            is_income=True, due_date=date(2026, 4, 23),
         )
         db.session.commit()
 
     def test_daily_is_none_without_today(self, app, seed_user, seed_periods, db):
         """Omitting ``today`` yields no daily view (year-overview parity)."""
         with app.app_context():
-            self._seed_january(db, seed_user, seed_periods)
+            self._seed_april(db, seed_user, seed_periods)
             result = calendar_service.get_month_detail(
-                user_id=seed_user["user"].id, year=2026, month=1,
+                user_id=seed_user["user"].id, year=2026, month=4,
             )
         assert result.daily is None
 
@@ -1422,16 +1462,16 @@ class TestCalendarDailyView:
     ):
         """The daily view carries per-day balances and the month trough."""
         with app.app_context():
-            self._seed_january(db, seed_user, seed_periods)
+            self._seed_april(db, seed_user, seed_periods)
             result = calendar_service.get_month_detail(
-                user_id=seed_user["user"].id, year=2026, month=1,
-                today=date(2026, 1, 20),
+                user_id=seed_user["user"].id, year=2026, month=4,
+                today=date(2026, 4, 20),
             )
         daily = result.daily
         assert isinstance(daily, DailyView)
         assert daily.daily_balances[5] == Decimal("500.00")
         assert daily.daily_balances[9] == Decimal("2500.00")
-        assert daily.daily_balances[29] == Decimal("3700.00")
+        assert daily.daily_balances[30] == Decimal("3700.00")
         # Trough is the earliest day of the month minimum ($500 on the 5th).
         assert daily.trough_day == 5
         assert daily.trough_balance == Decimal("500.00")
@@ -1441,10 +1481,10 @@ class TestCalendarDailyView:
     ):
         """balance_today and the elapsed/remaining split key off ``today``."""
         with app.app_context():
-            self._seed_january(db, seed_user, seed_periods)
+            self._seed_april(db, seed_user, seed_periods)
             result = calendar_service.get_month_detail(
-                user_id=seed_user["user"].id, year=2026, month=1,
-                today=date(2026, 1, 20),
+                user_id=seed_user["user"].id, year=2026, month=4,
+                today=date(2026, 4, 20),
             )
         daily = result.daily
         # End-of-day balance on the 20th (after the Car payment): $1700.
@@ -1452,7 +1492,7 @@ class TestCalendarDailyView:
         # Elapsed (days 1-20): Salary 2000 in, Rent 500 + Car 800 = 1300 out.
         assert daily.elapsed_income == Decimal("2000.00")
         assert daily.elapsed_expense == Decimal("1300.00")
-        # Remaining (days 21-31): the second Salary; no more expenses.
+        # Remaining (days 21-30): the second Salary; no more expenses.
         assert daily.remaining_income == Decimal("2000.00")
         assert daily.remaining_expense == Decimal("0.00")
 
@@ -1461,10 +1501,10 @@ class TestCalendarDailyView:
     ):
         """A month entirely after today is all remaining, no balance_today."""
         with app.app_context():
-            self._seed_january(db, seed_user, seed_periods)
+            self._seed_april(db, seed_user, seed_periods)
             result = calendar_service.get_month_detail(
-                user_id=seed_user["user"].id, year=2026, month=1,
-                today=date(2025, 12, 15),
+                user_id=seed_user["user"].id, year=2026, month=4,
+                today=date(2026, 3, 15),
             )
         daily = result.daily
         assert daily.balance_today is None

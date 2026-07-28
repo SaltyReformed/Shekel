@@ -517,8 +517,12 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
     Every screen must obtain an account's balance through
     ``app.services.balance_at``, and that is now STRUCTURAL, not name-keyed:
     plan step D1d moved every producer inside the seam as a private submodule
-    (``_cash_engine`` / ``_calculator`` / ``_daily_series`` / ``_kernel`` /
-    ``_investment``), W9910 forbids reaching one from outside the package in
+    (today ``_cash_fold`` / ``_asset_fold`` / ``_kernel``; ``_daily_series``
+    went at plan step X-c2b3, the calendar's per-day line being the fold
+    sampled at every day, and ``_cash_engine`` / ``_calculator`` /
+    ``_investment`` / ``_interest`` at X-g4b, once TWO folds answered what
+    six producers used to),
+    W9910 forbids reaching one from outside the package in
     every import spelling, and plan step E1e DELETED the last public producer
     outside the seam (the two genesis posting readers) rather than fencing it.
     So the call-fence tests are gone with the call fence -- the W9910 suite owns
@@ -615,9 +619,17 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
             self.checker.visit_functiondef(node)
 
     def test_ignores_public_function_in_consumer_module(self) -> None:
-        """A consumer's own public functions are not the fence's business."""
+        """A consumer's own public functions are not the fence's business.
+
+        The name and module are a REAL pair (``_horizon.build_horizon``), not a
+        plausible-looking one: this fixture named ``compute_net_worth_horizon``
+        against ``_horizon`` until plan step X-q2, and that function lived in
+        ``_orchestrator`` and has since been deleted -- a synthetic fixture
+        drifts silently because nothing resolves it.
+        """
         node = self._function_def(
-            "def compute_net_worth_horizon(user_id):\n    return {}\n",
+            "def build_horizon(user_id, core, account_data, category):\n"
+            "    return {}\n",
             "app.services.savings_dashboard_service._horizon",
         )
         with self.assertNoMessages():
@@ -951,7 +963,7 @@ class TestShekelBalanceSeamChecker(CheckerTestCase):
                     )
             # Only the module's OWN non-producer rulings are pinned for staleness:
             # the producer set is shared across the cluster (a producer defined
-            # in ``_cash_engine`` is legitimately absent from ``_kernel``).
+            # in one member module is legitimately absent from another).
             stale = non_producers - defined
             assert not stale, (
                 f"{module}: non-producer rulings for functions it no longer "
@@ -1873,8 +1885,10 @@ def _privacy_fixture_root(tmp_path_factory: pytest.TempPathFactory):
     so a hermetic fixture tree is built once per module and put on ``sys.path``:
 
     * ``dgate_res_pkg`` -- a REGULAR package: ``__init__`` defines a private
-      NAME, ``_engine`` is a private MODULE, ``public_mod`` is a public module
-      defining a private NAME.
+      NAME, ``_engine`` is a private MODULE (which itself defines a private
+      NAME, so the intra-package "private name out of a private sibling
+      module" form has a real target to resolve), ``public_mod`` is a public
+      module defining a private NAME.
     * ``dgate_res_ns`` -- a NAMESPACE package (no ``__init__.py``) holding a
       private module, mirroring ``scripts/_script_lib.py``, plus a private
       subPACKAGE (``_libpkg``) whose boundary a namespace sibling must NOT
@@ -1898,7 +1912,9 @@ def _privacy_fixture_root(tmp_path_factory: pytest.TempPathFactory):
         "_package_private_name = object()\n", encoding="utf-8",
     )
     (pkg / "_engine.py").write_text(
-        "def build_balance_map():\n    return {}\n", encoding="utf-8",
+        "def build_balance_map():\n    return {}\n\n\n"
+        "def _engine_private_helper():\n    return None\n",
+        encoding="utf-8",
     )
     (pkg / "public_mod.py").write_text(
         "_module_private_name = object()\n", encoding="utf-8",
@@ -2338,14 +2354,49 @@ class TestShekelPackagePrivacyChecker(CheckerTestCase):
         with self.assertNoMessages():
             self.checker.visit_importfrom(node)
 
-    def test_allows_seam_submodules_importing_each_other(self) -> None:
-        """The real seam's private modules compose each other freely."""
-        node = self._import_statement(
-            "from app.services.balance_at._context import _memoize_once",
-            "app.services.balance_at._plan",
-        )
-        with self.assertNoMessages():
-            self.checker.visit_importfrom(node)
+    def test_allows_seam_submodules_importing_each_other(
+        self, privacy_fixture_root: Path,
+    ) -> None:
+        """A package's private modules compose each other freely, both spellings.
+
+        The production shape this exists for is
+        ``app/services/balance_at/_plan.py:55`` --
+        ``from ._context import BalanceContext, _memoize_once, require_scenario``
+        -- a private NAME imported out of a private SIBLING module of the
+        importer's own package.  It is the one conforming form that reaches
+        the checker's name scan: the ``from`` clause's boundary dissolves on
+        dotted-name membership, the importer is not the base module itself,
+        and the imported name IS private, so ``_names_a_module`` has to
+        RESOLVE the base and find it is a module rather than a package.
+
+        **It is spelled against the hermetic fixture tree, and that is finding
+        N-45's repair** (balance plan step X-h).  It used to be spelled with
+        the real ``app.services.balance_at`` names, which this directory's
+        rootdir cannot import -- so the resolution failed, the checker
+        fail-CLOSED as designed, and the assertion fired whenever this class
+        ran alone (measured: 1 failed / 30 passed).  It read green in a
+        whole-file run only because ``TestShekelBalanceSeamChecker`` parses a
+        synthetic module under the real name ``app.services.balance_at._context``
+        earlier in the file and warmed astroid's cache.  The plan's proposed
+        fix -- give the synthetic importer a real ``path=`` -- was measured and
+        does NOT work: ``_importer_file_inside`` has to resolve the same
+        unresolvable name, so the message is emitted with or without the path.
+        The fixture tree exists for precisely this class of test, and
+        ``conftest._isolate_astroid_module_cache`` now stops any test being
+        green on a sibling's cache.
+
+        Both spellings are pinned because they reach the base through
+        different code (``_absolute_base``'s relative branch resolves the dots
+        against the importer's own name), and production uses the relative one.
+        """
+        assert privacy_fixture_root.is_dir()
+        for source in (
+            "from dgate_res_pkg._engine import _engine_private_helper",
+            "from ._engine import _engine_private_helper",
+        ):
+            node = self._import_statement(source, "dgate_res_pkg.composing_mod")
+            with self.assertNoMessages():
+                self.checker.visit_importfrom(node)
 
     def test_allows_own_init_importing_private_module(self) -> None:
         """A package ``__init__`` may bind its own private submodules absolutely."""

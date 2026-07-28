@@ -95,13 +95,15 @@
             aria-label="Net worth stream: asset composition above zero, liabilities below, net-worth trajectory through the middle"></canvas>
   </div>
   {# Legend: each present category band + its today subtotal, then a
-     line-sample for the net-worth trajectory.  Band order matches the
-     stack (asset groups up the ramp, then liabilities); the swatch colors
-     are the same --nw-band-* tokens the chart reads.  Every figure is
-     producer-computed (group_subtotals + the net-worth hero), never in JS. #}
-  {% set nw_band_order = ['asset', 'retirement', 'investment', 'other', 'liability'] %}
+     line-sample for the net-worth trajectory.  The band order IS the
+     producer's composition map -- the very series the chart stacks -- rather
+     than a fourth hand-written copy of the band vocabulary (plan step X-t3,
+     finding N-108), so a band the chart draws can never be missing from the
+     legend beside it.  The swatch colors are the same --nw-band-* tokens the
+     chart reads.  Every figure is producer-computed (group_subtotals + the
+     net-worth hero), never in JS. #}
   <div class="nw-legend">
-    {% for band_key in nw_band_order if band_key in group_subtotals %}
+    {% for band_key in net_worth.series.composition if band_key in group_subtotals %}
     <span class="nw-legend__item">
       <span class="nw-legend__swatch nw-legend__swatch--{{ band_key }}"></span>
       {{ category_labels.get(band_key, band_key|title) }}
@@ -154,7 +156,17 @@
         {% if ad.needs_setup %}
         <span class="badge bg-warning text-dark">Setup Required</span>
         {% endif %}
-        {% if ad.is_paid_off %}
+        {# The seam's own value object, carried whole since plan step X-r,
+           inside the projection's ONE loan field since X-t1.  The per-field
+           copies it replaced are the shape that DROPPED ``is_retired`` before
+           plan step X-o added it back as a sixth copy -- finding B-16, and the
+           reason the copying itself went.
+
+           ``is not none``, never ``is defined``: the field always EXISTS now,
+           so a defined-test would be true for every account and the cash cells
+           would dereference ``None`` -- which Jinja renders as empty rather
+           than raising, the silent-degradation hazard finding N-111 measured. #}
+        {% if ad.loan is not none and ad.loan.figures.is_paid_off %}
         <span class="badge bg-success">Paid Off</span>
         {% endif %}
       </div>
@@ -166,9 +178,11 @@
          that REPLACES it (input + Save / Cancel) is also lifted above the
          cell's .stretched-link overlay and stays clickable. #}
       <div class="acct-cell__balance">
-        {% with account=ad.account, current_balance=ad.current_balance, is_liability=ad.is_liability %}
+        {# The partial reads this loop's own ``ad`` -- the same
+           AccountProjection the revert endpoint renders it with (plan step
+           X-t1), so the two paths cannot state the cell's contract
+           differently. #}
         {% include "savings/_cockpit_balance.html" %}
-        {% endwith %}
       </div>
 
       {# One caption line: type + rate, the loan payment or the projected
@@ -178,15 +192,15 @@
       <div class="acct-cell__cap">
         <span>
           {{ ad.account.account_type.name if ad.account.account_type else '--' }}
-          {%- if ad.interest_params is defined and ad.interest_params %} &middot; APY {{ "%.2f"|format(ad.interest_params.apy|to_percent) }}%{% endif -%}
-          {%- if ad.loan_params is defined and ad.loan_params %} &middot; {{ "%.3f"|format(ad.current_rate|to_percent) }}%{% endif -%}
-          {%- if ad.investment_params is defined and ad.investment_params %} &middot; Return {{ "%.2f"|format(ad.investment_params.assumed_annual_return|to_percent) }}%{% endif -%}
+          {%- if ad.interest_params is not none %} &middot; APY {{ "%.2f"|format(ad.interest_params.apy|to_percent) }}%{% endif -%}
+          {%- if ad.loan is not none %} &middot; {{ "%.3f"|format(ad.loan.figures.terms.current_rate|to_percent) }}%{% endif -%}
+          {%- if ad.investment_params is not none %} &middot; Return {{ "%.2f"|format(ad.investment_params.assumed_annual_return|to_percent) }}%{% endif -%}
           {%- if ad.account.asset_appreciation_params %} &middot; Appr {{ "%.2f"|format(ad.account.asset_appreciation_params.annual_appreciation_rate|to_percent) }}%{% endif -%}
         </span>
-        {% if ad.loan_params is defined and ad.loan_params %}
+        {% if ad.loan is not none %}
         <span>
-          Monthly Payment <span class="font-mono">{{ money(ad.monthly_payment) }}</span>
-          {%- if ad.payoff_date is not none %} &middot; payoff {{ ad.payoff_date.strftime('%b %Y') }}{% endif %}
+          Monthly Payment <span class="font-mono">{{ money(ad.loan.figures.terms.monthly_payment) }}</span>
+          {%- if ad.loan.figures.payoff_date is not none %} &middot; payoff {{ ad.loan.figures.payoff_date.strftime('%b %Y') }}{% endif %}
         </span>
         {% elif ad.projected %}
         {% set last_proj = ad.projected.items() | list | last %}
@@ -256,16 +270,43 @@
   <div class="acct-group__foot">
     <span>Monthly <span class="font-mono">{{ money(debt_summary.total_monthly_payments) }}</span></span>
     <span>Avg rate <span class="font-mono">{{ "%.2f"|format(debt_summary.weighted_avg_rate|to_percent) }}%</span></span>
-    {% if debt_summary.projected_debt_free_date %}
-    <span>Debt-free <span class="font-mono">{{ debt_summary.projected_debt_free_date.strftime('%b %Y') }}</span></span>
-    {% elif debt_summary.has_unclearing_debt %}
-    {# C8d/C8f: a loan that never clears at its current payment has no debt-free
+    {# X-q3 / finding N-99: the date covers the debts that HAVE a payoff model
+       -- amortizing loans -- so it is captioned as what it measures.  A
+       revolving balance has no forward model (the seam holds it flat), so it
+       can never reach zero and is named separately rather than implied away.
+
+       X-s3 / ruling R-BE: all THREE states of the seam's payoff outlook are
+       rendered here, read off the value object the summary carries whole.  The
+       third -- every loan retired -- used to fall through this chain in
+       silence, because the summary copied the outlook's two stored fields and
+       dropped its derived ``is_loan_free`` (finding N-104). #}
+    {% if debt_summary.payoff_outlook.all_clear_on is not none %}
+    <span>Loans paid off <span class="font-mono">{{ debt_summary.payoff_outlook.all_clear_on.strftime('%b %Y') }}</span></span>
+    {% elif debt_summary.payoff_outlook.never_clears %}
+    {# C8d/C8f: a loan that never clears at its current payment has no payoff
        date, and saying so beats omitting the line -- the same treatment its own
        detail page gives the condition. #}
-    <span class="text-warning">No debt-free date at current payments</span>
+    <span class="text-warning">No loan payoff date at current payments</span>
+    {% elif debt_summary.payoff_outlook.is_loan_free %}
+    {# The congratulation, in the same words the Horizon chart's flag uses
+       (ruling R-AX), so the app says one thing one way.  Reachable only for a
+       user who HAS loan accounts and whose every loan is retired: with no
+       loans at all the summary is None and this whole footer is absent. #}
+    <span class="text-success">All loans paid off</span>
     {% endif %}
-    {% if debt_summary.dti_ratio is not none %}
-    <span>DTI <span class="font-mono">{{ debt_summary.dti_ratio }}%</span> {{ dti_badge(debt_summary.dti_label) }}</span>
+    {% if debt_summary.revolving_debt > 0 %}
+    <span class="text-muted">excludes <span class="font-mono">{{ money(debt_summary.revolving_debt) }}</span> revolving</span>
+    {% endif %}
+    {# ONE predicate for the DTI block (X-s3 / finding N-106): the ratio and
+       the band label are populated together or absent together, so they are
+       one nullable value object rather than parallel keys.  ``is not none``
+       and not truthiness, per the coding standard -- and MEASURED here: a
+       mistyped attribute renders as Jinja ``Undefined``, which is FALSY, so
+       ``{% if dti %}`` drops the whole block on a 200 while ``is not none``
+       passes the guard and raises on the read below.  Silent beats loud
+       nowhere in this app. #}
+    {% if debt_summary.dti is not none %}
+    <span>DTI <span class="font-mono">{{ debt_summary.dti.ratio }}%</span> {{ dti_badge(debt_summary.dti.label) }}</span>
     {% else %}
     <span>DTI N/A (no salary profile)</span>
     {% endif %}

@@ -18,6 +18,7 @@ scaled to a 0-100 percent float for the rail marker.
 """
 
 import json
+from dataclasses import dataclass
 
 from flask import Blueprint, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
@@ -29,6 +30,7 @@ from app.services import (
     pay_period_admin,
 )
 from app.services.account_resolver import resolve_grid_account
+from app.services.savings_dashboard_service import DebtSummary
 from app.utils.auth_helpers import require_owner
 
 dashboard_bp = Blueprint("dashboard", __name__)
@@ -38,6 +40,42 @@ dashboard_bp = Blueprint("dashboard", __name__)
 _CHART_LABEL_FORMAT = "%b %-d"
 # Scale a 0-1 principal-paid fraction to a 0-100 percent for the rail.
 _PERCENT_SCALE = 100
+
+
+@dataclass(frozen=True)
+class _DebtTrackView:
+    """The debt track as the template renders it: the summary plus a percent.
+
+    The presentation half of the producer's ``DebtSummary`` (plan step X-s3,
+    ruling R-BD).  The producer is Flask-free and money-precise, so it hands up
+    a ``Decimal`` FRACTION in ``[0, 1]``; the rail marker positions from a
+    0-100 percent float, and that scaling plus the cast is presentation.  This
+    route used to MUTATE a percent key into the producer's dict, which is the
+    fourth and last layer of the assemble-a-dict-across-four-modules shape
+    finding N-106 records -- a value object cannot be extended after the fact,
+    so the transformation has to say what it produces.
+
+    **The fraction it scales lives on the summary itself** as of plan step X-u
+    (finding N-109): the producer used to pair the summary with a fraction a
+    SECOND full debt projection produced, and this view is what that pairing
+    was for at the boundary.  Both values reach the template, so a caption
+    reading ``summary.principal_paid_fraction`` would render ``0.1768`` where
+    the rail reads ``17.7`` -- the rail attribute below is the rendered one, and
+    it is the only one ``dashboard/_tracks.html`` may position from.
+
+    Attributes:
+        summary: The producer's
+            :class:`~app.services.savings_dashboard_service.DebtSummary`,
+            passed through untouched -- every money figure stays ``Decimal``
+            for the ``money`` macro to render.
+        principal_paid_pct: The summary's principal-paid fraction scaled to
+            0-100 as a ``float``, or ``None`` when no loan has originated (the
+            rail then renders bare and the hero column still carries the
+            figure).
+    """
+
+    summary: DebtSummary
+    principal_paid_pct: float | None
 
 
 def _serialize_chart(chart: dict) -> str:
@@ -72,32 +110,53 @@ def _serialize_chart(chart: dict) -> str:
 
 
 def _serialize_tracks(tracks: dict) -> dict:
-    """Add the route-layer ``principal_paid_pct`` to the debt track.
+    """Map the debt track to its view: the summary plus a percent float.
 
-    The producer hands the debt track an honest principal-paid FRACTION
-    (``Decimal`` in [0, 1], or ``None`` when the user has no loans); the
+    The producer's summary carries an honest principal-paid FRACTION
+    (``Decimal`` in [0, 1], or ``None`` when no loan has ORIGINATED -- not
+    "when the user has no loans", which is the state where there is no summary
+    to read at all and this function returns at the guard below); the
     rail marker positions from a 0-100 PERCENT.  Scaling and the
     ``Decimal -> float`` cast are presentation, so they live here at the
     serialization boundary, not in the Flask-free producer.  ``None``
     flows through unchanged (the rail then renders without a marker).
 
+    It MUTATES NOTHING (plan step X-s3): the summary is a frozen value object,
+    and a serialization step that reaches back into its input to add a
+    field is how the debt track came to be assembled across four modules with
+    its shape written down in none of them (finding N-106).  With a summary it
+    returns a new dict carrying the view; with none there is nothing to
+    map and the input is passed straight back, which is the same object -- said
+    here because the first draft of this docstring claimed "returns a new dict"
+    unconditionally and that was false on the ``None`` branch.
+
     Args:
         tracks: The ``compute_tracks_section`` dict (``goals`` list +
-            ``debt`` dict or ``None``).
+            ``debt``, a
+            :class:`~app.services.savings_dashboard_service.DebtSummary` or
+            ``None``).  It was a ``DebtTrack`` wrapper around that summary
+            until plan step X-u deleted the second debt producer the wrapper
+            existed to pair it with (finding N-109).
 
     Returns:
-        The same dict with ``debt.principal_paid_pct`` added when a debt
-        track exists.  Returned for call-site readability; the ``debt``
-        sub-dict is mutated in place (it is a fresh ``dict`` the producer
-        copied, so no shared state is touched).
+        A dict whose ``goals`` is unchanged and whose ``debt`` is the
+        corresponding :class:`_DebtTrackView`; the input dict itself when
+        ``debt`` is ``None``.
     """
-    debt = tracks["debt"]
-    if debt is not None:
-        fraction = debt["principal_paid_fraction"]
-        debt["principal_paid_pct"] = (
-            float(fraction) * _PERCENT_SCALE if fraction is not None else None
-        )
-    return tracks
+    summary = tracks["debt"]
+    if summary is None:
+        return tracks
+    fraction = summary.principal_paid_fraction
+    return {
+        **tracks,
+        "debt": _DebtTrackView(
+            summary=summary,
+            principal_paid_pct=(
+                float(fraction) * _PERCENT_SCALE
+                if fraction is not None else None
+            ),
+        ),
+    }
 
 
 def _serialize_pulse(pulse: dict | None) -> dict | None:
@@ -215,10 +274,11 @@ def balance_section():
     -- the ``#balance-display`` fragment the editor replaced -- shaped on
     the pulse hero (``balance`` + ``account_id`` drive the control).
 
-    Uses the narrow ``compute_balance_section`` producer (the as-of-today
-    balance only, NOT the full pulse projection walk): the figure is the
-    same ``balance_as_of_date`` the hero shows, so the reverted control
-    agrees with the main pulse region.  Non-HTMX requests redirect to the
+    Uses the narrow ``compute_balance_section`` producer (one folded
+    balance, NOT the full pulse projection walk): the figure is the current
+    period's projected END balance -- the same date the hero reads off its
+    period map, and the one the fragment's own label promises -- so the
+    reverted control agrees with the main pulse region.  Non-HTMX requests redirect to the
     dashboard page.
     """
     if not request.headers.get("HX-Request"):

@@ -10,7 +10,31 @@ from decimal import Decimal
 
 from app import ref_cache
 from app.enums import CompoundingFrequencyEnum
-from app.services.interest_projection import calculate_interest
+from app.services.interest_projection import accrued_interest
+from app.utils.money import round_money
+
+
+def calculate_interest(*args, **kwargs):
+    """Return the cent-rounded accrual -- the shape these figures assert.
+
+    The production function of this name was a two-line ``round_money``
+    wrapper whose last caller (the per-PERIOD interest layer) was deleted at
+    plan step X-g4b, leaving it read by nothing but this file -- so it went
+    with the layer and the rounding moved HERE, where the rounded figures
+    are what is being asserted.  Every hand-computed expectation below is
+    UNCHANGED, which is the proof the deletion preserved the arithmetic:
+    the rule under test is ``accrued_interest``'s day count, and cents are
+    this file's own presentation of it.
+
+    Args:
+        *args: Forwarded to
+            :func:`~app.services.interest_projection.accrued_interest`.
+        **kwargs: Forwarded likewise.
+
+    Returns:
+        The ``Decimal`` accrual, quantized to cents (``ROUND_HALF_UP``).
+    """
+    return round_money(accrued_interest(*args, **kwargs))
 
 
 def _freq_id(member):
@@ -464,7 +488,7 @@ class TestDayCountConventionDocstring:
         assert "actual/365" not in doc
         assert "accepted simplification" not in doc.lower()
 
-    def test_calculate_interest_docstring_names_366_and_feb_29(self):
+    def test_accrued_interest_docstring_names_366_and_feb_29(self):
         """The function docstring names the 366-day divisor and the Feb 29 trigger.
 
         A caller reading only the function docstring (the common case
@@ -474,13 +498,18 @@ class TestDayCountConventionDocstring:
         stays self-sufficient and audit-traceable.
 
         Re-pinned under MED-05 / PA-06: was a F-126 lock; superseded
-        2026-05-19 (this commit).
+        2026-05-19.  **Re-pointed at plan step X-g4b** from the
+        cent-rounding wrapper ``calculate_interest`` -- deleted there, once
+        the per-PERIOD interest layer that was its last caller went -- onto
+        ``accrued_interest``, which has always owned the day-count rule this
+        guard exists to keep documented.  The paragraph moved WITH the guard;
+        losing it is the failure mode a deletion makes easy.
         """
         from app.services.interest_projection import (  # pylint: disable=import-outside-toplevel
-            calculate_interest,
+            accrued_interest,
         )
 
-        doc = calculate_interest.__doc__ or ""
+        doc = accrued_interest.__doc__ or ""
         assert "366" in doc
         assert "Feb 29" in doc
         assert "MED-05" in doc

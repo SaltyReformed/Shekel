@@ -49,9 +49,9 @@ class AccountProjectionKind(Enum):
        by :func:`app.services.loan_resolver.resolve_loan` via the
        :func:`app.services.loan_resolver.compute_payoff_scenarios`
        composer).
-    2. :data:`INTEREST` -- interest projection layered over the
-       balance calculator
-       (:func:`app.services.balance_at._calculator.calculate_balances_with_interest`).
+    2. :data:`INTEREST` -- a modelled accrual over the account's folded
+       cash balance, resolved by the seam's ONE event replay
+       (:mod:`app.services.balance_at._asset_fold`).
     3. :data:`APPRECIATING` -- the growth engine run as pure compound
        appreciation with no contributions
        (:func:`app.services.growth_engine.project_balance`, fed by
@@ -63,7 +63,7 @@ class AccountProjectionKind(Enum):
     4. :data:`INVESTMENT` -- growth engine
        (:func:`app.services.growth_engine.project_balance`).
     5. :data:`PLAIN` -- the generic entries-aware producer
-       (:func:`app.services.balance_at._cash_engine.balances_for`).
+       (:func:`app.services.balance_at._cash_fold.cash_period_balances`).
     """
 
     AMORTIZING = "amortizing"

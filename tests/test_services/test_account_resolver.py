@@ -17,6 +17,7 @@ from app.models.ref import AccountType
 from app.models.user import UserSettings
 from app.services.account_resolver import (
     list_grid_accounts,
+    resolve_analytics_account,
     resolve_grid_account,
 )
 from app.services import account_service
@@ -340,3 +341,99 @@ class TestGridKindGate:
             ids = [a.id for a in accounts]
             assert seed_user["account"].id in ids
             assert loan.id not in ids
+
+
+class TestAnalyticsKindGate:
+    """The X-a1 amortizing-kind gate on the analytics resolver (N-38).
+
+    The calendar reads the seam's CASH-FLOW view -- the account's pure
+    transaction running balance -- through ``cash_balance_at`` and
+    ``cash_daily_balance_series``.  Pointed at a loan, that view sums
+    the loan's payment shadows onto its anchor and answers with
+    confidence: measured on a dev clone before this gate,
+    ``?account_id=<Van Loan>`` rendered ``$531.94`` for a loan owing
+    ``$15,663.59``, and ``?account_id=<Mortgage>`` rendered
+    ``$178,103.41`` against ``$177,277.97`` owed.  That is finding B-3
+    on the surface ruling D4's enumeration missed.
+
+    Unlike the grid resolver, this one does NOT fall through to
+    checking: an explicit ``account_id`` asks about THAT account, so
+    answering with another account's balance would be a wrong answer
+    rather than a missing one.
+    """
+
+    def test_explicit_amortizing_loan_returns_none(self, app, db, seed_user):
+        """An explicit ``?account_id=<loan>`` resolves to None, not the loan."""
+        with app.app_context():
+            loan = _create_mortgage_account(seed_user)
+
+            assert resolve_analytics_account(
+                seed_user["user"].id, loan.id,
+            ) is None
+
+    def test_refused_loan_does_not_fall_through_like_the_grid(
+        self, app, db, seed_user,
+    ):
+        """The two resolvers refuse the SAME loan in two different ways.
+
+        Both gate on kind, but the analytics path returns ``None``
+        where the grid path falls through to checking: an explicit
+        ``?account_id=`` is a question about THAT account, so rendering
+        Checking's balance under a URL that named the Mortgage would
+        answer a question the caller did not ask.  Driving both
+        resolvers against one loan in one test is what gives the
+        distinction teeth -- asserting ``None`` alone would still pass
+        if the analytics gate were changed to fall through and then
+        happened to return ``None`` for another reason.
+        """
+        with app.app_context():
+            loan = _create_mortgage_account(seed_user)
+            checking_id = seed_user["account"].id
+
+            grid = resolve_grid_account(
+                seed_user["user"].id, None, override_account_id=loan.id,
+            )
+            analytics = resolve_analytics_account(
+                seed_user["user"].id, loan.id,
+            )
+
+            assert grid is not None
+            assert grid.id == checking_id
+            assert analytics is None
+
+    def test_explicit_cash_account_still_resolves(self, app, db, seed_user):
+        """The gate refuses ONLY amortizing kinds, not every explicit id."""
+        with app.app_context():
+            savings_type = db.session.query(AccountType).filter_by(
+                name="Savings",
+            ).one()
+            savings = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="Savings",
+                    anchor_balance=Decimal("0"),
+                ),
+                sort_order=5,
+            )
+            db.session.add(savings)
+            db.session.commit()
+
+            result = resolve_analytics_account(
+                seed_user["user"].id, savings.id,
+            )
+            assert result is not None
+            assert result.id == savings.id
+
+    def test_fallback_branch_unaffected_by_a_loan(self, app, db, seed_user):
+        """``account_id=None`` still resolves checking when a loan exists.
+
+        The fallback is CHECKING-typed by construction, so the gate has
+        nothing to add there; this pins that adding it changed nothing.
+        """
+        with app.app_context():
+            _create_mortgage_account(seed_user)
+
+            result = resolve_analytics_account(seed_user["user"].id, None)
+            assert result is not None
+            assert result.id == seed_user["account"].id

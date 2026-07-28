@@ -6,7 +6,7 @@ the extracted gap analysis and projection logic produces correct
 financial computations independently of the Flask route layer.
 """
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from app import ref_cache
@@ -34,7 +34,6 @@ from app.services import (
     paycheck_calculator,
     retirement_dashboard_service,
 )
-from app.services.balance_at import _cash_engine as balance_resolver
 from tests._test_helpers import make_investment_account
 
 
@@ -421,18 +420,38 @@ class TestRetirementProjectionEntryAware:
             ``_project_retirement_accounts`` path that this commit
             touches.
 
-        Hand arithmetic (CRIT-01 / F-009 / R-1):
+        Hand arithmetic (CRIT-01 / F-009 / R-1) for the CASH BASIS:
 
           cleared_debit   = 45.71
           uncleared_debit = 0
           sum_credit      = 0
           checking_impact = max(500.00 - 45.71 - 0, 0) = 454.29
-          current_balance = 50,000.00 + 0 - 454.29 = 49,545.71
+          cash basis      = 50,000.00 + 0 - 454.29 = 49,545.71
 
         Pre-Commit-8 the projection's ``current_balance`` was
-        50,000 - 500 = 49,500.00 via the silent-degrade seam.  Both
-        the canonical producer value AND the projection's
-        ``current_balance`` MUST equal Decimal("49545.71").
+        50,000 - 500 = 49,500.00 via the silent-degrade seam.
+
+        **The projection is no longer EQUAL to that basis, and this test used
+        to assert it was.**  Ruling R-Y (plan step X-g2b) gives the anchor
+        period its own accrual, so an INVESTMENT account is worth more than the
+        number last typed into it from the day after it was typed -- the same
+        divergence ``TestInvestmentCrossPageEquality`` and
+        ``TestPropertyCrossPageEquality`` already state for their kinds.  On a
+        clean $50,000 anchor at 7%/yr, measured: ``$0.00`` the day before the
+        assertion, ``+$9.27`` the day of it, and ``+$92.77`` at the period end
+        the per-period map answers at.
+
+        It passed before only because the anchor row's ``created_at`` came from
+        the DATABASE clock, which ``freeze_today`` did not reach -- so the
+        assertion was stamped four months PAST the end of its own seeded window
+        and the replay had nothing inside the window to accrue from (finding
+        N-65).  With the database clock frozen too, the anchor is dated inside
+        its own period and the tile carries the accrual it should.
+
+        So the basis is asserted as the hand-computed figure it has always
+        been, and the projection is asserted against the SEAM's own modelled
+        map -- strictly above the basis, which is what would fail if a surface
+        fell back to the cash producer.
         """
         with app.app_context():
             user = seed_user["user"]
@@ -493,48 +512,71 @@ class TestRetirementProjectionEntryAware:
             )
             db.session.commit()
 
-            # Canonical producer value (the contract Commit 8 locks).
-            producer = balance_resolver.balances_for(
-                acct, scenario.id, seed_periods_today,
+            # The entries-aware CASH BASIS the modelled balance is computed
+            # ON: 50,000 - max(500 - 45.71 - 0, 0) = 49,545.71.  Read through
+            # the seam's cash-flow view at plan step X-g4b, which deleted the
+            # anchor-forward producer this asserted against; that view is the
+            # same fold the modelled replay folds beneath its accrual, so the
+            # basis under test is genuinely the one the tile is built on.
+            ctx = BalanceContext.build(user.id)
+            basis = balance_at.cash_balance_map(
+                acct, ctx, seed_periods_today,
             )
-            assert producer.balances[current_period.id] == Decimal("49545.71")
+            # CRIT-01 / F-009 / R-1: 50000 - max(500 - 45.71, 0)
+            #                      = 50000 - 454.29 = 49,545.71.
+            # Pre-Commit-8 this was 49,500.00.
+            assert basis[current_period.id] == Decimal("49545.71")
 
             result = retirement_dashboard_service.compute_gap_data(user.id)
             projections = result["retirement_account_projections"]
             target = next(
                 p for p in projections if p["account"].id == acct.id
             )
-            # CRIT-01 / F-009 / R-1: 50000 - max(500 - 45.71, 0)
-            #                      = 50000 - 454.29 = 49,545.71.
-            # Pre-Commit-8 this was 49,500.00.
-            assert target["current_balance"] == Decimal("49545.71")
-            assert target["current_balance"] == producer.balances[
-                current_period.id
-            ]
+            # The projection reads the MODELLED map, which folds ruling R-Y's
+            # anchor-period accrual over the cash basis above.  Read once from
+            # the seam so this cannot drift from the producer it locks, exactly
+            # as the per-kind cross-page classes do.
+            modelled = balance_at.balance_map(acct, ctx, seed_periods_today)
+            assert target["current_balance"] == modelled[current_period.id]
+            # And the accrual is really there: a surface that fell back to the
+            # cash producer would land ON the basis, not above it.
+            assert target["current_balance"] > basis[current_period.id]
+            # PINNED to the figure, not only to the producer.  The two
+            # assertions above are a WIRING identity and an inequality: both
+            # survive a wrong RATE, which plan step X-h's adversarial review
+            # demonstrated by injecting a 10x return and watching this test
+            # stay green.  49,545.71 accruing 7%/yr from the 2026-03-20
+            # assertion to the current period's end (2026-03-29, 10 days --
+            # $9.27/day at this balance) is 49,637.72.
+            assert target["current_balance"] == Decimal("49637.72")
 
 
-class TestRetirementAnchorInPastModeledHeadlineCashSeed:
-    """Anchor-in-past retirement account: modeled headline, cash-basis seed.
+class TestRetirementAnchorInPastModeledHeadlineDatedSeed:
+    """Anchor-in-past: modelled headline, and a seed read the day before.
 
-    The Level 1 dashboards reroute made the displayed per-account
-    ``current_balance`` the model-from-anchor value (so it agrees with the
-    /savings net-worth tile and the /investment dashboard), while the
-    forward growth projection still seeds from the CASH basis -- the modeled
-    value already compounded the anchor forward to today, so seeding the
-    projection from it would re-grow (double-count) the current period.
+    The displayed per-account ``current_balance`` is the model-from-anchor
+    value (so it agrees with the /savings net-worth tile and the /investment
+    dashboard).  The forward growth projection seeds from the MODELLED balance
+    on the day BEFORE its window opens (plan step X-g2b, rulings R-AB / R-AE).
 
-    Every other retirement test anchors at the CURRENT period, where the
-    modeled value and the cash basis coincide, so the decouple is invisible
-    to them.  This locks the DIVERGENT anchor-in-past case: a future swap of
-    the displayed (``balance_map``) and seed (``seed_map``) maps -- which
-    would either show the wrong headline OR re-introduce growth-on-growth in
-    the projection -- fails here.
+    **The seed's basis changed and the reason it changed is the point.**  It
+    used to be the flat CASH carry, with the current period's own contribution
+    subtracted back out, because the window opened INSIDE the period the seed
+    was read at the end of -- so something had to be removed or the engine
+    re-applied it.  Read the seed a day before the window and the two are
+    disjoint: nothing it holds can be re-applied, and nothing it has earned is
+    thrown away.  Seeding from the flat cash basis instead now DROPS every cent
+    the account earned between its anchor and today, which is the error this
+    class newly locks in the other direction.
+
+    Every other retirement test anchors at the CURRENT period, where the three
+    candidate seeds nearly coincide, so the divergence is invisible to them.
     """
 
     def test_displayed_modeled_projection_seeds_cash(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """current_balance == modeled; projected_balance seeds from cash V0.
+        """current_balance == modelled; the projection seeds the day before.
 
         A 401(k) opening at V0 = $100,000, 7% return, no contributions,
         anchored at the FIRST seeded period while today falls in period 4 --
@@ -548,10 +590,12 @@ class TestRetirementAnchorInPastModeledHeadlineCashSeed:
             today (``balance_at.balance_map[current_period]``) -- the
             DISPLAYED headline is modeled, not the flat cash carry.
           * ``projected_balance`` equals the growth engine re-run from the
-            CASH basis V0 over the same forward periods, and does NOT equal
-            the run seeded from the modeled value -- the projection seeds
-            from cash, so the current period's growth is applied once, not
-            twice.
+            MODELLED balance on the day before the window opens, and equals
+            NEITHER the run seeded from the flat cash V0 (which would discard
+            the anchor-to-today growth) NOR the run seeded from the modelled
+            value at the current period's END (which would compound that
+            period twice).  Three seeds, three different answers, so the
+            equality is falsifiable in both directions.
 
         ``seed_user`` sets no retirement horizon (``planned_retirement_date``
         is None, no pensions), so the projection runs over the real
@@ -596,20 +640,29 @@ class TestRetirementAnchorInPastModeledHeadlineCashSeed:
                 p for p in all_periods
                 if p.period_index >= current_period.period_index
             ]
-            expected_cash = growth_engine.project_balance(
-                current_balance=v0,
-                assumed_annual_return=Decimal("0.07000"),
-                periods=forward_periods,
-            )[-1].end_balance
-            expected_modeled = growth_engine.project_balance(
-                current_balance=modeled,
-                assumed_annual_return=Decimal("0.07000"),
-                periods=forward_periods,
-            )[-1].end_balance
-            assert expected_cash != expected_modeled, (
-                "cash and modeled seeds must diverge for a non-tautological "
-                "lock"
+            def _run(seed):
+                return growth_engine.project_balance(
+                    current_balance=seed,
+                    assumed_annual_return=Decimal("0.07000"),
+                    periods=forward_periods,
+                )[-1].end_balance
+
+            # The ruled seed: the modelled balance the day BEFORE the window.
+            dated_seed = balance_at.balance_at(
+                acct, bctx,
+                forward_periods[0].start_date - timedelta(days=1),
             )
+            expected_dated = _run(dated_seed)
+            # The two errors it sits between: the retired flat cash carry
+            # (drops the anchor-to-today growth) and the current period's END
+            # (compounds that period twice).
+            expected_cash = _run(v0)
+            expected_end = _run(modeled)
+            assert len({expected_dated, expected_cash, expected_end}) == 3, (
+                "the three candidate seeds must diverge for a "
+                "non-tautological lock"
+            )
+            assert expected_cash < expected_dated < expected_end
 
             result = retirement_dashboard_service.compute_gap_data(user.id)
             target = next(
@@ -617,12 +670,14 @@ class TestRetirementAnchorInPastModeledHeadlineCashSeed:
                 if p["account"].id == acct.id
             )
 
-            # Displayed headline is the modeled value.
+            # Displayed headline is the modelled value.
             assert target["current_balance"] == modeled
-            # Forward projection seeds from the CASH basis, not the modeled
-            # headline (a modeled seed would be growth-on-growth).
-            assert target["projected_balance"] == expected_cash
-            assert target["projected_balance"] != expected_modeled
+            # The forward projection continues that curve from the day before
+            # its own window -- neither restarting from the flat basis nor
+            # re-growing the period the window opens in.
+            assert target["projected_balance"] == expected_dated
+            assert target["projected_balance"] != expected_cash
+            assert target["projected_balance"] != expected_end
 
 
 # ── C20: retirement zero-is-a-value, not "missing" (CRIT-04) ─────────

@@ -21,8 +21,8 @@ No Flask imports.
 """
 
 from collections.abc import Callable
-from dataclasses import dataclass
-from datetime import date
+from dataclasses import dataclass, field
+from datetime import date, timedelta
 from decimal import Decimal
 
 from app.extensions import db
@@ -39,10 +39,7 @@ from app.services import (
     income_service,
     pension_calculator,
 )
-from app.services.investment_projection import (
-    adapt_deductions,
-    current_period_transfer_contribution,
-)
+from app.services.investment_projection import adapt_deductions
 from app.services.projection_inputs import (
     build_investment_projection_inputs,
     load_active_deductions_for_accounts,
@@ -57,7 +54,7 @@ class _RetirementProjectionContext:  # pylint: disable=too-many-instance-attribu
     """Read-only inputs shared by the per-account projection helpers.
 
     Built by :func:`build_projection_context` and threaded through
-    :func:`_load_projection_batch`, :func:`_resolve_balance_maps`,
+    :func:`_load_projection_batch`, :func:`_resolve_displayed_balances`,
     and :func:`_project_one_account` so the projection takes one
     parameter instead of eight.  All fields are inputs (no derived
     state); the once-loaded batch data lives in :class:`_ProjectionBatch`.
@@ -108,11 +105,13 @@ class _ProjectionBatch:
 
     Built by :func:`load_projection_batch` before the per-account loop
     so the shared deduction / contribution / params / salary / balance
-    queries run a single time rather than once per account.  Every field
-    is DATE-INDEPENDENT -- the projection's period axis is a separate
-    argument to :func:`project_accounts_with_batch` -- so the P2b
-    retire-later probes load ONE batch and re-project it against many
-    candidate horizons without repeating any query.
+    queries run a single time rather than once per account.  Every FIELD is
+    date-independent -- the projection's period axis is a separate argument to
+    :func:`project_accounts_with_batch` -- so the P2b retire-later probes load
+    ONE batch and re-project it against many candidate horizons without
+    repeating any query.  The one axis-dependent value the projection needs is
+    a keyed MEMO rather than a field, for exactly that reason (see
+    :attr:`seed_memo` below).
 
     Attributes:
         deductions_by_account: Active paycheck deductions keyed by
@@ -131,14 +130,23 @@ class _ProjectionBatch:
             with the /savings net-worth tile and the /investment dashboard
             (an account anchored in the past shows its modeled market
             value, not the flat cash-basis contribution total).
-        seed_map: The CASH-BASIS END-of-current-period balance keyed by
-            account ID -- the pre-growth contribution total the forward
-            growth projection seeds from (NOT the modeled ``balance_map``).
-            Seeding from the modeled balance would re-grow the current
-            period, since the modeled value already compounded the anchor
-            forward to today; the per-account seed additionally removes the
-            current period's own transfer contribution (deep-quality-hunt
-            #14).
+        balance_ctx: The read pass's
+            :class:`~app.services.balance_at.BalanceContext`.  It is HERE
+            rather than rebuilt per projection because it memoizes each loan's
+            resolution and each account's walk for the pass, and the P2b
+            retire-later probes call :func:`project_accounts_with_batch` once
+            per candidate horizon: rebuilding it there would throw those memos
+            away on every probe.  It is date-independent in the sense this
+            bundle means -- its ``as_of`` is the request's today, which no
+            candidate horizon changes.
+
+    **The forward projection's SEED is deliberately NOT here** (plan step
+    X-g2b, rulings R-AB / R-AE).  It is read the day BEFORE the projection
+    window opens, so it is a function of the AXIS -- and the axis is this
+    bundle's whole point of NOT being one.  It used to sit here as
+    ``seed_map``, a current-period read that made the date-independence claim
+    above false in spirit and forced a compensating subtraction at every use;
+    :func:`project_accounts_with_batch` now resolves it once per axis instead.
     """
 
     deductions_by_account: dict[int, list[PaycheckDeduction]]
@@ -146,7 +154,10 @@ class _ProjectionBatch:
     params_by_account: dict[int, InvestmentParams]
     salary_gross_biweekly: Decimal
     balance_map: dict[int, Decimal]
-    seed_map: dict[int, Decimal]
+    balance_ctx: BalanceContext
+    seed_memo: "dict[tuple[date, tuple[int, ...]], dict[int, Decimal]]" = (
+        field(default_factory=dict, repr=False, compare=False)
+    )
 
 
 @dataclass(frozen=True)
@@ -350,8 +361,9 @@ def project_accounts_with_batch(
         A list of per-account projection dicts (see
         :func:`_project_one_account` for the keys).
     """
+    seeds = _resolve_seed_balances(ctx, batch, projection_periods)
     return [
-        _project_one_account(acct, ctx, batch, projection_periods)
+        _project_one_account(acct, ctx, batch, projection_periods, seeds)
         for acct in ctx.accounts
     ]
 
@@ -432,47 +444,44 @@ def load_projection_batch(
         ctx.user_id,
     )
 
-    # The displayed per-account balance is the model-from-anchor value (so
-    # it agrees with /savings and the /investment dashboard); the forward
-    # projection seeds from the cash basis instead.  Both read the one
-    # baseline scenario, resolved once here.
+    # The displayed per-account balance is the model-from-anchor value at the
+    # current period's end (so it agrees with /savings and the /investment
+    # dashboard).  The forward projection seeds from the same curve, read a day
+    # before its own AXIS opens, which is why the seed is not a field of this
+    # bundle -- see :class:`_ProjectionBatch`.  Both read the one baseline
+    # scenario, resolved once here and shared for the whole pass.
     balance_ctx = BalanceContext.build(ctx.user_id)
-    balance_map, seed_map = _resolve_balance_maps(ctx, balance_ctx)
+    balance_map = _resolve_displayed_balances(ctx, balance_ctx)
     return _ProjectionBatch(
         deductions_by_account=deductions_by_account,
         contributions=contributions,
         params_by_account=params_by_account,
         salary_gross_biweekly=salary_gross_biweekly,
         balance_map=balance_map,
-        seed_map=seed_map,
+        balance_ctx=balance_ctx,
     )
 
 
-def _resolve_balance_maps(
+def _resolve_displayed_balances(
     ctx: _RetirementProjectionContext, balance_ctx: BalanceContext,
-) -> tuple[dict[int, Decimal], dict[int, Decimal]]:
-    """Resolve each account's ``(displayed, seed)`` current balances.
+) -> dict[int, Decimal]:
+    """Resolve each account's DISPLAYED current balance.
 
-    Returns two account-ID maps, both at the current period:
+    The model-from-anchor balance from the :mod:`app.services.balance_at` seam
+    (:func:`~app.services.balance_at.build_maps`) read at the current period, so
+    the per-account "current balance" (and the weight in
+    ``compute_slider_defaults``' return-rate average) matches the /savings
+    net-worth tile and the /investment dashboard (the cross-page invariant: an
+    account anchored in the past shows its modeled market value, not the flat
+    cash-basis contribution total).
 
-    * **displayed** -- the model-from-anchor balance from the
-      :mod:`app.services.balance_at` seam
-      (:func:`~app.services.balance_at.build_maps`), so the per-account
-      "current balance" (and the weight in ``compute_slider_defaults``'
-      return-rate average) matches the /savings net-worth tile and the
-      /investment dashboard at today (the cross-page invariant: an account
-      anchored in the past shows its modeled market value, not the flat
-      cash-basis contribution total).
-    * **seed** -- the cash-basis (pre-growth) balance from the balance_at
-      seam's seed accessor
-      (:func:`~app.services.balance_at.investment_seed_map`), which the
-      forward growth projection seeds from.  Seeding from the modeled balance
-      would re-grow the current period (the modeled value already compounded
-      the anchor forward to today); the seam entry is the only way in, since
-      the seed producer lives inside it as a private submodule.
+    **It used to return a second map beside it** -- the pre-growth cash basis
+    the forward projection seeded from.  That seed is a function of the
+    projection AXIS, not of the batch (plan step X-g2b, ruling R-AB), so it
+    moved to :func:`_resolve_seed_balances`, which the axis-taking entry calls.
 
-    Both are empty when there is no scenario or no periods (each account
-    then falls back to its anchor balance in :func:`_project_one_account`).
+    Empty when there is no scenario or no periods (each account then falls back
+    to its anchor balance in :func:`_project_one_account`).
 
     Args:
         ctx: The read-only projection context.
@@ -481,24 +490,90 @@ def _resolve_balance_maps(
             scenario may be ``None``).
 
     Returns:
-        ``(displayed_by_account, seed_by_account)``.
+        ``{account_id: displayed balance}``.
     """
-    if balance_ctx.scenario is None or not ctx.all_periods:
-        return {}, {}
-    modeled_maps = balance_at.build_maps(
-        ctx.accounts, balance_ctx, ctx.all_periods,
+    # The seam's own precondition, read off the context rather than spelled
+    # out here (plan step X-t2, finding N-107).
+    if not balance_ctx.has_baseline or not ctx.all_periods:
+        return {}
+    return _pick_current_period_balances(
+        ctx, balance_at.build_maps(ctx.accounts, balance_ctx, ctx.all_periods),
     )
-    cash_maps = {
-        acct.id: balance_at.investment_seed_map(
-            acct, balance_ctx, ctx.all_periods,
-        )
-        for acct in ctx.accounts
-        if acct.current_anchor_period_id is not None
-    }
-    return (
-        _pick_current_period_balances(ctx, modeled_maps),
-        _pick_current_period_balances(ctx, cash_maps),
+
+
+def _resolve_seed_balances(
+    ctx: _RetirementProjectionContext,
+    batch: "_ProjectionBatch",
+    projection_periods: list,
+) -> dict[int, Decimal]:
+    """Resolve each account's balance the day BEFORE the window opens.
+
+    Ruling R-AB's seed, read once per AXIS rather than once per batch.  Every
+    event inside the window is then the growth engine's to apply and none of
+    them is in the seed, which is what let the
+    ``current_period_transfer_contribution`` subtraction this projection used to
+    carry DELETE rather than be ported (deep-quality-hunt #14): the compensator
+    existed because the seed was read at the current period's END while the
+    window opened at that period's START, so a recorded contribution on the
+    window's first payday was in the seed AND re-applied by the engine.
+
+    **Nothing is filtered out of it** (ruling R-AE).  The window opens strictly
+    after the seed's date, so the engine cannot re-grow a day the seed already
+    grew -- and filtering the modelled return, the correction the earlier design
+    needed, would instead drop every cent earned since the account's last
+    balance assertion.
+
+    **The consequence, stated so it is not discovered later:** a recorded
+    NON-contribution row dated inside the window (a withdrawal next week) leaves
+    the seed and the engine never re-creates it, so it drops out of the
+    projection.  Today it is smuggled in through the seed and then compounded
+    for the whole window, which is wrong in the other direction.  It costs
+    ``$0.00`` on both real databases -- all three investment accounts hold zero
+    transaction rows (ruling R-R's measurement).
+
+    **Memoized on the batch by (SEED DATE, account set).**  The P2b retire-later probes call
+    :func:`project_accounts_with_batch` once per candidate horizon and every one
+    of those axes opens at today, so without the memo each account is re-folded
+    once per probe: measured when this was written, the /retirement lever page
+    went 377 ms -> 682 ms without it.  The key is the DATE rather than a flag,
+    so an axis that genuinely opens somewhere else still gets its own seed.
+
+    Args:
+        ctx: The read-only projection context.
+        batch: The per-request bundle -- its ``balance_ctx`` scopes the read and
+            memoizes the pass's loan resolutions, its ``seed_memo`` holds one
+            map per distinct seed date.
+        projection_periods: The axis about to be projected.  Its FIRST period's
+            ``start_date`` is when the window opens.
+
+    Returns:
+        ``{account_id: seed balance}``; empty when there is no scenario, no
+        periods, or no axis (each account then falls back to its anchor).
+    """
+    # The seam's own precondition (plan step X-t2, finding N-107).
+    if (not batch.balance_ctx.has_baseline
+            or not ctx.all_periods
+            or not projection_periods):
+        return {}
+    # Keyed on the account SET as well as the date: the map is a function of
+    # both, and ``ctx`` arrives separately from ``batch``, so a caller reusing
+    # one batch across contexts with different account sets would otherwise get
+    # a hit for the first set and silently fall back to the stored anchor for
+    # every account the second set added.  Not reachable in-tree today (the P2b
+    # probes rebuild the context with ``replace``, which preserves ``accounts``)
+    # -- which is exactly why the key is widened rather than the invariant
+    # documented.
+    key = (
+        projection_periods[0].start_date - timedelta(days=1),
+        tuple(acct.id for acct in ctx.accounts),
     )
+    if key not in batch.seed_memo:
+        batch.seed_memo[key] = {
+            acct.id: balance_at.balance_at(acct, batch.balance_ctx, key[0])
+            for acct in ctx.accounts
+            if acct.current_anchor_period_id is not None
+        }
+    return batch.seed_memo[key]
 
 
 def _pick_current_period_balances(
@@ -507,14 +582,15 @@ def _pick_current_period_balances(
 ) -> dict[int, Decimal]:
     """Pick each account's current-period balance from its per-period map.
 
-    The shared current-period extractor for the two maps
-    :func:`_resolve_balance_maps` builds (model-from-anchor and cash-basis):
-    each is a per-account ``period_id -> balance`` map read at the current
-    period.  An account absent from *maps_by_account* (no anchor period, so
-    the seam / accessor omitted it) or with no current period falls back to
-    its stored anchor balance -- ``current_anchor_balance`` is NOT NULL, so
-    no ``or Decimal("0")`` guard is needed (the prior truthiness was dead
-    defence on a stored zero).
+    The current-period extractor for the model-from-anchor map
+    :func:`_resolve_displayed_balances` builds: a per-account
+    ``period_id -> balance`` map read at the current period.  It served a second
+    (cash-basis) map until plan step X-g2b made the forward projection's seed a
+    dated read rather than a period one.  An account absent from
+    *maps_by_account* (no anchor period, so the seam / accessor omitted it) or
+    with no current period falls back to its stored anchor balance --
+    ``current_anchor_balance`` is NOT NULL, so no ``or Decimal("0")`` guard is
+    needed (the prior truthiness was dead defence on a stored zero).
 
     Args:
         ctx: The read-only projection context.
@@ -535,22 +611,30 @@ def _pick_current_period_balances(
     return result
 
 
-def _run_account_projection(
+def _run_account_projection(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     acct: Account,
     ctx: _RetirementProjectionContext,
     batch: _ProjectionBatch,
     params: InvestmentParams,
     projection_periods: list,
+    seed: Decimal,
 ) -> _AccountProjectionResult:
     """Run the forward growth projection for one projecting account.
 
     Builds the account's investment projection inputs from the batch's
-    shared data, seeds from the cash-basis end-of-current balance, and runs
-    ``growth_engine.project_balance`` over *projection_periods* (passing the
-    P1b per-period employer salary basis).  Also computes the per-account
-    contribution facts (capped current-period employee amount and its
-    employer match at today's gross, mirroring the investment dashboard's
-    HIGH-07 per-period card).
+    shared data and runs ``growth_engine.project_balance`` over
+    *projection_periods* from the supplied *seed* (passing the P1b per-period
+    employer salary basis).
+
+    Also computes the per-account contribution facts (capped current-period
+    employee amount and its employer match at today's gross, mirroring the
+    investment dashboard's HIGH-07 per-period card).
+
+    Pylint: ``too-many-arguments`` (6/5) / ``too-many-positional-arguments``
+    (6/5) -- the seed joined the five because ruling R-AB makes it a function
+    of the AXIS rather than of the batch, and it is resolved once per axis by
+    :func:`_resolve_seed_balances` rather than per account here.  Bundling it
+    back into ``batch`` is precisely what that ruling undid.
 
     Args:
         acct: The account to project.
@@ -558,6 +642,8 @@ def _run_account_projection(
         batch: The shared per-request projection inputs.
         params: The account's :class:`InvestmentParams` (non-None).
         projection_periods: The non-empty period axis to project over.
+        seed: The account's balance the day before the window opens
+            (:func:`_resolve_seed_balances`).
 
     Returns:
         An :class:`_AccountProjectionResult`.
@@ -567,19 +653,6 @@ def _run_account_projection(
     ]
     adapted_deductions = adapt_deductions(
         batch.deductions_by_account.get(acct.id, []),
-    )
-    # Seed from the CASH-BASIS end-of-current balance (``batch.seed_map``),
-    # NOT the modeled headline: the modeled value already compounded the
-    # anchor forward to today, so seeding from it would re-grow the current
-    # period.  The current period's own transfer contribution is removed
-    # because the projection window includes the current period and the
-    # engine re-applies it; other current-period movements stay in the seed
-    # because the engine never re-creates them (deep-quality-hunt #14).
-    seed = (
-        batch.seed_map.get(acct.id, acct.current_anchor_balance)
-        - current_period_transfer_contribution(
-            acct_contributions, ctx.current_period,
-        )
     )
     inputs = build_investment_projection_inputs(
         params, adapted_deductions, acct_contributions,
@@ -623,6 +696,7 @@ def _project_one_account(
     ctx: _RetirementProjectionContext,
     batch: _ProjectionBatch,
     projection_periods: list,
+    seeds: dict[int, Decimal],
 ) -> dict:
     """Project a single account forward over the given period axis.
 
@@ -640,6 +714,9 @@ def _project_one_account(
         batch: The shared per-request projection inputs.
         projection_periods: The ordered period axis to project over (an
             empty list leaves the account non-projecting).
+        seeds: Ruling R-AB's ``{account_id: balance}`` the day before the
+            window opens (:func:`_resolve_seed_balances`), resolved once for
+            this axis.
 
     Returns:
         A projection dict with keys ``account``, ``current_balance``,
@@ -662,6 +739,7 @@ def _project_one_account(
     if params is not None and projection_periods:
         result = _run_account_projection(
             acct, ctx, batch, params, projection_periods,
+            seeds.get(acct.id, acct.current_anchor_balance),
         )
     else:
         result = _AccountProjectionResult(

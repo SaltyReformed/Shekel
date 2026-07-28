@@ -19,8 +19,9 @@ balances themselves.  (:func:`compute_property_equity` is the exception that
 proves the boundary: it is an EQUITY figure, not a net-worth balance, and it
 delegates to :mod:`app.services.home_equity_service`.)
 
-The dense per-account balance maps are built ONCE (over ALL periods, so
-``balance_resolver`` always has its anchor seed) and shared by both the
+The dense per-account balance maps are built ONCE (over ALL periods -- see
+:func:`build_account_net_worth_maps` for why that rule OUTLIVED the
+anchor-seeking producer that motivated it) and shared by both the
 series and the change delta, via :func:`build_account_net_worth_maps`;
 the orchestrator builds them and threads the result into both producers.
 """
@@ -35,43 +36,64 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
-# The asset/liability rule and the net-worth account-data builder live in
-# the shared adapter so every net-worth surface -- these today figures, the
-# trend below, and the Horizon band in ``_horizon`` -- classifies an account
-# one way; ``_is_liability_account`` keeps its local name (this module's
-# other net-worth helpers call it) as an alias over the one definition.
-from app.services.net_worth_account_data import (
-    is_liability_account as _is_liability_account,
-    to_net_worth_account_data,
-)
+# The net-worth account-data builder lives in the shared adapter, which also
+# owns the asset/liability rule every net-worth surface classifies through --
+# these today figures (via
+# :attr:`~.._types.AccountProjection.is_liability`, which IS that classifier),
+# the trend below, and the Horizon band in ``_horizon``.  The classifier's own
+# name is no longer imported here: plan step X-t1 moved the today reduction onto
+# the projection's property, and an alias whose only remaining uses were
+# docstrings is a name that reads as a call site and is not one (finding N-63's
+# class).
+from app.services.net_worth_account_data import to_net_worth_account_data
+from app.services.savings_dashboard_service._display import _CATEGORY_ORDER
 from app.services.savings_dashboard_service._metrics import _sum_liquid_balances
+from app.services.savings_dashboard_service._types import AccountProjection
 
 ZERO = Decimal("0.00")
 
-# The net-worth composition bands, keyed by the cockpit category
-# (:func:`~app.services.savings_dashboard_service._display.account_category_key`).
-# The asset-side bands sum to the asset total, the liability band is the
-# liability total, and net worth is their difference -- so the composition
-# split reconciles to the ``assets`` / ``liabilities`` / ``net`` totals by
+# The net-worth composition bands: the cockpit CATEGORIES, split into the
+# asset side and the one liability band.  The asset-side bands sum to the asset
+# total, the liability band is the liability total, and net worth is their
+# difference -- so the composition split reconciles to the ``net`` total by
 # construction (P-AC1 Loop B P1).
-_ASSET_BANDS = ("asset", "retirement", "investment", "other")
+#
+# DERIVED from the display vocabulary rather than restated (plan step X-t3,
+# finding N-108).  A band IS a category key
+# (:func:`~app.services.savings_dashboard_service._display.account_category_key`
+# assigns one per account), so listing them again here made the same vocabulary
+# answerable two ways in one package -- and a band this producer sums that the
+# grid does not group by would put money in a chart with no card behind it.
+# The categories themselves come from :class:`~app.enums.AcctCategoryEnum` plus
+# the ``other`` fall-through; see ``_display._CATEGORY_ORDER``.
 _LIABILITY_BAND = "liability"
+_ASSET_BANDS = tuple(
+    key for key in _CATEGORY_ORDER if key != _LIABILITY_BAND
+)
 _COMPOSITION_BANDS = _ASSET_BANDS + (_LIABILITY_BAND,)
 
 
-def compute_net_worth_today(account_data: list[dict]) -> dict:
+def compute_net_worth_today(account_data: list[AccountProjection]) -> dict:
     """Compute the today net-worth figures from the projected account data.
 
     Reduces over each account's ``current_balance`` -- the entries-aware
     resolver figure already in ``account_data`` (E-25), NOT the raw
     ``current_anchor_balance`` cache -- so this hero agrees with the
     per-tile balances the same page renders.  Assets add their balance;
-    liabilities (classified by :func:`_is_liability_account`) accumulate
-    their POSITIVE magnitude into ``total_liabilities``.  Net worth is
-    ``total_assets - total_liabilities``.
+    liabilities accumulate their POSITIVE magnitude into
+    ``total_liabilities``.  Net worth is ``total_assets - total_liabilities``.
+
+    The liability question is the projection's own
+    :attr:`~.._types.AccountProjection.is_liability` (plan step X-t1, finding
+    N-111).  It used to re-derive it here from the account, while the grid cell
+    beside it read a STORED key on the same projection -- one rule asked two
+    ways over one set of balances, which is the shape this arc keeps finding.
+    The property IS
+    :func:`app.services.net_worth_account_data.is_liability_account`, so the
+    classifier is unchanged and the answer cannot differ.
 
     Args:
-        account_data: Per-account dicts from
+        account_data: Per-account projections from
             ``_compute_account_projections`` (each carrying ``account``
             and ``current_balance``).
 
@@ -82,8 +104,8 @@ def compute_net_worth_today(account_data: list[dict]) -> dict:
     total_assets = ZERO
     total_liabilities = ZERO
     for ad in account_data:
-        balance = ad["current_balance"] or ZERO
-        if _is_liability_account(ad["account"]):
+        balance = ad.current_balance or ZERO
+        if ad.is_liability:
             total_liabilities += abs(balance)
         else:
             total_assets += balance
@@ -113,13 +135,14 @@ def build_account_net_worth_maps(
     seam deliberately returns balances only (liability classification is
     not a balance concern), so this consumer adds ``is_liability`` itself.
 
-    The seam builds each map over ALL periods (never a forward sub-window):
-    the entries-aware resolver behind the plain / investment paths must
-    include the anchor period to seed its running balance
-    (``balance_resolver.balances_for`` -- "Must include the anchor
-    period"), so a forward-only period list would starve a pre-anchor or
-    current-period account of its seed.  The forward consumers read the
-    periods they want back out of the dense map by id.
+    The seam builds each map over ALL periods (never a forward sub-window).
+    Since plan step X-g2b every kind is a TOTAL fold, so no path NEEDS the
+    dense domain to find a seed any more -- the reason this rule was written
+    (the INVESTMENT and APPRECIATING paths seeding off an anchor-forward
+    producer that had to be handed its anchor period) is gone with the producer.
+    What survives is the rule itself: a window is a window, and the forward
+    consumers read the periods they want back out by id, so passing everything
+    keeps one caller from asking about a slice and rendering it as a whole.
 
     Returns the same ``{account_id, balances, is_liability}`` shape
     :func:`compute_net_worth_series` (via
@@ -127,13 +150,20 @@ def build_account_net_worth_maps(
     :func:`compute_sparklines` consume.  Accounts with no anchor period (no
     dense map) are omitted by the seam and skipped here.
 
+    **The no-baseline rule is its CALLER's** (plan step X-t2, finding N-107).
+    This producer used to return an empty list for a ``None`` scenario, and the
+    trend-window builder beside it -- reached from the same caller, in the same
+    region -- answered the same question by building its axis anyway.  Two
+    degradations for one state is what a rule restated in each producer buys, so
+    :func:`~.._orchestrator._compute_net_worth_section` now states it once above
+    both and this calls the seam unconditionally.
+
     Args:
         accounts: The user's active accounts.
         ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
-            With no baseline scenario on it the seam's resolver path cannot run,
-            so an empty list is returned (the degraded no-scenario state)
-            WITHOUT calling the seam -- the seam raises on a ``None`` scenario by
-            contract, and this caller owns the legitimate empty state.
+            It MUST carry a baseline (``ctx.has_baseline``); the seam raises
+            otherwise, which is the intended fail-loud path for a caller that
+            did not guard.
         all_periods: All of the user's pay periods (the dense domain).
 
     Returns:
@@ -145,9 +175,6 @@ def build_account_net_worth_maps(
         :func:`_sum_composition_at_period` keys each account's composition
         band off it.
     """
-    if ctx.scenario is None:
-        return []
-
     balance_maps = balance_at.build_maps(accounts, ctx, all_periods)
     return to_net_worth_account_data(accounts, balance_maps)
 
@@ -207,25 +234,25 @@ def _sum_composition_at_period(
 # rather than a full-history axis.
 _TREND_HISTORY_PERIODS = 6
 
-# Account kinds whose dense balance map OMITS pre-anchor periods, so they
-# constrain how far back the trend's history can honestly reach.  PLAIN
-# (checking / savings) and INTEREST (HYSA / Money Market / CD / HSA) both
-# carry the running balance forward from the anchor period only
-# (``balance_resolver.balances_for`` /
-# ``balance_calculator.calculate_balances_with_interest`` -- "Must include
-# the anchor period ... pre-anchor periods ... absent from the result"), so
-# a period before such an account's anchor has NO balance for it and it
-# would silently contribute zero to the net-worth sum (cash dropping out of
-# the past).  AMORTIZING loans constrain the window separately (their
-# resolver schedule is today-forward, so pre-schedule periods report the
-# current balance held flat -- today's balance, not the loan's real past --
-# see :func:`_loan_schedule_start_index`).  INVESTMENT
-# (reverse growth projection) and APPRECIATING (flat-carry) are defined at
-# every period, so they never constrain it.
-_CASH_GATING_KINDS = frozenset({
+# Account kinds whose past balances are RECORDED rather than modelled.  Since
+# plan step X-c2b2 a cash account's balance is a fold over its own assertions,
+# so it is real at every period and CONSTRAINS the history window nowhere
+# (finding N-44) -- but its presence is still what makes a backward run actual
+# at all, which is why it participates in the gate with the no-constraint
+# index below instead of being skipped.  INVESTMENT (reverse growth
+# projection) and APPRECIATING (flat anchor carry) are MODELLED before their
+# anchor, so a set holding only those has no actual history to draw and falls
+# through to the no-history default.
+_RECORDED_HISTORY_KINDS = frozenset({
     AccountProjectionKind.PLAIN,
     AccountProjectionKind.INTEREST,
 })
+
+# The gate index an account contributes when it constrains nothing: the
+# earliest period there could be.  ``max`` over the gating indices then leaves
+# the window to whatever genuinely does constrain it (a loan's schedule) or to
+# the ``_TREND_HISTORY_PERIODS`` cap.
+_UNCONSTRAINED_INDEX = 0
 
 
 def _loan_schedule_start_index(
@@ -283,19 +310,44 @@ def _honest_history_start_index(
     """Earliest period_index whose net worth is real for every account.
 
     The trend's leading "actual" segment must not show an account's balance
-    as a fallback value in the past.  Two kinds carry such fallbacks:
+    as a fallback value in the past.  ONE kind still carries such a fallback:
 
-    - CASH (PLAIN / INTEREST, the kinds in :data:`_CASH_GATING_KINDS`): no
-      balance before the anchor period -- the account would contribute zero
-      (cash dropping out of the past).  Gates at its anchor index.
     - AMORTIZING loans: the resolver schedule is today-forward, so periods
       before it report the loan's CURRENT balance held flat -- today's
       balance, not its real past balance.  Gates at its schedule-start index
       (:func:`_loan_schedule_start_index`).
 
-    INVESTMENT (reverse-projected) and APPRECIATING (flat-carried) accounts
-    are defined at every period by the seam's own modeling, so they do not
-    constrain the window.
+    Every NON-loan kind is defined at every period by the seam's one event
+    replay, so none of them constrains the window.  This paragraph named the
+    INVESTMENT reverse projection and the APPRECIATING flat carry until plan
+    step X-g4b: those were two arms of a dispatch ladder ruling R-AD deleted,
+    and the property that mattered -- defined everywhere -- is now a
+    consequence of the fold being TOTAL rather than of each arm modelling its
+    own past.
+
+    **Cash no longer CONSTRAINS the window (plan step X-c2b2, finding N-44).**
+    PLAIN and INTEREST accounts used to gate at their anchor period, because
+    the projection carried the running balance forward from the anchor and a
+    pre-anchor period had NO balance for them -- so cash silently dropped out
+    of the past and the trend refused to draw it.  That gate was a compensator
+    for finding cash D3, and the fold closes it: every assertion is replayed,
+    so a past period reads the balance the account really held then.  Keeping
+    it would have made it a compensator for nothing that suppressed real
+    history -- measured on the prod-shape clone 2026-07-26, both real cash
+    accounts are anchored in the CURRENT period, so the cash arm equalled the
+    current index and ``/savings`` drew ZERO history points; without it the
+    loan arm gates at index 1 and the trend draws 6 (the
+    :data:`_TREND_HISTORY_PERIODS` cap).  It was still load-bearing at HEAD --
+    at those same indexes neither cash account had any balance at all, so
+    deleting it one commit early would have drawn six history points
+    understated by about ``$6,460``.
+
+    A cash account still PARTICIPATES, at :data:`_UNCONSTRAINED_INDEX`, and
+    that is load-bearing rather than decorative: dropping it from the loop
+    entirely would put a LOAN-FREE user into the no-history default below and
+    take away the very history this change exists to restore.  What the
+    default protects is a set whose past is wholly MODELLED -- investments and
+    property only -- and cash is exactly the thing that makes it not so.
 
     Returns the maximum gating index -- the earliest period at or after
     which every cash account has a real balance AND every loan is within
@@ -306,10 +358,9 @@ def _honest_history_start_index(
 
     Args:
         accounts: The user's active accounts (each with ``account_type``
-            eager-loaded for :func:`classify_account`, an ``id``, and a
-            ``current_anchor_period_id``).
-        all_periods: All of the user's pay periods (maps an anchor period
-            id to its index).
+            eager-loaded for :func:`classify_account` and an ``id``).
+        all_periods: All of the user's pay periods (the loan gate maps a
+            first-payment date to its period index).
         current_period: The period containing today (the upper clamp).
         debt_schedules: account_id -> the loan's amortization ROW list
             (from :func:`app.services.balance_at.debt_schedule_rows`), for the
@@ -322,15 +373,11 @@ def _honest_history_start_index(
         The earliest honest history ``period_index`` (``0`` ..
         ``current_period.period_index``).
     """
-    index_by_pid = {p.id: p.period_index for p in all_periods}
     gating_indices: list[int] = []
     for account in accounts:
         kind = classify_account(account)
-        if kind in _CASH_GATING_KINDS:
-            if account.current_anchor_period_id in index_by_pid:
-                gating_indices.append(
-                    index_by_pid[account.current_anchor_period_id]
-                )
+        if kind in _RECORDED_HISTORY_KINDS:
+            gating_indices.append(_UNCONSTRAINED_INDEX)
         elif kind is AccountProjectionKind.AMORTIZING:
             loan_start = _loan_schedule_start_index(
                 all_periods, debt_schedules.get(account.id),
@@ -359,13 +406,10 @@ def build_trend_periods(
     The tail spans the up-to-:data:`_TREND_HISTORY_PERIODS` periods
     immediately before the current period, but never earlier than
     :func:`_honest_history_start_index` -- so at every history point every
-    cash account has a real balance (none drops silently to zero) AND every
     loan is within its schedule (none shows today's balance carried flat
-    backward through its real past).  Because a loan's schedule is
-    today-forward, any
-    user with an amortizing loan has an empty tail (forward-only); the tail
-    shows only for loan-free users whose cash was trued up in the past (e.g.
-    renters), the case the honest tail genuinely serves.
+    backward through its real past).  Cash no longer constrains it at all
+    (finding N-44): the fold replays every assertion, so a past period reads
+    the balance each cash account really held then.
 
     ALL forward periods are included (not a fixed forward slice): the client
     selects the 6 / 13 / 26 / All forward horizon from the full series, so
@@ -416,14 +460,21 @@ def compute_net_worth_series(
 
     Reads each trend period's id out of the pre-built dense maps (built
     over ALL periods by :func:`build_account_net_worth_maps`) and produces
-    parallel ``net`` / ``assets`` / ``liabilities`` series, the per-category
-    ``composition`` split (P-AC1 Loop B P1), and the period descriptors the
-    route serializes.  ``net[i]`` equals ``assets[i] - liabilities[i]`` for
-    every ``i`` by construction, and ``assets[i]`` equals the sum of the
-    asset-side ``composition`` bands while ``liabilities[i]`` equals the
-    ``composition["liability"]`` band -- the split and the totals share one
-    per-period sum (:func:`_sum_composition_at_period`), so they cannot
-    drift.
+    the ``net`` series, the per-category ``composition`` split (P-AC1 Loop B
+    P1), and the period descriptors the route serializes.
+
+    **It published ``assets`` and ``liabilities`` as well, and plan step X-s1
+    deleted them** (finding N-104's residue).  They were one fact under two
+    keys: the split and the totals came from ONE per-period sum
+    (:func:`_sum_composition_at_period`), so ``assets[i]`` was by construction
+    the sum of the asset-side ``composition`` bands and ``liabilities[i]`` was
+    the ``composition["liability"]`` band.  The chart payload carried both
+    across to a client that reads neither, and once X-s1 stopped copying them
+    the producer keys had ZERO ``app/`` readers (AST-verified) -- the shape
+    rulings R-AZ ("one fact under two keys") and R-BA ("dead surface kept
+    honest by its own tests") each deleted once already.  A consumer that wants
+    the totals sums the bands, which is what every reader now does; ``net[i]``
+    still equals that difference by construction.
 
     The ``trend_periods`` window (from :func:`build_trend_periods`) is the
     honest history tail followed by the full forward projection; this
@@ -447,17 +498,14 @@ def compute_net_worth_series(
             driving the per-category ``composition`` split.
 
     Returns:
-        dict with ``periods`` (list of ``{end_date, period_index}``),
-        ``net``, ``assets``, ``liabilities`` (parallel ``Decimal`` lists,
-        one entry per trend period), and ``composition`` (a
-        ``{band: [Decimal, ...]}`` map over :data:`_COMPOSITION_BANDS`, each
+        dict with ``periods`` (list of ``{end_date, period_index}``), ``net``
+        (a ``Decimal`` list, one entry per trend period), and ``composition``
+        (a ``{band: [Decimal, ...]}`` map over :data:`_COMPOSITION_BANDS`, each
         band's series parallel to ``periods``).  The orchestrator adds
         ``current_index`` (the solid/dashed boundary) to this dict.
     """
     periods: list[dict] = []
     net: list[Decimal] = []
-    assets: list[Decimal] = []
-    liabilities: list[Decimal] = []
     composition: dict[str, list[Decimal]] = {
         band: [] for band in _COMPOSITION_BANDS
     }
@@ -473,16 +521,12 @@ def compute_net_worth_series(
             "period_index": period.period_index,
         })
         net.append(period_assets - period_liabilities)
-        assets.append(period_assets)
-        liabilities.append(period_liabilities)
         for band in _COMPOSITION_BANDS:
             composition[band].append(sums[band])
 
     return {
         "periods": periods,
         "net": net,
-        "assets": assets,
-        "liabilities": liabilities,
         "composition": composition,
     }
 
@@ -509,19 +553,39 @@ def compute_property_equity(
     Property (no secured loans) is included too: its card reports the full
     market value as equity at 0% LTV.
 
+    **It is a seam DOOR, and it owns its no-baseline state** (plan step X-t5,
+    finding N-107's residue).  :func:`~app.services.home_equity_service.resolve_home_equity`
+    calls :func:`app.services.balance_at.loan_figures` on each secured loan --
+    its own ``Raises:`` block says so -- which runs the seam's
+    ``require_scenario``.  Plan step X-t2 hoisted the rule for the net-worth
+    region and its docstrings then claimed this PACKAGE had exactly two seam
+    doors; this was the third, reached unguarded from the same page, and a
+    borrower with a Property securing a mortgage and no baseline got a
+    ``ValueError`` where the other tiles degraded.  Both of X-t's adversarial
+    reviews found it independently and one EXECUTED it; it pre-dates the step
+    (the same probe raises at ``33cb3e8f``), which is exactly why a census that
+    counted call sites instead of reading the call graph is worth recording.
+
     Args:
         accounts: The user's active accounts.
         ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
             Each secured loan is read from its memo, so the mortgage leg of this
             card is the SAME resolution the debt card and the net-worth liability
             column read -- one resolution, not a fourth one that has to agree.
+            With no baseline the seam cannot resolve a loan at all, so no
+            equity card can be built and the empty list is this producer's
+            legitimate degraded state.
 
     Returns:
         A list of ``{account, equity}`` dicts, one per Property account in
         ``accounts`` order, where ``equity`` is a
         :class:`~app.services.home_equity_service.HomeEquity` snapshot.
-        Empty when the user has no Property accounts.
+        Empty when the user has no Property accounts, and empty when the pass
+        has no baseline scenario.
     """
+    if not ctx.has_baseline:
+        return []
+
     result: list[dict] = []
     for account in accounts:
         if classify_account(account) is AccountProjectionKind.APPRECIATING:

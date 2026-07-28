@@ -61,16 +61,32 @@
                             consumed indirectly through
                             `render_row_card`; required whenever
                             `entry_lists` is provided.
-     subtotals           -- (optional) dict[period_id -> PeriodSubtotal].
+     columns             -- (optional) dict[period_id -> GridColumn].
                             When undefined (companion contract per
                             Section 12 Q-2 of the v3 plan), the
                             income / expense card-header totals and
-                            the Net Cash Flow bar are gracefully
-                            omitted; row cards still render.
-     balances            -- (optional) dict[period_id -> Decimal].
-                            When undefined or missing the key for
-                            `period.id`, the Projected Balance card
-                            is gracefully omitted.
+                            the whole summary block are gracefully
+                            omitted; row cards still render.  When
+                            defined but missing the key for
+                            `period.id`, the Projected Balance card is
+                            gracefully omitted.
+     period_row_flags    -- (optional) GridRowFlags for `periods[0]`, the
+                            ONE period this partial renders, forwarded to the
+                            summary partial for ruling R-O / R-P's THREE
+                            conditional bars (Timing & true-ups,
+                            Contributions, and the modelled return).  Scoped
+                            to that period rather than to the grid's visible
+                            window so the initial include and the self-refresh
+                            endpoint (which sees one period and no window)
+                            cannot disagree.
+     accrual_label       -- the modelled-return bar's per-kind heading
+                            (ruling R-AI), forwarded to the summary partial.
+                            REQUIRED whenever `period_row_flags` is supplied:
+                            the bar renders its heading with no fallback, so
+                            a caller that supplies the flags without the label
+                            ships a headless row.  Companion supplies neither
+                            -- and supplies no `columns` either, which is what
+                            suppresses the whole summary block.
      can_edit            -- (optional) bool, default True; forwarded
                             to `render_row_card` so companion
                             (`can_edit=False`) drops the
@@ -158,11 +174,11 @@
       <span class="fw-bold small text-uppercase">
         <i class="bi bi-chevron-down me-1"></i> Income
       </span>
-      {% if subtotals is defined %}
+      {% if columns is defined and columns.get(period.id) is not none %}
         {# Span id lets the self-refreshing _mobile_tp_summary partial
            update this header total out-of-band on mobileCardSettled. #}
         <span id="mobile-tp-income-total-{{ period.id }}" class="font-mono fw-bold">
-          {% set inc_total = subtotals[period.id].income %}
+          {% set inc_total = columns[period.id].income %}
           {% if inc_total %}{{ money(inc_total, cents=false) }}{% else %}$0{% endif %}
         </span>
       {% endif %}
@@ -218,11 +234,11 @@
       <span class="fw-bold small text-uppercase">
         <i class="bi bi-chevron-down me-1"></i> Expenses
       </span>
-      {% if subtotals is defined %}
+      {% if columns is defined and columns.get(period.id) is not none %}
         {# Span id lets the self-refreshing _mobile_tp_summary partial
            update this header total out-of-band on mobileCardSettled. #}
         <span id="mobile-tp-expense-total-{{ period.id }}" class="font-mono fw-bold">
-          {% set exp_total = subtotals[period.id].expense %}
+          {% set exp_total = columns[period.id].expense %}
           {% if exp_total %}{{ money(exp_total, cents=false) }}{% else %}$0{% endif %}
         </span>
       {% endif %}
@@ -270,7 +286,7 @@
        a mobile/companion Mark Paid (which swaps one card in place and
        fires mobileCardSettled instead of reloading) keeps these
        totals -- plus the income/expense header totals above, via OOB
-       swap -- current.  Renders nothing when subtotals is undefined
+       swap -- current.  Renders nothing when columns is undefined
        (the companion contract). #}
   {% include "grid/_mobile_tp_summary.html" %}
 

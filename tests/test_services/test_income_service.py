@@ -36,13 +36,11 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.services import (
     balance_at,
-    cash_ledger,
     income_service,
     pay_period_service,
     paycheck_calculator,
     savings_dashboard_service,
 )
-from app.services.balance_at import _cash_engine as balance_resolver
 from app.services.tax_config_service import load_tax_configs
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import freeze_today, make_investment_account
@@ -305,13 +303,19 @@ class TestLiveIncomeThroughBalanceResolver:
         self, app, db, seed_user, seed_periods,
     ):
         """A projected salary income row with a stale $1.00 stored amount
-        contributes its LIVE net to both ``period_subtotal`` and
-        ``balances_for`` -- never the stale stored value.
+        contributes its LIVE net to the grid's income row AND to the
+        rendered BALANCE -- never the stale stored value.
 
         $104,000 profile, no deductions, no tax configs seeded -> net =
         gross = 104000/26 = $4,000.00.  The transaction is stored at $1.00
         (simulating a cache invalidated by a profile/code change with no
-        regeneration); both balance surfaces must show $4,000.00.
+        regeneration); both surfaces must show $4,000.00.
+
+        The income row was read through ``cash_ledger.period_subtotal`` until
+        plan step X-c2b3 deleted it; it is now the shipped
+        ``GridColumn.income``, which is what the grid footer renders.  The
+        $4,000.00 is unchanged because the live override map is the same rule on
+        both bases -- which is the property this test exists to pin.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -341,24 +345,28 @@ class TestLiveIncomeThroughBalanceResolver:
             assert expected_net == Decimal("4000.00")
             assert expected_net != Decimal("1.00")
 
-            # period_subtotal income line reflects the live net.
-            subtotal = cash_ledger.period_subtotal(
-                account, scenario.id, period,
-            )
-            assert subtotal.income == expected_net, (
-                f"period_subtotal.income should be live {expected_net}, "
-                f"got {subtotal.income} (stale stored was 1.00)"
+            # The grid's income row reflects the live net.
+            column = balance_at.grid_balance_view(
+                account, bctx, periods,
+            ).columns[period.id]
+            assert column.income == expected_net, (
+                f"GridColumn.income should be live {expected_net}, "
+                f"got {column.income} (stale stored was 1.00)"
             )
 
-            # balances_for: the income period's balance moves by the live net.
-            result = balance_resolver.balances_for(
-                account, scenario.id, periods,
+            # The BALANCE moves by the live net too, not just the rendered
+            # income row -- the property that makes the override a basis rather
+            # than a display value.  Re-pointed off the deleted anchor-forward
+            # walk onto the cash view at plan step X-g4b; the delta is
+            # unchanged because both read one ``live_amount_overrides`` map.
+            result = balance_at.cash_balance_map(
+                account, bctx, periods,
             )
             idx = next(i for i, p in enumerate(periods) if p.id == period.id)
-            prior = result.balances[periods[idx - 1].id]
-            assert result.balances[period.id] - prior == expected_net, (
-                "balances_for income-period delta should be the live net "
-                f"{expected_net}, got {result.balances[period.id] - prior}"
+            prior = result[periods[idx - 1].id]
+            assert result[period.id] - prior == expected_net, (
+                "the income period's balance delta should be the live net "
+                f"{expected_net}, got {result[period.id] - prior}"
             )
 
     def test_overridden_income_row_keeps_user_value(
@@ -367,8 +375,10 @@ class TestLiveIncomeThroughBalanceResolver:
         """A user-overridden salary income row is NOT recomputed.
 
         ``is_override=True`` means the user deliberately set the amount;
-        the resolver must respect it (the producer excludes it), so the
-        subtotal reflects the stored $1234.56, not the live net.
+        the resolver must respect it (the producer excludes it), so the grid's
+        income row reflects the stored $1234.56, not the live net.  Read through
+        ``GridColumn.income`` since plan step X-c2b3 deleted
+        ``cash_ledger.period_subtotal``.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -386,12 +396,12 @@ class TestLiveIncomeThroughBalanceResolver:
             )
             db.session.commit()
 
-            subtotal = cash_ledger.period_subtotal(
-                account, scenario.id, period,
-            )
-            assert subtotal.income == Decimal("1234.56"), (
+            column = balance_at.grid_balance_view(
+                account, bctx, [period],
+            ).columns[period.id]
+            assert column.income == Decimal("1234.56"), (
                 "An overridden income row must keep the user's amount, "
-                f"got {subtotal.income}"
+                f"got {column.income}"
             )
 
 
@@ -553,18 +563,28 @@ class TestConsumerIntegration:
             # Savings consumer: after the Level-1 balance-seam reroute the
             # savings package no longer loads the gross itself -- each
             # investment tile delegates its projection to the ``balance_at``
-            # seam, which assembles the engine gross in ``_assemble_inputs``
-            # (loaded ONLY when the set has an investment account, the seam's
-            # investment-only scoping).  So the savings consumer's gross now
-            # routes seam -> income_service; lock it at the seam's assembly
-            # point.  A real INVESTMENT account must be in the set or the seam
-            # skips the gross fetch by design (and returns ZERO).
+            # seam, which loads the engine gross in
+            # ``_contribution_inputs_for_account`` (fetched ONLY when the account has
+            # investment params, the seam's investment-only scoping).  So the
+            # savings consumer's gross now routes seam -> income_service; lock
+            # it at the seam's own loading point.  A real INVESTMENT account is
+            # required or the seam skips the gross fetch by design (returning
+            # ZERO), which is asserted below as the scoping control.
             inv = make_investment_account(
                 seed_user, db.session, seed_periods_today[0],
                 Decimal("10000.00"),
             )
-            seam_inputs = balance_at._assemble_inputs([inv], bctx)
+            seam_inputs = balance_at._contribution_inputs_for_account(inv)
             assert seam_inputs.salary_gross_biweekly == canonical
+
+            # The scoping control: a non-investment account in the same user's
+            # set gets NO gross, so the assertion above is pinning the
+            # investment-only fetch rather than a value every account carries.
+            checking_inputs = balance_at._contribution_inputs_for_account(
+                seed_user["account"],
+            )
+            assert checking_inputs.salary_gross_biweekly == Decimal("0")
+            assert checking_inputs.investment_params is None
 
             # Investment consumer: Commit 17 introduced a thin
             # ``_salary_gross_biweekly`` wrapper around

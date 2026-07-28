@@ -14,7 +14,8 @@ from app import ref_cache
 from app.enums import AcctTypeEnum, TxnTypeEnum
 from app.models.transaction import Transaction
 from app.models.transfer_template import TransferTemplate
-from app.services.balance_at import _calculator as balance_calculator
+from app.services import balance_at
+from app.services.balance_at import BalanceContext
 from app.services.loan_payment_service import get_payment_history
 from tests._test_helpers import create_loan_account, loan_params_for
 
@@ -159,41 +160,47 @@ class TestLoanPaymentPipeline:
             # Prompt should be hidden (recurring transfer exists).
             assert "No recurring payment" not in html
 
-            # Step 7: Verify balance calculator for checking account.
-            # Shadow expense transactions reduce the checking balance.
+            # Step 7: the payment's cash leg reaches the CHECKING balance the
+            # app renders.  Re-pointed off the deleted anchor-forward walk at
+            # plan step X-g4b, and the two `if` guards went with it: a
+            # conditional assertion cannot fail on an empty pipeline, which is
+            # exactly the vacuity plan Section 7.3 rules out.  ``as_of`` is
+            # pinned inside period 0 so ruling R-G does not clamp the
+            # still-Projected shadow out of the window.
             checking_shadows = [
                 s for s in all_shadows
                 if s.account_id == checking.id
             ]
-            if checking_shadows:
-                checking_balances, _ = balance_calculator.calculate_balances(
-                    anchor_balance=Decimal("1000.00"),
-                    anchor_period_id=periods[0].id,
-                    periods=periods,
-                    transactions=checking_shadows,
-                )
-                # After transfers, checking balance should be lower.
-                period_with_transfer = checking_shadows[0].pay_period_id
-                if period_with_transfer in checking_balances:
-                    assert checking_balances[period_with_transfer] < Decimal("1000.00")
+            assert checking_shadows, "the pipeline produced no checking shadow"
+            checking_balances = balance_at.cash_balance_map(
+                checking,
+                BalanceContext.build(
+                    seed_user["user"].id, as_of=periods[0].start_date,
+                ),
+                periods,
+            )
+            period_with_transfer = checking_shadows[0].pay_period_id
+            assert period_with_transfer in checking_balances
+            assert checking_balances[period_with_transfer] < Decimal("1000.00")
 
-            # Step 8: Verify balance calculator for mortgage account.
-            # Shadow income transactions increase the mortgage balance
-            # (in the generic calculator's view -- it sums income).
-            mortgage_shadows = [
-                s for s in all_shadows
-                if s.account_id == mortgage.id
-            ]
-            if mortgage_shadows:
-                mortgage.current_anchor_period_id = periods[0].id
-                mortgage_balances, _ = balance_calculator.calculate_balances(
-                    anchor_balance=Decimal("200000.00"),
-                    anchor_period_id=periods[0].id,
-                    periods=periods,
-                    transactions=mortgage_shadows,
-                )
-                # The generic calculator adds income to balance.
-                # For a loan, this is semantically "payment received."
-                period_with_payment = mortgage_shadows[0].pay_period_id
-                if period_with_payment in mortgage_balances:
-                    assert mortgage_balances[period_with_payment] > Decimal("200000.00")
+            # Step 8 asked the KIND-BLIND cash view what the MORTGAGE was
+            # worth and read a shadow INCOME row as RAISING the balance owed.
+            # Ruling R-J closed that door at plan step X-a1: a loan's balance is
+            # not a transaction sum, and every cash-flow resolver refuses an
+            # amortizing account rather than answering with a wrong figure
+            # (measured live before the fix -- the Mortgage rendering
+            # $178,103.41 against $177,277.97 owed).
+            #
+            # **A re-point onto the KIND-CORRECT entry was tried at plan step
+            # X-g4b and MEASURED not to hold, which is why this is a deletion
+            # and not a move.**  R-J forbids the kind-blind view, not the seam,
+            # so ``balance_at.balance_at`` would answer this loan correctly --
+            # but at this point in the pipeline the payment is still PROJECTED.
+            # Nothing has settled, so the loan's folded balance reads
+            # $250,000.00 both at origination and today, and the honest
+            # property ("a payment REDUCES what is owed") has nothing to grade
+            # here.  It is graded where a settled payment exists, in the loan
+            # fold's own suites.  A step asserting a property its fixture does
+            # not create is the vacuity plan Section 7.3 rules out; the earlier
+            # version passed only because the producer was wrong in the
+            # direction that made it pass.

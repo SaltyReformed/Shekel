@@ -2,24 +2,40 @@
    Page-load only by design (Gate B6: no balanceChanged emitter reachable
    without leaving the dashboard moves these figures).
 
-   Context contract (dashboard.page, from
-   dashboard_pulse_service.compute_tracks_section plus the route-added
-   ``debt.principal_paid_pct`` -- the fraction scaled to 0-100, float,
-   or None when the user has no loans):
+   Context contract (dashboard.page): dashboard_pulse_service
+   .compute_tracks_section, with its ``debt`` summary MAPPED by the route to
+   a _DebtTrackView (X-s3 -- the route no longer adds a key to the
+   producer's object; it returns a new one):
 
      tracks.goals: [{name, account_name, account_id, progress_pct,
        current_balance, target_amount, target_date, pace,
        projected_completion_date, required_monthly, monthly_contribution}]
-     tracks.debt: compute_debt_summary dict (total_debt,
-       total_monthly_payments, dti_ratio, dti_label,
-       projected_debt_free_date) + principal_paid_pct | None
+     tracks.debt: a route-layer _DebtTrackView | None -- .summary (the
+       savings package's DebtSummary value object, passed through WHOLE) and
+       .principal_paid_pct (that summary's principal_paid_fraction scaled to
+       0-100, float, or None when no loan has originated)
+
+   X-u / finding N-109: the producer used to hand up a DebtTrack pairing the
+   summary with a fraction a SECOND full debt projection computed; the fraction
+   is a DebtSummary field now. Which of the two spellings this template may
+   position from is stated once, at _DebtTrackView in app/routes/dashboard.py.
+   The guard for it is behavioural, not static -- test_dashboard.py
+   ::test_debt_rail_renders_the_percent_not_the_raw_fraction renders a 0.6
+   fixture, where the right spelling reads "60% paid" and the wrong one "1%".
+   A grep-for-the-name gate is not available here: this comment names the raw
+   field twice, and a static guard cannot tell code from prose (the N-63 class).
 
    Rail mechanics: fill width via data-progress-pct (progress_bar.js),
    marker/label position via data-rail-pct (dashboard_pulse.js). The
    debt marker uses the ALL-LOANS-EVER monotonic basis (developer
-   ruling 2026-06-12); when principal_paid_pct is None (no loans is the
-   only reachable case while debt is non-None via summary -- defensive)
-   the rail renders bare, and the hero column still carries the figure.
+   ruling 2026-06-12); when principal_paid_pct is None the rail renders
+   bare, and the hero column still carries the figure. That state is
+   REACHABLE and was mis-documented here as defensive-only until X-u: a
+   borrower whose every loan is configured but not yet BORROWED has a debt
+   line, a payoff date and a summary, and has repaid nothing of nothing --
+   so the denominator is zero and there is no honest position to mark
+   (test_savings_dashboard_service.py::TestPrincipalPaidFraction
+   ::test_fraction_none_when_every_loan_is_unborrowed).
 
    Hierarchy (D10 ruling 2026-07-09): the CURRENT position is the hero
    figure, the destination is its caption, and the rail label carries
@@ -69,11 +85,19 @@
   {% endfor %}
 
   {% if tracks.debt %}
+  {#- X-s3 / finding N-106: ONE predicate for the DTI block.  The ratio and the
+      band label are populated together or absent together, so the tooltip and
+      the badge ask the same question of one nullable value object instead of
+      two questions of two parallel keys.  ``is not none`` and not truthiness,
+      per the coding standard: a mistyped attribute is Jinja ``Undefined``,
+      which is falsy, so a truthiness guard would drop the block on a 200
+      (measured) where this one raises. -#}
+  {% set dti = tracks.debt.summary.dti %}
   <div class="track"
-       title="paying {{ money(tracks.debt.total_monthly_payments) }}/mo{% if tracks.debt.dti_ratio is not none %} -- DTI {{ '{:.1f}'.format(tracks.debt.dti_ratio) }}%{% endif %}">
+       title="paying {{ money(tracks.debt.summary.total_monthly_payments) }}/mo{% if dti is not none %} -- DTI {{ '{:.1f}'.format(dti.ratio) }}%{% endif %}">
     <div class="track__label">
       <a href="{{ url_for('savings.dashboard') }}">Debt payoff</a>
-      {% if tracks.debt.dti_label %}{{ dti_badge(tracks.debt.dti_label) }}{% endif %}
+      {% if dti is not none %}{{ dti_badge(dti.label) }}{% endif %}
     </div>
     <div class="track__rail">
       {% if tracks.debt.principal_paid_pct is not none %}
@@ -85,11 +109,17 @@
       {% endif %}
     </div>
     <div class="track__pos">
-      <span class="track__pos-num font-mono">{{ money(tracks.debt.total_debt) }}</span>
+      <span class="track__pos-num font-mono">{{ money(tracks.debt.summary.total_debt) }}</span>
       <span class="track__pos-sub">
         to $0
-        {%- if tracks.debt.projected_debt_free_date %} &middot;
-        debt-free {{ tracks.debt.projected_debt_free_date.strftime('%b %Y') }}
+        {#- X-q3 / N-99: the date covers amortizing loans, which are the debts
+            that have a payoff model; it is captioned as what it measures.
+            X-s3: read off the seam's payoff outlook, carried whole by the
+            summary.  This track renders only the DATE state; the other two the
+            outlook distinguishes are captioned on /savings, which is a display
+            decision the value object at least makes visible (ruling R-BE). -#}
+        {%- if tracks.debt.summary.payoff_outlook.all_clear_on is not none %} &middot;
+        loans paid off {{ tracks.debt.summary.payoff_outlook.all_clear_on.strftime('%b %Y') }}
         {%- endif -%}
       </span>
     </div>

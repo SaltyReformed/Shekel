@@ -34,7 +34,6 @@ from app.services import (
     pay_schedule_service,
     period_population,
 )
-from app.services.balance_at import _cash_engine as balance_resolver
 from scripts.integrity_check import (
     check_balance_anomalies,
     check_referential_integrity,
@@ -44,6 +43,7 @@ from tests._test_helpers import (
     assert_pay_period_invariants,
     freeze_today,
     make_expense_template,
+    seam_cash_balance_at,
 )
 
 
@@ -214,7 +214,7 @@ class TestRegenerateHappyPath:
             retained_end = periods[3].end_date  # index 4
             new_start = retained_end + timedelta(days=1)
 
-            before = balance_resolver.balance_as_of_date(
+            before = seam_cash_balance_at(
                 account, scen, retained_end,
             )
             assert before == Decimal("-3800.00")  # 1000 - 4*1200
@@ -225,13 +225,13 @@ class TestRegenerateHappyPath:
             )
             db.session.commit()
 
-            after_retained = balance_resolver.balance_as_of_date(
+            after_retained = seam_cash_balance_at(
                 account, scen, retained_end,
             )
             assert after_retained == before  # retained window untouched
 
             last = pay_period_service.get_all_periods(user_id)[-1]  # index 8
-            assert balance_resolver.balance_as_of_date(
+            assert seam_cash_balance_at(
                 account, scen, last.end_date,
             ) == Decimal("-8600.00")  # 1000 - 8*1200
             assert_pay_period_invariants(db.session, user_id)

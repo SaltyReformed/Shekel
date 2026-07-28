@@ -7,12 +7,10 @@ it would catch.  Assertions match CURRENT behavior (even if broken) with
 comments explaining ideal behavior.
 """
 
-from collections import OrderedDict
 from datetime import date
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
 import pytest
-from sqlalchemy.exc import IntegrityError
 
 from tests._test_helpers import freeze_today
 
@@ -33,18 +31,15 @@ def _freeze_today_inside_seed_range(monkeypatch):
 from app.extensions import db
 from app.models.account import Account
 from app.models.category import Category
-from app.models.pay_period import PayPeriod
 from app.models.ref import AccountType, FilingStatus, Status, TransactionType
 from app.models.salary_profile import SalaryProfile
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
-from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.services import (
     carry_forward_service,
     credit_workflow,
 )
-from app.services.balance_at import _calculator as balance_calculator
 from app.services import account_service
 
 
@@ -841,86 +836,6 @@ class TestInputValidationBypass:
             })
             # Schema correctly rejects amount=0.
             assert "amount" in errors
-
-
-# ══════════════════════════════════════════════════════════════════════
-# 6. Balance Calculator Boundary Cases
-# ══════════════════════════════════════════════════════════════════════
-
-
-class TestBalanceCalculatorBoundary:
-    """Probe balance_calculator for anchor mismatches and None handling."""
-
-    def test_balance_calc_anchor_not_in_periods(self, app, seed_user, seed_periods):
-        """Anchor period_id doesn't match any period in the list.
-
-        Bug: calculate_balances silently returns an empty OrderedDict
-        when the anchor period is not found in the periods list.
-        No error raised -- caller gets silent wrong results.
-        """
-        with app.app_context():
-            result, _ = balance_calculator.calculate_balances(
-                anchor_balance=Decimal("1000.00"),
-                anchor_period_id=999999,  # Doesn't match any period
-                periods=seed_periods,
-                transactions=[],
-            )
-            # Current behavior: returns empty dict -- all periods are "pre-anchor".
-            assert result == OrderedDict()
-
-    def test_balance_calc_empty_periods_list(self, app, seed_user, seed_periods):
-        """Empty periods list → returns empty dict.
-
-        Documents behavior: not a bug, but worth testing.
-        """
-        with app.app_context():
-            result, _ = balance_calculator.calculate_balances(
-                anchor_balance=Decimal("1000.00"),
-                anchor_period_id=seed_periods[0].id,
-                periods=[],
-                transactions=[],
-            )
-            assert result == OrderedDict()
-
-    def test_balance_calc_none_anchor_balance(self, app, seed_user, seed_periods):
-        """anchor_balance=None → defaults to Decimal("0.00").
-
-        The service handles None by defaulting to 0.00.
-        """
-        with app.app_context():
-            result, _ = balance_calculator.calculate_balances(
-                anchor_balance=None,
-                anchor_period_id=seed_periods[0].id,
-                periods=seed_periods,
-                transactions=[],
-            )
-            # Current behavior: None is treated as 0.00.
-            assert result[seed_periods[0].id] == Decimal("0.00")
-
-    def test_balance_calc_negative_anchor_balance(self, app, seed_user, seed_periods):
-        """Negative anchor balance → propagates correctly.
-
-        Valid for overdrawn accounts.  Income increases the balance,
-        expenses decrease it further.
-        """
-        with app.app_context():
-            txn = _make_transaction(
-                seed_user, seed_periods, period_index=1,
-                txn_type_name="Income", name="Paycheck",
-                category_key="Salary", amount="2000.00",
-            )
-            db.session.commit()
-
-            result, _ = balance_calculator.calculate_balances(
-                anchor_balance=Decimal("-500.00"),
-                anchor_period_id=seed_periods[0].id,
-                periods=seed_periods[:2],
-                transactions=[txn],
-            )
-            # Period 0: anchor = -500.00, no transactions → -500.00
-            assert result[seed_periods[0].id] == Decimal("-500.00")
-            # Period 1: -500.00 + 2000.00 income = 1500.00
-            assert result[seed_periods[1].id] == Decimal("1500.00")
 
 
 # ══════════════════════════════════════════════════════════════════════

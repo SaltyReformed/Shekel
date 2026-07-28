@@ -63,7 +63,7 @@ class InterestParams(TimestampMixin, db.Model):
     # ``apy`` -- specifically the auto-create paths in
     # ``app/routes/accounts.py`` at account-creation and at
     # interest-detail rendering -- silently materialised a 4.5%
-    # rate the user never configured.  ``calculate_interest``
+    # rate the user never configured.  ``accrued_interest``
     # treats only ``apy <= 0`` as "no interest"
     # (``interest_projection.py``), so a missing-value default in
     # the dangerous non-zero direction (Q-24 #2 / E-12 "zero is a

@@ -20,23 +20,29 @@ served here -- they keep their own screens
 :func:`cash_detail` so external bookmarks and the not-yet-updated cockpit
 ``detail_endpoint`` macro still resolve.
 
-Balance production is unchanged from the two pre-merge routes (the audit's
-finding is a PRESENTATION rebuild, not a data change).  :func:`cash_detail`
-routes every balance through the balance-at seam (Level-1 Commit 8):
+Balance production routes every figure through the balance-at seam
+(Level-1 Commit 8).  The Fable 5 merge was a PRESENTATION rebuild and moved no
+producer; plan step X-c2b2 then moved BOTH branches onto the cash fold, so what
+the page shows changed there and not here:
 
-* interest-bearing accounts via the kind-correct ``balance_at.balance_map``
-  (interest-accrued balance) plus the kernel's
-  ``interest_by_period_for_account`` accessor for the earned-interest
-  figure, and
+* interest-bearing accounts via ``balance_at.interest_projection_for_account``,
+  which returns the interest-accrued balances AND the per-period earned
+  interest from ONE cash fold (plan step X-c2b2: the page read the
+  kind-correct ``balance_map`` and the earned-interest accessor separately
+  until the accrual's base became that fold, at which point the pair folded
+  the same account TWICE per render -- finding N-64), and
 * plain cash accounts via the cash-flow entry
   ``balance_at.cash_balance_map``.
 
 Both seam entries delegate to the canonical entries-aware producers, so
 the silent-degrade seam fixed by CRIT-01 / F-009 cannot reappear here.
 The F-6 static guard in :mod:`tests.test_routes.test_accounts` pins this
-contract by asserting that the seam (``balance_at.``) is used and the bare
-entries-blind producer ``calculate_balances`` (in ``balance_calculator``)
-is not; that guard reads this file directly.
+contract by asserting that the seam (``balance_at.``) is used and that the
+whole-account kind-correct ``balance_map`` is NOT called beside the interest
+map; that guard reads this file directly.  Its third arm forbade the bare
+entries-blind ``calculate_balances``, and plan step X-g4b deleted the arm with
+the producer: a negative arm naming a function that no longer exists is a
+sentence that can never fail.
 """
 
 from __future__ import annotations
@@ -238,17 +244,19 @@ def _cash_projection(
     is_interest: bool,
     balance_ctx: BalanceContext,
     all_periods: list[PayPeriod],
-    params: InterestParams | None,
 ) -> "tuple[dict[int, Decimal], dict[int, Decimal], AnchorPoint | None]":
     """Produce the per-period balances (and interest) for a cash account.
 
-    The single balance-production site, preserving the two pre-merge
-    routes' producer paths verbatim (Level-1 Commit 8):
+    The single balance-production site (Level-1 Commit 8), on the cash FOLD
+    for both branches since plan step X-c2b2:
 
-    * interest-bearing accounts read the KIND-CORRECT
-      ``balance_at.balance_map`` (interest-accrued balances) plus the
-      kernel's ``interest_by_period_for_account`` accessor for the
-      per-period earned interest, and
+    * interest-bearing accounts read
+      ``balance_at.interest_projection_for_account`` -- the interest-accrued
+      balances AND the per-period earned interest, from ONE fold (N-64).  It
+      no longer takes the account's ``InterestParams``: since plan step X-g2b
+      the replay reads the account's own accrual rule through the seam's ONE
+      predicate, so this route cannot hand it a rate loaded from somewhere
+      else, and
     * plain cash accounts read the cash-flow ``balance_at.cash_balance_map``
       (pure transaction running-balance).
 
@@ -269,15 +277,20 @@ def _cash_projection(
     if is_interest:
         if scenario is not None:
             anchor = cash_ledger.resolve_anchor(account, scenario.id)
-            balances = balance_at.balance_map(
-                account, balance_ctx, all_periods,
-            ) or {}
-            interest_by_period = balance_at.interest_by_period_for_account(
-                account, scenario, all_periods, params,
+            # ONE walk for both figures.  Asking the seam twice (the balance
+            # map, then the interest map) folded the account's whole cash
+            # event stream twice per render once the accrual's base became
+            # that fold -- and the two halves are one projection, so the page
+            # would also have had two chances to disagree with itself.
+            balances, interest_by_period = (
+                balance_at.interest_projection_for_account(
+                    account, balance_ctx, all_periods,
+                )
             )
     elif scenario is not None and all_periods:
-        result = balance_at.cash_balance_map(account, balance_ctx, all_periods)
-        balances = result.balances
+        balances = balance_at.cash_balance_map(
+            account, balance_ctx, all_periods,
+        )
         anchor = cash_ledger.resolve_anchor(account, scenario.id)
     return balances, interest_by_period, anchor
 
@@ -339,13 +352,11 @@ def _cash_detail_context(account: Account) -> dict:
     and chart from the same producers or a band refresh could disagree
     with the page render.
 
-    Balance production is preserved verbatim from the two pre-merge
-    routes: interest accounts read the kind-correct
-    ``balance_at.balance_map`` plus the kernel's
-    ``interest_by_period_for_account`` accessor; plain cash accounts
-    read the cash-flow ``balance_at.cash_balance_map``.  Both seam
-    entries delegate to the canonical entries-aware producers (Level-1
-    Commit 8), so this module calls no balance producer directly.  The
+    Balance production: interest accounts read
+    ``balance_at.interest_projection_for_account`` (both halves of ONE fold);
+    plain cash accounts read the cash-flow ``balance_at.cash_balance_map``.
+    Both seam entries are the cash FOLD sampled at period ends (plan step
+    X-c2b2), so this module calls no balance producer directly.  The
     anchor is resolved via the dated ``AccountAnchorHistory`` SoT (E-19,
     Commit 4) for the hero caption and the current-period fallback; the
     ``scenario is None`` / ``no pay periods`` empty-state guards are
@@ -372,7 +383,7 @@ def _cash_detail_context(account: Account) -> dict:
     )
 
     balances, interest_by_period, anchor = _cash_projection(
-        account, is_interest, balance_ctx, all_periods, params,
+        account, is_interest, balance_ctx, all_periods,
     )
 
     current_balance = _current_period_balance(balances, current_period, anchor)

@@ -67,13 +67,11 @@ from ._sync import (
 )
 from ._walk import (
     AccountAnchorCorrection,
-    AccountAnchorFact,
     walk_account_ledger,
 )
 
 __all__ = [
     "AccountAnchorCorrection",
-    "AccountAnchorFact",
     "backfill_all_account_anchor_postings",
     "reconcile_account_anchor_corrections",
     "resync_user_account_anchor_postings",

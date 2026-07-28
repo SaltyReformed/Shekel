@@ -92,17 +92,37 @@ def _serialize_horizon(horizon: dict | None) -> dict | None:
     The presentation boundary for the cockpit's ``Horizon`` range (P-AC1
     Loop B P1): maps the producer's parallel ``Decimal`` band series
     (``composition``) and net trajectory to ``float`` arrays, the annual
-    sample dates to ``%b %Y`` labels, and each milestone to its ISO ``date``
+    sample dates to ``%b %Y`` labels, and each milestone to its chip ``label``
     plus a fractional axis position ``x`` (via :func:`_milestone_axis_x`, so
     the client's flag plugin places the flag between the annual samples).
     ``None`` (the user has no pay periods) passes straight through so the
     client hides the range.
 
+    **It consumes every key the producer publishes, at EVERY level, and that is
+    a contract rather than a coincidence** (plan steps X-q2 / X-s1, findings
+    N-100 / N-104): each key is subscripted here, so a producer output nothing
+    renders cannot exist without failing
+    ``TestHorizonSerialization.test_every_published_key_is_read``, which removes
+    each key in turn -- the horizon's own, and each MILESTONE's -- and requires
+    this to raise.  ``build_horizon`` published ``horizon_end`` and
+    ``is_loan_free`` for months with no consumer anywhere (deleted at X-q2,
+    along with the narrow producer that carried them to nobody), and the
+    milestone dicts then carried a machine ``kind`` this function copied
+    STRAIGHT INTO the payload, where the client never read it -- the same
+    defect one level down, riding inside a live key where the guard could not
+    see it, which is why the guard now descends (deleted at X-s1).
+
+    **What this EMITS is likewise only what the client reads.**  The flag
+    plugin takes ``x`` and ``label`` and nothing else
+    (``net_worth_cockpit.js:393``, ``:407``, ``:419``), so the milestone's
+    ``date`` -- which ``x`` is computed FROM, and which is therefore already
+    spent by the time the payload is built -- is not carried across.
+
     Args:
         horizon: The ``net_worth["horizon"]`` dict from
             :func:`~app.services.savings_dashboard_service._horizon.build_horizon`
             (``dates`` / ``net`` / ``composition`` / ``milestones`` /
-            ``current_index``), or ``None``.
+            ``current_index`` -- its complete key set), or ``None``.
 
     Returns:
         A dict ``{"labels", "net", "composition", "milestones",
@@ -121,9 +141,7 @@ def _serialize_horizon(horizon: dict | None) -> dict | None:
         },
         "milestones": [
             {
-                "date": milestone["date"].isoformat(),
                 "label": milestone["label"],
-                "kind": milestone["kind"],
                 "x": _milestone_axis_x(horizon["dates"], milestone["date"]),
             }
             for milestone in horizon["milestones"]
@@ -138,24 +156,37 @@ def _serialize_net_worth_chart(net_worth: dict) -> str:
     The single Chart.js serialization boundary for the cockpit's net-worth
     region (coding-standards: ``float`` lives only here, never in a
     calculation).  Emits ONE payload carrying both ranges the element toggles
-    between (P-AC1): the ``2 years`` engine-real series (its ``net`` /
-    ``assets`` / ``liabilities`` totals AND the per-category ``composition``
-    split) with the ``current_index`` solid/dashed boundary, plus the nested
-    ``horizon`` range from :func:`_serialize_horizon`.  Every money figure is
-    mapped from the producer's money-precise ``Decimal`` to ``float`` here.
+    between (P-AC1): the ``2 years`` engine-real series (its ``net`` total and
+    the per-category ``composition`` split) with the ``current_index``
+    solid/dashed boundary, plus the nested ``horizon`` range from
+    :func:`_serialize_horizon`.  Every money figure is mapped from the
+    producer's money-precise ``Decimal`` to ``float`` here.
 
     ``current_index`` is the position of the current period within the
     ``2 years`` series: the leading points are the honest history tail the
-    client draws solid, the rest the forward projection.  The top-level
-    ``net`` / ``assets`` / ``liabilities`` / ``current_index`` keys keep their
-    prior shape so the current chart script renders unchanged until the P2
-    element replaces it; ``composition`` and ``horizon`` are additive fields
-    that script ignores.
+    client draws solid, the rest the forward projection.
+
+    **It published ``assets`` and ``liabilities`` too, and nothing read them**
+    (plan step X-s1, finding N-104).  They were kept "so the current chart
+    script renders unchanged until the P2 element replaces it" -- and that
+    element is ``net_worth_cockpit.js``, which has shipped: ``selectRange``
+    (``:173-192``) takes ``labels`` / ``net`` / ``composition`` /
+    ``current_index`` / ``horizon`` and never touches the two totals, because
+    the stacked bands ARE the two totals (the asset-side bands sum to
+    ``assets`` and the ``liability`` band equals ``liabilities`` -- asserted
+    against the PRODUCER series in
+    ``TestDashboardNetWorthContext.test_chart_json_parses_to_expected_shape_with_floats``).
+    A justification that names a consumer which does not read the value is the
+    shape this arc keeps finding.  The PRODUCER's copies went too, one review
+    later (ruling R-BG): with the payload copies gone they had no ``app/``
+    reader either, and the cross-page equality oracle now sums the bands the
+    chart actually draws.  (This sentence said the producer keys stay until
+    plan step X-t5 -- a docstring describing the tree as it was for one commit.)
 
     Args:
         net_worth: The ``compute_dashboard_data`` ``net_worth`` dict, with
-            ``series`` (``periods`` / ``net`` / ``assets`` / ``liabilities`` /
-            ``composition`` / ``current_index``) and ``horizon``.
+            ``series`` (``periods`` / ``net`` / ``composition`` /
+            ``current_index``) and ``horizon``.
 
     Returns:
         A JSON string for the ``data-chart`` attribute.
@@ -168,8 +199,6 @@ def _serialize_net_worth_chart(net_worth: dict) -> str:
             for point in periods
         ],
         "net": [float(value) for value in series["net"]],
-        "assets": [float(value) for value in series["assets"]],
-        "liabilities": [float(value) for value in series["liabilities"]],
         "current_index": series["current_index"],
         "composition": {
             band: [float(value) for value in band_series]
@@ -377,17 +406,22 @@ def cockpit_balance(account_id):
     owned, or archived between page load and the revert), satisfying the
     404-for-both security rule.  Non-HTMX requests redirect to the
     dashboard page.
+
+    The partial is rendered with the SAME value the grid loop passes it (plan
+    step X-t1): the producer returns the account's ``AccountProjection``, so
+    the reverted cell and the cell it replaces read one object rather than two
+    dicts that have to agree.
     """
     if not request.headers.get("HX-Request"):
         return redirect(url_for("savings.dashboard"))
 
-    cell = savings_dashboard_service.compute_account_balance_cell(
+    projection = savings_dashboard_service.compute_account_balance_cell(
         current_user.id, account_id,
     )
-    if cell is None:
+    if projection is None:
         abort(404)
 
-    return render_template("savings/_cockpit_balance.html", **cell)
+    return render_template("savings/_cockpit_balance.html", ad=projection)
 
 
 @savings_bp.route("/savings/goals/new", methods=["GET"])

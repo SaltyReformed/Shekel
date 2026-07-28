@@ -12,8 +12,9 @@ regions:
     state, so one producer + endpoint serves it.
   * :func:`compute_tracks_section` -- the page-load-only position tier:
     savings-goal metro tracks (reshaped from the /savings goal producer)
-    and the debt track (the /savings debt summary plus an honest
-    principal-paid fraction).
+    and the debt track (the /savings debt summary, which since plan step
+    X-u carries the honest principal-paid fraction the rail positions
+    from, so this tier passes ONE value through instead of pairing two).
 
 This module is additive (Loop B B-1).  The live page keeps running on the
 existing ``dashboard_service`` producers until the B-3 route swap.  Both
@@ -53,6 +54,7 @@ from app.utils.dates import to_display_date
 from app.utils.money import round_money
 
 _ZERO = Decimal("0")
+
 
 # The projected end-balance chart shows the current period plus the next
 # 12 (~6 months at biweekly cadence -- the developer's normal grid
@@ -112,7 +114,11 @@ def compute_pulse_section(user_id: int) -> dict | None:
         computed (no account / scenario / current period).
     """
     account, balance_ctx, current_period = _resolve_section_context(user_id)
-    if (account is None or balance_ctx.scenario is None
+    # ``has_baseline`` is the SEAM's own precondition, read off the context
+    # rather than re-spelled as ``scenario is None`` (plan step X-t2, finding
+    # N-107): this region legitimately handles the empty state, and the
+    # property it guards on is the one ``require_scenario`` raises on.
+    if (account is None or not balance_ctx.has_baseline
             or current_period is None):
         return None
 
@@ -127,13 +133,24 @@ def compute_pulse_section(user_id: int) -> dict | None:
     # account), and this region is the spending-account runway -- so it reads
     # the pure transaction running balance, NOT the kind-correct
     # ``balance_map`` (which would accrue interest into an HYSA's chart,
-    # amortize a loan, or compound an investment, diverging from the grid
-    # that deliberately keeps the SAME account on the cash-flow view, and
-    # inflating the "lowest point ahead" so a real future dip below zero
-    # could be hidden).  The cash map carries the running balance forward
-    # from the anchor period, so the period list MUST include the anchor
-    # period (a forward-only slice that excludes it yields an empty map --
-    # the engine has no seed).  The chart slices the current-period-forward
+    # amortize a loan, or compound an investment, and would inflate the
+    # "lowest point ahead" so a real future dip below zero could be hidden).
+    #
+    # **The RUNWAY argument above is the whole reason; the agreement argument
+    # this comment used to give beside it was FALSE and is deleted** (finding
+    # N-87, ruling R-AK).  It claimed the modelled map would diverge "from the
+    # grid that deliberately keeps the SAME account on the cash-flow view".
+    # The grid has layered an accrual for an INTEREST account since PR #47, so
+    # this region and the grid ALREADY disagree for that kind: measured at the
+    # last projected period on the prod-shape clone 2026-07-27, Fidelity
+    # Savings $5,363.56 here against the grid's $5,779.68 ($416.12) and the
+    # Money Market $16,644.27 against $17,348.99 ($704.72).  Plan step X-g3b
+    # extends the same gap to the INVESTMENT and APPRECIATING kinds.  The
+    # divergence is RECORDED, not fixed: whether ``/dashboard``'s runway
+    # question should read a modelled balance is its own ruling with its own
+    # measurement, and it is not made inside a render cutover.
+    #
+    # The chart slices the current-period-forward
     # tail to 13 points and the trough scans the whole forward tail.  The
     # trough horizon is the entire forward run -- the retired
     # negative-projection alert's full multi-year reach, but DELIBERATELY
@@ -141,14 +158,14 @@ def compute_pulse_section(user_id: int) -> dict | None:
     # today``): the chart's first plotted point is the current period's end
     # balance, so the labeled "lowest point ahead" must be able to coincide
     # with it rather than understating the worst visible dip.
-    # ``cash_balance_map`` resolves the anchor through the dated history SoT
-    # (reconciling the ``current_anchor_period_id`` cache-divergence edge the
-    # kind-correct map would have degraded to an empty chart), so its
-    # ``balances`` is always a populated map; the chart / trough / peak keep
-    # their existing missing-key skips for any period the resolver omits.
+    # ``cash_balance_map`` is a TOTAL fold (plan step X-c2b2): every requested
+    # period is in the result, replayed from the account's own assertions, so
+    # the chart / trough / peak missing-key skips below have nothing left to
+    # skip.  They stay because the forward slice is the caller's, not the
+    # producer's.
     end_balances = balance_at.cash_balance_map(
         account, balance_ctx, all_periods,
-    ).balances
+    )
     forward_periods = [
         p for p in all_periods
         if p.period_index >= current_period.period_index
@@ -170,7 +187,16 @@ def compute_pulse_section(user_id: int) -> dict | None:
     due_soon = _pulse_due_soon(unpaid_rows, current_period)
 
     return {
-        "hero": _pulse_hero(account, balance_ctx, current_period, settings),
+        # ``current_period`` came from ``get_current_period``, so it is a
+        # member of the ``all_periods`` the map was built over, and the fold is
+        # total over the periods it is given -- the key is present by
+        # construction.  Indexed rather than ``.get``-with-a-default on
+        # purpose: a default here would render SOME number for a hero whose
+        # own period the projection did not cover, which is the silent-wrong
+        # shape this arc exists to end.
+        "hero": _pulse_hero(
+            account, end_balances[current_period.id], current_period, settings,
+        ),
         "chart": _pulse_chart(forward_periods, end_balances, settings),
         "trough": _pulse_trough(
             forward_periods, end_balances, current_period,
@@ -189,23 +215,34 @@ def compute_pulse_section(user_id: int) -> dict | None:
 
 def _pulse_hero(
     account: Account,
-    balance_ctx: BalanceContext,
+    balance: Decimal,
     current_period: PayPeriod,
     settings: UserSettings | None,
 ) -> dict:
-    """Build the pulse hero block: the as-of-today balance and its captions.
+    """Build the pulse hero block: the period-END balance and its captions.
 
-    The headline ``balance`` is the as-of-today projected cash-flow
-    balance from the ``balance_at`` seam's cash-flow scalar
-    (``balance_at.cash_balance_at``) -- the exact figure
-    ``dashboard_service.compute_balance_section`` shows (it reads the same
-    cash-flow scalar) -- so the hero, the chart's first point, and the
-    balance card all agree.  The cash-flow view (NOT the kind-correct
-    ``balance_at`` scalar, which would accrue interest / amortize / compound)
-    is deliberate: the account is ``resolve_grid_account``'s any-kind pick,
-    and the chart the hero must agree with reads ``cash_balance_map`` for the
-    same reason.  Net pay is retired (data-value pass); only the
-    next-paycheck DATE survives.
+    The headline ``balance`` is the CURRENT PERIOD'S projected end balance,
+    read straight off the ``cash_balance_map`` the chart is built from -- so
+    the hero IS the chart's first point rather than a second producer call
+    that has to agree with it.
+
+    **It reads the period end, and the template is why** (plan step X-c2b2).
+    ``_pulse.html`` labels this figure "End of this period" and captions it
+    "projected through <period end>".  It used to be the as-of-TODAY scalar,
+    which was legitimate only because that scalar was period-FLAT: it summed
+    the whole period's still-projected rows whatever their dates, so "today"
+    and "period end" were the same number.  The fold makes the scalar
+    date-precise (finding cash D2), so a bill due later this period is no
+    longer in today's balance -- and reading it here would have put the
+    balance TODAY under a label promising the balance at the period's END,
+    differing by the whole unpaid remainder of the period.  The figure follows
+    the label.
+
+    The cash-flow view (NOT the kind-correct map, which would accrue interest
+    / amortize / compound) is deliberate: the account is
+    ``resolve_grid_account``'s any-kind pick, and the chart the hero must
+    agree with reads ``cash_balance_map`` for the same reason.  Net pay is
+    retired (data-value pass); only the next-paycheck DATE survives.
 
     ``is_stale`` is ``True`` when the anchor has never been set OR its
     last update is strictly older than ``settings.anchor_staleness_days``
@@ -215,8 +252,8 @@ def _pulse_hero(
     Args:
         account: The resolved dashboard account (``resolve_grid_account``'s
             pick; may be any kind).
-        balance_ctx: The read pass's
-            :class:`~app.services.balance_at.BalanceContext`.
+        balance: The current period's projected end balance, off the same
+            ``cash_balance_map`` the chart plots.
         current_period: The period containing today.
         settings: The user's settings, or ``None``.
 
@@ -225,9 +262,6 @@ def _pulse_hero(
         ``period_end_date``, ``account_name``, ``account_id``,
         ``last_updated_date``, ``is_stale``, ``next_paycheck_date``.
     """
-    balance = balance_at.cash_balance_at(
-        account, balance_ctx, balance_ctx.as_of,
-    )
     # One fetch of the raw anchor instant, two truncations: staleness
     # counts days in the UTC frame (storage convention, unchanged), the
     # caption shows the day in the user's display timezone so a late-
@@ -290,9 +324,9 @@ def _pulse_chart(
     Up to 13 points -- the current period plus the next 12 (fewer when
     fewer periods exist) -- each ``{end_date, balance}`` from the
     anchor-forward end-balance map.  The first point coincides with the
-    hero by construction (same producer family, reservation semantics):
-    with no entries dated after today the as-of-today balance equals the
-    current period's projected end balance.  ``low_balance_threshold`` is
+    hero by construction: both are the current period's entry in the SAME
+    folded period map (plan step X-c2b2), so the chart's first point IS the
+    hero rather than a second producer that has to agree with it.  ``low_balance_threshold`` is
     the user's setting as a ``Decimal`` (the column is a NOT NULL
     whole-dollar integer, so it always carries a value when a settings
     row exists) or ``None`` only when the user has no settings row at
@@ -302,7 +336,7 @@ def _pulse_chart(
         forward_periods: Periods from the current one forward, ordered by
             ``period_index``.
         end_balances: The ``period_id -> Decimal`` end-balance map from
-            ``balances_for``.
+            the seam's folded ``cash_balance_map``.
         settings: The user's settings, or ``None`` when the user has no
             settings row.
 
@@ -341,7 +375,7 @@ def _pulse_trough(
         forward_periods: Periods from the current one forward, ordered by
             ``period_index``.
         end_balances: The ``period_id -> Decimal`` end-balance map from
-            ``balances_for``.
+            the seam's folded ``cash_balance_map``.
         current_period: The period containing today (the offset origin).
 
     Returns:
@@ -372,7 +406,7 @@ def _pulse_peak(
         forward_periods: Periods from the current one forward, ordered by
             ``period_index``.
         end_balances: The ``period_id -> Decimal`` end-balance map from
-            ``balances_for``.
+            the seam's folded ``cash_balance_map``.
         current_period: The period containing today (the offset origin).
 
     Returns:
@@ -411,7 +445,7 @@ def _pulse_extremum(
         forward_periods: Periods from the current one forward, ordered by
             ``period_index``.
         end_balances: The ``period_id -> Decimal`` end-balance map from
-            ``balances_for``.
+            the seam's folded ``cash_balance_map``.
         current_period: The period containing today (the offset origin).
         find_max: ``True`` to return the maximum end balance (the peak),
             ``False`` to return the minimum (the trough).
@@ -760,12 +794,21 @@ def compute_tracks_section(user_id: int) -> dict:
       * ``goals`` -- one dict per active goal, reshaped from
         ``savings_dashboard_service.compute_goal_progress`` into the metro
         track contract (see :func:`_track_goal_datum`).
-      * ``debt`` -- the debt summary from
-        ``savings_dashboard_service.compute_debt_summary`` with an added
-        ``principal_paid_fraction`` (the honest principal-paid fraction,
-        or ``None`` when no per-loan original principal is available; the
-        UI renders no positional marker in that case).  ``None`` when the
-        user has no loan accounts.
+      * ``debt`` -- the
+        ``savings_dashboard_service.compute_debt_summary`` value, passed
+        through WHOLE: the same ``DebtSummary`` ``/savings`` renders, carrying
+        both the money figures and ``principal_paid_fraction`` (the honest
+        all-loans-ever rail position, or ``None`` when no loan has originated).
+        ``None`` when the user has no loan accounts.
+
+    **This tier carried a ``DebtTrack`` wrapper until plan step X-u** (ruling
+    R-BS, finding N-109), because the fraction came from a SECOND narrow
+    producer that re-ran the whole debt pipeline to get it -- measured at two
+    debt projections and three seam-batch builds per render.  With the fraction
+    a field of the summary, the wrapper's only job was to pair two values one
+    object already carries, so it is gone and this tier adds nothing to what the
+    producer answered.  The route still maps the fraction to a rail percent;
+    that is presentation and belongs there.
 
     No exception is caught here: the producers this delegates to are the
     same code the /savings route runs without a guard, so a
@@ -779,16 +822,20 @@ def compute_tracks_section(user_id: int) -> dict:
 
     Returns:
         A dict with keys ``goals`` (a list, possibly empty) and ``debt``
-        (a dict or ``None``).
+        (a ``savings_dashboard_service.DebtSummary`` or ``None``).
     """
     # Pylint: ``import-outside-toplevel`` -- Deferred: savings_dashboard_service
     # pulls the heaviest service import chain (+27 modules, measured); loaded only
     # when this path runs, not on every dashboard_pulse_service import.
     from app.services import savings_dashboard_service  # pylint: disable=import-outside-toplevel
 
-    # ONE read pass for all three producers: each loan is resolved once for the
-    # whole section rather than once per producer (they used to start three
-    # independent passes, so a two-loan user paid for six resolutions here).
+    # ONE read pass for both producers: each loan is resolved once for the
+    # whole section rather than once per producer (they used to start
+    # independent passes, so a two-loan user paid for four resolutions here).
+    # The pass is shared; the LOADS behind it are not -- each producer still
+    # runs its own ``_load_dashboard_core_data``, which is the input-tier memo
+    # plan step X-i1 owns (finding N-72), not something this section can fix
+    # without a second sharing channel beside the context.
     balance_ctx = BalanceContext.build(user_id)
 
     goal_data = savings_dashboard_service.compute_goal_progress(
@@ -796,16 +843,12 @@ def compute_tracks_section(user_id: int) -> dict:
     )
     goals = [_track_goal_datum(gd) for gd in goal_data]
 
-    debt = savings_dashboard_service.compute_debt_summary(user_id, balance_ctx)
-    if debt is not None:
-        debt = dict(debt)
-        debt["principal_paid_fraction"] = (
-            savings_dashboard_service.compute_debt_principal_progress(
-                user_id, balance_ctx,
-            )
-        )
-
-    return {"goals": goals, "debt": debt}
+    return {
+        "goals": goals,
+        "debt": savings_dashboard_service.compute_debt_summary(
+            user_id, balance_ctx,
+        ),
+    }
 
 
 def _track_goal_datum(goal_datum: dict) -> dict:

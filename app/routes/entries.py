@@ -8,7 +8,6 @@ the transaction detail popover and the companion view.
 
 import logging
 import re
-from datetime import date
 from typing import Any
 
 from flask import Blueprint, render_template, request
@@ -25,6 +24,7 @@ from app.schemas.validation import EntryCreateSchema, EntryUpdateSchema
 from app.services import entry_service
 from app.exceptions import NotFoundError, ValidationError
 from app.utils.auth_helpers import get_accessible_transaction
+from app.utils.dates import display_today
 from app.utils.db_errors import is_unique_violation
 from app.utils.error_fragments import (
     INVALID_REFERENCE_MSG,
@@ -149,7 +149,14 @@ def _render_entry_list(
         txn=txn,
         entries=entries,
         remaining=remaining,
-        today=date.today().isoformat(),
+        # The add form's hidden ``entry_date`` default, and the edit form's
+        # ``max``.  It is the USER's today (``display_today``), not the
+        # server's UTC one, because the service refuses a future entry date on
+        # that same clock (ruling R-M): with two clocks here, a UTC-running
+        # process would stamp tomorrow's date for the evening hours the frames
+        # disagree, and the app's own form would post a value its own guard
+        # rejects.
+        today=display_today().isoformat(),
         editing_id=editing_id,
         out_of_period_ids=out_of_period_ids,
         conflict=conflict,

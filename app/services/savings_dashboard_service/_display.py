@@ -1,8 +1,9 @@
 """
 Shekel Budget App -- Savings Dashboard: template display grouping.
 
-Groups the per-account projection dicts into the category-ordered
-structure the savings dashboard template renders.  No Flask imports.
+Groups the per-account :class:`~.._types.AccountProjection` values into the
+category-ordered structure the savings dashboard template renders.  No Flask
+imports.
 """
 
 from collections import OrderedDict
@@ -10,6 +11,7 @@ from decimal import Decimal
 
 from app import ref_cache
 from app.enums import AcctCategoryEnum
+from app.services.savings_dashboard_service._types import AccountProjection
 
 ZERO = Decimal("0.00")
 
@@ -19,6 +21,16 @@ ZERO = Decimal("0.00")
 # (:class:`~app.enums.AcctCategoryEnum`) exhaust every account that carries a
 # ``category_id``, so this order also enumerates every band the net-worth
 # composition can produce.
+#
+# **It is THE band vocabulary, and the net-worth producer now derives from it**
+# (plan step X-t3, finding N-108): ``_net_worth._ASSET_BANDS`` is this tuple
+# minus the liability key.  The two are the same set by construction rather
+# than by two lists agreeing, so a category added here cannot ship a chart band
+# with no grid group behind it.  The ORDER differs on purpose -- this one is the
+# grid's card order, the composition's is the chart's stack order -- and only
+# the SET is shared.  The presentation homes that cannot import it (the chart
+# script, the cockpit template's microcopy, the CSS band tokens) are held to
+# this set by ``test_net_worth_band_vocabulary.py``.
 _CATEGORY_ORDER = ("asset", "liability", "retirement", "investment", "other")
 
 # The four real categories paired with their display keys, in the order the
@@ -65,7 +77,9 @@ def account_category_key(account) -> str:
     return "other"
 
 
-def category_key_by_account_id(account_data) -> dict[int, str]:
+def category_key_by_account_id(
+    account_data: list[AccountProjection],
+) -> dict[int, str]:
     """Map each account's id to its cockpit category key.
 
     The composition-split adapter: the net-worth trend
@@ -76,20 +90,22 @@ def category_key_by_account_id(account_data) -> dict[int, str]:
     grid group cannot drift.
 
     Args:
-        account_data: The per-account projection dicts (each carrying an
+        account_data: The per-account projections (each carrying an
             ``account``).
 
     Returns:
         ``{account_id: category_key}`` over every account in *account_data*.
     """
     return {
-        ad["account"].id: account_category_key(ad["account"])
+        ad.account.id: account_category_key(ad.account)
         for ad in account_data
     }
 
 
-def _group_accounts_by_category(account_data):
-    """Group account data dicts by account type category.
+def _group_accounts_by_category(
+    account_data: list[AccountProjection],
+) -> "OrderedDict[str, list[AccountProjection]]":
+    """Group the per-account projections by account type category.
 
     Returns an OrderedDict with category labels as keys, preserving
     the display order: Asset, Liability, Retirement, Investment, Other.
@@ -101,7 +117,7 @@ def _group_accounts_by_category(account_data):
     for cat_label in _CATEGORY_ORDER:
         cat_accounts = [
             ad for ad in account_data
-            if account_category_key(ad["account"]) == cat_label
+            if account_category_key(ad.account) == cat_label
         ]
         if cat_accounts:
             grouped[cat_label] = cat_accounts
@@ -130,7 +146,7 @@ def _compute_group_subtotals(grouped_accounts):
     Args:
         grouped_accounts: The ``OrderedDict`` from
             :func:`_group_accounts_by_category` (category label ->
-            list of per-account projection dicts).
+            list of per-account projections).
 
     Returns:
         ``OrderedDict[str, Decimal]`` mapping each category label to its
@@ -140,7 +156,7 @@ def _compute_group_subtotals(grouped_accounts):
     for cat_label, cat_accounts in grouped_accounts.items():
         total = ZERO
         for ad in cat_accounts:
-            balance = ad["current_balance"]
+            balance = ad.current_balance
             if balance is not None:
                 total += balance
         subtotals[cat_label] = total

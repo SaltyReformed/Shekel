@@ -1,0 +1,345 @@
+"""Investment dashboard -- the growth CHART.
+
+Everything ``investment/_growth_chart.html`` draws: the forward projection over
+a synthetic horizon, the modeled-history series behind it, the Today and
+retirement markers between them, and the optional what-if overlay.  Split from
+the cards at this package's module-size ceiling on plan step D1c's cohesion
+line -- that half answers "what does this account look like right now", this one
+answers "what does it look like from here on".
+
+The initial dashboard chart and the HTMX fragment share ONE synthetic-period
+basis at the slider default horizon, so they cannot disagree.
+
+Boundary discipline (``CLAUDE.md``): no Flask symbol, all money is
+:class:`~decimal.Decimal`; ``float`` appears only at the Chart.js
+serialization boundary.
+"""
+
+from datetime import timedelta
+from decimal import Decimal, InvalidOperation
+
+from app.models.account import Account
+from app.services import balance_at, growth_engine, pay_period_service
+from app.utils.money import round_money
+
+from ._context import (
+    _ProjectionContext,
+    _PeriodList,
+    _load_investment_params,
+    _load_planned_retirement_date,
+    _load_projection_context,
+)
+
+
+def _run_growth_projection(
+    ctx: _ProjectionContext, periods: _PeriodList,
+) -> list[growth_engine.ProjectedBalance]:
+    """Project balances across *periods* from the shared growth context.
+
+    The single home for the ``growth_engine.project_balance`` splat the
+    dashboard and the growth-chart fragment both issue with identical
+    arguments -- only the period list differs (the dashboard's future
+    real periods vs. the chart's synthetic horizon periods).  Callers
+    must guard ``ctx.params is not None`` before calling.
+
+    Seeds from ``ctx.projection_seed`` -- the modelled balance on the day
+    BEFORE ``ctx.projection_start``, which is the day after the history line's
+    last valued point (rulings R-AB / R-AE / R-AF).  The window and the seed's
+    past are therefore disjoint: the engine cannot re-grow a day the seed
+    already grew, nor re-apply a contribution it already holds, so nothing has
+    to be subtracted back out of either (deep-quality-hunt #9 / #14, findings
+    N-80 / N-84).
+
+    The annual-limit accounting seeds from ``ctx.projection_ytd``, which is the
+    THROUGH-current total on this surface: ruling R-AF put the current pay
+    period OUTSIDE the window, so the engine never applies that period's own
+    contribution and the strictly-before seed would leave the limit one period
+    too roomy (:func:`._context._projection_ytd` carries the worked figure).
+    """
+    return growth_engine.project_balance(
+        current_balance=ctx.projection_seed,
+        assumed_annual_return=ctx.params.assumed_annual_return,
+        periods=periods,
+        periodic_contribution=ctx.inputs.periodic_contribution,
+        employer_params=ctx.inputs.employer_params,
+        annual_contribution_limit=ctx.params.annual_contribution_limit,
+        ytd_contributions_start=ctx.projection_ytd,
+        contributions=ctx.contributions,
+    )
+
+
+def _build_chart_series(
+    projection: list[growth_engine.ProjectedBalance],
+    periods: _PeriodList,
+    seed_balance: Decimal,
+) -> tuple[list[str], list[str], list[str]]:
+    """Build the chart's ``(labels, balances, contributions)`` string lists.
+
+    The single home for the cumulative-contribution chart loop the
+    dashboard and the growth-chart fragment both ran inline with
+    different variable names (so R0801 never clustered them).  Labels
+    resolve against *periods*; because :func:`growth_engine.project_balance`
+    emits exactly one row per input period, every ``pb.period_id`` is
+    present in the map and the three lists stay equal length.  The
+    contribution series is the running ``seed_balance + cumulative
+    employee + employer`` total per period, where ``seed_balance`` is the
+    projection's start-of-first-period seed (deep-quality-hunt #9) so the
+    invested-principal line and the with-growth line share one origin.
+    """
+    period_map = {p.id: p for p in periods}
+    labels: list[str] = []
+    balances: list[str] = []
+    contributions: list[str] = []
+    cumulative_contrib = Decimal("0")
+    for pb in projection:
+        period = period_map.get(pb.period_id)
+        if period:
+            labels.append(period.start_date.strftime("%b %Y"))
+        balances.append(str(round_money(pb.end_balance)))
+        cumulative_contrib += pb.contribution + pb.employer_contribution
+        contributions.append(
+            str(round_money(seed_balance + cumulative_contrib))
+        )
+    return labels, balances, contributions
+
+
+def _empty_chart_context() -> dict:
+    """Return the empty-chart context (no projection to draw)."""
+    return {
+        "chart_labels": [],
+        "chart_balances": [],
+        "chart_contributions": [],
+        "projection_end": None,
+    }
+
+
+def _assemble_chart_context(
+    account: Account,
+    ctx: _ProjectionContext,
+    horizon_years: int,
+    what_if_raw: str | None,
+) -> dict:
+    """Build the full chart context: projection + history + markers (C2).
+
+    The single code path the dashboard first paint and the HTMX fragment both
+    use (synthetic periods across ``horizon_years`` for the committed +
+    optional what-if series, plus modeled history and Today/retirement
+    markers), so they cannot disagree on basis.  Empty when the horizon yields
+    no periods; callers guard ``ctx.params is not None``.
+
+    **The axis opens at ``ctx.projection_start``, not at today** (ruling R-AF):
+    the day after the history line's last valued point, which is the same day
+    ``ctx.projection_seed`` is read on.  Taking the window and the seed from ONE
+    derivation is what makes the two lines MEET -- deriving the window here and
+    the seed in the loader is exactly how they came to be 10-13 days apart, with
+    a step at the Today marker that nobody had chosen.
+    """
+    horizon_years = max(1, min(horizon_years, 40))
+    end_date = ctx.projection_start + timedelta(days=horizon_years * 365)
+    periods = growth_engine.generate_projection_periods(
+        start_date=ctx.projection_start, end_date=end_date,
+    )
+    if not periods:
+        return _empty_chart_context()
+    projection = _run_growth_projection(ctx, periods)
+    chart_context = _growth_chart_context(ctx, periods, projection, what_if_raw)
+    history = _build_history_series(account, ctx)
+    markers = _build_chart_markers(
+        account.user_id, len(history["history_balances"]), periods,
+    )
+    return {**chart_context, **history, **markers}
+
+
+def _build_history_series(account: Account, ctx: _ProjectionContext) -> dict:
+    """Return the modeled-history chart series over real past periods (C2).
+
+    Modeled balances up to and including the current period, read through the
+    SAME :func:`app.services.balance_at.balance_map` the headline uses (so the
+    tail meets the headline at the Today boundary).  Empty when no scenario /
+    current period / map; values are stringified cent ``Decimal``.
+    """
+    bctx = ctx.balance_ctx
+    if bctx.scenario is None or ctx.current_period is None:
+        return {"history_labels": [], "history_balances": []}
+    balances = balance_at.balance_map(account, bctx, ctx.all_periods)
+    if balances is None:
+        return {"history_labels": [], "history_balances": []}
+    labels: list[str] = []
+    values: list[str] = []
+    for period in ctx.all_periods:
+        if period.period_index > ctx.current_period.period_index:
+            continue
+        balance = balances.get(period.id)
+        if balance is None:
+            continue
+        labels.append(period.start_date.strftime("%b %Y"))
+        values.append(str(round_money(balance)))
+    return {"history_labels": labels, "history_balances": values}
+
+
+def _build_chart_markers(
+    user_id: int, history_len: int, projection_periods: _PeriodList,
+) -> dict:
+    """Return the Today-boundary and retirement-year chart markers (C2).
+
+    ``today_boundary_index`` (== history length) splits solid history from
+    the dashed projection; ``retirement_marker_index`` / ``retirement_year``
+    mark the projection period holding the planned retirement date, else
+    ``None`` (unset or beyond the horizon).
+    """
+    retirement_date = _load_planned_retirement_date(user_id)
+    retirement_year = (
+        retirement_date.year if retirement_date is not None else None
+    )
+    retirement_marker_index = None
+    if retirement_date is not None:
+        for offset, period in enumerate(projection_periods):
+            if period.start_date <= retirement_date <= period.end_date:
+                retirement_marker_index = history_len + offset
+                break
+    return {
+        "today_boundary_index": history_len,
+        "retirement_year": retirement_year,
+        "retirement_marker_index": retirement_marker_index,
+    }
+
+
+def _growth_chart_context(
+    ctx: _ProjectionContext,
+    periods: _PeriodList,
+    projection: list[growth_engine.ProjectedBalance],
+    what_if_raw: str | None,
+) -> dict:
+    """Assemble the growth-chart fragment's full template context.
+
+    Builds the committed-projection chart series plus the optional
+    what-if overlay and comparison card.  Split out of
+    :func:`compute_growth_chart_data` so that orchestrator stays a thin
+    load-project-render sequence.
+    """
+    chart_labels, chart_balances, chart_contributions = _build_chart_series(
+        projection, periods, ctx.projection_seed,
+    )
+
+    what_if_amount = _parse_what_if(what_if_raw)
+    what_if_balances, comparison = _compute_what_if_overlay(
+        what_if_amount, ctx, periods, projection,
+    )
+
+    return {
+        "chart_labels": chart_labels,
+        "chart_balances": chart_balances,
+        "chart_contributions": chart_contributions,
+        "what_if_balances": what_if_balances,
+        "what_if_amount": what_if_amount,
+        "comparison": comparison,
+        # Committed end balance at the horizon: the verdict strip's current-plan
+        # figure when no what-if is entered.
+        "projection_end": round_money(projection[-1].end_balance) if projection else None,
+    }
+
+
+def _parse_what_if(what_if_raw: str | None) -> Decimal | None:
+    """Parse the what-if string, returning ``None`` for invalid / negative input.
+
+    Zero is a valid input ("growth-only scenario: what if I stop
+    contributing?").  Anything that fails :class:`Decimal` parsing
+    or is strictly negative degrades to ``None`` -- the caller
+    interprets ``None`` as "no what-if overlay" and renders the
+    single-line chart.
+    """
+    if not what_if_raw:
+        return None
+    try:
+        value = Decimal(what_if_raw)
+    except (InvalidOperation, ValueError):
+        return None
+    if value < Decimal("0"):
+        return None
+    return value
+
+
+def _compute_what_if_overlay(
+    what_if_amount: Decimal | None,
+    ctx: _ProjectionContext,
+    periods: _PeriodList,
+    projection: list[growth_engine.ProjectedBalance],
+) -> tuple[list[str], dict | None]:
+    """Run the what-if projection (when an amount is supplied) plus comparison.
+
+    Returns:
+        ``(what_if_balances, comparison)`` where ``what_if_balances``
+        is a list of string-formatted end balances (one per period)
+        and ``comparison`` is ``None`` or a 5-key dict describing
+        committed-vs-what-if end balances.
+    """
+    if what_if_amount is None or not periods:
+        return [], None
+
+    # contributions=None forces the engine to use periodic_contribution
+    # for every period (a flat-rate what-if).  Employer match is
+    # recalculated automatically because the per-period loop passes
+    # each period's contribution to ``calculate_employer_contribution``.
+    what_if_projection = growth_engine.project_balance(
+        current_balance=ctx.projection_seed,
+        assumed_annual_return=ctx.params.assumed_annual_return,
+        periods=periods,
+        periodic_contribution=what_if_amount,
+        employer_params=ctx.inputs.employer_params,
+        annual_contribution_limit=ctx.params.annual_contribution_limit,
+        ytd_contributions_start=ctx.projection_ytd,
+        contributions=None,
+    )
+
+    what_if_balances = [
+        str(round_money(pb.end_balance))
+        for pb in what_if_projection
+    ]
+
+    comparison = None
+    if projection and what_if_projection:
+        committed_end = round_money(projection[-1].end_balance)
+        whatif_end = round_money(what_if_projection[-1].end_balance)
+        difference = round_money(whatif_end - committed_end)
+        comparison = {
+            "committed_end": committed_end,
+            "whatif_end": whatif_end,
+            "difference": difference,
+            "is_positive": difference > Decimal("0"),
+            "is_zero": difference == Decimal("0"),
+        }
+    return what_if_balances, comparison
+
+
+def compute_growth_chart_data(
+    user_id: int,
+    account: Account,
+    horizon_years: int,
+    what_if_raw: str | None,
+) -> dict:
+    """Build the context for the ``investment/_growth_chart.html`` fragment.
+
+    Routes through the SAME :func:`_assemble_chart_context` the dashboard's
+    first paint uses (C2), so both agree on the synthetic-period basis and
+    carry the history series + markers.  Empty-chart shape when no params row
+    exists or the horizon yields no periods.
+
+    Args:
+        user_id: ID of the authenticated user.
+        account: The pre-ownership-checked account instance.
+        horizon_years: Slider value; clamped to ``[1, 40]`` defensively.
+        what_if_raw: Optional ``what_if_contribution``; invalid / negative
+            degrade to the single-line chart, ``Decimal("0")`` is valid.
+
+    Returns:
+        The chart fragment's context dict.
+    """
+    params = _load_investment_params(account.id)
+    if not params:
+        return _empty_chart_context()
+    all_periods = pay_period_service.get_all_periods(user_id)
+    current_period = pay_period_service.get_current_period(user_id)
+    ctx = _load_projection_context(
+        user_id, account, params, all_periods, current_period,
+    )
+    return _assemble_chart_context(account, ctx, horizon_years, what_if_raw)

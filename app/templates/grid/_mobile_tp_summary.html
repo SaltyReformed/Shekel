@@ -1,10 +1,9 @@
 {# Mobile "This Period" summary -- self-refreshing money totals.
 
-   Owner-only.  The companion route passes no ``subtotals`` /
-   ``balances`` (Q-2 (c) of the mobile-first v3 plan), so the
-   ``{% if subtotals is defined %}`` guard makes this partial render
-   nothing on the companion page -- there the card swap alone is the
-   whole update.
+   Owner-only.  The companion route passes no ``columns`` (Q-2 (c) of the
+   mobile-first v3 plan), so the ``columns is defined`` guard makes this
+   partial render nothing on the companion page -- there the card swap alone
+   is the whole update.
 
    Why it self-refreshes: the mobile / companion Mark Paid path swaps a
    single card in place and fires ``HX-Trigger: mobileCardSettled``
@@ -27,16 +26,39 @@
        HTMX ignores ``hx-swap-oob`` and the duplicate spans would
        otherwise double the totals on screen).
 
+   Ruling R-P: this card renders ruling R-O's three conditional lines -- Timing
+   & true-ups, Contributions and the modelled return -- on R-O's own rule, so
+   the mobile summary explains its balance with the same chain the desktop
+   footer does, in the same order (ruling R-AH: the money is contributed and
+   then earns).  Without them the card would show a Net Cash Flow that does not
+   account for the balance beside it -- the visible contradiction ruling R-K
+   refused to ship, on the form factor Mark Paid is used from.
+
    Expected context (* required):
      period *     -- the PayPeriod being summarised.
-     subtotals    -- dict[period_id -> PeriodSubtotal].  Absent ->
-                     whole partial renders nothing.
-     balances     -- (optional) dict[period_id -> Decimal | None].
-                     Absent or missing the key -> the Projected
-                     Balance card is omitted.
-     increments   -- (optional) dict[period_id -> Decimal | None] per-period
-                     interest accrual; when it carries a value for the period
-                     the Interest bar renders (INTEREST grid account only).
+     columns      -- dict[period_id -> GridColumn].  Absent -> whole partial
+                     renders nothing (the companion page passes none).
+                     Missing this period's key -> the Projected Balance card
+                     is omitted.
+     period_row_flags -- (optional) GridRowFlags for THIS period alone.
+                     ``.reconciliation`` / ``.contribution`` / ``.accrual``
+                     decide the three conditional bars.  Deliberately NOT the
+                     visible window's flags: this card is a one-period surface,
+                     so ruling R-O's "at least one visible column" is "this
+                     column", and the self-refresh endpoint has no window to
+                     evaluate anyway -- feeding it the grid's window would
+                     make the initial include and the refresh disagree.
+     accrual_label -- the modelled-return bar's per-kind heading, resolved in
+                     the route from classify_account (ruling R-AI): "Interest"
+                     on an HYSA, "Growth" on a 401(k), "Appreciation" on a
+                     house.  REQUIRED wherever ``period_row_flags`` is -- the
+                     two arrive together from all three render entries, and
+                     the one include that supplies neither (the companion
+                     page) is already suppressed whole by the ``columns is
+                     defined`` guard above.  Deliberately NOT defaulted: a
+                     fallback word would let a fourth render entry ship a
+                     silently wrong label, which is the shape ruling R-AI's
+                     "no default-less ``.get``" reasoning rejects.
      account      -- (optional) the grid Account, for the self-refresh
                      url_for's ``account_id``.  ``None`` for the
                      zero-accounts edge.
@@ -46,7 +68,8 @@
                      are emitted for the refresh but not the initial
                      include.
 #}
-{% if subtotals is defined %}
+{% if columns is defined %}
+{% set col = columns.get(period.id) %}
 <div id="mobile-tp-summary-{{ period.id }}"
      hx-get="{{ url_for('grid.mobile_this_period_summary', period_id=period.id, account_id=account.id) if account else url_for('grid.mobile_this_period_summary', period_id=period.id) }}"
      hx-trigger="mobileCardSettled from:body"
@@ -56,7 +79,9 @@
 
   {# --- Net Cash Flow Bar --- #}
   {% from "_money_macros.html" import money %}
-  {% set net = subtotals[period.id].net %}
+  {% from "grid/_grid_row_macros.html" import accrual_class, accrual_money %}
+  {% if col is not none %}
+  {% set net = col.net %}
   <div class="d-flex justify-content-between align-items-center px-3 py-2 mb-3 rounded bg-surface-raised">
     <span class="fw-bold small">Net Cash Flow</span>
     <span class="font-mono fw-bold {{ 'text-success' if net >= 0 else 'balance-negative' }}">
@@ -65,50 +90,80 @@
     </span>
   </div>
 
-  {# --- Interest accrual (INTEREST grid account only) ---
-       Rendered only when ``increments`` carries a value for this period,
-       which the balance-at seam populates exclusively for an INTEREST grid
-       account; for every other kind it is empty and this bar is omitted.
-       Sits between Net Cash Flow and Projected Balance so the accrual that
-       lifts the balance beyond the cash flow is visible. #}
-  {% if increments is defined and increments.get(period.id) is not none %}
-  <div class="d-flex justify-content-between align-items-center px-3 py-2 mb-3 rounded bg-surface-raised accrual-row interest-row">
-    <span class="fw-bold small"><i class="bi bi-percent" aria-hidden="true"></i> Interest</span>
-    <span class="font-mono fw-bold text-success">{{ money(increments[period.id], cents=false) }}</span>
+  {# --- Timing & true-ups (ruling R-O / R-P) ---
+       Money budgeted to this period that moved in another, money that moved
+       here but is budgeted elsewhere, and the balance assertions made inside
+       it.  Rendered on the seam's one visibility rule, never a rule decided
+       here. #}
+  {% if period_row_flags is defined and period_row_flags.reconciliation %}
+  <div class="d-flex justify-content-between align-items-center px-3 py-2 mb-3 rounded bg-surface-raised accrual-row reconciliation-row">
+    <span class="fw-bold small"><i class="bi bi-arrow-left-right" aria-hidden="true"></i> Timing &amp; true-ups</span>
+    <span class="font-mono fw-bold">{{ money(col.reconciliation, cents=false) }}</span>
   </div>
   {% endif %}
 
-  {# --- Projected End Balance (requires balances) --- #}
-  {% if balances is defined %}
-    {% set bal = balances.get(period.id) %}
-    {% if bal is not none %}
-      <div class="card mb-3 {{ 'border-danger' if bal < 0 else '' }}">
-        <div class="card-body py-2 d-flex justify-content-between align-items-center">
-          <span class="fw-bold small">
-            {% if bal < 0 %}<i class="bi bi-exclamation-triangle-fill text-danger me-1"></i>{% endif %}
-            Projected Balance
-          </span>
-          <span class="font-mono fw-bold fs-5 {% if bal < 0 %}text-danger{% else %}text-accent{% endif %}">
-            {{ money(bal) }}
-          </span>
-        </div>
-      </div>
-    {% endif %}
+  {# --- Contributions (INVESTMENT grid account only) ---
+       What the account's payroll puts in, employee plus employer.  Only an
+       INVESTMENT account has such a feed, so this bar can never appear on an
+       HYSA or a Property. #}
+  {% if period_row_flags is defined and period_row_flags.contribution %}
+  <div class="d-flex justify-content-between align-items-center px-3 py-2 mb-3 rounded bg-surface-raised accrual-row modelled-contribution-row">
+    <span class="fw-bold small"><i class="bi bi-plus-circle" aria-hidden="true"></i> Contributions</span>
+    <span class="font-mono fw-bold">{{ money(col.contribution) }}</span>
+  </div>
+  {% endif %}
+
+  {# --- Modelled return (an account that models one) ---
+       Labelled per kind by the route (ruling R-AI).  Sits between the
+       explanations and Projected Balance so the growth that lifts the balance
+       beyond the cash flow is visible, and AFTER Contributions because that is
+       the order the replay resolves them in (ruling R-AH).
+
+       The FLAG alone decides, with no second test beside it: for this
+       one-period surface a true flag means THIS column is non-zero, so a
+       redundant guard here would only mask a flag scoped to the wrong window
+       (the defect X-c2b1's review found -- the initial include was passing the
+       grid's whole visible window).
+
+       The sign reaches the styling (finding N-88): this bar hard-coded
+       ``text-success``, which was safe only while INTEREST was the sole kind
+       reaching it.  ``accrual_class`` / ``accrual_money`` state the three-way
+       rule once for all three surfaces. #}
+  {% if period_row_flags is defined and period_row_flags.accrual %}
+  <div class="d-flex justify-content-between align-items-center px-3 py-2 mb-3 rounded bg-surface-raised accrual-row modelled-accrual-row">
+    <span class="fw-bold small"><i class="bi bi-percent" aria-hidden="true"></i> {{ accrual_label }}</span>
+    <span class="font-mono fw-bold{{ accrual_class(col.accrual) }}">{{ accrual_money(col.accrual) }}</span>
+  </div>
+  {% endif %}
+
+  {# --- Projected End Balance --- #}
+  {% set bal = col.balance %}
+  {% if bal is not none %}
+  <div class="card mb-3 {{ 'border-danger' if bal < 0 else '' }}">
+    <div class="card-body py-2 d-flex justify-content-between align-items-center">
+      <span class="fw-bold small">
+        {% if bal < 0 %}<i class="bi bi-exclamation-triangle-fill text-danger me-1"></i>{% endif %}
+        Projected Balance
+      </span>
+      <span class="font-mono fw-bold fs-5 {% if bal < 0 %}text-danger{% else %}text-accent{% endif %}">
+        {{ money(bal) }}
+      </span>
+    </div>
+  </div>
+  {% endif %}
   {% endif %}
 
   {# --- Out-of-band refresh of the section-header totals ---
        Only on the HTMX response (oob=true); on the initial include
        these are skipped so the header totals are not duplicated. #}
-  {% if oob %}
-    {% set inc_total = subtotals[period.id].income %}
+  {% if oob and col is not none %}
     <span id="mobile-tp-income-total-{{ period.id }}"
           hx-swap-oob="true" class="font-mono fw-bold">
-      {% if inc_total %}{{ money(inc_total, cents=false) }}{% else %}$0{% endif %}
+      {% if col.income %}{{ money(col.income, cents=false) }}{% else %}$0{% endif %}
     </span>
-    {% set exp_total = subtotals[period.id].expense %}
     <span id="mobile-tp-expense-total-{{ period.id }}"
           hx-swap-oob="true" class="font-mono fw-bold">
-      {% if exp_total %}{{ money(exp_total, cents=false) }}{% else %}$0{% endif %}
+      {% if col.expense %}{{ money(col.expense, cents=false) }}{% else %}$0{% endif %}
     </span>
   {% endif %}
 

@@ -6,7 +6,10 @@ a single row, these answer "how much of this hits the checking balance right
 now?" -- the cash analog of :mod:`app.services.loan_ledger._split`, which
 answers the same question for one loan payment (principal / interest / escrow).
 
-Two rule families live here, and they compose in one direction:
+Three rule families live here, split by the question they answer.
+
+What a row is worth while it is still PROJECTED -- a reservation, money not yet
+gone -- is two of them, composing in one direction:
 
   * :func:`live_amount_overrides` PRODUCES the ``{transaction_id: Decimal}``
     map of what rows are worth right now when their stored amount is a stale
@@ -15,6 +18,16 @@ Two rule families live here, and they compose in one direction:
     the shared :func:`_override_for` lookup), falling back to the stored figure
     -- and, for an expense carrying entries, to the entries-aware reservation
     formula :func:`_entry_checking_impact`.
+
+What a row is worth once it has SETTLED -- money that really moved -- is the
+third, and it is deliberately none of the above:
+
+  * :func:`settled_cash_leg` is ``effective_amount - Sigma(credit entries)``,
+    signed by transaction type.  Neither read-time adjustment above can reach a
+    settled row (both filter to ``is_projected``), and a reservation would be
+    meaningless for cash already gone.  It arrived here at plan step X-a from
+    ``posting_service``, so the ledger WRITER and the cash WALK price one row
+    through the same function.
 
 **Why they are one module (plan step D1c).**  They were split across two:
 ``live_amount_overrides`` sat in the cash event sources while the four rules
@@ -34,7 +47,8 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from app.utils.balance_predicates import is_projected
+from app.models.transaction import Transaction
+from app.utils.balance_predicates import is_balance_contributing, is_projected
 
 
 def _override_for(txn, amount_overrides):
@@ -62,18 +76,18 @@ def _entry_checking_impact(entries, estimated_amount):
     """Three-bucket checking reservation for a sequence of debit/credit entries.
 
     The core of the entry-aware reduction, with exactly ONE caller:
-    :func:`_entry_aware_amount` below, which owns both the as-of window and the
-    empty-entries short-circuit.
+    :func:`_entry_aware_amount` below, which owns the empty-entries
+    short-circuit.
 
     **It is private, and D1c is what made that the honest answer.**  It was
     public for one documented reason -- ``balance_resolver`` held a second copy
     of the reduction (``_entry_aware_amount_dated``) and reached in here for the
     shared bucketing so the two paths "could not drift between the two balance
-    paths".  D1c deleted that copy: the window is a parameter now, so there is
-    no second path to keep in step, and a public name justified by a caller that
-    no longer exists is the stale-rationale shape finding N-30 is about.  Being
-    private also retires its W9909 ruling -- structure doing what a fence entry
-    was doing, which is the whole point of Phase D.
+    paths".  D1c deleted that copy, so there is no second path to keep in step,
+    and a public name justified by a caller that no longer exists is the
+    stale-rationale shape finding N-30 is about.  Being private also retires its
+    W9909 ruling -- structure doing what a fence entry was doing, which is the
+    whole point of Phase D.
 
     Partitions the supplied entries into three buckets and returns the portion
     of the budget still held back against checking:
@@ -93,15 +107,15 @@ def _entry_checking_impact(entries, estimated_amount):
     transaction), so it only reduces the reservation.
 
     This function sees whatever entry set it is handed and applies the
-    bucketing to all of it.  Windowing by ``as_of`` and short-circuiting an
-    empty set both belong to the caller, and there is now exactly one, so those
-    two decisions are made once rather than kept in step across two paths.
+    bucketing to all of it.  Short-circuiting an empty set belongs to the
+    caller, and there is exactly one, so that decision is made once rather than
+    kept in step across two paths.
 
     Args:
         entries: An iterable of entry rows, each exposing ``amount``
             (Decimal), ``is_credit`` (bool), and ``is_cleared`` (bool).
-            The caller is responsible for any date/window filtering and
-            for short-circuiting an empty sequence before calling.
+            The caller is responsible for short-circuiting an empty
+            sequence before calling.
         estimated_amount: Decimal -- the transaction's budgeted amount,
             the reservation ceiling before debits and credits reduce it.
 
@@ -126,7 +140,7 @@ def _entry_checking_impact(entries, estimated_amount):
     )
 
 
-def _entry_aware_amount(txn, as_of=None):
+def _entry_aware_amount(txn):
     """Compute the checking-balance impact for a single expense transaction.
 
     For projected expenses with entries (loaded eagerly or
@@ -176,13 +190,15 @@ def _entry_aware_amount(txn, as_of=None):
     vs $114.29 on /savings for the same data) is exactly that seam in
     production: the grid eager-loaded entries and computed the
     reduction; /savings did not and got back ``estimated_amount``
-    unchanged.  E-25's correction makes the canonical producer
-    ``app.services.balance_at._cash_engine.balances_for`` always
-    eager-load entries (through
-    :func:`app.services.cash_ledger._facts.load_balance_transactions`),
-    so this function never sees an unloaded relationship from a routed
-    caller.  The remaining ``getattr(txn, "entries", ())`` access below
-    covers two safe cases:
+    unchanged.  E-25's correction put the eager load inside the
+    LOADER rather than leaving it to each consumer, and plan step X-g4b
+    left that property where the fold reads: every row this rule is
+    handed comes from
+    :func:`app.services.cash_ledger._facts._unwindowed_contributing_rows`,
+    which issues ``selectinload(Transaction.entries)`` for both halves
+    of the event stream, so this function never sees an unloaded
+    relationship from a routed caller.  The remaining
+    ``getattr(txn, "entries", ())`` access below covers two safe cases:
 
       * **Not-yet-routed ORM callers** (savings/accounts/calendar/
         year-end/investment/retirement, fixed in Commits 6-9): the
@@ -200,30 +216,34 @@ def _entry_aware_amount(txn, as_of=None):
     yielding two different values for two different consumers based
     purely on whether their query happened to ``selectinload``.
 
-    **The as-of window is a PARAMETER, not a second function (plan step
-    D1c).**  ``balance_resolver`` carried a near-identical
-    ``_entry_aware_amount_dated`` whose docstring said "the formula is
-    otherwise identical to the engine helper" -- two copies of the
-    checking-reservation rule, kept in step by hand, which is the
-    agreeing-by-coincidence shape this arc exists to kill (and which
-    ``duplicate-code`` reported the moment both copies called the same
-    ``income_amount``).  One rule with an optional bound cannot drift, and
-    it makes the choice VISIBLE at the call site: a caller now passes a
-    date or does not, rather than having to remember which of two helpers
-    the calendar surfaces need.
+    **There is no as-of window, and the reason is what an ENTRY is (plan step
+    X-c2c1, ruling R-M).**  This carried an optional date bound (E-27 / HIGH-02
+    / W-277) that dropped entries dated after the reader's now, so a purchase
+    that had not happened could not clear the reservation early.  Ruling R-M
+    answered that at the SOURCE instead: an entry RECORDS a purchase that
+    happened, so plan step X-c0 refuses ``entry_date > display_today()`` at both
+    write doors (:func:`app.services.entry_service._reject_future_entry_date`)
+    -- and a purchase that happened belongs in the reservation whatever date the
+    reader is asking from.  What a row is WORTH is a function of the row, as
+    :func:`settled_cash_leg` beside it already is; the reader's clock decides
+    WHEN the row lands (ruling R-G's clamp, in the seam's fold), never what it
+    is worth.
+
+    Two measured facts, so the deletion is not read as merely tidy.  It moves
+    nothing: no stored entry is dated after any reader's now -- the write guard
+    bounds every row at ``display_today()``, which is never after the UTC
+    ``date.today()`` a :class:`~app.services.balance_at.BalanceContext` pins by
+    default, and zero rows in either database carry a future date (0 of 74 and 0
+    of 47, re-verified 2026-07-26).  And the only read it could ever have
+    changed is a HISTORICAL one, whose plan is TODAY's still-Projected rows
+    clamped forward rather than the plan as it stood then -- so windowing their
+    entries was a partial as-of purity inside a tier that has none.
 
     Args:
         txn: A Transaction object.  The ``entries`` relationship may
             be eager-loaded (canonical producer), unloaded
             (transitional caller; lazy-loads on demand), or absent
             (test fake).
-        as_of: Optional calendar date bounding entry inclusion (E-27 /
-            HIGH-02 / W-277).  ``None`` (the default) counts every loaded
-            entry.  With a date, entries dated AFTER it are excluded: a
-            purchase that has not happened yet cannot have cleared the
-            bank as of that date, and counting it would reduce the
-            reservation prematurely and ship a wrong balance for a
-            calendar month-end.
 
     Returns:
         Decimal -- the amount this transaction contributes to checking
@@ -253,20 +273,94 @@ def _entry_aware_amount(txn, as_of=None):
     if not is_projected(txn):
         return txn.effective_amount
 
-    if as_of is not None:
-        entries = [entry for entry in entries if entry.entry_date <= as_of]
-        if not entries:
-            # No purchase has occurred yet as of ``as_of``; the full
-            # estimated reservation is still pending.  ``effective_amount``
-            # collapses to estimated for an unfilled Projected expense
-            # (actual_amount is unset until it settles), so this matches
-            # the unwindowed empty-entries branch above.
-            return txn.effective_amount
-
     # Partition the entries and hold back the unreconciled budget.  The
     # bucketing rule and the reservation formula live once, in
     # ``_entry_checking_impact`` (E-27).
     return _entry_checking_impact(entries, txn.estimated_amount)
+
+
+def _credit_entry_sum(txn: Transaction) -> Decimal:
+    """Return the sum of a transaction's credit (credit-card) entry amounts.
+
+    The ``Sigma(credit entry amounts)`` term of the confirmed-cash-effect
+    formula: an envelope's credit purchases are excluded from the checking
+    outflow because each posts its own CC Payback when that payback settles
+    (``credit_workflow``), so counting them here would double-count against the
+    payback.  A plain transaction has no entries, so this is ``Decimal("0")``
+    and the effect collapses to ``effective_amount``.
+
+    Args:
+        txn: The transaction whose credit entries to sum.
+
+    Returns:
+        The sum of ``amount`` over the transaction's ``is_credit`` entries, as a
+        ``Decimal`` (``Decimal("0")`` when there are none).
+    """
+    return sum(
+        (entry.amount for entry in txn.entries if entry.is_credit),
+        Decimal("0"),
+    )
+
+
+def settled_cash_leg(txn: Transaction) -> Decimal:
+    """Return the confirmed cash effect of a SETTLED row: what really moved.
+
+    The settled counterpart of the projected valuations beside it, and the ONE
+    statement of that rule: ``effective_amount - Sigma(credit entry amounts)``,
+    signed ``+`` for income (money entering the account) and ``-`` for an
+    expense (money leaving).  The sign follows the transaction TYPE, never the
+    account class, so the leg is correct whether the cash account is an asset
+    (Checking) or a liability (a direct charge on a Credit Card account).
+
+    For a plain transaction the credit sum is zero and the effect collapses to
+    ``+/-effective_amount``.  For an ENVELOPE at settle ``effective_amount``
+    equals the sum of ALL its entries (``compute_actual_from_entries`` sets
+    ``actual_amount`` so), and subtracting the credit entries collapses the
+    result to the DEBIT-only outflow -- with no branch on "is this an envelope".
+
+    **This is why the rule lives HERE (plan step X-a), not in the posting
+    writer.**  It was ``posting_service._signed_cash_leg``, private to the
+    module that WRITES the ledger -- the same inversion plan step B0 corrected on
+    the loan side, where the payment split lived inside the posting package and
+    every other consumer had to reach through its privates for it.  Two
+    consumers need this rule now: the writer, which posts the effect, and the
+    cash WALK (:func:`app.services.cash_ledger.walk_cash_ledger`), which folds
+    it.  A second copy would let the projection and the posted ledger disagree
+    about what a settled row was worth -- measured on production 2026-07-25
+    before this move, a ``effective_amount``-only walk diverged from the posted
+    ledger on 10 of 130 Checking rows and by up to ``$181.58`` on one, because
+    every one of them was an envelope carrying credit-card entries.
+
+    The bulk oracle reader ``posting_reads.settled_transaction_effect`` computes
+    the same sum in SQL and deliberately stays independent: it is the Step-3
+    reconciliation oracle's own window onto the ledger, and an oracle that
+    shared this implementation could not grade it.
+
+    **TOTAL: a non-contributing row is worth exactly zero.**  A soft-deleted or
+    Credit / Cancelled row has an ``effective_amount`` of zero, but its ENTRIES
+    survive on the row -- so without the guard below,
+    ``0 - Sigma(credit)`` negated for an expense returns a FABRICATED INFLOW: a
+    deleted grocery envelope carrying an $80.00 credit purchase valued at
+    ``+$80.00``, money the account never received.  Unreachable through today's
+    two callers (the walk pre-filters with
+    :func:`~app.utils.balance_predicates.balance_contributing_clause`, and the
+    writer resolves a target only on the settle side), which is exactly why it
+    would have waited to be discovered by a third.  A function whose answer is
+    correct only because every caller happens to pre-filter is a contract nobody
+    can see; this one is total instead.
+
+    Args:
+        txn: The transaction whose confirmed cash effect to value.  A
+            non-contributing row (soft-deleted, Credit, or Cancelled) returns
+            ``0.00`` whatever entries it carries.
+
+    Returns:
+        The signed confirmed cash effect as a ``Decimal``.
+    """
+    if not is_balance_contributing(txn):
+        return Decimal("0.00")
+    net = txn.effective_amount - _credit_entry_sum(txn)
+    return net if txn.is_income else -net
 
 
 def income_amount(txn, amount_overrides):
@@ -302,7 +396,7 @@ def income_amount(txn, amount_overrides):
     return txn.effective_amount if override is None else override
 
 
-def _expense_amount(txn, amount_overrides, as_of=None):
+def _expense_amount(txn, amount_overrides):
     """Return the expense contribution for ``txn``, honoring a live override.
 
     The expense-leg analogue of :func:`income_amount`.  When the
@@ -316,24 +410,20 @@ def _expense_amount(txn, amount_overrides, as_of=None):
     from the map) returns the entry-aware amount unchanged, so non-loan
     expenses and the pre-seam behavior are byte-identical.
 
-    An override WINS over the as-of window, exactly as it wins over the
-    entry formula: a live-derived amount is what the row is worth now, and
-    it carries no entries to window.
+    An override WINS over the entry formula: a live-derived amount is what
+    the row is worth now, and it carries no entries to reduce.
 
     Args:
         txn: An expense Transaction.
         amount_overrides: Optional ``{transaction_id: Decimal}`` map, or
             None.
-        as_of: Optional calendar date bounding entry inclusion, forwarded
-            verbatim to :func:`_entry_aware_amount`; ``None`` counts every
-            loaded entry.
 
     Returns:
         Decimal -- the override amount when present, else
         :func:`_entry_aware_amount`.
     """
     override = _override_for(txn, amount_overrides)
-    return _entry_aware_amount(txn, as_of) if override is None else override
+    return _entry_aware_amount(txn) if override is None else override
 
 
 def live_amount_overrides(account, scenario_id, transactions):

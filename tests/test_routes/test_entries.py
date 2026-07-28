@@ -6,7 +6,7 @@ ownership and companion access controls, HTMX response format,
 entry-transaction mismatch guards, and popover integration.
 """
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -24,6 +24,7 @@ from app.models.user import User, UserSettings
 from app.services import pay_period_service
 from app.services.auth_service import hash_password
 from app.services import account_service
+from app.utils.dates import display_today
 
 from tests._test_helpers import freeze_today
 
@@ -609,6 +610,122 @@ class TestCreateEntry:
                 transaction_id=txn.id,
             ).one()
             assert entry.user_id == seed_user["user"].id
+
+
+# ---- Future entry date refused (plan step X-c0, ruling R-M) -------------
+
+class TestAFutureEntryDateIsRefusedAtTheRoute:
+    """Both HTTP doors reject an entry dated after the user's today.
+
+    Plan step **X-c0**, ruling R-M.  The service owns the boundary; these pin
+    that a user actually reaching the endpoint gets a 400 with the reason,
+    that nothing is written, and that the surface a hand-built request bypasses
+    (the picker's ``max``) is not the only thing standing in the way.
+
+    The dates come from :func:`~app.utils.dates.display_today` rather than the
+    file's frozen ``date.today()``: the boundary is the user's civil date, and
+    the two frames differ for part of every evening.
+    """
+
+    def test_post_with_a_future_date_is_refused_and_writes_nothing(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """POST a tomorrow-dated purchase -> 400, no row, reason shown."""
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            tomorrow = display_today() + timedelta(days=1)
+
+            resp = auth_client.post(
+                f"/transactions/{txn.id}/entries",
+                data={
+                    "amount": "150.00",
+                    "description": "Costco run I have not made",
+                    "entry_date": tomorrow.isoformat(),
+                },
+            )
+
+            assert resp.status_code == 400
+            assert b"cannot be in the future" in resp.data
+            assert db.session.query(TransactionEntry).filter_by(
+                transaction_id=txn.id,
+            ).count() == 0
+
+    def test_post_with_todays_date_succeeds(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """The add form posts exactly today, so today must be accepted.
+
+        The complement of the refusal above: without it, a guard that rejected
+        its own form would look identical to a working one from the refusal
+        test alone.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            today = display_today()
+
+            resp = auth_client.post(
+                f"/transactions/{txn.id}/entries",
+                data={
+                    "amount": "42.87",
+                    "description": "Walmart",
+                    "entry_date": today.isoformat(),
+                },
+            )
+
+            assert resp.status_code == 200
+            entry = db.session.query(TransactionEntry).filter_by(
+                transaction_id=txn.id,
+            ).one()
+            assert entry.entry_date == today
+
+    def test_patch_moving_a_date_forward_is_refused(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """PATCH an existing entry's date into the future -> 400, unchanged."""
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = _add_entry(
+                txn, seed_user, "50.00", "Kroger",
+                entry_date=display_today() - timedelta(days=2),
+            )
+            original = entry.entry_date
+            tomorrow = display_today() + timedelta(days=1)
+
+            resp = auth_client.patch(
+                f"/transactions/{txn.id}/entries/{entry.id}",
+                data={"entry_date": tomorrow.isoformat()},
+            )
+
+            assert resp.status_code == 400
+            db.session.expire_all()
+            assert db.session.get(
+                TransactionEntry, entry.id,
+            ).entry_date == original
+
+    def test_the_edit_picker_is_bounded_at_the_users_today(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """The rendered date input carries max=<display today>.
+
+        A courtesy bound, not the gate -- but if it drifts off the service's
+        clock the form starts offering values the server refuses.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = _add_entry(txn, seed_user, "50.00", "Kroger")
+
+            resp = auth_client.get(
+                f"/transactions/{txn.id}/entries?editing={entry.id}",
+            )
+
+            assert resp.status_code == 200
+            assert (
+                f'max="{display_today().isoformat()}"'.encode() in resp.data
+            )
 
 
 # ---- Update entry (PATCH) -----------------------------------------------

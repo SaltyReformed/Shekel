@@ -655,8 +655,10 @@ class TestDashboardTracks:
 
         The D10 ruling (2026-07-09) INVERTED the track's presentation:
         the CURRENT total debt is now the hero figure (``track__pos-num``),
-        the destination is its caption ("to $0 . debt-free <Mon YYYY>"),
-        and the rail's here-label carries only the percent ("N% paid").
+        the destination is its caption ("to $0 . loans paid off <Mon YYYY>",
+        worded that way as of plan step X-q3 -- the date covers the debts
+        that HAVE a payoff model), and the rail's here-label carries only the
+        percent ("N% paid").
         The old anatomy (a "$X left" rail mid-label under a "$0" hero) is
         retired; the word "left" no longer appears in the track.
 
@@ -685,13 +687,102 @@ class TestDashboardTracks:
             assert 'track__pos-num font-mono">$1,000.00' in html
             # D10 caption: the destination, then the projected arrival.
             assert "to $0" in html
-            assert "debt-free" in html
+            assert "loans paid off" in html
             # D10 rail label: only the percent -- exactly 0% with no
             # payments recorded against the $1,000.00 principal.
             assert "0% paid" in html
             # The route scales the principal-paid fraction to a percent on
             # the rail marker's data attribute.
             assert "data-rail-pct=" in html
+
+    def test_debt_rail_renders_the_percent_not_the_raw_fraction(
+        self, app, auth_client, seed_user, seed_periods_today, db,
+    ):
+        """The rail renders 60%, not 0.6 -- the scaled value, not the field.
+
+        Plan step X-u made ``principal_paid_fraction`` a ``DebtSummary`` field,
+        and the route's ``_DebtTrackView`` carries the summary WHOLE beside the
+        percent it scales from it.  So the template can now reach the figure two
+        ways, and only one of them is renderable: ``.principal_paid_pct`` is the
+        0-100 float the rail positions from, while ``.summary
+        .principal_paid_fraction`` is the ``Decimal`` in ``[0, 1]``.
+
+        The existing marker test cannot tell them apart -- its fixture's
+        fraction is exactly 0, which renders "0% paid" either way.  This one
+        trues a $1,000.00 loan down to a known $400.00, so the fraction is
+        (1000.00 - 400.00) / 1000.00 = 0.6 and the honest rail reads
+        **60% paid** where a template reading the raw field would read "1% paid"
+        (``"{:.0f}".format(0.6)``) and position the marker at 0.6% of the rail.
+        """
+        # pylint: disable=import-outside-toplevel
+        from tests._test_helpers import create_loan_account, insert_trueup_event
+
+        with app.app_context():
+            acct = create_loan_account(
+                seed_user, db.session, name="Trued Auto Loan",
+            )
+            insert_trueup_event(acct.loan_params, Decimal("400.00"))
+            db.session.commit()
+
+            resp = auth_client.get("/dashboard")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            # The fixture really is at $400.00 of $1,000.00, so the fraction is
+            # 0.6 -- not the 0 the sibling test's fixture produces.
+            assert 'track__pos-num font-mono">$400.00' in html
+            assert "60% paid" in html
+            assert 'data-rail-pct="60.0' in html
+            # And the raw fraction is NOT what reached the rail.
+            assert "1% paid" not in html
+            assert 'data-rail-pct="0.6"' not in html
+
+    def test_debt_track_renders_its_dti_badge_and_tooltip(
+        self, app, auth_client, seed_user, seed_periods_today, db,
+    ):
+        """The debt track's DTI badge and tooltip reach the page.
+
+        Plan step X-s3 re-pointed both from ``tracks.debt.dti_ratio`` /
+        ``dti_label`` to ``tracks.debt.summary.dti.ratio`` / ``.label``, and
+        X-s3's adversarial review measured that NOTHING covered them: the whole
+        of this module passed with the badge and tooltip silently gone, because
+        Jinja is on the default ``Undefined`` (no ``StrictUndefined``), so a
+        wrong attribute path renders nothing rather than raising.  The
+        ``/savings`` twin of this block was covered; this one was not.
+
+        $78,000 / 26 = $3,000 gross biweekly -> $3,000 * 26 / 12 = $6,500
+        gross monthly.  A $1,000 auto loan at 5% over 24 months carries a
+        $43.87 monthly P&I, so DTI = 43.87 / 6500 * 100 = 0.7% -- 'healthy',
+        which is the badge, and the figure the title attribute carries.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.models.ref import FilingStatus
+        from app.models.salary_profile import SalaryProfile
+        from tests._test_helpers import create_loan_account
+
+        with app.app_context():
+            create_loan_account(
+                seed_user, db.session, name="Auto Loan",
+                principal=Decimal("1000.00"), rate=Decimal("0.05000"),
+                term=24,
+            )
+            db.session.add(SalaryProfile(
+                user_id=seed_user["user"].id,
+                scenario_id=seed_user["scenario"].id,
+                filing_status_id=db.session.query(FilingStatus).first().id,
+                name="DTI Salary",
+                annual_salary=Decimal("78000.00"),
+                state_code="NC",
+            ))
+            db.session.commit()
+
+            resp = auth_client.get("/dashboard")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            # The tooltip carries the PITI total and the ratio, glued together
+            # so a stray "0.7%" elsewhere cannot satisfy it.
+            assert 'title="paying $43.87/mo -- DTI 0.7%"' in html
+            # The band badge, from the label property derived off that ratio.
+            assert "Healthy" in html
 
     def test_no_goals_no_debt_tracks_absent(
         self, app, auth_client, seed_user, seed_periods_today,

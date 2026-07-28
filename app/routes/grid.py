@@ -7,8 +7,6 @@ for inline editing, balance refresh, and carry forward.
 """
 
 import logging
-from collections import OrderedDict
-from datetime import date
 from decimal import Decimal
 from typing import NamedTuple
 
@@ -25,16 +23,20 @@ from app.models.ref import Status, TransactionType
 from app.services import (
     balance_at,
     baseline_service,
-    cash_ledger,
     grid_view_service,
     pay_period_admin,
     pay_period_service,
+)
+from app.services.account_projection import (
+    AccountProjectionKind,
+    classify_account,
 )
 from app.services.account_resolver import resolve_grid_account
 from app.services.entry_service import build_entry_lists_dict, build_entry_sums_dict
 from app.services.grid_view_service import RowKey
 from app.services.balance_at import BalanceContext
 from app.utils.auth_helpers import require_owner
+from app.utils.dates import display_today
 
 logger = logging.getLogger(__name__)
 
@@ -112,10 +114,11 @@ class _GridContext(NamedTuple):
         current_period: The user's current pay period (the natural
             leftmost column when ``start_offset == 0``).
         periods: The visible period slice (length ``num_periods``).
-        all_periods: All periods from anchor forward; the balance-at
-            seam's cash-flow entry
-            :func:`app.services.balance_at.cash_balance_map` walks this
-            list to project balances.
+        all_periods: ALL of the user's pay periods; the balance-at seam's
+            grid view folds this list into one column per period.  Not
+            anchor-forward: the fold answers a pre-anchor period with the
+            balance in force then (plan step X-c2b2), and each period is
+            valued off its own span.
     """
 
     user_id: int
@@ -184,8 +187,8 @@ def _resolve_grid_context(user_id, request_args, settings):
         start_offset=start_offset,
         current_period=current_period,
         periods=periods,
-        # All periods from anchor forward -- the canonical balance
-        # producer walks this list to project per-period end balances.
+        # ALL of the user's periods -- the fold answers every one of them,
+        # and each render window is a slice of this domain.
         all_periods=pay_period_service.get_all_periods(user_id),
     )
 
@@ -227,120 +230,133 @@ def _load_grid_transactions(account, balance_ctx, all_periods):
     )
 
 
-def _grid_amount_overrides(account, balance_ctx, all_periods):
-    """Build the live projected-net override map for a grid account.
-
-    The grid threads ONE live override map into the balance / accrual
-    producer so projected salary income (and any loan-transfer debit)
-    reflects the current profile -- the build-once-and-thread pattern.  The
-    :func:`index` route builds this map inline from the ``all_transactions``
-    it already loads for row rendering; the self-refresh endpoints
-    (:func:`balance_row`) call this helper, which loads the account's grid
-    transactions via :func:`_load_grid_transactions` and delegates to
-    :func:`~app.services.cash_ledger.live_amount_overrides`.
-
-    Threading the map matters for an INTEREST grid account:
-    :func:`~app.services.balance_at.grid_balance_view` falls back to the
-    stored estimate on a bare ``None`` (its interest walk does not auto-build
-    a live map the way the cash producer does), so an unthreaded refresh
-    would show stored income while the full-page render shows live, and the
-    balance row would flicker between them on refresh.
-    """
-    transactions = _load_grid_transactions(account, balance_ctx, all_periods)
-    return cash_ledger.live_amount_overrides(
-        account, balance_ctx.scenario.id, transactions,
-    )
-
-
-def _build_grid_balances(account, balance_ctx, all_periods, amount_overrides=None):
-    """Compute the anchor balance, period-end projection, and accrual row.
+def _build_grid_view(account, balance_ctx, all_periods):
+    """Compute the grid's per-period column set and the anchor balance.
 
     Routes through the balance-at seam's kind-aware grid view
-    :func:`app.services.balance_at.grid_balance_view` (the kind-correct-grid
-    feature).  For an INTEREST grid account it returns the interest-accrued
-    balances PLUS the per-period interest accrual (the grid's read-only
-    "Interest" row); for every other kind it returns the cash-flow
-    running-balance with an empty accrual map -- byte-identical to the prior
-    :func:`~app.services.balance_at.cash_balance_map` behavior.  Only INTEREST
-    accrues on the grid because only its balance is a transaction sum (a typed
-    grid row flows into it); loans / investments / property are cash- or
-    projection-driven and stay on the cash-flow view (see the seam's grid-view
-    section comment).  Either way the grid's balance row reconciles with its
-    rows: ``balances[p] - balances[p-1] == subtotals[p].net + increments[p]``
-    (``increments`` is zero for the cash kinds).  The view also carries the
-    ``stale_anchor_warning`` flag the grid surfaces in its banner.
+    :func:`app.services.balance_at.grid_balance_view`, which returns ONE
+    :class:`~app.services.balance_at.GridColumn` per period carrying every
+    figure the grid renders for it -- the projected end balance, the income /
+    expense / net subtotals, ruling R-K's "Timing & true-ups" remainder, and
+    the two modelled tiers (the contribution and the accrual, rendered as their
+    own conditional rows and labelled per kind by :func:`_accrual_row_label`).
 
-    The grid additionally keeps its own ``all_transactions`` query (in
+    **One producer pass, not three** (plan step X-c2b1, finding N-48).  The
+    route used to call the balance producer once and the subtotal producer
+    twice (the visible window and the Plan window), building the live override
+    map itself and threading it into all three -- and the invariant binding the
+    balance row to the subtotal row was then a claim two producers had to keep
+    true rather than a property of one row set.  Asking the seam once for the
+    whole anchor-forward set and SLICING it per window is both cheaper and the
+    shape ruling R-K's identity needs: measured on the prod-shape clone
+    2026-07-26 (real Checking, 60 periods, 5 runs) the full render's producer
+    work drops ``219.9 ms -> 127.6 ms``, the whole saving being the second
+    override build this route no longer does.
+
+    The grid keeps its own ``all_transactions`` query (in
     :func:`_load_grid_transactions`) for display purposes: the route needs the
     ``template`` eager-load for row-key generation and the same entries for
     ``entry_sums`` / cell rendering, neither of which is in the producer's
-    remit.
+    remit.  It no longer builds its own live override map -- the view carries
+    the one the projection was computed with (ruling R-Q), so a cell and the
+    balance row cannot price the same row differently.
 
-    Returns the 2-tuple ``(grid_view, anchor_balance)``: the
-    :class:`~app.services.balance_at.GridBalanceView` (its ``balances``,
-    ``increments``, and ``stale_anchor_warning`` are the cohesive per-period
-    projection the desktop tfoot and the mobile / plan cards all consume) plus
-    the account's anchor balance (a separate concern -- the header's starting
-    figure, not part of the projection).  No-account state (the
-    user-with-zero-accounts edge case) returns an empty view + zero anchor --
-    the grid template renders empty cells cleanly.
-    """
-    anchor_balance = (
-        account.current_anchor_balance if account else Decimal("0.00")
-    )
+    Args:
+        account: The grid account, or ``None`` for the user-with-zero-accounts
+            edge case.
+        balance_ctx: The read pass's
+            :class:`~app.services.balance_at.BalanceContext`.
+        all_periods: Every one of the user's pay periods (the projection
+            domain; each render window is a slice of it).  The fold answers
+            all of them -- there is no anchor-forward restriction to respect
+            since plan step X-c2b2 -- and each is valued off its OWN span, so
+            passing the full set is what makes a window a window rather than a
+            re-based projection.
 
-    if account is not None:
-        grid_view = balance_at.grid_balance_view(
-            account, balance_ctx, all_periods, amount_overrides=amount_overrides,
-        )
-    else:
-        grid_view = balance_at.GridBalanceView(
-            balances=OrderedDict(),
-            stale_anchor_warning=False,
-            increments=OrderedDict(),
-        )
-    return grid_view, anchor_balance
-
-
-def _build_grid_subtotals(account, balance_ctx, periods, amount_overrides=None):
-    """Compute per-period subtotals via the canonical entries-aware producer.
-
-    Routing the on-screen subtotal row through
-    :func:`cash_ledger.period_subtotals` (E-25 / Commit 10) closes
-    F-002 Pair C / F-004 (Q-10): the same Projected-only,
-    entries-aware formula now generates both the subtotal row and the
-    balance row, so ``balances[p] - balances[p-1] ==
-    subtotals[p].net`` by construction.  The pre-Commit-10 inline
-    loop used raw ``txn.effective_amount`` and disagreed with the
-    entries-aware balance row whenever a Projected envelope expense
-    carried cleared/uncleared/credit entries.
-
-    Uses the batch :func:`cash_ledger.period_subtotals` (one
-    transaction query for the whole window), NOT a per-period
-    :func:`cash_ledger.period_subtotal` loop -- the latter was an
-    N+1 (one SELECT per visible column) over a transaction set the page
-    had already loaded (DH-#36; ``database.md`` flags grid N+1
-    especially).
-
-    The :class:`cash_ledger.PeriodSubtotal` dataclass exposes
-    ``.income``, ``.expense``, ``.net`` which the grid templates
-    access by attribute (dict and dataclass behave identically
-    through Jinja's attribute resolution).  Returns a dict keyed by
-    ``period.id``; no-account state returns zero-valued
-    ``PeriodSubtotal`` so template ``.income`` / ``.expense`` /
-    ``.net`` access does not raise ``AttributeError`` and the
-    rendered subtotals match the empty-balance projection.
+    Returns:
+        ``(grid_view, anchor_balance)`` -- the
+        :class:`~app.services.balance_at.GridBalanceView` and the account's
+        anchor balance (a separate concern: the header's starting figure, not
+        part of the projection).  No-account state returns the seam's empty
+        view and a zero anchor, and the grid template renders empty cells
+        cleanly.
     """
     if account is None:
-        zero = cash_ledger.PeriodSubtotal(
-            income=Decimal("0.00"),
-            expense=Decimal("0.00"),
-            net=Decimal("0.00"),
-        )
-        return {period.id: zero for period in periods}
-    return cash_ledger.period_subtotals(
-        account, balance_ctx.scenario.id, periods, amount_overrides=amount_overrides,
+        return balance_at.empty_grid_view(), Decimal("0.00")
+    return (
+        balance_at.grid_balance_view(account, balance_ctx, all_periods),
+        account.current_anchor_balance,
     )
+
+
+# The word each account kind uses for the return it models, for the grid's
+# conditional accrual row (ruling R-AI).  It is not a new vocabulary: the app
+# already speaks all three, each on that kind's own page -- "Interest, next
+# 12 mo" (``accounts/_cash_band.html``), "Growth since Jun 23"
+# (``investment/dashboard.html``) and "appreciation" / "at 3.0%/yr"
+# (``accounts/property_detail.html``).  Those are PHRASES with their own
+# windows baked in rather than instances of one string, so this map is the
+# canonical source for the GRID's row and not a fourth copy of any of them.
+#
+# It is TOTAL over ``AccountProjectionKind`` and subscripted, never ``.get``
+# with a default: a kind added to the enum without a word here must fail at the
+# render rather than label a new kind silently and wrongly, which is the same
+# reason this codebase refuses a bare ``except``.  PLAIN and AMORTIZING can
+# never reach the row -- neither resolves an ACCRUAL tier, so
+# ``row_flags.accrual`` is False for both -- but they are members because the
+# map is a function of the enum, not of what happens to render today.
+#
+# The two unreachable kinds still carry the word their row WOULD honestly use,
+# because a knowingly-wrong entry is the very thing the subscript above exists
+# to prevent.  **AMORTIZING therefore reads "Interest", not the generic word:**
+# a loan's accrual is interest CHARGED, and naming a liability's accrual after
+# an asset's growth reads as the opposite of what it is.  PLAIN models no
+# return at all, so no word is truthful for it and it carries the kind-neutral
+# one -- which is also what a ``None`` account resolves to.
+#
+# The placeholder is its OWN constant even though it spells the same word an
+# INVESTMENT's row carries.  Those are two decisions, not one: "Growth" is the
+# vocabulary ruling R-AI chose for a 401(k), to match what ``/investment``
+# already renders.  Binding them together would let a later edit to the
+# placeholder silently rename the row the ruling named.
+_UNMODELLED_ACCRUAL_LABEL = "Growth"
+
+_ACCRUAL_ROW_LABELS = {
+    AccountProjectionKind.INTEREST: "Interest",
+    AccountProjectionKind.INVESTMENT: "Growth",
+    AccountProjectionKind.APPRECIATING: "Appreciation",
+    AccountProjectionKind.AMORTIZING: "Interest",
+    AccountProjectionKind.PLAIN: _UNMODELLED_ACCRUAL_LABEL,
+}
+
+
+def _accrual_row_label(account: "Account | None") -> str:
+    """Return the label the grid's modelled-return row carries for *account*.
+
+    Ruling R-AI: the row is "Interest" on an HYSA, "Growth" on a 401(k) and
+    "Appreciation" on a house.  Resolved in the presentation layer because
+    :mod:`app.services.balance_at._grid` carries no display strings -- its
+    ``GridRowFlags`` earns its place in the seam by carrying no money and
+    deciding no figure, and a label decides no figure but is not a balance rule
+    either, so it belongs where the render entries already build their context.
+
+    **It is TOTAL over ``Account | None``, not a three-entry subscript.**
+    :func:`~app.services.account_projection.classify_account` returns FIVE
+    values and :func:`_build_grid_view` legitimately carries ``account=None``
+    for the zero-accounts user, so a three-key lookup would ``KeyError`` on the
+    PLAIN checking account every default ``/grid`` render resolves to, and
+    ``classify_account(None)`` would ``AttributeError`` beside it.
+
+    Args:
+        account: The grid account, or ``None`` for the user-with-zero-accounts
+            edge case (which has no columns, so no row ever renders).
+
+    Returns:
+        The row's label.
+    """
+    if account is None:
+        return _UNMODELLED_ACCRUAL_LABEL
+    return _ACCRUAL_ROW_LABELS[classify_account(account)]
 
 
 class _GridRowData(NamedTuple):
@@ -438,9 +454,7 @@ def _build_grid_row_data(transactions, periods, show_all, all_categories):
     )
 
 
-def _build_plan_view(
-    ctx, all_transactions, grid_view, all_categories, amount_overrides=None,
-):
+def _build_plan_view(ctx, all_transactions, grid_view, all_categories):
     """Build the read-only "Plan" tab context window.
 
     The Plan tab on the mobile grid answers "what does the next half-
@@ -459,29 +473,23 @@ def _build_plan_view(
     Args:
         ctx: The :class:`_GridContext` for this request.  Supplies
             ``user_id`` and ``current_period`` (the plan window's
-            anchor and its pay-period query) plus ``account`` and
-            ``scenario`` (forwarded to the subtotal builder).
-            ``account`` may be ``None`` for the user-with-zero-accounts
-            edge case.
+            anchor and its pay-period query).
         all_transactions: The list already loaded by
             :func:`_load_grid_transactions`.  Re-used here instead of
             re-querying; ``_build_grid_row_data`` filters by visible
             window internally so the same list works for the wider
             Plan window.
         grid_view: The :class:`~app.services.balance_at.GridBalanceView`
-            produced by :func:`_build_grid_balances`.  Its ``balances`` and
-            per-period ``increments`` (the interest accrual, empty for a
-            non-interest account) are sliced to the plan periods without
-            recomputing.
+            produced by :func:`_build_grid_view`.  Its columns are SLICED to
+            the plan periods -- never recomputed, which is what keeps the Plan
+            recap and the This Period card two windows onto one projection
+            rather than two projections.
         all_categories: User's full category set (active + archived).
             Forwarded to the row-key builder so archived-category
             transactions still render.
-        amount_overrides: Optional live projected-income overrides,
-            forwarded to the subtotal builder so Plan subtotals match
-            the rest of the grid's cells and balances.
 
     Returns:
-        Dict with seven ``plan_*`` keys ready to splice into the
+        Dict with six ``plan_*`` keys ready to splice into the
         ``render_template`` kwargs of :func:`index`:
 
           - ``plan_periods``: list[PayPeriod], up to
@@ -493,13 +501,14 @@ def _build_plan_view(
           - ``plan_matched_by_row_period``: same shape as the
             interactive ``matched_by_row_period`` -- keys are
             ``(category_id, template_id, txn_name, period_id)``.
-          - ``plan_subtotals``: dict[period_id -> PeriodSubtotal].
-          - ``plan_balances``: dict[period_id -> Decimal | None],
-            sliced from the view's balance map.
-          - ``plan_increments``: dict[period_id -> Decimal | None], the
-            per-period interest accrual sliced from the view; all-``None``
-            for a non-interest account (the Plan recap then shows no Interest
-            figure).
+          - ``plan_columns``: dict[period_id ->
+            :class:`~app.services.balance_at.GridColumn`], the view's own
+            columns for the plan window.
+          - ``plan_row_flags``: the window's
+            :class:`~app.services.balance_at.GridRowFlags` (ruling R-O's
+            conditional-row rule, evaluated for THIS window rather than the
+            visible one -- the Plan tab reaches periods the grid may not
+            show).
     """
     plan_periods = pay_period_service.get_periods_in_range(
         ctx.user_id, ctx.current_period.period_index, PLAN_WINDOW_PERIODS,
@@ -509,23 +518,16 @@ def _build_plan_view(
         all_transactions, plan_periods, False, all_categories,
     )
 
-    plan_subtotals = _build_grid_subtotals(
-        ctx.account, ctx.balance_ctx, plan_periods, amount_overrides,
-    )
-
-    plan_balances = {p.id: grid_view.balances.get(p.id) for p in plan_periods}
-    plan_increments = {
-        p.id: grid_view.increments.get(p.id) for p in plan_periods
-    }
-
     return {
         "plan_periods": plan_periods,
         "plan_income_row_keys": row_data.income_row_keys,
         "plan_expense_row_keys": row_data.expense_row_keys,
         "plan_matched_by_row_period": row_data.matched_by_row_period,
-        "plan_subtotals": plan_subtotals,
-        "plan_increments": plan_increments,
-        "plan_balances": plan_balances,
+        "plan_columns": {
+            p.id: grid_view.columns[p.id]
+            for p in plan_periods if p.id in grid_view.columns
+        },
+        "plan_row_flags": grid_view.row_flags(plan_periods),
     }
 
 
@@ -561,25 +563,22 @@ def index():
     all_transactions = _load_grid_transactions(
         ctx.account, ctx.balance_ctx, ctx.all_periods,
     )
-    # Workstream B: build the live projected-income override once from the
-    # loaded transactions, annotate each row with the display amount, and
-    # thread it into every balance / subtotal producer call so projected
-    # salary income is recomputed live and shown consistently across the
-    # grid's cells, subtotals, and balance projection.  ``live_estimated_amount``
+    grid_view, anchor_balance = _build_grid_view(
+        ctx.account, ctx.balance_ctx, ctx.all_periods,
+    )
+    # Workstream B: annotate each row with the live display amount, read back
+    # off the map the SEAM built for its own projection (ruling R-Q) rather
+    # than a second one built here.  The two were "provably identical" by
+    # argument -- both filter the same account/scenario rows through
+    # ``is_projected`` -- and now they are the same object, so a cell and the
+    # balance row cannot price one row differently.  ``live_estimated_amount``
     # is a transient (non-mapped) attribute the cell templates read with a
     # safe ``is defined`` fallback, so it never persists and never affects
     # render paths that do not set it.
-    amount_overrides = cash_ledger.live_amount_overrides(
-        ctx.account, ctx.balance_ctx.scenario.id, all_transactions,
-    )
     for txn in all_transactions:
-        txn.live_estimated_amount = amount_overrides.get(
+        txn.live_estimated_amount = grid_view.amount_overrides.get(
             txn.id, txn.estimated_amount,
         )
-    grid_view, anchor_balance = _build_grid_balances(
-        ctx.account, ctx.balance_ctx, ctx.all_periods,
-        amount_overrides=amount_overrides,
-    )
 
     # Load ALL categories (including archived) for row-key building so
     # transactions with archived categories still render correctly;
@@ -600,11 +599,7 @@ def index():
     # from ctx.periods so a `?periods=1&offset=N` URL (driven by the
     # This Period arrow nav) does not starve Plan of forward visibility.
     plan_view = _build_plan_view(
-        ctx,
-        all_transactions,
-        grid_view,
-        all_categories,
-        amount_overrides,
+        ctx, all_transactions, grid_view, all_categories,
     )
 
     return render_template(
@@ -613,12 +608,20 @@ def index():
         account=ctx.account,
         periods=ctx.periods,
         current_period=ctx.current_period,
-        balances=grid_view.balances,
-        increments=grid_view.increments,
-        subtotals=_build_grid_subtotals(
-            ctx.account, ctx.balance_ctx, ctx.periods,
-            amount_overrides=amount_overrides,
-        ),
+        columns=grid_view.columns,
+        row_flags=grid_view.row_flags(ctx.periods),
+        # The mobile "This Period" card is a ONE-period surface -- it renders
+        # ``periods[0]`` -- so ruling R-O's "at least one visible column" is
+        # that column alone.  Scoping it here rather than reusing the desktop
+        # window's flags is what keeps the initial include and the
+        # ``mobileCardSettled`` refresh (which sees one period and no window)
+        # from disagreeing about whether a row is on screen.
+        period_row_flags=grid_view.row_flags(ctx.periods[:1]),
+        # ONE label for the three surfaces this render feeds -- the desktop
+        # <tfoot>, the mobile This Period card and the Plan recap all read it
+        # from this context (ruling R-AI / R-P), so the form factors cannot name
+        # the same row differently.
+        accrual_label=_accrual_row_label(ctx.account),
         categories=[c for c in all_categories if c.is_active],
         income_row_keys=row_data.income_row_keys,
         expense_row_keys=row_data.expense_row_keys,
@@ -633,10 +636,16 @@ def index():
             else "compact"
         ),
         anchor_balance=anchor_balance,
-        today=date.today(),
+        # The USER's today, not the server's UTC one: it drives the
+        # past-period column styling AND the add-entry form's hidden
+        # ``entry_date`` default, which the entry service refuses on that same
+        # display clock (ruling R-M).  Two clocks here would let a UTC-running
+        # process stamp tomorrow's date for the evening hours the frames
+        # disagree, and the app's own form would post a value its own guard
+        # rejects.
+        today=display_today(),
         all_periods=ctx.all_periods,
         low_balance_threshold=_resolve_low_balance_threshold(),
-        stale_anchor_warning=grid_view.stale_anchor_warning,
         entry_sums=row_data.entry_sums,
         entry_lists=row_data.entry_lists,
         matched_by_row_period=row_data.matched_by_row_period,
@@ -803,13 +812,6 @@ def balance_row():
     this endpoint has nothing to render -- returning 204 leaves the
     existing DOM untouched and avoids the ``AttributeError`` that
     dereferencing the missing scenario would have raised (F-099).
-
-    The stale-anchor warning banner is swapped out-of-band on every
-    refresh: the balance row already computes
-    ``balance_result.stale_anchor_warning``, so the response carries the
-    ``#stale-anchor-warning`` wrapper (with the alert inside only when
-    the condition holds) so a desktop mark-done that creates the
-    condition surfaces the banner without the old full page reload.
     """
     window = _resolve_partial_window(current_user.id)
     if window is None:
@@ -817,43 +819,27 @@ def balance_row():
 
     all_periods = pay_period_service.get_all_periods(current_user.id)
 
-    # Balances + stale-anchor flag + the per-period interest accrual via the
-    # balance-at seam's kind-aware grid view (the kind-correct-grid feature),
-    # which delegates to the canonical entries-aware producers.  For an
-    # INTEREST grid account this yields the interest-accrued balance and the
-    # "Interest" row; every other kind gets the cash-flow running-balance
-    # with no accrual row.  The live override map is threaded (built the same
-    # way the index route builds it) so an interest account's refreshed
-    # figures use live projected income, matching the full-page render.
-    if window.account is not None:
-        amount_overrides = _grid_amount_overrides(
-            window.account, window.balance_ctx, all_periods,
-        )
-        view = balance_at.grid_balance_view(
-            window.account, window.balance_ctx, all_periods,
-            amount_overrides=amount_overrides,
-        )
-        balances = view.balances
-        stale_anchor_warning = view.stale_anchor_warning
-        increments = view.increments
-    else:
-        balances = OrderedDict()
-        stale_anchor_warning = False
-        increments = OrderedDict()
-
-    low_balance_threshold = _resolve_low_balance_threshold()
+    # The whole column set via the balance-at seam's kind-aware grid view,
+    # which owns the live override map and the per-kind dispatch.  For
+    # a modelled grid account this yields the modelled balance and the accrual /
+    # contribution rows that explain it; an account that models nothing gets the
+    # folded cash balance with both tiers at zero (plan step X-g3b).  Asking the
+    # seam for the whole period set and reading the window's flags off it is
+    # what keeps this refresh and the full-page render one projection.
+    view, _anchor = _build_grid_view(
+        window.account, window.balance_ctx, all_periods,
+    )
 
     return render_template(
         "grid/_balance_row.html",
         periods=window.periods,
-        balances=balances,
-        increments=increments,
+        columns=view.columns,
+        row_flags=view.row_flags(window.periods),
+        accrual_label=_accrual_row_label(window.account),
         account=window.account,
         num_periods=window.num_periods,
         start_offset=window.start_offset,
-        low_balance_threshold=low_balance_threshold,
-        stale_anchor_warning=stale_anchor_warning,
-        oob=True,
+        low_balance_threshold=_resolve_low_balance_threshold(),
     )
 
 
@@ -880,9 +866,9 @@ def subtotal_rows():
     ``<tr>`` -- so the two summary blocks never need two separate GETs
     (which would double the fan-out and risk the ``RATELIMIT_DEFAULT``
     ceiling silently 429-ing the refresh).  Both ``<tbody>`` blocks read
-    the same :func:`_build_grid_subtotals` computation, so the financial
-    figures match the grid index route and the balance row exactly (no
-    duplicated subtotal logic).
+    the same :func:`_build_grid_view` column set the index route and the
+    balance row read, so the financial figures match exactly -- and they match
+    by being the SAME rows, not by two producers agreeing (ruling R-K).
 
     Mirrors :func:`balance_row`'s auth, ownership, and param handling:
     ``@login_required`` + ``@require_owner``, the same
@@ -895,19 +881,32 @@ def subtotal_rows():
     if window is None:
         return "", 204
 
-    # Same canonical, entries-aware subtotal computation the grid index
-    # route and the balance row use -- never a re-derived inline loop --
-    # so ``balances[p] - balances[p-1] == subtotals[p].net`` keeps
-    # holding across the live swap (E-25 / Commit 10).
-    subtotals = _build_grid_subtotals(
-        window.account, window.balance_ctx, window.periods,
+    # The same column set the grid index route and the balance row read --
+    # never a re-derived inline loop -- so ``balance[p] - balance[p-1] ==
+    # net[p] + reconciliation[p] + contribution[p] + accrual[p]`` keeps holding
+    # across the live swap because both sides are the same rows (E-25 /
+    # Commit 10, rulings R-K / R-AH).  The window is the whole anchor-forward
+    # set for the same reason
+    # the index route passes it: a projection re-based on the visible slice
+    # would answer a different question at the window's left edge, and asking
+    # for one this endpoint then does not render would be an argument a caller
+    # can get wrong.  This endpoint therefore does MORE work than it did
+    # (measured 2026-07-26 on the prod-shape clone: 87.9 ms -> 165.6 ms, the
+    # added cost being the balance walk), which is what buys the identity; the
+    # pair of self-refresh GETs a ``balanceChanged`` fires still costs less in
+    # total than before (360.2 ms -> 331.0 ms) because the balance row stopped
+    # building a second override map.  Finding N-56 records the remaining
+    # duplication.
+    view, _anchor = _build_grid_view(
+        window.account, window.balance_ctx,
+        pay_period_service.get_all_periods(current_user.id),
     )
 
     return render_template(
         "grid/_subtotal_rows.html",
         oob=True,
         periods=window.periods,
-        subtotals=subtotals,
+        columns=view.columns,
         account=window.account,
         num_periods=window.num_periods,
         start_offset=window.start_offset,
@@ -952,35 +951,21 @@ def mobile_this_period_summary():
     if period is None or period.user_id != user_id:
         return "", 204
 
-    all_periods = pay_period_service.get_all_periods(user_id)
-    if base.account is not None:
-        # Kind-aware balance + interest accrual via the seam (the
-        # kind-correct-grid feature).  The live override map is threaded (as
-        # the index route builds it) so an INTEREST account's refreshed
-        # balance + Interest figure use live projected income, matching the
-        # full render.  For every other kind this is the cash-flow
-        # running-balance with an empty accrual map -- the prior behavior.
-        amount_overrides = _grid_amount_overrides(
-            base.account, base.balance_ctx, all_periods,
-        )
-        view = balance_at.grid_balance_view(
-            base.account, base.balance_ctx, all_periods,
-            amount_overrides=amount_overrides,
-        )
-        balances = view.balances
-        increments = view.increments
-    else:
-        balances = OrderedDict()
-        increments = OrderedDict()
-
-    subtotals = _build_grid_subtotals(base.account, base.balance_ctx, [period])
+    # Kind-aware balance, subtotals and accrual from the ONE seam view (the
+    # kind-correct-grid feature).  Since plan step X-g3b every kind reads the
+    # modelled balance; an account that models no return resolves no tier, so
+    # its figure IS the cash-flow running balance.
+    view, _anchor = _build_grid_view(
+        base.account, base.balance_ctx,
+        pay_period_service.get_all_periods(user_id),
+    )
 
     return render_template(
         "grid/_mobile_tp_summary.html",
         period=period,
-        subtotals=subtotals,
-        balances=balances,
-        increments=increments,
+        columns=view.columns,
+        period_row_flags=view.row_flags([period]),
+        accrual_label=_accrual_row_label(base.account),
         account=base.account,
         oob=True,
     )

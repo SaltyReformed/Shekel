@@ -9,10 +9,15 @@
  * net-worth line rides the difference.  Both ranges arrive as one JSON
  * ``data-chart`` attribute on the canvas (the route's
  * _serialize_net_worth_chart):
- *   {labels, net, assets, liabilities, current_index, composition,
+ *   {labels, net, current_index, composition,
  *    horizon: {labels, net, composition, milestones, current_index} | null}
  * where ``composition`` maps each band (asset / retirement / investment /
- * other / liability) to a parallel float series.  Floats exist only at that
+ * other / liability) to a parallel float series and each milestone is
+ * {label, x}.  The payload carries only what this script reads (plan step
+ * X-s1): it used to also ship top-level ``assets`` / ``liabilities`` totals
+ * and a per-milestone ``date`` / ``kind``, none of which is referenced below
+ * -- the stacked bands already ARE the two totals, and the flag plugin
+ * positions from ``x`` alone.  Floats exist only at that
  * serialization boundary; this script never computes money -- it SELECTS the
  * active range, stacks the provided band series, RESTYLES the net line
  * (solid history vs dashed projection), and FORMATS axis / tooltip / label

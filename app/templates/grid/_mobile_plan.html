@@ -34,18 +34,23 @@
      plan_matched_by_row_period * -- dict[(category_id, template_id,
                                   txn_name, period_id) -> list[Transaction]]
                                   scoped to plan_periods.
-     plan_subtotals *          -- dict[period_id -> PeriodSubtotal]
-                                  for the income / expense / net
-                                  headline per card.
-     plan_balances             -- (optional) dict[period_id ->
-                                  Decimal | None].  When the value
-                                  is None for a given period_id, the
-                                  balance line is omitted.
-     plan_increments           -- (optional) dict[period_id ->
-                                  Decimal | None] per-period interest
-                                  accrual.  When it carries a value the
-                                  recap adds "Interest <amount>" (INTEREST
-                                  grid account only); None -> omitted.
+     plan_columns *            -- dict[period_id -> GridColumn] for the
+                                  whole recap: the income / expense / net
+                                  headline, the three conditional figures,
+                                  and the projected balance.  A period
+                                  absent from it (or carrying
+                                  `balance is None`) omits the balance
+                                  line.
+     plan_row_flags            -- (optional) GridRowFlags for the PLAN
+                                  window (rulings R-O / R-P): which of
+                                  "Timing & true-ups", "Contributions" and
+                                  the modelled-return figure the recap adds
+                                  after Net.
+     accrual_label             -- the modelled-return figure's per-kind
+                                  heading, resolved in the route from
+                                  classify_account (ruling R-AI):
+                                  "Interest" on an HYSA, "Growth" on a
+                                  401(k), "Appreciation" on a house.
      low_balance_threshold     -- (optional) int/Decimal.  When the
                                   projected balance is below this
                                   but >= 0, the balance gets the
@@ -54,14 +59,14 @@
                                   the desktop `_balance_row.html`
                                   pattern.
 #}
-{% from "grid/_grid_row_macros.html" import render_row_static %}
+{% from "grid/_grid_row_macros.html" import render_row_static, accrual_class, accrual_money %}
 {% from "_money_macros.html" import money %}
 
 {% if plan_periods %}
 <div class="accordion" id="plan-accordion">
   {% for period in plan_periods %}
-    {% set subtotal = plan_subtotals[period.id] if plan_subtotals is defined and period.id in plan_subtotals else none %}
-    {% set bal = plan_balances.get(period.id) if plan_balances is defined else none %}
+    {% set col = plan_columns.get(period.id) if plan_columns is defined else none %}
+    {% set bal = col.balance if col is not none else none %}
     {% set _bal_class = '' %}
     {% if bal is not none %}
       {% if bal < 0 %}
@@ -107,23 +112,36 @@
             <div class="fw-bold">
               {{ period.start_date.strftime('%b %-d') }} -- {{ period.end_date.strftime('%b %-d') }}
             </div>
-            {% if subtotal is not none %}
+            {% if col is not none %}
               <small class="text-muted">
-                Income {{ money(subtotal.income, cents=false) }}
+                Income {{ money(col.income, cents=false) }}
                 &middot;
-                Expense {{ money(subtotal.expense, cents=false) }}
+                Expense {{ money(col.expense, cents=false) }}
                 &middot;
                 Net
-                <span class="{{ 'balance-negative' if subtotal.net < 0 else '' }}">
-                  {{ money(subtotal.net, cents=false) }}
+                <span class="{{ 'balance-negative' if col.net < 0 else '' }}">
+                  {{ money(col.net, cents=false) }}
                 </span>
-                {# Interest accrual -- shown only for an INTEREST grid account
-                   (plan_increments carries a value), so Net + Interest
-                   explains the projected-balance change. #}
-                {% set _inc = plan_increments.get(period.id) if plan_increments is defined else none %}
-                {% if _inc is not none %}
+                {# The three conditional figures (rulings R-O / R-P / R-AH), on
+                   the seam's one visibility rule and in the order the replay
+                   resolves them: Timing & true-ups explains the part of the
+                   balance change the budget columns cannot, Contributions what
+                   payroll put in, and the modelled return what that money then
+                   earned.  Net + those three is the whole balance change. #}
+                {% if plan_row_flags is defined and plan_row_flags.reconciliation %}
                 &middot;
-                Interest {{ money(_inc, cents=false) }}
+                Timing {{ money(col.reconciliation, cents=false) }}
+                {% endif %}
+                {% if plan_row_flags is defined and plan_row_flags.contribution %}
+                &middot;
+                Contributions {{ money(col.contribution) }}
+                {% endif %}
+                {% if plan_row_flags is defined and plan_row_flags.accrual %}
+                &middot;
+                {{ accrual_label }}
+                <span class="{{ accrual_class(col.accrual) }}">
+                  {{ accrual_money(col.accrual) }}
+                </span>
                 {% endif %}
               </small>
             {% endif %}

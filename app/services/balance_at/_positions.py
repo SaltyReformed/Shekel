@@ -8,8 +8,8 @@ walk) for a date at or before the resolver's NOW, and the forward schedule
 projection after.  The seam's SCALAR
 (:func:`app.services.balance_at.balance_at`) and its LIABILITY band
 (:func:`app.services.balance_at.liability_owed_at_dates`) read it as of step C3b1;
-the per-period map (:func:`app.services.balance_at._account_balance_map`'s
-AMORTIZING branch) reads :func:`positions_period_map` as of step C3b3, so every
+the per-period map (:func:`app.services.balance_at._inputs._account_balance_map`'s
+CONFIGURED-LOAN branch) reads :func:`positions_period_map` as of step C3b3, so every
 loan balance surface -- point, band, and map -- now answers from this one
 producer.
 
@@ -200,7 +200,7 @@ def positions(
             f"positions() requires a configured loan; account {account.id} "
             f"({account.name!r}) has no LoanParams. The seam's AMORTIZING "
             f"dispatch degrades a non-loan account to the cash producer "
-            f"(balance_as_of_date) before reaching here."
+            f"(the cash fold) before reaching here."
         )
     # A date is PAST (reads the fold) iff the loan has originated by the NOW and
     # the date is at or before it; every other date -- future, or any date of a
@@ -246,8 +246,8 @@ def positions_period_map(
 ) -> "OrderedDict[int, Decimal]":
     """Return a loan's per-period balance map, built from :func:`positions`.
 
-    The per-period form of :func:`positions`, read by the seam's AMORTIZING map
-    dispatch (:func:`app.services.balance_at._account_balance_map`) as of step
+    The per-period form of :func:`positions`, read by the seam's loan map
+    dispatch (:func:`app.services.balance_at._inputs._account_balance_map`) as of step
     C3b3.  It reproduces the genesis per-period read switch the kernel's retired
     ``_build_amortizing_balance_map`` ran -- ledger past, projection future -- but
     from the ONE total loan producer instead of the sum-of-postings map plus a
