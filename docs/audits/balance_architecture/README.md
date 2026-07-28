@@ -1677,6 +1677,16 @@ preconditions cite entries in that file.
     behind a `//` comment satisfied the arm that exists to catch it; and nine stale or INVENTED
     citations, including `_net_worth._sum_net_worth_totals`, which has never existed in any commit.
 
+- [ ] **X-u** `refactor(savings): one debt projection per render` -- closes **N-109** (ruling
+  R-BI). `compute_tracks_section` runs `_project_debt_accounts` TWICE and the seam-batch builder
+  THREE times per dashboard render, measured, because the two narrow debt producers each run the
+  full load -> params -> project pipeline over the same loan set. The proposed fix is to make
+  `principal_paid_fraction` a `DebtSummary` field, which deletes `DebtTrack`,
+  `compute_debt_principal_progress` and the duplicate pass together. **It gets its own step because
+  the two producers answer over DIFFERENT membership rules** -- owed-today for the money figures,
+  all-loans-ever for the marker -- so merging them re-opens the question ruling X-q settled at a
+  measured cost of 19 years, and that trace is the step's first action.
+
 - [ ] **X-v** `refactor(balance): every degraded state is read, not renamed` -- closes **N-112** and
   **N-113**. The no-baseline residue X-t2 measured and did not reach: **12** more spellings of the
   seam's precondition across `routes/grid`, `calendar_service`, `dashboard_service`,
@@ -1689,16 +1699,6 @@ preconditions cite entries in that file.
   same state as `if not (current_period and scenario)`, invisible to a search for `scenario is
   None`, so the count is a floor until an AST pass replaces the grep (Section 8's own lesson, one
   axis over).
-
-- [ ] **X-u** `refactor(savings): one debt projection per render` -- closes **N-109** (ruling
-  R-BI). `compute_tracks_section` runs `_project_debt_accounts` TWICE and the seam-batch builder
-  THREE times per dashboard render, measured, because the two narrow debt producers each run the
-  full load -> params -> project pipeline over the same loan set. The proposed fix is to make
-  `principal_paid_fraction` a `DebtSummary` field, which deletes `DebtTrack`,
-  `compute_debt_principal_progress` and the duplicate pass together. **It gets its own step because
-  the two producers answer over DIFFERENT membership rules** -- owed-today for the money figures,
-  all-loans-ever for the marker -- so merging them re-opens the question ruling X-q settled at a
-  measured cost of 19 years, and that trace is the step's first action.
 
 - [ ] **X-w** `refactor(savings): the containers this read path still passes untyped` -- closes
   **N-114**. X-t1 typed the per-account projection; the same render still passes two untyped dicts
@@ -2282,6 +2282,14 @@ trace opened and which was born with an owner).
    (finding N-69). Every figure is read at the seam's default `as_of`, so a step whose change is
    scoped to a pinned historical as-of moves nothing in it -- X-c2c1 was exactly that, and its
    firing control, not this, was its proof.
+   **IT IS BLIND ABOVE THE SEAM, and that needed a SECOND instrument**
+   (`tests/manual/verify_savings_producers.py`, added 2026-07-28 at X-t). It reads `balance_at`
+   directly, so for a step whose whole surface is a producer package, a serializer or a template
+   it is byte-identical whatever the step did -- a free pass that reads as proof. The second one
+   dumps every per-account projection field, the debt summary, the tracks section, all four narrow
+   producers and the serialized `data-chart` payload, NORMALIZED across an intended shape change so
+   a deliberate diff cannot hide an accidental one, and it was shown firing on a planted one-cent
+   defect before X-t trusted it. **Ask of every harness: can it SEE the code under test?**
 3. **Every guard gets a negative control** that is shown to fire. A guard whose control does not
    fire is not a guard.
 4. **The fixture matrix must contain the shape the feature exists for** (a paid loan, an
