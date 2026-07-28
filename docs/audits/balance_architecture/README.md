@@ -9,7 +9,7 @@ are recording a finding.
 
 | record | what it holds |
 |---|---|
-| `archive/cash_arc_as_built_2026-07-27.md` | Phase X as built: the running state narrative, every shipped step from **X-a** to **X-g3b** with its measurements and firing controls, and the 10 findings they closed. On DEV, not production |
+| `archive/cash_arc_as_built_2026-07-27.md` | Phase X as built: the running state narrative, every shipped step from **X-a** to **X-g3b** with its measurements and firing controls, and the 10 findings they closed. **In production since 2026-07-28 (PR #65, merge `69a527cd`)** |
 | `archive/loan_arc_as_built_2026-07-26.md` | The LOAN half, complete and in production (PR #64, merge `88c79857`). Phases A-F, rulings D1-D5 / R-A / R-C / R-D / R-E, and the 75 findings that arc closed |
 
 Everything else that ever governed this work is in `archive/`, indexed by `archive/README.md`.
@@ -23,13 +23,24 @@ as plan step X-h's fifth commit. Read those two rules before recording a finding
 
 ## Where the arc stands
 
-**The LOAN half is COMPLETE and in production.** The CASH half is in flight on `dev` and **both of
-its cutovers are DONE** -- the cash one at X-c2b2 (`d3489728`) and the modelled one at X-g2b
+**BOTH HALVES ARE NOW IN PRODUCTION.** The loan half shipped at PR #64 (merge `88c79857`); the
+CASH half shipped 2026-07-28 at **PR #65** (merge `69a527cd`, image `sha256:5cb8ec33`) -- 89
+commits, **zero migrations**, CI green on its first sight of any of them, prod healthy in 10s with
+no rollback. `dev` and `main` are level at `69a527cd`.
+
+**Both cash cutovers are DONE** -- the cash one at X-c2b2 (`d3489728`) and the modelled one at X-g2b
 (`560b3339`), after which no remaining step can move a figure except by fixing a defect. The grid
 cutover X-g3b then landed on 2026-07-27, closing finding N-76 byte-exactly on 900 of 900 (account,
-period) pairs. Every non-loan account's balance is now ONE event replay, date-precise for all five
+period) pairs. Every non-loan account's balance is ONE event replay, date-precise for all five
 kinds; the three-source merge, the reverse growth projection, the per-period interest layer and the
-kernel's per-kind ladder are all out of the read path and awaiting deletion.
+kernel's per-kind ladder are deleted rather than merely unwired.
+
+**SHIP AT THE SEAMS FROM HERE, not at the end of the arc.** PR #65 reached 89 commits because the
+plan was to open it when the cash half finished, and CI does not run on `dev` pushes -- so nothing
+in it had been graded until the PR. The remaining steps have their own natural cut points: after
+**X-w**, and after **X-i1** (byte-identical) but BEFORE **X-i2**, which MOVES MONEY and on whose
+line X-i is already decomposed. **X-i2, X-k, X-d, X-e and X-f must never ride with a backlog** --
+they move money or change writers, and each wants its own PR so a rollback is precise.
 
 **What the cash cutover bought, measured on the prod-shape clone and signed off:** Checking today
 `$2,791.78` -> **`$2,824.26`**, the figure the app's own persisted double-entry ledger already

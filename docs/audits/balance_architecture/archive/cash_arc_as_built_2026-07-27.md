@@ -10,8 +10,16 @@ read it as instructions.
 carries the work that REMAINS rather than the log of work that is done. It is the same operation the
 loan half had at `loan_arc_as_built_2026-07-26.md`, with ONE difference that must be stated because
 Section 9 rule 5 of the live document does not cover it: **the loan half was archived because it was
-COMPLETE and in production. The cash half is NOT complete.** Phase X is in flight -- X-g4, X-c2c4
-and eleven more steps remain, and nothing here has shipped to production. So this is a
+COMPLETE and in production. The cash half was NOT complete when this was extracted.** Phase X was in
+flight -- X-g4, X-c2c4 and eleven more steps remained, and nothing here had shipped to production.
+
+**STATUS CORRECTION, 2026-07-28: everything in this file IS now in production** -- PR #65, merge
+`69a527cd`, image `sha256:5cb8ec33`, together with X-g4, X-c2c4, X-o, the X-q cluster, X-r, X-h,
+X-s, X-t and X-u. The paragraph above is left as written because it records why the extraction
+happened; only its present tense was wrong, and a present-tense status claim going stale is the
+exact class of finding N-97. The live document's 'Where the arc stands' is the authority.
+
+So this is a
 shipped-so-far record inside a live phase, not the closing of a half, and the live document's Phase
 X header stays where it is.
 

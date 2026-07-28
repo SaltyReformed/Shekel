@@ -6,7 +6,9 @@ completed as-built record, a superseded plan, or an audit whose surviving findin
 into the plan of record's findings ledger. Archived 2026-07-16, extended 2026-07-26.
 
 **Start here for the CASH half:** `cash_arc_as_built_2026-07-27.md`. It is the as-built record of
-Phase X as far as it has shipped -- X-a through X-g3b, on `dev` and NOT yet in production -- holding
+Phase X as far as it had shipped when it was extracted -- X-a through X-g3b. **It is in
+production as of 2026-07-28** (PR #65, merge `69a527cd`), together with every Phase X step after
+it through X-u. Holding
 the plan of record's whole running-state narrative, every shipped step's measurements and firing
 controls, and the 10 findings they closed. It differs from the loan record in one way that matters:
 the loan half was archived because it was COMPLETE, while Phase X is still IN FLIGHT, so this is a
