@@ -1581,23 +1581,59 @@ class TestPerKindSeamInjectionLock:
     equality test that happened to read the same producer twice would still
     report green.  Parametrised over the three single-value kinds to stay
     DRY.
+
+    **It fired whether or not the injection landed, and that is finding N-94**
+    (repaired at plan step X-h).  It compared every surface against the
+    fixture's ASSERTED value -- ``ctx["V"]`` / ``ctx["C"]`` -- and since plan
+    step X-g2b gave the anchor period its own accrual (ruling R-Y) no modelled
+    surface returns that number.  Measured on the fixtures at the repair:
+
+    ======================  ==============  ==============  ================
+    kind                    asserted        modelled        blind?
+    ======================  ==============  ==============  ================
+    loan                    ``$200,000.00`` ``$200,000.00`` no
+    property                ``$400,000.00`` ``$401,005.45`` YES
+    investment              ``$100,000.00`` ``$100,576.29`` YES
+    ======================  ==============  ==============  ================
+
+    So two of three cases raised with the patch and without it, and the
+    name/value assertions then matched against the "All surface values: {...}"
+    dump rather than against the lock actually biting -- the shape Section 7.3
+    of the balance plan exists to prevent.
+
+    Two things repair it.  The comparand is now the seam's own modelled
+    current balance, read through :func:`_modelled_current_balance`, which is
+    the identical oracle the sibling positive tests use -- so this control can
+    never again drift from the figure those tests assert.  And each case
+    carries the surfaces its positive test EXCLUDES: the property kind's
+    ``property_detail`` still reads the cache column (finding N-83), so
+    including it would leave the unpatched set non-uniform for a reason that
+    has nothing to do with the injection.
+
+    The control for the control is asserted in the test itself: the UNPATCHED
+    set must pass before the patch is applied.  Without that premise a lock
+    that fires for any reason reads exactly like a lock that fires for the
+    right one.
     """
 
     _WRONG = Decimal("-99999.99")  # no fixture balance equals this
 
     # One per-kind negative-control case: (ctx fixture name, that kind's
-    # reader dict, the ctx key holding the true balance, the surface to
+    # reader dict, the surfaces its positive test excludes, the surface to
     # break).  Bundled into a single parametrize value so the test stays a
     # cohesive 5-argument method rather than threading four parallel
     # parametrize columns.
     @pytest.mark.parametrize(
         "spec",
         [
-            ("cross_page_loan_ctx", _LOAN_SURFACE_READERS, "C", "savings"),
-            ("cross_page_property_ctx", _PROPERTY_SURFACE_READERS, "V", "savings"),
+            ("cross_page_loan_ctx", _LOAN_SURFACE_READERS, (), "savings"),
+            (
+                "cross_page_property_ctx", _PROPERTY_SURFACE_READERS,
+                ("property_detail",), "savings",
+            ),
             (
                 "cross_page_investment_ctx", _INVESTMENT_SURFACE_READERS,
-                "V", "savings",
+                (), "savings",
             ),
         ],
         ids=["loan", "property", "investment"],
@@ -1610,23 +1646,37 @@ class TestPerKindSeamInjectionLock:
         must raise an AssertionError whose message names the patched surface
         and the wrong value -- proving the lock bites on a real
         single-surface regression, not a coincidence.
+
+        The unpatched set is asserted to PASS first (finding N-94): a control
+        that raises before the injection lands proves nothing about the
+        injection.
         """
-        ctx_fixture, readers, expected_key, patched_surface = spec
+        ctx_fixture, readers, excluded, patched_surface = spec
         ctx = request.getfixturevalue(ctx_fixture)
-        expected = ctx[expected_key]
         with app.app_context():
+            expected = _modelled_current_balance(ctx)
+
+            def _read(reader_dict):
+                """Read every surface this case locks, minus its known gaps."""
+                return {
+                    name: reader(ctx)
+                    for name, reader in reader_dict.items()
+                    if name not in excluded
+                }
+
+            # The control FOR the control: without the injection the lock is
+            # silent, so the raise below is caused by the patch and nothing
+            # else.
+            _assert_surfaces_equal(_read(readers), expected, ctx_fixture)
 
             def _broken_reader(_ctx):
                 """Return a deliberately wrong Decimal for the patched surface."""
                 return self._WRONG
 
             monkeypatch.setitem(readers, patched_surface, _broken_reader)
-            surface_values = {
-                name: reader(ctx) for name, reader in readers.items()
-            }
 
             with pytest.raises(AssertionError) as excinfo:
-                _assert_surfaces_equal(surface_values, expected, ctx_fixture)
+                _assert_surfaces_equal(_read(readers), expected, ctx_fixture)
 
             message = str(excinfo.value)
             assert repr(patched_surface) in message, (
