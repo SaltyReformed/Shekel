@@ -8,10 +8,13 @@ account's dense period map with its asset/liability flag, producing the one
 net-worth producer (``savings_dashboard_service._net_worth``) reduces over.
 It was shared with the year-end summary until that package was deleted
 (plan step F2), which is why it lives in its own module rather than inside
-the cockpit's net-worth producer.  It still has two importers --
-``_net_worth`` (both names) and ``_projections`` (the classifier alone, which
-is what tags the account data the Horizon band selects on) -- so inlining it
-would break the second.
+the cockpit's net-worth producer.  Its importers today are ``_net_worth``
+(:func:`to_net_worth_account_data`), ``_types`` and ``_orchestrator``
+(:func:`is_liability_account`), so inlining it into any one of them would break
+the others.  (The sentence here counted two importers and named ``_projections``
+as one of them until plan step X-t5; X-t1 moved that classifier read onto
+:attr:`~app.services.savings_dashboard_service._types.AccountProjection.is_liability`
+and deleted the import, and the count never covered ``_orchestrator``.)
 
 Lives in its own module, between the consumers and the engine cluster, for
 two reasons:

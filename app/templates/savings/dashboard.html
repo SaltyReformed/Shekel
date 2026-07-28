@@ -211,7 +211,7 @@
   </a>
   <div class="collapse mt-2" id="archivedAccounts">
     <div class="row g-3">
-      {% for ad in archived_accounts %}
+      {% for archived in archived_accounts %}
       <div class="col-md-6 col-lg-4">
         <div class="card h-100 border-secondary">
           <div class="card-body text-muted">
@@ -240,17 +240,17 @@
                    measurements and the option space. #}
                 <h6 class="card-title mb-1">
                   <i class="bi bi-archive me-1"></i>
-                  {{ ad.account.name }}
+                  {{ archived.account.name }}
                 </h6>
-                <small>{{ ad.account.account_type.name if ad.account.account_type else '--' }}</small>
+                <small>{{ archived.account.account_type.name if archived.account.account_type else '--' }}</small>
               </div>
               <div class="d-flex gap-1">
-                <form method="POST" action="{{ url_for('accounts.unarchive_account', account_id=ad.account.id) }}"
+                <form method="POST" action="{{ url_for('accounts.unarchive_account', account_id=archived.account.id) }}"
                       class="d-inline">
                   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                   <button type="submit" class="btn btn-sm btn-outline-secondary"
-                          title="Unarchive {{ ad.account.name }}"
-                          aria-label="Unarchive {{ ad.account.name }}">
+                          title="Unarchive {{ archived.account.name }}"
+                          aria-label="Unarchive {{ archived.account.name }}">
                     <i class="bi bi-arrow-counterclockwise"></i>
                   </button>
                 </form>
@@ -259,13 +259,13 @@
                    is the same route the active cells' Danger Zone uses: confirm
                    modal + fresh-login gated, and an account that still has
                    transaction history is archived-not-deleted by the guard. #}
-                <form method="POST" action="{{ url_for('accounts.hard_delete_account', account_id=ad.account.id) }}"
+                <form method="POST" action="{{ url_for('accounts.hard_delete_account', account_id=archived.account.id) }}"
                       class="d-inline"
                       data-confirm="Permanently delete this account and all associated data? This cannot be undone.">
                   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                   <button type="submit" class="btn btn-sm btn-outline-danger"
-                          title="Delete {{ ad.account.name }} permanently"
-                          aria-label="Delete {{ ad.account.name }} permanently">
+                          title="Delete {{ archived.account.name }} permanently"
+                          aria-label="Delete {{ archived.account.name }} permanently">
                     <i class="bi bi-trash"></i>
                   </button>
                 </form>
@@ -273,7 +273,7 @@
             </div>
             <div class="mt-2">
               <div class="small">Last Balance</div>
-              <div class="fs-5 fw-bold font-mono">{{ money(ad.current_balance) }}</div>
+              <div class="fs-5 fw-bold font-mono">{{ money(archived.current_balance) }}</div>
             </div>
           </div>
         </div>

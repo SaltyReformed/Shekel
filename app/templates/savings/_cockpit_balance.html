@@ -18,6 +18,18 @@
    fields into a dict of its own, so this contract was stated in three places
    and held because the copies agreed.
 
+   ``ad`` here means an AccountProjection and NOTHING ELSE.  The grid include
+   binds it AMBIENTLY (the enclosing {% for ad in ... %}), so a future include
+   of this partial from a loop over a different shape would render that shape's
+   fields silently -- Jinja resolves a missing attribute to Undefined, which is
+   falsy, so the liability ink would simply vanish and an anchor-cache figure
+   would render as a seam balance.  The archived-account drawer in
+   dashboard.html is exactly such a loop (its rows are {account,
+   current_balance} dicts whose balance is Account.current_anchor_balance --
+   which finding N-103 says is not a loan's balance at all); its variable is
+   named ``archived`` for that reason (plan step X-t5, out of X-t's adversarial
+   design review).
+
    Contract (mirrors the dashboard hero dashboard/_pulse_balance.html, but
    account-scoped because the cockpit is multi-card):
      * Clicking (or Enter / Space via the global data-keyboard-activate

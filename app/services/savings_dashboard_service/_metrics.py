@@ -272,7 +272,10 @@ def _recent_settled_expenses_monthly(
         there is no current period / scenario, no checking account, or
         no recent periods.
     """
-    if not (current_period and scenario) or not checking_ids:
+    # ``is None``, not truthiness (coding standard; corrected at plan step
+    # X-t5, where a census of the no-baseline predicate found this spelling
+    # invisible to a search for ``scenario is None``).
+    if current_period is None or scenario is None or not checking_ids:
         return Decimal("0.00")
 
     recent_periods = [

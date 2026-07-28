@@ -80,9 +80,11 @@ def balance_map(
         ValueError: When ``scenario`` is None -- callers that resolve a
             nullable baseline must guard first.
     """
-    # Rerouted callers (e.g. ``build_account_net_worth_maps``) keep their own
-    # ``if scenario is None: return []`` guard, so the legitimate empty state
-    # is preserved; the seam raising here is the defensive contract that turns
+    # A caller that legitimately handles the no-baseline case guards on
+    # ``ctx.has_baseline`` BEFORE calling (the savings cockpit does so at each
+    # of its three seam doors -- plan steps X-t2 / X-t5; the per-producer guard
+    # this comment used to name was deleted with the hoist), so the legitimate
+    # empty state is preserved; the seam raising here is the defensive contract that turns
     # a deep AttributeError (or a silent $0 net worth) into a clear failure.
     _require_scenario(ctx)
     return _account_balance_map(

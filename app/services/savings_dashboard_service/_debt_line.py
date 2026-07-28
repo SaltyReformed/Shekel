@@ -39,9 +39,11 @@ debts that HAVE a payoff model and to caption the result as what it measures.
 **Those captions SHIPPED at plan step X-q3** (`bad97e6a`, closing finding
 N-99): the cockpit footer reads "Loans paid off <mon>" and names the revolving
 balance it excludes, the dashboard debt track reads "loans paid off <mon>", and
-the Horizon's flag reads "All loans paid off" -- the machine ``kind`` stayed
-"debt_free".  :func:`debt_without_payoff_model` below is what the footer's
-caveat sums.
+the Horizon's flag reads "All loans paid off".  (A milestone carried a machine
+``kind`` beside that label until plan step X-s1 deleted it at both ends for
+having no consumer; the label is the flag's only identity now, and the ruling on
+what that costs is at ``_horizon._DEBT_FREE_MILESTONE_LABEL``.)
+:func:`debt_without_payoff_model` below is what the footer's caveat sums.
 A card that can carry a real payoff date is the credit-card arc's work
 (``docs/plans/implementation_plan_credit_card.md``), and this module is where
 it would be admitted.
@@ -68,10 +70,11 @@ class LoanPayoffOutlook:
     rather than a nullable date.  A bare ``None`` collapses the last two, and
     a consumer that cannot tell them apart either captions a borrower as
     debt-free or stays silent where it owes them a warning: the cockpit renders
-    all three (`_cockpit.html:273-286` -- a date, a warning, or "All loans paid
-    off"; the line numbers re-pinned at plan step X-s3, whose ruling R-BE gave
-    the third state its caption, X-q2 and X-q3 having re-pinned them before
-    that) and the dashboard debt track renders only the date, which is a
+    all three (`_cockpit.html:283-296` -- a date, a warning, or "All loans paid
+    off"; re-pinned at plan step X-t5 after X-t1 and X-t3 shifted the block,
+    which is the THIRD re-pin in three steps -- so the durable anchor is the
+    three ``payoff_outlook`` predicates in that footer, not the numbers) and the
+    dashboard debt track renders only the date, which is a
     display decision that this value at least makes visible rather than
     structural.
 
@@ -236,9 +239,12 @@ def debt_without_payoff_model(
     page whose own liability band never touches zero, with nothing saying why.
 
     The magnitude is ``abs()``, matching the net-worth reducer's convention
-    (``_net_worth._sum_net_worth_totals`` accumulates ``abs(balance)`` into
-    the liability total): a Credit Card is anchored owed-as-NEGATIVE, and this
-    reports what is owed, not a signed balance.
+    (:func:`~.._net_worth.compute_net_worth_today` accumulates ``abs(balance)``
+    into its liability total): a Credit Card is anchored owed-as-NEGATIVE, and
+    this reports what is owed, not a signed balance.  (The name this sentence
+    carried until plan step X-t5 -- ``_net_worth._sum_net_worth_totals`` -- has
+    never existed in this tree, in any commit: an invented citation, written
+    into the record by the same step that renamed the caption above it.)
 
     Args:
         account_data: The per-account projections (each answering

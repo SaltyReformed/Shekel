@@ -332,7 +332,7 @@ def compute_goal_progress(
     Card 5): income-relative goals (``target_amount`` NULL by design) now
     resolve their target via ``resolve_goal_target`` instead of rendering
     ``$0.00 / 0%``, and the balance basis is the entries-aware resolver
-    balance (``account_data[...]["current_balance"]``) rather than the
+    balance (each projection's ``current_balance``) rather than the
     raw stored ``current_anchor_balance``.  So this card and the /savings
     page report the same numbers for the same goal.
 

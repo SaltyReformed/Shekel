@@ -19,9 +19,15 @@ from there directly (e.g. tests use
 
 Module map:
 
-* :mod:`app.services.savings_dashboard_service._types` -- the
-  request-scoped / per-account bundle dataclasses (``_DashboardCoreData``,
+* :mod:`app.services.savings_dashboard_service._types` -- the value objects.
+  ``AccountProjection`` (with its ``LoanDetail``) is the per-account result
+  EVERY surface in this package reduces over and both cockpit templates render;
+  beside it are the request-scoped bundles (``_DashboardCoreData``,
   ``_ProjectionContext``, ``_LoanAccountResult``, ``_SeamBatches``).
+  ``AccountProjection`` is deliberately NOT re-exported below: the route
+  receives one from ``compute_account_balance_cell`` and forwards it to a
+  template without naming the type, so it has no importer outside this package
+  -- the same test ``DebtSummary`` passes and ``DtiMetrics`` failed.
 * :mod:`app.services.savings_dashboard_service._data` -- batch data
   loaders (accounts / scenario / periods / transactions, the
   account-type parameter maps, archived accounts).

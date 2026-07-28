@@ -451,8 +451,11 @@ _FENCED_MODULE_RULINGS = {
         # the as-of.  It builds the object a producer is called WITH; it
         # computes no balance.
         "build",
-        # The baseline scenario's id -- an int, and the ONE place the
-        # no-baseline degradation is expressed.
+        # The baseline scenario's id -- an int, and the form the loaders and
+        # the resolver take.  (It said "the ONE place the no-baseline
+        # degradation is expressed" until plan step X-t5; that is
+        # ``has_baseline`` below, which is the PREDICATE -- this one is a
+        # nullable id.)
         "scenario_id",
         # Whether this pass has a baseline at all -- a bool, and the PRECONDITION
         # ``require_scenario`` raises on (plan step X-t2, finding N-107).  A

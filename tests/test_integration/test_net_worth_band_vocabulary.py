@@ -30,9 +30,33 @@ Reading a repository file by path and asserting on its text is an established
 shape here (``test_template_no_money_arithmetic.py``,
 ``test_posting_ref_seed_parity.py``).  Each arm below is matched against a
 DECLARATION -- an array literal, an object literal's keys, a custom-property
-definition, a class selector -- never a bare mention, so a band named in a
-comment cannot satisfy it (finding N-63's lesson: a static guard that greps for
-a name cannot tell code from prose).
+definition, a class selector -- never a bare mention, and every source is
+COMMENT-STRIPPED before it is scanned, so a band named in a comment cannot
+satisfy any arm (finding N-63's lesson: a static guard that greps for a name
+cannot tell code from prose).
+
+**Both of those properties were checked by exercising the helpers, not by
+reading them** (plan step X-t5, out of X-t's adversarial review).  The first
+draft matched the declaration but scanned its body RAW, so
+
+.. code-block:: javascript
+
+    var ASSET_BANDS = [
+      "asset", "retirement", "investment"  // "other" dropped
+    ];
+
+satisfied the arm that exists to catch exactly that -- the client stacking three
+bands' worth of a four-band sum, which is the "drawn stack stops reconciling to
+the drawn net line" this file was written for.  Two of the five arms had the
+hole; the comment strip below closes it for all five and
+:class:`TestTheGateItself` plants that source and requires a failure.
+
+**What these arms do NOT prove**, stated so it is not mistaken for more: they
+check that each DECLARATION carries the right keys, never that the client
+USES the declaration.  Rewiring ``readBandColors`` to iterate some other list
+would leave every arm green.  That is N-63's lesson one level up, and the honest
+answer to it is the behavioural render assertions in ``test_savings.py``, not a
+static scan.
 """
 
 from __future__ import annotations
@@ -58,10 +82,25 @@ _QUOTED = re.compile(r"""['"]([a-z_]+)['"]""")
 _LITERAL_KEY = re.compile(r"""(?:^|[,{])\s*['"]?([a-z_]+)['"]?\s*:""")
 
 
+# Line comments (``//``), block comments (``/* */``) and Jinja comments
+# (``{# #}``).  A CSS block comment is the same ``/* */``.
+_COMMENTS = re.compile(r"//[^\n]*|/\*.*?\*/|\{#.*?#\}", re.DOTALL)
+
+
+def _strip_comments(source: str) -> str:
+    """Blank every comment in *source*, keeping the rest byte-for-byte.
+
+    A band name mentioned in a comment must not satisfy any arm of this gate
+    (see the module docstring for the planted source that proved it could).
+    Comments are replaced rather than removed so nothing else shifts.
+    """
+    return _COMMENTS.sub("", source)
+
+
 def _read(path: Path) -> str:
-    """Return a repository file's text, failing loudly if it moved."""
+    """Return a repository file's COMMENT-STRIPPED text, failing if it moved."""
     assert path.exists(), f"{path} not found -- did the file move?"
-    return path.read_text(encoding="utf-8")
+    return _strip_comments(path.read_text(encoding="utf-8"))
 
 
 def _literal_body(source: str, declaration: str, opener: str) -> str:
@@ -184,6 +223,37 @@ class TestBandVocabulary:
             == set(_COMPOSITION_BANDS)
         )
 
+    def test_the_horizon_projects_every_band_it_publishes(self):
+        """The Horizon's three band producers EXHAUST the composition.
+
+        The gate's fifth home, and the one in Python (plan step X-t5, out of
+        X-t's adversarial design review).  ``_horizon`` assembles the annual
+        composition from three producers -- the /retirement engine's bands, the
+        param-growth bands, and the liability band -- and a band belonging to
+        none of them is published as a permanent ZERO series while the
+        ``2 years`` range beside it (which keys off the category map, not a
+        literal) reports the real money.  Nothing raises; the Horizon simply
+        stops equalling the hero it documents itself as starting from.
+
+        ``_PARAM_GROWTH_BANDS`` is derived for that reason, so this pins the
+        partition rather than a list.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.services.savings_dashboard_service._horizon import (
+            _ENGINE_BANDS,
+            _PARAM_GROWTH_BANDS,
+        )
+        covered = set(_ENGINE_BANDS) | set(_PARAM_GROWTH_BANDS) | {
+            _LIABILITY_BAND,
+        }
+        assert covered == set(_COMPOSITION_BANDS)
+        # And the three producers are disjoint: a band summed twice would
+        # double-count into ``net``.
+        assert not set(_ENGINE_BANDS) & set(_PARAM_GROWTH_BANDS)
+        assert _LIABILITY_BAND not in set(_ENGINE_BANDS) | set(
+            _PARAM_GROWTH_BANDS,
+        )
+
     def test_the_stylesheet_defines_a_token_and_a_swatch_per_band(self):
         """Every band has a ``--nw-band-*`` token and a legend swatch class.
 
@@ -199,3 +269,71 @@ class TestBandVocabulary:
         )
         assert tokens == set(_COMPOSITION_BANDS)
         assert swatches == set(_COMPOSITION_BANDS)
+
+
+class TestTheGateItself:
+    """The gate's own controls: a comment cannot satisfy it, a gap fails it.
+
+    Section 7.3 of the balance plan -- "every guard gets a negative control
+    that is shown to fire" -- applied to a guard whose subject is TEXT.  These
+    exercise the extractors on planted sources rather than on the repository,
+    so they fire on demand instead of only when someone breaks the real files.
+
+    The first case is not hypothetical: it is the source X-t's adversarial
+    review planted to prove the first draft of this file reported agreement it
+    had not checked.
+    """
+
+    _DROPPED_BAND_IN_A_COMMENT = '''
+      var ASSET_BANDS = [
+        "asset", "retirement", "investment"  // "other" dropped
+      ];
+    '''
+
+    def test_a_band_named_only_in_a_comment_does_not_count(self):
+        """The array arm sees three bands, not four, in the planted source."""
+        assert _js_array(_strip_comments(self._DROPPED_BAND_IN_A_COMMENT),
+                         "ASSET_BANDS") == {
+            "asset", "retirement", "investment",
+        }
+        # And without the strip it DOES count -- the hole, reproduced, so this
+        # control cannot quietly stop discriminating.
+        assert _js_array(self._DROPPED_BAND_IN_A_COMMENT, "ASSET_BANDS") == {
+            "asset", "retirement", "investment", "other",
+        }
+
+    def test_a_jinja_comment_cannot_supply_a_key(self):
+        """A band mentioned in a ``{# #}`` comment is not a dict key."""
+        planted = (
+            "{% set category_labels = {\n"
+            "  'asset': 'Assets',\n"
+            "  {# 'liability': 'Liabilities', #}\n"
+            "} %}"
+        )
+        assert _jinja_dict_keys(_strip_comments(planted), "category_labels") == {
+            "asset",
+        }
+
+    def test_a_partial_literal_cannot_pass_as_a_whole_one(self):
+        """The body scan spans the WHOLE literal, nested braces included.
+
+        The first draft used a ``[^}]*`` regex, which stopped at the first
+        inner brace and graded a FRAGMENT -- reporting agreement over half a
+        declaration.  The depth scan reaches the last key.
+
+        A nested key is collected too (``a`` below), which is deliberate rather
+        than tolerated: the real literals are flat, so if one ever gains a
+        nested object this arm reports an EXTRA band and fails, where dropping
+        the nesting silently would have reported agreement it had not checked.
+        The failure direction is the point.
+        """
+        planted = 'var BAND_LABELS = {\n  asset: {a: 1},\n  liability: "L"\n};'
+        assert _js_object_keys(planted, "BAND_LABELS") == {
+            "asset", "a", "liability",
+        }
+
+    def test_a_moved_file_fails_loudly(self):
+        """A missing source is an assertion, never a silently empty scan."""
+        import pytest  # pylint: disable=import-outside-toplevel
+        with pytest.raises(AssertionError, match="did the file move"):
+            _read(Path("app/static/js/no_such_file.js"))

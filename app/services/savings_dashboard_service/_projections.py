@@ -17,9 +17,10 @@ come from the context, which resolves each loan exactly once for the whole
 render.  No Flask imports.
 
 **Every seam read this module makes happens in :func:`_seam_batches`** (plan
-step X-s2), so the per-account assembly below touches the seam nowhere: the two
-doors -- the batched balance maps and the per-loan resolution -- are opened in
-one place, behind one no-baseline predicate, in one shape.
+step X-s2), so the per-account assembly below touches the seam nowhere: this
+module's two reads -- the batched balance maps and the per-loan resolution --
+are opened in one place, behind one no-baseline predicate, in one shape.  That
+place is one of the PACKAGE's three seam doors; see that function.
 """
 
 from collections import OrderedDict
@@ -61,14 +62,18 @@ def _seam_batches(accounts, ctx):
     ``ValueError`` from the fifth -- the loan arm reaching ``require_scenario``
     through ``loan_figures`` -> ``memoized_payoff``.
 
-    **This is now ONE of the package's TWO doors, and they are the only two**
-    (plan step X-t2, finding N-107).  The rule was written out in three
-    producers here; the other two -- the dense-map builder and the trend window
-    -- sat under one caller, so it moved up to
+    **This is ONE of the package's THREE seam doors** (plan step X-t2, finding
+    N-107; the count corrected at X-t5).  The rule was written out in three
+    producers here; two of them -- the dense-map builder and the trend window --
+    sat under one caller, so it moved up to
     :func:`~.._orchestrator._compute_net_worth_section` and they simply call the
     seam.  This door survives because it belongs to a DIFFERENT caller: the
     projection runs for the full page and for each narrow producer, and its
-    degraded value is a blank tile rather than an empty region.
+    degraded value is a blank tile rather than an empty region.  The third is
+    :func:`~.._net_worth.compute_property_equity`, whose secured-loan read
+    reaches the seam through ``home_equity_service`` -- X-t2's docstrings said
+    there were only two, and both of its adversarial reviews found the third by
+    walking the call graph instead of counting call sites.
 
     The PREDICATE itself is the seam's own
     :attr:`~app.services.balance_at.BalanceContext.has_baseline`, which

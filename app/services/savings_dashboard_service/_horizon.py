@@ -114,9 +114,22 @@ _DEBT_FREE_MILESTONE_LABEL = "All loans paid off"
 # are always shown in full, filled first.
 _MILESTONE_CAP = 8
 
-# The two category bands the /retirement engine owns; the rest of the
-# accounts (asset / other / liability) are projected here.
+# The two category bands the /retirement engine owns.
 _ENGINE_BANDS = ("retirement", "investment")
+
+# The asset-side bands this module projects itself, from each account's own
+# growth parameter: everything the engine does NOT own.  DERIVED rather than
+# written out (plan step X-t5, out of X-t's adversarial design review), because
+# the union of the three band producers here -- engine, param-growth, liability
+# -- must EXHAUST the composition or the Horizon silently publishes a zero
+# series for the missing band while the ``2 years`` range beside it (which keys
+# off the category map) reports the real money.  That breaks this module's own
+# stated invariant, "the horizon net at index 0 equals the net-worth hero", with
+# nothing failing: the finding X-t3 gated across four languages, surviving in
+# the one language where it could be DERIVED instead.
+_PARAM_GROWTH_BANDS = tuple(
+    band for band in _ASSET_BANDS if band not in _ENGINE_BANDS
+)
 
 
 @dataclass(frozen=True)
@@ -177,9 +190,10 @@ def _resolve_horizon_domain(
     finding N-100).  The three states the ``None`` date covers -- no loans at
     all, a loan that never clears, and a payoff already behind us -- belong to
     :class:`~.._debt_line.LoanPayoffOutlook`, which is where they are derived;
-    the cockpit footer beside this chart renders the same distinction, though
-    it reaches it through the two fields ``_metrics`` copies out of the outlook
-    rather than through the outlook itself (finding N-104).  This returned a
+    the cockpit footer beside this chart renders the same distinction off the
+    :class:`~.._debt_line.LoanPayoffOutlook` the debt summary carries WHOLE
+    (plan step X-s3 closed finding N-104's field-by-field copy this sentence
+    used to describe; corrected at X-t5).  This returned a
     third ``is_loan_free`` element until X-q2; nothing ever read it, and a
     producer republishing another module's derived property is the copy ruling
     R-AW deleted from the projection dict one layer down.
@@ -424,9 +438,11 @@ def _asset_bands(
     category_by_account_id: dict[int, str],
     frame: _HorizonFrame,
 ) -> dict[str, list[Decimal]]:
-    """Project the asset and other bands from each account's growth param.
+    """Project the non-engine asset bands from each account's growth param.
 
-    Every asset-category (and degenerate "other") account is seeded from its
+    Every account whose band is in :data:`_PARAM_GROWTH_BANDS` -- the
+    asset-side categories the /retirement engine does not own, today ``asset``
+    and the degenerate ``other`` -- is seeded from its
     real today balance and compounded forward over the horizon axis at its
     own rate (:func:`_horizon_growth_rate`) through the one
     :func:`app.services.growth_engine.project_balance` formula: a Property
@@ -442,10 +458,10 @@ def _asset_bands(
         frame: The horizon time frame.
 
     Returns:
-        ``{"asset": [...], "other": [...]}`` -- each band's Decimal series
-        over ``frame.sample_dates``.
+        One Decimal series per :data:`_PARAM_GROWTH_BANDS` band over
+        ``frame.sample_dates`` (today: ``asset`` and ``other``).
     """
-    bands = {"asset": _zero_series(frame), "other": _zero_series(frame)}
+    bands = {band: _zero_series(frame) for band in _PARAM_GROWTH_BANDS}
     for ad in account_data:
         account = ad.account
         band = category_by_account_id.get(account.id)

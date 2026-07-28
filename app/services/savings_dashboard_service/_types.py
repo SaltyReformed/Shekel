@@ -218,9 +218,17 @@ class AccountProjection:
             type-specific parameter row is missing -- a DIFFERENT question from
             "did it resolve as a loan", and answerable for an AMORTIZING account
             that has no :class:`~app.models.loan_params.LoanParams` at all.
-            STORED rather than derived (unlike :attr:`is_liability` below)
-            because it reads the parameter MAPS, which this value does not carry:
-            the state it reports is an account whose params row is absent.
+            STORED rather than derived (unlike :attr:`is_liability` below).
+            Three of its four arms COULD be derived from fields carried here
+            (an INTEREST / INVESTMENT account's absent params row is
+            :attr:`interest_params` / :attr:`investment_params`, and an
+            APPRECIATING account's hangs off ``account``); the AMORTIZING arm
+            cannot, because a loan with no ``LoanParams`` row has no
+            :attr:`loan` either -- absent for "not configured" and absent for
+            "not a loan" alike, which is the one distinction this flag exists to
+            make.  Deriving three arms and storing the fourth would be worse
+            than storing one answer (correction at plan step X-t5: the first
+            draft claimed all four were underivable).
         interest_params: The account's
             :class:`~app.models.interest_params.InterestParams`, or ``None``.
         investment_params: The account's
@@ -283,9 +291,14 @@ class _SeamBatches:
     balance while the fifth raised ``ValueError`` four lines later.  Both now
     sit behind one predicate in :func:`.._projections._seam_batches`.
 
-    The PACKAGE still states that rule in three more places (finding N-107);
-    see that function's docstring for where, and for why hoisting them is a
-    different step's work.
+    Plan step X-t2 then hoisted the rule for the net-worth region, DELETING the
+    copies in :func:`.._net_worth.build_account_net_worth_maps` and
+    :func:`.._orchestrator._build_trend_window` (finding N-107).  What remains
+    in this package is one door per legitimate degraded VALUE: a blank tile
+    here, an empty region there, and an empty equity list in
+    :func:`.._net_worth.compute_property_equity` (the third door, found by
+    X-t's reviews).  Each reads the seam's own
+    :attr:`~app.services.balance_at.BalanceContext.has_baseline`.
 
     Attributes:
         balance_maps: ``{account_id: period_id -> Decimal}`` from

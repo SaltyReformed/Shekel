@@ -177,13 +177,16 @@ def _serialize_net_worth_chart(net_worth: dict) -> str:
     against the PRODUCER series in
     ``TestDashboardNetWorthContext.test_chart_json_parses_to_expected_shape_with_floats``).
     A justification that names a consumer which does not read the value is the
-    shape this arc keeps finding, so the producer keys stay (the cross-page
-    equality oracle reads them) and only the dead payload copies go.
+    shape this arc keeps finding.  The PRODUCER's copies went too, one review
+    later (ruling R-BG): with the payload copies gone they had no ``app/``
+    reader either, and the cross-page equality oracle now sums the bands the
+    chart actually draws.  (This sentence said the producer keys stay until
+    plan step X-t5 -- a docstring describing the tree as it was for one commit.)
 
     Args:
         net_worth: The ``compute_dashboard_data`` ``net_worth`` dict, with
-            ``series`` (``periods`` / ``net`` / ``assets`` / ``liabilities`` /
-            ``composition`` / ``current_index``) and ``horizon``.
+            ``series`` (``periods`` / ``net`` / ``composition`` /
+            ``current_index``) and ``horizon``.
 
     Returns:
         A JSON string for the ``data-chart`` attribute.

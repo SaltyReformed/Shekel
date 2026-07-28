@@ -553,19 +553,39 @@ def compute_property_equity(
     Property (no secured loans) is included too: its card reports the full
     market value as equity at 0% LTV.
 
+    **It is a seam DOOR, and it owns its no-baseline state** (plan step X-t5,
+    finding N-107's residue).  :func:`~app.services.home_equity_service.resolve_home_equity`
+    calls :func:`app.services.balance_at.loan_figures` on each secured loan --
+    its own ``Raises:`` block says so -- which runs the seam's
+    ``require_scenario``.  Plan step X-t2 hoisted the rule for the net-worth
+    region and its docstrings then claimed this PACKAGE had exactly two seam
+    doors; this was the third, reached unguarded from the same page, and a
+    borrower with a Property securing a mortgage and no baseline got a
+    ``ValueError`` where the other tiles degraded.  Both of X-t's adversarial
+    reviews found it independently and one EXECUTED it; it pre-dates the step
+    (the same probe raises at ``33cb3e8f``), which is exactly why a census that
+    counted call sites instead of reading the call graph is worth recording.
+
     Args:
         accounts: The user's active accounts.
         ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
             Each secured loan is read from its memo, so the mortgage leg of this
             card is the SAME resolution the debt card and the net-worth liability
             column read -- one resolution, not a fourth one that has to agree.
+            With no baseline the seam cannot resolve a loan at all, so no
+            equity card can be built and the empty list is this producer's
+            legitimate degraded state.
 
     Returns:
         A list of ``{account, equity}`` dicts, one per Property account in
         ``accounts`` order, where ``equity`` is a
         :class:`~app.services.home_equity_service.HomeEquity` snapshot.
-        Empty when the user has no Property accounts.
+        Empty when the user has no Property accounts, and empty when the pass
+        has no baseline scenario.
     """
+    if not ctx.has_baseline:
+        return []
+
     result: list[dict] = []
     for account in accounts:
         if classify_account(account) is AccountProjectionKind.APPRECIATING:

@@ -4737,7 +4737,9 @@ class TestTypeDriftedLoanParamsRow:
 
             # No loan fields: the tile shows no payment / rate / payoff, so the
             # Horizon's domain and its milestone flags cannot pick it up.
-            assert entry.loan is None
+            # ONE field now answers both of the questions the dict spelled
+            # as two absent keys (``loan_params`` / ``loan_figures``): the
+            # projection either has a loan detail or it does not.
             assert entry.loan is None
 
             # And it raises no "paid off" milestone on the Horizon.
@@ -4819,13 +4821,20 @@ class TestNoBaselineDegradesEveryKindTheSameWay:
         the template's ``{% if net_worth.series.periods %}`` hides the chart
         rather than drawing a fabricated one.
 
-        The empty series is BUILT by the real producer over an empty window, so
-        its band keys are the producer's own; asserting them here would pass
-        against a hand-written literal, which is what this checks it is not.
+        The degraded series is asserted EQUAL to a real
+        ``compute_net_worth_series([], [], ...)`` call, not to a literal of the
+        expected keys: a literal would pass just as well against a hand-written
+        empty dict in ``_compute_net_worth_section``, which is precisely the
+        drift the construction avoids.  X-t's adversarial review found the
+        first draft claiming that discrimination while asserting the literal.
         """
         # pylint: disable=import-outside-toplevel
+        from app.services.savings_dashboard_service._display import (
+            category_key_by_account_id,
+        )
         from app.services.savings_dashboard_service._net_worth import (
             _COMPOSITION_BANDS,
+            compute_net_worth_series,
         )
         with app.app_context():
             _create_small_loan(seed_user, db.session, name="No Baseline")
@@ -4833,24 +4842,33 @@ class TestNoBaselineDegradesEveryKindTheSameWay:
             scenario.is_baseline = False
             db.session.commit()
 
-            net_worth = savings_dashboard_service.compute_dashboard_data(
+            data = savings_dashboard_service.compute_dashboard_data(
                 seed_user["user"].id,
-            )["net_worth"]
+            )
+            net_worth = data["net_worth"]
 
             # The today figures still come from the (blank) projections, so the
-            # hero reads zero rather than raising.
+            # hero reads zero rather than raising.  **Recorded, not endorsed**
+            # (finding N-113): every balance here is ``None``, so this $0.00 is
+            # as fabricated as the flat chart the step deleted -- whether the
+            # hero should say "--" instead is a display ruling this test pins
+            # only the CURRENT answer of.
             assert net_worth["net_worth"] == Decimal("0.00")
             assert net_worth["total_assets"] == Decimal("0.00")
             assert net_worth["total_liabilities"] == Decimal("0.00")
             # Nothing is drawn: no trend points, no forward projection, no
-            # Horizon axis.
-            assert net_worth["series"]["periods"] == []
-            assert net_worth["series"]["net"] == []
-            assert net_worth["series"]["current_index"] == 0
+            # Horizon axis, and no equity card (the third seam door).
+            assert net_worth["series"] == {
+                **compute_net_worth_series(
+                    [], [], category_key_by_account_id(data["account_data"]),
+                ),
+                "current_index": 0,
+            }
             assert net_worth["series"]["composition"] == {
                 band: [] for band in _COMPOSITION_BANDS
             }
             assert net_worth["horizon"] is None
+            assert data["property_equity"] == []
 
     def test_the_page_renders_with_no_baseline(
         self, app, auth_client, db, seed_user, seed_periods_today,
@@ -4861,9 +4879,27 @@ class TestNoBaselineDegradesEveryKindTheSameWay:
         template can render.  A producer returning ``None`` where the page
         subscripts, or an empty series the chart block still enters, is a 500
         that the service-level assertions above cannot see.
+
+        **The fixture carries a PROPERTY SECURING A MORTGAGE, and that is the
+        whole discriminator** (plan step X-t5).  X-t2 shipped this test with a
+        loan-only fixture and a docstring claiming the page renders -- while a
+        third seam door, ``compute_property_equity`` ->
+        ``home_equity_service.resolve_home_equity`` -> ``balance_at.loan_figures``,
+        raised ``ValueError`` for exactly this user.  Both of X-t's adversarial
+        reviews found it by walking the call graph; the control that should
+        have caught it could not fire, because its fixture had no Property.
+        That is finding N-69's shape on a render test: ask what a WRONG
+        implementation would return here, and make sure the fixture can tell.
         """
         with app.app_context():
             _create_small_loan(seed_user, db.session, name="No Baseline")
+            mortgage = _add_mortgage_account(
+                seed_user, seed_periods_today[0].id, Decimal("240000.00"),
+            )
+            prop = _add_property_account(
+                seed_user, seed_periods_today[0].id, Decimal("400000.00"),
+            )
+            mortgage.collateral_account_id = prop.id
             scenario = db.session.get(Scenario, seed_user["scenario"].id)
             scenario.is_baseline = False
             db.session.commit()
@@ -4874,6 +4910,9 @@ class TestNoBaselineDegradesEveryKindTheSameWay:
             assert "Net worth" in body
             # The chart block is skipped entirely (no canvas, so no payload).
             assert 'id="net-worth-chart-canvas"' not in body
+            # And the equity caption the Property cell carries when the seam
+            # CAN answer is absent rather than half-rendered.
+            assert "Equity" not in body
 
 
 class TestUnclearingDebtHasNoDebtFreeDate:
@@ -5035,7 +5074,7 @@ class TestTheProjectionShape:
             "interest_params", "investment_params", "loan",
         }
 
-    def test_it_is_frozen_and_a_mistyped_field_raises(self, app, db, seed_user):
+    def test_it_is_frozen_and_a_mistyped_field_raises(self, app):
         """A projection cannot be mutated, and an unknown field is an error.
 
         Frozen because every consumer on the page reads the SAME object: the
