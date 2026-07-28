@@ -65,7 +65,25 @@ seam's `LoanFigures` field by field and dropped the one field the debt-line ques
 the copy that dropped `is_retired` cannot recur -- a field the seam grows now arrives at every
 consumer by construction.
 
-**NEXT: X-q2**, then the steps after it in the order Section 5 lists.
+**X-q2 is DONE** (`be6cfae6`), and with it the whole of X-q. The Horizon producer's two unread
+keys and the callerless `compute_net_worth_horizon` are gone, the payload is BYTE-IDENTICAL on
+both databases, and "publish only what is read" is now a GATE at both ends of the boundary rather
+than a property someone checked once: the producer's key set is pinned, and the route removes each
+key in turn and requires the serializer to raise on it. N-102's fork is decided -- **no "Paid Off"
+badge on the archived drawer** -- on the ground that `is_paid_off` is the seam's own
+CONGRATULATION predicate and the moment to congratulate is the live list, not a drawer opened to
+unarchive or delete.
+
+**Its two adversarial reviews earned their cost a SIXTH time, and both found the same two things
+independently.** A docstring of mine justified deleting `is_loan_free` by naming a consumer that
+does not exist (the cockpit footer renders the same distinction from the two fields `_metrics`
+copies OUT of the outlook, never from the property), and the step cited a finding ID that did not
+yet exist. Both fixed in the commit. They also opened **N-104**: N-100's root survives one level
+INSIDE the dict X-q2 just certified -- the serialized milestones carry a `date` and a `kind` the
+client's flag plugin never reads -- and one package over, where the debt-summary dict flattens the
+outlook field by field, which is ruling R-AW's pattern again. Plan step **X-s** owns it.
+
+**NEXT: X-h**, then the steps after it in the order Section 5 lists.
 
 ---
 
@@ -130,16 +148,19 @@ live caller and were DELETED at plan step **X-g4b** (`17c57cde`). The full recor
    render) and an impurity (a historical read models contributions at TODAY's gross). Plan step
    **X-i**.
 
-7. **A producer publishes what nothing reads, and a template reads what nothing publishes.** The
-   Horizon returns `is_loan_free` and `horizon_end` that no serializer emits, and
-   `compute_net_worth_horizon` is a public export with zero `app/` callers (N-100); the archived
-   list's "Paid Off" badge asked for a key its own producer never builds, so it could not render
-   (N-102). Plan step **X-q2**. *(This root's larger half -- the debt-free date derived twice, 19
-   years apart -- CLOSED at X-q1 on 2026-07-27.)*
+7. ~~**A producer publishes what nothing reads, and a template reads what nothing publishes.**~~
+   **CLOSED 2026-07-27 at X-q2 (`be6cfae6`)**, its larger half -- the debt-free date derived twice,
+   19 years apart -- having closed at X-q1 the same day. The Horizon's `is_loan_free` and
+   `horizon_end` and the callerless `compute_net_worth_horizon` are deleted (N-100), and the
+   archived list's unrenderable "Paid Off" badge is a decided NO rather than an open question
+   (N-102). **The root itself is not closed**: X-q2's own reviews found it one level inside the
+   dict and one package over (**N-104**, plan step **X-s**), which is why this row is struck
+   through rather than removed -- the disease has a smaller surface, not none.
 
-**Eight more steps carry what the seven roots above do not name**, each owning findings the
-2026-07-27 triage grouped by root: X-h, X-i, X-j, X-k, X-l, X-m, X-n, X-p, plus E2's two. (X-q2 is
-root 7 above, so it is not counted again here; X-o, X-q1, X-q3 and X-r have SHIPPED.) Section 5 has them in execution order; Section 6 records who
+**Nine more steps carry what the seven roots above do not name**, each owning findings the
+2026-07-27 triage grouped by root: X-h, X-i, X-j, X-k, X-l, X-m, X-n, X-p, plus **X-s** (root 7's
+surviving residue, opened by X-q2's reviews) and E2's two. (Root 7 itself is CLOSED; X-o, X-q1,
+X-q2, X-q3 and X-r have all SHIPPED.) Section 5 has them in execution order; Section 6 records who
 owns every open finding, with no row unowned.
 
 ## 2. What is already shipped and correct (the foundation this plan builds on)
@@ -540,6 +561,19 @@ suggested.
 | **R-AX** (answered 2026-07-27, as recommended) | **"Debt-free" stays LOAN-ONLY, and the surfaces say so.**  The derivation covers accounts with a payoff MODEL -- amortizing loans -- while the Horizon's own liability band sums a revolving Credit Card the seam holds FLAT at its owed magnitude.  A flat balance never reaches zero, so a card can carry no payoff date, and including it under today's model would mean nobody carrying a card balance ever gets a date at all: honest and useless.  So the figure is unchanged and the CAPTION narrows to what it measures -- "Loans paid off <mon>", "All loans paid off" on the chart flag, plus "excludes `$X` revolving" when a liability with no payoff model carries a balance.  A card that can carry a REAL payoff date is the credit-card arc's work (`docs/plans/implementation_plan_credit_card.md`), and `_debt_line` is where it would be admitted.  Rejected: including revolving debt as it is modelled today (poisons the date for the state most users are in), and building the card paydown model inside X-q (a feature with its own UI and its own trace, overlapping an arc that already exists) | X-q3 |
 | **R-AY** (answered 2026-07-27, as recommended) | **A payoff date that is already PAST is reported, and the chart falls back.**  `plan_payoff_date` returns the DUE date the balance first folds to zero, and an overdue-but-still-projected installment that clears the loan folds behind today; `_metrics` counted it in its `max()` while `_horizon` filtered it out -- one question, two rules, which is the defect X-q exists to end.  The outlook reports what the fold says, because it is a fact about the loan's plan; the Horizon then falls back to its fixed window for AXIS SIZING only, since `_milestone_axis_x` clamps a past target to index `0.0` and would plant the flag on "Today".  The user is NOT loan-free in that state, and the rule this replaced said they were.  Rejected: future-dates-only (the caption stops reporting a date the fold can state, and "no date" then covers two different situations) and a third rendered state ("Debt-free Feb 2026 (payment overdue)": most informative, but a new value-object state and a new string in two templates for a case that needs an overdue unpaid installment to reach) | X-q1 |
 
+### Answered (developer ruling, 2026-07-27: X-q2's three forks, all as recommended)
+
+**The trace ran first and no code was written for it**, and it measured every figure below on both
+databases. The third fork was put to the developer TWICE: the first framing was rejected as unclear
+and re-asked in plain language -- what the drawer is, what the badge was, and what the number beside
+it actually comes from -- which is what surfaced the measurement that reframed it.
+
+| # | ruling | consumed by |
+|---|---|---|
+| **R-AZ** (N-100; answered 2026-07-27, as recommended) | **The Horizon publishes only what the presentation boundary reads: `horizon_end` and `is_loan_free` DELETE, and `_resolve_horizon_domain` returns the two things the axis needs.**  `horizon_end` is `dates[-1]` -- every branch of the resolver returns a December 31 strictly after `today`, so `_build_sample_dates` always ends on it (verified by brute force over **4,034,784 inputs**, zero mismatches), making it one fact under two keys.  `is_loan_free` is :attr:`LoanPayoffOutlook.is_loan_free`, a derived property of a value object this producer does not own -- ruling **R-AW's** copy one layer up from where X-r deleted it.  Neither key is named by any serializer, template, script or JS file, so the rendered payload is byte-identical.  **What the deletion COSTS, stated because it is the only real cost:** the X-q1 firing control `test_a_user_whose_only_loan_is_retired_is_loan_free` had `is_loan_free` as its ONLY discriminating value, and it moves to `loan_payoff_outlook(...).is_loan_free` -- where the discrimination now happens -- verified by mutation to fire on that exact assertion.  Rejected: **publishing them to the UI** (the cockpit footer beside the chart already renders the same three-state distinction, so a second rendered statement is a second place to disagree -- which is what X-q1 spent a commit ending), and **deleting `horizon_end` only** (`is_loan_free`'s ground is the stronger of the two, and keeping it leaves the exact shape this step exists to remove) | X-q2 |
+| **R-BA** (N-100; answered 2026-07-27, as recommended) | **`compute_net_worth_horizon` DELETES, and its tests read the horizon where the route reads it.**  A PUBLIC export with zero `app/` callers -- an AST census (never a grep) found 10 call sites, all in one test file -- while `compute_debt_summary`, `compute_debt_principal_progress`, `compute_goal_progress` and `compute_account_balance_cell` each have a live one.  "A narrow producer has a narrow consumer" goes from a pattern with one exception to an invariant with none.  Two tests delete with it: the narrow-vs-full agreement test, whose entire content is "two producers agree", and the standalone resolve-once test, whose property the full-build sibling pins (proved by mutation, not by argument).  Rejected: **keeping it and giving it a caller** (an HTMX range endpoint is a FEATURE with its own trace, and the client already receives BOTH ranges in one `data-chart` payload -- an endpoint would add a second full build per page, not remove one), and **keeping it documented as a public API** (verbatim N-85 / N-96 / N-100's own words: dead surface kept honest by its own tests) | X-q2 |
+| **R-BB** (N-102; answered 2026-07-27, as recommended, and re-asked in plain language first) | **NO "Paid Off" badge on the archived drawer, permanently, and the drawer's WRONG NUMBER is recorded as N-103 with X-e as its owner.**  The ground is a reason and not a cost: `is_paid_off` is the seam's CONGRATULATION predicate in its own words, and the moment to congratulate is the live list when the loan clears -- the archived drawer is opened to unarchive or permanently delete.  So `_load_archived_accounts` stays two keys and runs no engine or seam call.  **What pricing the badge found, and it reframed the fork:** the drawer's "Last Balance" is the `current_anchor_balance` COLUMN, which for an amortizing loan is not a balance at all -- `anchor_service.AmortizingAccountAnchorError` says so in terms and the cash true-up door REFUSES the kind, so nothing keeps it true; measured at `$178,103.41` against `$177,277.97` owed (Mortgage) and **`$0.00` against `$15,663.59`** (Van Loan).  That is archived finding B-15's shape on the one surface B-15's fix did not reach.  Zero archived loans exist on either database, so nothing is on screen today.  Rejected: **badging it** (accurate and stable -- `is_retired` folds RECORDED events, so an archived loan still owing never self-badges -- but it seats a green badge beside that wrong number), **badging AND fixing the balance** (decides a third of X-e's question early, on a surface X-e's entry already lists, and puts a per-kind switch inside a presentation loader -- the "surface picks its own producer" defect X-j exists to remove), and **handing the whole question to X-e** (leaves X-q2 having decided nothing).  **X-q2's adversarial design review argued for OVERTURNING this split**, on the ground that the deferred half falsifies the decided half -- the drawer congratulates anyway, falsely, through the number.  The argument is recorded at N-103 with its proposed fix (suppress the line for ledger-derived balances) rather than acted on, because the developer took this fork with the measurements in front of them | X-q2, N-103 |
+
 ### Answered (developer ruling, 2026-07-26: X-g's five forks, all as recommended)
 
 **The trace ran first and no code was written for it** -- the step's own stated first action. Each
@@ -585,10 +619,12 @@ its decomposed ID -- append-only, and never renumbered for readability. **Ruling
 then folded its CONTENT into `X-g4b`**, so the exception now costs no commit of its own: the entry
 stays where it is, its content is what X-g4b carries, and its box ticks with X-g4b's hash. The live
 order from here is
-**X-q2 -> X-h -> X-i -> X-j -> X-k -> X-l -> X-m -> X-n -> X-d -> X-e -> X-f -> X-p ->
-E2** (X-g4a, X-g4b, X-o, X-q1 and X-q3 and X-r, which used to open this line, have SHIPPED; X-q2 is
-the only leaf of X-q still open) (X-h .. X-k added 2026-07-27 by ruling R-AO, X-l .. X-p the same day by R-AQ, and
-X-q / X-r the same day by R-AV / R-AW out of X-o's trace; they
+**X-h -> X-s -> X-i -> X-j -> X-k -> X-l -> X-m -> X-n -> X-d -> X-e -> X-f -> X-p ->
+E2** (X-g4a, X-g4b, X-o and all three X-q leaves and X-r, which used to open this line, have
+SHIPPED) (X-h .. X-k added 2026-07-27 by ruling R-AO, X-l .. X-p the same day by R-AQ,
+X-q / X-r the same day by R-AV / R-AW out of X-o's trace, and X-s the same day out of X-q2's two
+adversarial reviews -- sequenced after X-h on X-h's own ground, since the controls X-h repairs are
+what grade a step that moves a client payload and a rendered caption; they
 appear on this page in EXECUTION order, which is why X-o precedes X-h and X-p follows X-f -- the
 alphabet has never been this page's order, exactly as X-g running before X-d already showed);
 both steps say so at their own entries, and the "Where the arc stands" section at the top of this
@@ -1059,7 +1095,9 @@ preconditions cite entries in that file.
   one question is how they came to disagree in the first place; the shared selection makes "the axis
   a payoff sizes and the flags drawn on it are the same set" a property of the construction.
 
-- [ ] **X-q** `fix(savings): one debt-free date, one derivation` -- closes **N-98**, **N-99** and
+- [x] **X-q** `fix(savings): one debt-free date, one derivation` -- **DONE**, in the three commits
+  its leaves took (`3b7823e1` / `bad97e6a` / `be6cfae6`; rule 6's convention for a decomposed step).
+  Closes **N-98**, **N-99** and
   **N-100** (ruling R-AV, 2026-07-27). **Opened BY X-o's trace, and it is the same disease one
   question over:** `/savings` derives "when is this user debt-free" TWICE, from the same
   `account_data`, with two different membership rules, and renders both answers on ONE page.
@@ -1131,16 +1169,38 @@ preconditions cite entries in that file.
     the developer confirming the expected behaviour changed rather than a test edited to pass.
     Ships out of execution order (before X-q2) because it is the caption half of X-q1's own
     ruling and the two read one derivation.
-  * [ ] **X-q2 THE SURFACE** -- the horizon publishes what is read (**N-100**), and the archived
-    list reads what is published (**N-102**). `is_loan_free` and
-    `horizon_end` are producer outputs `_serialize_horizon` does not emit and no template reads, and
-    `savings_dashboard_service.compute_net_worth_horizon` is a PUBLIC export with zero `app/`
-    callers, alive on 10 test call sites in one file. Same class as N-85 / N-96 in the seam. No behaviour: the
-    proof is that the rendered payload is byte-identical. **N-102 is the same mismatch pointing the
-    other way** and it is why this step is not purely a deletion: the archived-accounts list's
-    dicts carry `account` and `current_balance` only, so its "Paid Off" badge could never render --
-    X-r deleted the dead branch, and whether an archived paid-off loan SHOULD be badged, at the
-    cost of resolving loans for a historical list, is this step's fork.
+  * [x] **X-q2 THE SURFACE** -- **SHIPPED dev 2026-07-27 (`be6cfae6`)**, closing **N-100** and
+    **N-102** under rulings R-AZ / R-BA / R-BB. **The rendered payload is BYTE-IDENTICAL on both
+    databases** (13,480 bytes on `shekel`, 13,472 on `shekel_f3_final`), which is the proof this
+    step promised, and the loan baseline is unmoved.
+
+    `horizon_end` went as a duplicate of `dates[-1]` -- the review brute-forced the identity over
+    **4,034,784 inputs** (every day across 8 years x ~1,400 payoff offsets, plus `None`) with zero
+    mismatches, so "by construction" is measured and not asserted. `is_loan_free` went as a
+    republication of `LoanPayoffOutlook`'s derived property. `compute_net_worth_horizon` went as a
+    public export with zero `app/` callers while every sibling narrow producer has one, and its 10
+    test call sites now read the horizon out of `compute_dashboard_data`, the only path production
+    has. Two tests went with it, and the second one's property was proved still covered BY MUTATION
+    (giving `build_horizon` its own core data reddens
+    `test_dashboard_data_resolves_each_loan_once` with "loan 2 was resolved 2 times").
+
+    **What it added is a GATE at both ends of the boundary, not a note.** The producer's key set is
+    a literal; the route removes each key in turn and requires `_serialize_horizon` to raise a
+    `KeyError` NAMING that key. Both were shown to fire on the exact defect -- re-adding one unread
+    key reddens both -- and the route arm asserts WHICH key raised, so an incidental miss from a
+    later refactor cannot pass as proof.
+
+    **N-102 is decided, and the reason is not cost** (ruling R-BB): the badge reads the seam's
+    `is_paid_off`, which the seam defines as the CONGRATULATION predicate, and the moment to
+    congratulate is the live list when the loan clears. The archived dicts stay two keys and the
+    drawer runs no engine or seam call.
+
+    **Four false claims in the files it touches were corrected in-commit**, all found by hand or by
+    its reviews: `_debt_line`'s module docstring still said X-q3's captions were "NOT done here"
+    with N-99 open (both shipped at `bad97e6a`) and its `_cockpit.html` citation had drifted seven
+    lines; `_horizon` said the client's flag plugin carries a milestone's `kind` (it reads only `x`
+    and `label`); `_orchestrator` said "Two public entry points" and that `_build_projection_context`
+    is shared by "both" (five and four); and a stray-quote typo from X-r.
 
 - [x] **X-r** `refactor(savings): the projection dict carries the seam's figures` -- **SHIPPED dev
   2026-07-27 (`1204a99e`)**, closing **N-101** (ruling R-AW). **NO figure moved**, and it is B-16's
@@ -1703,7 +1763,7 @@ meantime without deciding that first**, or the classification is written and the
 ## 6. The findings ledger
 
 **Only UNRESOLVED findings are here, and every one of them has an OWNER** (Section 9 rule 6). The
-CLOSED registers are in the two as-built records: the 18 that Phase X's shipped steps closed are in
+CLOSED registers are in the two as-built records: the 20 that Phase X's shipped steps closed are in
 `archive/cash_arc_as_built_2026-07-27.md` Section 3, and the 75 the LOAN arc closed are in
 `archive/loan_arc_as_built_2026-07-26.md` Section 7. IDs keep their names, so a reference to any
 finding resolves in whichever file holds it. Unfinished work stays HERE whichever half of the arc it
@@ -1758,6 +1818,14 @@ the same trace and its adversarial review**: **N-98** (the debt-free date's seco
 **N-99** (revolving debt is invisible to "Debt-free"), **N-100** (the Horizon publishes three things
 nothing reads) and **N-101** (the projection dict re-flattens `LoanFigures`, which is B-16's root).
 
+**Two more came out of X-q2, and both were BORN with an owner** (rule 6), which is the difference
+from the four stale resolvers above: **N-103** (the archived drawer renders a column that is not a
+loan's balance -- owner **X-e**, which already listed that read) and **N-104** (N-100's root
+surviving inside the milestone dicts and in the debt-summary dict's flattening -- owner **X-s**, a
+step created for it in the same commit). **The ledger stands at 41 rows and every owner was
+re-checked against the checkbox list after X-q2's ticks**: none names a ticked step, none names an
+ID that is not a checkbox, and none is outside the closed vocabulary.
+
 | id | finding (one line) | worst measured | status | closed by |
 |---|---|---|---|---|
 | B-17 | **The debt-track `is_originated` guard proves where the value comes FROM and never that production puts it there -- the N-63 / N-67 class, third instance.** `test_balance_at.py:3583-3592` builds its OWN `_ad` dict with `"is_originated": figures.terms.is_originated` and asserts `_metrics` behaviour on it. Production builds that dict at `_projections.py:241-243`, with the same expression PLUS a `loan_result is None` fallback of `True` the test's dict has no branch for. Change the production key to `False`, to `is_retired`, or drop it, and the test stays GREEN -- it never executes the builder. The value's source is proven; the WIRING is not | the debt track counting an unclosed mortgage as 100% paid (the defect the flag was added to stop) | **OPEN -- RE-VERIFIED 2026-07-26** (the trim). Its old status ("flag deleted at C3b") was WRONG: `is_originated` is live on `LoanFigures.terms`, read through that dict at `_metrics.py:362`. The fix is the Section 8 rule N-63 wrote: assert the CALL, or assert behaviour through the real builder **TRIAGED 2026-07-27 (ruling R-AO): to X-h**, with the three other controls that cannot fire. | X-h |
@@ -1765,8 +1833,6 @@ nothing reads) and **N-101** (the projection dict re-flattens `LoanFigures`, whi
 | FU-3 | Standing overpayment resolves at today for any as-of | -- | latent **RE-VERIFIED 2026-07-27** and it is the X-i class, not a C-phase note: `_resolution.py:294` calls `loan_standing_extra_for_account(account.id)`, which resolves through `recurring_transfer_query.py:72-76` off the CURRENT template row with no as-of, inside a resolution the context pins an `as_of` for. **TRIAGED 2026-07-27 (ruling R-AO): to X-i2.** | X-i2 |
 | N-96 | **`balance_at.interest_by_period_for_account` is a public seam entry with ZERO `app/` callers.** AST-verified 2026-07-27 during X-g4b's review: the account-detail route reads `interest_projection_for_account`, and nothing reads this. `__init__.py` states as fact that it and `debt_schedule_rows` are "the two non-balance seam entries the out-of-cluster consumers (the account-detail route, the savings orchestrator) read" -- true of the second, FALSE of the first. Same class as the `calculate_interest` orphan X-g4b deleted, but it pre-dates that step rather than being created by it, so it was reported and not swept | a public seam entry no screen can reach, described as one two screens read | **OPEN -- found 2026-07-27** by X-g4b's adversarial review, AST-verified, deliberately NOT fixed in that commit (out of its scope, CLAUDE.md rule 6) | X-e |
 | N-97 | **`app/utils/dates.py:314` cites `balance_resolver.daily_cash_balance_series` as a live consumer of `attribution_date`.** That producer was deleted at plan step X-c2b3 (the calendar's per-day line is the fold sampled at every day). The rule the sentence states -- one attribution rule shared by the calendar's day cells and the balance line's steps, so a flow's cell and its step land on the same day -- is STILL TRUE and load-bearing; only its named example is gone. Found 2026-07-27 in X-g4b's sweep, outside that step's 26-site scope | a present-tense claim naming a producer deleted a month earlier, in the docstring of the rule two surfaces share | **OPEN -- found 2026-07-27**, reported not fixed (pre-dates X-g4b) | X-p |
-| N-100 (X-o trace) | **The Horizon producer publishes three things nothing reads.** `build_horizon` returns `is_loan_free` and `horizon_end`, and `_serialize_horizon` (`routes/savings.py:113-132`) emits neither -- it maps `labels` / `net` / `composition` / `milestones` / `current_index` and drops the rest; no template or JS names either. `savings_dashboard_service.compute_net_worth_horizon` is a PUBLIC export with ZERO `app/` callers, alive on 10 test call sites in one file (AST-counted, not grepped). Same class as N-85 / N-96 in the seam: dead surface kept honest by its own tests. It matters here because B-16's entry claimed the user was "told they are not loan-free", and the flag that would tell them reaches no screen | -- | **OPEN -- found 2026-07-27** by X-o's trace, which needed the claim checked before repeating it | X-q2 |
-| N-102 (X-r review) | **The archived-accounts list's "Paid Off" badge could never render, and X-r deleted the branch.** `_data._load_archived_accounts` builds its dicts with `account` and `current_balance` ONLY -- by design, since an archived account gets no engine or seam call -- so `savings/dashboard.html`'s `{% if ad.is_paid_off ... %}` was a guard against a shape the producer cannot make. It read as coverage and was not, which is Section 8's own lesson in a template. The branch is DELETED (a badge nobody can see is not a feature); whether an archived paid-off loan SHOULD be badged, at the cost of resolving loans for a historical list, is the open half | a badge silently absent for every archived loan, forever | **OPEN -- found 2026-07-27** by X-r's adversarial review while re-pointing the flat keys; the dead branch is gone, the FEATURE question is not answered | X-q2 |
 | N-103 (X-q2 trace + review) | **The archived-accounts drawer renders `current_anchor_balance` as "Last Balance", and for an amortizing loan that column is not a balance.** `_data._load_archived_accounts` (`_data.py:184`) reads the column directly -- by design, since an archived account gets no engine or seam call -- and `savings/dashboard.html` labels it "Last Balance". `anchor_service.AmortizingAccountAnchorError` states the rule in terms ("a loan's balance is never `accounts.current_anchor_balance` -- it is ledger-derived"), and the cash true-up door REFUSES an amortizing account, so nothing keeps the column true for a loan; a loan true-up appends a `LoanAnchorEvent` and never touches it. This is archived finding B-15's shape on the one surface B-15's fix did not reach -- B-15 was the Mortgage column reading `$1.00` against a ledger of `$177,277.97`. **Not live: zero archived loans exist on either database** (the two archived accounts are cash), so nothing is on screen today; a user archiving either real loan sees it immediately. Options are (a) suppress the line for accounts whose balance is ledger-derived, (b) resolve archived loans through the seam -- which also decides N-102's badge, and (c) record `archived_at` and read the ledger at that instant, since "what it owed when you archived it" is a fact the app does not store (`updated_at` moves on every edit) | Mortgage column `$178,103.41` against `$177,277.97` owed; Van Loan column **`$0.00`** against **`$15,663.59`** owed -- the whole balance, because a loan's true-ups never write the column (measured on `shekel` 2026-07-27; `$15,205.63` on `shekel_f3_final`) | **OPEN -- found 2026-07-27** by X-q2's trace while pricing N-102's badge, and sharpened by its adversarial review, which found the anchor service's own sentence. Deliberately NOT fixed there: the developer ruled the badge NO and this figure to X-e, which owns the column's fate and already lists this exact read | X-e |
 | N-104 (X-q2 review) | **"Publish only what is read" holds for the horizon dict and fails one level inside it, and one package over.** Two instances of N-100's own root that X-q2 closed the top-level case of. (a) Each SERIALIZED milestone carries `date` and `kind` (`routes/savings.py:133`, `:135`); the client's flag plugin reads only `x` and `label` (`net_worth_cockpit.js:388-414`), and `net-worth-chart-canvas` has exactly one consumer. The producer legitimately needs both -- `_build_milestones` sorts on `date`, tests filter on `kind` -- it is the copies in the PAYLOAD that reach nobody, and X-q2's guard cannot see them because it mutates the top-level dict only. The same file's `_serialize_net_worth_chart` emits `assets` and `liabilities` (`:180-181`) that `selectRange` (`net_worth_cockpit.js:180-186`) does not read either, behind a docstring justifying them "until the P2 element replaces it" -- that element is the file that ignores them. (b) `LoanPayoffOutlook.is_loan_free` has ZERO `app/` readers after X-q2 (AST-verified: only its own definition at `_debt_line.py:105`), because `_metrics._compute_debt_summary` copies the outlook's two STORED fields into the debt-summary dict (`projected_debt_free_date`, `has_unclearing_debt`) and `_cockpit.html:267-274` re-derives the third state as a Jinja fall-through. That is ruling R-AW's pattern -- a consumer bundle mirroring a value object field by field -- one package over from where X-r fixed it, and the fix is the same: carry the outlook whole. **A user whose loans are ALL retired is the state it hides**: the outlook says `is_loan_free`, and no surface says anything | no figure moves; the cost is that N-100's class survives in the file that just certified itself against it, and the all-loans-retired state reaches no caption | **OPEN -- found 2026-07-27** by X-q2's two adversarial reviews, independently. Reported not fixed: X-q2's proof is a byte-identical payload and (a) changes the client payload, while (b) re-points three surfaces and is X-r-sized | X-s |
 | cash D4 | Anchor column vs history table: divergence detected, only logged | latent | latent | X-e (widened 2026-07-27) |
