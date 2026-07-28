@@ -124,6 +124,22 @@ _DATED_RX = re.compile(r"\d{4}-\d{2}-\d{2}")
 #: Number of columns in the Section 6 table.
 _LEDGER_COLUMNS = 5
 
+#: The sentence Section 6 uses to state its own size, e.g.
+#: ``**The ledger stands at 38 rows**``.  Optional, because a document that
+#: simply does not claim a count is not lying about one; but a claim that IS
+#: made must match, which is what this exists to check.
+#:
+#: **The bold run may close after the sentence's own punctuation** -- the live
+#: document writes ``**The ledger stands at 41 rows.**``, with the period INSIDE
+#: the emphasis.  The first draft of this pattern required ``rows**`` and so
+#: matched the live document not at all: it read as "no count claimed", the arm
+#: returned clean, and a planted 38-against-41 passed.  Caught by planting that
+#: defect in the REAL file rather than by reading the regex, which is the gate
+#: lesson X-t3 paid for one step earlier.
+_STATED_COUNT_RX = re.compile(
+    r"\*\*The ledger stands at (?P<count>\d+) rows?\.?\*\*",
+)
+
 
 def _blank_fenced_regions(text: str) -> str:
     """Return *text* with every fenced code block's contents blanked.
@@ -286,6 +302,41 @@ def parse_ledger(text: str) -> list[tuple[str, str]]:
     return rows
 
 
+def stated_count_violation(text: str) -> str | None:
+    """Return the violation when Section 6's stated row count is wrong.
+
+    The ledger says how big it is in prose ("**The ledger stands at N rows**"),
+    and that sentence is edited by hand on every step that opens or closes a
+    finding.  It drifted: it read 38 while the table carried 40, because a step
+    that closed four rows and opened three updated the rows and not the
+    sentence.  Rule 2 already requires the ledger to be maintained when a step
+    ships; this makes the one part of it that is a NUMBER checkable, which is
+    the same argument Section 9 rule 6 makes for owners -- prose does not
+    enforce itself.
+
+    The sentence is OPTIONAL.  A document that states no count is not making a
+    false claim, and this gate exists to catch false claims, not to mandate a
+    sentence.
+
+    Args:
+        text: The whole document.
+
+    Returns:
+        The violation message, or ``None`` when the count is absent or correct.
+    """
+    match = _STATED_COUNT_RX.search(_section(text, _LEDGER_HEADING))
+    if match is None:
+        return None
+    stated = int(match.group("count"))
+    actual = len(parse_ledger(text))
+    if stated == actual:
+        return None
+    return (
+        f"Section 6 says it stands at {stated} rows and the table carries "
+        f"{actual}. Update the sentence with the rows, or delete it."
+    )
+
+
 def _vocabulary_violations(
     finding: str, owner: str, note: str | None,
 ) -> list[str]:
@@ -405,6 +456,19 @@ class TestTheBalancePlanLedgerHasNoUnownedRows:
             "Section 9 rule 6:\n  " + "\n  ".join(violations)
         )
 
+    def test_the_ledger_states_its_own_size_correctly(self):
+        """The "stands at N rows" sentence matches the table it describes.
+
+        Added 2026-07-28 at plan step X-u, which found the sentence reading 38
+        against a 40-row table -- drift left by a step that updated the rows and
+        not the prose about them.  Correcting the number by hand is what had
+        already been done and is what drifted; this makes it a predicate.
+        """
+        violation = stated_count_violation(
+            PLAN_PATH.read_text(encoding="utf-8"),
+        )
+        assert violation is None, violation
+
 
 class TestTheGateItselfFires:
     """The negative controls: each arm is shown to bite on a planted defect.
@@ -438,6 +502,54 @@ class TestTheGateItselfFires:
     def test_the_clean_document_passes(self):
         """Premise: the synthetic document is valid, so each defect is the only one."""
         assert owner_violations(self._DOC) == []
+
+    def test_a_stated_count_that_is_wrong_is_caught(self):
+        """The drift arm bites, and only when a count is both present and wrong.
+
+        Three cases, because the arm has three outcomes and two of them must NOT
+        fire: absent (this document states no count), present and correct,
+        present and wrong.
+
+        **Both punctuations are exercised, and that is not decoration.** The
+        live document closes the bold AFTER the full stop
+        (``**... 41 rows.**``); the first draft of this arm required
+        ``rows**``, matched the live file nowhere, and therefore reported a
+        planted 38-against-41 as clean. A synthetic control alone would not have
+        caught that -- it was written without the period and passed.
+        """
+        # Absent: no claim, no violation.
+        assert stated_count_violation(self._DOC) is None
+
+        for sentence in ("5 rows", "5 rows."):
+            correct = self._DOC.replace(
+                "| id | finding (one line) | worst measured | status | closed by |",
+                f"**The ledger stands at {sentence}**\n\n"
+                "| id | finding (one line) | worst measured | status | closed by |",
+            )
+            # Present and correct: the synthetic ledger has five rows.
+            assert stated_count_violation(correct) is None, sentence
+
+            # Present and wrong: the live document's own drift, reproduced.
+            wrong = correct.replace("stands at 5", "stands at 38")
+            violation = stated_count_violation(wrong)
+            assert violation is not None, sentence
+            assert "38" in violation and "5" in violation
+
+    def test_the_count_arm_reads_the_LIVE_documents_spelling(self):
+        """The arm matches the real file's sentence, not just the synthetic one.
+
+        The gate's own §8 lesson, one axis over: a pattern that is never
+        exercised against the artifact it grades can be blind to it and still
+        pass every synthetic control. This asserts the live document's count
+        sentence is FOUND -- if Section 6 stops stating a count the arm becomes
+        vacuous, and this is what says so.
+        """
+        text = PLAN_PATH.read_text(encoding="utf-8")
+        assert _STATED_COUNT_RX.search(_section(text, _LEDGER_HEADING)), (
+            "Section 6 no longer states a row count in the spelling this arm "
+            "matches -- the drift check is now vacuous. Restore the sentence "
+            "or delete the arm; do not leave it passing on nothing."
+        )
 
     def test_an_owner_that_has_shipped_is_caught(self):
         """The exact class that went unnoticed for weeks, three times."""

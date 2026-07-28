@@ -707,6 +707,28 @@ slightly wrong are recorded as re-measured rather than repeated.
 | **R-BQ** (answered 2026-07-28) | **The gate is comment-stripped, and it carries controls on ITSELF.**  Three of five arms scanned raw source, so a band dropped behind a `// "other" dropped` comment satisfied the arm written to catch exactly that -- proven by exercising the helper, not by reading it.  `TestTheGateItself` now plants that source, a Jinja comment, a nested literal and a moved file.  The docstring also states what the arms do NOT prove: that a declaration is USED.  Rejected: trusting the "declaration, not a mention" claim as written (it held for two arms of five) | X-t5 |
 | **R-BR** (answered 2026-07-28) | **The fabricated no-baseline HERO is recorded, not changed inside a fix commit.**  Every balance in that state is `None`, so the `$0.00` hero is as fabricated as the flat chart X-t2 deleted -- the review is right.  Whether it should read `--` is a DISPLAY ruling with its own surface, and X-t5's job was the review residue; it becomes finding N-113 with step X-v, and the test that pins today's answer says so at the assertion rather than reading as endorsement | X-v |
 
+### Answered (developer ruling, 2026-07-28: X-u's four forks, all as recommended)
+
+**The trace ran FIRST -- it is what the X-u entry named as the step's own first action -- and it
+answered ruling R-BI's objection with a measurement rather than an argument.** R-BI declined this
+merge inside X-s3 on the ground that the two producers "answer over different membership rules, and
+merging them means re-deciding which loan set each figure is entitled to". The trace measured that
+the rules are REDUCERS OVER ONE LIST, not two loan sets: `_loan_ad_current_principal` and
+`_compute_principal_paid_fraction` are both handed the same `loan_ads`, so neither predicate has to
+move for the merge, and the fraction is byte-identical over the narrow and the full projection on
+BOTH databases (`0.1768790812553367082980574648` on `shekel`,
+`0.1788328151006954065539843973` on `shekel_f3_final`). R-BS is therefore the ruling that REVERSES
+R-BI on evidence R-BI did not have, and it is recorded here BEFORE the code that cites it -- because
+X-s's code commit cited R-BD one commit before the ledger recorded it, and both of X-u's adversarial
+reviewers independently flagged the same shape here as an unresolvable citation.
+
+| # | ruling | consumed by |
+|---|---|---|
+| **R-BS** (answered 2026-07-28, as recommended) | **`principal_paid_fraction` becomes a `DebtSummary` FIELD, set at that value object's one construction site, and the second debt producer is deleted.**  It reduces over the same `loan_ads` the money figures do and applies its own all-loans-ever rule inside itself, so the rules stay distinct while the loan SET stays one -- the agreement the two producers' docstrings PROMISED becomes structural.  `DebtTrack`, `compute_debt_principal_progress` and the duplicate pass go together.  Rejected: a new `DebtPosition` value object pairing summary + fraction (it is `DebtTrack` relocated one package over -- a second container whose only job is to pair a value object with one scalar, which is the class finding N-114 opens next), and memoizing the shared pipeline behind both producers (caches a duplicate instead of deleting it, keeps two producers that must keep agreeing, and a memo keyed on a mutable context is a new hazard).  **The R-BG / R-BH objection was priced and does not bite**: those deleted surfaces with ZERO `app/` readers, and this field has a live one -- and `DebtSummary` was ALREADY a two-consumer union (four fields read only by `/savings`, and the dashboard track reads a strict subset), so the merge makes that union symmetric rather than adding a new class of thing | X-u |
+| **R-BT** (answered 2026-07-28, as recommended) | **`_project_debt_accounts` is INLINED into `compute_debt_summary` and deleted.**  Its entire stated rationale was that two producers must not drift onto different loan sets; with one producer left that rationale is gone, and the other three narrow producers in the module already inline their own load -> params -> filter -> project.  The helper was the ASYMMETRY, not the DRY -- verified by hand, since pylint's cross-module `duplicate-code` cannot see same-module duplication, and nothing it single-sourced is duplicated after the inline.  Rejected: keeping it as a one-caller private helper (a docstring justifying itself by a caller that no longer exists, and the debt producer shaped unlike its three siblings) | X-u |
+| **R-BU** (answered 2026-07-28, as recommended) | **The residual double load stays for the input-tier memo and is SEQUENCED, not deferred** (rule 7).  Threading a pre-loaded core through the narrow producers' signatures is a second sharing channel beside `BalanceContext`, which plan step X-i1 exists to make unnecessary.  **What the ruling assumed was smaller than what X-u's design review then measured**, so the sequencing survives and the RECORD does not: the residue is finding **N-115**, its owner's input tier is widened to name it, and it is a Section 6 row rather than a sentence in a docstring.  Rejected: collapsing it inside X-u | N-115 -> X-i1 |
+| **R-BV** (answered 2026-07-28, as recommended) | **`/savings` does not render the new field, and X-u adds no pixel.**  The cockpit's Liabilities footer has no rail and no slot for a progress marker; adding one is microcopy plus a caption that must not read as contradicting the owed-today total beside it -- two figures over two different loan sets -- which is a DISPLAY decision with its own surface, and is the change R-BH itself refused to make inside a cleanup step.  The step stays a refactor whose proof is that both real-data harnesses come back byte-identical.  Rejected: adding the caption here | X-u |
+
 ### Answered (developer ruling, 2026-07-26: X-g's five forks, all as recommended)
 
 **The trace ran first and no code was written for it** -- the step's own stated first action. Each
@@ -1677,15 +1699,34 @@ preconditions cite entries in that file.
     behind a `//` comment satisfied the arm that exists to catch it; and nine stale or INVENTED
     citations, including `_net_worth._sum_net_worth_totals`, which has never existed in any commit.
 
-- [ ] **X-u** `refactor(savings): one debt projection per render` -- closes **N-109** (ruling
-  R-BI). `compute_tracks_section` runs `_project_debt_accounts` TWICE and the seam-batch builder
-  THREE times per dashboard render, measured, because the two narrow debt producers each run the
-  full load -> params -> project pipeline over the same loan set. The proposed fix is to make
-  `principal_paid_fraction` a `DebtSummary` field, which deletes `DebtTrack`,
-  `compute_debt_principal_progress` and the duplicate pass together. **It gets its own step because
-  the two producers answer over DIFFERENT membership rules** -- owed-today for the money figures,
-  all-loans-ever for the marker -- so merging them re-opens the question ruling X-q settled at a
-  measured cost of 19 years, and that trace is the step's first action.
+- [ ] **X-u** `refactor(savings): one debt projection per render` -- closes **N-109** (rulings
+  **R-BS** / **R-BT** / **R-BU** / **R-BV**, which reverse R-BI on evidence R-BI did not have).
+  `compute_tracks_section` runs `_project_debt_accounts` TWICE and the seam-batch builder
+  THREE times per dashboard render, because the two narrow debt producers each run the
+  full load -> params -> project pipeline over the same loan set. `principal_paid_fraction` becomes a
+  `DebtSummary` field, which deletes `DebtTrack`,
+  `compute_debt_principal_progress` and the duplicate pass together.
+
+  **The trace ran first, as this entry required, and it answered the membership question the step
+  existed to be careful about.** R-BI's objection was that the two producers "answer over DIFFERENT
+  membership rules" -- owed-today for the money figures, all-loans-ever for the marker -- so merging
+  them re-opens what X-q settled at a measured cost of 19 years. Measured: they are **reducers over
+  ONE list**, not two loan sets. Both are handed the same `loan_ads`; neither predicate has to move;
+  and the fraction is identical over the narrow and the full projection on both databases. So the
+  merge changes no rule, and what it deletes is the duplication that made two docstrings promise
+  the agreement instead of the structure providing it.
+
+  **Measured before and after, on both databases** (`shekel` / `shekel_f3_final`): debt projections
+  per tracks render **2 -> 1**, seam-batch builds **3 -> 2**, SQL **92 -> 83** and **84 -> 75**,
+  median wall clock **103.4 -> 98.2 ms** and **94.8 -> 91.7 ms**. No figure moves: both real-data
+  harnesses are byte-identical, and the above-seam one was shown FIRING on a planted
+  one-basis-point drift in the merged field before it was trusted.
+
+  **What it leaves, stated so it is not mistaken for closed: finding N-115** (ruling R-BU). The
+  duplicate PROJECTION goes; the duplicate LOADS behind it stay, because sharing a `BalanceContext`
+  is not sharing the loads. That is X-i1's input-tier memo, whose entry is widened in the same
+  commit to name the three loaders it did not previously cover -- one of which is a full
+  paycheck-engine run, twice per render.
 
 - [ ] **X-v** `refactor(balance): every degraded state is read, not renamed` -- closes **N-112** and
   **N-113**. The no-baseline residue X-t2 measured and did not reach: **12** more spellings of the
@@ -1739,6 +1780,20 @@ preconditions cite entries in that file.
     rather than a second one: the pay-period calendar, the per-account contribution feed, the
     override map, the standing extra, the contractual schedule. Every loader keeps the clock it has
     TODAY, so no figure can move and the harness is the proof.
+
+    **Its tier is WIDENED by finding N-115** (2026-07-28, out of X-u's design review, ruling R-BU).
+    The five loaders above are the ones N-72 / N-89 / N-92 / N-93 named, and they do NOT cover the
+    budget dashboard's tracks section, which pays twice per render for three more:
+    `_load_dashboard_core_data` (the accounts query plus `get_all_periods` plus
+    `get_current_period`), `_load_account_params` (the AccountType query, `LoanParams`,
+    `EscrowLine` + versions, and the investment-params load), and
+    `_get_current_paycheck_breakdown` -- **two full `calculate_paycheck` runs per render**, measured
+    on both databases. The third is the expensive one and it is the reason this is not a tidy-up:
+    the SECOND breakdown alone costs **7.2 ms / 7 SQL** in-request on `shekel` and `7.2 ms / 7 SQL`
+    on `shekel_f3_final`, against the 9 SQL X-u's whole deletion removed. Its arguments all come off
+    `core`, so the same commit collapses the three copies of
+    `_get_current_paycheck_breakdown(user_id, core.all_periods, core.current_period)`
+    (`_orchestrator.py`, three call sites) to one that takes `core`.
   * [ ] **X-i2 THE CLOCK** -- the cutover. Each memoized loader takes `ctx.as_of` and `ctx.scenario`,
     and this MOVES MONEY: N-91 measured the gross at `$3,631.74` today against `$3,722.53` at a 2027
     read and `$0` before the first pay period, and FU-3 changes a loan's whole forward trajectory on
@@ -2217,8 +2272,10 @@ row, whose owner read `Section 5, Phase E2`; it is now `E2-0 / E2-n`, the phase'
 steps. Every other owner was already live, which is what the three hand-passes above bought and
 what nothing now has to buy again.
 
-**The ledger stands at 38 rows** (41 less the four X-h closed, plus **N-105**, which X-h's own
-trace opened and which was born with an owner).
+**The ledger stands at 41 rows.** That sentence read `38` against a 40-row table until 2026-07-28,
+drift left by a step that updated the rows and not the prose about them -- so it is a GATE arm now
+(`stated_count_violation`) rather than a number somebody remembers to edit, on the same ground rule 6
+is a gate. Correcting it by hand is exactly what had already been done.
 
 | id | finding (one line) | worst measured | status | closed by |
 |---|---|---|---|---|
@@ -2263,6 +2320,7 @@ trace opened and which was born with an owner).
 | N-112 (X-t2 trace) | **The balance seam's no-baseline precondition is spelled out at 18 call sites, and 12 of them remain.** Plan step X-t2 gave the rule ONE home (`BalanceContext.has_baseline`, which `require_scenario` itself now raises on) and converted the six sites on the `/savings` + dashboard-tracks path, deleting two of them outright. The rest still write `ctx.scenario is None` themselves: `routes/grid.py:154` and `:714`, `calendar_service.py:276` and `:326`, `dashboard_service.py:108`, `loan_recurrence_sync.py:267`, `investment_dashboard_service/_context.py:164` / `:189` / `:259`, `_chart.py:162`, `_orchestrator.py:67`, and `accounts/detail.py`. **A rename is NOT the fix and that is why this is a step rather than a sweep**: X-t2 found two copies in ONE region answering the same state with different degraded values (an empty map list beside a trend window that built its axis anyway), which a rename preserves. Each site's degraded VALUE has to be read. **The count is a floor**: `_metrics._recent_settled_expenses_monthly` guarded the same state as `if not (current_period and scenario)` -- invisible to a search for `scenario is None`, and found only because X-t5 was re-reading the file -- so the census wants an AST pass, which is Section 8's own lesson one axis over | `$0.00` today (the state is unreachable in production: `auth_service.py:707` writes a baseline at sign-up and no route deletes one). The cost is that 12 sites each decide a degraded value alone, which is how two of them came to disagree | **OPEN**, opened 2026-07-28 by plan step X-t2's census. Born with an owner (rule 6) | X-v |
 | N-113 (X-t review) | **The no-baseline hero reports `$0.00` over balances that are all `None`.** `compute_net_worth_today` sums `current_balance or ZERO`, so a user whose every balance the app cannot answer is told their net worth, assets and liabilities are exactly zero. Plan step X-t2 deleted the fabricated flat-$0 CHART on that reasoning and left the fabricated SCALAR above it, then pinned it with a test -- which X-t's design review named as turning residue into a contract. Whether the hero should read `--` (and what the chips and the legend do beside it) is a DISPLAY ruling, not a fix to make inside a review-residue commit (ruling R-BR); the test now says at the assertion that it pins today's answer rather than endorsing it | `$0.00`, and unreachable in production for the same reason as N-112. The cost is a page that states three figures it cannot know | **OPEN**, opened 2026-07-28 by X-t's adversarial design review. Born with an owner (rule 6) | X-v |
 | N-114 (X-t1 review) | **The liability rule is single-sourced on the projection and STILL stored in the dense-map dict beside it.** `net_worth_account_data.to_net_worth_account_data:97` writes `is_liability` into an untyped `{account_id, balances, is_liability}` dict that `_net_worth._sum_composition_at_period:221` reads, on the SAME render where `AccountProjection.is_liability` is now derived -- so X-t1's claim that "there is now one" spelling is true of the projection and false of the page. Both call `is_liability_account` today, so the figure risk is latent rather than live; what is live is that a future refinement landing on the property leaves the trend and the sparklines on the old classification, with the hero and the chart's today point disagreeing and every test that reads one of them staying green. It is the same untyped-container class N-111 closed, one module over, and the row that X-t's thesis ("which shapes are guaranteed and which are merely tested") points at next -- alongside the archived-account rows, whose `current_balance` is `Account.current_anchor_balance` (which finding N-103 says is not a loan's balance at all) and which shared the cockpit projection's loop-variable name until X-t5 renamed it | `$0.00` today; the measured cost of the LAST container in this class was B-16 and N-98 | **OPEN**, opened 2026-07-28 by X-t's adversarial design review. Born with an owner (rule 6) | X-w |
+| N-115 (X-u review) | **The dashboard tracks section pays TWICE for three loaders, and the expensive one is a full paycheck-engine run.** Plan step X-u deleted the duplicate debt PROJECTION; the duplicate LOADS behind it stayed, because `compute_tracks_section` shares one `BalanceContext` across its two producers and sharing the context is not sharing the loads. Measured on both databases with one active goal: `_load_dashboard_core_data` (accounts query + `get_all_periods` + `get_current_period`), `_load_account_params` (the AccountType query, `LoanParams`, `EscrowLine` + versions, the investment-params load) and `_get_current_paycheck_breakdown` each run **2x**, the last of them meaning **two full `calculate_paycheck` runs per render**. Its three call sites all pass `(user_id, core.all_periods, core.current_period)`, every argument off `core`, so the arg-threading closes with the memo | the SECOND breakdown alone: **7.2 ms / 7 SQL** in-request on `shekel`, **7.2 ms / 7 SQL** on `shekel_f3_final` -- against the 9 SQL X-u's whole deletion removed | **OPEN**, opened 2026-07-28 by X-u's adversarial design review, which counted the call graph where the step's own comment had counted one loader. Born with an owner (rule 6); X-i1's input tier is widened at its entry in the same commit, since three of these are not in the five loaders N-72 / N-89 / N-92 / N-93 named | X-i1 |
 
 ## 7. Verification standard (what "done" means for every step)
 
