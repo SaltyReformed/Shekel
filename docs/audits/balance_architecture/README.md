@@ -767,6 +767,75 @@ reviewers independently flagged the same shape here as an unresolvable citation.
 | **R-BU** (answered 2026-07-28, as recommended) | **The residual double load stays for the input-tier memo and is SEQUENCED, not deferred** (rule 7).  Threading a pre-loaded core through the narrow producers' signatures is a second sharing channel beside `BalanceContext`, which plan step X-i1 exists to make unnecessary.  **What the ruling assumed was smaller than what X-u's design review then measured**, so the sequencing survives and the RECORD does not: the residue is finding **N-115**, its owner's input tier is widened to name it, and it is a Section 6 row rather than a sentence in a docstring.  Rejected: collapsing it inside X-u | N-115 -> X-i1 |
 | **R-BV** (answered 2026-07-28, as recommended) | **`/savings` does not render the new field, and X-u adds no pixel.**  The cockpit's Liabilities footer has no rail and no slot for a progress marker; adding one is microcopy plus a caption that must not read as contradicting the owed-today total beside it -- two figures over two different loan sets -- which is a DISPLAY decision with its own surface, and is the change R-BH itself refused to make inside a cleanup step.  The step stays a refactor whose proof is that both real-data harnesses come back byte-identical.  Rejected: adding the caption here | X-u |
 
+### Answered (developer ruling, 2026-07-28: X-v's five forks -- and the developer's own question was the root)
+
+**The trace ran FIRST, as this arc's entries require, and it inverted the step's premise twice.**
+X-v was entered as "convert the 12 remaining spellings of the no-baseline rule, reading each
+degraded VALUE rather than renaming the predicate". Two instruments changed what the step is:
+
+* an **AST census** of `app/` -- the entry's own stated requirement, since the count was "a floor
+  until an AST pass replaces the grep" -- found **13**, not 12. `tax_report_service.py:374-375`
+  writes the rule through a local alias (`scenario = balance_ctx.scenario` then `if scenario is
+  None`), which the spelling-shaped census could not see.
+* a **route sweep** -- every GET rule in `url_map`, requested by an owner holding every account
+  kind with the baseline removed, 173 requests with and without HTMX headers -- found **8 endpoints
+  across 3 doors that 500, and not one of them spells the rule anywhere**.
+  `_load_route_context` (`routes/loan/_helpers.py:323` -> `_require_figures:239` ->
+  `loan_figures` -> `memoized_payoff`) 500s the loan dashboard, its anchor form, its balance hero
+  and both calculators; `resolve_home_equity` (`home_equity_service.py:140`) 500s
+  `/accounts/<id>/property`; `_load_debt_accounts` (`debt_strategy.py:140`) 500s `/debt-strategy`
+  and its calculate POST. **This is X-t5's lesson a second time**: a grep answers "who writes this
+  line"; the question was "who reaches that raise".
+
+**Then the developer asked the question the step had been circling -- "why not just enforce a
+default scenario per user and backfill?" -- and the answer is that there is nothing to backfill,
+because the invariant already holds.** Measured, not assumed:
+
+* `auth_service.py:707` writes a baseline for every OWNER at registration, and `register_user` is
+  the ONLY owner-creating path (`scripts/seed_user.py` calls it; `scripts/seed_companion.py` and
+  `routes/settings.py:529` create COMPANIONS).
+* Nothing in `app/` or `scripts/` ever sets `is_baseline = False`, deletes a `Scenario` row, or
+  PROMOTES a companion to owner -- the single role write in the tree is
+  `scripts/seed_companion.py:94`, which demotes.
+* `scripts/integrity_check.py:495-511` already declares the invariant as a **critical** check
+  (**DC-08**, "Users without a baseline scenario"), excluding companions on the stated ground that
+  a companion "views the linked owner's data and owns no budget rows of their own ... by design".
+* The one baseline-less row on EITHER real database is that companion (`klgrubb@pm.me`, 0
+  scenarios, 0 accounts, 0 pay periods). A route sweep run AS her returns
+  `{"200": 7, "302": 4, "404": 60}` with **zero 5xx**: `require_owner` 404s her off every balance
+  surface, and no companion service imports `BalanceContext` or `balance_at` at all.
+
+**So nineteen degraded values, two fabricated figures and three 500 doors are defending a state the
+application cannot produce -- and they disagree with each other.** The state is reachable only by
+`psql`. N-112's and N-113's cost columns said "unreachable in production" for the WRONG reason
+(they said no such user exists; one does, and what keeps him out is the role check, not the
+invariant), which is Section 7.6's rule earning its keep one more time.
+
+| # | ruling | consumed by |
+|---|---|---|
+| **R-BW** (answered 2026-07-28, developer's own reframing) | **The no-baseline state gets ONE answer, and it is a NAMED exception with ONE handler -- not nineteen invented values.**  `require_scenario` raises `BaselineMissingError` (`app/exceptions.py`, subclassing both `ShekelError` and `ValueError` so the 20 existing `pytest.raises(ValueError)` seam assertions stay honest rather than being rewritten), and one app-level handler beside the 400/403/404/429/500 ones answers it: the existing "Setup Incomplete" card with its **Create Baseline Scenario** button for a page request, `204 No Content` for an HTMX request (the grid partials' own shipped contract, so a live DOM is never replaced by a setup card), and an ERROR `log_event` either way so a genuine caller bug is loud in the logs even though it is quiet on screen.  **The handler is what keeps the REPAIR reachable**: `POST /grid/create-baseline` is today linked from exactly one template rendered by exactly one route, so deleting that route's guard with nothing in its place would leave an owner in this state with a fully 500'd app and no way back.  Rejected: a `@require_baseline` decorator on ~30 routes (same screens, but opt-in -- a route added later escapes silently, and this file's own Section 8 has already paid for a fail-closed gate scoped by a hand-written list); and keeping the seven per-surface answers while guarding only the three crash doors (that is the rename N-112's row rules out, and it leaves both fabrications live) | X-v1 |
+| **R-BX** (answered 2026-07-28, as recommended) | **`BalanceContext.scenario_id` becomes the RAISING accessor (`-> int`), so the nullable cannot escape the context.**  Five sites dereference `ctx.scenario.id` to SCOPE A QUERY rather than to read a balance -- the grid's transaction load, both calendar entries, the cash detail's anchor resolve, the investment anchor caption, the tax report's profile load -- and with the guards deleted each would raise `AttributeError` on `None`, which is a 500 of the WRONG TYPE that the handler cannot answer.  One accessor makes every dereference, seam read or query scope, fail the same named way at its first use.  `has_baseline` is DELETED with the guards that read it (X-t2 added it for exactly those callers, and after X-v2 it has none).  **What survives is the one reader that should**: `_liability.liability_owed_at_dates:185` keeps reading the nullable `ctx.scenario` directly, because a missing baseline there is the degenerate case of its own rule (no loan is resolvable, so every liability holds flat) and not an error -- the seam's documented single exception, now its ONLY one.  Rejected: making `scenario` itself non-nullable and raising in `BalanceContext.build` (it reads cleanest and it would undo plan step C8e, which split `LoanTerms` off precisely so escrow and rate editing work without a scenario they never needed; `_loan_terms_now` builds a context and must not raise) | X-v2 |
+| **R-BY** (answered 2026-07-28, as recommended) | **TWO guards keep their own explicit handling, and the reason is written at each.**  (a) `loan_recurrence_sync.py:267` is a WRITER running mid-mutation: under the handler a raise would roll back the user's just-flushed loan-params write and render a setup card, losing the edit, where today it writes the contract-derived START bound and skips only the scenario-scoped END bound -- C8e's rule ("a loan's contract terms are not scenario-scoped") applied to a write.  (b) `liability_owed_at_dates` per R-BX.  Everything else -- the grid's page and its three partials, both calendar entries, both dashboard sections, all five investment sites, the cash detail, the tax report, and X-t2's three `/savings` guards -- is DELETED | X-v2 |
+| **R-BZ** (answered 2026-07-28, developer confirmed under CLAUDE.md rule 5) | **X-t2's `/savings` no-baseline degradation is REVERSED, and this row is where that is findable.**  X-t2 ruled the honest region was "the today figures over an empty series and no Horizon"; the today figures are `compute_net_worth_today` reducing `current_balance or ZERO` over balances that are ALL `None`, so the page states a net worth, a total-assets and a total-liabilities figure for a user whose every balance it cannot answer.  Under R-BW the route answers with the repair card and there is no hero to fabricate.  **The developer confirmed the expected behaviour has changed**, which rule 5 requires before a test may move: the three tests in `TestNoBaselineDegradesEveryKindTheSameWay` are rewritten to assert the raise and the route's answer, and two grid tests that assert `204` on a NON-HTMX request are given the `HX-Request` header the browser actually sends.  Same standing as R-BS reversing R-BI: recorded as a reversal so the reader who looks it up finds the evidence, not a contradiction | X-v2 |
+| **R-CA** (answered 2026-07-28, as recommended) | **N-113 is closed by DELETION, not by inventing a display vocabulary for a state no page can now reach.**  `current_balance or ZERO` and the investment dashboard's `current_anchor_balance` fallback (`_context.py:189` / `:259`, which presents the raw cache column as a *current balance* -- finding N-103's complaint one screen over) both go with the guards that reach them.  **Measured before ruling it**: `AccountProjection.current_balance is None` has exactly ONE cause today.  The other cause its own docstring names ("a cash account whose anchor is after the current period") is stale -- a future-anchored HYSA still carries every period in its map since the X-c2b2 cutover, verified by probe -- and the seam's only other `None` map is `current_anchor_period_id is None`, which the schema forbids (`accounts.current_anchor_period_id` is `NOT NULL`).  Rejected: rendering `--` in the hero, chips and legend (a new display vocabulary for an unreachable state, and it keeps a page whose every tile is blank); and leaving the `$0.00` with its explanatory test | X-v2 |
+| **R-CB** (answered 2026-07-28, as recommended) | **The census instrument becomes a permanent GATE, because that is the only part of this step that cannot go stale.**  The route sweep enumerates `url_map`, so a route added in a year is graded without anyone remembering the rule exists -- the property the rejected decorator could not have.  It requires every GET route to answer a baseline-less owner without a 5xx, and the three named doors to answer with the card.  Per Section 7.3 it ships only after being shown to FIRE: the arms are run against the tree with the handler removed.  It does NOT prove the absence of a fabricated figure -- stated in its own docstring, because a gate that reads as proving more than it does is this arc's most-paid-for lesson | X-v1 |
+
+### Applied (X-v's two adversarial reviews, 2026-07-29: the residue, under the developer's standing instruction)
+
+**Both reviews earned their cost a TENTH time, and they found the same top defect independently: the
+step's central claim was false.** "There are no caller pre-checks left" was true of the balance
+SEAM and false of the application: the census instruments -- an AST pass that followed
+`BalanceContext`, and a route sweep that graded only 5xx -- are both blind to a surface that
+resolves the baseline DIRECTLY through `get_baseline_scenario`. Seventeen such sites remained, and
+the correctness review reached the worst of them by walking the call graph.
+
+| # | ruling | consumed by |
+|---|---|---|
+| **R-CC** (applied 2026-07-29) | **A financial STATEMENT never reports zeros for a ledger it cannot read**, and `scenario_resolver` gains the raising accessor that makes that structural.  `compute_balance_sheet` and `compute_income_statement` each resolved the nullable, saw `None`, and returned an EMPTY report -- which for the balance sheet meant assets `$0.00`, liabilities `$0.00`, equity `$0.00` **and `tie_out.in_balance = True`**: the application ASSERTING that a user's books balance over a ledger it could not read.  Verified by execution on the new fixture, and pinned green by two tests until this step.  It is finding N-113's fabrication one screen over, and R-CA's "closed by DELETION" was false while it stood.  `require_baseline_scenario` is now the resolver's raising form -- the same split `scenario_id` / `scenario_id_or_none` make one tier up, in the same direction, so the two tiers have ONE shape | X-v3 |
+| **R-CD** (applied 2026-07-29) | **204 answers a POLL, never a BUTTON.**  The handler keyed on `HX-Request` alone, so a MUTATING htmx request got `204 No Content` -- measured on `POST /debt-strategy/calculate`: the user presses Calculate and nothing happens, silently and every time, where before X-v1 it at least 500'd.  The branch is now `HX-Request` **and a safe method**; a mutating request gets the card, which swaps into the results target and says why the action did nothing.  **And the 200 status keeps its place on a NEW argument**: the old one was circular (it appealed to the grid guard this step deleted for being one of the wrong answers).  The real reason is htmx -- it swaps only 2xx, so an "honest" 4xx/5xx would make both htmx branches render NOTHING, which is the silence this ruling exists to end.  The failure signal is the ERROR event, which is what an operator alerts on | X-v3 |
+| **R-CE** (applied 2026-07-29) | **The exception carries the user it was RESOLVED for, and the event logs both ids.**  The handler's own docstring names "a caller resolving a context for the wrong user" as one of the two reasons it exists -- and it logged `current_user.id`, the REQUESTER, so the event was blind in exactly that case.  `BaselineMissingError` now takes `user_id`; the event carries `user_id` (who asked) beside `context_user_id` (who the raise was for), and they differ only when a caller has the wrong one.  Rejected: rendering a different card for the mismatch (a branch for a state that has never occurred, where a log line is what an operator actually needs) | X-v3 |
+| **R-CF** (applied 2026-07-29) | **The sweep's coverage claim becomes a PINNED LIST, and it grades the fragment answer too.**  Its skip-list assertion (`all("<" in rule for rule in skipped)`) was TRUE BY CONSTRUCTION -- the branch that fills the list is the one that tests for `<` -- so it could never fail while its docstring promised "an uncovered route that grows a balance read would pass this suite" was impossible.  That is finding N-63's class committed INSIDE the gate that quotes it.  The 17 unreachable rules are pinned literally, so a new one turns the gate red; and the sweep now asserts no HTMX request receives the full-page card, which is the regression the 204 branch exists to prevent and which a 5xx-only arm could never see | X-v3 |
+
 ### Answered (developer ruling, 2026-07-26: X-g's five forks, all as recommended)
 
 **The trace ran first and no code was written for it** -- the step's own stated first action. Each
@@ -812,10 +881,13 @@ its decomposed ID -- append-only, and never renumbered for readability. **Ruling
 then folded its CONTENT into `X-g4b`**, so the exception now costs no commit of its own: the entry
 stays where it is, its content is what X-g4b carries, and its box ticks with X-g4b's hash. The live
 order from here is
-**X-v -> X-w -> X-i -> X-j -> X-k -> X-l -> X-m -> X-n -> X-d -> X-e -> X-f -> X-p ->
+**X-v -> X-w -> X-x -> X-y -> X-i -> X-j -> X-k -> X-l -> X-m -> X-n -> X-d -> X-e -> X-f -> X-p ->
 E2** (X-g4a, X-g4b, X-o, all three X-q leaves, X-r, X-h, X-s, X-t and X-u, which used to open this
 line, have SHIPPED; **X-v** and **X-w** were appended 2026-07-28 out of X-t's own measurement and its
-two adversarial reviews) (X-h .. X-k added 2026-07-27 by ruling R-AO, X-l .. X-p the same day by R-AQ,
+two adversarial reviews, **X-x** the same day out of X-v's own AST census, which measured the
+period-absence family at 63 branches, and **X-y** on 2026-07-29 out of X-v's two adversarial
+reviews, which found fifteen surfaces answering this state without the seam -- all three are rule
+7's "its own step, never a deferral") (X-h .. X-k added 2026-07-27 by ruling R-AO, X-l .. X-p the same day by R-AQ,
 X-q / X-r the same day by R-AV / R-AW out of X-o's trace, and X-s the same day out of X-q2's two
 adversarial reviews -- sequenced after X-h on X-h's own ground, since the controls X-h repairs are
 what grade a step that moves a client payload and a rendered caption; they
@@ -1766,18 +1838,77 @@ preconditions cite entries in that file.
   commit to name the three loaders it did not previously cover -- one of which is a full
   paycheck-engine run, twice per render.
 
-- [ ] **X-v** `refactor(balance): every degraded state is read, not renamed` -- closes **N-112** and
-  **N-113**. The no-baseline residue X-t2 measured and did not reach: **12** more spellings of the
-  seam's precondition across `routes/grid`, `calendar_service`, `dashboard_service`,
-  `loan_recurrence_sync`, `investment_dashboard_service` and `accounts/detail`, plus the
-  `/savings` hero that still reports `$0.00` over balances that are all `None` -- as fabricated as
-  the flat chart X-t2 deleted, and now pinned by a test that says so at the assertion. **It is a
-  step and not a sweep** because each site's DEGRADED VALUE is the question, not its predicate: X-t2
-  found two copies in one region answering differently, which a rename would have preserved. The
-  census instrument is part of the step -- `_metrics._recent_settled_expenses_monthly` guarded the
-  same state as `if not (current_period and scenario)`, invisible to a search for `scenario is
-  None`, so the count is a floor until an AST pass replaces the grep (Section 8's own lesson, one
-  axis over).
+- [ ] **X-v** `refactor(balance): one answer for a state the app cannot produce` -- closes **N-112**
+  and **N-113** (rulings **R-BW**..**R-CB**).
+
+  **The trace inverted this entry's own premise, and the rulings block carries the measurements.**
+  The step was entered as "read each of the 12 degraded values rather than rename the predicate".
+  The AST census the entry demanded found **13** (`tax_report_service.py:374` hides one behind a
+  local alias). The route sweep the entry did NOT demand found **8 endpoints across 3 doors that
+  500**, none of which spells the rule anywhere -- `_load_route_context`, `resolve_home_equity`,
+  `_load_debt_accounts`. And the developer's question ("why not enforce a default scenario and
+  backfill?") measured out as: **there is nothing to backfill.** Registration writes a baseline for
+  every owner, nothing deletes or un-baselines one, no path promotes a companion to owner, and
+  `integrity_check`'s **DC-08** already asserts it as critical. The only baseline-less row on either
+  database is the COMPANION, who is 404'd off every balance surface by `require_owner` (swept: 0
+  5xx). So the 19 degraded values, the 2 fabricated figures and the 3 crash doors all defend a state
+  the application cannot produce, and they answer it **seven different ways**: a full-page recovery
+  card, `204`, a 404, a blank cockpit with a `$0.00` hero, `Account.current_anchor_balance`
+  presented as a *current balance*, a hidden chip, and an unhandled 500.
+
+  **DECOMPOSED on the arc's own line: the first commit cannot move a figure, the second is the
+  deletion.**
+
+  * [ ] **X-v1 THE ANSWER** -- additive. `BaselineMissingError` in `app/exceptions.py`,
+    `require_scenario` raising it, ONE app-level handler (card / `204` / ERROR log), the recovery
+    template moved out of `grid/` to the one place that now renders it, and **the route sweep
+    promoted to a permanent gate** (ruling R-CB), shown firing against a tree with the handler
+    removed. Nothing else changes: every existing guard still short-circuits ahead of the raise, so
+    the only behaviour that moves is the 3 doors that 500 today.
+  * [ ] **X-v2 THE DELETION** -- `BalanceContext.scenario_id` becomes the raising accessor
+    (R-BX), `has_baseline` goes with its last reader, and **18** display-tier guards, the `$0.00`
+    hero's `or ZERO` and the investment tile's anchor-column fallback are deleted (R-BY, R-CA).
+    `AccountProjection.current_balance` stops being nullable, which takes **eight** `or ZERO`
+    reducers with it -- the hero, the goal reducer, the debt line, the Horizon, three metrics and
+    the group subtotal. Two guards SURVIVE with their reasons written at them:
+    `loan_recurrence_sync` (a writer, where a raise would roll back the user's edit) and
+    `liability_owed_at_dates` (the degenerate case of its own rule). It reverses X-t2's `/savings`
+    degradation under R-BZ, which the developer confirmed per CLAUDE.md rule 5.
+  * [ ] **X-v3 THE REVIEW RESIDUE** (rulings R-CC..R-CF). Two adversarial reviews of the frozen
+    tree found the step's own central claim false: "no caller pre-checks left" held for the balance
+    SEAM and not for the application. The balance sheet was asserting `in_balance = True` over a
+    ledger it could not read; a mutating htmx request was answered with silence; the ERROR event
+    logged the wrong user id in the one case it exists to diagnose; and the new gate's coverage
+    assertion could not fail. **Both reviews found the ledger statements independently, and
+    neither instrument this step built could see them** -- which is the finding, not a footnote.
+
+- [ ] **X-y** `refactor(balance): the baseline decision that is not the balance seam's` -- closes
+  **N-117**. The fifteen surfaces that resolve the baseline DIRECTLY
+  (`get_baseline_scenario`) rather than through a `BalanceContext`, and so answer this state
+  without the seam ever being asked: the grid's two create-form fragments and the carry-forward
+  preview (`400 "No baseline scenario"`), template and transfer generation (a silent commit that
+  generates NOTHING), `salary/profiles` (a flash telling the user to **register a new account** --
+  a competing repair story, wrong since `/grid/create-baseline` shipped), `period_population`
+  (`return 0`), `spending_report_service` (`return None`), both posting syncs (a silently narrowed
+  scenario set), and `escrow_rates` / `loan/params` (which hand a NULLABLE id onward to a query --
+  the hazard `scenario_id_or_none`'s own docstring names). **X-v deliberately did not reach these**
+  and its ruling R-CC took only the two that fabricate a financial statement; the rest are a
+  different question one tier down -- "what may a WRITE do without a scenario" -- and they deserve
+  their own answer rather than X-v's by extension. Sequenced after X-x, which decides the twin
+  question for the period preconditions.
+
+- [ ] **X-x** `refactor(balance): the period preconditions, read once` -- closes **N-116**. X-v's
+  sibling one axis over, and it is a SEPARATE step because the two states are not the same kind of
+  thing: a missing baseline is broken setup with a one-click repair, while **no pay periods is a
+  legitimate state a new user is genuinely in**, so it may well keep a degraded render where X-v's
+  gets a repair card. Measured 2026-07-28 by the same AST census: **63 branches** in `app/` on
+  period absence (`current_period is None`, `not all_periods`), concentrated in
+  `accounts/detail` (5), `investment_dashboard_service/_chart` (4), `investment_projection` (4),
+  `retirement_projection` (4), `routes/grid` (3), `dashboard_pulse_service` (3) and
+  `investment_dashboard_service/_context` (3). **Sequenced after X-w** so it inherits whatever X-v
+  and X-w settle about typed containers and single-sourced preconditions rather than re-deciding
+  them, and because X-v's gate is the instrument this step will need (the sweep already exercises
+  the no-period user: the seeded probe user renders `/grid` through `no_periods.html`).
 
 - [ ] **X-w** `refactor(savings): the containers this read path still passes untyped` -- closes
   **N-114**. X-t1 typed the per-account projection; the same render still passes two untyped dicts
@@ -2310,7 +2441,9 @@ row, whose owner read `Section 5, Phase E2`; it is now `E2-0 / E2-n`, the phase'
 steps. Every other owner was already live, which is what the three hand-passes above bought and
 what nothing now has to buy again.
 
-**The ledger stands at 40 rows** (41 when plan step X-u opened N-115, less N-109 which X-u closed).
+**The ledger stands at 42 rows** (40 after X-u closed N-109 and opened N-115; X-v's census then
+opened N-116, the period-absence twin owned by X-x, and its two adversarial reviews opened N-117,
+the fifteen surfaces that answer this state without the balance seam, owned by X-y).
 **This sentence is checked by the gate**, and it needed to be: it read `38` against a 40-row table
 until 2026-07-28 -- drift left by an earlier step that updated the rows and not the prose about
 them. `stated_count_violation` makes it a predicate rather than a number somebody remembers to
@@ -2356,10 +2489,12 @@ done, and is what drifted.
 | N-93 (X-g3b review) | **Every grid render entry now pays the modelled contribution load, including the one that reads none of it.** Plan step X-g3b made `grid_balance_view` load the account's real `ContributionInputs`, which for an INVESTMENT costs an investment-params query, a deductions query and a full paycheck-engine run: measured best-of-five on both databases at `2.7 -> 14.8 ms` (an APPRECIATING asset `2.7 -> 3.7 ms`; PLAIN and INTEREST inside run-to-run noise). The grid has FOUR render entries and each pays it. **The sharpest sub-case is `subtotal_rows`**, which resolves the whole modelled fold to render three rows that read only `income` / `expense` / `net` -- and plan step X-g3a's own entry declined to hand that endpoint an `accrual_label` because "handing it a label would add a context variable nothing reads", which is the same argument one level cheaper. It also compounds finding N-89: `income_service.get_current_gross_biweekly` loads the pay-period calendar (`income_service.py:127`) on top of the route's own load and `contribution_events`', so a modelled grid render loads it THREE times where N-89 recorded two, and one `balanceChanged` firing `balance_row` + `subtotal_rows` costs ~6 loads and 2 engine runs | `~12 ms` per modelled grid render entry; 1 extra calendar load per modelled read on top of N-89's | **recorded, NOT fixed.** The load itself is not waste -- it is what the INVESTMENT kind's return is modelled FROM (ruling R-AJ (a)), so it cannot be gated away without reinstating the defect X-g3b removed. What is addressable is the per-pass repetition, and that is findings N-89 / N-92's shared fix (a context memo), plus a narrower view record for `subtotal_rows` if that endpoint's cost is ever measured to matter **TRIAGED 2026-07-27 (ruling R-AO): to X-i1.** | X-i1 |
 | N-86 (X-g2b review) | **The `/investment` limit CARD and the projection beside it read two different YTD boundaries, and only one of them is a function of the window.** `_compute_limit_info` renders `ytd_contributions` (the total THROUGH the current period -- what the user has actually put in this year), while `growth_engine.project_balance`'s `ytd_contributions_start` must hold exactly the periods the projection's window EXCLUDES. Those coincide only when the window opens past the current period, which is the case on this surface after ruling R-AF and is NOT the case on either of `retirement_projection`'s axes. X-g2b resolves the projection's half once, beside the window it depends on (`_context._projection_ytd`), so the two call sites cannot disagree; what is recorded is that the app now carries TWO correct YTD boundaries whose difference is invisible in the rendered figures. The durable version is for the engine to take the axis and derive the boundary itself, which is the same "one derivation" argument ruling R-AF made for the seed | `$1,000.00` of annual-limit room per period of divergence, compounded over the horizon -- the defect this finding's fix closed, measured on a `$23,500` limit at `$1,000`/period with today in the year's 15th period. `$0.00` on today's data: no real investment account has a contribution feed | **recorded, NOT fixed** -- the boundary is correct on both surfaces today and pinned in both directions by `TestTheAnnualLimitSeedFollowsTheWindow`. It is recorded because a THIRD projection surface would have to know the rule to get it right, and knowing a rule is what this arc replaces with structure **TRIAGED 2026-07-27 (ruling R-AO): genuine RESIDUE.** Correct on both surfaces today and pinned in both directions; its durable fix is inside the growth ENGINE's axis, which no remaining step touches. **RE-TRIAGED 2026-07-27 (ruling R-AQ): there is no deferred category: to X-m.** 'Correct on both surfaces today' is a statement about how many surfaces exist; the row's own text says a THIRD would have to KNOW the rule, and knowing a rule is what this arc replaces with structure. X-m has the engine derive the boundary from the axis it is handed, and `ytd_contributions_start` leaves the signature. | X-m |
 
-| N-112 (X-t2 trace) | **The balance seam's no-baseline precondition is spelled out at 18 call sites, and 12 of them remain.** Plan step X-t2 gave the rule ONE home (`BalanceContext.has_baseline`, which `require_scenario` itself now raises on) and converted the six sites on the `/savings` + dashboard-tracks path, deleting two of them outright. The rest still write `ctx.scenario is None` themselves: `routes/grid.py:154` and `:714`, `calendar_service.py:276` and `:326`, `dashboard_service.py:108`, `loan_recurrence_sync.py:267`, `investment_dashboard_service/_context.py:164` / `:189` / `:259`, `_chart.py:162`, `_orchestrator.py:67`, and `accounts/detail.py`. **A rename is NOT the fix and that is why this is a step rather than a sweep**: X-t2 found two copies in ONE region answering the same state with different degraded values (an empty map list beside a trend window that built its axis anyway), which a rename preserves. Each site's degraded VALUE has to be read. **The count is a floor**: `_metrics._recent_settled_expenses_monthly` guarded the same state as `if not (current_period and scenario)` -- invisible to a search for `scenario is None`, and found only because X-t5 was re-reading the file -- so the census wants an AST pass, which is Section 8's own lesson one axis over | `$0.00` today (the state is unreachable in production: `auth_service.py:707` writes a baseline at sign-up and no route deletes one). The cost is that 12 sites each decide a degraded value alone, which is how two of them came to disagree | **OPEN**, opened 2026-07-28 by plan step X-t2's census. Born with an owner (rule 6) | X-v |
-| N-113 (X-t review) | **The no-baseline hero reports `$0.00` over balances that are all `None`.** `compute_net_worth_today` sums `current_balance or ZERO`, so a user whose every balance the app cannot answer is told their net worth, assets and liabilities are exactly zero. Plan step X-t2 deleted the fabricated flat-$0 CHART on that reasoning and left the fabricated SCALAR above it, then pinned it with a test -- which X-t's design review named as turning residue into a contract. Whether the hero should read `--` (and what the chips and the legend do beside it) is a DISPLAY ruling, not a fix to make inside a review-residue commit (ruling R-BR); the test now says at the assertion that it pins today's answer rather than endorsing it | `$0.00`, and unreachable in production for the same reason as N-112. The cost is a page that states three figures it cannot know | **OPEN**, opened 2026-07-28 by X-t's adversarial design review. Born with an owner (rule 6) | X-v |
+| N-112 (X-t2 trace; **RE-MEASURED 2026-07-28 by X-v's own census, and it is bigger and cheaper than this row said**) | **The count is 13, not 12, and the sites that do NOT spell the rule are the ones that 500.** X-v's AST pass found a 13th (`tax_report_service.py:374`, behind a local alias) and its route sweep found **8 endpoints across 3 doors that raise** -- `_load_route_context` (`routes/loan/_helpers.py:323`), `resolve_home_equity` (`home_equity_service.py:140`), `_load_debt_accounts` (`debt_strategy.py:140`) -- none of which states the predicate anywhere, so no spelling-shaped census could ever have found them (X-t5's "count the call graph" lesson, paid twice). **And the cost column below was right by accident**: a baseline-less user DOES exist on both real databases (the companion), and what keeps him off every balance surface is `require_owner`, not the invariant this row credited. What the 13 + 3 are actually defending is a state no code path produces -- registration writes a baseline for every owner, nothing deletes or un-baselines one, no path promotes a companion, and `integrity_check` DC-08 already asserts it -- while answering it SEVEN different ways, two of them fabricated figures. Resolved by ONE named exception and ONE handler (rulings R-BW..R-CB), not by a rename. **The original row read:** the precondition is spelled out at 18 call sites and 12 remain -- Plan step X-t2 gave the rule ONE home (`BalanceContext.has_baseline`, which `require_scenario` itself now raises on) and converted the six sites on the `/savings` + dashboard-tracks path, deleting two of them outright. The rest still write `ctx.scenario is None` themselves: `routes/grid.py:154` and `:714`, `calendar_service.py:276` and `:326`, `dashboard_service.py:108`, `loan_recurrence_sync.py:267`, `investment_dashboard_service/_context.py:164` / `:189` / `:259`, `_chart.py:162`, `_orchestrator.py:67`, and `accounts/detail.py`. **A rename is NOT the fix and that is why this is a step rather than a sweep**: X-t2 found two copies in ONE region answering the same state with different degraded values (an empty map list beside a trend window that built its axis anyway), which a rename preserves. Each site's degraded VALUE has to be read. **The count is a floor**: `_metrics._recent_settled_expenses_monthly` guarded the same state as `if not (current_period and scenario)` -- invisible to a search for `scenario is None`, and found only because X-t5 was re-reading the file -- so the census wants an AST pass, which is Section 8's own lesson one axis over | `$0.00` today, and **RE-MEASURED**: the state is unreachable on a balance surface, but NOT for the reason this cell used to give. A baseline-less user exists on both real databases (`klgrubb@pm.me`, companion, 0 scenarios); a full GET sweep as him returns `{"200": 7, "302": 4, "404": 60}`, zero 5xx, because `require_owner` 404s him. The guarantee is the ROLE CHECK, not the invariant. The cost is 16 sites deciding one state alone -- two of which fabricate a figure, and three of which 500 | **OPEN**, opened 2026-07-28 by plan step X-t2's census; re-measured the same day by X-v's AST + route-sweep census. Born with an owner (rule 6) | X-v |
+| N-113 (X-t review) | **The no-baseline hero reports `$0.00` over balances that are all `None`.** `compute_net_worth_today` sums `current_balance or ZERO`, so a user whose every balance the app cannot answer is told their net worth, assets and liabilities are exactly zero. Plan step X-t2 deleted the fabricated flat-$0 CHART on that reasoning and left the fabricated SCALAR above it, then pinned it with a test -- which X-t's design review named as turning residue into a contract. Whether the hero should read `--` (and what the chips and the legend do beside it) is a DISPLAY ruling, not a fix to make inside a review-residue commit (ruling R-BR); the test now says at the assertion that it pins today's answer rather than endorsing it. **X-v measured the display fork away** (ruling R-CA): `current_balance is None` has exactly ONE cause -- the other cause the producer's own docstring names, "a cash account whose anchor is after the current period", is STALE (a future-anchored HYSA still carries every period in its map since X-c2b2, verified by probe), and the seam's only other `None` map needs `current_anchor_period_id IS NULL`, which the schema forbids. So the hero is fabricated in exactly the state where the page will no longer render, and the fix is to delete the `or ZERO` with the guard that reaches it rather than to invent a `--` vocabulary for an unreachable screen | `$0.00`, and unreachable for the same RE-MEASURED reason as N-112 (a role check, not the invariant). The cost is a page that states three figures it cannot know -- and a second surface doing the same thing, the investment tile that renders `Account.current_anchor_balance` as a *current balance* (`_context.py:189` / `:259`), which is finding N-103's complaint one screen over and which X-v deletes in the same pass | **OPEN**, opened 2026-07-28 by X-t's adversarial design review. Born with an owner (rule 6) | X-v |
 | N-114 (X-t1 review) | **The liability rule is single-sourced on the projection and STILL stored in the dense-map dict beside it.** `net_worth_account_data.to_net_worth_account_data:97` writes `is_liability` into an untyped `{account_id, balances, is_liability}` dict that `_net_worth._sum_composition_at_period:221` reads, on the SAME render where `AccountProjection.is_liability` is now derived -- so X-t1's claim that "there is now one" spelling is true of the projection and false of the page. Both call `is_liability_account` today, so the figure risk is latent rather than live; what is live is that a future refinement landing on the property leaves the trend and the sparklines on the old classification, with the hero and the chart's today point disagreeing and every test that reads one of them staying green. It is the same untyped-container class N-111 closed, one module over, and the row that X-t's thesis ("which shapes are guaranteed and which are merely tested") points at next -- alongside the archived-account rows, whose `current_balance` is `Account.current_anchor_balance` (which finding N-103 says is not a loan's balance at all) and which shared the cockpit projection's loop-variable name until X-t5 renamed it | `$0.00` today; the measured cost of the LAST container in this class was B-16 and N-98 | **OPEN**, opened 2026-07-28 by X-t's adversarial design review. Born with an owner (rule 6) | X-w |
 | N-115 (X-u review) | **The dashboard tracks section pays TWICE for three loaders, and the expensive one is a full paycheck-engine run.** Plan step X-u deleted the duplicate debt PROJECTION; the duplicate LOADS behind it stayed, because `compute_tracks_section` shares one `BalanceContext` across its two producers and sharing the context is not sharing the loads. Measured on both databases with one active goal: `_load_dashboard_core_data` (accounts query + `get_all_periods` + `get_current_period`), `_load_account_params` (the AccountType query, `LoanParams`, `EscrowLine` + versions, the investment-params load) and `_get_current_paycheck_breakdown` each run **2x**, the last of them meaning **two full `calculate_paycheck` runs per render**. Its three call sites all pass `(user_id, core.all_periods, core.current_period)`, every argument off `core`, so the arg-threading closes with the memo | the SECOND breakdown alone: **7.2 ms / 7 SQL** in-request on `shekel`, **7.2 ms / 7 SQL** on `shekel_f3_final` -- against the 9 SQL X-u's whole deletion removed | **OPEN**, opened 2026-07-28 by X-u's adversarial design review, which counted the call graph where the step's own comment had counted one loader. Born with an owner (rule 6); X-i1's input tier is widened at its entry in the same commit, since three of these are not in the five loaders N-72 / N-89 / N-92 / N-93 named | X-i1 |
+| N-116 (X-v census) | **The period preconditions are the baseline precondition's twin, at 63 branches, and nobody has read them either.** The same AST pass that re-counted N-112 measured **63** branches in `app/` on period absence (`current_period is None`, `not all_periods`, `not periods`), concentrated in `routes/accounts/detail` (5), `investment_dashboard_service/_chart` (4), `investment_projection` (4), `retirement_projection` (4), `routes/grid` (3), `dashboard_pulse_service` (3), `investment_dashboard_service/_context` (3). It is the same question X-v answers -- "what does this surface say when a precondition it needs is absent" -- and the same failure mode is already visible: `_projection_start` falls back to `date.today()` while `_current_balance_from_map` falls back to `current_anchor_balance`, two different degraded values for one state inside ONE package. **It is NOT the same ruling, which is why it is its own step and not a widening of X-v**: a missing baseline is broken setup with a one-click repair, while having no pay periods is a state a legitimately-new user is IN, so its answer may well stay a degraded render. What it must not stay is 63 answers nobody has compared | `$0.00` today and NOT re-measured beyond the count -- the branches were located, not read; that reading is the step | **OPEN**, opened 2026-07-28 by plan step X-v's AST census. Born with an owner (rule 6) | X-x |
+| N-117 (X-v reviews) | **Fifteen surfaces decide the no-baseline state WITHOUT the balance seam, and neither instrument X-v built could see one of them.** They resolve the baseline directly (`get_baseline_scenario`), so X-v's AST census -- which followed `BalanceContext` -- was blind to them, and its route sweep graded only 5xx, so a surface answering with a plausible 200 passed. Both adversarial reviews found the class independently; the correctness one reached the worst instance by walking the call graph. **The two that FABRICATED A FINANCIAL STATEMENT were fixed in X-v3 under ruling R-CC** (the balance sheet reported assets / liabilities / equity of `$0.00` **and `in_balance = True`** over a ledger it cannot read; the income statement reported a period of zeros). The remaining fifteen answer a DIFFERENT question -- "what may a WRITE do without a scenario" -- five ways: `400 "No baseline scenario"` (the two grid create fragments, the carry-forward preview AND its POST mutator), a silent commit that generates nothing (template + transfer generation, `salary/_helpers`), `return 0` / `return None` (`period_population`, `spending_report_service`), a silently narrowed scenario set (both posting syncs), and a nullable id handed onward to a query (`escrow_rates`, `loan/params`) -- plus one that tells the user to **register a new account**, a repair story that has been wrong since `/grid/create-baseline` shipped | `$0.00` today and unreachable for the same measured reason as N-112 (the only baseline-less user is a companion, kept off every owner route by the ROLE check). The measured cost of the two already fixed was a balance sheet asserting its own tie-out | **OPEN**, opened 2026-07-29 by X-v's two adversarial reviews. Born with an owner (rule 6) | X-y |
 
 ## 7. Verification standard (what "done" means for every step)
 
@@ -2531,6 +2666,27 @@ done, and is what drifted.
   NOT READ`) one step later and one axis over: there the arm read the wrong THING, here it read the
   right thing in the wrong SPELLING. Every gate over prose now carries an arm asserting its pattern
   still MATCHES the live document, or it can go vacuous in silence.
+* **AN AST CENSUS IS A GREP WITH BETTER MANNERS UNLESS IT FOLLOWS THE DATA.** Finding N-112 said
+  its own count was "a floor until an AST pass replaces the grep", and named the exact site the
+  grep could not see. X-v built the AST pass, found a 13th site the grep had missed -- **and still
+  missed the site N-112 named**, because that predicate arrives as a FUNCTION PARAMETER
+  (`_recent_settled_expenses_monthly(..., scenario)`) rather than as an attribute or a local alias.
+  A second pass that walks parameters found it plus a whole family one tier down. The instrument
+  that replaces a discredited one inherits its burden of proof: ask what SHAPE of the thing you are
+  counting your new instrument cannot represent, and answer it before quoting the number.
+* **A CENSUS AND A GATE CAN BE BLIND THE SAME WAY, AND THEN THEY CONFIRM EACH OTHER.** X-v's two
+  instruments were an AST pass that followed `BalanceContext` and a route sweep that failed only on
+  5xx. A surface that resolves the baseline ITSELF and answers with a plausible 200 is invisible to
+  both -- so the balance sheet reporting `in_balance = True` over an unreadable ledger passed the
+  census (it names no context) and passed the sweep (it returns 200), and the step shipped a
+  docstring saying no caller decides this any more. Two instruments are not independent evidence
+  when they share a blind spot; ask what a defect would have to look like to pass BOTH.
+* **A COUNT IN A DOCSTRING IS A CLAIM, AND THIS ARC KEEPS WRITING IT WRONG.** X-v's own reviews
+  found "exactly ONE caller reads the nullable" (four did, one of them named 130 lines below in the
+  same file), "five callers scope a query" (seventeen), "seventeen guards deleted" (eighteen), and
+  one enumeration copied into five files so a wrong count needed five edits. Where a claim is a
+  number, either recount it from the AST at writing time or cite the ONE place that carries it --
+  never restate it.
 * Documents rot in days here. This file is the only one allowed to rot, and every edit re-dates
   it.
 
