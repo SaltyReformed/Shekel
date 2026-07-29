@@ -114,12 +114,12 @@ def compute_pulse_section(user_id: int) -> dict | None:
         computed (no account / scenario / current period).
     """
     account, balance_ctx, current_period = _resolve_section_context(user_id)
-    # ``has_baseline`` is the SEAM's own precondition, read off the context
-    # rather than re-spelled as ``scenario is None`` (plan step X-t2, finding
-    # N-107): this region legitimately handles the empty state, and the
-    # property it guards on is the one ``require_scenario`` raises on.
-    if (account is None or not balance_ctx.has_baseline
-            or current_period is None):
+    # The no-baseline arm this guard used to carry is GONE (plan step X-v2,
+    # ruling R-BW): the seam raises and one application-level handler answers,
+    # so this region no longer decides what a user with no computable balance
+    # sees.  What remains are the two states this producer genuinely models --
+    # no grid account, and no period containing today.
+    if account is None or current_period is None:
         return None
 
     settings = _get_user_settings(user_id)
@@ -181,7 +181,7 @@ def compute_pulse_section(user_id: int) -> dict | None:
     if next_period is not None:
         period_ids.append(next_period.id)
     unpaid_rows = _query_unpaid_expense_rows(
-        account.id, balance_ctx.scenario.id, period_ids,
+        account.id, balance_ctx.scenario_id, period_ids,
     )
 
     due_soon = _pulse_due_soon(unpaid_rows, current_period)

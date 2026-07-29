@@ -118,8 +118,9 @@ def loan_interest_paid_in_year(
         The interest paid during *year* as a cent-quantized ``Decimal``.
 
     Raises:
-        ValueError: When ``ctx.scenario`` is None (guard a nullable baseline
-            first).
+        BaselineMissingError: When ``ctx.scenario`` is None.  A ``ValueError``
+            subclass; ONE application-level handler answers it (plan step
+            X-v2, ruling R-BW), so no caller pre-checks.
     """
     _require_scenario(ctx)
     return _settled_sum_in_year(
@@ -156,8 +157,9 @@ def loan_principal_paid_in_year(
         The principal paid during *year* as a cent-quantized ``Decimal``.
 
     Raises:
-        ValueError: When ``ctx.scenario`` is None (guard a nullable baseline
-            first).
+        BaselineMissingError: When ``ctx.scenario`` is None.  A ``ValueError``
+            subclass; ONE application-level handler answers it (plan step
+            X-v2, ruling R-BW), so no caller pre-checks.
     """
     _require_scenario(ctx)
     return _settled_sum_in_year(
@@ -251,8 +253,9 @@ def loan_interest_in_year(
         year and has no projected payment landing in it).
 
     Raises:
-        ValueError: When ``scenario`` is None (callers that resolve a nullable
-            baseline must guard first).
+        BaselineMissingError: When ``scenario`` is None.  A ``ValueError``
+            subclass; ONE application-level handler answers it (plan step
+            X-v2, ruling R-BW), so no caller pre-checks.
     """
     _require_scenario(ctx)
     debt_schedule = _kernel.generate_debt_schedules(

@@ -93,7 +93,7 @@ def _goal_account_balance(account_data, account_id):
     """
     for ad in account_data:
         if ad.account.id == account_id:
-            return ad.current_balance or Decimal("0.00")
+            return ad.current_balance
     return Decimal("0.00")
 
 

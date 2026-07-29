@@ -90,6 +90,7 @@ from app.extensions import db
 from app.models.user import User
 from app.routes.savings import _serialize_net_worth_chart, _serialize_sparklines
 from app.services import dashboard_pulse_service, savings_dashboard_service
+from app.services.scenario_resolver import get_baseline_scenario
 
 
 def _get(obj, name):
@@ -357,7 +358,25 @@ def _tracks(section):
 
 
 def _dump_user(user_id):
-    """Every figure the savings package answers for one user."""
+    """Every figure the savings package answers for one user.
+
+    **A user with NO BASELINE SCENARIO is recorded as skipped, and that is a
+    normalization, not an omission** (plan step X-v2).  Both real databases
+    carry one such user -- the COMPANION, who owns no accounts, no pay periods
+    and no scenario by design (``scripts/integrity_check`` DC-08 excludes that
+    role for exactly this reason) and who cannot reach `/savings` at all,
+    because ``require_owner`` 404s her off every balance surface.
+
+    The two trees answer that state differently ON PURPOSE: before X-v2 this
+    package returned a blob of fabricated ``$0.00`` figures for her, and after
+    it the seam raises :class:`~app.exceptions.BaselineMissingError` for one
+    application-level handler to answer.  Recording the SKIP keeps this one file
+    producing the same blob on both trees, which is what makes the rest of the
+    diff mean something -- and keeps the row visible, so a user who LOSES a
+    baseline shows up as a change rather than vanishing.
+    """
+    if get_baseline_scenario(user_id) is None:
+        return {"skipped": "no baseline scenario"}
     data = savings_dashboard_service.compute_dashboard_data(user_id)
     account_data = data["account_data"]
     # ONE narrow debt build per user, shared by the two keys that read it.

@@ -206,10 +206,20 @@ class AccountProjection:
         account: The :class:`~app.models.account.Account` this projects.
         current_balance: The account's balance today, from the
             :mod:`app.services.balance_at` seam -- the SAME figure the hero, the
-            grid cell and the group subtotal render.  ``None`` is the deliberate
-            "no balance here yet" state (a current period exists but the seam's
-            map omits it, e.g. a cash account anchored after it), which the hero
-            and goal reducers treat as zero; it is never a real zero balance.
+            grid cell and the group subtotal render.
+
+            **It stopped being nullable at plan step X-v2** (ruling R-CA).  It
+            was ``Decimal | None``, and SEVEN reducers in this package turned
+            that ``None`` into ``$0.00`` -- including the net-worth hero, which
+            told a user whose every balance the app could not answer that their
+            net worth was exactly zero (finding N-113).  Both documented causes
+            of the ``None`` were measured and neither survives: the no-baseline
+            state is answered above the route now, and "a current period exists
+            but the seam's map omits it, e.g. a cash account anchored after it"
+            was already FALSE -- a future-anchored account carries every period
+            in its map since the plan step X-c2b2 cutover, verified by probe.
+            The seam's only remaining empty map needs
+            ``current_anchor_period_id IS NULL``, which the schema forbids.
         projected: The 3 / 6 / 12-month horizon balances by label, from
             :func:`app.utils.period_projections.project_balance_horizons`.
             Empty for a loan (a loan tile renders no horizons) and for an
@@ -239,7 +249,7 @@ class AccountProjection:
     """
 
     account: Account
-    current_balance: Decimal | None
+    current_balance: Decimal
     projected: dict[str, Decimal]
     needs_setup: bool
     interest_params: InterestParams | None = None
@@ -293,12 +303,14 @@ class _SeamBatches:
 
     Plan step X-t2 then hoisted the rule for the net-worth region, DELETING the
     copies in :func:`.._net_worth.build_account_net_worth_maps` and
-    :func:`.._orchestrator._build_trend_window` (finding N-107).  What remains
-    in this package is one door per legitimate degraded VALUE: a blank tile
-    here, an empty region there, and an empty equity list in
-    :func:`.._net_worth.compute_property_equity` (the third door, found by
-    X-t's reviews).  Each reads the seam's own
-    :attr:`~app.services.balance_at.BalanceContext.has_baseline`.
+    :func:`.._orchestrator._build_trend_window` (finding N-107).  **Plan step
+    X-v2 then deleted the rest of them, and the property they read** (ruling
+    R-BW): this package's three seam doors each invented a degraded VALUE -- a
+    blank tile, an empty region, an empty equity list -- for a state no code
+    path produces, and the blank tiles were what the ``$0.00`` net-worth hero
+    was reduced from.  The seam raises and one application-level handler
+    answers (:func:`app.error_handlers.register_error_handlers`, which carries
+    the census); no producer here decides anything about it.
 
     Attributes:
         balance_maps: ``{account_id: period_id -> Decimal}`` from

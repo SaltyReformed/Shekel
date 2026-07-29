@@ -12,6 +12,8 @@ from decimal import ROUND_HALF_UP, Decimal
 
 import pytest
 
+from app.exceptions import BaselineMissingError
+
 from app import ref_cache
 from app.enums import (
     AcctTypeEnum,
@@ -44,7 +46,8 @@ def _projection(account, current_balance):
     Args:
         account: The stand-in account (its ``account_type.category_id`` drives
             the liability classification the reducer reads).
-        current_balance: The account's balance today, or ``None``.
+        current_balance: The account's balance today.  Non-nullable since
+            plan step X-v2 (ruling R-CA).
 
     Returns:
         The :class:`AccountProjection` the reducers consume.
@@ -4483,14 +4486,23 @@ class TestGroupSubtotals:
                 == list(result["grouped_accounts"].keys())
             )
 
-    def test_none_balance_counts_as_zero_not_skipped(self):
-        """A None current_balance contributes 0.00 rather than being dropped.
+    def test_every_account_in_a_group_is_counted(self):
+        """A group's subtotal is the sum of ALL its accounts, none dropped.
 
-        Direct unit test of the producer: two asset accounts in one group,
-        one $600.00 and one with a None balance (no resolvable
-        current-period figure).  The None account adds nothing (counts as
-        zero), so the subtotal is 600.00 -- the row is not silently dropped
-        in a way that would make a populated group look empty.
+        Direct unit test of the producer: three asset accounts in one group,
+        including a zero-balance one, which must be ADDED rather than skipped
+        -- a populated group must never look empty, and a real ``$0.00``
+        account is a member like any other.
+
+        **This test used to pin the opposite question** -- that a ``None``
+        balance "contributes 0.00 rather than being dropped" -- and plan step
+        X-v2 deleted the state it described (ruling R-CA).
+        ``AccountProjection.current_balance`` is non-nullable now: the ``None``
+        it tested for had exactly one cause (a user with no baseline scenario),
+        that user's page never renders, and treating "the app cannot answer
+        this balance" as ``$0.00`` was the eighth copy of finding N-113's
+        fabrication.  The developer confirmed the behaviour change per
+        CLAUDE.md rule 5.
         """
         # pylint: disable=import-outside-toplevel
         from collections import OrderedDict
@@ -4503,12 +4515,15 @@ class TestGroupSubtotals:
             [
                 _projection(SimpleNamespace(account_type=None),
                             Decimal("600.00")),
-                _projection(SimpleNamespace(account_type=None), None),
+                _projection(SimpleNamespace(account_type=None),
+                            Decimal("0.00")),
+                _projection(SimpleNamespace(account_type=None),
+                            Decimal("40.25")),
             ],
         )])
         subtotals = _compute_group_subtotals(grouped)
-        # 600.00 + (None -> 0.00) = 600.00
-        assert subtotals["asset"] == Decimal("600.00")
+        # 600.00 + 0.00 + 40.25
+        assert subtotals["asset"] == Decimal("640.25")
 
 
 class TestComputeSparklines:
@@ -4955,146 +4970,114 @@ class TestTypeDriftedLoanParamsRow:
             ]
 
 
-class TestNoBaselineDegradesEveryKindTheSameWay:
-    """A user with no baseline scenario gets blank balances, never an exception.
+class TestNoBaselineIsAnsweredOnceForEveryKind:
+    """A user with no baseline scenario gets ONE answer, not five blank tiles.
 
-    Plan step X-s2 (ruling R-BF, finding N-105).  The balance seam raises on a
-    ``None`` scenario by contract and requires its callers to guard BEFORE
-    calling (``balance_at._context.require_scenario``: "callers that
-    legitimately handle the no-baseline case keep their own guard ... this is
-    the defensive backstop").  This build has two doors into the seam and
-    guarded only one: the non-loan map builder returned ``{}`` while the loan
-    arm four lines later reached ``require_scenario`` through ``loan_figures``
-    -> ``memoized_payoff`` and raised, so ONE account kind 500'd the whole
-    ``/savings`` page in a state the other four rendered.
+    Plan step X-v2 (rulings R-BW / R-BZ / R-CA), REVERSING plan step X-t2's
+    ruling that this region should degrade in place.  The developer confirmed
+    the expected behaviour changed (CLAUDE.md rule 5); this docstring is where
+    that reversal is findable from the tests.
+
+    **What X-t2 shipped and why it was wrong.**  It gave the region one
+    no-baseline door returning the "today figures over an empty series".  Those
+    today figures were ``compute_net_worth_today`` reducing
+    ``current_balance or ZERO`` over balances that were ALL ``None`` -- so a
+    user whose every balance the app cannot answer was told their net worth,
+    total assets and total liabilities were exactly ``$0.00`` (finding N-113).
+    Seven reducers in this package made that same substitution, and four other
+    surfaces answered the same state four other ways, two of them by
+    fabricating a figure and three of them with a 500.
+
+    **What replaces it.**  The seam raises
+    :class:`~app.exceptions.BaselineMissingError` and ONE application-level
+    handler answers: the setup-recovery card for a page, ``204`` for an HTMX
+    fragment.  ``AccountProjection.current_balance`` stopped being nullable in
+    the same commit, so the seven fabrications are gone with the state that
+    produced them.
 
     Unreachable in production -- ``auth_service.register_user`` writes a
-    baseline at sign-up and no route deletes or un-baselines one -- which is
-    precisely why it needed a test: nothing else would ever have executed it.
+    baseline for every owner, nothing deletes or un-baselines one, and no path
+    promotes a companion to owner -- which is precisely why it needs tests:
+    nothing else would ever execute it.  The end-to-end arms live in
+    ``tests/test_routes/test_no_baseline_policy.py``, which sweeps every route
+    in ``url_map``.
     """
 
-    def test_a_loan_degrades_like_every_other_kind(
+    def test_every_kind_raises_the_same_named_exception(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """No baseline: the loan tile renders blank instead of raising.
+        """No baseline: the projection raises, whatever kinds the user holds.
 
-        The discriminating fixture is a loan BESIDE the seeded cash account:
-        without the loan the build never opens the second door, so any
-        implementation passes.  Both tiles must come back with no balance --
-        which is what "one rule, both doors" means here -- and the loan must
-        carry neither ``loan_params`` nor ``loan_figures``, since the seam that
-        would have produced its figures was never asked.
+        The discriminating fixture is a loan BESIDE the seeded cash account.
+        Before X-t2 the two arms disagreed -- the non-loan map builder returned
+        ``{}`` while the loan arm four lines later reached ``require_scenario``
+        and raised -- so ONE account kind 500'd a page the other four rendered.
+        Both arms now reach the same named exception, which is what "answered
+        once" means here; a fixture with only one kind could not tell.
         """
-        with app.app_context():
-            loan = _create_small_loan(seed_user, db.session, name="No Baseline")
-            scenario = db.session.get(Scenario, seed_user["scenario"].id)
-            scenario.is_baseline = False
-            db.session.commit()
-            loan_id, cash_id = loan.id, seed_user["account"].id
-
-            data = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
-            )
-
-            by_id = {ad.account.id: ad for ad in data["account_data"]}
-            # The loan: no seam read happened, so no loan detail (which carries
-            # both the figures and the params) and no balance.
-            assert by_id[loan_id].loan is None
-            assert by_id[loan_id].current_balance is None
-            assert by_id[loan_id].projected == {}
-            # The cash account: the arm that was already guarded, unchanged --
-            # the assertion that makes this "the same way" and not merely "not
-            # an exception".
-            assert by_id[cash_id].current_balance is None
-            assert by_id[cash_id].projected == {}
-            # And with no loan figures anywhere, the debt card has no loans to
-            # summarise rather than a half-built one.
-            assert data["debt_summary"] is None
-
-    def test_the_net_worth_region_degrades_through_one_door(
-        self, app, db, seed_user, seed_periods_today,
-    ):
-        """No baseline: the region reports today's zeros and draws NOTHING.
-
-        Plan step X-t2 (finding N-107).  The rule was stated in each producer of
-        this region and two of the copies answered it DIFFERENTLY: the dense-map
-        builder returned ``[]`` while the trend window built its axis anyway, so
-        the page drew a flat ``$0`` net-worth line across a real two-year window
-        for a user whose balances the app cannot answer at all.  One guard above
-        both now decides, and the honest answer is the empty series and no
-        Horizon -- the same shape the no-pay-periods path already renders, so
-        the template's ``{% if net_worth.series.periods %}`` hides the chart
-        rather than drawing a fabricated one.
-
-        The degraded series is asserted EQUAL to a real
-        ``compute_net_worth_series([], [], ...)`` call, not to a literal of the
-        expected keys: a literal would pass just as well against a hand-written
-        empty dict in ``_compute_net_worth_section``, which is precisely the
-        drift the construction avoids.  X-t's adversarial review found the
-        first draft claiming that discrimination while asserting the literal.
-        """
-        # pylint: disable=import-outside-toplevel
-        from app.services.savings_dashboard_service._display import (
-            category_key_by_account_id,
-        )
-        from app.services.savings_dashboard_service._net_worth import (
-            _COMPOSITION_BANDS,
-            compute_net_worth_series,
-        )
         with app.app_context():
             _create_small_loan(seed_user, db.session, name="No Baseline")
             scenario = db.session.get(Scenario, seed_user["scenario"].id)
             scenario.is_baseline = False
             db.session.commit()
 
-            data = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
-            )
-            net_worth = data["net_worth"]
+            with pytest.raises(BaselineMissingError):
+                savings_dashboard_service.compute_dashboard_data(
+                    seed_user["user"].id,
+                )
 
-            # The today figures still come from the (blank) projections, so the
-            # hero reads zero rather than raising.  **Recorded, not endorsed**
-            # (finding N-113): every balance here is ``None``, so this $0.00 is
-            # as fabricated as the flat chart the step deleted -- whether the
-            # hero should say "--" instead is a display ruling this test pins
-            # only the CURRENT answer of.
-            assert net_worth["net_worth"] == Decimal("0.00")
-            assert net_worth["total_assets"] == Decimal("0.00")
-            assert net_worth["total_liabilities"] == Decimal("0.00")
-            # Nothing is drawn: no trend points, no forward projection, no
-            # Horizon axis, and no equity card (the third seam door).
-            assert net_worth["series"] == {
-                **compute_net_worth_series(
-                    [], [], category_key_by_account_id(data["account_data"]),
-                ),
-                "current_index": 0,
-            }
-            assert net_worth["series"]["composition"] == {
-                band: [] for band in _COMPOSITION_BANDS
-            }
-            assert net_worth["horizon"] is None
-            assert data["property_equity"] == []
+    def test_the_hero_cannot_report_a_fabricated_zero(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """No baseline: no figure is produced at all, fabricated or otherwise.
 
-    def test_the_page_renders_with_no_baseline(
+        The regression this pins is finding N-113 as a POSITIVE claim rather
+        than an absence: the page used to reach
+        :func:`.._net_worth.compute_net_worth_today` with every
+        ``current_balance`` ``None`` and report ``$0.00`` net worth, ``$0.00``
+        assets and ``$0.00`` liabilities.  The assertion is that the producer
+        never returns, so there is no dict to inspect -- if a future change
+        re-introduces a degraded return, this fails whatever figures it carries.
+
+        The account set is deliberately NON-trivial (a loan and a cash account
+        with real balances), so a ``$0.00`` result would be visibly wrong
+        rather than coincidentally right.
+        """
+        with app.app_context():
+            _create_small_loan(seed_user, db.session, name="No Baseline")
+            scenario = db.session.get(Scenario, seed_user["scenario"].id)
+            scenario.is_baseline = False
+            db.session.commit()
+
+            with pytest.raises(BaselineMissingError) as excinfo:
+                savings_dashboard_service.compute_dashboard_data(
+                    seed_user["user"].id,
+                )
+            # The message names the repair, which is what makes the handler's
+            # card actionable rather than decorative.
+            assert "create-baseline" in str(excinfo.value)
+
+    def test_the_page_answers_with_the_repair(
         self, app, auth_client, db, seed_user, seed_periods_today,
     ):
-        """/savings returns 200 for a user with no baseline scenario.
+        """/savings renders the setup-recovery card for a baseline-less owner.
 
-        The end-to-end arm: the degraded region's shape must be one the
-        template can render.  A producer returning ``None`` where the page
-        subscripts, or an empty series the chart block still enters, is a 500
-        that the service-level assertions above cannot see.
+        The end-to-end arm: a producer that raises is only correct if the
+        application answers the raise, and this is the route where X-t2's
+        version returned 200 with a page full of fabricated zeros.
 
         **The fixture carries a PROPERTY SECURING A MORTGAGE, and that is the
-        whole discriminator** (plan step X-t5).  X-t2 shipped this test with a
-        loan-only fixture and a docstring claiming the page renders -- while a
-        third seam door, ``compute_property_equity`` ->
-        ``home_equity_service.resolve_home_equity`` -> ``balance_at.loan_figures``,
-        raised ``ValueError`` for exactly this user.  Both of X-t's adversarial
-        reviews found it by walking the call graph; the control that should
-        have caught it could not fire, because its fixture had no Property.
-        That is finding N-69's shape on a render test: ask what a WRONG
-        implementation would return here, and make sure the fixture can tell.
+        whole discriminator** (kept from plan step X-t5).  X-t2 shipped its
+        version of this test with a loan-only fixture and a docstring claiming
+        the page renders -- while a third seam door,
+        ``compute_property_equity`` -> ``home_equity_service.resolve_home_equity``
+        -> ``balance_at.loan_figures``, raised for exactly this user.  Both of
+        X-t's adversarial reviews found it by walking the call graph; the
+        control that should have caught it could not fire, because its fixture
+        had no Property.  The real link is ``collateral_account_id``:
+        ``secured_by_account_id`` is NOT a field, and SQLAlchemy accepts that
+        assignment in silence, which is how the first Property fixture was born
+        dead.
         """
         with app.app_context():
             _create_small_loan(seed_user, db.session, name="No Baseline")
@@ -5110,15 +5093,14 @@ class TestNoBaselineDegradesEveryKindTheSameWay:
             db.session.commit()
 
             resp = auth_client.get("/savings")
+
             assert resp.status_code == 200
             body = resp.data.decode()
-            assert "Net worth" in body
-            # The chart block is skipped entirely (no canvas, so no payload).
+            assert "Setup Incomplete" in body
+            assert "/create-baseline" in body
+            # And none of the page it replaced: no fabricated hero, no chart.
+            assert "Net worth" not in body
             assert 'id="net-worth-chart-canvas"' not in body
-            # And the equity caption the Property cell carries when the seam
-            # CAN answer is absent rather than half-rendered.
-            assert "Equity" not in body
-
 
 class TestUnclearingDebtHasNoDebtFreeDate:
     """A loan that never pays off must not be dropped from the debt-free date.

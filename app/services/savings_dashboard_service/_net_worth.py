@@ -104,7 +104,7 @@ def compute_net_worth_today(account_data: list[AccountProjection]) -> dict:
     total_assets = ZERO
     total_liabilities = ZERO
     for ad in account_data:
-        balance = ad.current_balance or ZERO
+        balance = ad.current_balance
         if ad.is_liability:
             total_liabilities += abs(balance)
         else:
@@ -161,9 +161,10 @@ def build_account_net_worth_maps(
     Args:
         accounts: The user's active accounts.
         ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
-            It MUST carry a baseline (``ctx.has_baseline``); the seam raises
-            otherwise, which is the intended fail-loud path for a caller that
-            did not guard.
+            A pass with no baseline raises
+            :class:`~app.exceptions.BaselineMissingError` at the seam, which
+            the application answers with the setup-recovery card -- no caller
+            guards ahead of it (plan step X-v2, ruling R-BW).
         all_periods: All of the user's pay periods (the dense domain).
 
     Returns:
@@ -572,20 +573,20 @@ def compute_property_equity(
             Each secured loan is read from its memo, so the mortgage leg of this
             card is the SAME resolution the debt card and the net-worth liability
             column read -- one resolution, not a fourth one that has to agree.
-            With no baseline the seam cannot resolve a loan at all, so no
-            equity card can be built and the empty list is this producer's
-            legitimate degraded state.
-
     Returns:
         A list of ``{account, equity}`` dicts, one per Property account in
         ``accounts`` order, where ``equity`` is a
         :class:`~app.services.home_equity_service.HomeEquity` snapshot.
-        Empty when the user has no Property accounts, and empty when the pass
-        has no baseline scenario.
-    """
-    if not ctx.has_baseline:
-        return []
+        Empty when the user has no Property accounts.
 
+        The no-baseline guard this opened with went at plan step X-v2 (ruling
+        R-BW).  It was added at X-t5 because this is the package's THIRD seam
+        door -- ``compute_property_equity`` -> ``home_equity_service`` ->
+        ``loan_figures`` -- and it raised a 500 on `/savings` for a borrower
+        with a Property securing a mortgage.  The raise is now ANSWERED rather
+        than forestalled, by the same handler that answers the other two doors,
+        so a fourth door discovered tomorrow needs no fourth guard.
+    """
     result: list[dict] = []
     for account in accounts:
         if classify_account(account) is AccountProjectionKind.APPRECIATING:

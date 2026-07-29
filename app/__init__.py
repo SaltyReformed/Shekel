@@ -7,25 +7,21 @@ to get a fully wired Flask instance.
 """
 
 import importlib
-import logging
 import os
 from datetime import datetime, timedelta, timezone
 
-from flask import Flask, render_template, request, session as flask_session
+from flask import Flask, request, session as flask_session
 
 from app.config import CONFIG_MAP
+from app.error_handlers import register_error_handlers
 from app.extensions import csrf, db, limiter, login_manager, migrate
 from app.jinja_filters import register_template_filters
 from app.routes.static_pass import static_file_version
-from app.utils.log_events import ACCESS, EVT_RATE_LIMIT_EXCEEDED, log_event
 from app.utils.logging_config import setup_logging
 from app.utils.session_helpers import (
     SESSION_CREATED_AT_KEY,
     SESSION_LAST_ACTIVITY_KEY,
 )
-
-
-_RATE_LIMIT_LOGGER = logging.getLogger(__name__)
 
 
 def create_app(config_name=None, *, init_ref_cache=True):
@@ -139,7 +135,10 @@ def create_app(config_name=None, *, init_ref_cache=True):
     _register_blueprints(app)
 
     # --- Error Handlers ---------------------------------------------------
-    _register_error_handlers(app)
+    # Every response for a condition no single route owns -- the five HTTP
+    # error pages plus the no-baseline answer -- lives in its own module, the
+    # same extraction the Jinja filters took above and for the same reason.
+    register_error_handlers(app)
 
     # --- Session activity refresh (commit C-10 / F-006) -------------------
     _register_session_activity_refresh(app)
@@ -494,91 +493,6 @@ def _register_blueprints(app):
     for name in _BLUEPRINT_MODULES:
         module = importlib.import_module(f"app.routes.{name}")
         app.register_blueprint(getattr(module, f"{name}_bp"))
-
-
-def _register_error_handlers(app):
-    """Register custom error pages for common HTTP errors."""
-
-    @app.errorhandler(400)
-    def bad_request(_e):
-        """Handle 400 Bad Request errors.
-
-        Common triggers: CSRF token validation failure (Flask-WTF
-        rejects the request), malformed form data, or invalid
-        request syntax.
-        """
-        return render_template("errors/400.html"), 400
-
-    @app.errorhandler(403)
-    def forbidden(_e):
-        """Handle 403 Forbidden errors.
-
-        Common triggers: permission denied, accessing a resource
-        that exists but the user is not authorized to view.
-        """
-        return render_template("errors/403.html"), 403
-
-    @app.errorhandler(404)
-    def page_not_found(_e):
-        """Handle 404 Not Found errors.
-
-        Triggers when the requested URL does not match any route.
-        """
-        return render_template("errors/404.html"), 404
-
-    @app.errorhandler(429)
-    def rate_limit_exceeded(_e):
-        """Return the 429 error page with a Retry-After header.
-
-        Also emits a structured ``rate_limit_exceeded`` log event
-        (audit Commit C-15 / finding F-146) so an operator can alert
-        on sustained rate-limit pressure from the observability
-        stack.  Without this event, a slow credential-stuffing
-        campaign that stays under each individual route's per-window
-        ceiling would still trigger the global default ceiling
-        (``200 per hour;30 per minute``) repeatedly with no signal
-        for incident response -- the rate limit successfully blocks
-        the attack from succeeding, but no human ever sees the
-        spike.
-
-        The event runs under WARNING level (not ERROR -- a single
-        rate-limit hit is not in itself an outage), under the
-        ACCESS category so it groups with the other access-control
-        events the SOC dashboard already filters on.  ``path`` and
-        ``remote_addr`` go into the structured payload so a Loki
-        query can pivot on either; the IP comes from
-        ``request.remote_addr`` which already reflects the
-        ``ProxyFix``-resolved client address (see ``gunicorn.conf.py``
-        ``forwarded_allow_ips``).
-        """
-        log_event(
-            _RATE_LIMIT_LOGGER,
-            logging.WARNING,
-            EVT_RATE_LIMIT_EXCEEDED,
-            ACCESS,
-            "Rate limit exceeded",
-            path=request.path,
-            method=request.method,
-            remote_addr=request.remote_addr,
-        )
-        response = app.make_response(
-            (render_template("errors/429.html"), 429)
-        )
-        # 900 seconds = 15 minutes, matching the rate limit window.
-        response.headers["Retry-After"] = "900"
-        return response
-
-    @app.errorhandler(500)
-    def internal_server_error(_e):
-        """Handle 500 Internal Server Error.
-
-        Triggers on unhandled exceptions in route handlers or
-        service layer code.  The rollback clears any failed transaction
-        so context-processor queries (e.g. inject_onboarding) can run
-        and the custom error template renders instead of a blank page.
-        """
-        db.session.rollback()
-        return render_template("errors/500.html"), 500
 
 
 def _idle_session_is_fresh(app):

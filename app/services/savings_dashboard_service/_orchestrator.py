@@ -483,11 +483,15 @@ def _compute_net_worth_section(
     today = compute_net_worth_today(account_data)
     category = category_key_by_account_id(account_data)
 
-    if not core.balance_ctx.has_baseline:
-        empty_series = compute_net_worth_series([], [], category)
-        empty_series["current_index"] = 0
-        return {**today, "series": empty_series, "horizon": None}, {}
-
+    # The no-baseline early return that stood here went at plan step X-v2
+    # (rulings R-BZ and R-CA).  It returned the today figures over an empty
+    # series -- and those "today figures" were ``current_balance or ZERO``
+    # reduced over balances that were ALL ``None``, so the region reported a
+    # net worth, a total-assets and a total-liabilities figure for a user whose
+    # every balance the app cannot answer.  The seam raises now and one
+    # application-level handler renders the repair, so there is no hero left to
+    # fabricate.  X-t2's ruling that this region should degrade here is
+    # REVERSED, on the developer's confirmation (CLAUDE.md rule 5).
     account_maps = build_account_net_worth_maps(
         core.accounts, core.balance_ctx, core.all_periods,
     )
@@ -597,7 +601,7 @@ def compute_dashboard_data(user_id):
     # ── Emergency fund metrics ──────────────────────────────────
     avg_monthly_expenses = _compute_avg_monthly_expenses(
         user_id, core.accounts, core.all_periods, core.current_period,
-        core.balance_ctx.scenario,
+        core.balance_ctx.scenario_id,
     )
     total_savings = _sum_liquid_balances(account_data)
     emergency_metrics = savings_goal_service.calculate_savings_metrics(

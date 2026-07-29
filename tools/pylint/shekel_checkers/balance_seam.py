@@ -452,16 +452,16 @@ _FENCED_MODULE_RULINGS = {
         # computes no balance.
         "build",
         # The baseline scenario's id -- an int, and the form the loaders and
-        # the resolver take.  (It said "the ONE place the no-baseline
-        # degradation is expressed" until plan step X-t5; that is
-        # ``has_baseline`` below, which is the PREDICATE -- this one is a
-        # nullable id.)
+        # the resolver take.  It RAISES for a pass with no baseline since plan
+        # step X-v2 (ruling R-BX), which is what keeps a query from being
+        # scoped to ``NULL`` and reading as an empty account; it still answers
+        # nothing about a balance.
         "scenario_id",
-        # Whether this pass has a baseline at all -- a bool, and the PRECONDITION
-        # ``require_scenario`` raises on (plan step X-t2, finding N-107).  A
-        # caller that legitimately handles the empty state guards on it before
-        # calling the seam; it answers nothing about an account.
-        "has_baseline",
+        # The same id, nullable, for the two seam-internal rules that HAVE an
+        # answer for a missing baseline (the loan resolution's payment feed and
+        # the confirmed view).  Its docstring names both.  Same classification
+        # and the same reason as ``scenario_id``: an id, not a balance.
+        "scenario_id_or_none",
         # The fail-loud no-baseline guard.  It raises or returns None; it
         # answers nothing about an account.
         "require_scenario",

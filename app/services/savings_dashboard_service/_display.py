@@ -135,9 +135,12 @@ def _compute_group_subtotals(grouped_accounts):
     ``grouped_accounts.items()`` loop.
 
     Each subtotal is the ``Decimal`` sum of the group's per-account
-    ``current_balance``.  A ``None`` balance (an account with no resolvable
-    current-period figure) contributes ``0.00`` rather than being skipped,
-    matching how the cards render it as a zero rather than dropping the row.
+    ``current_balance``, which is never ``None`` since plan step X-v2
+    (ruling R-CA): the ``is not None`` test this loop used to carry was the
+    EIGHTH reducer treating "the app cannot answer this balance" as ``$0.00``,
+    and the field stopped being nullable when the one state that produced a
+    ``None`` stopped rendering.
+
     Liability groups sum the loan resolver's positive owed balances, so a
     liability subtotal is the positive total owed; the template colors it
     with the danger token (color is a display decision keyed on the
@@ -154,10 +157,7 @@ def _compute_group_subtotals(grouped_accounts):
     """
     subtotals = OrderedDict()
     for cat_label, cat_accounts in grouped_accounts.items():
-        total = ZERO
-        for ad in cat_accounts:
-            balance = ad.current_balance
-            if balance is not None:
-                total += balance
-        subtotals[cat_label] = total
+        subtotals[cat_label] = sum(
+            (ad.current_balance for ad in cat_accounts), ZERO,
+        )
     return subtotals

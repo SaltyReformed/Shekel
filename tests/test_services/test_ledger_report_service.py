@@ -25,6 +25,8 @@ from decimal import Decimal
 
 import pytest
 
+from app.exceptions import BaselineMissingError
+
 from app.enums import PostingKindEnum, PostingSourceEnum
 from app.models.category import Category
 from app.models.pay_period import PayPeriod
@@ -303,17 +305,22 @@ class TestIncomeStatementValidationAndEmpty:
                     seed_user["user"].id, StatementWindow("month", year=2026),
                 )
 
-    def test_no_baseline_scenario_is_empty(self, app, bare_user):
-        """A user with no baseline scenario gets a zeroed statement."""
+    def test_no_baseline_scenario_refuses_rather_than_zeroing(
+        self, app, bare_user,
+    ):
+        """A baseline-less user gets no statement -- NOT one reporting zeros.
+
+        The balance sheet's twin (plan step X-v2, ruling R-BW).  An all-zero
+        income statement reads as "you earned and spent nothing this period",
+        which is a claim about the user's money; the truth is that this ledger
+        cannot be read at all.  See the balance sheet's own test for the full
+        argument and for how the review found both.
+        """
         with app.app_context():
-            report = ledger_report_service.compute_income_statement(
-                bare_user["user"].id, StatementWindow("year", year=2026),
-            )
-            assert not report.income.lines
-            assert not report.expense.lines
-            assert report.income.total == Decimal("0.00")
-            assert report.expense.total == Decimal("0.00")
-            assert report.net_income == Decimal("0.00")
+            with pytest.raises(BaselineMissingError):
+                ledger_report_service.compute_income_statement(
+                    bare_user["user"].id, StatementWindow("year", year=2026),
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -521,18 +528,34 @@ class TestBalanceSheetPosition:
             ).amount == Decimal("900.00")
             assert on_day.tie_out.in_balance is True
 
-    def test_no_baseline_scenario_green_tieout(self, app, bare_user):
-        """A baseline-less user's balance sheet is empty and green (0 == 0)."""
+    def test_no_baseline_scenario_refuses_rather_than_tying_out(
+        self, app, bare_user,
+    ):
+        """A baseline-less user gets no statement -- NOT a green tie-out.
+
+        **Changed at plan step X-v2** (ruling R-BW), and the answer this
+        replaces is why.  It used to return assets ``$0.00``, liabilities
+        ``$0.00``, equity ``$0.00`` and ``tie_out.in_balance is True``: the
+        application ASSERTING that a user's books balance over a ledger it
+        cannot read.  A statement that cannot be produced is not a statement of
+        zeros, and "the two sides agree" is the single strongest claim this
+        report makes -- making it up is the same defect finding N-113 recorded
+        for the net-worth hero, one screen over.
+
+        Found by X-v2's adversarial correctness review, which reached it by
+        walking the call graph rather than the predicate's spelling: this
+        producer resolves the baseline DIRECTLY, so neither X-v's AST census
+        (which followed ``BalanceContext``) nor its route sweep (which graded
+        only 5xx) could see it.
+
+        One application-level handler now renders the setup-recovery card for
+        this state, so the user is told what is wrong and given the repair.
+        """
         with app.app_context():
-            sheet = ledger_report_service.compute_balance_sheet(
-                bare_user["user"].id, _ALL_ACTIVITY,
-            )
-            assert not sheet.assets.lines
-            assert not sheet.liabilities.lines
-            assert _labels(sheet.equity.lines) == ["Retained Earnings"]
-            assert sheet.equity.total == Decimal("0.00")
-            assert sheet.tie_out.ledger_net == Decimal("0.00")
-            assert sheet.tie_out.in_balance is True
+            with pytest.raises(BaselineMissingError):
+                ledger_report_service.compute_balance_sheet(
+                    bare_user["user"].id, _ALL_ACTIVITY,
+                )
 
 
 # ---------------------------------------------------------------------------

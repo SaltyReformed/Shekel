@@ -186,8 +186,10 @@ def positions(
         requested date.  ``{}`` for an empty *dates*.
 
     Raises:
-        ValueError: When ``scenario`` is None (callers that resolve a nullable
-            baseline must guard first), or when *account* is not a configured loan
+        BaselineMissingError: When ``scenario`` is None.  A ``ValueError``
+            subclass; ONE application-level handler answers it (plan step
+            X-v2, ruling R-BW), so no caller pre-checks.
+        ValueError: When *account* is not a configured loan
             (the seam degrades a non-loan to the cash producer before reaching
             here).
     """
@@ -311,8 +313,10 @@ def positions_period_map(
         *periods* order.  ``OrderedDict()`` for an empty *periods*.
 
     Raises:
-        ValueError: When ``scenario`` is None (callers that resolve a nullable
-            baseline must guard first), or when *account* is not a configured loan
+        BaselineMissingError: When ``scenario`` is None.  A ``ValueError``
+            subclass; ONE application-level handler answers it (plan step
+            X-v2, ruling R-BW), so no caller pre-checks.
+        ValueError: When *account* is not a configured loan
             (:func:`positions`' own contract).
     """
     # Fail loud at the entry on a missing baseline, as every public seam entry
@@ -383,8 +387,10 @@ def loan_payoff_date(account: Account, ctx: BalanceContext) -> date | None:
         the loan is already retired or never pays off.
 
     Raises:
-        ValueError: When ``scenario`` is None (callers that resolve a nullable
-            baseline must guard first), or when *account* is not a configured loan
+        BaselineMissingError: When ``scenario`` is None.  A ``ValueError``
+            subclass; ONE application-level handler answers it (plan step
+            X-v2, ruling R-BW), so no caller pre-checks.
+        ValueError: When *account* is not a configured loan
             (the seam degrades a non-loan to the cash producer before reaching
             here).
     """
@@ -424,7 +430,10 @@ def memoized_payoff(account: Account, ctx: BalanceContext) -> date | None:
         :attr:`~app.services.balance_at.LoanFigures.is_retired` to tell them apart).
 
     Raises:
-        ValueError: When ``ctx.scenario`` is None, or when *account* is not a
+        BaselineMissingError: When ``ctx.scenario`` is None.  A ``ValueError``
+            subclass; ONE application-level handler answers it (plan step
+            X-v2, ruling R-BW), so no caller pre-checks.
+        ValueError: When *account* is not a
             configured loan -- on EVERY call (a raising derivation is never cached).
     """
     return _memoize_once(

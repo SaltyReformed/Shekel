@@ -18,7 +18,10 @@ producers that replaced them are tested in
 from datetime import date
 from decimal import Decimal
 
+import pytest
+
 from app import ref_cache
+from app.exceptions import BaselineMissingError
 from app.enums import StatusEnum, TxnTypeEnum
 from app.models.account import Account
 from app.models.scenario import Scenario
@@ -303,21 +306,39 @@ class TestComputeBalanceSection:
             )
             assert result == {"hero": None}
 
-    def test_no_scenario_returns_none_hero(self, app, seed_user, db):
-        """No baseline scenario -> ``{"hero": None}``.
+    def test_no_scenario_raises_rather_than_reporting_an_empty_hero(
+        self, app, seed_user, seed_periods_today, db,
+    ):
+        """No baseline scenario -> the seam's named exception, not a blank hero.
 
-        The producer guards on ``account is None or scenario is None``;
-        with no baseline scenario the second clause fires.
+        **Changed at plan step X-v2** (ruling R-BW).  This producer used to
+        return ``{"hero": None}``, which the template renders as an empty
+        balance -- one of seven different answers the app gave to this one
+        state, and indistinguishable on screen from "you have no account".  It
+        raises now, and the application's one handler turns that into the
+        setup-recovery card with its repair button.
+
+        The ``account is None`` arm of the old guard is UNCHANGED and is
+        asserted by its own test: that state is a real one this producer
+        models, and it still answers ``{"hero": None}``.
+
+        **``seed_periods_today`` is the discriminating fixture, and finding it
+        cost a red test.**  With no current period this producer never reaches
+        the seam at all -- it answers from ``Account.current_anchor_balance``,
+        the documented no-current-period fallback -- so the first draft of this
+        test asserted a raise against a path that cannot raise.  That fallback
+        is a DIFFERENT precondition's degraded value (finding N-116, the
+        period-absence family, owned by plan step X-x); it is untouched here.
         """
         with app.app_context():
             scenario = db.session.get(Scenario, seed_user["scenario"].id)
             scenario.is_baseline = False
             db.session.flush()
 
-            result = dashboard_service.compute_balance_section(
-                seed_user["user"].id,
-            )
-            assert result == {"hero": None}
+            with pytest.raises(BaselineMissingError):
+                dashboard_service.compute_balance_section(
+                    seed_user["user"].id,
+                )
 
     def test_no_current_period_uses_raw_anchor(self, app, seed_user):
         """No current period -> the hero balance is the raw anchor, not None.

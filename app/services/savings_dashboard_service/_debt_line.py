@@ -256,7 +256,7 @@ def debt_without_payoff_model(
     """
     return sum(
         (
-            abs(ad.current_balance or ZERO) for ad in account_data
+            abs(ad.current_balance) for ad in account_data
             if ad.is_liability and ad.loan is None
         ),
         ZERO,

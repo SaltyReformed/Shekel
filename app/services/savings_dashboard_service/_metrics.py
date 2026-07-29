@@ -215,7 +215,7 @@ def _sum_liquid_balances(account_data: list[AccountProjection]) -> Decimal:
     for ad in account_data:
         acct_type = ad.account.account_type
         if acct_type is not None and acct_type.is_liquid:
-            total_savings += ad.current_balance or Decimal("0.00")
+            total_savings += ad.current_balance
     return total_savings
 
 
@@ -299,7 +299,7 @@ def _checking_account_ids(accounts):
 
 
 def _recent_settled_expenses_monthly(
-    checking_ids, all_periods, current_period, scenario,
+    checking_ids, all_periods, current_period, scenario_id,
 ):
     """Average monthly settled checking expenses over the last 6 periods.
 
@@ -319,17 +319,25 @@ def _recent_settled_expenses_monthly(
             :func:`_checking_account_ids` set the floor also uses).
         all_periods: All pay periods for the user.
         current_period: The current :class:`PayPeriod`, or ``None``.
-        scenario: The baseline scenario, or ``None``.
+        scenario_id: The baseline scenario's id, from the read pass's
+            raising accessor -- never a nullable (plan step X-v2).
 
     Returns:
         The monthly average as a Decimal.  ``Decimal("0.00")`` when
-        there is no current period / scenario, no checking account, or
-        no recent periods.
+        there is no current period, no checking account, or no recent
+        periods.
+
+    **This function took the nullable SCENARIO OBJECT and answered
+    ``Decimal("0.00")`` for a user with no baseline** -- a fabricated monthly
+    expense feeding the emergency-fund runway, and the THIRD surviving guard
+    in a step whose ruling R-BY says exactly two survive.  Both of X-v2's
+    adversarial reviews found it independently.  It is also the site finding
+    N-112's own row named as the reason the census "wants an AST pass", and
+    the AST census X-v built STILL missed it -- because the predicate arrives
+    as a PARAMETER, not as an attribute or a local alias.  The census that
+    replaces a grep needs the same scepticism the grep earned.
     """
-    # ``is None``, not truthiness (coding standard; corrected at plan step
-    # X-t5, where a census of the no-baseline predicate found this spelling
-    # invisible to a search for ``scenario is None``).
-    if current_period is None or scenario is None or not checking_ids:
+    if current_period is None or not checking_ids:
         return Decimal("0.00")
 
     recent_periods = [
@@ -345,7 +353,7 @@ def _recent_settled_expenses_monthly(
         .filter(
             Transaction.pay_period_id.in_(recent_period_ids),
             Transaction.account_id.in_(checking_ids),
-            Transaction.scenario_id == scenario.id,
+            Transaction.scenario_id == scenario_id,
             Transaction.is_deleted.is_(False),
         )
         .all()
@@ -409,7 +417,7 @@ def _committed_expense_floor(user_id, checking_ids):
 
 
 def _compute_avg_monthly_expenses(
-    user_id, accounts, all_periods, current_period, scenario,
+    user_id, accounts, all_periods, current_period, scenario_id,
 ):
     """Compute average monthly expenses for emergency fund coverage.
 
@@ -423,7 +431,7 @@ def _compute_avg_monthly_expenses(
     """
     checking_ids = _checking_account_ids(accounts)
     historical = _recent_settled_expenses_monthly(
-        checking_ids, all_periods, current_period, scenario,
+        checking_ids, all_periods, current_period, scenario_id,
     )
     floor = _committed_expense_floor(user_id, checking_ids)
     return max(historical, floor)
@@ -473,7 +481,7 @@ def _loan_ad_current_principal(ad: AccountProjection) -> Decimal | None:
     # figure as the loan card; replaces the previous read of the
     # non-authoritative ``LoanParams.current_principal`` column that
     # produced F-008's stored-vs-engine divergence.
-    principal = ad.current_balance or Decimal("0.00")
+    principal = ad.current_balance
     if principal <= Decimal("0.00"):
         return None
     return principal
@@ -586,7 +594,7 @@ def _compute_principal_paid_fraction(
         total_original += ad.loan.params.original_principal
         if ad.loan.figures.is_retired:
             continue
-        current = ad.current_balance or Decimal("0.00")
+        current = ad.current_balance
         total_current += max(current, Decimal("0.00"))
 
     if total_original <= Decimal("0.00"):

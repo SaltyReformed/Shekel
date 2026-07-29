@@ -34,7 +34,6 @@ from app.enums import TxnTypeEnum
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.models.pay_period import PayPeriod
-from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.user import UserSettings
 from app.services import balance_at, pay_period_service
@@ -105,7 +104,7 @@ def compute_balance_section(user_id: int) -> dict:
         ``{"hero": None}`` when the user has no resolvable account.
     """
     account, balance_ctx, current_period = _resolve_section_context(user_id)
-    if account is None or balance_ctx.scenario is None:
+    if account is None:
         return {"hero": None}
 
     if current_period is not None:
@@ -120,19 +119,27 @@ def compute_balance_section(user_id: int) -> dict:
 
 def _resolve_section_context(
     user_id: int,
-) -> tuple[Account | None, Scenario | None, PayPeriod | None]:
-    """Resolve the account, baseline scenario, and current period.
+) -> tuple[Account | None, BalanceContext | None, PayPeriod | None]:
+    """Resolve the account, the read pass, and the current period.
 
     The shared head-of-function resolution the pulse producer
     (``dashboard_pulse_service.compute_pulse_section``) and
     :func:`compute_balance_section` both need, so the resolution is
     defined once rather than copied.
 
+    **The middle slot is a ``BalanceContext``, not a ``Scenario``.**  The
+    annotation said ``Scenario | None`` from before the context existed, while
+    both consumers read ``.has_baseline`` / ``.scenario`` off it -- a type that
+    documented a value this function has never returned (corrected at plan step
+    X-v2, which deleted the ``has_baseline`` reads that made it visible).
+
     Returns:
         ``(account, balance_ctx, current_period)``.  ``account`` is ``None``
-        when the user has no resolvable grid account; ``balance_ctx.scenario``
-        is ``None`` when there is no baseline scenario; ``current_period``
-        is ``None`` when no period contains today.
+        when the user has no resolvable grid account, and the other two are
+        then ``None`` with it; ``current_period`` is ``None`` when no period
+        contains today.  A user with no baseline scenario is NOT reported here
+        -- the seam raises and one application-level handler answers (plan step
+        X-v2, ruling R-BW).
     """
     settings = _get_user_settings(user_id)
     account = resolve_grid_account(user_id, settings)

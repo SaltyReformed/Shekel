@@ -240,6 +240,14 @@ EVT_RATE_LIMIT_EXCEEDED = _register(
     "rate_limit_exceeded", ACCESS,
     "Flask-Limiter rejected a request that exceeded its per-IP quota.",
 )
+EVT_BASELINE_MISSING = _register(
+    "baseline_missing", ERROR,
+    "A request asked the balance seam for a figure for a user with no "
+    "baseline scenario; the setup-recovery page (or 204 for a fragment) was "
+    "returned instead of the balance.  No code path produces this state, so "
+    "every occurrence is either data changed outside the app or a caller "
+    "resolving the wrong user -- alert on it.",
+)
 
 
 # ── Business events: existing call sites ───────────────────────────

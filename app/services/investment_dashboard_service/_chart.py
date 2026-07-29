@@ -155,11 +155,13 @@ def _build_history_series(account: Account, ctx: _ProjectionContext) -> dict:
 
     Modeled balances up to and including the current period, read through the
     SAME :func:`app.services.balance_at.balance_map` the headline uses (so the
-    tail meets the headline at the Today boundary).  Empty when no scenario /
-    current period / map; values are stringified cent ``Decimal``.
+    tail meets the headline at the Today boundary).  Empty when there is no
+    current period or no map; values are stringified cent ``Decimal``.  The
+    no-scenario arm went at plan step X-v2 (ruling R-BW) -- that state is
+    answered above this route now.
     """
     bctx = ctx.balance_ctx
-    if bctx.scenario is None or ctx.current_period is None:
+    if ctx.current_period is None:
         return {"history_labels": [], "history_balances": []}
     balances = balance_at.balance_map(account, bctx, ctx.all_periods)
     if balances is None:

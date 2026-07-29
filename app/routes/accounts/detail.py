@@ -260,11 +260,16 @@ def _cash_projection(
     * plain cash accounts read the cash-flow ``balance_at.cash_balance_map``
       (pure transaction running-balance).
 
-    The anchor is resolved via the dated ``AccountAnchorHistory`` SoT for
-    the hero caption and the current-period fallback.  Returns empty maps
-    and a ``None`` anchor in the legitimate empty states (no baseline
-    scenario, or -- for a plain account -- no pay periods), so the template
+    The anchor is resolved via the dated ``AccountAnchorHistory`` SoT for the
+    hero caption and the current-period fallback.  Returns empty maps and a
+    ``None`` anchor for a plain account with no pay periods, so the template
     renders cleanly.
+
+    **The no-baseline arm of both guards is gone** (plan step X-v2, ruling
+    R-BW): ``balance_ctx.scenario_id`` raises and one application-level handler
+    answers, so this helper no longer decides what a user whose balances the
+    app cannot compute sees -- it returned empty maps, where `/savings`
+    returned a fabricated ``$0.00`` and the loan page returned a 500.
 
     Returns:
         ``(balances, interest_by_period, anchor)``.  ``interest_by_period``
@@ -273,25 +278,23 @@ def _cash_projection(
     balances: dict[int, Decimal] = {}
     interest_by_period: dict[int, Decimal] = {}
     anchor: AnchorPoint | None = None
-    scenario = balance_ctx.scenario
     if is_interest:
-        if scenario is not None:
-            anchor = cash_ledger.resolve_anchor(account, scenario.id)
-            # ONE walk for both figures.  Asking the seam twice (the balance
-            # map, then the interest map) folded the account's whole cash
-            # event stream twice per render once the accrual's base became
-            # that fold -- and the two halves are one projection, so the page
-            # would also have had two chances to disagree with itself.
-            balances, interest_by_period = (
-                balance_at.interest_projection_for_account(
-                    account, balance_ctx, all_periods,
-                )
+        anchor = cash_ledger.resolve_anchor(account, balance_ctx.scenario_id)
+        # ONE walk for both figures.  Asking the seam twice (the balance
+        # map, then the interest map) folded the account's whole cash
+        # event stream twice per render once the accrual's base became
+        # that fold -- and the two halves are one projection, so the page
+        # would also have had two chances to disagree with itself.
+        balances, interest_by_period = (
+            balance_at.interest_projection_for_account(
+                account, balance_ctx, all_periods,
             )
-    elif scenario is not None and all_periods:
+        )
+    elif all_periods:
         balances = balance_at.cash_balance_map(
             account, balance_ctx, all_periods,
         )
-        anchor = cash_ledger.resolve_anchor(account, scenario.id)
+        anchor = cash_ledger.resolve_anchor(account, balance_ctx.scenario_id)
     return balances, interest_by_period, anchor
 
 
@@ -358,11 +361,11 @@ def _cash_detail_context(account: Account) -> dict:
     Both seam entries are the cash FOLD sampled at period ends (plan step
     X-c2b2), so this module calls no balance producer directly.  The
     anchor is resolved via the dated ``AccountAnchorHistory`` SoT (E-19,
-    Commit 4) for the hero caption and the current-period fallback; the
-    ``scenario is None`` / ``no pay periods`` empty-state guards are
-    kept (a fixture without a baseline scenario, a freshly-registered
-    user with no generated periods) and the templates render cleanly
-    when ``balances`` is empty.
+    Commit 4) for the hero caption and the current-period fallback; the ``no
+    pay periods`` empty-state guard is kept (a freshly-registered user with no
+    generated periods) and the templates render cleanly when ``balances`` is
+    empty.  The ``scenario is None`` guard beside it went at plan step X-v2 --
+    that state is answered above every route now, in one place (ruling R-BW).
     """
     is_interest = bool(
         account.account_type and account.account_type.has_interest

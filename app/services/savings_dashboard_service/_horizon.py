@@ -467,7 +467,7 @@ def _asset_bands(
         band = category_by_account_id.get(account.id)
         if band not in bands:
             continue
-        today_value = ad.current_balance or ZERO
+        today_value = ad.current_balance
         rate = _horizon_growth_rate(account, classify_account(account))
         rows = growth_engine.project_balance(
             current_balance=today_value,

@@ -270,9 +270,16 @@ class TestBalanceRow:
 
         The fix short-circuits with HTTP 204 No Content, matching the
         existing ``not current_period`` branch -- HTMX leaves the
-        existing DOM untouched, the grid index route renders
-        ``no_setup.html`` separately, and the user sees a coherent
-        empty state instead of a stack trace.
+        existing DOM untouched and the user sees a coherent empty state
+        instead of a stack trace.
+
+        **The 204 now comes from the application-level handler, not from a
+        guard in this route** (plan step X-v2, ruling R-BW), and the request
+        carries the ``HX-Request`` header the browser actually sends for this
+        endpoint.  That header is load-bearing rather than cosmetic: this test
+        used to pass while omitting it, so it pinned the answer to a request
+        shape no client makes.  A plain GET of the same URL is a human pasting
+        it into the address bar, and gets the repair card.
 
         Asserts both the status code AND empty body to pin the
         contract; a future change that returns 200 with a rendered
@@ -284,7 +291,10 @@ class TestBalanceRow:
             ).delete()
             db.session.commit()
 
-            resp = auth_client.get("/grid/balance-row?periods=6&offset=0")
+            resp = auth_client.get(
+                "/grid/balance-row?periods=6&offset=0",
+                headers={"HX-Request": "true"},
+            )
             assert resp.status_code == 204
             assert resp.data == b""
 
@@ -552,7 +562,14 @@ class TestSubtotalRowsEndpoint:
     def test_no_baseline_scenario_returns_204(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """No baseline scenario returns 204, matching balance_row (F-099)."""
+        """No baseline scenario returns 204, matching balance_row (F-099).
+
+        The 204 comes from the application-level ``BaselineMissingError``
+        handler since plan step X-v2 (ruling R-BW) rather than from a guard in
+        this route, and the request carries the ``HX-Request`` header this
+        endpoint is actually called with -- see ``balance_row``'s twin above
+        for why that header is the point and not a detail.
+        """
         with app.app_context():
             db.session.query(Scenario).filter_by(
                 user_id=seed_user["user"].id,
@@ -561,6 +578,7 @@ class TestSubtotalRowsEndpoint:
 
             resp = auth_client.get(
                 "/grid/subtotal-rows?periods=6&offset=0",
+                headers={"HX-Request": "true"},
             )
             assert resp.status_code == 204
             assert resp.data == b""

@@ -371,10 +371,12 @@ def compute_tax_report(user_id: int, year: int, today: date) -> TaxReport | None
     # all and re-derive its own ``date.today()``, silently discarding the one
     # this producer was handed (the New-Year UTC/display seam).
     balance_ctx = BalanceContext.build(user_id, as_of=today)
-    scenario = balance_ctx.scenario
-    if scenario is None:
-        return None
-    profiles = load_active_salary_profiles(user_id, scenario.id)
+    # ``scenario_id`` RAISES for a user with no baseline (plan step X-v2,
+    # ruling R-BX) and one application-level handler answers that state, so the
+    # ``return None`` this used to open with -- which rendered the same empty
+    # state as "no salary profile", two different conditions wearing one answer
+    # -- is gone.  The ``None`` below now means exactly one thing.
+    profiles = load_active_salary_profiles(user_id, balance_ctx.scenario_id)
     if not profiles:
         return None
 

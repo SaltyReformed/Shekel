@@ -5,7 +5,8 @@
    Cancel / Escape and 409-retry revert target).
 
    Context: ad -- ONE AccountProjection (the service value object), carrying
-   ad.account, ad.current_balance (Decimal | None -- the resolver as-of-today
+   ad.account, ad.current_balance (Decimal, never None since plan step X-v2 --
+   the resolver as-of-today
    balance the card shows; None when no current period resolves a figure,
    rendered as a non-editable dash) and ad.is_liability (the account's
    category is LIABILITY, so the figure takes the danger token the group
@@ -50,9 +51,11 @@
    loan page's own true-up, so the cash anchor editor is never offered --
    the PATCH would be refused with 422.  Branches on the
    has_amortization boolean column, never a type-name string. #}
-{% if ad.current_balance is none %}
-<div class="acct-card__num font-mono">--</div>
-{% elif ad.account.account_type.has_amortization %}
+{# ``current_balance`` is non-nullable since plan step X-v2 (ruling R-CA), so
+   the ``is none -> --`` branch that stood here is gone with the state that
+   produced it: a user whose balances the app cannot answer now gets the
+   setup-recovery card instead of a page of dashes. #}
+{% if ad.account.account_type.has_amortization %}
 <div class="acct-card__num font-mono{% if ad.current_balance < 0 %} acct-card__num--neg{% endif %}{% if ad.is_liability %} acct-card__num--liability{% endif %}">
   {{ money(ad.current_balance) }}
 </div>

@@ -336,8 +336,9 @@ def loan_plan(account: Account, ctx: BalanceContext) -> list[PlannedPayment]:
         :class:`~app.models.loan_params.LoanParams`).
 
     Raises:
-        ValueError: When ``ctx.scenario`` is None (guard a nullable baseline
-            first).
+        BaselineMissingError: When ``ctx.scenario`` is None.  A ``ValueError``
+            subclass; ONE application-level handler answers it (plan step
+            X-v2, ruling R-BW), so no caller pre-checks.
     """
     require_scenario(ctx)
     resolved = resolved_loan(account, ctx)
@@ -414,7 +415,7 @@ def memoized_plan(account: Account, ctx: BalanceContext) -> list[PlannedPayment]
         The pass's memoized :class:`PlannedPayment` list for this loan.
 
     Raises:
-        ValueError: When ``ctx.scenario`` is None -- on EVERY call, not just the
+        BaselineMissingError: When ``ctx.scenario`` is None -- on EVERY call, not just the
             first.  A build that raises is never cached (the cache assigns only on
             a returned value), and ``ctx.scenario`` is frozen for the pass, so the
             guard cannot be worn down by retrying: there is no state in which a

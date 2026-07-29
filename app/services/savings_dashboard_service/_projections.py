@@ -23,8 +23,6 @@ are opened in one place, behind one no-baseline predicate, in one shape.  That
 place is one of the PACKAGE's three seam doors; see that function.
 """
 
-from collections import OrderedDict
-from decimal import Decimal
 
 from app.services import balance_at
 from app.services.account_projection import (
@@ -75,15 +73,14 @@ def _seam_batches(accounts, ctx):
     there were only two, and both of its adversarial reviews found the third by
     walking the call graph instead of counting call sites.
 
-    The PREDICATE itself is the seam's own
-    :attr:`~app.services.balance_at.BalanceContext.has_baseline`, which
-    :func:`~app.services.balance_at.require_scenario` raises on -- so the guard
-    and the precondition it guards are one property, read from both ends,
-    rather than an independent spelling of ``ctx.scenario is None`` at each call
-    site (18 in the tree when X-t2 measured it; the 12 this step does not reach
-    are finding N-112).  A new seam call added inside this module's per-account
-    loop would still escape -- nothing mechanical prevents it, since W9909 /
-    W9910 gate imports and module identity, never call sites.
+    **All three doors are now UNGUARDED, deliberately** (plan step X-v2,
+    ruling R-BW).  X-t2 gave the three one PREDICATE to share; they still
+    answered with three different degraded values, and the fourth door nobody
+    had found would have needed a fourth.  The seam raises a named exception
+    and one application-level handler answers it, so "a new seam call added
+    inside this loop escapes the guard" -- true when this paragraph was written,
+    and unfixable by any import- or module-scoped gate -- stopped being a way
+    to get a wrong number onto a screen.
 
     Args:
         accounts: The accounts being projected (any mix of kinds).
@@ -91,13 +88,16 @@ def _seam_batches(accounts, ctx):
             ``all_periods`` and ``params.loan_params_map`` feed the seam).
 
     Returns:
-        The :class:`_SeamBatches` for this projection -- empty on both maps
-        when there is no baseline scenario, which is the legitimate empty state
-        every tile then degrades through.
-    """
-    if not ctx.balance_ctx.has_baseline:
-        return _SeamBatches(balance_maps={}, loan_results={})
+        The :class:`_SeamBatches` for this projection.
 
+        **The no-baseline early return went at plan step X-v2** (ruling R-BW).
+        It returned empty maps so every tile could "degrade" -- which meant
+        every ``current_balance`` came back ``None`` and seven reducers in this
+        package turned that into ``$0.00``.  The seam raises now and one
+        application-level handler answers, which is why
+        :attr:`~.._types.AccountProjection.current_balance` could stop being
+        nullable in the same commit.
+    """
     loan_results = {}
     non_loan_accounts = []
     for acct in accounts:
@@ -120,27 +120,42 @@ def _seam_batches(accounts, ctx):
 def _current_balance_from_map(balances, acct, ctx):
     """Read the current-period balance from a seam map, anchor as fallback.
 
-    Preserves the pre-seam ``_compute_base_balances`` contract exactly: with
-    a current period, the tile shows that period's balance from the map --
-    which is ``None`` when the map omits it (a cash account whose anchor is
-    after the current period: cash balances are not carried backward
-    pre-anchor), and that ``None`` is the deliberate "no balance here yet"
-    state the hero and goal reducers already treat as zero.  With no current
-    period at all, it falls back to the account's stored anchor balance.
+    With a current period the tile shows that period's balance from the map;
+    with no current period at all it falls back to the account's stored anchor
+    balance (a ``NOT NULL`` column, so that is a real figure and not a
+    stand-in).
+
+    **The map is INDEXED, not ``.get``-defaulted** (plan step X-v2, ruling
+    R-CA), which is the argument :func:`app.services.balance_at.build_maps`
+    already makes about its own total feed map: the seam builds a column for
+    EVERY period it is handed, so a missing key is a defect in the seam or in
+    the period list, and answering it with ``None`` renders a real account as
+    one the app has no figure for -- a wrong figure wearing a plausible shape.
+    The ``None`` this used to return was reduced to ``$0.00`` by seven callers
+    (finding N-113); a ``KeyError`` here fails loudly at the one place that can
+    explain it.
+
+    Its documented cause was also already false: "a cash account whose anchor is
+    after the current period" carries every period in its map since the plan
+    step X-c2b2 cutover, verified by probe on a future-anchored HYSA.
 
     Args:
-        balances: The seam's period_id -> balance map (possibly empty).
+        balances: The seam's period_id -> balance map, built over
+            ``ctx.all_periods``.
         acct: The account whose ``current_anchor_balance`` is the
             no-current-period fallback.
         ctx: The shared :class:`_ProjectionContext`.
 
     Returns:
-        The current-period ``Decimal`` balance, or ``None`` when a current
-        period exists but the map omits it.
+        The current-period ``Decimal`` balance.
+
+    Raises:
+        KeyError: When a current period exists and the map has no column for
+            it -- a seam or period-list defect, never a display state.
     """
     if ctx.current_period is None:
-        return acct.current_anchor_balance or Decimal("0.00")
-    return balances.get(ctx.current_period.id)
+        return acct.current_anchor_balance
+    return balances[ctx.current_period.id]
 
 
 def _compute_loan_account(acct, acct_loan_params, ctx):
@@ -262,9 +277,11 @@ def _project_one_account(acct, ctx, batches):
         ctx: The shared :class:`_ProjectionContext`.
         batches: The :class:`~.._types._SeamBatches` from
             :func:`_seam_batches` -- every seam read this projection makes,
-            built once for the whole set.  A loan, and a non-loan account the
-            seam omits (no anchor period), are absent from ``balance_maps`` and
-            read as an empty map.
+            built once for the whole set.  A loan is absent from
+            ``balance_maps`` (it takes the loan arm and reads no map).  A
+            non-loan account cannot be absent: the seam omits only an account
+            with no anchor period, and ``accounts.current_anchor_period_id`` is
+            ``NOT NULL``.
 
     Returns:
         The account's :class:`~.._types.AccountProjection` -- THE shape every
@@ -289,7 +306,7 @@ def _project_one_account(acct, ctx, batches):
         # Every non-loan kind reads its per-period balance map out of the one
         # batch the seam already built, then picks the current balance and the
         # horizons out of that single map.
-        balances = batches.balance_maps.get(acct.id) or OrderedDict()
+        balances = batches.balance_maps[acct.id]
         current_bal = _current_balance_from_map(balances, acct, ctx)
         projected = project_balance_horizons(
             ctx.current_period, ctx.all_periods, balances,

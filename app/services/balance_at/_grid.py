@@ -422,8 +422,9 @@ def grid_balance_view(
         A :class:`GridBalanceView`.
 
     Raises:
-        ValueError: When ``scenario`` is None -- callers that resolve a
-            nullable baseline must guard first.
+        BaselineMissingError: When ``scenario`` is None.  A ``ValueError``
+            subclass; ONE application-level handler answers it (plan step
+            X-v2, ruling R-BW), so no caller pre-checks.
     """
     _require_scenario(ctx)
     if not periods:
@@ -433,7 +434,7 @@ def grid_balance_view(
         # list -- the same guard :func:`._asset_fold.asset_period_view` and
         # :func:`._asset_fold.period_columns` already carry.
         return empty_grid_view()
-    folded = _cash_fold.assemble(account, ctx.scenario.id, ctx.as_of)
+    folded = _cash_fold.assemble(account, ctx.scenario_id, ctx.as_of)
     view = _cash_fold.period_view_of(folded, periods)
     modelled = _asset_fold.period_columns(
         _asset_fold.resolve(

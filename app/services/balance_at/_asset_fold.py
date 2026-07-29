@@ -690,7 +690,7 @@ def _assemble(
     """
     return resolve(
         account,
-        _cash_fold.assemble(account, ctx.scenario.id, ctx.as_of),
+        _cash_fold.assemble(account, ctx.scenario_id, ctx.as_of),
         horizon_end,
         inputs,
     )
