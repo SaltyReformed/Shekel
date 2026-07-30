@@ -21,27 +21,26 @@ proof.  This dumps the layer that step actually changes:
   carries the summary.
 
 **NORMALIZED across the intended shape changes**, so a deliberate diff cannot
-hide an accidental one.  Two so far, and each is a place where this ONE file
-has to produce the same blob on the old tree and the new one:
+hide an accidental one.  **A NORMALIZATION SHIM IS DELETED BY THE STEP AFTER THE
+ONE THAT NEEDED IT**, because each adds a branch that can never be taken on the
+current tree, and a file whose readers all tolerate several dead shapes is one
+that can no longer answer this harness's own question (Section 7.2 -- can it SEE
+the code under test?).
 
-* plan step X-t1 turned the per-account projection dict into a frozen
-  ``AccountProjection`` carrying a nested loan value -- every reader here is
-  dict-or-attribute tolerant and the loan half flattens to the same two keys
-  either way;
-* plan step X-u made the principal-paid fraction a ``DebtSummary`` field and
-  deleted both the ``compute_debt_principal_progress`` producer and the
-  ``DebtTrack`` wrapper -- so the fraction is read through
-  :func:`_principal_fraction` / :func:`_narrow_fraction` / :func:`_full_build_fraction`,
-  and the tracks section's ``debt`` normalizes whether it is the summary or a
-  wrapper around it.
+**Plan step X-w5 paid the two that were owed.**  The X-t1 shim (the per-account
+projection's pre-value-object ``loan_figures`` / ``loan_params`` keys) was due to
+go when X-v shipped and did not; the X-u shim (the deleted
+``compute_debt_principal_progress`` producer and the ``DebtTrack`` wrapper) was
+due here.  Both are gone, and each was verified dead by RUNNING this file
+against the tree it was written for.
 
-**A NORMALIZATION SHIM IS DELETED BY THE STEP AFTER THE ONE THAT NEEDED IT.**
-Each of the above adds a branch that can never be taken on the current tree, and
-they accumulate: X-v and X-w change these same producers, and a file whose
-readers all tolerate three dead shapes is one that can no longer answer this
-harness's own question (Section 7.2 -- can it SEE the code under test?).  So the
-X-t1 tolerance goes when X-v ships, the X-u tolerance when X-w does, and this
-paragraph goes with the last of them.
+**What remains is X-w's OWN tolerance, and X-x deletes it**: :func:`_get` reads
+a field off a dict OR a value object, and :func:`_today_figures` and the
+archived row read both spellings of a renamed figure.  Plan step X-w turned five
+containers on this path into frozen value objects (rulings R-CG / R-CH / R-CI),
+so those branches are what let this ONE file produce the same blob on the
+pre-X-w tree and the post-X-w one -- which is the only thing that makes the
+diff mean anything.
 
 **Usage** (from the repository root)::
 
@@ -136,17 +135,16 @@ def _figures(figures):
 
 
 def _loan_halves(ad):
-    """The loan figures + params of one projection, whichever shape carries them.
+    """The loan figures + params of one projection.
 
-    Pre-X-t1 they are two optional dict keys; post-X-t1 they are the two fields
-    of one nested value object.  Both normalize here, so the shape change is
-    invisible in the blob and a FIGURE change is not.
+    The X-t1 shim -- a fallback to the pre-value-object ``loan_figures`` /
+    ``loan_params`` dict keys -- was deleted at plan step X-w5.  ``loan`` is a
+    :class:`~app.services.savings_dashboard_service._types.LoanDetail` or
+    ``None``, and ``None`` IS "this account is not a configured loan".
     """
     loan = _get(ad, "loan")
-    if loan is not None:
-        figures, params = _get(loan, "figures"), _get(loan, "params")
-    else:
-        figures, params = _get(ad, "loan_figures"), _get(ad, "loan_params")
+    figures = None if loan is None else _get(loan, "figures")
+    params = None if loan is None else _get(loan, "params")
     return {
         "loan_figures": _figures(figures),
         "loan_original_principal": _money(_get(params, "original_principal")),
@@ -187,14 +185,14 @@ def _outlook(outlook):
 
 
 def _debt_summary(summary):
-    """The debt summary's money fields, its outlook and its DTI block.
+    """The debt summary's money fields, its outlook, its DTI block, its rail.
 
-    Deliberately NOT ``principal_paid_fraction``: plan step X-u added it, so a
-    tree without it would dump ``null`` here and the intended shape change would
-    read as a figure change.  It is dumped instead through the three top-level
-    keys that carry it on BOTH trees -- ``narrow_principal_fraction``,
-    ``full_build_principal_fraction`` and the tracks section's own copy -- which
-    is where a real change to it shows up.
+    ``principal_paid_fraction`` is dumped HERE since plan step X-w5.  It was
+    excluded, and carried by three top-level keys instead, because plan step
+    X-u's own tree had no such field on the summary -- a shim for a shape that
+    has not existed since ``e2cdc589``.  Dumping it in one place covers both the
+    full build's summary and the narrow producer's, which is what those three
+    keys were reaching for.
     """
     if summary is None:
         return None
@@ -207,6 +205,7 @@ def _debt_summary(summary):
         "weighted_avg_rate": _money(_get(summary, "weighted_avg_rate")),
         "revolving_debt": _money(_get(summary, "revolving_debt")),
         "payoff_outlook": _outlook(_get(summary, "payoff_outlook")),
+        "principal_paid_fraction": _money(_principal_fraction(summary)),
         "dti_ratio": _money(_get(dti, "ratio")),
         "dti_label": _get(dti, "label"),
     }
@@ -305,46 +304,15 @@ def _goal(datum):
 
 
 def _principal_fraction(summary):
-    """The principal-paid fraction of one summary, wherever this tree keeps it.
+    """The principal-paid fraction of one :class:`DebtSummary`, or ``None``.
 
-    Plan step X-u makes it a ``DebtSummary`` field; before it, the only producer
-    of it was ``compute_debt_principal_progress`` and the summary had no such
-    attribute.  Reading it tolerantly is what lets THIS FILE run against both
-    trees and produce the same blob for the same data -- the X-t1 normalization
-    one step over, and the reason the deliberate shape change cannot mask an
-    accidental figure change.
+    A plain field read since plan step X-w5.  It was tolerant of a tree where
+    the summary had no such attribute -- the pre-X-u shape, where the only
+    producer of the fraction was the second debt producer X-u deleted -- and
+    that branch has been dead since ``e2cdc589``.  The dump is still tolerant of
+    a ``None`` SUMMARY (a user with no loan accounts), which is a live state.
     """
-    return _get(summary, "principal_paid_fraction")
-
-
-def _narrow_fraction(user_id, narrow_summary):
-    """The narrow producers' principal-paid fraction, whichever exists here.
-
-    Takes the already-computed narrow summary rather than fetching its own.
-    It DID fetch its own until X-u's adversarial review counted the calls: this
-    file measures finding N-109 (one render, two identical debt pipelines) and
-    was running ``compute_debt_summary`` twice per user dump to do it.
-    """
-    legacy = getattr(
-        savings_dashboard_service, "compute_debt_principal_progress", None,
-    )
-    if legacy is not None:
-        return legacy(user_id)
-    return _principal_fraction(narrow_summary)
-
-
-def _full_build_fraction(user_id, summary, narrow_summary):
-    """The full ``/savings`` build's principal-paid fraction, tolerantly.
-
-    Post-X-u the full build's own ``debt_summary`` carries it; pre-X-u nothing
-    on that path computed one, so the narrow figure stands in.  A summary that
-    HAS the attribute is authoritative even when the value is ``None`` (the
-    reachable no-loan-has-originated state), which is why this tests for the
-    attribute rather than for a truthy value.
-    """
-    if summary is not None and hasattr(summary, "principal_paid_fraction"):
-        return summary.principal_paid_fraction
-    return _narrow_fraction(user_id, narrow_summary)
+    return None if summary is None else summary.principal_paid_fraction
 
 
 def _tracks(section):
@@ -354,14 +322,10 @@ def _tracks(section):
     out = {}
     for key, value in sorted(section.items()):
         if key == "debt":
-            debt = value
-            # Pre-X-u ``debt`` is a ``DebtTrack`` wrapping the summary; post-X-u
-            # it IS the summary.  Both normalize to the same two entries.
-            summary = _get(debt, "summary") if debt is not None else None
-            out[key] = None if debt is None else {
-                "summary": _debt_summary(summary if summary is not None else debt),
-                "principal_paid_fraction": _money(_principal_fraction(debt)),
-            }
+            # The track's ``debt`` IS the ``DebtSummary``.  It was a
+            # ``DebtTrack`` wrapping one until plan step X-u deleted the
+            # wrapper, and the shim that unwrapped either shape went at X-w5.
+            out[key] = _debt_summary(value)
         elif key == "goals":
             out[key] = [
                 {
@@ -477,20 +441,10 @@ def _dump_user(user_id):
         # The narrow producers, each answering over its own restricted
         # load -- the "identical figures by construction" promise, measured.
         # There were four until plan step X-u deleted the second debt one.
+        # The principal-paid fraction rides inside BOTH debt summaries since
+        # plan step X-w5, where the two top-level keys that used to carry it
+        # across the X-u shape change were deleted with the shim.
         "narrow_debt_summary": _debt_summary(narrow_summary),
-        "narrow_principal_fraction": _money(
-            _narrow_fraction(user_id, narrow_summary),
-        ),
-        # The FULL build's fraction: post-X-u a field of the ``debt_summary``
-        # above, pre-X-u a figure no full-build producer computed at all -- so
-        # on the old tree this reads the narrow value, which is what the two
-        # paths are asserted to share
-        # (``TestDebtSummary::test_narrow_producer_matches_full_dashboard``
-        # compares the whole value object).  Without this key the merged
-        # field would reach ``/savings`` unmeasured by this harness.
-        "full_build_principal_fraction": _money(
-            _full_build_fraction(user_id, data["debt_summary"], narrow_summary),
-        ),
         "narrow_goal_progress": [
             _goal(datum)
             for datum in savings_dashboard_service.compute_goal_progress(
