@@ -1418,15 +1418,15 @@ class TestTracksGoals:
                 gd for gd in savings_dashboard_service.compute_goal_progress(
                     seed_user["user"].id,
                 )
-                if gd["goal"].account_id == acct.id
+                if gd.goal.account_id == acct.id
             )
-            assert track["pace"] == sav["trajectory"]["pace"]
+            assert track["pace"] == sav.trajectory["pace"]
             assert (
                 track["projected_completion_date"]
-                == sav["trajectory"]["projected_completion_date"]
+                == sav.trajectory["projected_completion_date"]
             )
-            assert track["required_monthly"] == sav["trajectory"]["required_monthly"]
-            assert track["progress_pct"] == sav["progress_pct"]
+            assert track["required_monthly"] == sav.trajectory["required_monthly"]
+            assert track["progress_pct"] == sav.progress_pct
 
     def test_no_goals_empty_list(self, app, seed_user, seed_periods, db):
         """No active goals -> goals is an empty list."""

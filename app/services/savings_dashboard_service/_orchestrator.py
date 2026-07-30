@@ -55,6 +55,7 @@ from app.services.savings_dashboard_service._display import (
     category_key_by_account_id,
 )
 from app.services.savings_dashboard_service._goals import (
+    GoalProgress,
     _compute_goal_progress,
     _load_active_goals,
 )
@@ -272,7 +273,7 @@ def compute_debt_summary(
 
 def compute_goal_progress(
     user_id: int, balance_ctx: BalanceContext | None = None,
-) -> list[dict]:
+) -> list[GoalProgress]:
     """Compute only the savings-goal progress for the budget dashboard card.
 
     The narrow producer behind the dashboard's savings tracks

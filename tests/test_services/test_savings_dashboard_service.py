@@ -230,8 +230,8 @@ class TestGoalProgress:
             assert len(result["goal_data"]) == 1
             gd = result["goal_data"][0]
             # 5000 / 10000 * 100 = 50.00 via money.percent_complete (Decimal).
-            assert gd["progress_pct"] == Decimal("50.00")
-            assert gd["current_balance"] == Decimal("5000.00")
+            assert gd.progress_pct == Decimal("50.00")
+            assert gd.current_balance == Decimal("5000.00")
 
     def test_progress_pct_rounds_half_up_fractional_percent(
         self, app, db, seed_user, seed_periods
@@ -280,10 +280,10 @@ class TestGoalProgress:
                 seed_user["user"].id
             )
             gd = result["goal_data"][0]
-            assert gd["current_balance"] == Decimal("4980.00")
+            assert gd.current_balance == Decimal("4980.00")
             # 4980 / 5000 * 100 = 99.60, ROUND_HALF_UP via percent_complete
             # (NOT the old int()-truncated 99).
-            assert gd["progress_pct"] == Decimal("99.60")
+            assert gd.progress_pct == Decimal("99.60")
 
     def test_progress_pct_clamps_over_funded_to_100(
         self, app, db, seed_user, seed_periods
@@ -326,9 +326,9 @@ class TestGoalProgress:
                 seed_user["user"].id
             )
             gd = result["goal_data"][0]
-            assert gd["current_balance"] == Decimal("6000.00")
+            assert gd.current_balance == Decimal("6000.00")
             # 6000 / 5000 * 100 = 120, clamped to 100.00 by percent_complete.
-            assert gd["progress_pct"] == Decimal("100.00")
+            assert gd.progress_pct == Decimal("100.00")
 
     def test_progress_pct_clamps_negative_balance_to_zero(
         self, app, db, seed_user, seed_periods
@@ -374,9 +374,9 @@ class TestGoalProgress:
                 seed_user["user"].id
             )
             gd = result["goal_data"][0]
-            assert gd["current_balance"] == Decimal("-500.00")
+            assert gd.current_balance == Decimal("-500.00")
             # -500 / 5000 * 100 = -10%, floored to 0.00 by percent_complete.
-            assert gd["progress_pct"] == Decimal("0")
+            assert gd.progress_pct == Decimal("0")
 
     def test_no_goals_returns_empty_list(
         self, app, db, seed_user, seed_periods
@@ -415,16 +415,22 @@ class TestIncomeRelativeGoalDashboard:
                 seed_user["user"].id
             )
             gd = result["goal_data"][0]
-            assert gd["resolved_target"] == Decimal("5000.00")
-            assert gd["income_descriptor"] is None
+            assert gd.resolved_target == Decimal("5000.00")
+            assert gd.income_descriptor is None
 
     def test_dashboard_goal_data_includes_new_keys(
         self, app, db, seed_user, seed_periods
     ):
-        """Goal data dict contains all new keys from 5.4-3.
+        """The goal record's field set is exactly what its consumers read.
 
-        Every goal entry must include: resolved_target, goal_mode_id,
-        income_descriptor, has_salary_data.
+        It carried a twelfth key, ``goal_mode_id``, a straight copy of
+        ``goal.goal_mode_id`` on a record that already carries the goal.  An AST
+        census over ``app/`` and ``tests/`` found the copy had ZERO readers, so
+        plan step X-w4 dropped it when the dict became a
+        :class:`~...._goals.GoalProgress` -- finding N-100's
+        published-key-with-no-consumer, in the container being typed.  This
+        pins the whole set, and its ABSENCE with it, so a future step that
+        re-adds a field without a reader fails here.
         """
         with app.app_context():
             goal = SavingsGoal(
@@ -441,10 +447,18 @@ class TestIncomeRelativeGoalDashboard:
                 seed_user["user"].id
             )
             gd = result["goal_data"][0]
-            assert "resolved_target" in gd
-            assert "goal_mode_id" in gd
-            assert "income_descriptor" in gd
-            assert "has_salary_data" in gd
+            # pylint: disable=import-outside-toplevel
+            from dataclasses import fields
+            assert {f.name for f in fields(gd)} == {
+                "goal", "current_balance", "progress_pct", "remaining_periods",
+                "required_contribution", "resolved_target",
+                "income_descriptor", "has_salary_data", "trajectory",
+                "monthly_contribution",
+            }
+            assert not hasattr(gd, "goal_mode_id"), (
+                "the goal's mode is read through ``gd.goal``; a copy of it here "
+                "had no reader anywhere in app/ or tests/"
+            )
 
     def test_dashboard_income_relative_goal_resolves_target(
         self, app, db, seed_user, seed_periods
@@ -486,9 +500,9 @@ class TestIncomeRelativeGoalDashboard:
             gd = result["goal_data"][0]
             # The exact value depends on the salary profile's net pay.
             # With a salary profile, resolved_target should be > 0.
-            assert gd["resolved_target"] > Decimal("0.00")
-            assert gd["has_salary_data"] is True
-            assert isinstance(gd["resolved_target"], Decimal)
+            assert gd.resolved_target > Decimal("0.00")
+            assert gd.has_salary_data is True
+            assert isinstance(gd.resolved_target, Decimal)
 
     def test_dashboard_income_relative_no_salary(
         self, app, db, seed_user, seed_periods
@@ -517,9 +531,9 @@ class TestIncomeRelativeGoalDashboard:
                 seed_user["user"].id
             )
             gd = result["goal_data"][0]
-            assert gd["resolved_target"] == Decimal("0.00")
-            assert gd["has_salary_data"] is False
-            assert gd["progress_pct"] == 0
+            assert gd.resolved_target == Decimal("0.00")
+            assert gd.has_salary_data is False
+            assert gd.progress_pct == 0
 
     def test_dashboard_income_descriptor_format(
         self, app, db, seed_user, seed_periods
@@ -548,7 +562,7 @@ class TestIncomeRelativeGoalDashboard:
                 seed_user["user"].id
             )
             gd = result["goal_data"][0]
-            assert gd["income_descriptor"] == "3.00 months of salary"
+            assert gd.income_descriptor == "3.00 months of salary"
 
     def test_progress_uses_resolved_target(
         self, app, db, seed_user, seed_periods
@@ -595,8 +609,8 @@ class TestIncomeRelativeGoalDashboard:
             # progress_pct = 1000 / resolved_target * 100.
             # The exact percentage depends on the salary amount,
             # but it must be > 0 (balance is $1000 and target is > 0).
-            assert gd["progress_pct"] > 0
-            assert gd["resolved_target"] > Decimal("0.00")
+            assert gd.progress_pct > 0
+            assert gd.resolved_target > Decimal("0.00")
 
     def test_progress_zero_target_no_division_error(
         self, app, db, seed_user, seed_periods
@@ -625,8 +639,8 @@ class TestIncomeRelativeGoalDashboard:
                 seed_user["user"].id
             )
             gd = result["goal_data"][0]
-            assert gd["progress_pct"] == 0
-            assert gd["required_contribution"] is None
+            assert gd.progress_pct == 0
+            assert gd.required_contribution is None
 
 
 class TestGoalTrajectoryDashboard:
@@ -672,10 +686,8 @@ class TestGoalTrajectoryDashboard:
                 seed_user["user"].id
             )
             gd = result["goal_data"][0]
-            assert "trajectory" in gd
-            assert "monthly_contribution" in gd
-            assert isinstance(gd["trajectory"], dict)
-            assert isinstance(gd["monthly_contribution"], Decimal)
+            assert isinstance(gd.trajectory, dict)
+            assert isinstance(gd.monthly_contribution, Decimal)
 
     def test_trajectory_with_no_transfer_template(
         self, app, db, seed_user, seed_periods
@@ -716,8 +728,8 @@ class TestGoalTrajectoryDashboard:
                 seed_user["user"].id
             )
             gd = result["goal_data"][0]
-            assert gd["monthly_contribution"] == Decimal("0.00")
-            assert gd["trajectory"]["months_to_goal"] is None
+            assert gd.monthly_contribution == Decimal("0.00")
+            assert gd.trajectory["months_to_goal"] is None
 
     def test_trajectory_with_transfer_template(
         self, app, db, seed_user, seed_periods
@@ -784,9 +796,9 @@ class TestGoalTrajectoryDashboard:
             )
             gd = result["goal_data"][0]
             # Monthly transfer of $500 with $3,000 remaining
-            assert gd["monthly_contribution"] == Decimal("500.00")
+            assert gd.monthly_contribution == Decimal("500.00")
             # remaining = 6000 - 3000 = 3000, months = ceil(3000/500) = 6
-            assert gd["trajectory"]["months_to_goal"] == 6
+            assert gd.trajectory["months_to_goal"] == 6
 
 
 class TestEmergencyFundMetrics:

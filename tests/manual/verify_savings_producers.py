@@ -277,18 +277,22 @@ def _today_figures(region):
 
 
 def _goal(datum):
-    """One goal progress row, every money figure."""
-    trajectory = datum["trajectory"]
+    """One goal progress row, every money figure.
+
+    Read through :func:`_get` because plan step X-w4 turned the row into a
+    frozen ``GoalProgress`` (ruling R-CI); the tolerance goes with X-w's others.
+    """
+    trajectory = _get(datum, "trajectory")
     return {
-        "goal_id": datum["goal"].id,
-        "current_balance": _money(datum["current_balance"]),
-        "progress_pct": _money(datum["progress_pct"]),
-        "remaining_periods": datum["remaining_periods"],
-        "required_contribution": _money(datum["required_contribution"]),
-        "resolved_target": _money(datum["resolved_target"]),
-        "monthly_contribution": _money(datum["monthly_contribution"]),
-        "income_descriptor": datum["income_descriptor"],
-        "has_salary_data": datum["has_salary_data"],
+        "goal_id": _get(datum, "goal").id,
+        "current_balance": _money(_get(datum, "current_balance")),
+        "progress_pct": _money(_get(datum, "progress_pct")),
+        "remaining_periods": _get(datum, "remaining_periods"),
+        "required_contribution": _money(_get(datum, "required_contribution")),
+        "resolved_target": _money(_get(datum, "resolved_target")),
+        "monthly_contribution": _money(_get(datum, "monthly_contribution")),
+        "income_descriptor": _get(datum, "income_descriptor"),
+        "has_salary_data": _get(datum, "has_salary_data"),
         "trajectory": None if trajectory is None else {
             "months_to_goal": trajectory["months_to_goal"],
             "projected_completion_date": _date(

@@ -6,6 +6,7 @@ recurring transfer templates, and the projected completion trajectory.
 No Flask imports.
 """
 
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
@@ -16,6 +17,87 @@ from app.models.savings_goal import SavingsGoal
 from app.models.transfer_template import TransferTemplate
 from app.services import obligations_aggregator, savings_goal_service
 from app.utils.money import percent_complete
+
+
+@dataclass(frozen=True)
+class GoalProgress:  # pylint: disable=too-many-instance-attributes
+    """One savings goal's progress: where it stands and when it lands.
+
+    The per-goal record the ``/savings`` goal cards and the budget dashboard's
+    savings track both reduce over -- two templates, through two packages.  A
+    frozen value object since plan step X-w4 (ruling R-CI); it was an ELEVEN-key
+    untyped dict, the largest record container on this read path, and its
+    contract was stated only in two ``Returns:`` blocks that had to be kept in
+    step with each other by hand.
+
+    **It published a TWELFTH key that nothing read** (plan step X-w4).
+    ``goal_mode_id`` was a straight copy of ``goal.goal_mode_id`` -- one fact
+    under two keys, on a record that already carries the goal -- and an AST
+    census over ``app/`` and ``tests/`` found ZERO readers of the copy: every
+    ``goal_mode_id`` site in the tree is either the ref-cache accessor
+    (``ref_cache.goal_mode_id``), the ORM column, the goal FORM's own field, or
+    the create/update schema's payload.  That is finding N-100's defect
+    (a published key with no consumer) in a container being typed, so it went
+    with the dict rather than being carried into the record.
+
+    Pylint: ``too-many-instance-attributes`` (10/7) -- suppressed because this
+    is a cohesive per-goal display record read flat by two templates, not an
+    object accumulating state.  Every field has a named reader (each was
+    counted before the record was written), and there is no cohesive sub-group
+    to nest: the goal's own columns are read THROUGH ``goal`` rather than
+    copied, and the trajectory is already one nested value.  Grouping any of
+    the rest would invent a concept to satisfy a count.  Mirrors
+    :class:`~.._types.AccountProjection`, whose 8/7 carries the same rationale.
+
+    Attributes:
+        goal: The :class:`~app.models.savings_goal.SavingsGoal` row.  Every
+            field the cards read off the goal itself -- its name, account,
+            target date, manual per-period contribution, and its mode -- is
+            read HERE rather than copied onto this record.
+        current_balance: The backing account's balance today, taken from that
+            account's :class:`~.._types.AccountProjection` so the goal card and
+            the account tile cannot report different balances.
+        progress_pct: Completion percent through the canonical
+            :func:`app.utils.money.percent_complete` contract (ROUND_HALF_UP,
+            clamped ``[0, 100]``), so this card, the budget-dashboard card and
+            the companion entry view report one number for one goal.
+        remaining_periods: Pay periods from today to the target date, or
+            ``None`` when the goal has no target date.
+        required_contribution: The per-period contribution needed to land on
+            the target date, or ``None`` when there is no actionable target or
+            the date has passed (the card renders "Past target date" for the
+            second).
+        resolved_target: The dollar target -- ``target_amount`` for a FIXED
+            goal, the income-relative computation for the other mode.
+        income_descriptor: The income-relative caption ("3 months of salary"),
+            or ``None`` for a fixed goal.  Presentation microcopy composed in
+            the service because templates display and never compute.
+        has_salary_data: Whether the engine produced a positive net biweekly
+            pay.  STORED rather than derived: the pay figure itself is not
+            carried here, and an income-relative goal with no salary profile is
+            exactly the state the card warns about.
+        trajectory: The completion projection from
+            :func:`app.services.savings_goal_service.calculate_trajectory`
+            (``months_to_goal`` / ``projected_completion_date`` / ``pace`` /
+            ``required_monthly``), or ``None``.  **Still a dict**: it is
+            produced by :mod:`app.services.savings_goal_service`, a module
+            outside this package with its own consumers and test surface, so
+            typing it is a widening this step's ruling (R-CI) does not cover.
+        monthly_contribution: The committed monthly inflow discovered from the
+            recurring transfer templates targeting the goal's account, through
+            the one canonical obligations aggregator.
+    """
+
+    goal: SavingsGoal
+    current_balance: Decimal
+    progress_pct: Decimal
+    remaining_periods: int | None
+    required_contribution: Decimal | None
+    resolved_target: Decimal
+    income_descriptor: str | None
+    has_salary_data: bool
+    trajectory: dict | None
+    monthly_contribution: Decimal
 
 
 def _load_active_goals(user_id):
@@ -99,8 +181,8 @@ def _goal_account_balance(account_data, account_id):
 
 def _build_goal_datum(
     goal, acct_balance, monthly_contribution, all_periods, net_biweekly_pay,
-):
-    """Build the per-goal progress dict for one savings goal.
+) -> GoalProgress:
+    """Build the per-goal progress record for one savings goal.
 
     For income-relative goals the resolved target is calculated from the
     user's net biweekly pay and the goal's multiplier/unit; for fixed
@@ -118,10 +200,8 @@ def _build_goal_datum(
             resolve income-relative goal targets.
 
     Returns:
-        Dict with keys: goal, current_balance, progress_pct,
-        remaining_periods, required_contribution, resolved_target,
-        goal_mode_id, income_descriptor, has_salary_data, trajectory,
-        monthly_contribution.
+        The goal's :class:`GoalProgress` (an eleven-key dict until plan step
+        X-w4, ruling R-CI).
     """
     fixed_id = ref_cache.goal_mode_id(GoalModeEnum.FIXED)
     has_salary = net_biweekly_pay > Decimal("0.00")
@@ -169,22 +249,27 @@ def _build_goal_datum(
         target_date=goal.target_date,
     )
 
-    return {
-        "goal": goal,
-        "current_balance": acct_balance,
-        "progress_pct": progress_pct,
-        "remaining_periods": remaining_periods,
-        "required_contribution": required,
-        "resolved_target": resolved_target,
-        "goal_mode_id": goal.goal_mode_id,
-        "income_descriptor": income_descriptor,
-        "has_salary_data": has_salary,
-        "trajectory": trajectory,
-        "monthly_contribution": monthly_contribution,
-    }
+    # ``goal_mode_id`` is NOT carried (plan step X-w4).  It was a copy of
+    # ``goal.goal_mode_id`` on a record that carries the goal, and an AST
+    # census found the copy had zero readers anywhere -- finding N-100's
+    # published-key-with-no-consumer, inside the container this step typed.
+    return GoalProgress(
+        goal=goal,
+        current_balance=acct_balance,
+        progress_pct=progress_pct,
+        remaining_periods=remaining_periods,
+        required_contribution=required,
+        resolved_target=resolved_target,
+        income_descriptor=income_descriptor,
+        has_salary_data=has_salary,
+        trajectory=trajectory,
+        monthly_contribution=monthly_contribution,
+    )
 
 
-def _compute_goal_progress(user_id, account_data, all_periods, net_biweekly_pay, goals):
+def _compute_goal_progress(
+    user_id, account_data, all_periods, net_biweekly_pay, goals,
+) -> list[GoalProgress]:
     """Compute savings goal progress, contributions, and trajectory.
 
     For income-relative goals, the resolved target is calculated from
@@ -208,10 +293,7 @@ def _compute_goal_progress(user_id, account_data, all_periods, net_biweekly_pay,
             per request, not twice (both entry points already load it).
 
     Returns:
-        List of dicts with keys: goal, current_balance, progress_pct,
-        remaining_periods, required_contribution, resolved_target,
-        goal_mode_id, income_descriptor, has_salary_data, trajectory,
-        monthly_contribution.
+        One :class:`GoalProgress` per active goal, in *goals* order.
     """
     templates_by_account = _load_goal_templates(user_id, goals)
 

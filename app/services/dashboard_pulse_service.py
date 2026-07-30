@@ -851,7 +851,7 @@ def compute_tracks_section(user_id: int) -> dict:
     }
 
 
-def _track_goal_datum(goal_datum: dict) -> dict:
+def _track_goal_datum(goal_datum) -> dict:
     """Reshape one ``compute_goal_progress`` entry into the metro-track contract.
 
     Pulls only the fields the savings track renders -- the goal's name and
@@ -861,10 +861,12 @@ def _track_goal_datum(goal_datum: dict) -> dict:
     reaching into the nested ``goal`` ORM object and ``trajectory`` sub-dict.
 
     Args:
-        goal_datum: One per-goal dict from
-            ``savings_dashboard_service.compute_goal_progress`` (carries
-            ``goal``, ``progress_pct``, ``current_balance``,
-            ``resolved_target``, ``trajectory``, ``monthly_contribution``).
+        goal_datum: One
+            :class:`~app.services.savings_dashboard_service._goals.GoalProgress`
+            from ``savings_dashboard_service.compute_goal_progress`` (an untyped
+            eleven-key dict until plan step X-w4, ruling R-CI).  Read through
+            ATTRIBUTES now, so a field this producer renames fails here rather
+            than resolving to a ``KeyError`` that reads like missing data.
 
     Returns:
         A dict with keys ``name``, ``account_name``, ``account_id``,
@@ -872,18 +874,18 @@ def _track_goal_datum(goal_datum: dict) -> dict:
         ``target_date``, ``pace``, ``projected_completion_date``,
         ``required_monthly``, ``monthly_contribution``.
     """
-    goal = goal_datum["goal"]
-    trajectory = goal_datum["trajectory"]
+    goal = goal_datum.goal
+    trajectory = goal_datum.trajectory
     return {
         "name": goal.name,
         "account_name": goal.account.name,
         "account_id": goal.account_id,
-        "progress_pct": goal_datum["progress_pct"],
-        "current_balance": goal_datum["current_balance"],
-        "target_amount": goal_datum["resolved_target"],
+        "progress_pct": goal_datum.progress_pct,
+        "current_balance": goal_datum.current_balance,
+        "target_amount": goal_datum.resolved_target,
         "target_date": goal.target_date,
         "pace": trajectory["pace"],
         "projected_completion_date": trajectory["projected_completion_date"],
         "required_monthly": trajectory["required_monthly"],
-        "monthly_contribution": goal_datum["monthly_contribution"],
+        "monthly_contribution": goal_datum.monthly_contribution,
     }
