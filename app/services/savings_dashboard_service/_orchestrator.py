@@ -27,6 +27,7 @@ field of the first one's value object now.  No Flask imports.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -40,6 +41,8 @@ from app.services.savings_dashboard_service._data import (
 )
 from app.services.savings_dashboard_service._horizon import build_horizon
 from app.services.savings_dashboard_service._net_worth import (
+    NetWorthSeries,
+    NetWorthToday,
     build_trend_periods,
     compute_net_worth_series,
     compute_net_worth_today,
@@ -76,6 +79,38 @@ if TYPE_CHECKING:
         _AccountParams,
         _DashboardCoreData,
     )
+
+
+@dataclass(frozen=True)
+class _NetWorthRegion:
+    """The cockpit's whole net-worth region: today, the trend, the horizon.
+
+    A frozen value object since plan step X-w3 (ruling R-CI).  It was a dict
+    assembled by SPREADING one producer's four keys beside two more
+    (``{**today, "series": ..., "horizon": ...}``), which is why "what does this
+    region publish" needed three producers and a spread operator to answer, and
+    why the template's own contract lived in a header comment.
+
+    The today figures are COMPOSED rather than flattened, which is ruling
+    R-AW's rule: a bundle that mirrors another value object field by field goes
+    stale the moment that object grows, and this package has paid for that twice
+    (findings B-16 and N-104).
+
+    Attributes:
+        today: The :class:`~.._net_worth.NetWorthToday` hero and its chips.
+        series: The ``2 years`` :class:`~.._net_worth.NetWorthSeries`.
+        horizon: The ``Horizon`` range from
+            :func:`~.._horizon.build_horizon`, or ``None`` when the user has no
+            pay periods.  **Deliberately still a dict** (ruling R-CI): its key
+            set at EVERY level is pinned by ``TestHorizonSerialization``, which
+            removes each key in turn and requires the serializer to raise -- a
+            stronger contract than a dataclass, because it proves every
+            published key is READ.  Findings N-100 and N-104 bought that guard.
+    """
+
+    today: NetWorthToday
+    series: NetWorthSeries
+    horizon: dict | None
 
 
 def _build_projection_context(
@@ -477,12 +512,8 @@ def _compute_net_worth_section(
             engine reuse).
 
     Returns:
-        ``(net_worth, sparklines)``.  ``net_worth`` carries ``net_worth``,
-        ``total_assets``, ``total_liabilities``, ``liquid``, ``series`` (the
-        ``2 years`` trend + its ``composition`` split, carrying
-        ``current_index``), and ``horizon`` (the annual composition +
-        trajectory + milestones, or ``None`` with no periods).  ``sparklines``
-        is ``{account_id: [Decimal, ...]}``.
+        ``(region, sparklines)`` -- the :class:`_NetWorthRegion` and
+        ``{account_id: [Decimal, ...]}``.
     """
     today = compute_net_worth_today(account_data)
     category = category_key_by_account_id(account_data)
@@ -496,20 +527,21 @@ def _compute_net_worth_section(
     # application-level handler renders the repair, so there is no hero left to
     # fabricate.  X-t2's ruling that this region should degrade here is
     # REVERSED, on the developer's confirmation (CLAUDE.md rule 5).
+    # The window and its current index come from ONE producer and are handed to
+    # the series builder together, so the solid-history / dashed-projection
+    # boundary is a field of a series built once rather than a key mutated onto
+    # a dict after it was returned (plan step X-w3, ruling R-CI).
     trend_periods, current_index, _ = _build_trend_window(core, params)
-    series = compute_net_worth_series(account_data, trend_periods, category)
-    # The solid-history / dashed-projection boundary (and the "Today"
-    # marker): the index of the current period within the trend window.
-    series["current_index"] = current_index
+    series = compute_net_worth_series(
+        account_data, trend_periods, category, current_index,
+    )
 
     sparklines = _compute_card_sparklines(core, account_data)
     horizon = build_horizon(user_id, core, account_data, category)
 
-    return {
-        **today,
-        "series": series,
-        "horizon": horizon,
-    }, sparklines
+    return _NetWorthRegion(
+        today=today, series=series, horizon=horizon,
+    ), sparklines
 
 
 def _compute_cockpit_grid_section(

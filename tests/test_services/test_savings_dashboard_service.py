@@ -88,7 +88,7 @@ class TestComputeDashboardData:
                 "group_subtotals", "property_equity",
                 # Loop B P3 slice 3c: the per-account card sparklines.
                 # (The diverging allocation bar split retired with P-AC1:
-                # the net-worth stream reads net_worth["series"]["composition"]
+                # the net-worth stream reads net_worth.series.composition
                 # instead.)
                 "sparklines",
             }
@@ -3073,11 +3073,11 @@ class TestNetWorthHero:
             )["net_worth"]
 
             # 1000.00 + 4000.00 = 5000.00
-            assert nw["total_assets"] == Decimal("5000.00")
+            assert nw.today.total_assets == Decimal("5000.00")
             # Mortgage resolver current balance = origination principal.
-            assert nw["total_liabilities"] == Decimal("240000.00")
+            assert nw.today.total_liabilities == Decimal("240000.00")
             # 5000.00 - 240000.00 = -235000.00
-            assert nw["net_worth"] == Decimal("-235000.00")
+            assert nw.today.net_worth == Decimal("-235000.00")
 
     def test_total_liabilities_is_positive_magnitude(
         self, app, db, seed_user, seed_periods,
@@ -3092,8 +3092,8 @@ class TestNetWorthHero:
                 seed_user["user"].id
             )["net_worth"]
 
-            assert nw["total_liabilities"] == Decimal("240000.00")
-            assert nw["total_liabilities"] > Decimal("0.00")
+            assert nw.today.total_liabilities == Decimal("240000.00")
+            assert nw.today.total_liabilities > Decimal("0.00")
 
     def test_a_negative_balance_liability_still_adds_its_magnitude(
         self, app, db, seed_user, seed_periods,
@@ -3136,11 +3136,11 @@ class TestNetWorthHero:
             )["net_worth"]
 
             # Seed Checking only.
-            assert nw["total_assets"] == Decimal("1000.00")
+            assert nw.today.total_assets == Decimal("1000.00")
             # abs(-500.00) = 500.00 -- the magnitude, not the signed balance.
-            assert nw["total_liabilities"] == Decimal("500.00")
+            assert nw.today.total_liabilities == Decimal("500.00")
             # 1000.00 - 500.00 = 500.00 (NOT 1500.00, the no-abs answer).
-            assert nw["net_worth"] == Decimal("500.00")
+            assert nw.today.net_worth == Decimal("500.00")
 
     def test_liquid_excludes_non_liquid(
         self, app, db, seed_user, seed_periods,
@@ -3167,7 +3167,7 @@ class TestNetWorthHero:
             )["net_worth"]
 
             # 1000.00 + 4000.00 = 5000.00 (mortgage excluded from liquid).
-            assert nw["liquid"] == Decimal("5000.00")
+            assert nw.today.liquid == Decimal("5000.00")
 
 
 class TestNetWorthSeries:
@@ -3194,23 +3194,23 @@ class TestNetWorthSeries:
         with app.app_context():
             series = savings_dashboard_service.compute_dashboard_data(
                 seed_user["user"].id
-            )["net_worth"]["series"]
+            )["net_worth"].series
 
             # history tail (indices 0-3) + forward (indices 4-9) = 10 points
-            assert len(series["periods"]) == 10
-            assert len(series["net"]) == 10
+            assert len(series.periods) == 10
+            assert len(series.net) == 10
             # The parallel ``assets`` / ``liabilities`` totals were deleted at
             # plan step X-s1 (one fact under two keys); the bands they summed
             # carry the same length.
-            assert len(series["composition"]["asset"]) == 10
-            assert len(series["composition"]["liability"]) == 10
+            assert len(series.composition["asset"]) == 10
+            assert len(series.composition["liability"]) == 10
             # current period (index 4) sits at position 4: 4 history points
             # precede it (indices 0, 1, 2, 3).
-            assert series["current_index"] == 4
-            assert [p["period_index"] for p in series["periods"][:4]] == [
+            assert series.current_index == 4
+            assert [p.period_index for p in series.periods[:4]] == [
                 0, 1, 2, 3,
             ]
-            assert series["periods"][4]["period_index"] == 4
+            assert series.periods[4].period_index == 4
 
     def test_net_equals_assets_minus_liabilities_each_point(
         self, app, db, seed_user, seed_periods,
@@ -3235,21 +3235,21 @@ class TestNetWorthSeries:
 
             series = savings_dashboard_service.compute_dashboard_data(
                 seed_user["user"].id
-            )["net_worth"]["series"]
+            )["net_worth"].series
 
-            assert len(series["net"]) > 0
-            for i in range(len(series["net"])):
+            assert len(series.net) > 0
+            for i in range(len(series.net)):
                 # ``net`` is the asset bands less the liability band.  It was
                 # asserted against the parallel ``assets`` / ``liabilities``
                 # totals until plan step X-s1 deleted those -- they were the
                 # same sums under a second name, so this reads them from the
                 # bands the chart actually draws.
-                assert series["net"][i] == (
+                assert series.net[i] == (
                     sum(
-                        (series["composition"][b][i] for b in _ASSET_BANDS),
+                        (series.composition[b][i] for b in _ASSET_BANDS),
                         Decimal("0.00"),
                     )
-                    - series["composition"]["liability"][i]
+                    - series.composition["liability"][i]
                 )
 
     def test_series_liability_band_holds_a_negative_balance_magnitude(
@@ -3290,16 +3290,16 @@ class TestNetWorthSeries:
 
             series = savings_dashboard_service.compute_dashboard_data(
                 seed_user["user"].id
-            )["net_worth"]["series"]
+            )["net_worth"].series
 
-            assert len(series["composition"]["liability"]) > 0
-            for i in range(len(series["composition"]["liability"])):
+            assert len(series.composition["liability"]) > 0
+            for i in range(len(series.composition["liability"])):
                 # abs(-500.00) = 500.00 at every point (the card holds flat).
-                assert series["composition"]["liability"][i] == Decimal(
+                assert series.composition["liability"][i] == Decimal(
                     "500.00",
                 )
                 # Seed Checking 1000.00 - 500.00 = 500.00 (NOT 1500.00).
-                assert series["net"][i] == Decimal("500.00")
+                assert series.net[i] == Decimal("500.00")
 
     def test_current_period_point_equals_hero_for_liquid_only(
         self, app, db, seed_user, seed_periods,
@@ -3308,7 +3308,7 @@ class TestNetWorthSeries:
         point equals the today hero.
 
         With no transactions every balance is flat, so the current
-        period's net worth (``series["net"][current_index]``) equals the
+        period's net worth (``series.net[current_index]``) equals the
         today hero:
           Checking 1000.00 + Savings 4000.00 = 5000.00.
         A flat liquid-only set has the same value at every point, so the
@@ -3324,13 +3324,13 @@ class TestNetWorthSeries:
                 seed_user["user"].id
             )["net_worth"]
 
-            current = nw["series"]["current_index"]
+            current = nw.series.current_index
             # 1000.00 + 4000.00 = 5000.00, identical hero and current point.
-            assert nw["net_worth"] == Decimal("5000.00")
-            assert nw["series"]["net"][current] == Decimal("5000.00")
-            assert nw["series"]["net"][current] == nw["net_worth"]
+            assert nw.today.net_worth == Decimal("5000.00")
+            assert nw.series.net[current] == Decimal("5000.00")
+            assert nw.series.net[current] == nw.today.net_worth
             # Flat liquid-only: every trend point (history tail + forward).
-            assert all(v == Decimal("5000.00") for v in nw["series"]["net"])
+            assert all(v == Decimal("5000.00") for v in nw.series.net)
 
     def test_current_period_point_agrees_with_hero_for_amortizing_loan(
         self, app, db, seed_user, seed_periods_today,
@@ -3367,11 +3367,11 @@ class TestNetWorthSeries:
                 seed_user["user"].id
             )["net_worth"]
 
-            current = nw["series"]["current_index"]
+            current = nw.series.current_index
             # No confirmed payment: 1000.00 (checking) - 240000.00 (mortgage).
-            assert nw["net_worth"] == Decimal("-239000.00")
+            assert nw.today.net_worth == Decimal("-239000.00")
             # The tile and the trend's own 'today' point agree, to the cent.
-            assert nw["series"]["net"][current] == nw["net_worth"], (
+            assert nw.series.net[current] == nw.today.net_worth, (
                 f"the /savings hero ({nw['net_worth']}) and the net-worth "
                 f"trend's current-period point "
                 f"({nw['series']['net'][current]}) disagree; the page is "
@@ -3379,7 +3379,7 @@ class TestNetWorthSeries:
             )
             # Amortization is real in the FUTURE, where the projection answers:
             # the last trend point sits above the flat-debt line.
-            assert nw["series"]["net"][-1] > nw["net_worth"]
+            assert nw.series.net[-1] > nw.today.net_worth
 
 
 class TestBuildTrendPeriods:
@@ -3719,26 +3719,35 @@ class TestNetWorthProducerEdgeCases:
             compute_net_worth_today,
         )
         today = compute_net_worth_today([])
-        assert today["net_worth"] == Decimal("0.00")
-        assert today["total_assets"] == Decimal("0.00")
-        assert today["total_liabilities"] == Decimal("0.00")
-        assert today["liquid"] == Decimal("0.00")
+        assert today.net_worth == Decimal("0.00")
+        assert today.total_assets == Decimal("0.00")
+        assert today.total_liabilities == Decimal("0.00")
+        assert today.liquid == Decimal("0.00")
 
     def test_no_projections_series_is_empty_window(self):
-        """With no projections and no forward periods the series is empty."""
+        """With no projections and no forward periods the series is empty.
+
+        The field set is pinned for the reason the key set was: ``assets`` and
+        ``liabilities`` were deleted at plan step X-s1 for being the band sums
+        under a second key, and a producer that re-publishes them fails here.
+        ``current_index`` is a FIELD rather than a key the caller mutates on
+        afterwards since plan step X-w3 (ruling R-CI), so it is in the literal.
+        """
         # pylint: disable=import-outside-toplevel
+        from dataclasses import fields
         from app.services.savings_dashboard_service._net_worth import (
             _COMPOSITION_BANDS,
             compute_net_worth_series,
         )
-        series = compute_net_worth_series([], [], {})
-        assert series["periods"] == []
-        assert series["net"] == []
-        # ``assets`` / ``liabilities`` deleted at plan step X-s1; the key set
-        # is pinned below, so their return would fail here.
-        assert set(series) == {"periods", "net", "composition"}
+        series = compute_net_worth_series([], [], {}, 0)
+        assert series.periods == []
+        assert series.net == []
+        assert series.current_index == 0
+        assert {f.name for f in fields(series)} == {
+            "periods", "net", "composition", "current_index",
+        }
         # Every composition band is present but empty (no periods to sum).
-        assert series["composition"] == {band: [] for band in _COMPOSITION_BANDS}
+        assert series.composition == {band: [] for band in _COMPOSITION_BANDS}
 
     def test_liabilities_only_today_is_negative(self):
         """An accounts-set of only liabilities yields negative net worth.
@@ -3767,11 +3776,11 @@ class TestNetWorthProducerEdgeCases:
         today = compute_net_worth_today([
             _projection(account, Decimal("500.00")),
         ])
-        assert today["total_assets"] == Decimal("0.00")
-        assert today["total_liabilities"] == Decimal("500.00")
+        assert today.total_assets == Decimal("0.00")
+        assert today.total_liabilities == Decimal("500.00")
         # 0.00 - 500.00 = -500.00
-        assert today["net_worth"] == Decimal("-500.00")
-        assert today["liquid"] == Decimal("0.00")
+        assert today.net_worth == Decimal("-500.00")
+        assert today.liquid == Decimal("0.00")
 
     def test_single_asset_account(self):
         """A single non-liability liquid account: net worth equals its balance.
@@ -3789,10 +3798,10 @@ class TestNetWorthProducerEdgeCases:
         today = compute_net_worth_today([
             _projection(account, Decimal("750.00")),
         ])
-        assert today["net_worth"] == Decimal("750.00")
-        assert today["total_assets"] == Decimal("750.00")
-        assert today["total_liabilities"] == Decimal("0.00")
-        assert today["liquid"] == Decimal("750.00")
+        assert today.net_worth == Decimal("750.00")
+        assert today.total_assets == Decimal("750.00")
+        assert today.total_liabilities == Decimal("0.00")
+        assert today.liquid == Decimal("750.00")
 
     def test_zero_balance_account_contributes_zero_not_absent(self):
         """A zero-balance asset contributes 0.00, it is not skipped.
@@ -3816,9 +3825,9 @@ class TestNetWorthProducerEdgeCases:
             _projection(empty, Decimal("0.00")),
         ])
         # 600.00 + 0.00 = 600.00 (the zero account is summed, not absent).
-        assert today["net_worth"] == Decimal("600.00")
-        assert today["total_assets"] == Decimal("600.00")
-        assert today["liquid"] == Decimal("600.00")
+        assert today.net_worth == Decimal("600.00")
+        assert today.total_assets == Decimal("600.00")
+        assert today.liquid == Decimal("600.00")
 
 
 class TestCategoryClassifier:
@@ -3893,12 +3902,12 @@ class TestNetWorthComposition:
 
             series = savings_dashboard_service.compute_dashboard_data(
                 seed_user["user"].id,
-            )["net_worth"]["series"]
-            comp = series["composition"]
+            )["net_worth"].series
+            comp = series.composition
             asset_bands = ("asset", "retirement", "investment", "other")
 
-            assert len(series["net"]) > 0
-            for i in range(len(series["net"])):
+            assert len(series.net) > 0
+            for i in range(len(series.net)):
                 asset_side = sum(
                     (comp[band][i] for band in asset_bands), Decimal("0"),
                 )
@@ -3908,7 +3917,7 @@ class TestNetWorthComposition:
                 # ``liabilities`` lanes this used to reconcile against were
                 # deleted at plan step X-s1 for being that same sum under a
                 # second key, so what remains is the identity itself.
-                assert series["net"][i] == (
+                assert series.net[i] == (
                     asset_side - comp["liability"][i]
                 )
 
@@ -3933,9 +3942,9 @@ class TestNetWorthComposition:
             data = savings_dashboard_service.compute_dashboard_data(
                 seed_user["user"].id,
             )
-            series = data["net_worth"]["series"]
-            comp = series["composition"]
-            current = series["current_index"]
+            series = data["net_worth"].series
+            comp = series.composition
+            current = series.current_index
 
             k401_balance = next(
                 ad.current_balance for ad in data["account_data"]
@@ -4004,7 +4013,7 @@ class TestNetWorthHorizon:
         with app.app_context():
             horizon = savings_dashboard_service.compute_dashboard_data(
                 seed_user["user"].id,
-            )["net_worth"]["horizon"]
+            )["net_worth"].horizon
 
             assert set(horizon) == {
                 "dates", "current_index", "composition", "net", "milestones",
@@ -4023,7 +4032,7 @@ class TestNetWorthHorizon:
         with app.app_context():
             horizon = savings_dashboard_service.compute_dashboard_data(
                 seed_user["user"].id,
-            )["net_worth"]["horizon"]
+            )["net_worth"].horizon
             assert horizon is not None
             assert horizon["dates"][0] == date.today()
             assert horizon["dates"][-1] == date(date.today().year + 10, 12, 31)
@@ -4055,17 +4064,17 @@ class TestNetWorthHorizon:
             hero = savings_dashboard_service.compute_dashboard_data(
                 uid,
             )["net_worth"]
-            horizon = hero["horizon"]
+            horizon = hero.horizon
 
             asset_bands = ("asset", "retirement", "investment", "other")
             asset0 = sum(
                 (horizon["composition"][band][0] for band in asset_bands),
                 Decimal("0"),
             )
-            assert horizon["net"][0] == hero["net_worth"]
-            assert asset0 == hero["total_assets"]
+            assert horizon["net"][0] == hero.today.net_worth
+            assert asset0 == hero.today.total_assets
             assert horizon["composition"]["liability"][0] == (
-                hero["total_liabilities"]
+                hero.today.total_liabilities
             )
 
     def test_group_subtotal_equals_horizon_band_at_today(
@@ -4095,7 +4104,7 @@ class TestNetWorthHorizon:
 
             ctx = savings_dashboard_service.compute_dashboard_data(uid)
             subtotals = ctx["group_subtotals"]
-            horizon = ctx["net_worth"]["horizon"]
+            horizon = ctx["net_worth"].horizon
 
             # Checking $1,000 + Savings $4,000 = $5,000 asset; $240,000
             # mortgage liability.  Both groups are present.
@@ -4139,13 +4148,13 @@ class TestNetWorthHorizon:
             hero = savings_dashboard_service.compute_dashboard_data(
                 uid,
             )["net_worth"]
-            horizon = hero["horizon"]
+            horizon = hero.horizon
             liability = horizon["composition"]["liability"]
 
             # Checking $1,000 + Savings $4,000 assets, $3,000 card liability:
             #   total_liabilities = 3000.00 ; net = 5000 - 3000 = 2000.
-            assert hero["total_liabilities"] == Decimal("3000.00")
-            assert horizon["net"][0] == hero["net_worth"]
+            assert hero.today.total_liabilities == Decimal("3000.00")
+            assert horizon["net"][0] == hero.today.net_worth
             # The card is in the band at index 0 and holds flat (no schedule).
             assert liability[0] == Decimal("3000.00")
             assert liability[-1] == Decimal("3000.00")
@@ -4169,7 +4178,7 @@ class TestNetWorthHorizon:
 
             horizon = savings_dashboard_service.compute_dashboard_data(
                 seed_user["user"].id,
-            )["net_worth"]["horizon"]
+            )["net_worth"].horizon
             comp = horizon["composition"]
             asset_bands = ("asset", "retirement", "investment", "other")
             for k in range(len(horizon["net"])):
@@ -4201,7 +4210,7 @@ class TestNetWorthHorizon:
 
             horizon = savings_dashboard_service.compute_dashboard_data(
                 uid,
-            )["net_worth"]["horizon"]
+            )["net_worth"].horizon
 
             all_periods = pay_period_service.get_all_periods(uid)
             current = pay_period_service.get_current_period(uid)
@@ -4242,7 +4251,7 @@ class TestNetWorthHorizon:
 
             data = savings_dashboard_service.compute_dashboard_data(uid)
             payoff = data["debt_summary"].payoff_outlook.all_clear_on
-            horizon = data["net_worth"]["horizon"]
+            horizon = data["net_worth"].horizon
             liability = horizon["composition"]["liability"]
 
             # A payoff-sized domain is the loan-bearing state: the fixed
@@ -4282,7 +4291,7 @@ class TestNetWorthHorizon:
 
             data = savings_dashboard_service.compute_dashboard_data(uid)
             payoff = data["debt_summary"].payoff_outlook.all_clear_on
-            horizon = data["net_worth"]["horizon"]
+            horizon = data["net_worth"].horizon
 
             # Identified by the (label, date) PAIR, never the label alone
             # (plan step X-t4, finding N-110): a per-loan flag reads
@@ -4326,7 +4335,7 @@ class TestNetWorthHorizon:
 
             horizon = savings_dashboard_service.compute_dashboard_data(
                 seed_user["user"].id,
-            )["net_worth"]["horizon"]
+            )["net_worth"].horizon
             assert horizon["net"][0] < Decimal("500000")
             assert horizon["net"][-1] >= Decimal("500000")
             crossings = [
@@ -4403,7 +4412,7 @@ class TestAMilestoneLabelCanCollide:
             data = savings_dashboard_service.compute_dashboard_data(
                 seed_user["user"].id,
             )
-            milestones = data["net_worth"]["horizon"]["milestones"]
+            milestones = data["net_worth"].horizon["milestones"]
             payoff = data["debt_summary"].payoff_outlook.all_clear_on
 
             # Precondition: the fixture really does collide -- the per-loan
@@ -4691,12 +4700,12 @@ class TestPropertyEquityInContext:
             equity_data = result["property_equity"]
             assert len(equity_data) == 1
             entry = equity_data[0]
-            assert entry["account"].id == prop.id
+            assert entry.account.id == prop.id
             # 400000.00 - 240000.00 = 160000.00; 240000/400000 = 0.6000
-            assert entry["equity"].market_value == Decimal("400000.00")
-            assert entry["equity"].total_debt == Decimal("240000.00")
-            assert entry["equity"].equity == Decimal("160000.00")
-            assert entry["equity"].ltv == Decimal("0.6000")
+            assert entry.equity.market_value == Decimal("400000.00")
+            assert entry.equity.total_debt == Decimal("240000.00")
+            assert entry.equity.equity == Decimal("160000.00")
+            assert entry.equity.ltv == Decimal("0.6000")
 
     def test_no_property_yields_empty_list(
         self, app, db, seed_user, seed_periods,
@@ -4727,10 +4736,10 @@ class TestPropertyEquityInContext:
             equity_data = result["property_equity"]
             assert len(equity_data) == 1
             entry = equity_data[0]
-            assert entry["account"].id == prop.id
-            assert entry["equity"].total_debt == Decimal("0")
-            assert entry["equity"].equity == Decimal("300000.00")
-            assert entry["equity"].ltv == Decimal("0.0000")
+            assert entry.account.id == prop.id
+            assert entry.equity.total_debt == Decimal("0")
+            assert entry.equity.equity == Decimal("300000.00")
+            assert entry.equity.ltv == Decimal("0.0000")
 
 
 class TestAccountBalanceCell:
@@ -4989,7 +4998,7 @@ class TestTypeDriftedLoanParamsRow:
             assert entry.loan is None
 
             # And it raises no "paid off" milestone on the Horizon.
-            horizon = data["net_worth"]["horizon"]
+            horizon = data["net_worth"].horizon
             assert horizon is not None
             assert not [
                 m for m in horizon["milestones"] if "Drifted" in m["label"]
@@ -5556,7 +5565,7 @@ class TestARetiredLoanHasNoDebtLine:
                 data["account_data"], date(2026, 3, 20),
             ) == (self._CLEARING_DOMAIN_END, self._CLEARING_PAYOFF)
 
-            horizon = data["net_worth"]["horizon"]
+            horizon = data["net_worth"].horizon
             assert {
                 (m["label"], m["date"]) for m in horizon["milestones"]
             } >= {(_DEBT_FREE_MILESTONE_LABEL, self._CLEARING_PAYOFF)}
@@ -5791,7 +5800,7 @@ class TestTheDebtFreeDateIsOneDerivation:
                 account_data, date(2026, 3, 20),
             ) == (date(2057, 12, 31), self._MORTGAGE_PAYOFF)
             assert {
-                (m["label"], m["date"]) for m in data["net_worth"]["horizon"][
+                (m["label"], m["date"]) for m in data["net_worth"].horizon[
                     "milestones"
                 ]
             } >= {(_DEBT_FREE_MILESTONE_LABEL, self._MORTGAGE_PAYOFF)}

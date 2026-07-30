@@ -3396,10 +3396,10 @@ class TestDashboardNetWorthContext:
             net_worth = context["net_worth"]
 
             # 1000.00 + 4000.00 = 5000.00
-            assert net_worth["total_assets"] == Decimal("5000.00")
-            assert net_worth["total_liabilities"] == Decimal("0.00")
-            assert net_worth["net_worth"] == Decimal("5000.00")
-            assert net_worth["liquid"] == Decimal("5000.00")
+            assert net_worth.today.total_assets == Decimal("5000.00")
+            assert net_worth.today.total_liabilities == Decimal("0.00")
+            assert net_worth.today.net_worth == Decimal("5000.00")
+            assert net_worth.today.liquid == Decimal("5000.00")
 
     def test_chart_json_parses_to_expected_shape_with_floats(
         self, app, auth_client, seed_user, seed_periods,
@@ -3437,8 +3437,8 @@ class TestDashboardNetWorthContext:
             assert set(chart.keys()) == {
                 "labels", "net", "current_index", "composition", "horizon",
             }
-            series = context["net_worth"]["series"]
-            n = len(series["periods"])
+            series = context["net_worth"].series
+            n = len(series.periods)
             assert n > 0
             assert len(chart["labels"]) == n
             assert len(chart["net"]) == n
@@ -3448,7 +3448,7 @@ class TestDashboardNetWorthContext:
             assert chart["net"][0] == 5000.0
             # current_index (the solid/dashed boundary) passes straight
             # through from the producer's series; an int in [0, n].
-            assert chart["current_index"] == series["current_index"]
+            assert chart["current_index"] == series.current_index
             assert isinstance(chart["current_index"], int)
             assert 0 <= chart["current_index"] <= n
 
@@ -3466,7 +3466,7 @@ class TestDashboardNetWorthContext:
             for i in range(n):
                 asset_side = sum(comp[band][i] for band in asset_bands)
                 assert asset_side - comp["liability"][i] == chart["net"][i]
-                assert chart["net"][i] == float(series["net"][i])
+                assert chart["net"][i] == float(series.net[i])
 
             # The horizon range: a float net series that starts at the hero
             # ($5,000), plus composition bands + milestone list.
@@ -3607,7 +3607,7 @@ class TestHorizonSerialization:
             db.session.commit()
             horizon = savings_dashboard_service.compute_dashboard_data(
                 seed_user["user"].id,
-            )["net_worth"]["horizon"]
+            )["net_worth"].horizon
             assert horizon is not None
             # The unmutated payload serializes, so a failure below is the
             # missing key and never a broken fixture.
@@ -3791,6 +3791,17 @@ class TestCockpitSection:
         click-to-edit balance cell, but NOT the ``#cockpit-section`` wrapper
         (that lives in the page) -- proving it is the fragment the
         balanceChanged swap consumes, not the whole page.
+
+        **The hero's FIGURE is asserted, not just its label** (plan step X-w3).
+        It asserted ``"Net worth" in body`` and nothing else, so the four
+        producer fields the hero and its chips render could be renamed -- as
+        ruling R-CI renames them -- and the template would go on reading the old
+        ones: Jinja answers a missing attribute with ``Undefined``, which
+        renders as an EMPTY string, and typing the producer does NOT change
+        that.  A cockpit reporting a blank net worth on a $1,000 account would
+        have passed every arm of this test.  The sibling test below states this
+        rule in terms for the loan caption; the hero was the surface it had not
+        reached.
         """
         with app.app_context():
             acct_id = seed_user["account"].id
@@ -3800,6 +3811,14 @@ class TestCockpitSection:
             assert resp.status_code == 200
             body = resp.data.decode()
             assert "Net worth" in body
+            # Seed Checking $1,000.00, no liabilities: hero == assets ==
+            # liquid == $1,000.00, and the liability chip is a real $0.00.
+            assert body.count("$1,000.00") >= 3, (
+                "the hero and its Total assets / Liquid chips must render the "
+                "figure, not an empty Undefined"
+            )
+            assert "Total liabilities" in body
+            assert "$0.00" in body
             assert f'id="acct-balance-{acct_id}"' in body
             assert 'id="cockpit-section"' not in body
 

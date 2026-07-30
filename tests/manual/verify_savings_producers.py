@@ -213,22 +213,28 @@ def _debt_summary(summary):
 
 
 def _series(series):
-    """The 2-year trend: periods, net, and every composition band."""
+    """The 2-year trend: periods, net, and every composition band.
+
+    Read through :func:`_get` because plan step X-w3 turned the series and its
+    period descriptors into frozen value objects (ruling R-CI); the tolerance is
+    what lets this ONE file produce the same blob on the HEAD tree and the new
+    one, and it goes when X-w5 deletes X-w's tolerances.
+    """
     if series is None:
         return None
     return {
         "periods": [
             {
-                "end_date": _date(point["end_date"]),
-                "period_index": point["period_index"],
+                "end_date": _date(_get(point, "end_date")),
+                "period_index": _get(point, "period_index"),
             }
-            for point in series["periods"]
+            for point in _get(series, "periods")
         ],
-        "net": [_money(value) for value in series["net"]],
-        "current_index": series["current_index"],
+        "net": [_money(value) for value in _get(series, "net")],
+        "current_index": _get(series, "current_index"),
         "composition": {
             band: [_money(value) for value in values]
-            for band, values in sorted(series["composition"].items())
+            for band, values in sorted(_get(series, "composition").items())
         },
     }
 
@@ -249,6 +255,24 @@ def _horizon(horizon):
             {"date": _date(m["date"]), "label": m["label"]}
             for m in horizon["milestones"]
         ],
+    }
+
+
+def _today_figures(region):
+    """The hero and its three chips, wherever this tree keeps them.
+
+    Pre-X-w3 they are four keys spread flat on the region dict; post-X-w3 they
+    are the four fields of the region's ``today`` value object.  Both normalize
+    to the same four blob entries, so the shape change is invisible here and a
+    FIGURE change is not.
+    """
+    today = _get(region, "today")
+    source = region if today is None else today
+    return {
+        name: _money(_get(source, name))
+        for name in (
+            "net_worth", "total_assets", "total_liabilities", "liquid",
+        )
     }
 
 
@@ -393,9 +417,9 @@ def _dump_user(user_id):
         },
         "property_equity": [
             {
-                "account_id": row["account"].id,
-                "equity": _money(_get(row["equity"], "equity")),
-                "ltv": _money(_get(row["equity"], "ltv")),
+                "account_id": _get(row, "account").id,
+                "equity": _money(_get(_get(row, "equity"), "equity")),
+                "ltv": _money(_get(_get(row, "equity"), "ltv")),
             }
             for row in data["property_equity"]
         ],
@@ -425,13 +449,14 @@ def _dump_user(user_id):
             for row in data["archived_accounts"]
         ],
         "debt_summary": _debt_summary(data["debt_summary"]),
+        # The region became a frozen ``_NetWorthRegion`` at plan step X-w3, with
+        # the four today figures COMPOSED on a ``today`` field where they used
+        # to be spread flat (ruling R-CI).  ``_today_figures`` normalizes both,
+        # so the blob is the same on either tree; X-w5 deletes it.
         "net_worth": {
-            "net_worth": _money(data["net_worth"]["net_worth"]),
-            "total_assets": _money(data["net_worth"]["total_assets"]),
-            "total_liabilities": _money(data["net_worth"]["total_liabilities"]),
-            "liquid": _money(data["net_worth"]["liquid"]),
-            "series": _series(data["net_worth"]["series"]),
-            "horizon": _horizon(data["net_worth"]["horizon"]),
+            **_today_figures(data["net_worth"]),
+            "series": _series(_get(data["net_worth"], "series")),
+            "horizon": _horizon(_get(data["net_worth"], "horizon")),
         },
         "sparklines": {
             str(account_id): [_money(value) for value in values]

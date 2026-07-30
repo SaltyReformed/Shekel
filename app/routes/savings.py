@@ -150,7 +150,7 @@ def _serialize_horizon(horizon: dict | None) -> dict | None:
     }
 
 
-def _serialize_net_worth_chart(net_worth: dict) -> str:
+def _serialize_net_worth_chart(net_worth) -> str:
     """Serialize BOTH net-worth ranges into one Chart.js JSON payload.
 
     The single Chart.js serialization boundary for the cockpit's net-worth
@@ -183,28 +183,36 @@ def _serialize_net_worth_chart(net_worth: dict) -> str:
     chart actually draws.  (This sentence said the producer keys stay until
     plan step X-t5 -- a docstring describing the tree as it was for one commit.)
 
+    **The two ranges are read DIFFERENTLY on purpose** (plan step X-w3, ruling
+    R-CI).  The ``2 years`` half is a value object -- ``series.net``,
+    ``series.composition`` -- while the nested ``horizon`` half stays a dict and
+    is subscripted in :func:`_serialize_horizon`.  That asymmetry is the ruling,
+    not an oversight: the horizon's key set at every level is pinned by
+    ``TestHorizonSerialization``, which removes each key in turn and requires
+    this module to raise, so it proves every published key is READ.  A dataclass
+    would state the contract and not prove it, and findings N-100 and N-104 are
+    what that guard cost.
+
     Args:
-        net_worth: The ``compute_dashboard_data`` ``net_worth`` dict, with
-            ``series`` (``periods`` / ``net`` / ``composition`` /
-            ``current_index``) and ``horizon``.
+        net_worth: The ``compute_dashboard_data`` ``net_worth`` region (its
+            ``series`` and its ``horizon``).
 
     Returns:
         A JSON string for the ``data-chart`` attribute.
     """
-    series = net_worth["series"]
-    periods = series["periods"]
+    series = net_worth.series
     return json.dumps({
         "labels": [
-            point["end_date"].strftime(_NET_WORTH_LABEL_FORMAT)
-            for point in periods
+            point.end_date.strftime(_NET_WORTH_LABEL_FORMAT)
+            for point in series.periods
         ],
-        "net": [float(value) for value in series["net"]],
-        "current_index": series["current_index"],
+        "net": [float(value) for value in series.net],
+        "current_index": series.current_index,
         "composition": {
             band: [float(value) for value in band_series]
-            for band, band_series in series["composition"].items()
+            for band, band_series in series.composition.items()
         },
-        "horizon": _serialize_horizon(net_worth["horizon"]),
+        "horizon": _serialize_horizon(net_worth.horizon),
     })
 
 

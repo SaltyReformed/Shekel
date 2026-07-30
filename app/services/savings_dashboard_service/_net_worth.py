@@ -39,9 +39,13 @@ out by id, so passing everything keeps one caller from asking about a slice and
 rendering it as a whole.
 """
 
+from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 
+from app.models.account import Account
 from app.models.pay_period import PayPeriod
+from app.services.home_equity_service import HomeEquity
 from app.services import home_equity_service
 from app.services.amortization_engine import AmortizationRow
 from app.services.balance_at import BalanceContext
@@ -62,6 +66,100 @@ from app.services.savings_dashboard_service._metrics import _sum_liquid_balances
 from app.services.savings_dashboard_service._types import AccountProjection
 
 ZERO = Decimal("0.00")
+
+
+@dataclass(frozen=True)
+class NetWorthToday:
+    """The cockpit hero and its three chips: what the user is worth right now.
+
+    A frozen value object since plan step X-w3 (ruling R-CI).  It was a four-key
+    dict SPREAD into the region beside ``series`` and ``horizon``
+    (``{**today, ...}``), so "what does the net-worth region publish" was
+    answerable only by reading two producers and a spread operator, and the
+    hero's contract lived in a template comment.
+
+    Attributes:
+        net_worth: ``total_assets - total_liabilities`` -- the hero figure.
+        total_assets: The sum of every non-liability account's balance today.
+        total_liabilities: The POSITIVE magnitude owed across every liability.
+        liquid: The subset of assets in liquid account types (the
+            emergency-fund basis), from :func:`.._metrics._sum_liquid_balances`.
+    """
+
+    net_worth: Decimal
+    total_assets: Decimal
+    total_liabilities: Decimal
+    liquid: Decimal
+
+
+@dataclass(frozen=True)
+class TrendPoint:
+    """One x-position on the ``2 years`` trend: a pay period, described.
+
+    The period descriptors the chart's labels are built from.  Both fields are
+    read at the presentation boundary (``routes/savings._serialize_net_worth_chart``
+    formats ``end_date``; ``period_index`` identifies the point), which is the
+    same "publish only what is read" rule the Horizon's remove-a-key gate
+    enforces one payload over.
+    """
+
+    end_date: date
+    period_index: int
+
+
+@dataclass(frozen=True)
+class NetWorthSeries:
+    """The ``2 years`` trend: the net line, its band split, and the today mark.
+
+    **Built ONCE, and that is the point** (plan step X-w3, ruling R-CI).  It was
+    a three-key dict that :func:`.._orchestrator._compute_net_worth_section`
+    then MUTATED a fourth key into after the producer returned
+    (``series["current_index"] = ...``) -- so the object a template and a
+    serializer read was never fully constructed anywhere, and "which keys does
+    the series have" needed both modules in call order to answer.  That is
+    byte-for-byte the shape ruling R-BD deleted from :class:`~.._metrics.DebtSummary`,
+    whose DTI keys were mutated in by a separate applier.
+
+    Attributes:
+        periods: The trend window's :class:`TrendPoint` descriptors,
+            chronological (history tail, then the current period, then the
+            forward projection).
+        net: The net-worth figure at each period, parallel to :attr:`periods`.
+        composition: ``{band: [Decimal, ...]}`` over
+            :data:`_COMPOSITION_BANDS`, each band's series parallel to
+            :attr:`periods`.  The asset-side bands sum to total assets and the
+            liability band IS total liabilities, so ``net[i]`` is their
+            difference by construction.
+        current_index: The position of the CURRENT period within
+            :attr:`periods` -- the solid-history / dashed-projection boundary
+            and the "Today" marker.  Equivalently, the count of leading history
+            points.
+    """
+
+    periods: list[TrendPoint]
+    net: list[Decimal]
+    composition: dict[str, list[Decimal]]
+    current_index: int
+
+
+@dataclass(frozen=True)
+class PropertyEquity:
+    """One Property account paired with its resolved equity snapshot.
+
+    A frozen value object since plan step X-w3 (ruling R-CI); it was an untyped
+    ``{account, equity}`` dict.  Both fields are read by the cockpit's per-cell
+    equity caption.
+
+    Attributes:
+        account: The APPRECIATING :class:`~app.models.account.Account`.
+        equity: Its :class:`~app.services.home_equity_service.HomeEquity`
+            snapshot -- the SAME producer the Property detail page reads, so the
+            two surfaces cannot report different equity for one home.
+    """
+
+    account: Account
+    equity: HomeEquity
+
 
 # The net-worth composition bands: the cockpit CATEGORIES, split into the
 # asset side and the one liability band.  The asset-side bands sum to the asset
@@ -84,7 +182,9 @@ _ASSET_BANDS = tuple(
 _COMPOSITION_BANDS = _ASSET_BANDS + (_LIABILITY_BAND,)
 
 
-def compute_net_worth_today(account_data: list[AccountProjection]) -> dict:
+def compute_net_worth_today(
+    account_data: list[AccountProjection],
+) -> NetWorthToday:
     """Compute the today net-worth figures from the projected account data.
 
     Reduces over each account's ``current_balance`` -- the entries-aware
@@ -109,8 +209,8 @@ def compute_net_worth_today(account_data: list[AccountProjection]) -> dict:
             and ``current_balance``).
 
     Returns:
-        dict with ``net_worth``, ``total_assets``, ``total_liabilities``
-        (a positive magnitude), and ``liquid`` -- all ``Decimal``.
+        The :class:`NetWorthToday` value object (a four-key dict until plan
+        step X-w3, ruling R-CI).
     """
     total_assets = ZERO
     total_liabilities = ZERO
@@ -121,12 +221,12 @@ def compute_net_worth_today(account_data: list[AccountProjection]) -> dict:
         else:
             total_assets += balance
 
-    return {
-        "net_worth": total_assets - total_liabilities,
-        "total_assets": total_assets,
-        "total_liabilities": total_liabilities,
-        "liquid": _sum_liquid_balances(account_data),
-    }
+    return NetWorthToday(
+        net_worth=total_assets - total_liabilities,
+        total_assets=total_assets,
+        total_liabilities=total_liabilities,
+        liquid=_sum_liquid_balances(account_data),
+    )
 
 
 def _sum_composition_at_period(
@@ -416,7 +516,8 @@ def compute_net_worth_series(
     account_data: list[AccountProjection],
     trend_periods: list[PayPeriod],
     category_by_account_id: dict[int, str],
-) -> dict:
+    current_index: int,
+) -> NetWorthSeries:
     """Build the net-worth trend over the trend window.
 
     Reads each trend period's id out of each projection's dense
@@ -460,15 +561,19 @@ def compute_net_worth_series(
         category_by_account_id: Each account's cockpit category key, from
             :func:`~app.services.savings_dashboard_service._display.category_key_by_account_id`,
             driving the per-category ``composition`` split.
+        current_index: The current period's position within *trend_periods*,
+            from :func:`build_trend_periods` -- the solid/dashed boundary and
+            the "Today" marker.  **It is an ARGUMENT because the result is
+            built ONCE** (plan step X-w3, ruling R-CI): the caller used to
+            MUTATE it onto the returned dict, so the series a template read was
+            never fully constructed in any one place.  The window and its index
+            come from one producer, so a caller cannot pass an index for a
+            different window than the periods it hands over.
 
     Returns:
-        dict with ``periods`` (list of ``{end_date, period_index}``), ``net``
-        (a ``Decimal`` list, one entry per trend period), and ``composition``
-        (a ``{band: [Decimal, ...]}`` map over :data:`_COMPOSITION_BANDS`, each
-        band's series parallel to ``periods``).  The orchestrator adds
-        ``current_index`` (the solid/dashed boundary) to this dict.
+        The :class:`NetWorthSeries` for this window.
     """
-    periods: list[dict] = []
+    periods: list[TrendPoint] = []
     net: list[Decimal] = []
     composition: dict[str, list[Decimal]] = {
         band: [] for band in _COMPOSITION_BANDS
@@ -480,25 +585,25 @@ def compute_net_worth_series(
         )
         period_assets = sum((sums[band] for band in _ASSET_BANDS), ZERO)
         period_liabilities = sums[_LIABILITY_BAND]
-        periods.append({
-            "end_date": period.end_date,
-            "period_index": period.period_index,
-        })
+        periods.append(TrendPoint(
+            end_date=period.end_date, period_index=period.period_index,
+        ))
         net.append(period_assets - period_liabilities)
         for band in _COMPOSITION_BANDS:
             composition[band].append(sums[band])
 
-    return {
-        "periods": periods,
-        "net": net,
-        "composition": composition,
-    }
+    return NetWorthSeries(
+        periods=periods,
+        net=net,
+        composition=composition,
+        current_index=current_index,
+    )
 
 
 def compute_property_equity(
     accounts: list,
     ctx: BalanceContext,
-) -> list[dict]:
+) -> list[PropertyEquity]:
     """Resolve each Property account's equity for the cockpit equity card.
 
     Reuses the same producer the Property detail page uses
@@ -537,10 +642,10 @@ def compute_property_equity(
             card is the SAME resolution the debt card and the net-worth liability
             column read -- one resolution, not a fourth one that has to agree.
     Returns:
-        A list of ``{account, equity}`` dicts, one per Property account in
-        ``accounts`` order, where ``equity`` is a
-        :class:`~app.services.home_equity_service.HomeEquity` snapshot.
-        Empty when the user has no Property accounts.
+        A list of :class:`PropertyEquity` values, one per Property account in
+        ``accounts`` order.  Empty when the user has no Property accounts.
+        (They were untyped ``{account, equity}`` dicts until plan step X-w3,
+        ruling R-CI.)
 
         The no-baseline guard this opened with went at plan step X-v2 (ruling
         R-BW).  It was added at X-t5 because this is the package's THIRD seam
@@ -550,15 +655,13 @@ def compute_property_equity(
         than forestalled, by the same handler that answers the other two doors,
         so a fourth door discovered tomorrow needs no fourth guard.
     """
-    result: list[dict] = []
+    result: list[PropertyEquity] = []
     for account in accounts:
         if classify_account(account) is AccountProjectionKind.APPRECIATING:
-            result.append({
-                "account": account,
-                "equity": home_equity_service.resolve_home_equity(
-                    account, ctx,
-                ),
-            })
+            result.append(PropertyEquity(
+                account=account,
+                equity=home_equity_service.resolve_home_equity(account, ctx),
+            ))
     return result
 
 
