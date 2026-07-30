@@ -331,6 +331,51 @@ class AccountProjection:  # pylint: disable=too-many-instance-attributes
 
 
 @dataclass(frozen=True)
+class ArchivedAccount:
+    """One archived account's drawer row: the account and its last anchor.
+
+    What :func:`.._data._load_archived_accounts` returns, and the ONLY per-account
+    shape on this page that is not an :class:`AccountProjection` -- deliberately,
+    because an archived account receives no projection at all: no engine call, no
+    seam read, no goal calculation.  It is history.
+
+    **The figure is named for what it IS** (plan step X-w2, ruling R-CH, finding
+    N-114).  It was an untyped ``{account, current_balance}`` dict, and
+    ``current_balance`` is what :class:`AccountProjection` calls the
+    SEAM-DERIVED balance every live tile renders.  This is not that: it is the
+    :attr:`~app.models.account.Account.current_anchor_balance` COLUMN, read
+    directly, and for an amortizing loan it is not a balance at all --
+    :class:`~app.services.anchor_service.AmortizingAccountAnchorError` says so in
+    terms ("a loan's balance is never ``accounts.current_anchor_balance`` -- it
+    is ledger-derived") and a loan true-up appends a ledger event without ever
+    touching the column.  Two different facts under one key on one page is the
+    shape this arc keeps finding; the key now says which one this is.
+
+    **Whether the line should be RENDERED for such an account is finding
+    N-103's question and belongs to plan step X-e**, which already owns it and
+    its three options.  Measured there, and re-verified at X-w's trace: no
+    archived loan exists on either database (both archived accounts are cash),
+    while the ACTIVE Van Loan carries ``current_anchor_balance`` of ``$0.00``
+    against ``$15,663.59`` owed -- so the column is already wrong for a loan
+    today, and archiving one is all it takes to put that on screen.
+
+    Attributes:
+        account: The archived :class:`~app.models.account.Account`.
+        last_anchor_balance: The account's ``current_anchor_balance`` column --
+            the last balance the user asserted for it, NOT a seam-derived
+            balance.  A ``NOT NULL`` column (``account.py:91``, with the
+            redundant ``ck_accounts_anchor_balance_present`` CHECK beside it), so
+            it is always a real figure; the ``or Decimal("0.00")`` the loader
+            used to apply could fire only on a genuine ``$0.00`` and return
+            ``$0.00``, and it is the truthiness-on-money shape ruling R-CA
+            deleted eight of.
+    """
+
+    account: Account
+    last_anchor_balance: Decimal
+
+
+@dataclass(frozen=True)
 class _SeamBatches:
     """Every :mod:`app.services.balance_at` read the projection loop consumes.
 

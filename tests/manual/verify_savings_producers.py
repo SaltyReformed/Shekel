@@ -407,10 +407,20 @@ def _dump_user(user_id):
         "total_savings": _money(data["total_savings"]),
         "avg_monthly_expenses": _money(data["avg_monthly_expenses"]),
         "savings_accounts": [acct.id for acct in data["savings_accounts"]],
+        # The archived rows became a frozen ``ArchivedAccount`` at plan step
+        # X-w2 and the figure was RENAMED (ruling R-CH), so both spellings are
+        # read here -- this file's own tolerance for the shape change it is
+        # measuring, which is what lets it produce the same blob on the HEAD
+        # tree and the new one.  It goes when the next step deletes X-w's
+        # tolerances, exactly as this file's header requires.
         "archived_accounts": [
             {
-                "account_id": row["account"].id,
-                "current_balance": _money(row["current_balance"]),
+                "account_id": _get(row, "account").id,
+                "current_balance": _money(
+                    _get(row, "last_anchor_balance")
+                    if _get(row, "last_anchor_balance") is not None
+                    else _get(row, "current_balance"),
+                ),
             }
             for row in data["archived_accounts"]
         ],

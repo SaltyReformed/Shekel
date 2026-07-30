@@ -1231,7 +1231,7 @@ class TestArchivedAccounts:
             )
             assert "archived_accounts" in result
             assert len(result["archived_accounts"]) == 1
-            assert result["archived_accounts"][0]["account"].name == "Old Savings"
+            assert result["archived_accounts"][0].account.name == "Old Savings"
 
     def test_archived_excluded_from_active(
         self, app, db, seed_user, seed_periods,
@@ -1275,7 +1275,15 @@ class TestArchivedAccounts:
     def test_archived_has_balance_only(
         self, app, db, seed_user, seed_periods,
     ):
-        """Archived accounts carry current_balance but no projections."""
+        """An archived row carries the last anchor balance and nothing else.
+
+        The field is ``last_anchor_balance`` since plan step X-w2 (ruling
+        R-CH): it is the ``current_anchor_balance`` COLUMN, not the
+        seam-derived balance the live tiles call ``current_balance``, and an
+        archived account gets no seam read at all.  The negative arms pin BOTH
+        -- the old name must not come back, and no projection field may appear
+        on a shape that is deliberately not an ``AccountProjection``.
+        """
         with app.app_context():
             savings_type = (
                 db.session.query(AccountType)
@@ -1297,9 +1305,12 @@ class TestArchivedAccounts:
                 seed_user["user"].id,
             )
             archived_row = result["archived_accounts"][0]
-            assert "current_balance" in archived_row
-            assert archived_row["current_balance"] == Decimal("3000.00")
-            assert "projected" not in archived_row
+            assert archived_row.last_anchor_balance == Decimal("3000.00")
+            assert not hasattr(archived_row, "current_balance"), (
+                "the archived drawer's figure is the anchor COLUMN, not the "
+                "seam-derived balance the live tiles publish under that name"
+            )
+            assert not hasattr(archived_row, "projected")
 
 
 # ── Debt Summary Tests (Commit 5.12-1) ────────────────────────────────

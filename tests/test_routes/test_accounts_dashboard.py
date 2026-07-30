@@ -542,6 +542,14 @@ class TestAccountHardDelete:
         active-vs-archived split now lives on the unified cockpit
         (savings.dashboard): active accounts render as cards, archived
         accounts in the collapsed "Archived Accounts (N)" section.
+
+        **The FIGURE is asserted, not just the name** (plan step X-w2).  This
+        test asserted the section header and the account name only, so the
+        producer's field could be renamed -- as ruling R-CH renames it -- and
+        the template would go on reading the old one: Jinja answers a missing
+        attribute with ``Undefined``, which renders as an EMPTY string.  A drawer
+        showing a blank where $5,000 belongs would have passed every arm of this
+        test.  It is finding N-63's class on a template rather than a guard.
         """
         with app.app_context():
             # seed_user["account"] is active by default.
@@ -561,6 +569,10 @@ class TestAccountHardDelete:
             # Archived section with count indicator.
             assert "Archived Accounts (1)" in html
             assert "Archived Savings" in html
+            # And its last anchor balance -- the $5,000 the helper anchors it
+            # at -- is actually RENDERED under the "Last Balance" label.
+            assert "Last Balance" in html
+            assert "$5,000.00" in html
 
     def test_hard_delete_account_with_history_already_archived(
         self, app, auth_client, seed_user, db, seed_periods_today,
