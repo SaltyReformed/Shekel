@@ -6,6 +6,7 @@ the extracted business logic produces correct financial computations
 independently of the Flask route layer.
 """
 
+from collections import OrderedDict
 from dataclasses import replace
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
@@ -33,21 +34,26 @@ from app.services.balance_at import BalanceContext
 from app.services.savings_dashboard_service._types import AccountProjection
 
 
-def _projection(account, current_balance):
+def _projection(account, current_balance, balances=None):
     """Build an :class:`AccountProjection` for the pure reducer unit tests.
 
-    The reducers below (the net-worth today figures, the group subtotals) read
-    an account and a balance and nothing else, so their fixtures are a stand-in
-    account plus one figure.  Constructed through the REAL frozen type rather
-    than a dict arranged to look like it (plan step X-t1, finding N-111): a
-    test that builds its own shape stays green when production changes the one
-    it builds, which is finding B-17's lesson paid on this very package.
+    The reducers below read an account, a balance, and -- for the per-period
+    ones -- the dense period map, so their fixtures are a stand-in account plus
+    those figures.  Constructed through the REAL frozen type rather than a dict
+    arranged to look like it (plan step X-t1, finding N-111): a test that builds
+    its own shape stays green when production changes the one it builds, which
+    is finding B-17's lesson paid on this very package.
 
     Args:
         account: The stand-in account (its ``account_type.category_id`` drives
             the liability classification the reducer reads).
         current_balance: The account's balance today.  Non-nullable since
             plan step X-v2 (ruling R-CA).
+        balances: The dense ``period_id -> Decimal`` map (plan step X-w, ruling
+            R-CG).  Defaults to EMPTY, which is honest for the today-only
+            reducers -- the net-worth hero and the group subtotals read
+            ``current_balance`` and never a period -- and is supplied for real
+            by the per-period reducers' own tests.
 
     Returns:
         The :class:`AccountProjection` the reducers consume.
@@ -55,6 +61,7 @@ def _projection(account, current_balance):
     return AccountProjection(
         account=account,
         current_balance=current_balance,
+        balances=OrderedDict() if balances is None else OrderedDict(balances),
         projected={},
         needs_setup=False,
     )
@@ -3706,8 +3713,8 @@ class TestNetWorthProducerEdgeCases:
         assert today["total_liabilities"] == Decimal("0.00")
         assert today["liquid"] == Decimal("0.00")
 
-    def test_no_account_maps_series_is_empty_window(self):
-        """With no account maps and no forward periods the series is empty."""
+    def test_no_projections_series_is_empty_window(self):
+        """With no projections and no forward periods the series is empty."""
         # pylint: disable=import-outside-toplevel
         from app.services.savings_dashboard_service._net_worth import (
             _COMPOSITION_BANDS,
@@ -4537,12 +4544,20 @@ class TestComputeSparklines:
 
     @staticmethod
     def _map(account_id, balances):
-        """One dense-map entry as build_account_net_worth_maps emits it."""
-        return {
-            "account_id": account_id,
-            "balances": balances,
-            "is_liability": False,
-        }
+        """One account's projection as ``_project_one_account`` emits it.
+
+        It was the ``{account_id, balances, is_liability}`` dict a second
+        producer built beside the projections until plan step X-w (ruling
+        R-CG, finding N-114).  ``compute_sparklines`` reads the projection
+        itself now, so this fixture builds the REAL frozen type -- the
+        stand-in account carries only the ``id`` the producer keys on.
+        """
+        from types import SimpleNamespace  # pylint: disable=import-outside-toplevel
+        return _projection(
+            SimpleNamespace(id=account_id, account_type=None),
+            Decimal("0.00"),
+            balances,
+        )
 
     def test_trending_account_is_included(self):
         """An account whose forward balance moves enough gets a series.
@@ -5253,12 +5268,20 @@ class TestTheProjectionShape:
         a consumer, or the loan detail re-flattened into parallel
         ``loan_figures`` / ``loan_params`` fields (the shape plan step X-s2 had
         to unpick at the seam-batch layer), fails this literal.
+
+        ``balances`` joined the set at plan step X-w (ruling R-CG, finding
+        N-114), and its consumers are named so this stays the
+        "field added without a consumer" gate it was written to be: the
+        per-period net-worth reduction (``_sum_composition_at_period``), the
+        card sparklines (``compute_sparklines``), and -- for every kind but a
+        loan -- the current balance and the 3 / 6 / 12-month horizons that
+        ``_project_one_account`` reads out of it.
         """
         # pylint: disable=import-outside-toplevel
         from dataclasses import fields
         assert {f.name for f in fields(AccountProjection)} == {
-            "account", "current_balance", "projected", "needs_setup",
-            "interest_params", "investment_params", "loan",
+            "account", "current_balance", "balances", "projected",
+            "needs_setup", "interest_params", "investment_params", "loan",
         }
 
     def test_it_is_frozen_and_a_mistyped_field_raises(self, app):
@@ -5314,6 +5337,51 @@ class TestTheProjectionShape:
             # And it is the classifier itself, not a copy that agrees today.
             for ad in data["account_data"]:
                 assert ad.is_liability == is_liability_account(ad.account)
+
+    def test_every_kind_carries_its_dense_period_map_including_a_loan(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """``balances`` is TOTAL over the pay periods, for cash AND for a loan.
+
+        Plan step X-w, ruling R-CG, finding N-114.  The projection carried no
+        dense map at all, and a SECOND per-account container was built beside it
+        for the net-worth trend and the card sparklines -- storing the liability
+        flag this projection derives.  Folding the map in is what deleted that
+        container, and it only works if the map covers EVERY kind: a loan's tile
+        reads none of it, but the trend and the liability band do, and the loans
+        were exactly what the old batch left out.
+
+        The loan arm is the one worth pinning to the cent.  Its
+        ``current_balance`` is still the SCALAR
+        (:func:`app.services.balance_at.balance_at`), not a read of this map,
+        and the two agree because the seam clamps the current period's column to
+        the read pass's ``as_of`` -- a property of the seam's construction, not
+        of this module's, so it is asserted rather than assumed.  It was
+        measured equal to the cent for both real loans on both databases at the
+        step's trace.
+        """
+        with app.app_context():
+            loan = _create_small_loan(seed_user, db.session, name="Van")
+            db.session.commit()
+            user_id = seed_user["user"].id
+            all_period_ids = {
+                p.id for p in pay_period_service.get_all_periods(user_id)
+            }
+            current = pay_period_service.get_current_period(user_id)
+
+            data = savings_dashboard_service.compute_dashboard_data(user_id)
+            by_id = {ad.account.id: ad for ad in data["account_data"]}
+
+            for ad in data["account_data"]:
+                assert set(ad.balances) == all_period_ids, (
+                    f"{ad.account.name}'s dense map does not cover every pay "
+                    f"period, so the net-worth trend would read a gap"
+                )
+            # The loan is in the map (it was excluded until this step) AND its
+            # map agrees with the scalar the tile renders.
+            assert by_id[loan.id].balances[current.id] == (
+                by_id[loan.id].current_balance
+            )
 
 
 def _with_badging_predicate(account_data):

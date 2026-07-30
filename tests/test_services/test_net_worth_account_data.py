@@ -1,17 +1,21 @@
 """
-Shekel Budget App -- Net-Worth Account-Data Adapter Tests.
+Shekel Budget App -- asset-vs-liability classifier tests.
 
 Direct coverage for the shared :mod:`app.services.net_worth_account_data`
-bridge the savings cockpit's net-worth producer reduces over (it was shared
-with the year-end summary until plan step F2 deleted that package).  The
-asset-plus / liability-minus VALUE behavior is locked end-to-end by the
-cross-page balance oracle (its loan / secured cases exercise
-``is_liability`` True); these tests pin the adapter's own contract: the
-missing-map skip and the degenerate-account-type guard.
+classifier every net-worth surface reaches through
+:attr:`~app.services.savings_dashboard_service._types.AccountProjection.is_liability`
+(it was shared with the year-end summary until plan step F2 deleted that
+package).  The asset-plus / liability-minus VALUE behavior is locked end-to-end
+by the cross-page balance oracle (its loan / secured cases exercise
+``is_liability`` True); these tests pin the classifier's own contract: the
+LIABILITY category id and the degenerate-account-type guard.
+
+The module's ``to_net_worth_account_data`` adapter -- and the
+``{account_id, balances, is_liability}`` container it built beside the
+projection that derives the same flag -- went at plan step X-w (ruling R-CG,
+finding N-114), so its two tests went with it.
 """
 
-from collections import OrderedDict
-from decimal import Decimal
 from types import SimpleNamespace
 
 from app.services import net_worth_account_data
@@ -37,42 +41,3 @@ class TestIsLiabilityAccount:
             assert net_worth_account_data.is_liability_account(
                 seed_user["account"],
             ) is False
-
-
-class TestToNetWorthAccountData:
-    """Tests for ``to_net_worth_account_data`` (seam-map -> account-data)."""
-
-    def test_pairs_balances_with_liability_flag(self, app, db, seed_user):
-        """Each mapped account becomes {account_id, balances, is_liability}.
-
-        The seed Checking account (asset) with a one-period balance map of
-        $100.00 yields a single row whose ``is_liability`` is False and
-        whose ``balances`` is the supplied map.
-        """
-        with app.app_context():
-            account = seed_user["account"]
-            balance_maps = {
-                account.id: OrderedDict({1: Decimal("100.00")}),
-            }
-            data = net_worth_account_data.to_net_worth_account_data(
-                [account], balance_maps,
-            )
-            assert data == [{
-                "account_id": account.id,
-                "balances": OrderedDict({1: Decimal("100.00")}),
-                "is_liability": False,
-            }]
-
-    def test_skips_accounts_with_no_map(self, app, db, seed_user):
-        """An account absent from ``balance_maps`` is omitted from the result.
-
-        Mirrors the seam's no-anchor omission: build_maps drops an
-        un-anchored account, so it has no key here and contributes no row
-        (rather than a ``None`` balances entry that would crash the sum).
-        """
-        with app.app_context():
-            account = seed_user["account"]
-            # Empty balance_maps -> the account has no map -> omitted.
-            assert net_worth_account_data.to_net_worth_account_data(
-                [account], {},
-            ) == []

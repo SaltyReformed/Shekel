@@ -40,7 +40,6 @@ from app.services.savings_dashboard_service._data import (
 )
 from app.services.savings_dashboard_service._horizon import build_horizon
 from app.services.savings_dashboard_service._net_worth import (
-    build_account_net_worth_maps,
     build_trend_periods,
     compute_net_worth_series,
     compute_net_worth_today,
@@ -392,18 +391,18 @@ def _build_trend_window(
 
 
 def _compute_card_sparklines(
-    core: _DashboardCoreData, account_maps: list[dict],
+    core: _DashboardCoreData, account_data: list[AccountProjection],
 ) -> dict:
     """Build the per-account forward card sparklines (slice 3c).
 
-    Reuses the dense per-account balance maps already built for the net-worth
-    trend, so the sparklines and the net-worth math read ONE projection.  The
+    Reads the dense per-account balance maps the projections already carry, so
+    the sparklines, the tiles and the net-worth math read ONE projection.  The
     forward window is the current-period-onward run the trend projects.
 
     Args:
         core: The loaded core data (its periods define the forward window).
-        account_maps: The dense maps from
-            :func:`build_account_net_worth_maps`.
+        account_data: The per-account projections, each carrying its dense
+            :attr:`~.._types.AccountProjection.balances` map (plan step X-w).
 
     Returns:
         ``{account_id: [Decimal, ...]}`` for each informative account.
@@ -413,7 +412,7 @@ def _compute_card_sparklines(
         if core.current_period is not None
         and p.period_index >= core.current_period.period_index
     ]
-    return compute_sparklines(account_maps, forward_periods)
+    return compute_sparklines(account_data, forward_periods)
 
 
 def _compute_net_worth_section(
@@ -424,22 +423,29 @@ def _compute_net_worth_section(
 ) -> dict:
     """Assemble the cockpit's net-worth region, sparklines, and Horizon range.
 
-    One producer over a single build of the dense per-account balance maps:
-    the today figures (from the already-projected ``account_data``), the
+    One producer over ONE per-account projection: the today figures, the
     ``2 years`` net-worth trend series with its per-category composition
     split, the per-account forward sparklines, AND the ``Horizon`` range
-    (P-AC1 Loop B P1) all derive from that ONE dashboard load -- so the
-    /savings request pays for one load, not two (no redundant standalone
-    horizon-producer call), and every figure reads one projection.
+    (P-AC1 Loop B P1) all reduce over the same ``account_data`` this page
+    already built -- so the /savings request pays for one load, not two (no
+    redundant standalone horizon-producer call), and every figure reads one
+    projection.
 
-    The maps are built once over ALL periods (so the entries-aware resolver
-    always has its anchor seed) via :func:`build_account_net_worth_maps`,
-    which routes through the :mod:`app.services.balance_at` seam.  The
-    per-category composition split reads each account's band off the SAME
-    id-based classifier the grid grouping uses, so a trend band and its grid
-    group cannot disagree.  The Horizon range reuses the /retirement engine,
-    so it re-projects the retirement / investment accounts -- the accepted
-    cost of the single-engine invariant, the same the dense-map rebuild pays.
+    **It built a SECOND per-account container to do that, and plan step X-w
+    deleted it** (ruling R-CG, finding N-114).  ``build_account_net_worth_maps``
+    re-asked the seam for every account's dense period map and paired each with
+    a stored liability flag; the projections beside it already carried the same
+    balances and derived the same flag.  The dense map is
+    :attr:`~.._types.AccountProjection.balances` now, so the trend, the
+    sparklines and the hero cannot be given different accounts, different
+    balances or different classifications.
+
+    The maps are still built over ALL periods (so every consumer reads whichever
+    ones it wants back out by id); the per-category composition split reads each
+    account's band off the SAME id-based classifier the grid grouping uses, so a
+    trend band and its grid group cannot disagree.  The Horizon range reuses the
+    /retirement engine, so it re-projects the retirement / investment accounts --
+    the accepted cost of the single-engine invariant.
 
     Degrades gracefully with no current period: the today figures still come
     from ``account_data``, the series is empty (``current_index`` 0), the
@@ -448,17 +454,15 @@ def _compute_net_worth_section(
     (:func:`~app.services.savings_dashboard_service._horizon.build_horizon`
     returns ``None`` then).
 
-    **This is the ONE no-baseline door for the whole region** (plan step X-t2,
-    finding N-107).  Every seam read below it -- the dense maps, the trend
-    window's loan schedules, the sparklines and the Horizon's bands -- is
-    reachable only with a baseline, so the rule is stated HERE and the three
-    producers below simply call the seam.  It was stated in each of them
-    instead, and two of those copies degraded DIFFERENTLY: the map builder
-    returned an empty list (a $0 trend drawn over a real window) while the trend
-    window still built its axis.  A user with no baseline has no balance the app
-    can answer, so the honest region is the today figures over an empty series
-    and no Horizon at all -- which is exactly the state the no-pay-periods path
-    already renders, so the template and the client need no new branch.
+    **No producer here decides the no-baseline state** (plan step X-v2, ruling
+    R-BW).  This function was the ONE door for the whole region at plan step
+    X-t2 (finding N-107), because two producers under it degraded DIFFERENTLY --
+    the map builder returned an empty list, a ``$0`` trend drawn over a real
+    window, while the trend window built its axis anyway.  X-v2 then deleted the
+    predicate itself: the seam raises
+    :class:`~app.exceptions.BaselineMissingError` and one application-level
+    handler answers it.  Since plan step X-w the region's dense maps are not
+    even read here -- the projection opened that door before this function ran.
 
     The empty series is BUILT by :func:`compute_net_worth_series` over an empty
     window rather than written out as a literal here, so the degraded shape
@@ -492,17 +496,13 @@ def _compute_net_worth_section(
     # application-level handler renders the repair, so there is no hero left to
     # fabricate.  X-t2's ruling that this region should degrade here is
     # REVERSED, on the developer's confirmation (CLAUDE.md rule 5).
-    account_maps = build_account_net_worth_maps(
-        core.accounts, core.balance_ctx, core.all_periods,
-    )
-
     trend_periods, current_index, _ = _build_trend_window(core, params)
-    series = compute_net_worth_series(account_maps, trend_periods, category)
+    series = compute_net_worth_series(account_data, trend_periods, category)
     # The solid-history / dashed-projection boundary (and the "Today"
     # marker): the index of the current period within the trend window.
     series["current_index"] = current_index
 
-    sparklines = _compute_card_sparklines(core, account_maps)
+    sparklines = _compute_card_sparklines(core, account_data)
     horizon = build_horizon(user_id, core, account_data, category)
 
     return {

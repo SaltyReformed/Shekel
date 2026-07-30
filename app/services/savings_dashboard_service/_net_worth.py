@@ -19,33 +19,44 @@ balances themselves.  (:func:`compute_property_equity` is the exception that
 proves the boundary: it is an EQUITY figure, not a net-worth balance, and it
 delegates to :mod:`app.services.home_equity_service`.)
 
-The dense per-account balance maps are built ONCE (over ALL periods -- see
-:func:`build_account_net_worth_maps` for why that rule OUTLIVED the
-anchor-seeking producer that motivated it) and shared by both the
-series and the change delta, via :func:`build_account_net_worth_maps`;
-the orchestrator builds them and threads the result into both producers.
+**Every producer here takes ONE shape: the per-account
+:class:`~.._types.AccountProjection` list** (plan step X-w, ruling R-CG,
+finding N-114).  The today figures took it and the series took a parallel
+``{account_id, balances, is_liability}`` dict -- the same accounts, on the same
+render, in two containers, the second STORING the liability rule the first
+derives.  ``build_account_net_worth_maps`` was this module's builder for that
+dict and is deleted; the dense period map is now
+:attr:`~.._types.AccountProjection.balances`, built once by the seam inside
+:func:`.._projections._seam_batches` for every kind including loans.
+
+The maps are still built over ALL periods, never a forward sub-window.  Since
+plan step X-g2b every kind is a TOTAL fold, so no path NEEDS the dense domain to
+find a seed any more -- the reason the rule was written (the INVESTMENT and
+APPRECIATING paths seeding off an anchor-forward producer that had to be handed
+its anchor period) is gone with the producer.  What survives is the rule itself:
+a window is a window, and the forward consumers read the periods they want back
+out by id, so passing everything keeps one caller from asking about a slice and
+rendering it as a whole.
 """
 
 from decimal import Decimal
 
 from app.models.pay_period import PayPeriod
-from app.services import balance_at, home_equity_service
+from app.services import home_equity_service
 from app.services.amortization_engine import AmortizationRow
 from app.services.balance_at import BalanceContext
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
-# The net-worth account-data builder lives in the shared adapter, which also
-# owns the asset/liability rule every net-worth surface classifies through --
-# these today figures (via
-# :attr:`~.._types.AccountProjection.is_liability`, which IS that classifier),
-# the trend below, and the Horizon band in ``_horizon``.  The classifier's own
-# name is no longer imported here: plan step X-t1 moved the today reduction onto
-# the projection's property, and an alias whose only remaining uses were
-# docstrings is a name that reads as a call site and is not one (finding N-63's
-# class).
-from app.services.net_worth_account_data import to_net_worth_account_data
+# Nothing from :mod:`app.services.net_worth_account_data` is imported here any
+# more.  Plan step X-t1 moved the today reduction onto
+# :attr:`~.._types.AccountProjection.is_liability` (which IS that module's
+# classifier), and plan step X-w deleted ``to_net_worth_account_data`` with the
+# second per-account container it built -- so every net-worth surface in this
+# module now reaches the asset/liability rule through the projection, and an
+# alias whose only remaining uses were docstrings would be a name that reads as
+# a call site and is not one (finding N-63's class).
 from app.services.savings_dashboard_service._display import _CATEGORY_ORDER
 from app.services.savings_dashboard_service._metrics import _sum_liquid_balances
 from app.services.savings_dashboard_service._types import AccountProjection
@@ -118,71 +129,9 @@ def compute_net_worth_today(account_data: list[AccountProjection]) -> dict:
     }
 
 
-def build_account_net_worth_maps(
-    accounts: list,
-    ctx: BalanceContext,
-    all_periods: list[PayPeriod],
-) -> list[dict]:
-    """Build each account's dense balance map plus its liability flag.
-
-    The net-worth shape adapter over the balance-at seam.  It asks
-    :func:`app.services.balance_at.build_maps` for every account's dense
-    period balance map and pairs each with the account's liability flag,
-    producing the single build-once structure the forward trend and the
-    per-account sparklines both read.  The seam owns the input assembly
-    (the debt schedules, investment params, deductions, and engine
-    gross-biweekly), so this producer no longer pre-assembles them; the
-    seam deliberately returns balances only (liability classification is
-    not a balance concern), so this consumer adds ``is_liability`` itself.
-
-    The seam builds each map over ALL periods (never a forward sub-window).
-    Since plan step X-g2b every kind is a TOTAL fold, so no path NEEDS the
-    dense domain to find a seed any more -- the reason this rule was written
-    (the INVESTMENT and APPRECIATING paths seeding off an anchor-forward
-    producer that had to be handed its anchor period) is gone with the producer.
-    What survives is the rule itself: a window is a window, and the forward
-    consumers read the periods they want back out by id, so passing everything
-    keeps one caller from asking about a slice and rendering it as a whole.
-
-    Returns the same ``{account_id, balances, is_liability}`` shape
-    :func:`compute_net_worth_series` (via
-    :func:`_sum_composition_at_period`) and
-    :func:`compute_sparklines` consume.  Accounts with no anchor period (no
-    dense map) are omitted by the seam and skipped here.
-
-    **The no-baseline rule is its CALLER's** (plan step X-t2, finding N-107).
-    This producer used to return an empty list for a ``None`` scenario, and the
-    trend-window builder beside it -- reached from the same caller, in the same
-    region -- answered the same question by building its axis anyway.  Two
-    degradations for one state is what a rule restated in each producer buys, so
-    :func:`~.._orchestrator._compute_net_worth_section` now states it once above
-    both and this calls the seam unconditionally.
-
-    Args:
-        accounts: The user's active accounts.
-        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
-            A pass with no baseline raises
-            :class:`~app.exceptions.BaselineMissingError` at the seam, which
-            the application answers with the setup-recovery card -- no caller
-            guards ahead of it (plan step X-v2, ruling R-BW).
-        all_periods: All of the user's pay periods (the dense domain).
-
-    Returns:
-        A list of ``{account_id: int, balances: OrderedDict[int, Decimal],
-        is_liability: bool}`` dicts, one per account that has a dense map,
-        in ``accounts`` order.  The ``account_id`` lets the per-account
-        sparkline producer (:func:`compute_sparklines`) reuse these maps, so
-        the sparklines and the net-worth math read one projection, and
-        :func:`_sum_composition_at_period` keys each account's composition
-        band off it.
-    """
-    balance_maps = balance_at.build_maps(accounts, ctx, all_periods)
-    return to_net_worth_account_data(accounts, balance_maps)
-
-
 def _sum_composition_at_period(
     period_id: int,
-    account_maps: list[dict],
+    account_data: list[AccountProjection],
     category_by_account_id: dict[int, str],
 ) -> dict[str, Decimal]:
     """Sum each category band's balance at one period.
@@ -191,10 +140,17 @@ def _sum_composition_at_period(
     non-liability account adds its balance to its category band (asset /
     retirement / investment / other, keyed by *category_by_account_id*),
     and each liability account accumulates its POSITIVE magnitude
-    (``abs(bal)``) into the liability band.  The liability flag -- not the
-    category key -- decides the sign, so a liability always lands in the
-    liability band with a positive magnitude even if its category map entry
-    were missing.
+    (``abs(bal)``) into the liability band.
+
+    **The SIGN comes from the projection's own
+    :attr:`~.._types.AccountProjection.is_liability`, which is the predicate
+    :func:`compute_net_worth_today` reduces with**, and that shared predicate is
+    what makes this page's stated identity -- the hero equals this series at the
+    current period equals the Horizon's index 0 -- a property of construction.
+    The category key decides only which ASSET band a non-liability lands in.
+    (The two id-based spellings of "is this a liability" are equivalent by
+    reading and not by construction; finding N-118 owns that, and this reducer
+    deliberately does not pick the other one.)
 
     This is the ONE per-period net-worth reduction.  Summing the asset-side
     bands and subtracting the liability band is exactly asset ``+bal`` /
@@ -205,25 +161,29 @@ def _sum_composition_at_period(
 
     Args:
         period_id: The pay period id to read balances at.
-        account_maps: The dense ``{account_id, balances, is_liability}``
-            maps from :func:`build_account_net_worth_maps`.
+        account_data: The per-account projections, each carrying its dense
+            :attr:`~.._types.AccountProjection.balances` map (plan step X-w,
+            ruling R-CG).  It took a parallel
+            ``{account_id, balances, is_liability}`` dict built from the same
+            accounts on the same render, whose stored flag is finding N-114.
         category_by_account_id: Each account's cockpit category key, from
-            :func:`~app.services.savings_dashboard_service._display.category_key_by_account_id`
-            (built from the SAME classifier the grid grouping uses).  An
-            account absent from the map falls to ``"other"`` (defensive; the
-            producer passes a total map).
+            :func:`~app.services.savings_dashboard_service._display.category_key_by_account_id`.
+            INDEXED, not defaulted (plan step X-w, ruling R-CJ): the map is
+            built from this same ``account_data``, so a missing key is a defect
+            in the producer, and the ``"other"`` default this used to carry
+            would bank a real account's money in the wrong chart band in
+            silence.  Ruling R-CA's rule, applied one container over.
 
     Returns:
         ``{band: Decimal}`` for every band in :data:`_COMPOSITION_BANDS`.
     """
     sums = {band: ZERO for band in _COMPOSITION_BANDS}
-    for data in account_maps:
-        bal = data["balances"].get(period_id, ZERO)
-        if data["is_liability"]:
+    for ad in account_data:
+        bal = ad.balances.get(period_id, ZERO)
+        if ad.is_liability:
             sums[_LIABILITY_BAND] += abs(bal)
         else:
-            band = category_by_account_id.get(data["account_id"], "other")
-            sums[band] += bal
+            sums[category_by_account_id[ad.account.id]] += bal
     return sums
 
 
@@ -453,16 +413,17 @@ def build_trend_periods(
 
 
 def compute_net_worth_series(
-    account_maps: list[dict],
+    account_data: list[AccountProjection],
     trend_periods: list[PayPeriod],
     category_by_account_id: dict[int, str],
 ) -> dict:
     """Build the net-worth trend over the trend window.
 
-    Reads each trend period's id out of the pre-built dense maps (built
-    over ALL periods by :func:`build_account_net_worth_maps`) and produces
-    the ``net`` series, the per-category ``composition`` split (P-AC1 Loop B
-    P1), and the period descriptors the route serializes.
+    Reads each trend period's id out of each projection's dense
+    :attr:`~.._types.AccountProjection.balances` map (built over ALL periods by
+    the seam, inside :func:`.._projections._seam_batches`) and produces the
+    ``net`` series, the per-category ``composition`` split (P-AC1 Loop B P1),
+    and the period descriptors the route serializes.
 
     **It published ``assets`` and ``liabilities`` as well, and plan step X-s1
     deleted them** (finding N-104's residue).  They were one fact under two
@@ -483,15 +444,17 @@ def compute_net_worth_series(
     widening the window from forward-only to history-plus-forward needed no
     change here.
 
-    Takes the pre-built ``account_maps`` rather than the raw accounts so
-    the maps are built exactly once and shared with the per-account
-    sparklines (the locked build-once invariant); the orchestrator builds
-    them via :func:`build_account_net_worth_maps` and threads them into
-    both.
+    Takes the already-projected ``account_data`` rather than the raw accounts,
+    so the maps are built exactly once for the whole render and shared with the
+    per-account sparklines, the tiles and the hero (the locked build-once
+    invariant).  Until plan step X-w (ruling R-CG) the shared structure was a
+    SECOND per-account container the orchestrator built beside the projections;
+    it is now the projections themselves, so "one projection" is what the type
+    says rather than what two builders agree on.
 
     Args:
-        account_maps: The dense ``{account_id, balances, is_liability}``
-            maps from :func:`build_account_net_worth_maps`.
+        account_data: The per-account projections, each carrying its dense
+            :attr:`~.._types.AccountProjection.balances` map.
         trend_periods: The trend window (history tail + current + forward),
             chronological; each must appear in the dense maps' domain.
         category_by_account_id: Each account's cockpit category key, from
@@ -513,7 +476,7 @@ def compute_net_worth_series(
 
     for period in trend_periods:
         sums = _sum_composition_at_period(
-            period.id, account_maps, category_by_account_id,
+            period.id, account_data, category_by_account_id,
         )
         period_assets = sum((sums[band] for band in _ASSET_BANDS), ZERO)
         period_liabilities = sums[_LIABILITY_BAND]
@@ -635,23 +598,24 @@ def _is_informative(series: list[Decimal]) -> bool:
 
 
 def compute_sparklines(
-    account_maps: list[dict], forward_periods: list[PayPeriod],
+    account_data: list[AccountProjection], forward_periods: list[PayPeriod],
 ) -> dict[int, list[Decimal]]:
     """Build each informative account's forward sparkline series.
 
-    Reuses the dense per-account balance maps already built for the
-    net-worth trend (:func:`build_account_net_worth_maps`), so the sparkline
-    and the net-worth math read ONE projection rather than two that could
-    drift.  Slices each account's forward window (up to
+    Reads each projection's dense
+    :attr:`~.._types.AccountProjection.balances` map -- the one the tile's
+    balance, the net-worth trend and the group subtotal all come from -- so the
+    sparkline and the net-worth math read ONE projection rather than two that
+    could drift.  Slices each account's forward window (up to
     :data:`_SPARKLINE_PERIODS` points from the current period) and keeps only
     the accounts whose window is informative (:func:`_is_informative`); a
     flat account is omitted so its card falls back to the figure + projected
     line.
 
     Args:
-        account_maps: The dense maps from
-            :func:`build_account_net_worth_maps`, each carrying
-            ``account_id`` and ``balances``.
+        account_data: The per-account projections, each carrying its dense
+            ``balances`` map.  It took a parallel container built beside the
+            projections until plan step X-w (ruling R-CG).
         forward_periods: The forward window (current period onward),
             chronological.
 
@@ -662,9 +626,9 @@ def compute_sparklines(
     """
     window = forward_periods[:_SPARKLINE_PERIODS]
     result: dict[int, list[Decimal]] = {}
-    for data in account_maps:
-        balances = data["balances"]
+    for ad in account_data:
+        balances = ad.balances
         series = [balances[p.id] for p in window if p.id in balances]
         if _is_informative(series):
-            result[data["account_id"]] = series
+            result[ad.account.id] = series
     return result

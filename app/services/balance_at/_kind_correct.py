@@ -103,9 +103,11 @@ def build_maps(
     :func:`._inputs._contribution_inputs_for_accounts` (one investment-params
     query, one deductions query, one gross fetch for the whole set), then loops
     the shared :func:`._inputs._account_balance_map` per account.  This is the
-    per-account dense-map build the savings cockpit's
-    ``build_account_net_worth_maps`` performs today, internalised behind the
-    seam so the assembly lives in one place.
+    per-account dense-map build the savings cockpit used to perform itself,
+    internalised behind the seam so the assembly lives in one place.  (Its
+    caller there was ``build_account_net_worth_maps``, which plan step X-w
+    deleted along with the second per-account container it built; the cockpit's
+    projection now calls this entry directly.)
 
     The feed map is TOTAL over *accounts*, so it is INDEXED per account rather
     than defaulted: an account missing from it would be a defect in the loader,

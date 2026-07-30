@@ -170,7 +170,7 @@ class _LoanAccountResult:
 
 
 @dataclass(frozen=True)
-class AccountProjection:
+class AccountProjection:  # pylint: disable=too-many-instance-attributes
     """One account's projected figures: THE shape this package renders from.
 
     The per-account value every savings-cockpit surface reduces over -- the
@@ -202,6 +202,27 @@ class AccountProjection:
     ONE field rather than the two the dict carried, so "is this a loan" has one
     answer and the figures and the terms row cannot arrive apart.
 
+    **It is the ONLY per-account record this render builds** (plan step X-w,
+    ruling R-CG, finding N-114).  There was a second: an untyped
+    ``{account_id, balances, is_liability}`` dict that the net-worth trend and
+    the card sparklines reduced over, built from the same accounts on the same
+    render -- and it STORED the liability flag :attr:`is_liability` derives, so
+    the page single-sourced that rule in one container and not in the other.
+    Both spellings called one classifier, so nothing was wrong on screen; what
+    was wrong was that a refinement landing on the property would have left the
+    trend and the sparklines on the old classification, with the hero and the
+    chart's today point disagreeing and every test that reads one of them
+    staying green.  Carrying the dense map HERE makes that unrepresentable
+    rather than merely fixed: there is no second container to store a flag in.
+
+    Pylint: ``too-many-instance-attributes`` (8/7) -- suppressed because this is
+    a cohesive per-account value record, read flat by the cockpit template and
+    by every reducer in this package, not an object accumulating state.  The
+    one cohesive sub-group it HAD is already nested: ``loan`` is a
+    :class:`LoanDetail` rather than the two flat keys the dict carried (plan
+    step X-t1).  The remaining seven are one account's independent projected
+    facts, and grouping any of them would invent a concept to satisfy a count.
+
     Attributes:
         account: The :class:`~app.models.account.Account` this projects.
         current_balance: The account's balance today, from the
@@ -220,10 +241,34 @@ class AccountProjection:
             in its map since the plan step X-c2b2 cutover, verified by probe.
             The seam's only remaining empty map needs
             ``current_anchor_period_id IS NULL``, which the schema forbids.
+        balances: The account's DENSE period balance map
+            (``period_id -> Decimal``) over the user's whole pay-period
+            calendar, from :func:`app.services.balance_at.build_maps`.  What
+            the net-worth trend, its per-category composition split and the
+            card sparklines reduce over -- and, for every kind but a loan,
+            where :attr:`current_balance` and :attr:`projected` are read from.
+
+            **It is carried for EVERY kind, loans included** (plan step X-w).
+            A loan's tile reads no map, but the net-worth trend and the
+            liability band do, so excluding loans here is what forced the
+            second container to exist.  The seam answers a loan from its
+            ``positions()`` fold and every other kind from one event replay, and
+            the resolution is memoized on the read pass, so adding the loans
+            costs the two narrow producers a measured ``0.19-0.59 ms`` and ZERO
+            SQL per loan (best of five, both databases).
         projected: The 3 / 6 / 12-month horizon balances by label, from
             :func:`app.utils.period_projections.project_balance_horizons`.
             Empty for a loan (a loan tile renders no horizons) and for an
             account with no current period.
+
+            **STORED although it is three samples of** :attr:`balances`, for
+            the reason :attr:`needs_setup` is stored: deriving it needs the
+            current period and the pay-period calendar, which this record does
+            not carry and which it would have to grow a second time for every
+            consumer.  A property that takes arguments is a method, and a
+            method here would put the horizon labels' rule on a value object
+            instead of in :mod:`app.utils.period_projections` where the grid
+            reads it too.
         needs_setup: Whether the account flags ``has_parameters`` but its
             type-specific parameter row is missing -- a DIFFERENT question from
             "did it resolve as a loan", and answerable for an AMORTIZING account
@@ -250,6 +295,7 @@ class AccountProjection:
 
     account: Account
     current_balance: Decimal
+    balances: "OrderedDict[int, Decimal]"
     projected: dict[str, Decimal]
     needs_setup: bool
     interest_params: InterestParams | None = None
@@ -302,7 +348,8 @@ class _SeamBatches:
     sit behind one predicate in :func:`.._projections._seam_batches`.
 
     Plan step X-t2 then hoisted the rule for the net-worth region, DELETING the
-    copies in :func:`.._net_worth.build_account_net_worth_maps` and
+    copies in that region's dense-map builder (``_net_worth``'s
+    ``build_account_net_worth_maps``, itself deleted at plan step X-w) and in
     :func:`.._orchestrator._build_trend_window` (finding N-107).  **Plan step
     X-v2 then deleted the rest of them, and the property they read** (ruling
     R-BW): this package's three seam doors each invented a degraded VALUE -- a
@@ -314,14 +361,26 @@ class _SeamBatches:
 
     Attributes:
         balance_maps: ``{account_id: period_id -> Decimal}`` from
-            :func:`app.services.balance_at.build_maps`, for the NON-loan
-            accounts the seam answers for.  An account the seam omits (no
-            anchor period) is simply absent.
+            :func:`app.services.balance_at.build_maps`, for EVERY account being
+            projected.  It covered the NON-loan accounts only until plan step
+            X-w (ruling R-CG): a loan tile reads no map, but the net-worth trend
+            and the liability band do, and excluding the loans here is what
+            forced a second per-account container to exist beside
+            :class:`AccountProjection`.  The map is TOTAL over the projected
+            accounts -- the seam omits an account only when
+            ``current_anchor_period_id IS NULL``, which the schema forbids -- so
+            :func:`.._projections._project_one_account` INDEXES it.
         loan_results: ``{account_id: _LoanAccountResult}`` for the accounts that
             resolved as configured loans.  Membership IS "this account is a
-            loan for this projection": an account with a ``LoanParams`` row the
-            seam cannot resolve is in neither map and reads as a non-loan with
-            no balance.
+            loan for this projection", and it is a SUBSET of ``balance_maps``'s
+            keys: an account reaches the loan arm only when
+            ``params.loan_params_map`` holds a row for it, and
+            :func:`app.services.balance_at.loan_figures` resolves through the
+            same ``LoanParams`` query that map was built from, so the
+            "resolved as a loan for the map but not for the tile" state the
+            sentence here used to describe is unreachable rather than degraded
+            (traced at plan step X-w; ``_data._load_loan_params_and_escrow`` and
+            ``loan_loaders.load_loan_params`` issue the same filter).
     """
 
     balance_maps: dict[int, OrderedDict]
