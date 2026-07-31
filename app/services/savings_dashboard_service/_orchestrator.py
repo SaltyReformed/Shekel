@@ -27,7 +27,6 @@ field of the first one's value object now.  No Flask imports.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -41,8 +40,7 @@ from app.services.savings_dashboard_service._data import (
 )
 from app.services.savings_dashboard_service._horizon import build_horizon
 from app.services.savings_dashboard_service._net_worth import (
-    NetWorthSeries,
-    NetWorthToday,
+    NetWorthRegion,
     build_trend_periods,
     compute_net_worth_series,
     compute_net_worth_today,
@@ -80,38 +78,6 @@ if TYPE_CHECKING:
         _AccountParams,
         _DashboardCoreData,
     )
-
-
-@dataclass(frozen=True)
-class _NetWorthRegion:
-    """The cockpit's whole net-worth region: today, the trend, the horizon.
-
-    A frozen value object since plan step X-w3 (ruling R-CI).  It was a dict
-    assembled by SPREADING one producer's four keys beside two more
-    (``{**today, "series": ..., "horizon": ...}``), which is why "what does this
-    region publish" needed three producers and a spread operator to answer, and
-    why the template's own contract lived in a header comment.
-
-    The today figures are COMPOSED rather than flattened, which is ruling
-    R-AW's rule: a bundle that mirrors another value object field by field goes
-    stale the moment that object grows, and this package has paid for that twice
-    (findings B-16 and N-104).
-
-    Attributes:
-        today: The :class:`~.._net_worth.NetWorthToday` hero and its chips.
-        series: The ``2 years`` :class:`~.._net_worth.NetWorthSeries`.
-        horizon: The ``Horizon`` range from
-            :func:`~.._horizon.build_horizon`, or ``None`` when the user has no
-            pay periods.  **Deliberately still a dict** (ruling R-CI): its key
-            set at EVERY level is pinned by ``TestHorizonSerialization``, which
-            removes each key in turn and requires the serializer to raise -- a
-            stronger contract than a dataclass, because it proves every
-            published key is READ.  Findings N-100 and N-104 bought that guard.
-    """
-
-    today: NetWorthToday
-    series: NetWorthSeries
-    horizon: dict | None
 
 
 def _build_projection_context(
@@ -303,9 +269,9 @@ def compute_goal_progress(
             :func:`compute_debt_summary`).
 
     Returns:
-        A list of per-goal progress dicts (see
-        :func:`_compute_goal_progress`), one per active goal; empty when
-        the user has no active goals.
+        One :class:`~.._goals.GoalProgress` per active goal (see
+        :func:`_compute_goal_progress`); empty when the user has no active
+        goals.
     """
     core = _load_dashboard_core_data(user_id, balance_ctx)
 
@@ -456,7 +422,7 @@ def _compute_net_worth_section(
     params: _AccountParams,
     account_data: list[AccountProjection],
     user_id: int,
-) -> dict:
+) -> tuple[NetWorthRegion, dict[int, list[Decimal]]]:
     """Assemble the cockpit's net-worth region, sparklines, and Horizon range.
 
     One producer over ONE per-account projection: the today figures, the
@@ -513,7 +479,7 @@ def _compute_net_worth_section(
             engine reuse).
 
     Returns:
-        ``(region, sparklines)`` -- the :class:`_NetWorthRegion` and
+        ``(region, sparklines)`` -- the :class:`~.._net_worth.NetWorthRegion` and
         ``{account_id: [Decimal, ...]}``.
     """
     today = compute_net_worth_today(account_data)
@@ -540,7 +506,7 @@ def _compute_net_worth_section(
     sparklines = _compute_card_sparklines(core, account_data)
     horizon = build_horizon(user_id, core, account_data, category)
 
-    return _NetWorthRegion(
+    return NetWorthRegion(
         today=today, series=series, horizon=horizon,
     ), sparklines
 
@@ -568,8 +534,8 @@ def _compute_cockpit_grid_section(
     Returns:
         dict with ``grouped_accounts`` (category label -> projections),
         ``group_subtotals`` (category label -> ``Decimal`` balance
-        subtotal), and ``property_equity`` (list of ``{account, equity}`` for
-        each Property account).
+        subtotal), and ``property_equity`` (a
+        :class:`~.._net_worth.PropertyEquity` per Property account).
     """
     grouped_accounts = _group_accounts_by_category(account_data)
     group_subtotals = _compute_group_subtotals(grouped_accounts)

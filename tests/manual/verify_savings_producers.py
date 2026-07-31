@@ -88,7 +88,9 @@ from app import create_app
 from app.extensions import db
 from app.models.user import User
 from app.routes.savings import _serialize_net_worth_chart, _serialize_sparklines
-from app.services import dashboard_pulse_service, savings_dashboard_service
+from app.services import balance_at, dashboard_pulse_service, pay_period_service
+from app.services import savings_dashboard_service
+from app.services.balance_at import BalanceContext
 from app.services.scenario_resolver import get_baseline_scenario
 
 
@@ -152,7 +154,56 @@ def _loan_halves(ad):
     }
 
 
-def _projection(ad):
+def _balances(ad, seam_maps):
+    """The projection's DENSE period map, every column.
+
+    **Added at plan step X-w6 (ruling R-CM), and the reason is the finding.**
+    Plan step X-w folded the dense map onto the projection, which means the
+    three NARROW producers now carry one their consumers do not read -- and this
+    file dumped every projection field EXCEPT this one, while
+    ``verify_balance_baseline.py`` never runs this package at all.  So a defect
+    confined to ``AccountProjection.balances`` on a narrow-producer path was
+    invisible to BOTH instruments: exactly Section 8's "a census and a gate can
+    be blind the same way, and then they confirm each other".
+
+    Dumped in full rather than as a digest.  A digest answers "did the map
+    change" and this file's whole job is to answer "which figure moved"; 60
+    columns per account is a few hundred lines of blob against an instrument
+    that already carries the whole daily series one layer down.
+
+    **What this does and does not reach, stated so it is not discovered later.**
+    It covers every projection the FULL build produces and the one
+    ``compute_account_balance_cell`` returns.  It cannot reach the maps inside
+    ``compute_debt_summary`` and ``compute_goal_progress``, because those
+    producers reduce projections into a summary and return no projection at
+    all -- so their ``balances`` is internal by construction and a change to it
+    is only observable through a figure this file already dumps.
+
+    **On a PRE-X-w tree it falls back to the seam's own map**, and that is not a
+    courtesy -- it is what keeps this one file producing the same blob on both
+    trees, which is the only reason its diff means anything.  The projection had
+    no such field before plan step X-w1; dumping ``null`` there would make every
+    account's map read as a change and drown the comparison.  Falling back to
+    :func:`app.services.balance_at.build_maps` compares the NEW projection's map
+    against the SEAM's map for the same account, which is exactly ruling R-CG's
+    claim -- so the cross-tree diff proves it directly instead of leaving it to
+    be inferred from the figures downstream.  It goes when plan step X-x deletes
+    X-w's tolerances.
+
+    Args:
+        ad: The per-account projection (or the narrow balance cell).
+        seam_maps: ``{account_id: period map}`` from the seam, used only when
+            *ad* carries no ``balances`` field of its own.
+    """
+    balances = _get(ad, "balances")
+    if balances is None:
+        balances = seam_maps.get(_get(ad, "account").id)
+    if balances is None:
+        return None
+    return {str(period_id): _money(value) for period_id, value in balances.items()}
+
+
+def _projection(ad, seam_maps):
     """One per-account projection, every field."""
     account = _get(ad, "account")
     interest = _get(ad, "interest_params")
@@ -161,6 +212,7 @@ def _projection(ad):
         "account_id": account.id,
         "account_name": account.name,
         "current_balance": _money(_get(ad, "current_balance")),
+        "balances": _balances(ad, seam_maps),
         "projected": {
             label: _money(value)
             for label, value in sorted((_get(ad, "projected") or {}).items())
@@ -217,16 +269,21 @@ def _series(series):
     Read through :func:`_get` because plan step X-w3 turned the series and its
     period descriptors into frozen value objects (ruling R-CI); the tolerance is
     what lets this ONE file produce the same blob on the HEAD tree and the new
-    one, and it goes when X-w5 deletes X-w's tolerances.
+    one, and it goes when plan step X-x deletes X-w's tolerances.
+
+    **A period point is its ``end_date`` and nothing else.**  It carried a
+    ``period_index`` until plan step X-w6 deleted that field for having no
+    production reader (ruling R-CL), so dumping it here would make an INTENDED
+    shape change read as a per-point diff on every cross-tree run -- the exact
+    thing this file's normalization discipline exists to prevent.  The window's
+    identity is fully carried by the dates, which are dumped and which the chart
+    is actually built from.
     """
     if series is None:
         return None
     return {
         "periods": [
-            {
-                "end_date": _date(_get(point, "end_date")),
-                "period_index": _get(point, "period_index"),
-            }
+            {"end_date": _date(_get(point, "end_date"))}
             for point in _get(series, "periods")
         ],
         "net": [_money(value) for value in _get(series, "net")],
@@ -371,10 +428,17 @@ def _dump_user(user_id):
         return {"skipped": "no baseline scenario"}
     data = savings_dashboard_service.compute_dashboard_data(user_id)
     account_data = data["account_data"]
+    # The pre-X-w fallback for ``_balances`` (see it for why).  Built from
+    # the seam directly, so it is the SAME entry both trees answer from.
+    seam_maps = balance_at.build_maps(
+        [_get(ad, "account") for ad in account_data],
+        BalanceContext.build(user_id),
+        pay_period_service.get_all_periods(user_id),
+    )
     # ONE narrow debt build per user, shared by the two keys that read it.
     narrow_summary = savings_dashboard_service.compute_debt_summary(user_id)
     return {
-        "account_data": [_projection(ad) for ad in account_data],
+        "account_data": [_projection(ad, seam_maps) for ad in account_data],
         "grouped_accounts": {
             label: [_get(ad, "account").id for ad in group]
             for label, group in data["grouped_accounts"].items()
@@ -403,7 +467,7 @@ def _dump_user(user_id):
         # X-w2 and the figure was RENAMED (ruling R-CH), so both spellings are
         # read here -- this file's own tolerance for the shape change it is
         # measuring, which is what lets it produce the same blob on the HEAD
-        # tree and the new one.  It goes when the next step deletes X-w's
+        # tree and the new one.  It goes when plan step X-x deletes X-w's
         # tolerances, exactly as this file's header requires.
         "archived_accounts": [
             {
@@ -420,7 +484,7 @@ def _dump_user(user_id):
         # The region became a frozen ``_NetWorthRegion`` at plan step X-w3, with
         # the four today figures COMPOSED on a ``today`` field where they used
         # to be spread flat (ruling R-CI).  ``_today_figures`` normalizes both,
-        # so the blob is the same on either tree; X-w5 deletes it.
+        # so the blob is the same on either tree; plan step X-x deletes it.
         "net_worth": {
             **_today_figures(data["net_worth"]),
             "series": _series(_get(data["net_worth"], "series")),
@@ -452,7 +516,9 @@ def _dump_user(user_id):
             )
         ],
         "narrow_balance_cells": {
-            str(_get(ad, "account").id): _cell(user_id, _get(ad, "account").id)
+            str(_get(ad, "account").id): _cell(
+                user_id, _get(ad, "account").id, seam_maps,
+            )
             for ad in account_data
         },
         "tracks_section": _tracks(
@@ -461,8 +527,13 @@ def _dump_user(user_id):
     }
 
 
-def _cell(user_id, account_id):
-    """The cockpit balance cell for one account, whichever shape it returns."""
+def _cell(user_id, account_id, seam_maps):
+    """The cockpit balance cell for one account -- the NARROW projection.
+
+    Its dense map is dumped too since plan step X-w6 (ruling R-CM): this is the
+    one narrow producer that returns a projection, so it is where a defect
+    confined to a narrow path's ``balances`` becomes visible to this file.
+    """
     cell = savings_dashboard_service.compute_account_balance_cell(
         user_id, account_id,
     )
@@ -471,6 +542,7 @@ def _cell(user_id, account_id):
     return {
         "account_id": _get(cell, "account").id,
         "current_balance": _money(_get(cell, "current_balance")),
+        "balances": _balances(cell, seam_maps),
         "is_liability": _get(cell, "is_liability"),
     }
 

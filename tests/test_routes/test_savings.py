@@ -9,6 +9,7 @@ Tests for the savings dashboard and goal CRUD endpoints:
   - Double-submit (unique constraint on user+account+name)
 """
 
+import re
 from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -3792,16 +3793,27 @@ class TestCockpitSection:
         (that lives in the page) -- proving it is the fragment the
         balanceChanged swap consumes, not the whole page.
 
-        **The hero's FIGURE is asserted, not just its label** (plan step X-w3).
-        It asserted ``"Net worth" in body`` and nothing else, so the four
-        producer fields the hero and its chips render could be renamed -- as
-        ruling R-CI renames them -- and the template would go on reading the old
-        ones: Jinja answers a missing attribute with ``Undefined``, which
-        renders as an EMPTY string, and typing the producer does NOT change
-        that.  A cockpit reporting a blank net worth on a $1,000 account would
-        have passed every arm of this test.  The sibling test below states this
-        rule in terms for the loan caption; the hero was the surface it had not
-        reached.
+        **The hero's FIGURE is asserted at its own anchor** (plan step X-w3,
+        rewritten at X-w6 after both adversarial reviews found the first
+        version could not fire).
+
+        Two things were wrong with that version and both are worth recording.
+        Its arm was ``body.count("$1,000.00") >= 3``, and the fragment carries
+        SEVEN occurrences of that figure -- at least three from outside the
+        hero region (the account's balance cell, the category group-header
+        subtotal, the legend's asset band), so all four hero reads could point
+        at the wrong-but-present field and the count still passed.  That is
+        ruling R-CF's class, a control that cannot fail, committed one step
+        after R-CF.  And its stated reason was false: Jinja renders a bare
+        ``{{ value }}`` on a missing attribute as an empty string, but the
+        ``money`` macro opens with ``{% if value < 0 %}`` and
+        ``Undefined.__lt__`` RAISES -- so a renamed money field 500s and the
+        ``status_code == 200`` assertion above already covered that class.
+
+        What is left uncovered by the status check, and is what this test now
+        pins, is a producer returning the WRONG FIGURE: a hero reduced over an
+        empty set reports ``$0.00`` with a 200.  So each figure is matched
+        inside the element that names it.
         """
         with app.app_context():
             acct_id = seed_user["account"].id
@@ -3813,12 +3825,22 @@ class TestCockpitSection:
             assert "Net worth" in body
             # Seed Checking $1,000.00, no liabilities: hero == assets ==
             # liquid == $1,000.00, and the liability chip is a real $0.00.
-            assert body.count("$1,000.00") >= 3, (
-                "the hero and its Total assets / Liquid chips must render the "
-                "figure, not an empty Undefined"
-            )
-            assert "Total liabilities" in body
-            assert "$0.00" in body
+            # Each figure is anchored to the element that renders it, so an
+            # occurrence elsewhere on the page cannot satisfy the arm.
+            assert re.search(
+                r'nw-hero__num[^>]*>\s*\$1,000\.00', body,
+            ), "the net-worth hero did not render $1,000.00"
+            for label, figure in (
+                ("Total assets", "$1,000.00"),
+                ("Total liabilities", "$0.00"),
+                ("Liquid", "$1,000.00"),
+            ):
+                assert re.search(
+                    rf'pulse-chip__label">{label}</div>\s*'
+                    rf'<div class="pulse-chip__value[^>]*>\s*'
+                    rf'{re.escape(figure)}',
+                    body,
+                ), f"the {label} chip did not render {figure}"
             assert f'id="acct-balance-{acct_id}"' in body
             assert 'id="cockpit-section"' not in body
 

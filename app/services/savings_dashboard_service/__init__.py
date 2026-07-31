@@ -27,7 +27,8 @@ Module map:
   ``AccountProjection`` is deliberately NOT re-exported below: the route
   receives one from ``compute_account_balance_cell`` and forwards it to a
   template without naming the type, so it has no importer outside this package
-  -- the same test ``DebtSummary`` passes and ``DtiMetrics`` failed.
+  -- the same test ``DebtSummary``, ``GoalProgress`` and ``NetWorthRegion``
+  pass and ``DtiMetrics`` failed.
 * :mod:`app.services.savings_dashboard_service._data` -- batch data
   loaders (accounts / scenario / periods / transactions, the
   account-type parameter maps, archived accounts).
@@ -81,13 +82,26 @@ Module map:
 # route's ``_DebtTrackView`` annotation (``app/routes/dashboard.py``) -- and one
 # live consumer is all this line has ever needed.
 #
-# ONLY that one.  The first draft of this block also exported ``DtiMetrics``
-# and ``LoanPayoffOutlook``, and X-s3's adversarial review found neither had a
+# The first draft of this block also exported ``DtiMetrics`` and
+# ``LoanPayoffOutlook``, and X-s3's adversarial review found neither had a
 # single importer anywhere -- their in-package users take them from
 # ``_debt_line`` / ``_metrics`` directly.  Exporting a name against a consumer
-# that might one day want it is the defect this very step deletes elsewhere;
+# that might one day want it is the defect that step deleted elsewhere;
 # a future outside consumer adds its own line here, with a caller to point at.
+#
+# **``GoalProgress`` and ``NetWorthRegion`` joined at plan step X-w6** (ruling
+# R-CN), because X-w put both in exactly ``DebtSummary``'s position and X-w's
+# adversarial review found the rule stated here and not applied.
+# ``compute_goal_progress`` publicly returns ``list[GoalProgress]`` and
+# ``dashboard_pulse_service`` consumes it; ``NetWorthRegion`` is what
+# ``compute_dashboard_data`` puts under ``net_worth`` and what
+# ``app/routes/savings.py`` and both cockpit templates read.  Leaving them
+# unexported is what made two signatures drop their type hints, against
+# ``.claude/rules/coding.md`` -- an out-of-package annotation had no name it was
+# allowed to say.
+from app.services.savings_dashboard_service._goals import GoalProgress
 from app.services.savings_dashboard_service._metrics import DebtSummary
+from app.services.savings_dashboard_service._net_worth import NetWorthRegion
 from app.services.savings_dashboard_service._orchestrator import (
     compute_account_balance_cell,
     compute_dashboard_data,
@@ -97,6 +111,8 @@ from app.services.savings_dashboard_service._orchestrator import (
 
 __all__ = [
     "DebtSummary",
+    "GoalProgress",
+    "NetWorthRegion",
     "compute_account_balance_cell",
     "compute_dashboard_data",
     "compute_debt_summary",

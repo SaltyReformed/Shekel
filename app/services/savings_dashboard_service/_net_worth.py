@@ -19,15 +19,23 @@ balances themselves.  (:func:`compute_property_equity` is the exception that
 proves the boundary: it is an EQUITY figure, not a net-worth balance, and it
 delegates to :mod:`app.services.home_equity_service`.)
 
-**Every producer here takes ONE shape: the per-account
-:class:`~.._types.AccountProjection` list** (plan step X-w, ruling R-CG,
-finding N-114).  The today figures took it and the series took a parallel
+**Every producer here that reduces over BALANCES takes ONE shape: the
+per-account :class:`~.._types.AccountProjection` list** (plan step X-w, ruling
+R-CG, finding N-114) -- the today figures, the trend series and the card
+sparklines.  The today figures took it and the series took a parallel
 ``{account_id, balances, is_liability}`` dict -- the same accounts, on the same
 render, in two containers, the second STORING the liability rule the first
 derives.  ``build_account_net_worth_maps`` was this module's builder for that
 dict and is deleted; the dense period map is now
 :attr:`~.._types.AccountProjection.balances`, built once by the seam inside
 :func:`.._projections._seam_batches` for every kind including loans.
+
+The two producers that take raw ``Account`` rows are NOT balance reductions and
+that is why they are exempt: :func:`build_trend_periods` computes a WINDOW from
+each account's kind and loan schedule, and :func:`compute_property_equity`
+resolves an EQUITY figure through another service.  (This paragraph claimed
+"every producer here" until plan step X-w6's adversarial review counted them --
+the same overclaim X-t2 made about this package's seam doors, two steps on.)
 
 The maps are still built over ALL periods, never a forward sub-window.  Since
 plan step X-g2b every kind is a TOTAL fold, so no path NEEDS the dense domain to
@@ -45,8 +53,8 @@ from decimal import Decimal
 
 from app.models.account import Account
 from app.models.pay_period import PayPeriod
-from app.services.home_equity_service import HomeEquity
 from app.services import home_equity_service
+from app.services.home_equity_service import HomeEquity
 from app.services.amortization_engine import AmortizationRow
 from app.services.balance_at import BalanceContext
 from app.services.account_projection import (
@@ -94,17 +102,29 @@ class NetWorthToday:
 
 @dataclass(frozen=True)
 class TrendPoint:
-    """One x-position on the ``2 years`` trend: a pay period, described.
+    """One x-position on the ``2 years`` trend: the pay period's end date.
 
-    The period descriptors the chart's labels are built from.  Both fields are
-    read at the presentation boundary (``routes/savings._serialize_net_worth_chart``
-    formats ``end_date``; ``period_index`` identifies the point), which is the
-    same "publish only what is read" rule the Horizon's remove-a-key gate
-    enforces one payload over.
+    **It carried a ``period_index`` too, and plan step X-w6 deleted it**
+    (ruling R-CL).  Nothing in ``app/`` read it: the presentation boundary
+    (:func:`app.routes.savings._serialize_net_worth_chart`) formats
+    ``end_date`` and nothing else, the cockpit tests the list for truthiness,
+    and no script names it -- so it was a published field with no consumer,
+    which is finding N-100's defect, written by the same step that deleted
+    ``goal_mode_id`` for exactly that.  X-s3's precedent, one step later: that
+    step's own review found ``DtiMetrics.gross_monthly_income`` had no reader
+    and the field it had just written went.
+
+    The RECORD survives its one field, deliberately.  The name is what says the
+    trend's x-axis is a DATE per pay period rather than a bare list of dates,
+    and both the serializer and the real-data harness read it by that name; a
+    ``list[date]`` would save a line and lose the sentence.
+
+    Attributes:
+        end_date: The pay period's end date -- the chart's x-axis label, and
+            the only field any consumer reads.
     """
 
     end_date: date
-    period_index: int
 
 
 @dataclass(frozen=True)
@@ -160,6 +180,44 @@ class PropertyEquity:
     account: Account
     equity: HomeEquity
 
+
+@dataclass(frozen=True)
+class NetWorthRegion:
+    """The cockpit's whole net-worth region: today, the trend, the horizon.
+
+    A frozen value object since plan step X-w3 (ruling R-CI), and PUBLIC and
+    living beside its own two field types since plan step X-w6 (ruling R-CN).
+    It was ``_orchestrator._NetWorthRegion`` -- the one type the route and both
+    cockpit templates actually read, and the only value object this arc's step
+    created that was underscore-private, in a module its fields' types did not
+    live in.  That placement is what forced
+    :func:`app.routes.savings._serialize_net_worth_chart` to drop its parameter
+    annotation, against the coding standard.  It was a dict
+    assembled by SPREADING one producer's four keys beside two more
+    (``{**today, "series": ..., "horizon": ...}``), which is why "what does this
+    region publish" needed three producers and a spread operator to answer, and
+    why the template's own contract lived in a header comment.
+
+    The today figures are COMPOSED rather than flattened, which is ruling
+    R-AW's rule: a bundle that mirrors another value object field by field goes
+    stale the moment that object grows, and this package has paid for that twice
+    (findings B-16 and N-104).
+
+    Attributes:
+        today: The :class:`NetWorthToday` hero and its chips.
+        series: The ``2 years`` :class:`NetWorthSeries`.
+        horizon: The ``Horizon`` range from
+            :func:`~.._horizon.build_horizon`, or ``None`` when the user has no
+            pay periods.  **Deliberately still a dict** (ruling R-CI): its key
+            set at EVERY level is pinned by ``TestHorizonSerialization``, which
+            removes each key in turn and requires the serializer to raise -- a
+            stronger contract than a dataclass, because it proves every
+            published key is READ.  Findings N-100 and N-104 bought that guard.
+    """
+
+    today: NetWorthToday
+    series: NetWorthSeries
+    horizon: dict | None
 
 # The net-worth composition bands: the cockpit CATEGORIES, split into the
 # asset side and the one liability band.  The asset-side bands sum to the asset
@@ -276,10 +334,23 @@ def _sum_composition_at_period(
 
     Returns:
         ``{band: Decimal}`` for every band in :data:`_COMPOSITION_BANDS`.
+
+    Raises:
+        KeyError: When an account's dense map has no column for *period_id*, or
+            when the category map has no entry for the account.  Both are
+            producer defects, never display states -- see the balance read
+            below.
     """
     sums = {band: ZERO for band in _COMPOSITION_BANDS}
     for ad in account_data:
-        bal = ad.balances.get(period_id, ZERO)
+        # INDEXED, not ``.get(period_id, ZERO)`` (plan step X-w6, ruling R-CK).
+        # The trend window is a slice of the SAME period list the seam built
+        # every map over, so a missing column is a defect in the seam or in the
+        # window -- and answering it with ZERO banks a real account's balance at
+        # nothing for that band, so the composition silently stops reconciling
+        # to the hero the page asserts it equals.  Ruling R-CJ's rule, which
+        # X-w1 applied to the category map one line down and not to this one.
+        bal = ad.balances[period_id]
         if ad.is_liability:
             sums[_LIABILITY_BAND] += abs(bal)
         else:
@@ -567,8 +638,13 @@ def compute_net_worth_series(
             built ONCE** (plan step X-w3, ruling R-CI): the caller used to
             MUTATE it onto the returned dict, so the series a template read was
             never fully constructed in any one place.  The window and its index
-            come from one producer, so a caller cannot pass an index for a
-            different window than the periods it hands over.
+            come from ONE producer (:func:`build_trend_periods` returns both),
+            so the only caller hands over a matched pair.  (This said "a caller
+            CANNOT pass an index for a different window"; nothing in the
+            signature enforces that, and this step's own edge-case test passes
+            ``([], [], {}, 0)``.  Corrected at plan step X-w6 -- killing the
+            post-return mutation is the real gain, and overstating it as a
+            construction guarantee is the class this arc keeps paying for.)
 
     Returns:
         The :class:`NetWorthSeries` for this window.
@@ -585,9 +661,7 @@ def compute_net_worth_series(
         )
         period_assets = sum((sums[band] for band in _ASSET_BANDS), ZERO)
         period_liabilities = sums[_LIABILITY_BAND]
-        periods.append(TrendPoint(
-            end_date=period.end_date, period_index=period.period_index,
-        ))
+        periods.append(TrendPoint(end_date=period.end_date))
         net.append(period_assets - period_liabilities)
         for band in _COMPOSITION_BANDS:
             composition[band].append(sums[band])
@@ -726,12 +800,23 @@ def compute_sparklines(
         ``{account_id: [Decimal, ...]}`` -- the forward balance series for
         each informative account; empty when none qualify.  The route
         normalizes each series to SVG geometry.
+
+    Raises:
+        KeyError: When an account's dense map has no column for a period in the
+            forward window -- a producer defect, never a display state.
     """
     window = forward_periods[:_SPARKLINE_PERIODS]
     result: dict[int, list[Decimal]] = {}
     for ad in account_data:
-        balances = ad.balances
-        series = [balances[p.id] for p in window if p.id in balances]
+        # INDEXED over the WHOLE window, with no ``if p.id in balances`` filter
+        # (plan step X-w6, ruling R-CK).  The filter was the third spelling of
+        # "is this map total?" in this module, and it was the most dangerous:
+        # :func:`app.routes.savings._serialize_sparklines` normalizes on series
+        # LENGTH (``x = (index / last) * _SPARK_VIEW_W``), so silently dropping
+        # one point does not leave a gap -- it moves EVERY remaining point on
+        # that card.  The forward window is a slice of the same period list the
+        # maps are built over, so a missing column is a defect and says so.
+        series = [ad.balances[p.id] for p in window]
         if _is_informative(series):
             result[ad.account.id] = series
     return result

@@ -32,6 +32,7 @@ from app.routes._recurrence_form_helpers import (
 from app.routes._redirect_target import RedirectTarget
 from app.schemas.validation import SavingsGoalCreateSchema, SavingsGoalUpdateSchema
 from app.services import account_service, savings_dashboard_service
+from app.services.savings_dashboard_service import NetWorthRegion
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +120,7 @@ def _serialize_horizon(horizon: dict | None) -> dict | None:
     spent by the time the payload is built -- is not carried across.
 
     Args:
-        horizon: The ``net_worth["horizon"]`` dict from
+        horizon: The ``net_worth.horizon`` dict from
             :func:`~app.services.savings_dashboard_service._horizon.build_horizon`
             (``dates`` / ``net`` / ``composition`` / ``milestones`` /
             ``current_index`` -- its complete key set), or ``None``.
@@ -150,7 +151,7 @@ def _serialize_horizon(horizon: dict | None) -> dict | None:
     }
 
 
-def _serialize_net_worth_chart(net_worth) -> str:
+def _serialize_net_worth_chart(net_worth: NetWorthRegion) -> str:
     """Serialize BOTH net-worth ranges into one Chart.js JSON payload.
 
     The single Chart.js serialization boundary for the cockpit's net-worth

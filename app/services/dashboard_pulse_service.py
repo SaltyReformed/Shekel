@@ -30,9 +30,12 @@ extracting cohesive dashboard concerns into their own modules.
 Pure aggregation service -- no Flask imports, no database writes.
 """
 
+from __future__ import annotations
+
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from itertools import groupby
+from typing import TYPE_CHECKING
 
 from app.extensions import db
 from app.models.account import Account
@@ -52,6 +55,17 @@ from app.services.dashboard_service import (
 from app.services.entry_service import compute_remaining
 from app.utils.dates import to_display_date
 from app.utils.money import round_money
+
+if TYPE_CHECKING:
+    # Type-only, and that is load-bearing here: the runtime import of
+    # ``savings_dashboard_service`` inside ``compute_tracks_section`` is
+    # DEFERRED on purpose (it pulls the heaviest service chain, +27 modules
+    # measured), so annotating at module scope would undo a measured decision.
+    # ``GoalProgress`` is the package's PUBLIC re-export as of plan step X-w6
+    # (ruling R-CN), not a private module name, so this is the façade the
+    # W9910 package-privacy checker asks for -- the type hint the coding
+    # standard asks for, at no import cost.
+    from app.services.savings_dashboard_service import GoalProgress
 
 _ZERO = Decimal("0")
 
@@ -851,7 +865,7 @@ def compute_tracks_section(user_id: int) -> dict:
     }
 
 
-def _track_goal_datum(goal_datum) -> dict:
+def _track_goal_datum(goal_datum: GoalProgress) -> dict:
     """Reshape one ``compute_goal_progress`` entry into the metro-track contract.
 
     Pulls only the fields the savings track renders -- the goal's name and

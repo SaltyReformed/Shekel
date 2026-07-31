@@ -30,7 +30,11 @@ class GoalProgress:  # pylint: disable=too-many-instance-attributes
     contract was stated only in two ``Returns:`` blocks that had to be kept in
     step with each other by hand.
 
-    **It published a TWELFTH key that nothing read** (plan step X-w4).
+    **One of those eleven keys was read by NOTHING, and it did not become a
+    field** -- eleven keys in, ten fields out.  (This said "a TWELFTH key" until
+    plan step X-w6's adversarial review recounted the dict it describes, which
+    is the "a count in a docstring is a claim" class inside the paragraph that
+    deletes a field for being one.)
     ``goal_mode_id`` was a straight copy of ``goal.goal_mode_id`` -- one fact
     under two keys, on a record that already carries the goal -- and an AST
     census over ``app/`` and ``tests/`` found ZERO readers of the copy: every

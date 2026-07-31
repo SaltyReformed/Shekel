@@ -25,11 +25,18 @@
    fields silently -- Jinja resolves a missing attribute to Undefined, which is
    falsy, so the liability ink would simply vanish and an anchor-cache figure
    would render as a seam balance.  The archived-account drawer in
-   dashboard.html is exactly such a loop (its rows are {account,
-   current_balance} dicts whose balance is Account.current_anchor_balance --
-   which finding N-103 says is not a loan's balance at all); its variable is
-   named ``archived`` for that reason (plan step X-t5, out of X-t's adversarial
-   design review).
+   dashboard.html is exactly such a loop; its variable is named ``archived`` for
+   that reason (plan step X-t5, out of X-t's adversarial design review).
+
+   Its rows are frozen ArchivedAccount(account, last_anchor_balance) values as
+   of plan step X-w2 (ruling R-CH) -- they were {account, current_balance} dicts,
+   and the RENAME is what closes the hazard this paragraph describes: the
+   balance there is Account.current_anchor_balance (which finding N-103 says is
+   not a loan's balance at all), so it no longer answers to the name this
+   partial's seam-derived figure uses.  A cross-include would now render nothing
+   rather than the wrong figure under the right name. #}
+{# (This comment still described the rows as dicts one step after they stopped
+   being dicts; corrected at plan step X-w6.)
 
    Contract (mirrors the dashboard hero dashboard/_pulse_balance.html, but
    account-scoped because the cockpit is multi-card):

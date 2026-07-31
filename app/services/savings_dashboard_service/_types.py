@@ -261,14 +261,23 @@ class AccountProjection:  # pylint: disable=too-many-instance-attributes
             Empty for a loan (a loan tile renders no horizons) and for an
             account with no current period.
 
-            **STORED although it is three samples of** :attr:`balances`, for
-            the reason :attr:`needs_setup` is stored: deriving it needs the
-            current period and the pay-period calendar, which this record does
-            not carry and which it would have to grow a second time for every
-            consumer.  A property that takes arguments is a method, and a
-            method here would put the horizon labels' rule on a value object
-            instead of in :mod:`app.utils.period_projections` where the grid
-            reads it too.
+            **STORED although it is three samples of** :attr:`balances`, and
+            that IS a second copy of facts this record already holds -- the
+            normalization cost is named here rather than argued away (plan step
+            X-w6, out of the adversarial correctness review, which pointed out
+            that the argument below is about the SIGNATURE and not about the
+            duplication).
+
+            What is bought for it: deriving these three needs the current period
+            and the pay-period calendar, which this record does not carry, so a
+            derived form is a METHOD taking two arguments -- and a method here
+            would put the horizon-label rule on a value object instead of in
+            :mod:`app.utils.period_projections`, where the grid reads the same
+            rule.  The copy cannot go stale within a render (both are written
+            once, from the same map, by the same builder), which is what makes
+            this a normalization smell rather than the two-containers defect
+            finding N-114 records.  The step that gives this record its periods
+            is the one that should collapse it.
         needs_setup: Whether the account flags ``has_parameters`` but its
             type-specific parameter row is missing -- a DIFFERENT question from
             "did it resolve as a loan", and answerable for an AMORTIZING account
@@ -419,13 +428,23 @@ class _SeamBatches:
             resolved as configured loans.  Membership IS "this account is a
             loan for this projection", and it is a SUBSET of ``balance_maps``'s
             keys: an account reaches the loan arm only when
-            ``params.loan_params_map`` holds a row for it, and
-            :func:`app.services.balance_at.loan_figures` resolves through the
-            same ``LoanParams`` query that map was built from, so the
-            "resolved as a loan for the map but not for the tile" state the
-            sentence here used to describe is unreachable rather than degraded
-            (traced at plan step X-w; ``_data._load_loan_params_and_escrow`` and
-            ``loan_loaders.load_loan_params`` issue the same filter).
+            ``params.loan_params_map`` holds a row for it, so the "resolved as a
+            loan for the map but not for the tile" state the sentence here used
+            to describe is unreachable rather than degraded.
+
+            **The proof first written here was wrong and is corrected** (plan
+            step X-w6, out of the adversarial design review).  It said
+            ``_data._load_loan_params_and_escrow`` and
+            ``loan_loaders.load_loan_params`` "issue the same filter"; they do
+            not -- the first restricts to accounts of a ``has_amortization``
+            TYPE and then queries ``LoanParams``, the second queries
+            ``LoanParams`` by ``account_id`` with no kind test at all.  The
+            conclusion holds on a different footing:
+            :func:`app.services.balance_at._resolution.configured_loan`
+            CONJOINS ``classify_account(...) is AMORTIZING`` with that same
+            params query, which reproduces the type filter the loader applies --
+            so membership in ``loan_params_map`` is exactly
+            ``configured_loan(...) is not None``.
     """
 
     balance_maps: dict[int, OrderedDict]

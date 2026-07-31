@@ -423,8 +423,10 @@ class TestIncomeRelativeGoalDashboard:
     ):
         """The goal record's field set is exactly what its consumers read.
 
-        It carried a twelfth key, ``goal_mode_id``, a straight copy of
-        ``goal.goal_mode_id`` on a record that already carries the goal.  An AST
+        One of the dict's eleven keys did not become a field: ``goal_mode_id``,
+        a straight copy of ``goal.goal_mode_id`` on a record that already
+        carries the goal.  (This said "a twelfth key" until plan step X-w6
+        recounted it -- eleven keys in, ten fields out.)  An AST
         census over ``app/`` and ``tests/`` found the copy had ZERO readers, so
         plan step X-w4 dropped it when the dict became a
         :class:`~...._goals.GoalProgress` -- finding N-100's
@@ -3219,10 +3221,17 @@ class TestNetWorthSeries:
             # current period (index 4) sits at position 4: 4 history points
             # precede it (indices 0, 1, 2, 3).
             assert series.current_index == 4
-            assert [p.period_index for p in series.periods[:4]] == [
-                0, 1, 2, 3,
+            # The window's IDENTITY, asserted through the field the chart
+            # actually reads.  It read ``p.period_index`` until plan step X-w6
+            # deleted that field for having no production consumer (ruling
+            # R-CL) -- and this test was its only meaningful reader, so the
+            # property it pinned moves onto ``end_date`` rather than being lost:
+            # the first four points ARE the four elapsed periods, and the fifth
+            # IS the current one.
+            assert [p.end_date for p in series.periods[:4]] == [
+                seed_periods_today[i].end_date for i in range(4)
             ]
-            assert series.periods[4].period_index == 4
+            assert series.periods[4].end_date == seed_periods_today[4].end_date
 
     def test_net_equals_assets_minus_liabilities_each_point(
         self, app, db, seed_user, seed_periods,
@@ -3383,10 +3392,15 @@ class TestNetWorthSeries:
             # No confirmed payment: 1000.00 (checking) - 240000.00 (mortgage).
             assert nw.today.net_worth == Decimal("-239000.00")
             # The tile and the trend's own 'today' point agree, to the cent.
+            # The message reads the SAME attributes the assertion does (plan
+            # step X-w6).  It kept the pre-X-w3 subscripts, which raise
+            # ``TypeError`` on the frozen region -- and an assert message is
+            # lazy, so it would have raised at the one moment it exists for:
+            # the moment the tile and the trend disagree.
             assert nw.series.net[current] == nw.today.net_worth, (
-                f"the /savings hero ({nw['net_worth']}) and the net-worth "
+                f"the /savings hero ({nw.today.net_worth}) and the net-worth "
                 f"trend's current-period point "
-                f"({nw['series']['net'][current]}) disagree; the page is "
+                f"({nw.series.net[current]}) disagree; the page is "
                 f"contradicting itself about the same loan on the same day"
             )
             # Amortization is real in the FUTURE, where the projection answers:
@@ -5414,6 +5428,93 @@ class TestTheProjectionShape:
             assert by_id[loan.id].balances[current.id] == (
                 by_id[loan.id].current_balance
             )
+
+
+class TestTheDenseMapIsTotalAndSaysSo:
+    """A missing period column FAILS LOUD at every reader of the dense map.
+
+    Plan step X-w6, ruling R-CK.  ``_net_worth`` ended plan step X-w1 asking
+    "is this map total over this window?" THREE ways: the projection's own read
+    INDEXED, the per-period composition reduction wrote
+    ``ad.balances.get(period_id, ZERO)``, and the sparkline producer wrote
+    ``[balances[p.id] for p in window if p.id in balances]``.
+
+    The two defaults are unreachable -- every window on this path is a slice of
+    the period list the seam builds each map over -- and they degrade in
+    opposite, silent, financially wrong directions if ever reached.  ``ZERO``
+    banks a real account's balance at nothing for that band, so the composition
+    stops reconciling to the hero the page asserts it equals.  The membership
+    filter SHORTENS the series, and ``_serialize_sparklines`` normalizes on
+    series LENGTH, so one dropped point moves every remaining point on the card.
+
+    These pin the loud behaviour, which is what the ``Raises: KeyError`` blocks
+    on all three readers claim and nothing asserted before this step.
+    """
+
+    @staticmethod
+    def _account(account_id=1):
+        """A stand-in account: only ``id`` and the liability classifier read it."""
+        from types import SimpleNamespace  # pylint: disable=import-outside-toplevel
+        return SimpleNamespace(id=account_id, account_type=None)
+
+    def test_the_composition_reduction_raises_on_a_missing_column(self, app):
+        """A period the map has no column for is a KeyError, not a silent $0."""
+        # pylint: disable=import-outside-toplevel
+        from app.services.savings_dashboard_service._net_worth import (
+            _sum_composition_at_period,
+        )
+        with app.app_context():
+            ad = _projection(
+                self._account(7), Decimal("100.00"), {1: Decimal("100.00")},
+            )
+            # Period 1 is present; period 2 is not.
+            assert _sum_composition_at_period(1, [ad], {7: "asset"})["asset"] == (
+                Decimal("100.00")
+            )
+            with pytest.raises(KeyError):
+                _sum_composition_at_period(2, [ad], {7: "asset"})
+
+    def test_the_sparkline_producer_raises_on_a_missing_column(self, app):
+        """A window point the map lacks is a KeyError, not a shorter series.
+
+        A shorter series is the dangerous answer: the route normalizes each
+        sparkline into a fixed viewBox by its own LENGTH, so silently dropping
+        one point re-positions every other point on that card.
+        """
+        # pylint: disable=import-outside-toplevel
+        from types import SimpleNamespace
+        from app.services.savings_dashboard_service._net_worth import (
+            compute_sparklines,
+        )
+        with app.app_context():
+            balances = {i: Decimal(str(1000 * i)) for i in range(1, 6)}
+            ad = _projection(self._account(8), Decimal("1000.00"), balances)
+            window = [SimpleNamespace(id=i) for i in range(1, 6)]
+            assert len(compute_sparklines([ad], window)[8]) == 5
+            # One period beyond the map's domain.
+            with pytest.raises(KeyError):
+                compute_sparklines([ad], window + [SimpleNamespace(id=99)])
+
+    def test_the_projection_read_raises_on_a_missing_current_period(self, app):
+        """``_current_balance_from_map`` states ``Raises: KeyError`` -- it does.
+
+        Its contract has said so since plan step X-v2 (ruling R-CA) and nothing
+        asserted it; this is the third reader of the same invariant, so it is
+        pinned with the other two.
+        """
+        # pylint: disable=import-outside-toplevel
+        from types import SimpleNamespace
+        from app.services.savings_dashboard_service._projections import (
+            _current_balance_from_map,
+        )
+        with app.app_context():
+            acct = SimpleNamespace(current_anchor_balance=Decimal("5.00"))
+            ctx = SimpleNamespace(current_period=SimpleNamespace(id=2))
+            assert _current_balance_from_map(
+                {2: Decimal("42.00")}, acct, ctx,
+            ) == Decimal("42.00")
+            with pytest.raises(KeyError):
+                _current_balance_from_map({1: Decimal("42.00")}, acct, ctx)
 
 
 def _with_badging_predicate(account_data):
