@@ -136,16 +136,19 @@ class TestCalculateSavingsMetrics:
         """Each unit is rounded ONCE from the raw ratio, not from the months.
 
         **The shape none of the cases above could see** (plan step X-z5, ruling
-        R-CS, finding N-120).  Every other test here uses an exactly-divisible
-        ratio -- 12000/2000, 24000/3000, 36000/1000, 100000/0.01, 0/2000 -- so
-        the rounded months EQUALS the raw ratio and both rounding rules give
-        byte-identical answers.  The whole class was invisible to this file
-        (Section 7.4: the fixture matrix must contain the shape the feature
-        exists for).
+        R-CS, finding N-120).  Every ratio asserted anywhere in this repository
+        divided EXACTLY -- 12000/2000, 24000/3000, 36000/1000 and 0/2000 here,
+        100000/0.01 in ``TestNegativeAndBoundaryPaths`` -- so the rounded months
+        equalled the raw ratio and both rounding rules gave byte-identical
+        answers.  The whole class was invisible to this file (Section 7.4: the
+        fixture matrix must contain the shape the feature exists for).  (Ruling
+        R-CS called these "all five ``TestCalculateSavingsMetrics`` cases"; the
+        class had six and one of the five is in the other class.  Corrected at
+        plan step X-z8 -- a count in a docstring is a claim.)
 
         The developer's own prod-shape figures, worked by hand:
 
-            raw months     = 4076.92 / 5667.63 = 0.7193347...
+            raw months     = 4076.92 / 5667.63 = 0.7193342...
             months_covered = 0.7193... -> 0.7
             paychecks      = 0.7193... * 26 / 12 = 1.55855... -> 1.6
             years          = 0.7193... / 12      = 0.05994...  -> 0.1
@@ -161,6 +164,38 @@ class TestCalculateSavingsMetrics:
         assert result.months_covered == Decimal("0.7")
         assert result.paychecks_covered == Decimal("1.6")
         assert result.years_covered == Decimal("0.1")
+
+    def test_years_covered_also_converts_from_the_raw_months(self):
+        """``years_covered`` has its own discriminating shape.
+
+        **Nothing gated it until plan step X-z8** (ruling R-CV), which is the
+        gap X-z's adversarial correctness review measured: every (savings,
+        expenses) pair asserted anywhere in this repository gave the IDENTICAL
+        ``years_covered`` under both rounding rules, so
+
+            years_covered=_to_coverage_grain(
+                _to_coverage_grain(months) / MONTHS_PER_YEAR)
+
+        passed all 7,668 tests.  X-z5 added the discriminating shape for
+        ``paychecks_covered`` and not for the unit beside it, while ruling
+        R-CS's own sweep had measured ``years_covered`` diverging in 4.2% of
+        shapes.
+
+            raw months     = 550 / 1000 = 0.55
+            months_covered = 0.55 -> 0.6      (half-up)
+            years          = 0.55 / 12 = 0.04583... -> 0.0
+
+        The double-rounded route gives 0.6 / 12 = 0.05 -> 0.1, so this case
+        renders a tenth of a year of runway that the money does not support.
+        """
+        result = calculate_savings_metrics(
+            savings_balance=Decimal("550"),
+            average_monthly_expenses=Decimal("1000"),
+        )
+        assert result.months_covered == Decimal("0.6")
+        assert result.years_covered == Decimal("0.0")
+        # paychecks: 0.55 * 26 / 12 = 1.19166... -> 1.2 (1.3 double-rounded).
+        assert result.paychecks_covered == Decimal("1.2")
 
     def test_the_worst_measured_double_rounding_gap(self):
         """The 0.2-paycheck case from the 40,817-shape sweep.

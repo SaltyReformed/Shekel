@@ -163,12 +163,80 @@ class TestTheTwoSpellingsAreOneAnswer:
         sharing a key would put two groups' money in one band; a category
         mapped to :data:`_OTHER_KEY` would make the fall-through
         indistinguishable from a real category.
+
+        The last line is ``x == x`` at this tree -- ``LIABILITY_KEY`` is
+        DEFINED as that subscript -- and is kept only against someone
+        re-spelling it as a literal that then drifts.  The assertion carrying
+        the weight is ``LIABILITY_KEY == "liability"`` in the band gate, which
+        pins the key the chart script, the stylesheet and the cockpit template
+        all spell out.  (X-z's adversarial review named the overstatement; the
+        line stays, the claim does not.)
         """
         keys = list(_CATEGORY_KEYS.values())
         assert len(set(keys)) == len(keys)
         assert _OTHER_KEY not in keys
         assert set(_CATEGORY_KEYS) == set(AcctCategoryEnum)
         assert _CATEGORY_KEYS[AcctCategoryEnum.LIABILITY] == LIABILITY_KEY
+
+    def test_every_key_the_mapping_names_has_a_display_slot(self):
+        """Every band a category can produce is in the display order.
+
+        **The precondition nothing asserted until plan step X-z8** (ruling
+        R-CV, out of X-z's adversarial design review):
+        :func:`~.._display._group_accounts_by_category` seeds its buckets from
+        ``_CATEGORY_ORDER`` and indexes them by ``category_key``, so a key with
+        no slot is a ``KeyError`` on ``/savings``.
+
+        **What holds it today is the DERIVATION, not this arm**, and that is
+        worth being exact about: ``_CATEGORY_ORDER``'s four real entries are
+        subscripts of ``_CATEGORY_KEYS``, so RENAMING a key moves both
+        together -- planting a rename fails nothing here, correctly.  What this
+        arm catches is the case the derivation cannot: a FIFTH
+        ``AcctCategoryEnum`` member given a ``_CATEGORY_KEYS`` entry (which the
+        injectivity arm above forces) and no line in ``_CATEGORY_ORDER``.  The
+        test below is the negative control -- it separates the two structures
+        at runtime and shows the grouping raising -- so the failure this arm
+        names is demonstrated rather than asserted.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.services.savings_dashboard_service import _display
+        assert set(_CATEGORY_KEYS.values()) | {_OTHER_KEY} <= set(
+            _display._CATEGORY_ORDER,  # pylint: disable=protected-access
+        )
+
+    def test_a_key_with_no_display_slot_fails_the_grouping_loudly(
+        self, app, db, seed_user,
+    ):
+        """A band outside the display order raises rather than losing money.
+
+        The negative control for the arm above, planted against the REAL
+        module.  It proves the precondition is load-bearing: without it the
+        grouping's bucket lookup is a ``KeyError`` on a live page, and the
+        alternative a future author might reach for -- a ``setdefault`` -- would
+        silently create a group the template has no label, icon, chart band or
+        CSS token for, which is finding N-108's defect one language back.
+        """
+        # pylint: disable=import-outside-toplevel,protected-access
+        from types import SimpleNamespace
+        from app.services.savings_dashboard_service import _display
+        with app.app_context():
+            projection = SimpleNamespace(
+                account=SimpleNamespace(id=1, account_type=None),
+                category=AcctCategoryEnum.ASSET,
+            )
+            original = _display._CATEGORY_KEYS
+            try:
+                _display._CATEGORY_KEYS = dict(original)
+                _display._CATEGORY_KEYS[AcctCategoryEnum.ASSET] = "crypto"
+                with pytest.raises(KeyError):
+                    _display._group_accounts_by_category([projection])
+            finally:
+                _display._CATEGORY_KEYS = original
+            # And with the mapping restored the same input groups cleanly, so
+            # the control discriminates rather than always raising.
+            assert list(
+                _display._group_accounts_by_category([projection]),
+            ) == ["asset"]
 
     @pytest.mark.parametrize("category", list(AcctCategoryEnum))
     def test_the_key_and_the_predicate_agree_for_every_category(

@@ -17,9 +17,11 @@ ZERO = Decimal("0.00")
 # The DISPLAY vocabulary: one key per modelled account category.  This module
 # owns the mapping and the order because both are display decisions; what an
 # account's category IS belongs to
-# :func:`app.services.account_category.account_category`, which is the only
-# place a ``category_id`` meets a cached reference id (plan step X-z, ruling
-# R-CP, finding N-118).
+# :func:`app.services.account_category.account_category`, the one classifier
+# every cockpit and net-worth surface reads (plan step X-z, ruling R-CP,
+# finding N-118).  It is NOT the only place in the application that compares a
+# ``category_id`` against a cached id -- see that module for the write-path
+# survivor finding N-122 owns.
 _CATEGORY_KEYS = {
     AcctCategoryEnum.ASSET: "asset",
     AcctCategoryEnum.LIABILITY: "liability",

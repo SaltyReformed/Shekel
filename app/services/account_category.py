@@ -1,17 +1,17 @@
 """
 Shekel Budget App -- the account-type CATEGORY classifier.
 
-The one place an account's ``account_type.category_id`` is compared against a
-cached reference-table id.  Every question the app asks about an account's
-category derives from :func:`account_category`'s single answer:
+The one home of the account-category vocabulary every NET-WORTH and cockpit
+surface classifies through.  Every category question those surfaces ask derives
+from :func:`account_category`'s single answer:
 
 * :func:`is_liability_account` -- the asset-vs-liability rule the net-worth
   reduction, the liability band, the danger ink and the revolving-debt figure
   all classify through, reached by every cockpit surface as
   :attr:`~app.services.savings_dashboard_service._types.AccountProjection.is_liability`;
-* :func:`~app.services.savings_dashboard_service._display.account_category_key`
+* :func:`~app.services.savings_dashboard_service._display.category_key`
   -- the five-key DISPLAY vocabulary (the grid's group cards, the net-worth
-  composition bands, the Horizon's bands), which looks this answer up in a
+  composition bands, the Horizon's bands), which NAMES this answer through a
   mapping that lives with the display order it belongs to.
 
 **Those two were independent id comparisons until plan step X-z** (ruling
@@ -19,9 +19,10 @@ R-CP, finding N-118), equivalent by READING and by nothing else.  The Horizon
 is where that cost the most: its three band producers must partition the
 account set exactly once and they selected with BOTH spellings, so an account
 the two classified differently would be counted twice with opposite signs --
-net worth wrong by double its balance -- or not at all.  Now
-``account_category_key(a) == LIABILITY_KEY`` iff ``is_liability_account(a)``,
-given only that the display mapping is injective, which the band gate asserts.
+net worth wrong by double its balance -- or not at all.  Since plan step X-z7
+the answer is resolved ONCE per account onto
+:attr:`~app.services.savings_dashboard_service._types.AccountProjection.category`
+and both questions read that member, so there is no second derivation left.
 
 **The module was ``net_worth_account_data`` until the same step** (ruling
 R-CQ).  It was named for a ``to_net_worth_account_data`` adapter that paired
@@ -49,11 +50,25 @@ from app.enums import AcctCategoryEnum
 def account_category(account) -> AcctCategoryEnum | None:
     """Return the :class:`~app.enums.AcctCategoryEnum` for *account*'s type.
 
-    The canonical account-category classifier, and the ONLY place in the
-    application where an ``account_type.category_id`` is compared against a
-    cached reference-table id (IDs for logic, never a ``.name`` string).  Every
-    other category question derives from this answer, so no two of them can
-    disagree about one account.
+    The canonical account-category classifier (IDs for logic, never a ``.name``
+    string).  Every category question the savings cockpit and the net-worth
+    surfaces ask derives from this answer, so no two of THEM can disagree about
+    one account.
+
+    **It is not the only place a ``category_id`` meets a cached id, and the
+    claim that it was is corrected here** (plan step X-z8, ruling R-CU; both of
+    plan step X-z's adversarial reviews found the overclaim independently).  The
+    survivor that matters is
+    :func:`app.services.ledger_account_service.ledger_class_id_for_category`,
+    which asks THIS function's asset-vs-liability question a second time on the
+    WRITE path -- it decides which ledger class a real account's paired posting
+    account carries.  The two agree by READING, which is finding N-118's own
+    condition; **finding N-122 owns it and plan step X-ab is where it is
+    merged**, because a re-class moves what an account's postings book against
+    and that is not a refactor's business.  Four more sites classify
+    RETIREMENT-or-INVESTMENT rather than liability (``account_service``'s
+    projection query, the cash-detail route guard, and two templates); they
+    answer a different question and are out of this rule's scope.
 
     Returns ``None`` -- "this account has no category the app models" -- in
     exactly two states, neither of which a healthy persisted row reaches:

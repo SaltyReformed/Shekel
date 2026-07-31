@@ -307,6 +307,17 @@ def calculate_savings_metrics(
     the rendered ``0.7`` by ``26/12`` gets ``1.5`` and the line beside it says
     ``1.6``.  Each figure is the best answer to its own question instead.
 
+    **The shape that cost can take, measured and ruled acceptable** (plan step
+    X-z8, ruling R-CW, out of X-z's adversarial design review, which found the
+    ruling had been taken without it): against the developer's own
+    ``$5,667.63``/mo baseline, any liquid savings between ``$130.80`` and
+    ``$283.38`` renders ``0.0 months / 0.1 paychecks / 0.0 years`` on ONE line,
+    where the old rule rendered three zeros.  Both figures are individually
+    right -- ``0.1`` paychecks IS the better answer for ``$200`` of savings --
+    and the line still reads as self-contradictory.  It stands because the
+    alternative is a figure 40% wrong about the money, and because near-zero
+    savings is where a reader is least likely to be converting between units.
+
     Args:
         savings_balance: The user's total liquid savings.
         average_monthly_expenses: The average monthly expense total.

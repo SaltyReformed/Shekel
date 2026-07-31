@@ -734,17 +734,28 @@ def _assemble_composition(
     and other bands from per-account param growth (:func:`_asset_bands`), and
     the liability band from the loan schedules (:func:`_liability_band`).
 
-    **The three producers must partition the account set EXACTLY once, and
-    since plan step X-z that is a property of construction** (ruling R-CP,
-    finding N-118).  Two of them select by category key and the third selects
-    by :attr:`~.._types.AccountProjection.is_liability`, which were independent
-    id comparisons: an account the two classified differently would land in an
-    asset band AND the liability band -- counted twice, with opposite signs, so
-    net worth is wrong by double its balance -- or in neither, vanishing from a
-    chart whose own docstring says its index 0 equals the net-worth hero.
-    Nothing would raise either way.  Both rules now derive from
-    :func:`app.services.account_category.account_category`, so
-    ``is_liability`` and ``category_key == LIABILITY_KEY`` are one answer.
+    **The three producers must partition the account set EXACTLY once.**  Two
+    of them band by category and the third selects by
+    :attr:`~.._types.AccountProjection.is_liability`; those were independent id
+    comparisons until plan step X-z, so an account the two classified
+    differently would land in an asset band AND the liability band -- counted
+    twice, with opposite signs, so net worth is wrong by double its balance --
+    or in neither, vanishing from a chart whose own docstring says its index 0
+    equals the net-worth hero.  Nothing would raise either way.  Both now read
+    ONE member off the projection (ruling R-CT), so for the accounts in
+    ``account_data`` the partition holds by construction.
+
+    **One seam remains and it is named rather than claimed away** (plan step
+    X-z8, ruling R-CV, out of X-z's adversarial design review, which found this
+    paragraph overstating what it had).  :func:`_retirement_investment_bands`
+    iterates the /retirement ENGINE's own account set, selected by a SQL
+    category filter in ``account_service``, not by this module's classifier; it
+    reconciles that set against the projections' categories and skips an account
+    that is in neither band.  The two selections agree because the engine's
+    filter names the same two categories -- by reading, not by construction --
+    so an account the engine loads and this page does not classify as
+    retirement-or-investment is dropped from the composition silently.  That is
+    the write-path shape finding N-122 records, one surface over.
     ``test_net_worth_band_vocabulary`` pins the complementary half: that the
     three producers' BANDS are disjoint and exhaust the composition.
 

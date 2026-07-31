@@ -232,8 +232,8 @@ class NetWorthRegion:
 #
 # DERIVED from the display vocabulary rather than restated (plan step X-t3,
 # finding N-108).  A band IS a category key
-# (:func:`~app.services.savings_dashboard_service._display.account_category_key`
-# assigns one per account), so listing them again here made the same vocabulary
+# (:func:`~app.services.savings_dashboard_service._display.category_key` names
+# one per account), so listing them again here made the same vocabulary
 # answerable two ways in one package -- and a band this producer sums that the
 # grid does not group by would put money in a chart with no card behind it.
 # The categories themselves come from :class:`~app.enums.AcctCategoryEnum` plus

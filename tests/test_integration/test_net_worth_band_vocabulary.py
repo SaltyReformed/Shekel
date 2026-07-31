@@ -279,22 +279,32 @@ class TestBandVocabulary:
         has one home now (``_display.LIABILITY_KEY``); Jinja cannot import it,
         which is exactly the situation this file exists for.
 
-        Asserts the SET of compared keys is a subset of the composition bands
-        AND that the liability key is among them, so both a renamed key and a
-        typo fail here.
+        Asserts the compared keys are a subset of the composition bands AND
+        that the list is EXACTLY the two liability comparisons -- so a renamed
+        key, a typo, a site moved to another band, and a site deleted all fail
+        here.  The first draft asserted only subset + membership and three of
+        those four survived it (see :class:`TestTheGateItself`).
         """
         source = _read(COCKPIT_PATH)
         compared = _jinja_category_comparisons(source)
-        assert compared, (
-            "no `category_name == '<key>'` comparison found in "
-            f"{COCKPIT_PATH} -- did the group loop change shape? "
-            "This arm cannot grade what it cannot find."
-        )
         assert set(compared) <= set(_COMPOSITION_BANDS), (
             f"cockpit compares category_name to {sorted(set(compared))}, "
             f"which is not a subset of {sorted(_COMPOSITION_BANDS)}"
         )
-        assert LIABILITY_KEY in compared
+        # THE COUNT, which is what the list return exists for.  The first
+        # draft of this arm asserted only non-empty + subset + membership, and
+        # both of plan step X-z's adversarial reviewers independently showed
+        # three realistic mutants surviving it: deleting the debt-footer guard
+        # (leaves ``['liability']``), moving the danger ink to the Assets card
+        # (leaves ``['asset', 'liability']``), and deleting the danger ink.
+        # ``TestTheGateItself`` runs all three against the REAL template.
+        assert compared == [LIABILITY_KEY, LIABILITY_KEY], (
+            f"expected exactly two `category_name == '{LIABILITY_KEY}'` "
+            f"comparisons in {COCKPIT_PATH} -- the Liabilities group's danger "
+            f"subtotal and the debt-summary footer's guard -- found "
+            f"{compared!r}.  A site that moved to another band, or vanished, "
+            "takes a live money-display rule with it."
+        )
 
     def test_the_horizon_projects_every_band_it_publishes(self):
         """The Horizon's three band producers EXHAUST the composition.
@@ -424,26 +434,58 @@ class TestTheGateItself:
         assert _jinja_category_comparisons(planted) == ["liability", "asset"]
 
     def test_the_category_arm_fires_on_the_real_template(self):
-        """A renamed key in the REAL cockpit fails the arm, not a synthetic twin.
+        """Four mutants of the REAL cockpit each fail the arm, not a twin.
 
         Section 8's "a gate's pattern must be exercised against the artifact it
         grades": X-u's ledger-count arm matched its synthetic control and the
-        live document NOWHERE, and passed a planted defect clean.  So this
-        plants the defect in ``savings/_cockpit.html`` itself -- read, mutated
-        in memory, never written -- and requires both halves of the arm to
-        reject it.
+        live document NOWHERE, and passed a planted defect clean.  So these
+        plant the defect in ``savings/_cockpit.html`` itself -- read, mutated in
+        memory, never written.
+
+        **THREE OF THE FOUR SURVIVED THE FIRST DRAFT OF THIS ARM**, and both of
+        plan step X-z's adversarial reviewers found them independently.  The
+        draft asserted non-empty + subset + ``LIABILITY_KEY in compared``, so
+        anything that left one liability comparison standing passed -- including
+        deleting the guard on the whole debt-summary footer, which is the
+        failure the arm's own docstring names as its reason for existing.
         """
         source = _read(COCKPIT_PATH)
-        renamed = source.replace(
-            f"category_name == '{LIABILITY_KEY}'", "category_name == 'debt'",
+        guard = f"category_name == '{LIABILITY_KEY}'"
+        assert source.count(guard) == 2, (
+            "the mutants below are written against a template that spells the "
+            f"guard {guard!r} twice; found {source.count(guard)}"
         )
-        assert renamed != source, (
-            "the planted rename changed nothing -- the arm's pattern and this "
-            "control disagree about how the comparison is written"
-        )
-        compared = _jinja_category_comparisons(renamed)
-        assert LIABILITY_KEY not in compared
-        assert not set(compared) <= set(_COMPOSITION_BANDS)
+
+        def _fails(mutated: str) -> bool:
+            """Whether the arm's assertions reject *mutated*."""
+            compared = _jinja_category_comparisons(mutated)
+            return not (
+                set(compared) <= set(_COMPOSITION_BANDS)
+                and compared == [LIABILITY_KEY, LIABILITY_KEY]
+            )
+
+        # 1. Both sites renamed to a non-band -- the only one the first draft
+        #    caught, because it breaks the subset arm.
+        assert _fails(source.replace(guard, "category_name == 'debt'"))
+        # 2. The debt-summary footer's guard DELETED: the footer's monthly
+        #    payments, average rate and payoff outlook render under EVERY
+        #    category card.  Leaves ``['liability']``.
+        assert _fails(source.replace(
+            f"{guard} and debt_summary", "debt_summary", 1,
+        ))
+        # 3. The danger subtotal moved to the Assets card: the Assets total
+        #    takes the liability danger token and the Liabilities total renders
+        #    plain.  Leaves ``['asset', 'liability']`` -- a valid band, so the
+        #    subset arm cannot see it.
+        assert _fails(source.replace(guard, "category_name == 'asset'", 1))
+        # 4. One site renamed to another VALID band rather than deleted.
+        assert _fails(source.replace(
+            f"{guard} and debt_summary",
+            "category_name == 'retirement' and debt_summary", 1,
+        ))
+        # And the unmutated template passes, so these prove discrimination
+        # rather than an assertion that rejects everything.
+        assert not _fails(source)
 
     def test_a_moved_file_fails_loudly(self):
         """A missing source is an assertion, never a silently empty scan."""

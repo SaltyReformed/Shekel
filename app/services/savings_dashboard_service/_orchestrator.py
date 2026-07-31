@@ -525,7 +525,8 @@ def _compute_cockpit_grid_section(
 
     **The grouping no longer CLASSIFIES** (plan steps X-z2 and X-z7).  It
     bucketed each account by calling the classifier once per category label --
-    5N calls, 40 for 8 accounts -- then briefly read a map this function was
+    5N calls, 40 for 8 accounts, on top of the N-call map the net-worth region
+    built, for 48 on the render -- then briefly read a map this function was
     handed, and now reads the category each projection already carries.
 
     Args:
