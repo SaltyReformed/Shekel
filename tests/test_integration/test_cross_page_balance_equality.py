@@ -63,7 +63,7 @@ Commit 11 specification.
 """
 
 import re
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -84,6 +84,67 @@ from app.services.savings_dashboard_service._net_worth import (
     _ASSET_BANDS,
     _LIABILITY_BAND,
 )
+from tests._test_helpers import freeze_today
+
+
+@pytest.fixture(autouse=True)
+def _freeze_today_mid_month(monkeypatch):
+    """Run this module MID-MONTH, because its periods are calendar months.
+
+    **Found 2026-07-31 with six of this module's tests red on that day, at
+    ``HEAD`` and at every commit for weeks, while CI had last been green on
+    2026-07-28.**  ``_build_cross_page_calendar_periods`` builds one period per
+    calendar month and the anchor is the month containing today, so on the LAST
+    day of any month ``date.today() == anchor.end_date`` -- and every
+    hand-computed ``expected_balance`` in ``_CASES`` assumes today is inside its
+    period, not on its final day.  The suite was a time bomb that fired roughly
+    12 days a year and blocked the merge gate on each of them.
+
+    **The production behaviour it trips over was MEASURED CORRECT and is NOT
+    changed**, which is the only reason freezing the clock here is a fix and not
+    a cover-up.  Ruling R-G lands a still-projected row on
+    ``max(attribution_date, as_of + 1)`` -- a plan cannot have already happened
+    -- so on a period's last day ``as_of + 1`` is outside the period and the
+    whole remaining plan legitimately rolls into the next one.  The column then
+    equals the settled balance, and the money is conserved: measured on the
+    prod-shape clone, the current column went ``$406.92 -> $2,824.26`` on the
+    period's last day while every later column and the horizon's last stayed
+    put.  Relaxing the floor to ``as_of`` was tried and REJECTED by measurement:
+    it moves the real Checking account's balance TODAY from ``$2,824.26`` to
+    ``$2,978.28``, counting income merely expected today as money in hand, and
+    ``$2,824.26`` is the figure verified to the cent against the persisted
+    double-entry ledger.
+
+    The 15th rather than a pinned calendar date (the
+    ``tests/test_services/conftest.py`` precedent freezes to ``2026-03-20``):
+    the property this module needs is "strictly inside the month", and deriving
+    it from the real month keeps the fixture's year range current instead of
+    ageing into a second kind of rot.
+    """
+    freeze_today(monkeypatch, date.today().replace(day=15))
+
+
+def test_the_frozen_clock_is_strictly_inside_its_month():
+    """The precondition the module's expectations rest on, asserted.
+
+    A fixture that silently stops exercising what it names is this codebase's
+    signature defect.  Without this, a future edit to the freeze above could put
+    the clock back on a month boundary and every ``expected_balance`` would be
+    graded against the wrong day again -- silently for 11 months of the year.
+    """
+    today = date.today()
+    first_of_month = today.replace(day=1)
+    next_month = (
+        first_of_month.replace(year=today.year + 1, month=1)
+        if today.month == 12
+        else first_of_month.replace(month=today.month + 1)
+    )
+    last_of_month = next_month - timedelta(days=1)
+    assert first_of_month < today < last_of_month, (
+        f"the module clock is frozen to {today}, which is a month BOUNDARY; "
+        "every hand-computed expected_balance here assumes today is strictly "
+        "inside its calendar-month pay period"
+    )
 
 
 # ── Parameter matrix (cases 1..5 of the plan's Commit 11 spec) ─────
