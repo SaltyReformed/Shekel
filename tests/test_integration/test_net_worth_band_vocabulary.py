@@ -1,19 +1,29 @@
-"""Static gate: the net-worth band vocabulary is ONE set in five languages.
+"""Static gate: the net-worth band vocabulary is ONE set in four languages.
 
 Plan step X-t3, finding N-108.  A composition band is a cockpit CATEGORY, and
-the same five keys are spelled out in five places that no compiler, linter or
+the same five keys are spelled out in places that no compiler, linter or
 import can hold together:
 
 * **Python** -- ``_display._CATEGORY_ORDER``, from which
   ``_net_worth._COMPOSITION_BANDS`` is now derived (that half is a real
-  deletion, not a gate);
+  deletion, not a gate), plus ``_horizon``'s ``_ENGINE_BANDS`` and its derived
+  ``_PARAM_GROWTH_BANDS``;
 * **JavaScript** -- ``net_worth_cockpit.js``: ``ASSET_BANDS`` +
   ``LIABILITY_BAND`` (which datasets get stacked), ``BAND_LABELS`` (the tooltip
   and dataset names), ``BAND_FILL_ALPHA`` (each band's fill opacity);
 * **Jinja** -- ``savings/_cockpit.html``: ``category_labels`` and
-  ``category_icons``, the microcopy for the legend and the group headers;
+  ``category_icons``, the microcopy for the legend and the group headers, and
+  the two bare ``category_name == '<key>'`` comparisons that give the
+  Liabilities group its danger subtotal and decide whether the debt-summary
+  footer renders at all (plan step X-z3, ruling R-CR -- the liability rule's
+  third spelling, which this file read the same template for and did not see);
 * **CSS** -- ``accounts.css``: the ``--nw-band-*`` color tokens the chart reads
   off ``:root`` and the ``.nw-legend__swatch--*`` classes the legend paints.
+
+(This opened "in FIVE languages" and lists four; corrected at X-z3 while adding
+a home to one of them, on Section 7.6's rule to re-verify what you touch.  A
+count in a docstring is a claim -- Section 8, paid for four times by X-v's
+reviews alone.)
 
 **Why a gate and not a refactor.**  The Python half was two lists and is now
 one.  The other four cannot import it: the chart script is served to a browser,
@@ -155,6 +165,24 @@ def _jinja_dict_keys(source: str, name: str) -> set[str]:
     )
 
 
+# ``category_name == 'liability'`` -- the loop variable of the cockpit's
+# per-category group loop, compared against a bare band key.  Both spacing
+# styles and both quote styles, because a reformat must not make the arm go
+# quiet.
+_CATEGORY_COMPARE = re.compile(
+    r"""category_name\s*==\s*['"]([a-z_]+)['"]""",
+)
+
+
+def _jinja_category_comparisons(source: str) -> list[str]:
+    """Return every band key the cockpit template compares ``category_name`` to.
+
+    A list, not a set: the count is part of what the arm asserts, so a site
+    silently disappearing is a failure rather than a set that still matches.
+    """
+    return _CATEGORY_COMPARE.findall(source)
+
+
 class TestBandVocabulary:
     """Every home of the band vocabulary carries the same five keys."""
 
@@ -231,6 +259,42 @@ class TestBandVocabulary:
             _jinja_dict_keys(source, "category_icons")
             == set(_COMPOSITION_BANDS)
         )
+
+    def test_the_cockpit_compares_category_name_to_real_band_keys(self):
+        """Every bare ``category_name == '<key>'` in the cockpit is a real band.
+
+        The gate's SIXTH home, and the third spelling of the liability rule
+        (plan step X-z3, ruling R-CR, finding N-118).  ``savings/_cockpit.html``
+        loops the producer's ``grouped_accounts`` and tests the loop variable
+        against a literal twice: once to give the Liabilities group its danger
+        subtotal, and once to decide whether the WHOLE debt-summary footer
+        (monthly payments, average rate, payoff outlook) renders under this
+        card.
+
+        Neither is display microcopy, so neither is covered by the
+        ``category_labels`` / ``category_icons`` arms above -- and neither
+        fails loudly: a key that no longer matches simply makes both conditions
+        false, so the group loses its colour and the debt footer disappears
+        from a live page with the suite green.  The Python half of that rule
+        has one home now (``_display.LIABILITY_KEY``); Jinja cannot import it,
+        which is exactly the situation this file exists for.
+
+        Asserts the SET of compared keys is a subset of the composition bands
+        AND that the liability key is among them, so both a renamed key and a
+        typo fail here.
+        """
+        source = _read(COCKPIT_PATH)
+        compared = _jinja_category_comparisons(source)
+        assert compared, (
+            "no `category_name == '<key>'` comparison found in "
+            f"{COCKPIT_PATH} -- did the group loop change shape? "
+            "This arm cannot grade what it cannot find."
+        )
+        assert set(compared) <= set(_COMPOSITION_BANDS), (
+            f"cockpit compares category_name to {sorted(set(compared))}, "
+            f"which is not a subset of {sorted(_COMPOSITION_BANDS)}"
+        )
+        assert LIABILITY_KEY in compared
 
     def test_the_horizon_projects_every_band_it_publishes(self):
         """The Horizon's three band producers EXHAUST the composition.
@@ -340,6 +404,46 @@ class TestTheGateItself:
         assert _js_object_keys(planted, "BAND_LABELS") == {
             "asset", "a", "liability",
         }
+
+    def test_a_category_comparison_in_a_comment_does_not_count(self):
+        """A ``category_name ==`` inside a Jinja comment satisfies no arm.
+
+        The comment strip, exercised on the shape the new arm reads.  Without
+        it, a template that had REMOVED both live comparisons would still pass
+        on the strength of a comment describing them.
+        """
+        planted = (
+            "{# {% if category_name == 'liability' %} the old way {% endif %} #}\n"
+            "{% if category_name == 'asset' %}x{% endif %}"
+        )
+        assert _jinja_category_comparisons(_strip_comments(planted)) == [
+            "asset",
+        ]
+        # And without the strip it DOES count -- the hole, reproduced, so this
+        # control cannot quietly stop discriminating.
+        assert _jinja_category_comparisons(planted) == ["liability", "asset"]
+
+    def test_the_category_arm_fires_on_the_real_template(self):
+        """A renamed key in the REAL cockpit fails the arm, not a synthetic twin.
+
+        Section 8's "a gate's pattern must be exercised against the artifact it
+        grades": X-u's ledger-count arm matched its synthetic control and the
+        live document NOWHERE, and passed a planted defect clean.  So this
+        plants the defect in ``savings/_cockpit.html`` itself -- read, mutated
+        in memory, never written -- and requires both halves of the arm to
+        reject it.
+        """
+        source = _read(COCKPIT_PATH)
+        renamed = source.replace(
+            f"category_name == '{LIABILITY_KEY}'", "category_name == 'debt'",
+        )
+        assert renamed != source, (
+            "the planted rename changed nothing -- the arm's pattern and this "
+            "control disagree about how the comparison is written"
+        )
+        compared = _jinja_category_comparisons(renamed)
+        assert LIABILITY_KEY not in compared
+        assert not set(compared) <= set(_COMPOSITION_BANDS)
 
     def test_a_moved_file_fails_loudly(self):
         """A missing source is an assertion, never a silently empty scan."""
