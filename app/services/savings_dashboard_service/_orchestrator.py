@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING
 
 from app.services import balance_at, savings_goal_service
 from app.services.balance_at import BalanceContext
-from app.services.net_worth_account_data import is_liability_account
+from app.services.account_category import is_liability_account
 from app.services.savings_dashboard_service._data import (
     _load_account_params,
     _load_archived_accounts,
@@ -40,7 +40,7 @@ from app.services.savings_dashboard_service._data import (
 )
 from app.services.savings_dashboard_service._horizon import build_horizon
 from app.services.savings_dashboard_service._net_worth import (
-    build_account_net_worth_maps,
+    NetWorthRegion,
     build_trend_periods,
     compute_net_worth_series,
     compute_net_worth_today,
@@ -50,9 +50,9 @@ from app.services.savings_dashboard_service._net_worth import (
 from app.services.savings_dashboard_service._display import (
     _compute_group_subtotals,
     _group_accounts_by_category,
-    category_key_by_account_id,
 )
 from app.services.savings_dashboard_service._goals import (
+    GoalProgress,
     _compute_goal_progress,
     _load_active_goals,
 )
@@ -238,7 +238,7 @@ def compute_debt_summary(
 
 def compute_goal_progress(
     user_id: int, balance_ctx: BalanceContext | None = None,
-) -> list[dict]:
+) -> list[GoalProgress]:
     """Compute only the savings-goal progress for the budget dashboard card.
 
     The narrow producer behind the dashboard's savings tracks
@@ -268,9 +268,9 @@ def compute_goal_progress(
             :func:`compute_debt_summary`).
 
     Returns:
-        A list of per-goal progress dicts (see
-        :func:`_compute_goal_progress`), one per active goal; empty when
-        the user has no active goals.
+        One :class:`~.._goals.GoalProgress` per active goal (see
+        :func:`_compute_goal_progress`); empty when the user has no active
+        goals.
     """
     core = _load_dashboard_core_data(user_id, balance_ctx)
 
@@ -392,18 +392,18 @@ def _build_trend_window(
 
 
 def _compute_card_sparklines(
-    core: _DashboardCoreData, account_maps: list[dict],
+    core: _DashboardCoreData, account_data: list[AccountProjection],
 ) -> dict:
     """Build the per-account forward card sparklines (slice 3c).
 
-    Reuses the dense per-account balance maps already built for the net-worth
-    trend, so the sparklines and the net-worth math read ONE projection.  The
+    Reads the dense per-account balance maps the projections already carry, so
+    the sparklines, the tiles and the net-worth math read ONE projection.  The
     forward window is the current-period-onward run the trend projects.
 
     Args:
         core: The loaded core data (its periods define the forward window).
-        account_maps: The dense maps from
-            :func:`build_account_net_worth_maps`.
+        account_data: The per-account projections, each carrying its dense
+            :attr:`~.._types.AccountProjection.balances` map (plan step X-w).
 
     Returns:
         ``{account_id: [Decimal, ...]}`` for each informative account.
@@ -413,7 +413,7 @@ def _compute_card_sparklines(
         if core.current_period is not None
         and p.period_index >= core.current_period.period_index
     ]
-    return compute_sparklines(account_maps, forward_periods)
+    return compute_sparklines(account_data, forward_periods)
 
 
 def _compute_net_worth_section(
@@ -421,25 +421,33 @@ def _compute_net_worth_section(
     params: _AccountParams,
     account_data: list[AccountProjection],
     user_id: int,
-) -> dict:
+) -> tuple[NetWorthRegion, dict[int, list[Decimal]]]:
     """Assemble the cockpit's net-worth region, sparklines, and Horizon range.
 
-    One producer over a single build of the dense per-account balance maps:
-    the today figures (from the already-projected ``account_data``), the
+    One producer over ONE per-account projection: the today figures, the
     ``2 years`` net-worth trend series with its per-category composition
     split, the per-account forward sparklines, AND the ``Horizon`` range
-    (P-AC1 Loop B P1) all derive from that ONE dashboard load -- so the
-    /savings request pays for one load, not two (no redundant standalone
-    horizon-producer call), and every figure reads one projection.
+    (P-AC1 Loop B P1) all reduce over the same ``account_data`` this page
+    already built -- so the /savings request pays for one load, not two (no
+    redundant standalone horizon-producer call), and every figure reads one
+    projection.
 
-    The maps are built once over ALL periods (so the entries-aware resolver
-    always has its anchor seed) via :func:`build_account_net_worth_maps`,
-    which routes through the :mod:`app.services.balance_at` seam.  The
-    per-category composition split reads each account's band off the SAME
-    id-based classifier the grid grouping uses, so a trend band and its grid
-    group cannot disagree.  The Horizon range reuses the /retirement engine,
-    so it re-projects the retirement / investment accounts -- the accepted
-    cost of the single-engine invariant, the same the dense-map rebuild pays.
+    **It built a SECOND per-account container to do that, and plan step X-w
+    deleted it** (ruling R-CG, finding N-114).  ``build_account_net_worth_maps``
+    re-asked the seam for every account's dense period map and paired each with
+    a stored liability flag; the projections beside it already carried the same
+    balances and derived the same flag.  The dense map is
+    :attr:`~.._types.AccountProjection.balances` now, so the trend, the
+    sparklines and the hero cannot be given different accounts, different
+    balances or different classifications.
+
+    The maps are still built over ALL periods (so every consumer reads whichever
+    ones it wants back out by id); the per-category composition split reads each
+    account's band off the category the projection itself carries, the same
+    field the grid grouping buckets by (plan step X-z7, ruling R-CT), so a
+    trend band and its grid group cannot disagree.  The Horizon range reuses
+    the /retirement engine, so it re-projects the retirement / investment
+    accounts -- the accepted cost of the single-engine invariant.
 
     Degrades gracefully with no current period: the today figures still come
     from ``account_data``, the series is empty (``current_index`` 0), the
@@ -448,17 +456,15 @@ def _compute_net_worth_section(
     (:func:`~app.services.savings_dashboard_service._horizon.build_horizon`
     returns ``None`` then).
 
-    **This is the ONE no-baseline door for the whole region** (plan step X-t2,
-    finding N-107).  Every seam read below it -- the dense maps, the trend
-    window's loan schedules, the sparklines and the Horizon's bands -- is
-    reachable only with a baseline, so the rule is stated HERE and the three
-    producers below simply call the seam.  It was stated in each of them
-    instead, and two of those copies degraded DIFFERENTLY: the map builder
-    returned an empty list (a $0 trend drawn over a real window) while the trend
-    window still built its axis.  A user with no baseline has no balance the app
-    can answer, so the honest region is the today figures over an empty series
-    and no Horizon at all -- which is exactly the state the no-pay-periods path
-    already renders, so the template and the client need no new branch.
+    **No producer here decides the no-baseline state** (plan step X-v2, ruling
+    R-BW).  This function was the ONE door for the whole region at plan step
+    X-t2 (finding N-107), because two producers under it degraded DIFFERENTLY --
+    the map builder returned an empty list, a ``$0`` trend drawn over a real
+    window, while the trend window built its axis anyway.  X-v2 then deleted the
+    predicate itself: the seam raises
+    :class:`~app.exceptions.BaselineMissingError` and one application-level
+    handler answers it.  Since plan step X-w the region's dense maps are not
+    even read here -- the projection opened that door before this function ran.
 
     The empty series is BUILT by :func:`compute_net_worth_series` over an empty
     window rather than written out as a literal here, so the degraded shape
@@ -473,39 +479,35 @@ def _compute_net_worth_section(
             engine reuse).
 
     Returns:
-        ``(net_worth, sparklines)``.  ``net_worth`` carries ``net_worth``,
-        ``total_assets``, ``total_liabilities``, ``liquid``, ``series`` (the
-        ``2 years`` trend + its ``composition`` split, carrying
-        ``current_index``), and ``horizon`` (the annual composition +
-        trajectory + milestones, or ``None`` with no periods).  ``sparklines``
-        is ``{account_id: [Decimal, ...]}``.
+        ``(region, sparklines)`` -- the :class:`~.._net_worth.NetWorthRegion` and
+        ``{account_id: [Decimal, ...]}``.
     """
     today = compute_net_worth_today(account_data)
-    category = category_key_by_account_id(account_data)
 
-    if not core.balance_ctx.has_baseline:
-        empty_series = compute_net_worth_series([], [], category)
-        empty_series["current_index"] = 0
-        return {**today, "series": empty_series, "horizon": None}, {}
-
-    account_maps = build_account_net_worth_maps(
-        core.accounts, core.balance_ctx, core.all_periods,
+    # The no-baseline early return that stood here went at plan step X-v2
+    # (rulings R-BZ and R-CA).  It returned the today figures over an empty
+    # series -- and those "today figures" were ``current_balance or ZERO``
+    # reduced over balances that were ALL ``None``, so the region reported a
+    # net worth, a total-assets and a total-liabilities figure for a user whose
+    # every balance the app cannot answer.  The seam raises now and one
+    # application-level handler renders the repair, so there is no hero left to
+    # fabricate.  X-t2's ruling that this region should degrade here is
+    # REVERSED, on the developer's confirmation (CLAUDE.md rule 5).
+    # The window and its current index come from ONE producer and are handed to
+    # the series builder together, so the solid-history / dashed-projection
+    # boundary is a field of a series built once rather than a key mutated onto
+    # a dict after it was returned (plan step X-w3, ruling R-CI).
+    trend_periods, current_index, _ = _build_trend_window(core, params)
+    series = compute_net_worth_series(
+        account_data, trend_periods, current_index,
     )
 
-    trend_periods, current_index, _ = _build_trend_window(core, params)
-    series = compute_net_worth_series(account_maps, trend_periods, category)
-    # The solid-history / dashed-projection boundary (and the "Today"
-    # marker): the index of the current period within the trend window.
-    series["current_index"] = current_index
+    sparklines = _compute_card_sparklines(core, account_data)
+    horizon = build_horizon(user_id, core, account_data)
 
-    sparklines = _compute_card_sparklines(core, account_maps)
-    horizon = build_horizon(user_id, core, account_data, category)
-
-    return {
-        **today,
-        "series": series,
-        "horizon": horizon,
-    }, sparklines
+    return NetWorthRegion(
+        today=today, series=series, horizon=horizon,
+    ), sparklines
 
 
 def _compute_cockpit_grid_section(
@@ -521,6 +523,12 @@ def _compute_cockpit_grid_section(
     :func:`app.services.savings_dashboard_service._net_worth.compute_property_equity`
     producer.  All money math lives here, never in the template.
 
+    **The grouping no longer CLASSIFIES** (plan steps X-z2 and X-z7).  It
+    bucketed each account by calling the classifier once per category label --
+    5N calls, 40 for 8 accounts, on top of the N-call map the net-worth region
+    built, for 48 on the render -- then briefly read a map this function was
+    handed, and now reads the category each projection already carries.
+
     Args:
         core: The loaded :class:`_DashboardCoreData` (its ``accounts`` feed
             the equity resolver; its ``scenario`` supplies the loan
@@ -531,8 +539,8 @@ def _compute_cockpit_grid_section(
     Returns:
         dict with ``grouped_accounts`` (category label -> projections),
         ``group_subtotals`` (category label -> ``Decimal`` balance
-        subtotal), and ``property_equity`` (list of ``{account, equity}`` for
-        each Property account).
+        subtotal), and ``property_equity`` (a
+        :class:`~.._net_worth.PropertyEquity` per Property account).
     """
     grouped_accounts = _group_accounts_by_category(account_data)
     group_subtotals = _compute_group_subtotals(grouped_accounts)
@@ -542,6 +550,57 @@ def _compute_cockpit_grid_section(
         "property_equity": compute_property_equity(
             core.accounts, core.balance_ctx,
         ),
+    }
+
+
+def _compute_emergency_fund_section(
+    user_id: int,
+    core: _DashboardCoreData,
+    account_data: list[AccountProjection],
+) -> dict:
+    """Assemble the cockpit's emergency-fund figures and their basis.
+
+    A section helper beside :func:`_compute_net_worth_section` and
+    :func:`_compute_cockpit_grid_section`, so the three cohesive blocks of
+    :func:`compute_dashboard_data` read alike and it assembles sections rather
+    than computing some of them inline (plan step X-z2; the three locals it
+    held were what pushed that function past the locals ceiling).
+
+    All three keys are published because the footer renders all three: the
+    coverage itself, and the two figures its caption names as the basis
+    ("Based on $X savings and $Y/mo avg expenses").  The money math is here,
+    never in the template.
+
+    **A known duplication is named rather than hidden**: ``total_savings`` is
+    :func:`~.._metrics._sum_liquid_balances` over the same ``account_data``
+    :attr:`~.._net_worth.NetWorthToday.liquid` reduces on the same render, so
+    one fact is computed twice and published under two keys.  Out of plan step
+    X-z's scope (``CLAUDE.md`` rule 6) and recorded as finding N-121 with an
+    owner, because collapsing it changes what the page publishes and wants its
+    own commit.
+
+    Args:
+        user_id: Integer ID of the current user.
+        core: The loaded :class:`_DashboardCoreData` (its accounts, periods and
+            scenario scope the expense baseline).
+        account_data: The per-account projections (the liquid balances).
+
+    Returns:
+        dict with ``emergency_metrics``
+        (:class:`~app.services.savings_goal_service.SavingsCoverage`),
+        ``total_savings`` and ``avg_monthly_expenses``.
+    """
+    avg_monthly_expenses = _compute_avg_monthly_expenses(
+        user_id, core.accounts, core.all_periods, core.current_period,
+        core.balance_ctx.scenario_id,
+    )
+    total_savings = _sum_liquid_balances(account_data)
+    return {
+        "emergency_metrics": savings_goal_service.calculate_savings_metrics(
+            total_savings, avg_monthly_expenses,
+        ),
+        "total_savings": total_savings,
+        "avg_monthly_expenses": avg_monthly_expenses,
     }
 
 
@@ -594,16 +653,6 @@ def compute_dashboard_data(user_id):
         _load_active_goals(user_id),
     )
 
-    # ── Emergency fund metrics ──────────────────────────────────
-    avg_monthly_expenses = _compute_avg_monthly_expenses(
-        user_id, core.accounts, core.all_periods, core.current_period,
-        core.balance_ctx.scenario,
-    )
-    total_savings = _sum_liquid_balances(account_data)
-    emergency_metrics = savings_goal_service.calculate_savings_metrics(
-        total_savings, avg_monthly_expenses,
-    )
-
     # ── Template helpers ────────────────────────────────────────
     # Liquid accounts appear in the savings goal form dropdown.
     savings_accounts = [
@@ -633,9 +682,9 @@ def compute_dashboard_data(user_id):
         # math stays out of the template.
         **_compute_cockpit_grid_section(core, account_data),
         "goal_data": goal_data,
-        "emergency_metrics": emergency_metrics,
-        "total_savings": total_savings,
-        "avg_monthly_expenses": avg_monthly_expenses,
+        # The coverage figures and the two figures its caption names as their
+        # basis, from one helper (plan step X-z2).
+        **_compute_emergency_fund_section(user_id, core, account_data),
         "savings_accounts": savings_accounts,
         "archived_accounts": _load_archived_accounts(user_id),
         "debt_summary": debt_summary,

@@ -472,7 +472,7 @@ def _latest_assertion_day(
             "investigate any code path that constructed the Account row "
             "without routing through the canonical factory."
         )
-    return walk.anchor_corrections[-1].visible_on
+    return walk.anchor_corrections[-1].observed_on
 
 
 def _resolve(
@@ -690,7 +690,7 @@ def _assemble(
     """
     return resolve(
         account,
-        _cash_fold.assemble(account, ctx.scenario.id, ctx.as_of),
+        _cash_fold.assemble(account, ctx.scenario_id, ctx.as_of),
         horizon_end,
         inputs,
     )

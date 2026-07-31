@@ -270,9 +270,16 @@ class TestBalanceRow:
 
         The fix short-circuits with HTTP 204 No Content, matching the
         existing ``not current_period`` branch -- HTMX leaves the
-        existing DOM untouched, the grid index route renders
-        ``no_setup.html`` separately, and the user sees a coherent
-        empty state instead of a stack trace.
+        existing DOM untouched and the user sees a coherent empty state
+        instead of a stack trace.
+
+        **The 204 now comes from the application-level handler, not from a
+        guard in this route** (plan step X-v2, ruling R-BW), and the request
+        carries the ``HX-Request`` header the browser actually sends for this
+        endpoint.  That header is load-bearing rather than cosmetic: this test
+        used to pass while omitting it, so it pinned the answer to a request
+        shape no client makes.  A plain GET of the same URL is a human pasting
+        it into the address bar, and gets the repair card.
 
         Asserts both the status code AND empty body to pin the
         contract; a future change that returns 200 with a rendered
@@ -284,7 +291,10 @@ class TestBalanceRow:
             ).delete()
             db.session.commit()
 
-            resp = auth_client.get("/grid/balance-row?periods=6&offset=0")
+            resp = auth_client.get(
+                "/grid/balance-row?periods=6&offset=0",
+                headers={"HX-Request": "true"},
+            )
             assert resp.status_code == 204
             assert resp.data == b""
 
@@ -552,7 +562,14 @@ class TestSubtotalRowsEndpoint:
     def test_no_baseline_scenario_returns_204(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """No baseline scenario returns 204, matching balance_row (F-099)."""
+        """No baseline scenario returns 204, matching balance_row (F-099).
+
+        The 204 comes from the application-level ``BaselineMissingError``
+        handler since plan step X-v2 (ruling R-BW) rather than from a guard in
+        this route, and the request carries the ``HX-Request`` header this
+        endpoint is actually called with -- see ``balance_row``'s twin above
+        for why that header is the point and not a detail.
+        """
         with app.app_context():
             db.session.query(Scenario).filter_by(
                 user_id=seed_user["user"].id,
@@ -561,6 +578,7 @@ class TestSubtotalRowsEndpoint:
 
             resp = auth_client.get(
                 "/grid/subtotal-rows?periods=6&offset=0",
+                headers={"HX-Request": "true"},
             )
             assert resp.status_code == 204
             assert resp.data == b""
@@ -3734,22 +3752,29 @@ class TestTransactionNameRows:
                 f"&account_id={account.id}"
             )
             assert resp.status_code == 200
-            # Hand-computed under the fold (plan step X-c2b2): the true-up
-            # asserts $5,000.00, then the paycheck (+$2,000.00) and the
-            # electric bill (-$500.00) SETTLE after that assertion and are
-            # counted from the day they moved, and the carried-forward $150.00
-            # rent is still projected so ruling R-G lands it tomorrow -- inside
-            # the current period.  5000 + 2000 - 500 - 150 = $6,350.00, then
-            # the next period's $300.00 grocery envelope = $6,050.00.
+            # Hand-computed under the fold (ruling R-DH (a)): the true-up
+            # asserts $5,000.00 and the paycheck (+$2,000.00) and electric bill
+            # (-$500.00) are recorded on that SAME civil day, so the assertion
+            # -- the day's closing balance -- already contains them.  The
+            # carried-forward $150.00 rent is still projected, so ruling R-G
+            # lands it tomorrow, inside the current period.
+            # 5000 - 150 = $4,850.00, then the next period's $300.00 grocery
+            # envelope = $4,550.00.
             #
-            # This assertion was $4,850 / $4,550 before the cutover, and the
-            # difference IS the reported bug: the projection excluded every
-            # row settled after the anchor, so marking the paycheck received
-            # deleted $2,000.00 from the balance the user had just trued up
-            # (finding cash D1).  The workflow this test walks -- true up, then
-            # mark things paid -- is exactly the one that lost it.
-            assert b"$6,350" in resp.data
-            assert b"$6,050" in resp.data
+            # These figures moved twice: $4,850 / $4,550 before plan step
+            # X-c2b2's cutover, $6,350 / $6,050 at it, and back at ruling R-DH
+            # (2026-07-31).  The cutover read "the row was recorded after the
+            # anchor" as "the money moved after the anchor", but ``paid_at`` is
+            # stamped at the CLICK and the assertion carries no date at all, so
+            # on the real workflow -- true up, then tick off what already
+            # cleared -- that inference is backwards.  It rendered the
+            # developer's own grid at -$4,021.37 against a true -$19.95.
+            # Finding cash D1 survives for the case that is actually about
+            # money: a settle dated a LATER DAY than the assertion still rides
+            # on top (pinned in ``test_cash_walk``).  See
+            # ``docs/audits/balance_architecture/anchor_settle_partition.md``.
+            assert b"$4,850" in resp.data
+            assert b"$4,550" in resp.data
 
     def test_grid_row_ordering_is_deterministic(
         self, app, auth_client, seed_user, seed_periods_today,

@@ -22,7 +22,7 @@ from datetime import date
 from decimal import Decimal
 
 from app.models.ledger_account import LedgerAccount
-from app.services.scenario_resolver import get_baseline_scenario
+from app.services.scenario_resolver import require_baseline_scenario
 
 from ._attribution import (
     StatementClassIds,
@@ -63,11 +63,17 @@ def compute_balance_sheet(user_id: int, as_of: date) -> BalanceSheetReport:
         PostingError: If a source with a nonzero net cannot resolve its
             attribution date (a broken linkage invariant -- from
             :func:`._attribution.dated_account_nets`).
+        BaselineMissingError: When the user has no baseline scenario, so this
+            ledger cannot be read at all.  It used to return an EMPTY sheet
+            instead: assets ``$0.00``, liabilities ``$0.00``, equity ``$0.00``
+            and ``tie_out.in_balance = True`` -- the app ASSERTING that a
+            user's books balance over a ledger it could not read (plan step
+            X-v2's adversarial review; the same fabrication ruling R-CA deleted
+            from the net-worth hero, one screen over).  A statement that cannot
+            be produced is not a statement of zeros.
     """
     class_ids = statement_class_ids()
-    scenario = get_baseline_scenario(user_id)
-    if scenario is None:
-        return _balance_sheet_from_cumulative(as_of, {}, {}, class_ids)
+    scenario = require_baseline_scenario(user_id)
     chart = load_chart(user_id)
     cumulative = _cumulative_nets_through(user_id, scenario.id, as_of)
     return _balance_sheet_from_cumulative(as_of, cumulative, chart, class_ids)

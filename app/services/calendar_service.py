@@ -44,22 +44,29 @@ MAX_VISIBLE_DAY_FLOWS = 3
 
 
 class CalendarAccountNotResolvableError(LookupError):
-    """Raised when the calendar cannot resolve a backing account or scenario.
+    """Raised when the calendar cannot resolve a backing ACCOUNT.
 
     After Commits 3-8 of the main remediation locked the E-19 / CRIT-01
     invariant ("anchor is never NULL; ``resolve_anchor`` raises or
-    returns a valid ``AnchorPoint``"), an ``account is None`` /
-    ``scenario is None`` outcome from
-    :func:`~app.services.account_resolver.resolve_analytics_account` or
-    :func:`~app.services.scenario_resolver.get_baseline_scenario`
-    indicates an *upstream* defect (deleted analytics account, missing
-    baseline scenario), not a normal "empty calendar" state.  Pre-F-2
-    the service silently substituted a zeroed :class:`MonthSummary` /
-    :class:`YearOverview`, which masked the upstream bug behind a
-    ``$0.00`` calendar shown to the user with no error.  Raising
+    returns a valid ``AnchorPoint``"), an ``account is None`` outcome from
+    :func:`~app.services.account_resolver.resolve_analytics_account`
+    indicates an *upstream* defect (a deleted analytics account), not a normal
+    "empty calendar" state.  Pre-F-2 the service silently substituted a zeroed
+    :class:`MonthSummary` / :class:`YearOverview`, which masked the upstream bug
+    behind a ``$0.00`` calendar shown to the user with no error.  Raising
     instead lets the route layer answer with the project-standard 404
     ("404 for both 'not found' and 'not yours'", see
     :mod:`app.utils.auth_helpers`).
+
+    **It no longer covers a missing baseline SCENARIO** (plan step X-v2, ruling
+    R-BW).  Both entries used to raise this for that state too, and the route
+    turned it into a 404 -- a seventh answer to a question fifteen other
+    surfaces were each answering differently, and the least useful of them: a
+    404 tells a user with a repairable setup problem that their calendar does
+    not exist.  The seam now raises
+    :class:`~app.exceptions.BaselineMissingError` and one application-level
+    handler renders the repair.  Two conditions that shared one exception are
+    two exceptions again, and this one means exactly what its name says.
     """
 
 
@@ -273,18 +280,12 @@ def get_month_detail(  # pylint: disable=too-many-arguments
         )
 
     balance_ctx = BalanceContext.build(user_id)
-    if balance_ctx.scenario is None:
-        raise CalendarAccountNotResolvableError(
-            f"Baseline scenario not resolvable for user_id={user_id} "
-            f"year={year} month={month}",
-        )
-
     first_day = date(year, month, 1)
     last_day = date(year, month, calendar.monthrange(year, month)[1])
 
     periods = get_overlapping_periods(user_id, first_day, last_day)
     transactions = _query_transactions_for_range(
-        account.id, balance_ctx.scenario.id, user_id, first_day, last_day,
+        account.id, balance_ctx.scenario_id, user_id, first_day, last_day,
     )
 
     ctx = _MonthBuildContext(
@@ -323,17 +324,11 @@ def get_year_overview(
         )
 
     balance_ctx = BalanceContext.build(user_id)
-    if balance_ctx.scenario is None:
-        raise CalendarAccountNotResolvableError(
-            f"Baseline scenario not resolvable for user_id={user_id} "
-            f"year={year}",
-        )
-
     first_day = date(year, 1, 1)
     last_day = date(year, 12, 31)
     periods = get_overlapping_periods(user_id, first_day, last_day)
     all_txns = _query_transactions_for_range(
-        account.id, balance_ctx.scenario.id, user_id, first_day, last_day,
+        account.id, balance_ctx.scenario_id, user_id, first_day, last_day,
     )
 
     ctx = _MonthBuildContext(

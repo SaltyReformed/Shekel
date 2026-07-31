@@ -143,16 +143,26 @@ def _resolve_grid_context(user_id, request_args, settings):
             or ``None``.  Source of the default ``grid_default_periods``
             when the request omits ``periods``.
 
+    A user with no baseline scenario is NOT handled here (plan step X-v2,
+    ruling R-BW).  This route used to render ``errors/no_baseline.html`` itself
+    and was the only surface in the app that did, while `/savings` fabricated a
+    ``$0.00`` hero and three other pages returned a 500.  The raise comes from
+    the caller's :func:`_load_grid_transactions`, which asks the context for
+    the scenario id it scopes its query with; ONE application-level handler
+    renders that same card, so every surface answers the state identically and
+    this route states no policy about it.
+
+    **Its ORDER against the no-periods answer changed with it**: a user missing
+    both now sees ``no_periods.html``, where the deleted guard put the baseline
+    card first.  Neither is a dead end (the card is one click from any balance
+    page), and a user with no periods and no baseline needs both repairs.
+
     Returns:
-        A :class:`_GridContext` on success, OR a rendered HTML string
-        (the ``no_setup.html`` / ``no_periods.html`` early-return page)
-        when the user lacks a baseline scenario or any current pay
+        A :class:`_GridContext` on success, OR a rendered HTML string (the
+        ``no_periods.html`` early-return page) when the user has no current pay
         period.  The caller distinguishes via ``isinstance(result, str)``.
     """
-    # Get the baseline scenario.
     balance_ctx = BalanceContext.build(user_id)
-    if balance_ctx.scenario is None:
-        return render_template("grid/no_setup.html")
 
     # Get the grid account (checking by default, or user preference).
     account = resolve_grid_account(
@@ -214,7 +224,7 @@ def _load_grid_transactions(account, balance_ctx, all_periods):
     period_ids = [p.id for p in all_periods]
     txn_filters = [
         Transaction.pay_period_id.in_(period_ids),
-        Transaction.scenario_id == balance_ctx.scenario.id,
+        Transaction.scenario_id == balance_ctx.scenario_id,
         Transaction.is_deleted.is_(False),
     ]
     if account:
@@ -604,7 +614,14 @@ def index():
 
     return render_template(
         "grid/grid.html",
-        scenario=ctx.balance_ctx.scenario,
+        # The ID, not the Scenario ROW (plan step X-v2): the template needs
+        # exactly the id for its hidden create-form field, and the two sibling
+        # create fragments already take ``scenario_id``.  Passing the nullable
+        # model handed a template an object it dereferenced as
+        # ``{{ scenario.id }}`` -- a Jinja ``UndefinedError`` waiting on a state
+        # the seam now answers before the render, and one more reader of the
+        # nullable this step exists to stop handing out.
+        scenario_id=ctx.balance_ctx.scenario_id,
         account=ctx.account,
         periods=ctx.periods,
         current_period=ctx.current_period,
@@ -677,14 +694,14 @@ def create_baseline():
 class _PartialBase(NamedTuple):
     """Scenario + grid account shared by every self-refresh grid partial.
 
-    Produced by :func:`_resolve_partial_base`, the scenario-guard +
-    account-resolve prefix that all three self-refresh endpoints --
-    :func:`balance_row`, :func:`subtotal_rows`, and
-    :func:`mobile_this_period_summary` -- share.  ``None`` from the
-    resolver (no baseline scenario) is each route's 204 no-op.
+    Produced by :func:`_resolve_partial_base`, the account-resolve prefix
+    that all three self-refresh endpoints -- :func:`balance_row`,
+    :func:`subtotal_rows`, and :func:`mobile_this_period_summary` -- share.
+    The resolver's no-baseline ``None`` (and each route's 204 on it) moved to
+    the application handler at plan step X-v2, ruling R-BW.
 
     Attributes:
-        scenario: The baseline scenario for the requesting user.
+        balance_ctx: The read pass's ``BalanceContext`` (scenario + as-of).
         account: The grid account (checking by default, or the user's
             preferred grid account), or ``None`` for the
             user-with-zero-accounts edge case.
@@ -695,25 +712,28 @@ class _PartialBase(NamedTuple):
 
 
 def _resolve_partial_base(user_id):
-    """Resolve the scenario + grid account shared by the grid partials.
+    """Resolve the read pass + grid account shared by the grid partials.
 
-    The scenario-guard + account-resolve prefix every self-refresh grid
-    partial performs identically.  Returns ``None`` when the user has no
-    baseline scenario -- the transient-miss on which each caller returns
-    its 204 No Content no-op (never a 404), an idempotent refresh that
-    leaves the existing summary DOM untouched.
+    The account-resolve prefix every self-refresh grid partial performs
+    identically.
+
+    **The no-baseline guard this opened with is GONE, and its answer is now the
+    whole app's** (plan step X-v2, ruling R-BW).  Returning ``None`` here so
+    each caller could answer ``204`` was the right answer to the wrong-sized
+    question: the seam raises :class:`~app.exceptions.BaselineMissingError` and
+    one application-level handler returns ``204 No Content`` for ANY HTMX
+    request, which is precisely this idempotent leave-the-DOM-alone refresh.
+    These three endpoints behave identically; fifteen other surfaces stopped
+    inventing their own answer.
 
     Args:
         user_id: ID of the requesting user.
 
     Returns:
-        A :class:`_PartialBase`, or ``None`` when the user has no
-        baseline scenario.
+        A :class:`_PartialBase`.  Never ``None``: the one state it used to
+        report is answered above this route now.
     """
     balance_ctx = BalanceContext.build(user_id)
-    if balance_ctx.scenario is None:
-        return None
-
     account = resolve_grid_account(
         user_id, current_user.settings,
         request.args.get("account_id", type=int),
@@ -734,7 +754,7 @@ class _PartialWindow(NamedTuple):
     :func:`index`.
 
     Attributes:
-        scenario: The baseline scenario for the requesting user.
+        balance_ctx: The read pass's ``BalanceContext`` (scenario + as-of).
         account: The grid account (checking by default, or the user's
             preferred grid account), or ``None`` for the
             user-with-zero-accounts edge case.
@@ -756,7 +776,7 @@ class _PartialWindow(NamedTuple):
 def _resolve_partial_window(user_id):
     """Resolve the shared scenario / account / period-window context.
 
-    Extracts the identical scenario-guard, account-resolve,
+    Extracts the identical account-resolve,
     ``periods`` / ``offset`` parse, current-period guard, and range query
     that :func:`balance_row` and :func:`subtotal_rows` each performed
     inline (the two had copied the same ~20-line block).  Both endpoints
@@ -769,16 +789,14 @@ def _resolve_partial_window(user_id):
         user_id: ID of the requesting user.
 
     Returns:
-        A :class:`_PartialWindow` on success, or ``None`` when the user
-        has no baseline scenario or no current pay period -- the same
-        transient-miss conditions on which both callers return their
-        204 No Content no-op (an idempotent refresh that leaves the
-        existing summary DOM untouched, never a 404).
+        A :class:`_PartialWindow` on success, or ``None`` when the user has no
+        current pay period -- the transient miss on which both callers return
+        their 204 No Content no-op (an idempotent refresh that leaves the
+        existing summary DOM untouched, never a 404).  The no-BASELINE half of
+        that contract moved to the application handler at plan step X-v2, which
+        answers any HTMX request in that state with the same 204.
     """
     base = _resolve_partial_base(user_id)
-    if base is None:
-        return None
-
     num_periods = request.args.get("periods", default=6, type=int)
     start_offset = request.args.get("offset", default=0, type=int)
 
@@ -806,12 +824,14 @@ def _resolve_partial_window(user_id):
 def balance_row():
     """HTMX partial: recalculate and return the balance summary row.
 
-    Returns 204 No Content when the user has no baseline scenario or no
-    current pay period.  The grid index route renders ``no_setup.html``
-    / ``no_periods.html`` for those cases, so the HTMX partial swap on
-    this endpoint has nothing to render -- returning 204 leaves the
-    existing DOM untouched and avoids the ``AttributeError`` that
-    dereferencing the missing scenario would have raised (F-099).
+    Returns 204 No Content when the user has no current pay period: the grid
+    index route renders ``no_periods.html`` for that case, so the HTMX partial
+    swap on this endpoint has nothing to render, and 204 leaves the existing
+    DOM untouched.  A user with no baseline scenario gets the same 204 from the
+    application-level ``BaselineMissingError`` handler (plan step X-v2), which
+    is where the ``AttributeError`` this route once guarded against (F-099) is
+    now made impossible -- ``BalanceContext.scenario_id`` raises rather than
+    handing out a ``None`` to dereference.
     """
     window = _resolve_partial_window(current_user.id)
     if window is None:
@@ -873,9 +893,10 @@ def subtotal_rows():
     Mirrors :func:`balance_row`'s auth, ownership, and param handling:
     ``@login_required`` + ``@require_owner``, the same
     ``account_id`` / ``periods`` / ``offset`` parse, and the same 204
-    No Content no-op (rather than 404) when the user has no baseline
-    scenario or no current pay period -- an idempotent GET refresh that
-    leaves the existing summary DOM untouched on a transient miss.
+    No Content no-op (rather than 404) when the user has no current pay
+    period -- an idempotent GET refresh that leaves the existing summary DOM
+    untouched on a transient miss.  A user with no baseline scenario gets the
+    same 204 from the application handler (plan step X-v2).
     """
     window = _resolve_partial_window(current_user.id)
     if window is None:
@@ -931,18 +952,18 @@ def mobile_this_period_summary():
     Owner-only (``@require_owner``): the companion view shows no
     subtotal / balance blocks, so it has nothing to refresh.
 
-    Returns 204 No Content -- a swap-nothing no-op that leaves the
-    existing summary DOM untouched -- when the user has no baseline
-    scenario, no ``period_id`` is supplied, or the period does not
-    exist or belongs to another user.  204 (rather than 404) keeps an
-    idempotent GET refresh from blanking the summary on a transient
-    miss, mirroring :func:`balance_row`'s no-op contract.
+    Returns 204 No Content -- a swap-nothing no-op that leaves the existing
+    summary DOM untouched -- when no ``period_id`` is supplied, or the period
+    does not exist or belongs to another user.  204 (rather than 404) keeps an
+    idempotent GET refresh from blanking the summary on a transient miss,
+    mirroring :func:`balance_row`'s no-op contract.  A user with no baseline
+    scenario gets the same 204 from the application-level
+    ``BaselineMissingError`` handler (plan step X-v2) rather than from a guard
+    here.
     """
     user_id = current_user.id
 
     base = _resolve_partial_base(user_id)
-    if base is None:
-        return "", 204
 
     period_id = request.args.get("period_id", type=int)
     if period_id is None:

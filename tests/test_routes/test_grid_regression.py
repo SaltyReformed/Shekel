@@ -476,31 +476,51 @@ class TestPaydayWorkflowRegression:
           4. Mark $500 expense as done
           5. Mark $300 expense as credit (payback in future period)
 
-        Hand-calculated balances after all steps (the FOLD, plan step X-c2b2):
+        Hand-calculated balances after all steps (the FOLD, ruling R-DH (a)):
 
-          Current period (assertion = $5,000 at the true-up instant):
-              received income ($2,000) -- SETTLED after the assertion, counted
-                                          from the day its money moved
-              done expense ($500) -- SETTLED after the assertion, counted
+          Current period (assertion = $5,000, asserted THIS civil day):
+              received income ($2,000) -- settled the SAME day as the
+                                          assertion, so it is inside it
+              done expense ($500) -- same day, so inside it too
               credit expense ($300) -- excluded (a credit purchase leaves via
                                        its CC Payback sibling, never checking)
               carried-forward expense ($150) -- still projected, so ruling R-G
                                        lands it at as_of + 1, inside this period
-            balance = 5,000 + 2,000 - 500 - 150 = $6,350
+            balance = 5,000 - 150 = $4,850
 
           Future period:
               CC payback ($300) -- still projected, counted
-            balance = 6,350 - 300 = $6,050
+            balance = 4,850 - 300 = $4,550
 
-        **This was $4,850 / $4,550 before the cutover, and the difference is
-        the reported bug this whole phase exists to close.**  The retired
-        projection excluded every SETTLED row on the reasoning that the anchor
-        already reflected them -- but the anchor here was asserted in step 1,
-        BEFORE the paycheck was marked received in step 2, so it reflected
-        neither.  $2,500 of real money left the projection at the moment the
-        user recorded it, and the only way back was to re-anchor again (52
-        times in 119 days on the real account).  This test walks precisely that
-        workflow, which is why its numbers move most.
+        **These figures moved TWICE, and the second move is ruling R-DH (a)
+        (2026-07-31) overturning the first.**  They were $4,850 / $4,550 before
+        plan step X-c2b2's cutover, went to $6,350 / $6,050 at it, and are back.
+        The cutover's reasoning was that the anchor was asserted in step 1
+        BEFORE the paycheck was marked received in step 2, so it could not have
+        reflected it -- $2,500 of real money "lost" at the moment the user
+        recorded it (finding cash D1).  That reasoning reads the ORDER OF TWO
+        CLICKS as chronology, and on real data it is wrong far more often than
+        right: ``paid_at`` is ``db.func.now()`` at the click and the assertion
+        has no date column at all, so the user's actual workflow -- read the
+        bank, enter the anchor, then tick off what already cleared -- files
+        every one of those settles AFTER an anchor that already contains them.
+        Measured across four months of the developer's Checking account, 65 of
+        139 settled rows land within an hour of an assertion; absorbing them
+        cuts the correction the model must plug from ``$40,554.34`` gross /
+        ``-$6,998.90`` net to ``$14,286.82`` / ``-$940.06``.  Live, the instant
+        partition rendered the grid at ``-$4,021.37`` against a hand-computed
+        ``-$19.95``.
+
+        **Finding cash D1 is NARROWED, not reopened.**  A settle dated a LATER
+        DAY than the assertion still rides on top of it -- that is the real
+        shape of "money the app loses", and
+        ``test_cash_walk.TestEveryAssertionIsReplayed
+        .test_three_assertions_each_reset_the_running_balance`` pins it (a
+        -$300.00 settle on 04-01 reduces a $900.00 assertion made 03-01).  What
+        R-DH removed is the SAME-DAY claim, which was never a fact about money.
+
+        Full trace and measurements:
+        ``docs/audits/balance_architecture/anchor_settle_partition.md``.
         """
         with app.app_context():
             projected = (
@@ -648,5 +668,5 @@ class TestPaydayWorkflowRegression:
             assert resp.status_code == 200
 
             # See hand calculation in docstring above.
-            assert b"$6,350" in resp.data
-            assert b"$6,050" in resp.data
+            assert b"$4,850" in resp.data
+            assert b"$4,550" in resp.data

@@ -7,8 +7,6 @@ the archived-account list.  No Flask imports; every function takes plain
 data and returns plain data.
 """
 
-from decimal import Decimal
-
 from sqlalchemy.orm import selectinload
 
 from app.extensions import db
@@ -23,6 +21,7 @@ from app.services.projection_inputs import (
 )
 from app.services.balance_at import BalanceContext
 from app.services.savings_dashboard_service._types import (
+    ArchivedAccount,
     _AccountParams,
     _DashboardCoreData,
 )
@@ -161,18 +160,32 @@ def _load_account_params(accounts: list[Account]) -> _AccountParams:
     )
 
 
-def _load_archived_accounts(user_id: int) -> list[dict]:
+def _load_archived_accounts(user_id: int) -> list[ArchivedAccount]:
     """Load archived accounts with minimal data for the collapsed section.
 
     Archived accounts do not receive balance projections, engine calls,
-    or goal calculations -- they are historical.  Each dict contains
-    the Account ORM object and its last known balance.
+    or goal calculations -- they are historical, so the only figure the drawer
+    can show is the last balance the user asserted for the account.
+
+    **That figure is NAMED for what it is** (plan step X-w2, ruling R-CH,
+    finding N-114).  The rows were untyped ``{account, current_balance}`` dicts,
+    and ``current_balance`` is what
+    :class:`~.._types.AccountProjection` calls the seam-derived balance every
+    LIVE tile renders -- a different fact under the same key, on the same page.
+    :class:`~.._types.ArchivedAccount` carries why that matters and which
+    finding owns the question of whether the line belongs here at all.
+
+    The ``or Decimal("0.00")`` this loop used to apply is gone with the dict:
+    ``accounts.current_anchor_balance`` is ``NOT NULL`` with a redundant CHECK
+    beside it, so the reducer could fire only on a genuine ``$0.00`` and return
+    ``$0.00`` -- vacuous, and the truthiness-on-money shape ruling R-CA deleted
+    eight of.
 
     Args:
         user_id: Integer ID of the current user.
 
     Returns:
-        List of dicts with keys: account, current_balance.
+        The :class:`~.._types.ArchivedAccount` rows, ordered for display.
     """
     accounts = (
         db.session.query(Account)
@@ -180,10 +193,9 @@ def _load_archived_accounts(user_id: int) -> list[dict]:
         .order_by(Account.sort_order, Account.name)
         .all()
     )
-    result = []
-    for acct in accounts:
-        result.append({
-            "account": acct,
-            "current_balance": acct.current_anchor_balance or Decimal("0.00"),
-        })
-    return result
+    return [
+        ArchivedAccount(
+            account=acct, last_anchor_balance=acct.current_anchor_balance,
+        )
+        for acct in accounts
+    ]

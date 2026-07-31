@@ -346,14 +346,19 @@ contribution, savings metrics, and count_periods_until all covered.
 
 #### `calculate_savings_metrics()`
 
-| Category | Tests Needed                                  |
-| -------- | --------------------------------------------- |
-| HP       | Returns months/paychecks/years covered        |
-| FIN      | `paychecks_covered = months * 26 / 12`        |
-| FIN      | `years_covered = months / 12`                 |
-| BE       | `average_monthly_expenses = 0` → all zeros    |
-| BE       | `average_monthly_expenses = None` → all zeros |
-| BE       | `savings_balance = 0` → all zeros             |
+Each unit is quantized ONCE from the raw `savings / expenses` ratio, never from
+the rounded months figure (plan step X-z5, ruling R-CS, finding N-120). The
+non-divisible row is the shape that tells the two rules apart: every other case
+here divides exactly, so both give identical answers.
+
+| Category | Tests Needed                                             |
+| -------- | -------------------------------------------------------- |
+| HP       | Returns months/paychecks/years covered                   |
+| FIN      | `paychecks_covered = raw_months * 26 / 12`, rounded once  |
+| FIN      | `years_covered = raw_months / 12`, rounded once           |
+| FIN      | Non-divisible ratio: 4076.92/5667.63 → 0.7 / 1.6 / 0.1   |
+| BE       | `average_monthly_expenses = 0` → all zeros               |
+| BE       | `savings_balance = 0` → all zeros                        |
 
 #### `count_periods_until()`
 

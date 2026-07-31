@@ -28,13 +28,12 @@ sees assigned ids; the caller owns the transaction boundary.
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date
 from decimal import Decimal
 
 from app.extensions import db
 from app.models.journal_entry import JournalEntry, Posting
 from app.services.posting_reads import PostingError
-from app.utils.dates import utc_civil_date
 
 logger = logging.getLogger(__name__)
 
@@ -73,25 +72,6 @@ class _PostingLeg:
     ledger_account_id: int
     amount: Decimal
     posting_kind_id: int
-
-
-def _utc_civil_date(instant: datetime) -> date:
-    """Return the UTC calendar date of a stored instant.
-
-    A thin alias for :func:`app.utils.dates.utc_civil_date` kept as this leaf's
-    local name so its one remaining consumer (the account-anchor poster,
-    :mod:`app.services.account_posting_service._anchors`) reads uniformly; the
-    derivation itself lives once in ``app.utils.dates`` (the pure module the fold's
-    payment-visibility rule and ``posting_service._civil_settle_date`` both share
-    -- balance step C2).
-
-    Args:
-        instant: A stored ``paid_at`` / ``created_at`` / ``asserted_at`` instant.
-
-    Returns:
-        The UTC calendar date of *instant*.
-    """
-    return utc_civil_date(instant)
 
 
 def _emit_balanced_entry(

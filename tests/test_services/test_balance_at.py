@@ -1227,7 +1227,7 @@ class TestBuildMaps:
           ``build_account_balance_map`` under the orchestrator's manual assembly,
           which locks the batch's input assembly and its deduction-scoping rule
           (both scope to the InvestmentParams map's keys).  The oracle is the
-          direct kernel call, NOT the rerouted ``build_account_net_worth_maps``
+          direct kernel call, NOT the savings cockpit's own read of this entry
           (which delegates to ``build_maps`` -- comparing would be tautological).
         * **Loan accounts**: the batch seam map must equal the SINGLE-account seam
           map, proving the batch loop routed the loan to its fold (the shared

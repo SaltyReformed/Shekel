@@ -60,11 +60,13 @@ def compute_dashboard_data(user_id: int, account: Account) -> dict:
         if params else _empty_chart_context()
     )
     # Measured growth since the anchor (None -> chip hidden), via the seam.
-    growth = (
-        balance_at.investment_growth_since_anchor(
-            account, ctx.balance_ctx, current_period,
-        )
-        if ctx.balance_ctx.scenario is not None else None
+    # The ``scenario is not None`` ternary that used to wrap this went at plan
+    # step X-v2 (ruling R-BW): hiding the chip was this surface's private
+    # answer to a state fifteen others answered differently, and the seam's own
+    # raise plus one handler is the answer now.  ``None`` here still hides the
+    # chip, and now means only what the producer means by it.
+    growth = balance_at.investment_growth_since_anchor(
+        account, ctx.balance_ctx, current_period,
     )
 
     return {

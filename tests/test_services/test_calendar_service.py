@@ -11,6 +11,7 @@ from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
+from app.exceptions import BaselineMissingError
 from app.enums import RecurrencePatternEnum, StatusEnum, TxnTypeEnum
 from app.models.pay_period import PayPeriod
 from app.models.recurrence_rule import RecurrenceRule
@@ -1334,11 +1335,19 @@ class TestUnresolvableAccountOrScenario:
     After Commits 3-8 of the main remediation locked the E-19 /
     CRIT-01 invariant, the calendar service must raise
     :class:`CalendarAccountNotResolvableError` when
-    :func:`resolve_analytics_account` or
-    :func:`get_baseline_scenario` returns ``None`` -- the pre-F-2
+    :func:`resolve_analytics_account` returns ``None`` -- the pre-F-2
     behaviour of silently substituting a zeroed
     :class:`MonthSummary` / :class:`YearOverview` masked the
     upstream defect behind a ``$0.00`` calendar.
+
+    **The no-BASELINE half of that contract moved at plan step X-v2** (ruling
+    R-BW).  Both conditions used to raise this one exception, and the route
+    turned both into a 404; they are two different problems (a deleted
+    analytics account, versus a repairable missing baseline) and they get two
+    different answers now.  The baseline half raises
+    :class:`~app.exceptions.BaselineMissingError` from the seam, which one
+    application-level handler answers with the repair card -- asserted below,
+    and end-to-end in ``tests/test_routes/test_no_baseline_policy.py``.
     """
 
     def test_month_detail_raises_when_account_unresolvable(
@@ -1360,7 +1369,7 @@ class TestUnresolvableAccountOrScenario:
     def test_month_detail_raises_when_scenario_unresolvable(
         self, app, seed_user, db, monkeypatch,
     ):
-        """C11-2 (service): None baseline scenario -> error."""
+        """A None baseline raises the SEAM's named exception, not this module's."""
         with app.app_context():
             # The baseline scenario is now resolved inside the balance context,
             # so that is where an unresolvable baseline is simulated.
@@ -1368,7 +1377,11 @@ class TestUnresolvableAccountOrScenario:
                 resolution_context, "get_baseline_scenario",
                 lambda _user_id: None,
             )
-            with pytest.raises(CalendarAccountNotResolvableError):
+            # The seam's own named exception, NOT the calendar's: a missing
+            # baseline is answered by one application-level handler, and a
+            # producer that translated it into its own error is what made this
+            # state 404 here while it 500'd on the loan page (ruling R-BW).
+            with pytest.raises(BaselineMissingError):
                 calendar_service.get_month_detail(
                     user_id=seed_user["user"].id,
                     year=2026,
@@ -1401,7 +1414,11 @@ class TestUnresolvableAccountOrScenario:
                 resolution_context, "get_baseline_scenario",
                 lambda _user_id: None,
             )
-            with pytest.raises(CalendarAccountNotResolvableError):
+            # The seam's own named exception, NOT the calendar's: a missing
+            # baseline is answered by one application-level handler, and a
+            # producer that translated it into its own error is what made this
+            # state 404 here while it 500'd on the loan page (ruling R-BW).
+            with pytest.raises(BaselineMissingError):
                 calendar_service.get_year_overview(
                     user_id=seed_user["user"].id,
                     year=2026,

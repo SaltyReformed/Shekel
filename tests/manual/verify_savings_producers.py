@@ -21,27 +21,27 @@ proof.  This dumps the layer that step actually changes:
   carries the summary.
 
 **NORMALIZED across the intended shape changes**, so a deliberate diff cannot
-hide an accidental one.  Two so far, and each is a place where this ONE file
-has to produce the same blob on the old tree and the new one:
+hide an accidental one.  **A NORMALIZATION SHIM IS DELETED BY THE STEP AFTER THE
+ONE THAT NEEDED IT**, because each adds a branch that can never be taken on the
+current tree, and a file whose readers all tolerate several dead shapes is one
+that can no longer answer this harness's own question (Section 7.2 -- can it SEE
+the code under test?).
 
-* plan step X-t1 turned the per-account projection dict into a frozen
-  ``AccountProjection`` carrying a nested loan value -- every reader here is
-  dict-or-attribute tolerant and the loan half flattens to the same two keys
-  either way;
-* plan step X-u made the principal-paid fraction a ``DebtSummary`` field and
-  deleted both the ``compute_debt_principal_progress`` producer and the
-  ``DebtTrack`` wrapper -- so the fraction is read through
-  :func:`_principal_fraction` / :func:`_narrow_fraction` / :func:`_full_build_fraction`,
-  and the tracks section's ``debt`` normalizes whether it is the summary or a
-  wrapper around it.
+**Plan step X-w5 paid the two that were owed.**  The X-t1 shim (the per-account
+projection's pre-value-object ``loan_figures`` / ``loan_params`` keys) was due to
+go when X-v shipped and did not; the X-u shim (the deleted
+``compute_debt_principal_progress`` producer and the ``DebtTrack`` wrapper) was
+due here.  Both are gone, and each was verified dead by RUNNING this file
+against the tree it was written for.
 
-**A NORMALIZATION SHIM IS DELETED BY THE STEP AFTER THE ONE THAT NEEDED IT.**
-Each of the above adds a branch that can never be taken on the current tree, and
-they accumulate: X-v and X-w change these same producers, and a file whose
-readers all tolerate three dead shapes is one that can no longer answer this
-harness's own question (Section 7.2 -- can it SEE the code under test?).  So the
-X-t1 tolerance goes when X-v ships, the X-u tolerance when X-w does, and this
-paragraph goes with the last of them.
+**What remains is X-w's OWN tolerance, and X-x deletes it**: :func:`_get` reads
+a field off a dict OR a value object, and :func:`_today_figures` and the
+archived row read both spellings of a renamed figure.  Plan steps X-w and X-aa
+turned SEVEN containers on this path into frozen value objects (rulings R-CG /
+R-CH / R-CI / R-CO),
+so those branches are what let this ONE file produce the same blob on the
+pre-X-w tree and the post-X-w one -- which is the only thing that makes the
+diff mean anything.
 
 **Usage** (from the repository root)::
 
@@ -89,7 +89,10 @@ from app import create_app
 from app.extensions import db
 from app.models.user import User
 from app.routes.savings import _serialize_net_worth_chart, _serialize_sparklines
-from app.services import dashboard_pulse_service, savings_dashboard_service
+from app.services import balance_at, dashboard_pulse_service, pay_period_service
+from app.services import savings_dashboard_service
+from app.services.balance_at import BalanceContext
+from app.services.scenario_resolver import get_baseline_scenario
 
 
 def _get(obj, name):
@@ -135,17 +138,16 @@ def _figures(figures):
 
 
 def _loan_halves(ad):
-    """The loan figures + params of one projection, whichever shape carries them.
+    """The loan figures + params of one projection.
 
-    Pre-X-t1 they are two optional dict keys; post-X-t1 they are the two fields
-    of one nested value object.  Both normalize here, so the shape change is
-    invisible in the blob and a FIGURE change is not.
+    The X-t1 shim -- a fallback to the pre-value-object ``loan_figures`` /
+    ``loan_params`` dict keys -- was deleted at plan step X-w5.  ``loan`` is a
+    :class:`~app.services.savings_dashboard_service._types.LoanDetail` or
+    ``None``, and ``None`` IS "this account is not a configured loan".
     """
     loan = _get(ad, "loan")
-    if loan is not None:
-        figures, params = _get(loan, "figures"), _get(loan, "params")
-    else:
-        figures, params = _get(ad, "loan_figures"), _get(ad, "loan_params")
+    figures = None if loan is None else _get(loan, "figures")
+    params = None if loan is None else _get(loan, "params")
     return {
         "loan_figures": _figures(figures),
         "loan_original_principal": _money(_get(params, "original_principal")),
@@ -153,7 +155,56 @@ def _loan_halves(ad):
     }
 
 
-def _projection(ad):
+def _balances(ad, seam_maps):
+    """The projection's DENSE period map, every column.
+
+    **Added at plan step X-w6 (ruling R-CM), and the reason is the finding.**
+    Plan step X-w folded the dense map onto the projection, which means the
+    three NARROW producers now carry one their consumers do not read -- and this
+    file dumped every projection field EXCEPT this one, while
+    ``verify_balance_baseline.py`` never runs this package at all.  So a defect
+    confined to ``AccountProjection.balances`` on a narrow-producer path was
+    invisible to BOTH instruments: exactly Section 8's "a census and a gate can
+    be blind the same way, and then they confirm each other".
+
+    Dumped in full rather than as a digest.  A digest answers "did the map
+    change" and this file's whole job is to answer "which figure moved"; 60
+    columns per account is a few hundred lines of blob against an instrument
+    that already carries the whole daily series one layer down.
+
+    **What this does and does not reach, stated so it is not discovered later.**
+    It covers every projection the FULL build produces and the one
+    ``compute_account_balance_cell`` returns.  It cannot reach the maps inside
+    ``compute_debt_summary`` and ``compute_goal_progress``, because those
+    producers reduce projections into a summary and return no projection at
+    all -- so their ``balances`` is internal by construction and a change to it
+    is only observable through a figure this file already dumps.
+
+    **On a PRE-X-w tree it falls back to the seam's own map**, and that is not a
+    courtesy -- it is what keeps this one file producing the same blob on both
+    trees, which is the only reason its diff means anything.  The projection had
+    no such field before plan step X-w1; dumping ``null`` there would make every
+    account's map read as a change and drown the comparison.  Falling back to
+    :func:`app.services.balance_at.build_maps` compares the NEW projection's map
+    against the SEAM's map for the same account, which is exactly ruling R-CG's
+    claim -- so the cross-tree diff proves it directly instead of leaving it to
+    be inferred from the figures downstream.  It goes when plan step X-x deletes
+    X-w's tolerances.
+
+    Args:
+        ad: The per-account projection (or the narrow balance cell).
+        seam_maps: ``{account_id: period map}`` from the seam, used only when
+            *ad* carries no ``balances`` field of its own.
+    """
+    balances = _get(ad, "balances")
+    if balances is None:
+        balances = seam_maps.get(_get(ad, "account").id)
+    if balances is None:
+        return None
+    return {str(period_id): _money(value) for period_id, value in balances.items()}
+
+
+def _projection(ad, seam_maps):
     """One per-account projection, every field."""
     account = _get(ad, "account")
     interest = _get(ad, "interest_params")
@@ -162,6 +213,7 @@ def _projection(ad):
         "account_id": account.id,
         "account_name": account.name,
         "current_balance": _money(_get(ad, "current_balance")),
+        "balances": _balances(ad, seam_maps),
         "projected": {
             label: _money(value)
             for label, value in sorted((_get(ad, "projected") or {}).items())
@@ -186,14 +238,14 @@ def _outlook(outlook):
 
 
 def _debt_summary(summary):
-    """The debt summary's money fields, its outlook and its DTI block.
+    """The debt summary's money fields, its outlook, its DTI block, its rail.
 
-    Deliberately NOT ``principal_paid_fraction``: plan step X-u added it, so a
-    tree without it would dump ``null`` here and the intended shape change would
-    read as a figure change.  It is dumped instead through the three top-level
-    keys that carry it on BOTH trees -- ``narrow_principal_fraction``,
-    ``full_build_principal_fraction`` and the tracks section's own copy -- which
-    is where a real change to it shows up.
+    ``principal_paid_fraction`` is dumped HERE since plan step X-w5.  It was
+    excluded, and carried by three top-level keys instead, because plan step
+    X-u's own tree had no such field on the summary -- a shim for a shape that
+    has not existed since ``e2cdc589``.  Dumping it in one place covers both the
+    full build's summary and the narrow producer's, which is what those three
+    keys were reaching for.
     """
     if summary is None:
         return None
@@ -206,28 +258,40 @@ def _debt_summary(summary):
         "weighted_avg_rate": _money(_get(summary, "weighted_avg_rate")),
         "revolving_debt": _money(_get(summary, "revolving_debt")),
         "payoff_outlook": _outlook(_get(summary, "payoff_outlook")),
+        "principal_paid_fraction": _money(_principal_fraction(summary)),
         "dti_ratio": _money(_get(dti, "ratio")),
         "dti_label": _get(dti, "label"),
     }
 
 
 def _series(series):
-    """The 2-year trend: periods, net, and every composition band."""
+    """The 2-year trend: periods, net, and every composition band.
+
+    Read through :func:`_get` because plan step X-w3 turned the series and its
+    period descriptors into frozen value objects (ruling R-CI); the tolerance is
+    what lets this ONE file produce the same blob on the HEAD tree and the new
+    one, and it goes when plan step X-x deletes X-w's tolerances.
+
+    **A period point is its ``end_date`` and nothing else.**  It carried a
+    ``period_index`` until plan step X-w6 deleted that field for having no
+    production reader (ruling R-CL), so dumping it here would make an INTENDED
+    shape change read as a per-point diff on every cross-tree run -- the exact
+    thing this file's normalization discipline exists to prevent.  The window's
+    identity is fully carried by the dates, which are dumped and which the chart
+    is actually built from.
+    """
     if series is None:
         return None
     return {
         "periods": [
-            {
-                "end_date": _date(point["end_date"]),
-                "period_index": point["period_index"],
-            }
-            for point in series["periods"]
+            {"end_date": _date(_get(point, "end_date"))}
+            for point in _get(series, "periods")
         ],
-        "net": [_money(value) for value in series["net"]],
-        "current_index": series["current_index"],
+        "net": [_money(value) for value in _get(series, "net")],
+        "current_index": _get(series, "current_index"),
         "composition": {
             band: [_money(value) for value in values]
-            for band, values in sorted(series["composition"].items())
+            for band, values in sorted(_get(series, "composition").items())
         },
     }
 
@@ -251,71 +315,73 @@ def _horizon(horizon):
     }
 
 
-def _goal(datum):
-    """One goal progress row, every money figure."""
-    trajectory = datum["trajectory"]
+def _today_figures(region):
+    """The hero and its three chips, wherever this tree keeps them.
+
+    Pre-X-w3 they are four keys spread flat on the region dict; post-X-w3 they
+    are the four fields of the region's ``today`` value object.  Both normalize
+    to the same four blob entries, so the shape change is invisible here and a
+    FIGURE change is not.
+    """
+    today = _get(region, "today")
+    source = region if today is None else today
     return {
-        "goal_id": datum["goal"].id,
-        "current_balance": _money(datum["current_balance"]),
-        "progress_pct": _money(datum["progress_pct"]),
-        "remaining_periods": datum["remaining_periods"],
-        "required_contribution": _money(datum["required_contribution"]),
-        "resolved_target": _money(datum["resolved_target"]),
-        "monthly_contribution": _money(datum["monthly_contribution"]),
-        "income_descriptor": datum["income_descriptor"],
-        "has_salary_data": datum["has_salary_data"],
-        "trajectory": None if trajectory is None else {
-            "months_to_goal": trajectory["months_to_goal"],
+        name: _money(_get(source, name))
+        for name in (
+            "net_worth", "total_assets", "total_liabilities", "liquid",
+        )
+    }
+
+
+def _goal(datum):
+    """One goal progress row, every money figure.
+
+    Read through :func:`_get` because plan step X-w4 turned the row into a
+    frozen ``GoalProgress`` (ruling R-CI) and plan step X-aa turned its nested
+    trajectory into a ``GoalTrajectory`` (ruling R-CO); both tolerances go with
+    X-w's others.
+
+    **The ``trajectory is None`` branch this carried is GONE** (X-aa's
+    adversarial review).  ``calculate_trajectory`` returned a full dict on the
+    old tree and returns a full value object on the new one -- it has never
+    returned ``None`` -- so that was not a cross-tree tolerance, it was the same
+    guard-that-cannot-fail this very step deletes from ``savings/dashboard.html``,
+    sitting in the function the step was rewriting.  (Contrast
+    :func:`_principal_fraction` below, whose ``None`` guard is LIVE: a user with
+    no loan accounts genuinely has no summary.)
+    """
+    trajectory = _get(datum, "trajectory")
+    return {
+        "goal_id": _get(datum, "goal").id,
+        "current_balance": _money(_get(datum, "current_balance")),
+        "progress_pct": _money(_get(datum, "progress_pct")),
+        "remaining_periods": _get(datum, "remaining_periods"),
+        "required_contribution": _money(_get(datum, "required_contribution")),
+        "resolved_target": _money(_get(datum, "resolved_target")),
+        "monthly_contribution": _money(_get(datum, "monthly_contribution")),
+        "income_descriptor": _get(datum, "income_descriptor"),
+        "has_salary_data": _get(datum, "has_salary_data"),
+        "trajectory": {
+            "months_to_goal": _get(trajectory, "months_to_goal"),
             "projected_completion_date": _date(
-                trajectory["projected_completion_date"],
+                _get(trajectory, "projected_completion_date"),
             ),
-            "pace": trajectory["pace"],
-            "required_monthly": _money(trajectory["required_monthly"]),
+            "pace": _get(trajectory, "pace"),
+            "required_monthly": _money(_get(trajectory, "required_monthly")),
         },
     }
 
 
 def _principal_fraction(summary):
-    """The principal-paid fraction of one summary, wherever this tree keeps it.
+    """The principal-paid fraction of one :class:`DebtSummary`, or ``None``.
 
-    Plan step X-u makes it a ``DebtSummary`` field; before it, the only producer
-    of it was ``compute_debt_principal_progress`` and the summary had no such
-    attribute.  Reading it tolerantly is what lets THIS FILE run against both
-    trees and produce the same blob for the same data -- the X-t1 normalization
-    one step over, and the reason the deliberate shape change cannot mask an
-    accidental figure change.
+    A plain field read since plan step X-w5.  It was tolerant of a tree where
+    the summary had no such attribute -- the pre-X-u shape, where the only
+    producer of the fraction was the second debt producer X-u deleted -- and
+    that branch has been dead since ``e2cdc589``.  The dump is still tolerant of
+    a ``None`` SUMMARY (a user with no loan accounts), which is a live state.
     """
-    return _get(summary, "principal_paid_fraction")
-
-
-def _narrow_fraction(user_id, narrow_summary):
-    """The narrow producers' principal-paid fraction, whichever exists here.
-
-    Takes the already-computed narrow summary rather than fetching its own.
-    It DID fetch its own until X-u's adversarial review counted the calls: this
-    file measures finding N-109 (one render, two identical debt pipelines) and
-    was running ``compute_debt_summary`` twice per user dump to do it.
-    """
-    legacy = getattr(
-        savings_dashboard_service, "compute_debt_principal_progress", None,
-    )
-    if legacy is not None:
-        return legacy(user_id)
-    return _principal_fraction(narrow_summary)
-
-
-def _full_build_fraction(user_id, summary, narrow_summary):
-    """The full ``/savings`` build's principal-paid fraction, tolerantly.
-
-    Post-X-u the full build's own ``debt_summary`` carries it; pre-X-u nothing
-    on that path computed one, so the narrow figure stands in.  A summary that
-    HAS the attribute is authoritative even when the value is ``None`` (the
-    reachable no-loan-has-originated state), which is why this tests for the
-    attribute rather than for a truthy value.
-    """
-    if summary is not None and hasattr(summary, "principal_paid_fraction"):
-        return summary.principal_paid_fraction
-    return _narrow_fraction(user_id, narrow_summary)
+    return None if summary is None else summary.principal_paid_fraction
 
 
 def _tracks(section):
@@ -325,14 +391,10 @@ def _tracks(section):
     out = {}
     for key, value in sorted(section.items()):
         if key == "debt":
-            debt = value
-            # Pre-X-u ``debt`` is a ``DebtTrack`` wrapping the summary; post-X-u
-            # it IS the summary.  Both normalize to the same two entries.
-            summary = _get(debt, "summary") if debt is not None else None
-            out[key] = None if debt is None else {
-                "summary": _debt_summary(summary if summary is not None else debt),
-                "principal_paid_fraction": _money(_principal_fraction(debt)),
-            }
+            # The track's ``debt`` IS the ``DebtSummary``.  It was a
+            # ``DebtTrack`` wrapping one until plan step X-u deleted the
+            # wrapper, and the shim that unwrapped either shape went at X-w5.
+            out[key] = _debt_summary(value)
         elif key == "goals":
             out[key] = [
                 {
@@ -357,13 +419,38 @@ def _tracks(section):
 
 
 def _dump_user(user_id):
-    """Every figure the savings package answers for one user."""
+    """Every figure the savings package answers for one user.
+
+    **A user with NO BASELINE SCENARIO is recorded as skipped, and that is a
+    normalization, not an omission** (plan step X-v2).  Both real databases
+    carry one such user -- the COMPANION, who owns no accounts, no pay periods
+    and no scenario by design (``scripts/integrity_check`` DC-08 excludes that
+    role for exactly this reason) and who cannot reach `/savings` at all,
+    because ``require_owner`` 404s her off every balance surface.
+
+    The two trees answer that state differently ON PURPOSE: before X-v2 this
+    package returned a blob of fabricated ``$0.00`` figures for her, and after
+    it the seam raises :class:`~app.exceptions.BaselineMissingError` for one
+    application-level handler to answer.  Recording the SKIP keeps this one file
+    producing the same blob on both trees, which is what makes the rest of the
+    diff mean something -- and keeps the row visible, so a user who LOSES a
+    baseline shows up as a change rather than vanishing.
+    """
+    if get_baseline_scenario(user_id) is None:
+        return {"skipped": "no baseline scenario"}
     data = savings_dashboard_service.compute_dashboard_data(user_id)
     account_data = data["account_data"]
+    # The pre-X-w fallback for ``_balances`` (see it for why).  Built from
+    # the seam directly, so it is the SAME entry both trees answer from.
+    seam_maps = balance_at.build_maps(
+        [_get(ad, "account") for ad in account_data],
+        BalanceContext.build(user_id),
+        pay_period_service.get_all_periods(user_id),
+    )
     # ONE narrow debt build per user, shared by the two keys that read it.
     narrow_summary = savings_dashboard_service.compute_debt_summary(user_id)
     return {
-        "account_data": [_projection(ad) for ad in account_data],
+        "account_data": [_projection(ad, seam_maps) for ad in account_data],
         "grouped_accounts": {
             label: [_get(ad, "account").id for ad in group]
             for label, group in data["grouped_accounts"].items()
@@ -374,35 +461,49 @@ def _dump_user(user_id):
         },
         "property_equity": [
             {
-                "account_id": row["account"].id,
-                "equity": _money(_get(row["equity"], "equity")),
-                "ltv": _money(_get(row["equity"], "ltv")),
+                "account_id": _get(row, "account").id,
+                "equity": _money(_get(_get(row, "equity"), "equity")),
+                "ltv": _money(_get(_get(row, "equity"), "ltv")),
             }
             for row in data["property_equity"]
         ],
         "goal_data": [_goal(datum) for datum in data["goal_data"]],
+        # The emergency-fund coverage became a frozen ``SavingsCoverage`` at
+        # plan step X-aa (ruling R-CO); read field by field so the blob is the
+        # same on either tree.  Goes with X-w's other tolerances at X-x.
         "emergency_metrics": {
-            key: _money(value) if isinstance(value, Decimal) else value
-            for key, value in sorted(data["emergency_metrics"].items())
+            name: _money(_get(data["emergency_metrics"], name))
+            for name in ("months_covered", "paychecks_covered", "years_covered")
         },
         "total_savings": _money(data["total_savings"]),
         "avg_monthly_expenses": _money(data["avg_monthly_expenses"]),
         "savings_accounts": [acct.id for acct in data["savings_accounts"]],
+        # The archived rows became a frozen ``ArchivedAccount`` at plan step
+        # X-w2 and the figure was RENAMED (ruling R-CH), so both spellings are
+        # read here -- this file's own tolerance for the shape change it is
+        # measuring, which is what lets it produce the same blob on the HEAD
+        # tree and the new one.  It goes when plan step X-x deletes X-w's
+        # tolerances, exactly as this file's header requires.
         "archived_accounts": [
             {
-                "account_id": row["account"].id,
-                "current_balance": _money(row["current_balance"]),
+                "account_id": _get(row, "account").id,
+                "current_balance": _money(
+                    _get(row, "last_anchor_balance")
+                    if _get(row, "last_anchor_balance") is not None
+                    else _get(row, "current_balance"),
+                ),
             }
             for row in data["archived_accounts"]
         ],
         "debt_summary": _debt_summary(data["debt_summary"]),
+        # The region became a frozen ``_NetWorthRegion`` at plan step X-w3, with
+        # the four today figures COMPOSED on a ``today`` field where they used
+        # to be spread flat (ruling R-CI).  ``_today_figures`` normalizes both,
+        # so the blob is the same on either tree; plan step X-x deletes it.
         "net_worth": {
-            "net_worth": _money(data["net_worth"]["net_worth"]),
-            "total_assets": _money(data["net_worth"]["total_assets"]),
-            "total_liabilities": _money(data["net_worth"]["total_liabilities"]),
-            "liquid": _money(data["net_worth"]["liquid"]),
-            "series": _series(data["net_worth"]["series"]),
-            "horizon": _horizon(data["net_worth"]["horizon"]),
+            **_today_figures(data["net_worth"]),
+            "series": _series(_get(data["net_worth"], "series")),
+            "horizon": _horizon(_get(data["net_worth"], "horizon")),
         },
         "sparklines": {
             str(account_id): [_money(value) for value in values]
@@ -419,20 +520,10 @@ def _dump_user(user_id):
         # The narrow producers, each answering over its own restricted
         # load -- the "identical figures by construction" promise, measured.
         # There were four until plan step X-u deleted the second debt one.
+        # The principal-paid fraction rides inside BOTH debt summaries since
+        # plan step X-w5, where the two top-level keys that used to carry it
+        # across the X-u shape change were deleted with the shim.
         "narrow_debt_summary": _debt_summary(narrow_summary),
-        "narrow_principal_fraction": _money(
-            _narrow_fraction(user_id, narrow_summary),
-        ),
-        # The FULL build's fraction: post-X-u a field of the ``debt_summary``
-        # above, pre-X-u a figure no full-build producer computed at all -- so
-        # on the old tree this reads the narrow value, which is what the two
-        # paths are asserted to share
-        # (``TestDebtSummary::test_narrow_producer_matches_full_dashboard``
-        # compares the whole value object).  Without this key the merged
-        # field would reach ``/savings`` unmeasured by this harness.
-        "full_build_principal_fraction": _money(
-            _full_build_fraction(user_id, data["debt_summary"], narrow_summary),
-        ),
         "narrow_goal_progress": [
             _goal(datum)
             for datum in savings_dashboard_service.compute_goal_progress(
@@ -440,7 +531,9 @@ def _dump_user(user_id):
             )
         ],
         "narrow_balance_cells": {
-            str(_get(ad, "account").id): _cell(user_id, _get(ad, "account").id)
+            str(_get(ad, "account").id): _cell(
+                user_id, _get(ad, "account").id, seam_maps,
+            )
             for ad in account_data
         },
         "tracks_section": _tracks(
@@ -449,8 +542,13 @@ def _dump_user(user_id):
     }
 
 
-def _cell(user_id, account_id):
-    """The cockpit balance cell for one account, whichever shape it returns."""
+def _cell(user_id, account_id, seam_maps):
+    """The cockpit balance cell for one account -- the NARROW projection.
+
+    Its dense map is dumped too since plan step X-w6 (ruling R-CM): this is the
+    one narrow producer that returns a projection, so it is where a defect
+    confined to a narrow path's ``balances`` becomes visible to this file.
+    """
     cell = savings_dashboard_service.compute_account_balance_cell(
         user_id, account_id,
     )
@@ -459,6 +557,7 @@ def _cell(user_id, account_id):
     return {
         "account_id": _get(cell, "account").id,
         "current_balance": _money(_get(cell, "current_balance")),
+        "balances": _balances(cell, seam_maps),
         "is_liability": _get(cell, "is_liability"),
     }
 

@@ -290,7 +290,15 @@ def resolve_loan_bundle(
     if params is None:
         return None
     anchor_facts = load_loan_anchor_facts(params)
-    context = load_loan_context(account.id, ctx.scenario_id, params)
+    # ``scenario_id_or_none``, deliberately: a loan's payment feed is the ONE
+    # scenario-scoped input to its resolution, and its params, anchors and rate
+    # history are contract facts.  With no baseline the feed is empty and the
+    # CONTRACT terms still resolve -- plan step C8e's rule, and what keeps
+    # escrow and rate editing working for a user whose baseline is missing.
+    # Every other reader takes the raising ``scenario_id`` (ruling R-BX).
+    context = load_loan_context(
+        account.id, ctx.scenario_id_or_none, params,
+    )
     extra_principal = loan_standing_extra_for_account(account.id)
     state = loan_resolver.resolve_loan(
         loan_resolver.LoanInputs(

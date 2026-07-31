@@ -30,9 +30,12 @@ extracting cohesive dashboard concerns into their own modules.
 Pure aggregation service -- no Flask imports, no database writes.
 """
 
+from __future__ import annotations
+
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from itertools import groupby
+from typing import TYPE_CHECKING
 
 from app.extensions import db
 from app.models.account import Account
@@ -52,6 +55,17 @@ from app.services.dashboard_service import (
 from app.services.entry_service import compute_remaining
 from app.utils.dates import to_display_date
 from app.utils.money import round_money
+
+if TYPE_CHECKING:
+    # Type-only, and that is load-bearing here: the runtime import of
+    # ``savings_dashboard_service`` inside ``compute_tracks_section`` is
+    # DEFERRED on purpose (it pulls the heaviest service chain, +27 modules
+    # measured), so annotating at module scope would undo a measured decision.
+    # ``GoalProgress`` is the package's PUBLIC re-export as of plan step X-w6
+    # (ruling R-CN), not a private module name, so this is the façade the
+    # W9910 package-privacy checker asks for -- the type hint the coding
+    # standard asks for, at no import cost.
+    from app.services.savings_dashboard_service import GoalProgress
 
 _ZERO = Decimal("0")
 
@@ -114,12 +128,12 @@ def compute_pulse_section(user_id: int) -> dict | None:
         computed (no account / scenario / current period).
     """
     account, balance_ctx, current_period = _resolve_section_context(user_id)
-    # ``has_baseline`` is the SEAM's own precondition, read off the context
-    # rather than re-spelled as ``scenario is None`` (plan step X-t2, finding
-    # N-107): this region legitimately handles the empty state, and the
-    # property it guards on is the one ``require_scenario`` raises on.
-    if (account is None or not balance_ctx.has_baseline
-            or current_period is None):
+    # The no-baseline arm this guard used to carry is GONE (plan step X-v2,
+    # ruling R-BW): the seam raises and one application-level handler answers,
+    # so this region no longer decides what a user with no computable balance
+    # sees.  What remains are the two states this producer genuinely models --
+    # no grid account, and no period containing today.
+    if account is None or current_period is None:
         return None
 
     settings = _get_user_settings(user_id)
@@ -181,7 +195,7 @@ def compute_pulse_section(user_id: int) -> dict | None:
     if next_period is not None:
         period_ids.append(next_period.id)
     unpaid_rows = _query_unpaid_expense_rows(
-        account.id, balance_ctx.scenario.id, period_ids,
+        account.id, balance_ctx.scenario_id, period_ids,
     )
 
     due_soon = _pulse_due_soon(unpaid_rows, current_period)
@@ -851,20 +865,23 @@ def compute_tracks_section(user_id: int) -> dict:
     }
 
 
-def _track_goal_datum(goal_datum: dict) -> dict:
+def _track_goal_datum(goal_datum: GoalProgress) -> dict:
     """Reshape one ``compute_goal_progress`` entry into the metro-track contract.
 
     Pulls only the fields the savings track renders -- the goal's name and
     account name, the progress percent and balance/target, and the
     ``calculate_trajectory`` outputs (pace, projected completion date,
     required monthly) -- so the template reads a flat dict rather than
-    reaching into the nested ``goal`` ORM object and ``trajectory`` sub-dict.
+    reaching into the nested ``goal`` ORM object and its
+    :class:`~app.services.savings_goal_service.GoalTrajectory`.
 
     Args:
-        goal_datum: One per-goal dict from
-            ``savings_dashboard_service.compute_goal_progress`` (carries
-            ``goal``, ``progress_pct``, ``current_balance``,
-            ``resolved_target``, ``trajectory``, ``monthly_contribution``).
+        goal_datum: One
+            :class:`~app.services.savings_dashboard_service._goals.GoalProgress`
+            from ``savings_dashboard_service.compute_goal_progress`` (an untyped
+            eleven-key dict until plan step X-w4, ruling R-CI).  Read through
+            ATTRIBUTES now, so a field this producer renames fails here rather
+            than resolving to a ``KeyError`` that reads like missing data.
 
     Returns:
         A dict with keys ``name``, ``account_name``, ``account_id``,
@@ -872,18 +889,18 @@ def _track_goal_datum(goal_datum: dict) -> dict:
         ``target_date``, ``pace``, ``projected_completion_date``,
         ``required_monthly``, ``monthly_contribution``.
     """
-    goal = goal_datum["goal"]
-    trajectory = goal_datum["trajectory"]
+    goal = goal_datum.goal
+    trajectory = goal_datum.trajectory
     return {
         "name": goal.name,
         "account_name": goal.account.name,
         "account_id": goal.account_id,
-        "progress_pct": goal_datum["progress_pct"],
-        "current_balance": goal_datum["current_balance"],
-        "target_amount": goal_datum["resolved_target"],
+        "progress_pct": goal_datum.progress_pct,
+        "current_balance": goal_datum.current_balance,
+        "target_amount": goal_datum.resolved_target,
         "target_date": goal.target_date,
-        "pace": trajectory["pace"],
-        "projected_completion_date": trajectory["projected_completion_date"],
-        "required_monthly": trajectory["required_monthly"],
-        "monthly_contribution": goal_datum["monthly_contribution"],
+        "pace": trajectory.pace,
+        "projected_completion_date": trajectory.projected_completion_date,
+        "required_monthly": trajectory.required_monthly,
+        "monthly_contribution": goal_datum.monthly_contribution,
     }

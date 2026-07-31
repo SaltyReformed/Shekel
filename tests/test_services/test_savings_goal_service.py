@@ -6,6 +6,7 @@ calculate_required_contribution, calculate_savings_metrics,
 count_periods_until, resolve_goal_target, and calculate_trajectory.
 """
 
+from dataclasses import astuple
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from types import SimpleNamespace
@@ -17,6 +18,7 @@ from app import ref_cache
 from app.enums import GoalModeEnum, IncomeUnitEnum
 from app.services.savings_goal_service import (
     calculate_required_contribution,
+    GoalTrajectory,
     calculate_savings_metrics,
     calculate_trajectory,
     count_periods_until,
@@ -89,9 +91,9 @@ class TestCalculateSavingsMetrics:
             savings_balance=Decimal("12000"),
             average_monthly_expenses=Decimal("2000"),
         )
-        assert result["months_covered"] == Decimal("6.0")
-        assert result["paychecks_covered"] == Decimal("13.0")
-        assert result["years_covered"] == Decimal("0.5")
+        assert result.months_covered == Decimal("6.0")
+        assert result.paychecks_covered == Decimal("13.0")
+        assert result.years_covered == Decimal("0.5")
 
     def test_paychecks_formula(self):
         """Paychecks = months * 26 / 12."""
@@ -100,8 +102,8 @@ class TestCalculateSavingsMetrics:
             average_monthly_expenses=Decimal("3000"),
         )
         # months = 8.0, paychecks = 8.0 * 26 / 12 = 17.333... → 17.3
-        assert result["months_covered"] == Decimal("8.0")
-        assert result["paychecks_covered"] == Decimal("17.3")
+        assert result.months_covered == Decimal("8.0")
+        assert result.paychecks_covered == Decimal("17.3")
 
     def test_years_formula(self):
         """Years = months / 12."""
@@ -110,8 +112,8 @@ class TestCalculateSavingsMetrics:
             average_monthly_expenses=Decimal("1000"),
         )
         # months = 36.0, years = 36 / 12 = 3.0
-        assert result["months_covered"] == Decimal("36.0")
-        assert result["years_covered"] == Decimal("3.0")
+        assert result.months_covered == Decimal("36.0")
+        assert result.years_covered == Decimal("3.0")
 
     def test_expenses_zero_returns_all_zeros(self):
         """Zero expenses -- can't divide, return zeros."""
@@ -119,19 +121,105 @@ class TestCalculateSavingsMetrics:
             savings_balance=Decimal("10000"),
             average_monthly_expenses=Decimal("0"),
         )
-        assert result["months_covered"] == Decimal("0")
-        assert result["paychecks_covered"] == Decimal("0")
-        assert result["years_covered"] == Decimal("0")
+        assert result.months_covered == Decimal("0")
+        assert result.paychecks_covered == Decimal("0")
+        assert result.years_covered == Decimal("0")
 
-    def test_expenses_none_returns_all_zeros(self):
-        """None expenses -- return zeros."""
+    # ``test_expenses_none_returns_all_zeros`` went at plan step X-z4 (ruling
+    # R-CS) with the ``None`` arm it exercised.  Neither parameter is nullable:
+    # the one production caller passes two producers that return a ``Decimal``
+    # on every path, and nothing anywhere passed a ``None`` balance.  A branch
+    # whose only consumer is the test written for it is the shape X-s3 deleted
+    # ``DtiMetrics.gross_monthly_income`` for.
+
+    def test_a_non_divisible_ratio_converts_from_the_raw_months(self):
+        """Each unit is rounded ONCE from the raw ratio, not from the months.
+
+        **The shape none of the cases above could see** (plan step X-z5, ruling
+        R-CS, finding N-120).  Every ratio asserted anywhere in this repository
+        divided EXACTLY -- 12000/2000, 24000/3000, 36000/1000 and 0/2000 here,
+        100000/0.01 in ``TestNegativeAndBoundaryPaths`` -- so the rounded months
+        equalled the raw ratio and both rounding rules gave byte-identical
+        answers.  The whole class was invisible to this file (Section 7.4: the
+        fixture matrix must contain the shape the feature exists for).  (Ruling
+        R-CS called these "all five ``TestCalculateSavingsMetrics`` cases"; the
+        class had six and one of the five is in the other class.  Corrected at
+        plan step X-z8 -- a count in a docstring is a claim.)
+
+        The developer's own prod-shape figures, worked by hand:
+
+            raw months     = 4076.92 / 5667.63 = 0.7193342...
+            months_covered = 0.7193... -> 0.7
+            paychecks      = 0.7193... * 26 / 12 = 1.55855... -> 1.6
+            years          = 0.7193... / 12      = 0.05994...  -> 0.1
+
+        Under the old rule the paychecks figure came from the ROUNDED 0.7
+        (0.7 * 26 / 12 = 1.51666... -> 1.5), which is the tenth this test
+        exists to hold.
+        """
         result = calculate_savings_metrics(
-            savings_balance=Decimal("10000"),
-            average_monthly_expenses=None,
+            savings_balance=Decimal("4076.92"),
+            average_monthly_expenses=Decimal("5667.63"),
         )
-        assert result["months_covered"] == Decimal("0")
-        assert result["paychecks_covered"] == Decimal("0")
-        assert result["years_covered"] == Decimal("0")
+        assert result.months_covered == Decimal("0.7")
+        assert result.paychecks_covered == Decimal("1.6")
+        assert result.years_covered == Decimal("0.1")
+
+    def test_years_covered_also_converts_from_the_raw_months(self):
+        """``years_covered`` has its own discriminating shape.
+
+        **Nothing gated it until plan step X-z8** (ruling R-CV), which is the
+        gap X-z's adversarial correctness review measured: every (savings,
+        expenses) pair asserted anywhere in this repository gave the IDENTICAL
+        ``years_covered`` under both rounding rules, so
+
+            years_covered=_to_coverage_grain(
+                _to_coverage_grain(months) / MONTHS_PER_YEAR)
+
+        passed all 7,668 tests.  X-z5 added the discriminating shape for
+        ``paychecks_covered`` and not for the unit beside it, while ruling
+        R-CS's own sweep had measured ``years_covered`` diverging in 4.2% of
+        shapes.
+
+            raw months     = 550 / 1000 = 0.55
+            months_covered = 0.55 -> 0.6      (half-up)
+            years          = 0.55 / 12 = 0.04583... -> 0.0
+
+        The double-rounded route gives 0.6 / 12 = 0.05 -> 0.1, so this case
+        renders a tenth of a year of runway that the money does not support.
+        """
+        result = calculate_savings_metrics(
+            savings_balance=Decimal("550"),
+            average_monthly_expenses=Decimal("1000"),
+        )
+        assert result.months_covered == Decimal("0.6")
+        assert result.years_covered == Decimal("0.0")
+        # paychecks: 0.55 * 26 / 12 = 1.19166... -> 1.2 (1.3 double-rounded).
+        assert result.paychecks_covered == Decimal("1.2")
+
+    def test_the_worst_measured_double_rounding_gap(self):
+        """The 0.2-paycheck case from the 40,817-shape sweep.
+
+        Small balances are where double-rounding bites hardest, because the
+        months figure rounds up by nearly a full half-tenth and the ``26/12``
+        conversion then multiplies that error by 2.17:
+
+            raw months     = 250 / 1000 = 0.25
+            months_covered = 0.25 -> 0.3   (half-up)
+            paychecks      = 0.25 * 26 / 12 = 0.54166... -> 0.5
+
+        The old rule gave 0.3 * 26 / 12 = 0.65 -> 0.7, a 40% overstatement of
+        how many pay periods the money actually covers.  This is a VALUE
+        assertion on the arithmetic, not a shape check: a wrong implementation
+        returns 0.7 here and 0.5 is the only right answer.
+        """
+        result = calculate_savings_metrics(
+            savings_balance=Decimal("250"),
+            average_monthly_expenses=Decimal("1000"),
+        )
+        assert result.months_covered == Decimal("0.3")
+        assert result.paychecks_covered == Decimal("0.5")
+        assert result.years_covered == Decimal("0.0")
 
     def test_balance_zero_returns_all_zeros(self):
         """Zero balance -- nothing to cover expenses with."""
@@ -139,9 +227,9 @@ class TestCalculateSavingsMetrics:
             savings_balance=Decimal("0"),
             average_monthly_expenses=Decimal("2000"),
         )
-        assert result["months_covered"] == Decimal("0.0")
-        assert result["paychecks_covered"] == Decimal("0.0")
-        assert result["years_covered"] == Decimal("0.0")
+        assert result.months_covered == Decimal("0.0")
+        assert result.paychecks_covered == Decimal("0.0")
+        assert result.years_covered == Decimal("0.0")
 
 
 # ── TestCountPeriodsUntil ────────────────────────────────────────
@@ -234,9 +322,9 @@ class TestNegativeAndBoundaryPaths:
             savings_balance=Decimal("10000"),
             average_monthly_expenses=Decimal("-100"),
         )
-        assert result["months_covered"] == Decimal("0")
-        assert result["paychecks_covered"] == Decimal("0")
-        assert result["years_covered"] == Decimal("0")
+        assert result.months_covered == Decimal("0")
+        assert result.paychecks_covered == Decimal("0")
+        assert result.years_covered == Decimal("0")
 
     def test_metrics_very_small_expenses(self):
         """Very small expenses produce very large coverage numbers without overflow.
@@ -248,11 +336,11 @@ class TestNegativeAndBoundaryPaths:
             average_monthly_expenses=Decimal("0.01"),
         )
         # months = 100000 / 0.01 = 10000000.0
-        assert result["months_covered"] == Decimal("10000000.0")
+        assert result.months_covered == Decimal("10000000.0")
         # paychecks = 10000000.0 * 26 / 12 = 21666666.666... → 21666666.7
-        assert result["paychecks_covered"] == Decimal("21666666.7")
+        assert result.paychecks_covered == Decimal("21666666.7")
         # years = 10000000.0 / 12 = 833333.333... → 833333.3
-        assert result["years_covered"] == Decimal("833333.3")
+        assert result.years_covered == Decimal("833333.3")
 
     def test_required_contribution_exact_match(self):
         """When balance exactly equals target, contribution is Decimal("0.00").
@@ -490,6 +578,70 @@ class TestCalculateTrajectory:
     """
 
     @patch("app.services.savings_goal_service.date")
+    def test_every_branch_returns_a_whole_trajectory(self, mock_date):
+        """Each of the three returns yields its WHOLE four-field answer.
+
+        Plan step X-aa, ruling R-CO.  This is the contract that let
+        ``GoalProgress.trajectory`` stop being ``dict | None`` and let the goal
+        card drop its ``{% if gd.trajectory %}`` guard: both were unreachable,
+        and a nullable that cannot be null is ruling R-CA's defect while a
+        truthiness test that cannot be false is not a guard.
+
+        **The first draft of this test could not fire, and that is why it now
+        asserts whole tuples** (X-aa's adversarial review).  It looped
+        ``assert hasattr(traj, field)`` over the four names -- structurally
+        unfalsifiable, because ``GoalTrajectory`` is a frozen dataclass with
+        four required fields, so anything that passes ``isinstance`` has all
+        four by construction.  Seven mutants were run against it and FIVE
+        survived, including the one its own docstring named ("omits a field")
+        and a ``required_monthly`` inflated tenfold.  Comparing
+        ``dataclasses.astuple`` per branch kills all seven: a wrong field in
+        any position fails the branch it belongs to.
+        """
+        mock_date.today.return_value = date(2026, 4, 15)
+        # remaining = 6000 - 3000 = 3000; months = ceil(3000 / 500) = 6;
+        # projected = 2026-04-15 + 6 months = 2026-10-15, target month 2026-10
+        # -> 'on_track'.  months_between(2026-04-15, 2026-10-31) = 6, so
+        # required = ceil(3000 / 6) = 500.00.
+        projectable = calculate_trajectory(
+            current_balance=Decimal("3000.00"),
+            target_amount=Decimal("6000.00"),
+            monthly_contribution=Decimal("500.00"),
+            target_date=date(2026, 10, 31),
+        )
+        # Goal met: 0 months, completion is today, pace measured today vs the
+        # target month (2026-04 < 2026-10) -> 'ahead', nothing more required.
+        already_met = calculate_trajectory(
+            current_balance=Decimal("6000.00"),
+            target_amount=Decimal("6000.00"),
+            monthly_contribution=Decimal("500.00"),
+            target_date=date(2026, 10, 31),
+        )
+        # No contribution: no projectable date at all, so 'behind' by
+        # definition -- but the required monthly is still answerable
+        # (5000 gap over 6 whole months = 833.34, ceiling-rounded).
+        no_contribution = calculate_trajectory(
+            current_balance=Decimal("1000.00"),
+            target_amount=Decimal("6000.00"),
+            monthly_contribution=Decimal("0.00"),
+            target_date=date(2026, 10, 31),
+        )
+
+        assert astuple(projectable) == (
+            6, date(2026, 10, 15), "on_track", Decimal("500.00"),
+        )
+        assert astuple(already_met) == (
+            0, date(2026, 4, 15), "ahead", Decimal("0.00"),
+        )
+        assert astuple(no_contribution) == (
+            None, None, "behind", Decimal("833.34"),
+        )
+        # And each really is a GoalTrajectory rather than a look-alike, which
+        # is what pins the shape ruling R-CO settled.
+        for traj in (projectable, already_met, no_contribution):
+            assert isinstance(traj, GoalTrajectory)
+
+    @patch("app.services.savings_goal_service.date")
     def test_trajectory_on_track(self, mock_date):
         """C-5.15-1: On track when projected month matches target month.
 
@@ -512,10 +664,10 @@ class TestCalculateTrajectory:
             monthly_contribution=Decimal("500.00"),
             target_date=target_date,
         )
-        assert result["months_to_goal"] == 6
-        assert result["projected_completion_date"] == date(2026, 10, 3)
-        assert result["pace"] == "on_track"
-        assert result["required_monthly"] == Decimal("500.00")
+        assert result.months_to_goal == 6
+        assert result.projected_completion_date == date(2026, 10, 3)
+        assert result.pace == "on_track"
+        assert result.required_monthly == Decimal("500.00")
 
     @patch("app.services.savings_goal_service.date")
     def test_trajectory_behind(self, mock_date):
@@ -540,11 +692,11 @@ class TestCalculateTrajectory:
             monthly_contribution=Decimal("500.00"),
             target_date=target_date,
         )
-        assert result["months_to_goal"] == 10
-        assert result["projected_completion_date"] == date(2027, 2, 3)
-        assert result["pace"] == "behind"
+        assert result.months_to_goal == 10
+        assert result.projected_completion_date == date(2027, 2, 3)
+        assert result.pace == "behind"
         # required = ceil(5000 / 3) = 1666.666... -> 1666.67
-        assert result["required_monthly"] == Decimal("1666.67")
+        assert result.required_monthly == Decimal("1666.67")
 
     @patch("app.services.savings_goal_service.date")
     def test_trajectory_ahead(self, mock_date):
@@ -569,11 +721,11 @@ class TestCalculateTrajectory:
             monthly_contribution=Decimal("500.00"),
             target_date=target_date,
         )
-        assert result["months_to_goal"] == 2
-        assert result["projected_completion_date"] == date(2026, 6, 3)
-        assert result["pace"] == "ahead"
+        assert result.months_to_goal == 2
+        assert result.projected_completion_date == date(2026, 6, 3)
+        assert result.pace == "ahead"
         # required = ceil(1000 / 12) = 83.333... -> 83.34
-        assert result["required_monthly"] == Decimal("83.34")
+        assert result.required_monthly == Decimal("83.34")
 
     @patch("app.services.savings_goal_service.date")
     def test_trajectory_no_contribution(self, mock_date):
@@ -590,11 +742,11 @@ class TestCalculateTrajectory:
             monthly_contribution=Decimal("0.00"),
             target_date=date(2027, 4, 3),
         )
-        assert result["months_to_goal"] is None
-        assert result["projected_completion_date"] is None
-        assert result["pace"] == "behind"
+        assert result.months_to_goal is None
+        assert result.projected_completion_date is None
+        assert result.pace == "behind"
         # required = ceil(3000 / 12) = 250.00
-        assert result["required_monthly"] == Decimal("250.00")
+        assert result.required_monthly == Decimal("250.00")
 
     @patch("app.services.savings_goal_service.date")
     def test_trajectory_goal_already_met(self, mock_date):
@@ -611,10 +763,10 @@ class TestCalculateTrajectory:
             monthly_contribution=Decimal("500.00"),
             target_date=date(2027, 4, 3),
         )
-        assert result["months_to_goal"] == 0
-        assert result["projected_completion_date"] == date(2026, 4, 3)
-        assert result["pace"] == "ahead"
-        assert result["required_monthly"] == Decimal("0.00")
+        assert result.months_to_goal == 0
+        assert result.projected_completion_date == date(2026, 4, 3)
+        assert result.pace == "ahead"
+        assert result.required_monthly == Decimal("0.00")
 
     @patch("app.services.savings_goal_service.date")
     def test_trajectory_no_target_date(self, mock_date):
@@ -632,10 +784,10 @@ class TestCalculateTrajectory:
             monthly_contribution=Decimal("500.00"),
             target_date=None,
         )
-        assert result["months_to_goal"] == 6
-        assert result["projected_completion_date"] == date(2026, 10, 3)
-        assert result["pace"] is None
-        assert result["required_monthly"] is None
+        assert result.months_to_goal == 6
+        assert result.projected_completion_date == date(2026, 10, 3)
+        assert result.pace is None
+        assert result.required_monthly is None
 
     @patch("app.services.savings_goal_service.date")
     def test_trajectory_exact_boundary(self, mock_date):
@@ -652,7 +804,7 @@ class TestCalculateTrajectory:
             target_amount=Decimal("6000.00"),
             monthly_contribution=Decimal("500.00"),
         )
-        assert result["months_to_goal"] == 1
+        assert result.months_to_goal == 1
 
     @patch("app.services.savings_goal_service.date")
     def test_trajectory_fractional_months_rounds_up(self, mock_date):
@@ -669,8 +821,8 @@ class TestCalculateTrajectory:
             target_amount=Decimal("6000.00"),
             monthly_contribution=Decimal("700.00"),
         )
-        assert result["months_to_goal"] == 5
-        assert result["projected_completion_date"] == date(2026, 9, 3)
+        assert result.months_to_goal == 5
+        assert result.projected_completion_date == date(2026, 9, 3)
 
     @patch("app.services.savings_goal_service.date")
     def test_required_monthly_rounds_up(self, mock_date):
@@ -690,7 +842,7 @@ class TestCalculateTrajectory:
         )
         # remaining = 5000, months_available = 3 (Jul - Apr = 3)
         # required = ceil(5000/3) = 1666.67
-        assert result["required_monthly"] == Decimal("1666.67")
+        assert result.required_monthly == Decimal("1666.67")
 
     @patch("app.services.savings_goal_service.date")
     def test_trajectory_target_date_past(self, mock_date):
@@ -709,9 +861,9 @@ class TestCalculateTrajectory:
             monthly_contribution=Decimal("500.00"),
             target_date=date(2026, 4, 2),  # yesterday
         )
-        assert result["months_to_goal"] == 6
-        assert result["pace"] is None
-        assert result["required_monthly"] is None
+        assert result.months_to_goal == 6
+        assert result.pace is None
+        assert result.required_monthly is None
 
     @patch("app.services.savings_goal_service.date")
     def test_trajectory_zero_target(self, mock_date):
@@ -727,8 +879,8 @@ class TestCalculateTrajectory:
             target_amount=Decimal("0.00"),
             monthly_contribution=Decimal("500.00"),
         )
-        assert result["months_to_goal"] == 0
-        assert result["projected_completion_date"] == date(2026, 4, 3)
+        assert result.months_to_goal == 0
+        assert result.projected_completion_date == date(2026, 4, 3)
 
     @patch("app.services.savings_goal_service.date")
     def test_trajectory_negative_contribution(self, mock_date):
@@ -744,8 +896,8 @@ class TestCalculateTrajectory:
             target_amount=Decimal("6000.00"),
             monthly_contribution=Decimal("-50.00"),
         )
-        assert result["months_to_goal"] is None
-        assert result["projected_completion_date"] is None
+        assert result.months_to_goal is None
+        assert result.projected_completion_date is None
 
     @patch("app.services.savings_goal_service.date")
     def test_trajectory_very_small_contribution(self, mock_date):
@@ -763,8 +915,8 @@ class TestCalculateTrajectory:
             target_amount=Decimal("100000.00"),
             monthly_contribution=Decimal("1.00"),
         )
-        assert result["months_to_goal"] == 100000
-        assert result["projected_completion_date"] is not None
+        assert result.months_to_goal == 100000
+        assert result.projected_completion_date is not None
 
     @patch("app.services.savings_goal_service.date")
     def test_pace_same_month_is_on_track(self, mock_date):
@@ -784,7 +936,7 @@ class TestCalculateTrajectory:
             monthly_contribution=Decimal("500.00"),
             target_date=date(2026, 10, 28),
         )
-        assert result["pace"] == "on_track"
+        assert result.pace == "on_track"
 
     @patch("app.services.savings_goal_service.date")
     def test_trajectory_no_contribution_no_target_date(self, mock_date):
@@ -802,7 +954,7 @@ class TestCalculateTrajectory:
             monthly_contribution=Decimal("0.00"),
             target_date=None,
         )
-        assert result["months_to_goal"] is None
-        assert result["projected_completion_date"] is None
-        assert result["pace"] is None
-        assert result["required_monthly"] is None
+        assert result.months_to_goal is None
+        assert result.projected_completion_date is None
+        assert result.pace is None
+        assert result.required_monthly is None

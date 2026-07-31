@@ -9,6 +9,7 @@ Tests for the savings dashboard and goal CRUD endpoints:
   - Double-submit (unique constraint on user+account+name)
 """
 
+import re
 from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -3396,10 +3397,10 @@ class TestDashboardNetWorthContext:
             net_worth = context["net_worth"]
 
             # 1000.00 + 4000.00 = 5000.00
-            assert net_worth["total_assets"] == Decimal("5000.00")
-            assert net_worth["total_liabilities"] == Decimal("0.00")
-            assert net_worth["net_worth"] == Decimal("5000.00")
-            assert net_worth["liquid"] == Decimal("5000.00")
+            assert net_worth.today.total_assets == Decimal("5000.00")
+            assert net_worth.today.total_liabilities == Decimal("0.00")
+            assert net_worth.today.net_worth == Decimal("5000.00")
+            assert net_worth.today.liquid == Decimal("5000.00")
 
     def test_chart_json_parses_to_expected_shape_with_floats(
         self, app, auth_client, seed_user, seed_periods,
@@ -3437,8 +3438,8 @@ class TestDashboardNetWorthContext:
             assert set(chart.keys()) == {
                 "labels", "net", "current_index", "composition", "horizon",
             }
-            series = context["net_worth"]["series"]
-            n = len(series["periods"])
+            series = context["net_worth"].series
+            n = len(series.periods)
             assert n > 0
             assert len(chart["labels"]) == n
             assert len(chart["net"]) == n
@@ -3448,7 +3449,7 @@ class TestDashboardNetWorthContext:
             assert chart["net"][0] == 5000.0
             # current_index (the solid/dashed boundary) passes straight
             # through from the producer's series; an int in [0, n].
-            assert chart["current_index"] == series["current_index"]
+            assert chart["current_index"] == series.current_index
             assert isinstance(chart["current_index"], int)
             assert 0 <= chart["current_index"] <= n
 
@@ -3466,7 +3467,7 @@ class TestDashboardNetWorthContext:
             for i in range(n):
                 asset_side = sum(comp[band][i] for band in asset_bands)
                 assert asset_side - comp["liability"][i] == chart["net"][i]
-                assert chart["net"][i] == float(series["net"][i])
+                assert chart["net"][i] == float(series.net[i])
 
             # The horizon range: a float net series that starts at the hero
             # ($5,000), plus composition bands + milestone list.
@@ -3607,7 +3608,7 @@ class TestHorizonSerialization:
             db.session.commit()
             horizon = savings_dashboard_service.compute_dashboard_data(
                 seed_user["user"].id,
-            )["net_worth"]["horizon"]
+            )["net_worth"].horizon
             assert horizon is not None
             # The unmutated payload serializes, so a failure below is the
             # missing key and never a broken fixture.
@@ -3791,6 +3792,28 @@ class TestCockpitSection:
         click-to-edit balance cell, but NOT the ``#cockpit-section`` wrapper
         (that lives in the page) -- proving it is the fragment the
         balanceChanged swap consumes, not the whole page.
+
+        **The hero's FIGURE is asserted at its own anchor** (plan step X-w3,
+        rewritten at X-w6 after both adversarial reviews found the first
+        version could not fire).
+
+        Two things were wrong with that version and both are worth recording.
+        Its arm was ``body.count("$1,000.00") >= 3``, and the fragment carries
+        SEVEN occurrences of that figure -- at least three from outside the
+        hero region (the account's balance cell, the category group-header
+        subtotal, the legend's asset band), so all four hero reads could point
+        at the wrong-but-present field and the count still passed.  That is
+        ruling R-CF's class, a control that cannot fail, committed one step
+        after R-CF.  And its stated reason was false: Jinja renders a bare
+        ``{{ value }}`` on a missing attribute as an empty string, but the
+        ``money`` macro opens with ``{% if value < 0 %}`` and
+        ``Undefined.__lt__`` RAISES -- so a renamed money field 500s and the
+        ``status_code == 200`` assertion above already covered that class.
+
+        What is left uncovered by the status check, and is what this test now
+        pins, is a producer returning the WRONG FIGURE: a hero reduced over an
+        empty set reports ``$0.00`` with a 200.  So each figure is matched
+        inside the element that names it.
         """
         with app.app_context():
             acct_id = seed_user["account"].id
@@ -3800,6 +3823,24 @@ class TestCockpitSection:
             assert resp.status_code == 200
             body = resp.data.decode()
             assert "Net worth" in body
+            # Seed Checking $1,000.00, no liabilities: hero == assets ==
+            # liquid == $1,000.00, and the liability chip is a real $0.00.
+            # Each figure is anchored to the element that renders it, so an
+            # occurrence elsewhere on the page cannot satisfy the arm.
+            assert re.search(
+                r'nw-hero__num[^>]*>\s*\$1,000\.00', body,
+            ), "the net-worth hero did not render $1,000.00"
+            for label, figure in (
+                ("Total assets", "$1,000.00"),
+                ("Total liabilities", "$0.00"),
+                ("Liquid", "$1,000.00"),
+            ):
+                assert re.search(
+                    rf'pulse-chip__label">{label}</div>\s*'
+                    rf'<div class="pulse-chip__value[^>]*>\s*'
+                    rf'{re.escape(figure)}',
+                    body,
+                ), f"the {label} chip did not render {figure}"
             assert f'id="acct-balance-{acct_id}"' in body
             assert 'id="cockpit-section"' not in body
 

@@ -6,6 +6,7 @@ Flask imports -- called by the savings route to compute metrics.
 """
 
 import logging
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
 
@@ -20,6 +21,103 @@ from app.utils.money import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class GoalTrajectory:
+    """When a savings goal lands at the current rate, and how that reads.
+
+    What :func:`calculate_trajectory` returns.  A frozen value object since plan
+    step X-aa (ruling R-CO); it was a four-key dict nested INSIDE the
+    :class:`~app.services.savings_dashboard_service.GoalProgress` record
+    plan step X-w4 created -- a typed outer with a dict inner, which is the
+    inconsistency ruling R-CI exists to remove, sitting in R-CI's own container.
+
+    **It is never absent.**  Its producer has three ``return`` statements and
+    every one of them fills all four fields, so a consumer asks about the
+    FIELDS, never about the record.  X-w4 typed the field that holds it as
+    ``dict | None`` and ``savings/dashboard.html`` guarded it with a truthiness
+    test; both were unreachable, and both went with this type -- a nullable that
+    cannot be null is ruling R-CA's defect, and a guard that cannot be false is
+    not a guard.
+
+    **The four fields ARE nullable, and each nullable means one thing**, which
+    is why they are read individually:
+
+    Attributes:
+        months_to_goal: Whole months until the balance reaches the target.
+            ``0`` when the goal is already met -- that branch is tested FIRST,
+            so a funded goal whose recurring transfer was deleted still reports
+            ``0`` rather than ``None`` -- and ``None`` when the goal is NOT met
+            and there is no positive monthly contribution, the state the card
+            renders as "No recurring contribution".  ``0`` and ``None`` are
+            DIFFERENT answers and the template branches on both.  (The
+            precedence was unstated until plan step X-aa's adversarial review
+            reached the overlap by execution.)
+        projected_completion_date: The date the goal is projected to be met,
+            or ``None`` exactly when :attr:`months_to_goal` is.
+        pace: ``'ahead'`` / ``'on_track'`` / ``'behind'`` against the goal's
+            target date, or ``None`` when there is no ACTIONABLE target date
+            (none set, or one already past).  Compared against literals by the
+            template's ``pace_pill`` macro, which ``_money_macros.html`` records
+            as the sanctioned pattern here: these are this service's own
+            vocabulary, not a reference-table ``.name`` column.
+        required_monthly: The monthly contribution needed to hit the target
+            date.  ``None`` when there is no ACTIONABLE target date (none set,
+            or one already past) -- **and also when an actionable target date
+            falls inside the current calendar month**, which leaves zero whole
+            months to spread the gap over
+            (:func:`_compute_required_monthly` divides by
+            :func:`app.utils.dates.months_between`).  That second case is
+            reachable and was missing from this list until plan step X-aa's
+            adversarial review measured it: a goal targeted later THIS month
+            renders "behind" with no "Increase to $X/mo" line beside it.  The
+            goal-met branch is the exception that proves the rule -- it returns
+            ``0.00`` for the same date, because nothing more is required.
+    """
+
+    months_to_goal: int | None
+    projected_completion_date: date | None
+    pace: str | None
+    required_monthly: Decimal | None
+
+
+@dataclass(frozen=True)
+class SavingsCoverage:
+    """How long the user's liquid savings would cover their expenses.
+
+    What :func:`calculate_savings_metrics` returns, and what the cockpit's
+    emergency-fund footer renders.  A frozen value object since plan step X-aa
+    (ruling R-CO); it was a three-key dict.
+
+    All three fields are one figure expressed in three units, so they are a
+    record rather than three returns -- and they are all present always: the
+    zero-expenses branch returns three zeros rather than omitting anything.
+
+    **Each is quantized ONCE from the raw ratio** (plan step X-z5, ruling R-CS,
+    closing finding N-120).  The two derived units were converted from the
+    ROUNDED months -- rounded twice, so each could differ from the true answer
+    by a tenth: `$4,076.92` over `$5,667.63` is `0.719334` raw months, and the
+    footer rendered `0.7 months / 1.5 paychecks` where the raw ratio gives
+    `1.6`.  The three are therefore no longer exact conversions of each other
+    at the displayed grain, which is the price of each being right about its
+    own question; :func:`calculate_savings_metrics` carries the measurement.
+    (This paragraph said "the same span in biweekly pay periods" until plan
+    step X-aa's adversarial review measured that it was not.)
+
+    Attributes:
+        months_covered: Savings divided by average monthly expenses, at the
+            footer's one-decimal grain.  ``0`` when there are no expenses to
+            cover.
+        paychecks_covered: How many biweekly pay periods the same savings
+            cover -- the raw ratio times ``26/12``, then rounded.
+        years_covered: The same span in years -- the raw ratio over ``12``,
+            then rounded.
+    """
+
+    months_covered: Decimal
+    paychecks_covered: Decimal
+    years_covered: Decimal
 
 
 def resolve_goal_target(
@@ -136,43 +234,116 @@ def calculate_required_contribution(current_balance, target_amount, remaining_pe
     return round_money(gap / remaining_periods)
 
 
-def calculate_savings_metrics(savings_balance, average_monthly_expenses):
-    """Calculate how long savings would cover expenses.
+# The grain the emergency-fund footer renders its three coverage units at: one
+# decimal place.  A display grain rather than a money one -- these are spans of
+# time, not amounts -- so it is named here and not in ``app.utils.money``, whose
+# rounding helpers are all two-place currency.
+_COVERAGE_GRAIN = Decimal("0.1")
+
+
+def _to_coverage_grain(value: Decimal) -> Decimal:
+    """Round one coverage figure to the footer's displayed grain.
+
+    The single quantization point for all three units of
+    :class:`SavingsCoverage`, so each is rounded exactly ONCE from the raw
+    ratio (plan step X-z5, ruling R-CS, finding N-120) rather than two of them
+    being converted from an already-rounded third.
 
     Args:
-        savings_balance:          Decimal -- total savings balance.
-        average_monthly_expenses: Decimal -- average monthly expense total.
+        value: The unrounded coverage figure, in whichever unit.
 
     Returns:
-        Dict with months_covered, paychecks_covered, years_covered.
-        All values are Decimal. Returns zeros if expenses are zero.
+        *value* at :data:`_COVERAGE_GRAIN`, half-up.
     """
-    if savings_balance is None:
-        savings_balance = Decimal("0.00")
-    else:
-        savings_balance = Decimal(str(savings_balance))
+    return value.quantize(_COVERAGE_GRAIN, rounding=ROUND_HALF_UP)
 
-    if average_monthly_expenses is None or Decimal(str(average_monthly_expenses)) <= 0:
-        return {
-            "months_covered": Decimal("0"),
-            "paychecks_covered": Decimal("0"),
-            "years_covered": Decimal("0"),
-        }
 
-    avg_expenses = Decimal(str(average_monthly_expenses))
-    months = (savings_balance / avg_expenses).quantize(
-        Decimal("0.1"), rounding=ROUND_HALF_UP
-    )
+def calculate_savings_metrics(
+    savings_balance: Decimal,
+    average_monthly_expenses: Decimal,
+) -> SavingsCoverage:
+    """Calculate how long savings would cover expenses.
 
-    return {
-        "months_covered": months,
-        "paychecks_covered": (
-            months * PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR
-        ).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP),
-        "years_covered": (months / MONTHS_PER_YEAR).quantize(
-            Decimal("0.1"), rounding=ROUND_HALF_UP,
+    **Neither input is nullable, and neither was reachable as one** (plan step
+    X-z4, ruling R-CS).  Both were ``Decimal | None`` with a ``None`` arm each.
+    The ONE production caller
+    (:func:`~app.services.savings_dashboard_service._orchestrator._compute_emergency_fund_section`)
+    passes ``_sum_liquid_balances(...)`` and ``_compute_avg_monthly_expenses(...)``,
+    which return a ``Decimal`` on every path -- and NO test anywhere passed
+    ``savings_balance=None``, so that branch had zero exercisers in the whole
+    repository.  That is ruling R-CA's "a nullable that cannot be null", one
+    function over from where plan step X-aa closed it for
+    :class:`GoalTrajectory`.  The four ``Decimal(str(x))`` coercions went with
+    them: they defended against types this signature forbids, and without them
+    a float caller raises ``TypeError`` rather than silently succeeding.
+
+    The non-positive guard STAYS and is a different thing entirely: a user with
+    no recorded expenses is a real state, and three zeros is a real answer to
+    "how long would your savings last" when nothing is being spent.
+
+    **Each of the three units is quantized ONCE, from the RAW ratio** (plan step
+    X-z5, ruling R-CS, finding N-120).  The months figure was rounded to
+    :data:`_COVERAGE_GRAIN` FIRST and the other two derived from that rounded
+    value, so both were rounded twice.  That is the drift the two functions
+    beside this one forbid in terms -- :func:`resolve_goal_target`
+    ("Intermediate results are NOT quantized") and :func:`amount_to_monthly`
+    ("The result is NOT quantized -- callers are responsible for rounding at
+    their own aggregation boundary").
+
+    What the paychecks figure ANSWERS is "how many pay periods would my savings
+    cover", which is ``savings / (monthly expenses * 12/26)``.  Converting the
+    already-rounded months answers a different question -- how many pay periods
+    the DISPLAYED months figure corresponds to -- which is a fact about the
+    display, not about the user's money.  Measured on the prod-shape clone:
+    ``$4,076.92`` over ``$5,667.63`` is ``0.719334`` raw months, which rendered
+    ``0.7 months / 1.5 paychecks`` where the raw ratio gives ``1.6``.  A sweep
+    over 40,817 (savings, expenses) shapes differed on ``paychecks_covered`` in
+    53.5% of them and on ``years_covered`` in 4.2%, worst gap ``0.2`` paychecks:
+    ``$250`` against ``$1,000``/mo rendered ``0.3 months / 0.7 paychecks``
+    against a raw answer of ``0.5``, a 40% error on that figure.
+
+    The cost, stated rather than argued away: the three are no longer exact
+    conversions of each other at the displayed grain, so a reader multiplying
+    the rendered ``0.7`` by ``26/12`` gets ``1.5`` and the line beside it says
+    ``1.6``.  Each figure is the best answer to its own question instead.
+
+    **The shape that cost can take, measured and ruled acceptable** (plan step
+    X-z8, ruling R-CW, out of X-z's adversarial design review, which found the
+    ruling had been taken without it): against the developer's own
+    ``$5,667.63``/mo baseline, any liquid savings between ``$130.80`` and
+    ``$283.38`` renders ``0.0 months / 0.1 paychecks / 0.0 years`` on ONE line,
+    where the old rule rendered three zeros.  Both figures are individually
+    right -- ``0.1`` paychecks IS the better answer for ``$200`` of savings --
+    and the line still reads as self-contradictory.  It stands because the
+    alternative is a figure 40% wrong about the money, and because near-zero
+    savings is where a reader is least likely to be converting between units.
+
+    Args:
+        savings_balance: The user's total liquid savings.
+        average_monthly_expenses: The average monthly expense total.
+
+    Returns:
+        The :class:`SavingsCoverage` (a three-key dict until plan step
+        X-aa, ruling R-CO).  Three zeros when there are no expenses to
+        cover -- a real answer, not an absent one.
+    """
+    if average_monthly_expenses <= 0:
+        return SavingsCoverage(
+            months_covered=Decimal("0"),
+            paychecks_covered=Decimal("0"),
+            years_covered=Decimal("0"),
+        )
+
+    # The one unrounded answer all three units are expressed from.
+    months = savings_balance / average_monthly_expenses
+
+    return SavingsCoverage(
+        months_covered=_to_coverage_grain(months),
+        paychecks_covered=_to_coverage_grain(
+            months * PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR,
         ),
-    }
+        years_covered=_to_coverage_grain(months / MONTHS_PER_YEAR),
+    )
 
 
 def count_periods_until(target_date, periods):
@@ -286,7 +457,7 @@ def calculate_trajectory(
     target_amount: Decimal,
     monthly_contribution: Decimal,
     target_date: date | None = None,
-) -> dict:
+) -> GoalTrajectory:
     """Calculate savings goal completion trajectory and pace.
 
     Computes how long it will take to reach the goal at the current
@@ -303,18 +474,10 @@ def calculate_trajectory(
         target_date: Optional target completion date for pace comparison.
 
     Returns:
-        Dict with keys:
-            months_to_goal: int or None -- months until balance reaches
-                target. None if monthly_contribution is zero or negative.
-                0 if goal is already met.
-            projected_completion_date: date or None -- the date the goal
-                will be met. None if months_to_goal is None.
-            pace: str or None -- 'ahead', 'on_track', or 'behind'.
-                None if no target_date is set or target_date is in the
-                past.
-            required_monthly: Decimal or None -- the monthly contribution
-                needed to hit target_date. None if no target_date or
-                target_date is in the past.
+        The :class:`GoalTrajectory` -- see it for what each nullable means.
+        NEVER ``None``: all three branches below fill every field, which is
+        why plan step X-aa could delete the ``dict | None`` its consumer's
+        field carried and the template guard that tested it (ruling R-CO).
     """
     today = date.today()
     remaining = target_amount - current_balance
@@ -324,21 +487,21 @@ def calculate_trajectory(
 
     if remaining <= Decimal("0.00"):
         # Goal already met.
-        return {
-            "months_to_goal": 0,
-            "projected_completion_date": today,
-            "pace": _compute_pace(today, target_date) if actionable_target else None,
-            "required_monthly": Decimal("0.00") if actionable_target else None,
-        }
+        return GoalTrajectory(
+            months_to_goal=0,
+            projected_completion_date=today,
+            pace=_compute_pace(today, target_date) if actionable_target else None,
+            required_monthly=Decimal("0.00") if actionable_target else None,
+        )
 
     if monthly_contribution <= Decimal("0.00"):
         # No contribution -- cannot project a completion date.
-        return {
-            "months_to_goal": None,
-            "projected_completion_date": None,
-            "pace": "behind" if actionable_target else None,
-            "required_monthly": _compute_required_monthly(remaining, target_date),
-        }
+        return GoalTrajectory(
+            months_to_goal=None,
+            projected_completion_date=None,
+            pace="behind" if actionable_target else None,
+            required_monthly=_compute_required_monthly(remaining, target_date),
+        )
 
     # Ceiling division in Decimal land -- no float conversion.
     months = int(
@@ -350,12 +513,12 @@ def calculate_trajectory(
     projected = add_months(today, months)
     pace = _compute_pace(projected, target_date) if actionable_target else None
 
-    return {
-        "months_to_goal": months,
-        "projected_completion_date": projected,
-        "pace": pace,
-        "required_monthly": _compute_required_monthly(remaining, target_date),
-    }
+    return GoalTrajectory(
+        months_to_goal=months,
+        projected_completion_date=projected,
+        pace=pace,
+        required_monthly=_compute_required_monthly(remaining, target_date),
+    )
 
 
 def _compute_pace(projected_date: date, target_date: date) -> str:

@@ -59,6 +59,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import TYPE_CHECKING, TypeVar
 
+from app.exceptions import BaselineMissingError
 from app.models.account import Account
 from app.models.scenario import Scenario
 from app.services.loan_ledger import LoanLedgerWalk, walk_loan_ledger
@@ -195,49 +196,82 @@ class BalanceContext:
         )
 
     @property
-    def scenario_id(self) -> int | None:
-        """The baseline scenario's id, or ``None`` with no baseline.
+    def scenario_id(self) -> int:
+        """The baseline scenario's id -- the form the loaders and resolver take.
 
-        The form the loaders and the resolver take.  Reading it off the context
-        (rather than each caller writing ``scenario.id if scenario else None``)
-        keeps the no-baseline degradation expressed in ONE place.
-        """
-        return self.scenario.id if self.scenario is not None else None
+        **It RAISES rather than returning ``None``** (plan step X-v2, ruling
+        R-BX), which is what keeps the nullable from escaping this object.
+        Seventeen callers read it, and the ones that make the raise
+        load-bearing are those that SCOPE A QUERY with it rather than read a
+        balance -- the grid's transaction load, both calendar entries, the cash
+        detail's anchor resolve, the tax report's profile load, the dashboard
+        pulse's unpaid-bill query, the emergency-fund history, the loan route's
+        payment-context load.  A nullable id reaching any of them is a query
+        silently scoped to nothing (which reads exactly like an empty account)
+        or an ``AttributeError`` on ``None``, which is a failure the
+        application's :class:`~app.exceptions.BaselineMissingError` handler
+        cannot answer because it does not wear that name.  One accessor makes
+        every dereference, seam read or query scope, fail the same named way at
+        its first use.
 
-    @property
-    def has_baseline(self) -> bool:
-        """Whether this pass can be answered at all -- the seam's precondition.
-
-        THE statement of the rule :func:`require_scenario` enforces, and the one
-        a caller that legitimately handles the empty state guards on BEFORE
-        calling the seam.  Both read this property, so the raise and the
-        pre-check cannot come apart.
-
-        **It exists because the rule was written out everywhere but here**
-        (plan step X-t2, finding N-107).  The finding counted four spellings of
-        ``ctx.scenario is None``; reading the code it named found two more in
-        ``retirement_projection``, and an AST-free census of the whole tree
-        found **18 in total** (the seam's own
-        :func:`~app.services.balance_at.liability_owed_at_dates` is a
-        nineteenth, and is the documented exception -- a missing baseline is the
-        degenerate case of its own rule there, not an error).  X-t2 converts the
-        six in the ``/savings`` and dashboard-tracks path and DELETES two of
-        them outright; the remaining **12** are finding N-112, owner X-v, because
-        each needs its degradation read rather than its predicate renamed.
-
-        Two of the three savings copies answered the same question with
-        DIFFERENT degraded values -- an empty map list beside a trend window
-        that built its axis anyway -- which is what a rule restated rather than
-        named buys.
-
-        A caller that does NOT handle the state calls the seam and gets
-        :func:`require_scenario`'s ``ValueError``, which is the intended
-        fail-loud path and is unchanged.
+        **The nullable itself is still :attr:`scenario`, and after plan step
+        X-v2 exactly TWO callers read it** -- the two ruling R-BY carves out,
+        each documenting why at its own guard:
+        :func:`app.services.balance_at.liability_owed_at_dates` (a missing
+        baseline is the degenerate case of its own rule) and
+        :func:`app.services.loan_recurrence_sync.sync_recurring_payment_bounds`
+        (a writer, where raising would roll back the user's edit).  An earlier
+        draft of this paragraph said ONE, and X-v2's adversarial design review
+        counted four -- the writer named 130 lines below in this same file, an
+        emergency-fund reducer that fabricated ``$0.00``, and a template
+        context handed the Scenario ROW.  The last two are gone; a count in a
+        docstring is a claim, and this arc has paid for that one before.
 
         Returns:
-            ``True`` when this pass has a baseline scenario.
+            The baseline scenario's id.
+
+        Raises:
+            BaselineMissingError: When this pass has no baseline scenario.
         """
-        return self.scenario is not None
+        require_scenario(self)
+        return self.scenario.id
+
+    @property
+    def scenario_id_or_none(self) -> int | None:
+        """The baseline scenario's id, or ``None`` -- for a rule that HAS an answer.
+
+        The verbose sibling of :attr:`scenario_id`, and the naming is the point
+        (plan step X-v2, ruling R-BX): the obvious name is the one that fails
+        loud, and reaching for the nullable is a deliberate act that reads as
+        one at the call site.
+
+        **Exactly two callers, both inside the seam, both because a missing
+        baseline is the degenerate case of their own rule rather than an
+        error:**
+
+        * :func:`._resolution.resolve_loan_bundle` -- a loan's payment feed is
+          the ONE scenario-scoped input to its resolution; its params, anchors
+          and rate history are contract facts.  With no baseline the feed is
+          empty and the CONTRACT terms still resolve, which is plan step C8e's
+          rule and what keeps escrow and rate editing working for a user whose
+          baseline is missing (:func:`app.routes.loan._helpers._loan_terms_now`).
+        * :func:`._confirmed_view.confirmed_view` -- the confirmed ledger view
+          is scenario-scoped by construction, so with no baseline there is no
+          view and the resolver falls back to its anchor replay.
+
+        A third reader tests the nullable directly rather than its id:
+        :func:`app.services.balance_at.liability_owed_at_dates`, the one seam
+        entry with no :func:`require_scenario` at all.
+
+        Anything else -- and in particular anything that SCOPES A QUERY with
+        this id -- takes :attr:`scenario_id` and gets the raise, because a query
+        scoped to ``NULL`` returns an empty result that reads exactly like an
+        empty account.
+
+        Returns:
+            The baseline scenario's id, or ``None`` with no baseline.
+        """
+        return self.scenario.id if self.scenario is not None else None
 
     def loan_walk(self, account: Account) -> LoanLedgerWalk:
         """Return *account*'s ledger walk for this pass, walking it at most once.
@@ -337,37 +371,63 @@ def _memoize_once(
 
 
 def require_scenario(ctx: BalanceContext) -> None:
-    """Raise ``ValueError`` when *ctx* has no baseline scenario -- the fail-loud guard.
+    """Raise :class:`~app.exceptions.BaselineMissingError` when *ctx* has no baseline.
 
-    Every balance the seam produces is scoped to a baseline scenario, and
-    ``get_baseline_scenario`` can return ``None`` (a fresh user with no
-    baseline).  Centralising the guard keeps the contract and its message
-    single-sourced.  Callers that legitimately handle the no-baseline case keep
-    their own ``if not ctx.has_baseline: return ...`` guard BEFORE calling the
-    seam; this is the defensive backstop that turns a missed guard into a clear
-    failure instead of a deep ``AttributeError`` (or a silent ``$0``).
+    Every balance the seam produces is scoped to a baseline scenario, so a
+    context without one cannot answer anything -- the fail-loud guard at each
+    seam entry's door, stated once so the contract and its message are
+    single-sourced.
 
-    **The predicate is one property, read from both ends** (plan step X-t2,
-    finding N-107): this raise and every caller's pre-check both ask
-    :attr:`BalanceContext.has_baseline`, so the guard and the condition it
-    guards cannot be stated differently.  Six callers spelled it out
-    independently before that.
+    **It raises a NAMED exception, and that name is the no-baseline policy**
+    (plan step X-v1, ruling R-BW).  One application-level handler catches
+    :class:`~app.exceptions.BaselineMissingError` and answers it in ONE way --
+    the setup-recovery page for a full request, ``204 No Content`` for an HTMX
+    fragment (so a live DOM is never replaced by a setup card), and an ERROR log
+    event either way.  The exception subclasses ``ValueError``, so this
+    function's long-documented contract is unchanged for anything that catches
+    the broader type; the handler catches the narrow one, because catching
+    ``ValueError`` at the application tier would swallow every unrelated
+    conversion failure in the request.
 
-    The ONE seam entry that does not run this guard is
-    :func:`app.services.balance_at.liability_owed_at_dates`, where a missing
-    baseline is not an error but the degenerate case of its own rule (no loan is
-    resolvable, so every liability holds flat); its docstring owns that
-    rationale.
+    **There are no caller pre-checks left on the balance path, and that is the
+    point** (plan step X-v2, rulings R-BY and R-BZ).  Every caller used to ask
+    this question itself, and between them they answered it several different
+    ways -- the census and the full list live at
+    :func:`app.error_handlers.register_error_handlers`'s handler, which is the
+    one place that now decides.  Plan step X-t2 had already tried
+    single-sourcing the PREDICATE (a ``has_baseline`` property, finding
+    N-107); that made the callers agree on the QUESTION while they still
+    disagreed on the ANSWER, so the property is gone with them.
+
+    **Exactly two callers keep their own handling, and each says why at the
+    guard** (ruling R-BY):
+
+    * :func:`app.services.loan_recurrence_sync.sync_recurring_payment_bounds`
+      -- a WRITER, running mid-mutation.  A raise there would roll back the
+      user's just-flushed loan-params edit and answer with a setup card, losing
+      the write; it instead writes the contract-derived START bound and skips
+      only the scenario-scoped END bound, which is plan step C8e's rule ("a
+      loan's contract terms are not scenario-scoped") applied to a write.
+    * :func:`app.services.balance_at.liability_owed_at_dates` -- the ONE seam
+      entry that does not run this guard at all, because a missing baseline
+      there is not an error but the degenerate case of its own rule (no loan is
+      resolvable, so every liability holds flat); its docstring owns that
+      rationale.
 
     Args:
         ctx: The read pass's :class:`BalanceContext`.
 
     Raises:
-        ValueError: When ``ctx.scenario`` is ``None``.
+        BaselineMissingError: When ``ctx.scenario`` is ``None``.  A
+            ``ValueError`` subclass.
     """
-    if not ctx.has_baseline:
-        raise ValueError(
-            "the balance_at seam requires a baseline scenario; build the "
-            "BalanceContext for a user who has one, and guard a None scenario "
-            "before calling the seam"
+    if ctx.scenario is None:
+        raise BaselineMissingError(
+            "the balance_at seam requires a baseline scenario; this user has "
+            "none, so no balance can be answered for them. Every owner gets one "
+            "at registration (auth_service.register_user) and nothing deletes "
+            "one, so reaching this means the data was changed outside the app: "
+            "POST /grid/create-baseline repairs it, together with both posting "
+            "ledgers",
+            user_id=ctx.user_id,
         )

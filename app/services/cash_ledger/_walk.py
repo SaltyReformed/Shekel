@@ -9,12 +9,13 @@ about which settles a given assertion already covered.
 
 **The walk yields FACTS, not a balance-at-T.**  Its output is a
 :class:`CashLedgerWalk`: one :class:`~._events.CashSourceFact` per settled row and
-one :class:`CashAnchorCorrection` per assertion, in INSTANT order.  Turning those
-facts into "what is the balance on date D" is the FOLD -- re-key each event by the
-day it becomes visible (:func:`dated_deltas`), prefix-sum, sample -- and the
-prefix-sum lives in the balance seam, not here.  A consumer holding a walk
-therefore cannot reach a balance from a public leaf name, which is why the walk
-needs no call fence (plan step D-fold's ruling, restated for cash).
+one :class:`CashAnchorCorrection` per assertion, in DAY order -- every source
+dated a day, then the assertions that close it (ruling R-DH).  Turning those
+facts into "what is the balance on date D" is the FOLD -- collect each event's
+dated delta (:func:`dated_deltas`), prefix-sum, sample -- and the prefix-sum
+lives in the balance seam, not here.  A consumer holding a walk therefore cannot
+reach a balance from a public leaf name, which is why the walk needs no call
+fence (plan step D-fold's ruling, restated for cash).
 
 **Two consumers, one walk** (ruling R-H).  The seam's read pass folds it into a
 balance at a date; at plan step X-d the posting writer projects it into the
@@ -68,8 +69,6 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from app.utils.dates import utc_civil_date
-
 from ._events import (
     CashAnchorFact,
     CashSourceFact,
@@ -110,16 +109,22 @@ class CashAnchorCorrection:
     balance_before: Decimal
 
     @property
-    def visible_on(self) -> date:
-        """Return the civil day this correction COUNTS from -- its UTC day.
+    def observed_on(self) -> date:
+        """Return the civil day this correction is the closing balance FOR.
 
-        The assertion twin of :attr:`~._events.CashSourceFact.visible_on`, and
-        the same rule: one attribution instant, and the day falls out of it.
+        The assertion twin of :attr:`~._events.CashSourceFact.settled_on`, and
+        the same rule: the day is resolved ONCE on the fact this correction wraps
+        (ruling R-DH) and every consumer reads that one field rather than
+        re-deriving one from a timestamp.
+
+        It reads THROUGH to the fact rather than re-deriving, which is the point:
+        the property existed to convert ``asserted_at`` to a UTC civil day, and
+        that conversion was a second statement of a rule the fact now owns.
 
         Returns:
-            The UTC calendar date of the assertion instant.
+            The civil day of the assertion this correction books.
         """
-        return utc_civil_date(self.anchor.asserted_at)
+        return self.anchor.observed_on
 
     @property
     def delta(self) -> Decimal:
@@ -137,7 +142,7 @@ class CashAnchorCorrection:
         step X-c1) -- and until X-c1 the fold RE-DERIVED it, which its own
         docstring had to pin with a test.  A property on the record retires that
         re-derivation, exactly as :class:`~._events.CashSourceFact` already
-        carries its own ``visible_on`` / ``delta``.
+        carries its own ``settled_on`` / ``delta``.
 
         Returns:
             The signed correction as a ``Decimal``, in the same LEDGER-NATIVE
@@ -161,7 +166,7 @@ class CashLedgerWalk:
     Attributes:
         source_facts: One :class:`~._events.CashSourceFact` per settled
             balance-contributing row, ascending by
-            ``(occurred_at, transaction_id)`` -- including rows attributed BEFORE
+            ``(settled_on, transaction_id)`` -- including rows dated BEFORE
             the account's opening assertion, which the opening's correction
             absorbs (the same treatment the loan walk gives a pre-origination
             payment).
@@ -225,7 +230,7 @@ def walk_cash_ledger(account_id: int, scenario_id: int) -> CashLedgerWalk:
     sources = settled_cash_facts(account_id, scenario_id)
     corrections: list[CashAnchorCorrection] = []
     running = _ZERO_MONEY
-    for _instant, is_anchor, item in merge_anchor_and_cash_events(
+    for _day, is_anchor, item in merge_anchor_and_cash_events(
         anchors, sources,
     ):
         if is_anchor:
@@ -241,16 +246,16 @@ def walk_cash_ledger(account_id: int, scenario_id: int) -> CashLedgerWalk:
 
 
 def dated_deltas(walk: CashLedgerWalk) -> list[tuple[date, Decimal]]:
-    """Return the walk's ``(visible_on, delta)`` steps, ascending by date.
+    """Return the walk's ``(day, delta)`` steps, ascending by date.
 
-    The bridge from the walk (events ordered by the INSTANT they happened) to the
-    civil day each event COUNTS FROM -- the cash twin of
+    The bridge from the walk (events in the order the running balance applied
+    them) to the civil day each event COUNTS FROM -- the cash twin of
     :func:`app.services.loan_ledger.dated_deltas`.  It MERGES the two per-event
     statements of that clock rather than restating either: each fact and each
-    correction carries its own ``visible_on`` / ``delta``, so a reader that needs
-    the two kinds apart (the fold's R-I seed, the period view's assertion
-    component) reads the same pair this list is built from.  Each event
-    contributes the amount it moved the running balance by:
+    correction carries its own day (``settled_on`` / ``observed_on``) and its own
+    ``delta``, so a reader that needs the two kinds apart (the fold's R-I seed,
+    the period view's assertion component) reads the same pair this list is built
+    from.  Each event contributes the amount it moved the running balance by:
 
     * an assertion: :attr:`CashAnchorCorrection.delta`
       (``anchor_balance - balance_before``) -- the jump its reset booked;
@@ -294,15 +299,16 @@ def dated_deltas(walk: CashLedgerWalk) -> list[tuple[date, Decimal]]:
     ruling, recorded as finding **N-37** for plan step X-b; this leaf states the
     facts and does not decide it.
 
-    **Deltas are computed in INSTANT order and then re-keyed by civil DAY, and
-    that is deliberate.**  Which settles an assertion already covers turns on
-    order within a day (see :func:`._events.merge_anchor_and_cash_events`), while
-    "what is the balance on date D" is a question about days.  Doing the
-    partition first and the re-key second answers both without either rule
-    reaching into the other -- and it is safe to collapse same-day steps
-    afterwards because a prefix sum does not care in what order a day's deltas
-    are added, only which side of the assertion each was computed on, which the
-    walk has already settled.
+    **The walk and this re-key are now on ONE granularity, and that is ruling
+    R-DH.**  They were not: the walk partitioned on the INSTANT while this list
+    keyed the resulting deltas by civil DAY, so a day's total depended on
+    sub-day click ordering even though the fold above reads only day boundaries.
+    This function's own prior text stated the split as a design -- "which settles
+    an assertion already covers turns on order within a day" -- and that sentence
+    is what cost production ``$4,001.42`` on 2026-07-31 (see
+    :func:`._events.merge_anchor_and_cash_events`).  Both halves key on the day
+    now, so the collapse below is not merely safe, it is the same rule the walk
+    applied.
 
     **Dated FACTS, not a balance-at-T** (the W9909 ruling): each pair says what
     ONE event contributed and when it counts, both readable off the public source
@@ -313,18 +319,18 @@ def dated_deltas(walk: CashLedgerWalk) -> list[tuple[date, Decimal]]:
         walk: The account's :class:`CashLedgerWalk` (:func:`walk_cash_ledger`).
 
     Returns:
-        ``[(visible_on, delta), ...]`` ascending by ``(visible_on, tag)``, where a
-        SOURCE tags before an ASSERTION on a shared date -- mirroring the walk's
-        own tie-break, so reading the list shows the same chronology the walk
+        ``[(day, delta), ...]`` ascending by ``(day, tag)``, where a SOURCE tags
+        before an ASSERTION on a shared date -- mirroring the walk's own
+        tie-break, so reading the list shows the same chronology the walk
         applied.  Empty for a walk with no facts.
     """
     # Tag 0 = source, 1 = assertion: the same tie-break the walk applies, so a
     # source sharing an assertion's day reads before it here too.
     tagged: list[tuple[date, int, Decimal]] = [
-        (fact.visible_on, 0, fact.delta) for fact in walk.source_facts
+        (fact.settled_on, 0, fact.delta) for fact in walk.source_facts
     ] + [
-        (correction.visible_on, 1, correction.delta)
+        (correction.observed_on, 1, correction.delta)
         for correction in walk.anchor_corrections
     ]
     tagged.sort(key=lambda step: (step[0], step[1]))
-    return [(visible_on, delta) for visible_on, _tag, delta in tagged]
+    return [(day, delta) for day, _tag, delta in tagged]

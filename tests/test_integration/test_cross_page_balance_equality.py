@@ -80,10 +80,8 @@ from app.services import (
 from app.services.balance_at import _kernel as net_worth_kernel
 from app.services.balance_at import BalanceContext
 from app.services.balance_at._resolution import resolved_loan
-from app.services.savings_dashboard_service._net_worth import (
-    _ASSET_BANDS,
-    _LIABILITY_BAND,
-)
+from app.services.savings_dashboard_service._display import LIABILITY_KEY
+from app.services.savings_dashboard_service._net_worth import _ASSET_BANDS
 from tests._test_helpers import freeze_today
 
 
@@ -928,7 +926,7 @@ def _net_worth_series(ctx):
     the per-kind trend readers index into it at ``current_index``.
     """
     data = savings_dashboard_service.compute_dashboard_data(ctx["user_id"])
-    return data["net_worth"]["series"]
+    return data["net_worth"].series
 
 
 def _savings_tile_value(ctx):
@@ -953,9 +951,9 @@ def _trend_assets_value(ctx):
     pages against the series the chart really draws.
     """
     series = _net_worth_series(ctx)
-    index = series["current_index"]
+    index = series.current_index
     return sum(
-        (series["composition"][band][index] for band in _ASSET_BANDS),
+        (series.composition[band][index] for band in _ASSET_BANDS),
         Decimal("0.00"),
     )
 
@@ -969,7 +967,7 @@ def _trend_liabilities_value(ctx):
     (see :func:`_trend_assets_value`).
     """
     series = _net_worth_series(ctx)
-    return series["composition"][_LIABILITY_BAND][series["current_index"]]
+    return series.composition[LIABILITY_KEY][series.current_index]
 
 
 def _loan_detail_value(ctx):
@@ -1636,8 +1634,8 @@ class TestSecuredHomeEquityEquality:
             # debt -- so the two differ by exactly the N-83 gap measured above,
             # never by anything else.  Asserting the difference rather than the
             # equality is what keeps this a lock while the finding is open.
-            series = dashboard["net_worth"]["series"]
-            trend_net = series["net"][series["current_index"]]
+            series = dashboard["net_worth"].series
+            trend_net = series.net[series.current_index]
             # PV - MC = 400000.00 - 250000.00 = 150000.00.
             assert equity.equity == (pv - mc), (
                 f"equity disagreed: equity={equity.equity!r}, "

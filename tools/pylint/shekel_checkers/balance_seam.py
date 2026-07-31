@@ -302,28 +302,36 @@ _FENCED_MODULE_RULINGS = {
         # ``_events`` (plan step X-a) -- the cash EVENT STREAM, the exact
         # counterpart of the ``loan_ledger`` non-producer rulings below and
         # non-producers for the same reason: each answers "what happened, and
-        # when", never "what is held at time T".  ``attribution_instant`` is the
-        # ONE statement of when a settled source's cash moved (a chronology rule
-        # returning a ``datetime``); ``cash_anchor_facts`` and
+        # when", never "what is held at time T".  ``settled_civil_day`` is the
+        # ONE statement of which civil day a settled source's cash moved on (a
+        # chronology rule returning a ``date``); ``cash_anchor_facts`` and
         # ``settled_cash_facts`` are LOADERS returning stored assertions and
         # per-row signed effects; ``merge_anchor_and_cash_events`` orders those
         # two fact kinds against each other and returns them unchanged.
-        # ``visible_on`` is a public METHOD on ``CashSourceFact`` and, since plan
-        # step X-c1, on ``CashAnchorCorrection`` too (W9909 sees public methods
-        # of public classes, which is the surface D3's review found W9910
-        # structurally blind to): it returns the civil DAY one fact counts from
-        # -- a date, not a figure.  ``delta`` beside it is the correction that
-        # ONE assertion booked (``anchor_balance - balance_before``), the
-        # assertion twin of ``CashSourceFact.delta``: what one event contributed,
-        # never what the account holds.  Both are per-EVENT, and a per-event
-        # figure is not a balance per ACCOUNT -- the same ground the
-        # ``settled_cash_leg`` / ``split_*`` rulings stand on.
-        "attribution_instant",
+        # ``observed_on`` is a public METHOD on ``CashAnchorCorrection`` (W9909
+        # sees public methods of public classes, which is the surface D3's review
+        # found W9910 structurally blind to): it returns the civil DAY one
+        # assertion is the closing balance FOR -- a date, not a figure.
+        # ``delta`` beside it is the correction that ONE assertion booked
+        # (``anchor_balance - balance_before``), the assertion twin of
+        # ``CashSourceFact.delta``: what one event contributed, never what the
+        # account holds.  Both are per-EVENT, and a per-event figure is not a
+        # balance per ACCOUNT -- the same ground the ``settled_cash_leg`` /
+        # ``split_*`` rulings stand on.
+        #
+        # ``settled_civil_day`` REPLACED ``attribution_instant`` at ruling R-DH
+        # (2026-07-31), and ``visible_on`` left this set with it: both facts now
+        # carry their civil day as a FIELD resolved once at construction
+        # (``CashSourceFact.settled_on`` / ``CashAnchorFact.observed_on``)
+        # instead of re-deriving it per read, so there is no public method left
+        # on ``CashSourceFact`` for this set to rule on.  The classification is
+        # unchanged in substance: a day is not a balance.
         "cash_anchor_facts",
         "delta",
         "merge_anchor_and_cash_events",
+        "observed_on",
+        "settled_civil_day",
         "settled_cash_facts",
-        "visible_on",
         # ``_walk`` (plan step X-a) -- the running-balance REPLAY and the
         # visible-day re-key of its events.  Ruled NON-producers on exactly the
         # grounds ``loan_ledger``'s twins below are, and the ruling is only
@@ -452,16 +460,16 @@ _FENCED_MODULE_RULINGS = {
         # computes no balance.
         "build",
         # The baseline scenario's id -- an int, and the form the loaders and
-        # the resolver take.  (It said "the ONE place the no-baseline
-        # degradation is expressed" until plan step X-t5; that is
-        # ``has_baseline`` below, which is the PREDICATE -- this one is a
-        # nullable id.)
+        # the resolver take.  It RAISES for a pass with no baseline since plan
+        # step X-v2 (ruling R-BX), which is what keeps a query from being
+        # scoped to ``NULL`` and reading as an empty account; it still answers
+        # nothing about a balance.
         "scenario_id",
-        # Whether this pass has a baseline at all -- a bool, and the PRECONDITION
-        # ``require_scenario`` raises on (plan step X-t2, finding N-107).  A
-        # caller that legitimately handles the empty state guards on it before
-        # calling the seam; it answers nothing about an account.
-        "has_baseline",
+        # The same id, nullable, for the two seam-internal rules that HAVE an
+        # answer for a missing baseline (the loan resolution's payment feed and
+        # the confirmed view).  Its docstring names both.  Same classification
+        # and the same reason as ``scenario_id``: an id, not a balance.
+        "scenario_id_or_none",
         # The fail-loud no-baseline guard.  It raises or returns None; it
         # answers nothing about an account.
         "require_scenario",

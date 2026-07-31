@@ -22,6 +22,7 @@ import sqlalchemy.exc
 from app.extensions import db
 from app import create_app, ref_cache
 from app.enums import (
+    AcctCategoryEnum,
     GoalModeEnum,
     IncomeUnitEnum,
     LedgerAccountClassEnum,
@@ -870,3 +871,82 @@ class TestLedgerAccountKindRefCache:
             # Roll back so other tests aren't affected, then re-init clean.
             db.session.rollback()
             ref_cache.init(db.session)
+
+
+class TestAcctCategoryMemberRefCache:
+    """The account-category REVERSE lookup (plan step X-z6, ruling R-CV).
+
+    ``acct_category_member`` inverts ``acct_category_id`` so the canonical
+    classifier (:func:`app.services.account_category.account_category`)
+    resolves an account's category in one dict read.  It was a scan over the
+    enum asking ``acct_category_id`` once per member, which made every
+    net-worth surface's liability question 2.3x-4.5x more expensive than the
+    single comparison plan step X-z1 replaced.
+    """
+
+    def test_round_trips_every_member(self, app, db):
+        """Every member's id resolves back to that member, and only that one.
+
+        The VALUE assertion the inversion could get wrong: a builder that
+        collided two members onto one id, or inverted the wrong way, returns a
+        different member here rather than a shape difference.
+        """
+        with app.app_context():
+            for member in AcctCategoryEnum:
+                category_id = ref_cache.acct_category_id(member)
+                assert ref_cache.acct_category_member(category_id) is member, (
+                    f"{member.name}: id {category_id} did not round-trip"
+                )
+
+    def test_the_inversion_is_total_and_one_to_one(self, app, db):
+        """Every cached category id appears exactly once in the reverse map.
+
+        A collision would silently shadow one category -- the reverse map is
+        built from a dict comprehension, so two members sharing an id would
+        keep only the last and the shadowed category would classify as the
+        other one on every surface.
+        """
+        with app.app_context():
+            ids = [
+                ref_cache.acct_category_id(member)
+                for member in AcctCategoryEnum
+            ]
+            assert len(set(ids)) == len(ids)
+            resolved = {ref_cache.acct_category_member(i) for i in ids}
+            assert resolved == set(AcctCategoryEnum)
+
+    def test_an_unmodelled_category_id_answers_none(self, app, db):
+        """An id no member names answers ``None`` -- it does NOT raise.
+
+        **This is the deliberate difference from
+        ``ledger_class_is_debit_normal`` beside it**, which raises on an
+        unknown id.  That accessor reads a CLOSED set this application wrote
+        from its own enum, so an unknown id is a data error.  This one reads
+        ``ref.account_type_categories``, where ``init`` requires the four
+        enum rows and does not forbid a fifth -- so an unmodelled category is a
+        state the schema permits, and the application's answer for it is "no
+        category I model" (bucketed ``other``, never a liability), not a 500 on
+        every page that classifies an account.
+        """
+        with app.app_context():
+            known = {
+                ref_cache.acct_category_id(m) for m in AcctCategoryEnum
+            }
+            assert ref_cache.acct_category_member(max(known) + 1000) is None
+
+    def test_requires_initialization(self, app, db):
+        """An uninitialized cache raises rather than answering ``None``.
+
+        The ``None`` above means "no such category"; a ``None`` from an
+        unloaded cache would mean "I could not look", and the two must not be
+        the same answer -- every account would classify as uncategorised and
+        the net-worth hero would report every liability as an asset.
+        """
+        with app.app_context():
+            # pylint: disable=protected-access
+            ref_cache._cache.initialized = False
+            try:
+                with pytest.raises(RuntimeError):
+                    ref_cache.acct_category_member(1)
+            finally:
+                ref_cache.init(db.session)

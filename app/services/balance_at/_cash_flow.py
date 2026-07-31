@@ -137,12 +137,13 @@ def cash_balance_map(
         *periods* was given.
 
     Raises:
-        ValueError: When ``scenario`` is None -- callers that resolve a
-            nullable baseline must guard first.
+        BaselineMissingError: When ``scenario`` is None.  A ``ValueError``
+            subclass; ONE application-level handler answers it (plan step
+            X-v2, ruling R-BW), so no caller pre-checks.
     """
     _require_scenario(ctx)
     return _cash_fold.cash_period_balances(
-        account, ctx.scenario.id, ctx.as_of, periods,
+        account, ctx.scenario_id, ctx.as_of, periods,
     )
 
 
@@ -180,15 +181,16 @@ def cash_balance_at(
         The cent-quantized ``Decimal`` cash-flow balance at *as_of*.
 
     Raises:
-        ValueError: When ``scenario`` is None -- callers that resolve a
-            nullable baseline must guard first.
+        BaselineMissingError: When ``scenario`` is None.  A ``ValueError``
+            subclass; ONE application-level handler answers it (plan step
+            X-v2, ruling R-BW), so no caller pre-checks.
         TypeError: When ``as_of`` is not a civil :class:`datetime.date` -- a
             ``datetime`` INCLUDED (see :func:`_require_civil_date`).
     """
     _require_scenario(ctx)
     _require_civil_date("cash_balance_at", as_of=as_of)
     return _cash_fold.fold_cash_balances(
-        account, ctx.scenario.id, ctx.as_of, [as_of],
+        account, ctx.scenario_id, ctx.as_of, [as_of],
     )[as_of]
 
 
@@ -234,8 +236,9 @@ def cash_daily_balance_series(
         quantized to cents.  An inverted range yields an empty map.
 
     Raises:
-        ValueError: When ``scenario`` is None -- callers that resolve a
-            nullable baseline must guard first.
+        BaselineMissingError: When ``scenario`` is None.  A ``ValueError``
+            subclass; ONE application-level handler answers it (plan step
+            X-v2, ruling R-BW), so no caller pre-checks.
         TypeError: When ``first_day`` / ``last_day`` are not civil
             :class:`datetime.date` values -- a ``datetime`` INCLUDED (see
             :func:`_require_civil_date`).
@@ -254,6 +257,6 @@ def cash_daily_balance_series(
         day += _ONE_DAY
 
     folded = _cash_fold.fold_cash_balances(
-        account, ctx.scenario.id, ctx.as_of, days,
+        account, ctx.scenario_id, ctx.as_of, days,
     )
     return OrderedDict((day, folded[day]) for day in days)

@@ -5,7 +5,8 @@
    Cancel / Escape and 409-retry revert target).
 
    Context: ad -- ONE AccountProjection (the service value object), carrying
-   ad.account, ad.current_balance (Decimal | None -- the resolver as-of-today
+   ad.account, ad.current_balance (Decimal, never None since plan step X-v2 --
+   the resolver as-of-today
    balance the card shows; None when no current period resolves a figure,
    rendered as a non-editable dash) and ad.is_liability (the account's
    category is LIABILITY, so the figure takes the danger token the group
@@ -24,11 +25,18 @@
    fields silently -- Jinja resolves a missing attribute to Undefined, which is
    falsy, so the liability ink would simply vanish and an anchor-cache figure
    would render as a seam balance.  The archived-account drawer in
-   dashboard.html is exactly such a loop (its rows are {account,
-   current_balance} dicts whose balance is Account.current_anchor_balance --
-   which finding N-103 says is not a loan's balance at all); its variable is
-   named ``archived`` for that reason (plan step X-t5, out of X-t's adversarial
-   design review).
+   dashboard.html is exactly such a loop; its variable is named ``archived`` for
+   that reason (plan step X-t5, out of X-t's adversarial design review).
+
+   Its rows are frozen ArchivedAccount(account, last_anchor_balance) values as
+   of plan step X-w2 (ruling R-CH) -- they were {account, current_balance} dicts,
+   and the RENAME is what closes the hazard this paragraph describes: the
+   balance there is Account.current_anchor_balance (which finding N-103 says is
+   not a loan's balance at all), so it no longer answers to the name this
+   partial's seam-derived figure uses.  A cross-include would now render nothing
+   rather than the wrong figure under the right name. #}
+{# (This comment still described the rows as dicts one step after they stopped
+   being dicts; corrected at plan step X-w6.)
 
    Contract (mirrors the dashboard hero dashboard/_pulse_balance.html, but
    account-scoped because the cockpit is multi-card):
@@ -50,9 +58,11 @@
    loan page's own true-up, so the cash anchor editor is never offered --
    the PATCH would be refused with 422.  Branches on the
    has_amortization boolean column, never a type-name string. #}
-{% if ad.current_balance is none %}
-<div class="acct-card__num font-mono">--</div>
-{% elif ad.account.account_type.has_amortization %}
+{# ``current_balance`` is non-nullable since plan step X-v2 (ruling R-CA), so
+   the ``is none -> --`` branch that stood here is gone with the state that
+   produced it: a user whose balances the app cannot answer now gets the
+   setup-recovery card instead of a page of dashes. #}
+{% if ad.account.account_type.has_amortization %}
 <div class="acct-card__num font-mono{% if ad.current_balance < 0 %} acct-card__num--neg{% endif %}{% if ad.is_liability %} acct-card__num--liability{% endif %}">
   {{ money(ad.current_balance) }}
 </div>

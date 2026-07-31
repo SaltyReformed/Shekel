@@ -176,7 +176,7 @@ series derives assets / liabilities / net from those bands).  The third,
 :func:`liability_owed_at_dates` below, which is the one seam entry that accepts
 a caller's already-classified liability set and returns owed magnitudes on that
 same ``abs`` convention.  All three classify asset-vs-liability through the one
-``net_worth_account_data.is_liability_account`` home.
+``account_category.is_liability_account`` home.
 """
 
 from ._cash_flow import (

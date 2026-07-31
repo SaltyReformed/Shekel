@@ -296,10 +296,21 @@ class TestCalendarTab:
             )
             assert resp.status_code == 404
 
-    def test_calendar_tab_404_when_scenario_unresolvable(
+    def test_calendar_tab_204_when_the_user_has_no_baseline(
         self, app, auth_client, seed_user, monkeypatch,
     ):
-        """C11-2 (route): unresolvable baseline scenario returns 404."""
+        """A missing baseline answers 204 to this fragment, not 404.
+
+        **Changed at plan step X-v2** (ruling R-BW), and the old answer is the
+        reason: this endpoint 404'd, telling a user with a one-click-repairable
+        setup problem that their calendar does not exist, while `/savings`
+        showed them a fabricated ``$0.00``, the investment page showed a cache
+        column as a balance, and the loan page 500'd -- seven answers to one
+        state.  There is one now: an HTMX request gets 204 and leaves the DOM
+        alone, a page request gets the repair card.  ``CalendarAccountNotResolvableError``
+        still means what its name says (no analytics ACCOUNT), and the
+        neighbouring test asserts that 404 is untouched.
+        """
         # The baseline scenario is resolved inside the balance context now.
         from app.services.balance_at import (  # pylint: disable=import-outside-toplevel
             _context as resolution_context,
@@ -313,7 +324,15 @@ class TestCalendarTab:
                 "/analytics/calendar",
                 headers={"HX-Request": "true"},
             )
-            assert resp.status_code == 404
+            assert resp.status_code == 204
+            assert resp.data == b""
+
+            # No page arm here, and that is a fact about the endpoint rather
+            # than an omission: a plain GET of this URL renders the analytics
+            # SHELL, whose tab body is fetched by the HTMX request above, so it
+            # never reaches the calendar producer at all.  The page answer for
+            # this state is graded where a page actually raises, in
+            # ``tests/test_routes/test_no_baseline_policy.py``.
 
     def test_calendar_tab_404_for_amortizing_account(
         self, app, db, auth_client, seed_user, seed_periods,

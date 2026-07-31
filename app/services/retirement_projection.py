@@ -486,15 +486,16 @@ def _resolve_displayed_balances(
     Args:
         ctx: The read-only projection context.
         balance_ctx: The read pass's
-            :class:`~app.services.balance_at.BalanceContext` (its
-            scenario may be ``None``).
+            :class:`~app.services.balance_at.BalanceContext`.
 
     Returns:
-        ``{account_id: displayed balance}``.
+        ``{account_id: displayed balance}``; empty with no pay periods, in
+        which case each account falls back to its anchor.
     """
-    # The seam's own precondition, read off the context rather than spelled
-    # out here (plan step X-t2, finding N-107).
-    if not balance_ctx.has_baseline or not ctx.all_periods:
+    # The no-baseline arm of this guard went at plan step X-v2 (ruling R-BW):
+    # the seam raises and one application-level handler answers, so this
+    # producer decides only what it models -- a user with no pay periods.
+    if not ctx.all_periods:
         return {}
     return _pick_current_period_balances(
         ctx, balance_at.build_maps(ctx.accounts, balance_ctx, ctx.all_periods),
@@ -547,13 +548,11 @@ def _resolve_seed_balances(
             ``start_date`` is when the window opens.
 
     Returns:
-        ``{account_id: seed balance}``; empty when there is no scenario, no
-        periods, or no axis (each account then falls back to its anchor).
+        ``{account_id: seed balance}``; empty when there are no periods or no
+        axis (each account then falls back to its anchor).  The no-scenario arm
+        went at plan step X-v2 (ruling R-BW) -- answered above this route now.
     """
-    # The seam's own precondition (plan step X-t2, finding N-107).
-    if (not batch.balance_ctx.has_baseline
-            or not ctx.all_periods
-            or not projection_periods):
+    if not ctx.all_periods or not projection_periods:
         return {}
     # Keyed on the account SET as well as the date: the map is a function of
     # both, and ``ctx`` arrives separately from ``batch``, so a caller reusing

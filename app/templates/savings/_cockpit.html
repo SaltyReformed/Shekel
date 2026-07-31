@@ -45,25 +45,25 @@
   <div class="nw-sky">
     <div class="nw-hero">
       <div class="pulse-hero__label">Net worth</div>
-      <div class="nw-hero__num font-mono{% if net_worth.net_worth < 0 %} nw-hero__num--neg{% endif %}">
-        {{ money(net_worth.net_worth) }}
+      <div class="nw-hero__num font-mono{% if net_worth.today.net_worth < 0 %} nw-hero__num--neg{% endif %}">
+        {{ money(net_worth.today.net_worth) }}
       </div>
       <div class="nw-hero__cap">as of today</div>
     </div>
     <div class="pulse-statrow nw-statrow">
       <div class="pulse-chip">
         <div class="pulse-chip__label">Total assets</div>
-        <div class="pulse-chip__value font-mono">{{ money(net_worth.total_assets) }}</div>
+        <div class="pulse-chip__value font-mono">{{ money(net_worth.today.total_assets) }}</div>
       </div>
       <div class="pulse-chip">
         <div class="pulse-chip__label">Total liabilities</div>
-        <div class="pulse-chip__value font-mono{% if net_worth.total_liabilities > 0 %} nw-amount--neg{% endif %}">
-          {{ money(net_worth.total_liabilities) }}
+        <div class="pulse-chip__value font-mono{% if net_worth.today.total_liabilities > 0 %} nw-amount--neg{% endif %}">
+          {{ money(net_worth.today.total_liabilities) }}
         </div>
       </div>
       <div class="pulse-chip">
         <div class="pulse-chip__label">Liquid</div>
-        <div class="pulse-chip__value font-mono">{{ money(net_worth.liquid) }}</div>
+        <div class="pulse-chip__value font-mono">{{ money(net_worth.today.liquid) }}</div>
       </div>
     </div>
   </div>
@@ -113,7 +113,7 @@
     <span class="nw-legend__item">
       <span class="nw-legend__line"></span>
       Net worth
-      <span class="font-mono nw-legend__value">{{ money(net_worth.net_worth) }}</span>
+      <span class="font-mono nw-legend__value">{{ money(net_worth.today.net_worth) }}</span>
     </span>
   </div>
   {% endif %}

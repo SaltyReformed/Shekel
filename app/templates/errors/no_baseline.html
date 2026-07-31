@@ -1,3 +1,17 @@
+{#
+  The ONE answer to "this user has no baseline scenario, so no balance can be
+  computed for them" (plan step X-v, ruling R-BW).  Rendered by the
+  application-level ``BaselineMissingError`` handler for every full page
+  request, whichever surface raised it -- it lived under ``grid/no_setup.html``
+  and was reachable from one route, while `/savings` fabricated a $0.00 hero,
+  the investment tile showed an anchor cache column as a balance, and three
+  other surfaces returned a 500.  An HTMX request gets 204 instead, never this
+  card, so a fragment refresh cannot replace a live region with a setup page.
+
+  It carries the REPAIR, which is why the handler renders a page at all:
+  ``POST /grid/create-baseline`` mints the scenario AND resyncs both posting
+  ledgers in one transaction (``baseline_service``).
+#}
 {% extends "base.html" %}
 {% block title %}Setup Required -- Shekel{% endblock title %}
 

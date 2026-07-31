@@ -156,14 +156,16 @@ def _resolve_anchor_as_of(
     Dates the hero's "anchored <date>" caption against the dated anchor SoT
     (the latest :class:`AccountAnchorHistory` row via
     :func:`~app.services.cash_ledger.resolve_anchor`, the same accessor
-    the cockpit "as of" uses), NOT the anchor period's ``start_date``.  The
-    UTC ``created_at`` is converted to display tz
-    (:func:`~app.utils.dates.to_display_date`); ``None`` when no baseline
-    scenario is configured.
+    the cockpit "as of" uses), NOT the anchor period's ``start_date``.  The UTC
+    ``created_at`` is converted to display tz
+    (:func:`~app.utils.dates.to_display_date`).
+
+    The ``return None`` for a user with no baseline went at plan step X-v2
+    (ruling R-BW): ``scenario_id`` raises and one application-level handler
+    answers, so a hidden caption is no longer this function's way of saying
+    "the app cannot compute anything for you".
     """
-    if balance_ctx.scenario is None:
-        return None
-    anchor = cash_ledger.resolve_anchor(account, balance_ctx.scenario.id)
+    anchor = cash_ledger.resolve_anchor(account, balance_ctx.scenario_id)
     return to_display_date(anchor.created_at)
 
 
@@ -183,10 +185,17 @@ def _resolve_current_balance(
     own window opens (:func:`_resolve_seed_balance`) -- it used to seed from a
     flat cash basis, which discarded every cent earned since the last assertion
     (finding N-80).  Falls back to :attr:`Account.current_anchor_balance` with
-    no scenario / anchor / period.
+    no anchor / period.
+
+    **The no-baseline arm of that fallback is GONE** (plan step X-v2, ruling
+    R-CA).  It presented the raw ``current_anchor_balance`` CACHE COLUMN as
+    this account's *current balance* -- a figure the app cannot know in that
+    state, which is finding N-103's complaint one screen over and the same
+    class as the ``$0.00`` net-worth hero deleted in the same pass.  The seam
+    raises and the page is answered by the repair card instead.
     """
     anchor_balance = account.current_anchor_balance or Decimal("0.00")
-    if balance_ctx.scenario is None or current_period is None:
+    if current_period is None:
         return anchor_balance
     balances = balance_at.balance_map(account, balance_ctx, all_periods)
     if balances is None:
@@ -253,11 +262,14 @@ def _resolve_seed_balance(
 
     Returns:
         The seed balance, falling back to
-        :attr:`Account.current_anchor_balance` with no scenario or no anchor
-        period -- the states in which the seam cannot answer.
+        :attr:`Account.current_anchor_balance` with no anchor period -- the
+        state in which the seam cannot answer.  The no-baseline arm of that
+        fallback went at plan step X-v2 (ruling R-CA), for the reason
+        :func:`_resolve_current_balance` above carries: it seeded a projection
+        CHART from a cache column, so the whole forward line was drawn from a
+        figure the app could not know.
     """
-    if (balance_ctx.scenario is None
-            or account.current_anchor_period_id is None):
+    if account.current_anchor_period_id is None:
         return account.current_anchor_balance or Decimal("0.00")
     return balance_at.balance_at(
         account, balance_ctx,

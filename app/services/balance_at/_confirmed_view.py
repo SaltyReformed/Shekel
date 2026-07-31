@@ -222,7 +222,9 @@ def confirmed_view(
     Returns ``None`` on four guards, so a caller's fallback to the anchor replay
     is exactly the pre-switch behaviour:
 
-    * ``ctx.scenario_id`` is ``None`` (no baseline scenario to scope the walk to);
+    * ``ctx.scenario_id_or_none`` is ``None`` (no baseline scenario to scope the
+      walk to -- one of the seam's two degenerate-case readers of the nullable,
+      ruling R-BX);
     * ``ctx.as_of`` is after today (a future date is a forward projection, out of
       the confirmed view's domain -- the resolver projects it);
     * *account* is not a configured loan (its walk carries no opening fact, so it
@@ -251,7 +253,7 @@ def confirmed_view(
         The :class:`~app.services.loan_resolver.ConfirmedLedgerView`, or ``None``
         to fall back to the resolver's anchor replay.
     """
-    if ctx.scenario_id is None or ctx.as_of > date.today():
+    if ctx.scenario_id_or_none is None or ctx.as_of > date.today():
         return None
     walk = ctx.loan_walk(account)
     origination_date = _origination_date(walk)

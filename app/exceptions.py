@@ -3,6 +3,13 @@ Shekel Budget App -- Domain-Specific Exceptions
 
 Raised by the service layer, caught and translated to HTTP responses
 by the route layer.  Keeps business logic free of Flask concerns.
+
+**One of them is translated APPLICATION-wide instead of per route**:
+:class:`BaselineMissingError` is answered by a single handler in
+:mod:`app.error_handlers` (plan step X-v, ruling R-BW), because the condition
+it reports -- this user has no baseline scenario, so no balance is computable
+for them -- has exactly one right answer on every surface, and sixteen routes
+deciding it separately is the defect that ruling exists to end.
 """
 
 
@@ -24,6 +31,56 @@ class AuthError(ShekelError):
 
 class ConflictError(ShekelError):
     """Operation would create a conflicting state (e.g. duplicate)."""
+
+
+class BaselineMissingError(ShekelError, ValueError):
+    """The balance seam was asked for a figure by a user with no baseline scenario.
+
+    Every balance the app produces is scoped to a baseline scenario, so a user
+    without one has no balance the app can answer -- not a zero balance, an
+    UNANSWERABLE one.  :func:`app.services.balance_at.require_scenario` raises
+    this at the seam's door, :func:`app.services.scenario_resolver.require_baseline_scenario`
+    raises it one tier down, and ONE handler
+    (:func:`app.error_handlers.register_error_handlers`'s ``baseline_missing``)
+    turns it into the setup-recovery page for a full request and ``204 No
+    Content`` for a safe-method HTMX one -- so the answer is decided in ONE
+    place instead of at every surface that reads a balance (plan step X-v,
+    ruling R-BW).
+
+    Carries :attr:`user_id`, the user the raise was RESOLVED for.  The handler
+    logs it beside the requesting user's id, and they differ only when a caller
+    built a context for the wrong user -- the one failure this exception's
+    ERROR event exists to diagnose, and the one the requester's id alone cannot
+    show (plan step X-v2's adversarial design review).
+
+    **It is a state the application cannot produce**, measured 2026-07-28:
+    ``auth_service.register_user`` writes a baseline for every owner, nothing in
+    ``app/`` or ``scripts/`` deletes a scenario or clears ``is_baseline``, no
+    path promotes a companion to owner, and ``scripts/integrity_check`` asserts
+    it as critical check DC-08.  The handler exists because "cannot be produced
+    by code" is not "cannot exist in the data", and because a user who somehow
+    reaches this state needs the repair button rather than a stack trace.
+
+    **It subclasses ``ValueError`` as well as :class:`ShekelError`** so that the
+    seam's long-standing documented contract ("raises ``ValueError`` when the
+    context has no baseline") stays literally true for every caller and test
+    that relies on it, while the handler can catch this condition and nothing
+    else.  Catching bare ``ValueError`` at the application tier would swallow
+    every unrelated conversion failure in the request.
+
+    Args:
+        message: What happened, naming the repair.
+        user_id: The user the raise was resolved for, or ``None`` when the
+            raiser does not know it (the seam's context always does).
+
+    Attributes:
+        user_id: As above.
+    """
+
+    def __init__(self, message: str, user_id: int | None = None) -> None:
+        """Store the resolved user id alongside the message."""
+        super().__init__(message)
+        self.user_id = user_id
 
 
 class RecurrenceConflict(ShekelError):

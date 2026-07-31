@@ -3,6 +3,7 @@ Tests for the unified Accounts & Savings dashboard (category grouping)
 and account hard-delete (5A.5-4).
 """
 
+import re
 from datetime import date
 from decimal import Decimal
 
@@ -542,6 +543,20 @@ class TestAccountHardDelete:
         active-vs-archived split now lives on the unified cockpit
         (savings.dashboard): active accounts render as cards, archived
         accounts in the collapsed "Archived Accounts (N)" section.
+
+        **The FIGURE is asserted under its own label, not just the name**
+        (plan step X-w2; anchored and its reason corrected at X-w6).  This test
+        asserted the section header and the account name only.
+
+        The reason first written here was wrong, and correcting it is the
+        point.  A bare ``{{ value }}`` on a missing attribute does render
+        empty -- but this figure goes through the ``money`` macro, whose first
+        statement is ``{% if value < 0 %}``, and ``Undefined.__lt__`` RAISES.
+        So ruling R-CH's rename would have produced a 500, which the
+        ``status_code == 200`` arm above already caught.  What no status check
+        can see is the drawer rendering the WRONG figure, or an unrelated
+        ``$5,000.00`` elsewhere on the page satisfying a bare ``in html``.  So
+        the assertion is anchored to the ``Last Balance`` label it sits under.
         """
         with app.app_context():
             # seed_user["account"] is active by default.
@@ -561,6 +576,14 @@ class TestAccountHardDelete:
             # Archived section with count indicator.
             assert "Archived Accounts (1)" in html
             assert "Archived Savings" in html
+            # And its last anchor balance -- the $5,000 the helper anchors it
+            # at -- is actually RENDERED under the "Last Balance" label, matched
+            # as one block so a figure elsewhere on the page cannot stand in.
+            assert re.search(
+                r'Last Balance</div>\s*<div class="[^"]*font-mono">'
+                r'\$5,000\.00',
+                html,
+            ), "the archived drawer did not render $5,000.00 as Last Balance"
 
     def test_hard_delete_account_with_history_already_archived(
         self, app, auth_client, seed_user, db, seed_periods_today,

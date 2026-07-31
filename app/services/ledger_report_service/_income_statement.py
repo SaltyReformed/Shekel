@@ -29,7 +29,7 @@ from app.models.journal_entry import JournalEntry, Posting
 from app.models.ledger_account import LedgerAccount
 from app.models.pay_period import PayPeriod
 from app.services import spending_analysis
-from app.services.scenario_resolver import get_baseline_scenario
+from app.services.scenario_resolver import require_baseline_scenario
 
 from ._attribution import (
     StatementClassIds,
@@ -81,10 +81,11 @@ def compute_income_statement(
     window_label = _window_label(window, period)
     class_ids = statement_class_ids()
 
-    scenario = get_baseline_scenario(user_id)
-    if scenario is None:
-        return _income_statement_from_nets({}, {}, class_ids, window_label)
-
+    # Raises for a user with no baseline (see the balance sheet's twin for the
+    # argument): this used to report an all-zero income statement, which reads
+    # as "you earned and spent nothing this period" rather than "this ledger
+    # cannot be read".
+    scenario = require_baseline_scenario(user_id)
     chart = load_chart(user_id)
     if window.window_type == "pay_period":
         nets = _pay_period_income_expense_nets(

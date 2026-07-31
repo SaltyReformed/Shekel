@@ -39,9 +39,9 @@ net at index 0 equals the net-worth hero and the ``2 years`` series' current
 point by construction.
 
 No Flask imports; every function takes plain data (the loaded core data, the
-per-account :class:`~.._types.AccountProjection` values, the id-based category
-map) and returns plain ``Decimal`` / ``dict`` data the route serializes at the
-presentation boundary.
+per-account :class:`~.._types.AccountProjection` values, each carrying its own
+resolved category) and returns plain ``Decimal`` / ``dict`` data the route
+serializes at the presentation boundary.
 """
 
 from dataclasses import dataclass
@@ -58,10 +58,13 @@ from app.services.savings_dashboard_service._debt_line import (
     debt_line_loans,
     loan_payoff_outlook,
 )
+from app.services.savings_dashboard_service._display import (
+    LIABILITY_KEY,
+    category_key,
+)
 from app.services.savings_dashboard_service._net_worth import (
     _ASSET_BANDS,
     _COMPOSITION_BANDS,
-    _LIABILITY_BAND,
     ZERO,
 )
 from app.services.savings_dashboard_service._types import AccountProjection
@@ -326,7 +329,7 @@ def _zero_series(frame: _HorizonFrame) -> list[Decimal]:
 def _retirement_investment_bands(
     user_id: int,
     core: "_DashboardCoreData",
-    category_by_account_id: dict[int, str],
+    account_data: list[AccountProjection],
     frame: _HorizonFrame,
 ) -> dict[str, list[Decimal]]:
     """Project the retirement and investment bands via the /retirement engine.
@@ -363,7 +366,9 @@ def _retirement_investment_bands(
         user_id: The authenticated user's id (the engine loads its own
             retirement / investment accounts for this user).
         core: The loaded dashboard core data (periods + current period).
-        category_by_account_id: Each account's id-based category key.
+        account_data: The per-account projections; each carries its own
+            resolved :attr:`~.._types.AccountProjection.category`, which this
+            reconciles the ENGINE's account set against (see above).
         frame: The horizon time frame (its ``horizon_end`` is the projection
             horizon, its ``axis`` the explicit period axis).
 
@@ -372,9 +377,12 @@ def _retirement_investment_bands(
         series over ``frame.sample_dates``.
     """
     bands = {band: _zero_series(frame) for band in _ENGINE_BANDS}
-    if not any(
-        band in _ENGINE_BANDS for band in category_by_account_id.values()
-    ):
+    engine_band_by_account_id = {
+        ad.account.id: category_key(ad.category)
+        for ad in account_data
+        if category_key(ad.category) in _ENGINE_BANDS
+    }
+    if not engine_band_by_account_id:
         return bands
 
     # The last two args are return_rate_override and employer_salary_basis,
@@ -390,8 +398,8 @@ def _retirement_investment_bands(
     )
     for projection in projections:
         account = projection["account"]
-        band = category_by_account_id.get(account.id)
-        if band not in _ENGINE_BANDS:
+        band = engine_band_by_account_id.get(account.id)
+        if band is None:
             # Defensive: the engine loads only retirement / investment types,
             # so this cannot fire; it keeps a mis-typed account out of the
             # asset bands rather than silently mis-banding it.
@@ -435,7 +443,6 @@ def _horizon_growth_rate(account, kind: AccountProjectionKind) -> Decimal:
 
 def _asset_bands(
     account_data: list[AccountProjection],
-    category_by_account_id: dict[int, str],
     frame: _HorizonFrame,
 ) -> dict[str, list[Decimal]]:
     """Project the non-engine asset bands from each account's growth param.
@@ -454,7 +461,6 @@ def _asset_bands(
     Args:
         account_data: The per-account projections (the ``current_balance``
             seeds each account's growth).
-        category_by_account_id: Each account's id-based category key.
         frame: The horizon time frame.
 
     Returns:
@@ -464,10 +470,10 @@ def _asset_bands(
     bands = {band: _zero_series(frame) for band in _PARAM_GROWTH_BANDS}
     for ad in account_data:
         account = ad.account
-        band = category_by_account_id.get(account.id)
+        band = category_key(ad.category)
         if band not in bands:
             continue
-        today_value = ad.current_balance or ZERO
+        today_value = ad.current_balance
         rate = _horizon_growth_rate(account, classify_account(account))
         rows = growth_engine.project_balance(
             current_balance=today_value,
@@ -557,7 +563,7 @@ def _net_series(
     """
     return [
         sum((composition[band][k] for band in _ASSET_BANDS), ZERO)
-        - composition[_LIABILITY_BAND][k]
+        - composition[LIABILITY_KEY][k]
         for k in range(count)
     ]
 
@@ -719,7 +725,6 @@ def _assemble_composition(
     user_id: int,
     core: "_DashboardCoreData",
     account_data: list[AccountProjection],
-    category_by_account_id: dict[int, str],
     frame: _HorizonFrame,
 ) -> dict[str, list[Decimal]]:
     """Assemble the per-band composition series over the horizon frame.
@@ -729,11 +734,35 @@ def _assemble_composition(
     and other bands from per-account param growth (:func:`_asset_bands`), and
     the liability band from the loan schedules (:func:`_liability_band`).
 
+    **The three producers must partition the account set EXACTLY once.**  Two
+    of them band by category and the third selects by
+    :attr:`~.._types.AccountProjection.is_liability`; those were independent id
+    comparisons until plan step X-z, so an account the two classified
+    differently would land in an asset band AND the liability band -- counted
+    twice, with opposite signs, so net worth is wrong by double its balance --
+    or in neither, vanishing from a chart whose own docstring says its index 0
+    equals the net-worth hero.  Nothing would raise either way.  Both now read
+    ONE member off the projection (ruling R-CT), so for the accounts in
+    ``account_data`` the partition holds by construction.
+
+    **One seam remains and it is named rather than claimed away** (plan step
+    X-z8, ruling R-CV, out of X-z's adversarial design review, which found this
+    paragraph overstating what it had).  :func:`_retirement_investment_bands`
+    iterates the /retirement ENGINE's own account set, selected by a SQL
+    category filter in ``account_service``, not by this module's classifier; it
+    reconciles that set against the projections' categories and skips an account
+    that is in neither band.  The two selections agree because the engine's
+    filter names the same two categories -- by reading, not by construction --
+    so an account the engine loads and this page does not classify as
+    retirement-or-investment is dropped from the composition silently.  That is
+    the write-path shape finding N-122 records, one surface over.
+    ``test_net_worth_band_vocabulary`` pins the complementary half: that the
+    three producers' BANDS are disjoint and exhaust the composition.
+
     Args:
         user_id: The authenticated user's id.
         core: The loaded dashboard core data.
         account_data: The per-account projections.
-        category_by_account_id: Each account's id-based category key.
         frame: The horizon time frame.
 
     Returns:
@@ -741,13 +770,13 @@ def _assemble_composition(
     """
     composition = {band: _zero_series(frame) for band in _COMPOSITION_BANDS}
     engine_bands = _retirement_investment_bands(
-        user_id, core, category_by_account_id, frame,
+        user_id, core, account_data, frame,
     )
-    asset_bands = _asset_bands(account_data, category_by_account_id, frame)
+    asset_bands = _asset_bands(account_data, frame)
     for band, series in {**engine_bands, **asset_bands}.items():
         _add_into(composition[band], series)
     _add_into(
-        composition[_LIABILITY_BAND],
+        composition[LIABILITY_KEY],
         _liability_band(account_data, core, frame),
     )
     return composition
@@ -757,7 +786,6 @@ def build_horizon(
     user_id: int,
     core: "_DashboardCoreData",
     account_data: list[AccountProjection],
-    category_by_account_id: dict[int, str],
 ) -> dict | None:
     """Build the long-horizon annual net-worth composition + milestones.
 
@@ -796,9 +824,9 @@ def build_horizon(
             reuse).
         core: The loaded dashboard core data.
         account_data: The per-account projections from
-            ``_compute_account_projections``.
-        category_by_account_id: Each account's id-based category key from
-            :func:`~app.services.savings_dashboard_service._display.category_key_by_account_id`.
+            ``_compute_account_projections``, each carrying its own resolved
+            :attr:`~.._types.AccountProjection.category` -- which is what every
+            band producer below buckets on.
 
     Returns:
         A dict with ``dates`` (the sample dates, whose last element is the
@@ -821,7 +849,7 @@ def build_horizon(
     )
 
     composition = _assemble_composition(
-        user_id, core, account_data, category_by_account_id, frame,
+        user_id, core, account_data, frame,
     )
     net = _net_series(composition, len(frame.sample_dates))
     milestones = _build_milestones(account_data, net, debt_free_date, frame)

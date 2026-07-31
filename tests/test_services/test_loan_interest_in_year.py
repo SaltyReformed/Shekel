@@ -270,21 +270,29 @@ class TestLoanInterestInYearMerge:
     def test_evening_settle_utc_rollover_counted_exactly_once(
         self, app, db, seed_user, seed_periods, monkeypatch,
     ):
-        """A payment settled evening-Eastern (UTC next-day) is not double-counted.
+        """A payment settled evening-Eastern is counted exactly once.
 
-        The two-clock trap the walk-merge closes.  A loan payment settled in the
-        evening of a UTC-behind zone has a ``paid_at`` that rolls into the NEXT UTC
-        day, so its ``payment_visible_on`` (UTC civil date) is tomorrow -- outside
-        ``confirmed_shadows_through(as_of)``, which the plan's ESTIMATED de-dup keys
-        on -- yet for TAX it was paid TODAY (display), so the settled half counts it.
-        Without a merge against the WALK the plan would re-synthesize its installment
-        and the deduction would double.
+        **The two-clock trap this test was written for is GONE at its source**
+        (ruling R-DH (b), 2026-07-31).  ``payment_visible_on`` derived the UTC
+        civil date, so a payment settled in the evening of a UTC-behind zone was
+        visible TOMORROW -- outside ``confirmed_shadows_through(as_of)``, which
+        the plan's ESTIMATED de-dup keys on -- while for TAX it was paid TODAY
+        (display).  The plan therefore re-synthesized the installment and the
+        deduction doubled unless a merge against the WALK removed it.  Both
+        clocks are the user's day now, so the de-dup and the tax attribution
+        agree and the slot is never synthesized in the first place.
 
-        Frozen display today 2026-01-31 (EST, UTC-5).  A period-``p2`` payment (due
-        2026-03-01) is settled EARLY at ``2026-02-01 02:00 UTC`` = ``2026-01-31 21:00
-        EST``: display-paid 2026-01-31 (year 2026, in the settled half at 500.00),
-        but UTC-visible 2026-02-01 > as_of -- so ``loan_plan`` still synthesizes a
-        March ESTIMATED record.  The producer must exclude that March slot.
+        Frozen display today 2026-01-31 (EST, UTC-5).  A period-``p2`` payment
+        (due 2026-03-01) is settled EARLY at ``2026-02-01 02:00 UTC`` =
+        ``2026-01-31 21:00 EST``: display-paid 2026-01-31 (year 2026, in the
+        settled half at 500.00) AND visible 2026-01-31 <= as_of, so ``loan_plan``
+        does not synthesize a March ESTIMATED record at all.
+
+        **The walk-merge is NOT deleted and this test still grades it.**  What
+        changed is that it is no longer the ONLY thing standing between this
+        shape and a doubled deduction -- it is now the second of two independent
+        mechanisms, which is defence in depth rather than a workaround.  The
+        final assertion is unchanged: the producer counts this payment once.
         """
         with app.app_context():
             freeze_today(monkeypatch, date(2026, 1, 31))
@@ -308,31 +316,29 @@ class TestLoanInterestInYearMerge:
                 loan, ctx, 2026,
             ) == Decimal("500.00")
 
-            # It is UTC-invisible by as_of, so the plan STILL synthesizes March --
-            # the gap the walk-merge must close.
+            # It is now VISIBLE by as_of on the same clock the tax attribution
+            # uses, so the plan does not synthesize March at all -- the gap is
+            # closed at its source rather than patched downstream.
             march = (2026, 3)
             plan_slots = {
                 (payment.due_date.year, payment.due_date.month)
                 for payment in loan_plan(loan, ctx)
             }
-            assert march in plan_slots
+            assert march not in plan_slots
 
-            # The un-merged projection double-counts March; the merged one drops it.
-            # The gap is exactly the March ESTIMATED record's interest -- a material
-            # amount, ~a full installment's worth (roughly $495 on the ~$100k
-            # balance), i.e. a real deduction error, not a rounding cent.
+            # With the slot absent, excluding it is a no-op: the two projections
+            # agree, which is the arithmetic statement of "no double-count to
+            # remove".  Under the UTC clock these differed by ~$495, a full
+            # installment's interest and a real deduction error.
             naive = _plan_projected_interest(loan, ctx, 2026)
             merged = _plan_projected_interest(
                 loan, ctx, 2026, exclude_slots=frozenset({march}),
             )
-            assert naive > merged                   # March IS in the projection
-            assert naive - merged > Decimal("400.00")  # material double-count
+            assert naive == merged
 
-            # The producer counts March ONCE: settled + the MERGED projection, never
-            # settled + the naive (double-counting) projection.
+            # The producer counts this payment ONCE either way.
             result = balance_at.loan_interest_in_year(loan, ctx, 2026)
             assert result == Decimal("500.00") + merged
-            assert result < Decimal("500.00") + naive   # the walk-merge fired
 
 
 class TestLoanInterestAnswersFromTheFold:

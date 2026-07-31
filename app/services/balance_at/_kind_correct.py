@@ -77,15 +77,14 @@ def balance_map(
         account has no anchor period.
 
     Raises:
-        ValueError: When ``scenario`` is None -- callers that resolve a
-            nullable baseline must guard first.
+        BaselineMissingError: When ``scenario`` is None (a ``ValueError``
+            subclass).
     """
-    # A caller that legitimately handles the no-baseline case guards on
-    # ``ctx.has_baseline`` BEFORE calling (the savings cockpit does so at each
-    # of its three seam doors -- plan steps X-t2 / X-t5; the per-producer guard
-    # this comment used to name was deleted with the hoist), so the legitimate
-    # empty state is preserved; the seam raising here is the defensive contract that turns
-    # a deep AttributeError (or a silent $0 net worth) into a clear failure.
+    # NO caller guards ahead of this any more (plan step X-v2, ruling R-BW).
+    # The raise IS the answer: it carries a name the application's one handler
+    # catches, which renders the setup-recovery card for a page and 204 for a
+    # safe-method HTMX fragment.  The census of what the callers used to answer
+    # instead lives with that handler.
     _require_scenario(ctx)
     return _account_balance_map(
         account, ctx, periods, _contribution_inputs_for_account(account),
@@ -104,9 +103,11 @@ def build_maps(
     :func:`._inputs._contribution_inputs_for_accounts` (one investment-params
     query, one deductions query, one gross fetch for the whole set), then loops
     the shared :func:`._inputs._account_balance_map` per account.  This is the
-    per-account dense-map build the savings cockpit's
-    ``build_account_net_worth_maps`` performs today, internalised behind the
-    seam so the assembly lives in one place.
+    per-account dense-map build the savings cockpit used to perform itself,
+    internalised behind the seam so the assembly lives in one place.  (Its
+    caller there was ``build_account_net_worth_maps``, which plan step X-w
+    deleted along with the second per-account container it built; the cockpit's
+    projection now calls this entry directly.)
 
     The feed map is TOTAL over *accounts*, so it is INDEXED per account rather
     than defaulted: an account missing from it would be a defect in the loader,
@@ -128,8 +129,9 @@ def build_maps(
         Decimal balance map, for every account that has a map.
 
     Raises:
-        ValueError: When ``scenario`` is None -- callers that resolve a
-            nullable baseline must guard first.
+        BaselineMissingError: When ``scenario`` is None.  A ``ValueError``
+            subclass; ONE application-level handler answers it (plan step
+            X-v2, ruling R-BW), so no caller pre-checks.
     """
     _require_scenario(ctx)
     feeds = _contribution_inputs_for_accounts(accounts)
@@ -250,8 +252,9 @@ def balance_at(
         The ``Decimal`` balance at *as_of*.
 
     Raises:
-        ValueError: When ``scenario`` is None -- callers that resolve a
-            nullable baseline must guard first.
+        BaselineMissingError: When ``scenario`` is None.  A ``ValueError``
+            subclass; ONE application-level handler answers it (plan step
+            X-v2, ruling R-BW), so no caller pre-checks.
     """
     _require_scenario(ctx)
     if configured_loan(account, ctx) is not None:
@@ -315,8 +318,9 @@ def investment_growth_since_anchor(
         hiding would deny a figure the balance beside it already contains.
 
     Raises:
-        ValueError: When ``scenario`` is None -- callers that resolve a
-            nullable baseline must guard first.
+        BaselineMissingError: When ``scenario`` is None.  A ``ValueError``
+            subclass; ONE application-level handler answers it (plan step
+            X-v2, ruling R-BW), so no caller pre-checks.
     """
     _require_scenario(ctx)
     inputs = _contribution_inputs_for_account(account)
