@@ -75,6 +75,15 @@ def account_category(account) -> AcctCategoryEnum | None:
     counted as an asset is a balance in the wrong chart band, where counting it
     as a liability would SUBTRACT it from net worth.
 
+    **It is ONE dict read** (plan step X-z6, ruling R-CV).  It opened as a scan
+    over :class:`~app.enums.AcctCategoryEnum` asking ``ref_cache`` once per
+    member, which measured 2.3x-4.5x the cost of the single comparison it
+    replaced (``0.135 -> 0.307`` us for an ASSET, ``0.139 -> 0.624`` us for an
+    INVESTMENT, best of 200k iterations) -- so the step that unified the rule
+    made every read of it slower.
+    :func:`app.ref_cache.acct_category_member` inverts the cached map once at
+    startup instead.
+
     Args:
         account: The :class:`~app.models.account.Account` to classify, with its
             ``account_type`` relationship loaded (this issues no query).
@@ -86,11 +95,7 @@ def account_category(account) -> AcctCategoryEnum | None:
     acct_type = account.account_type
     if acct_type is None:
         return None
-    category_id = acct_type.category_id
-    for member in AcctCategoryEnum:
-        if category_id == ref_cache.acct_category_id(member):
-            return member
-    return None
+    return ref_cache.acct_category_member(acct_type.category_id)
 
 
 def is_liability_account(account) -> bool:

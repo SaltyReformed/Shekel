@@ -75,13 +75,17 @@ class _RefState:
     PK}`` lookup; ``acct_type_meta`` maps an account-type PK to its
     presentation metadata; ``ledger_class_debit_normal`` maps a
     ledger-account-class PK to its natural-balance side (TRUE =
-    debit-normal).  Written once at startup (re-written in tests) and
+    debit-normal); ``acct_category_members`` is the INVERSE of
+    ``enum_ids[AcctCategoryEnum]``, so a reader holding an account type's
+    ``category_id`` resolves its member in one lookup rather than scanning
+    the enum.  Written once at startup (re-written in tests) and
     read-only thereafter via the accessor functions below.
     """
 
     enum_ids: dict[type[Enum], dict[Enum, int]] = field(default_factory=dict)
     acct_type_meta: dict[int, _AcctTypeMeta] = field(default_factory=dict)
     ledger_class_debit_normal: dict[int, bool] = field(default_factory=dict)
+    acct_category_members: dict[int, Enum] = field(default_factory=dict)
     initialized: bool = False
 
 
@@ -251,6 +255,7 @@ def init(db_session):
     _cache.enum_ids.clear()
     _cache.acct_type_meta.clear()
     _cache.ledger_class_debit_normal.clear()
+    _cache.acct_category_members.clear()
     for spec in specs:
         _cache.enum_ids[spec.enum] = {}
 
@@ -308,6 +313,19 @@ def init(db_session):
     if "ledger_account_classes" not in unavailable:
         for row in db_session.query(ref_models.LedgerAccountClass).all():
             _cache.ledger_class_debit_normal[row.id] = row.is_debit_normal
+
+    # Invert the account-category map so a reader holding an account type's
+    # ``category_id`` resolves its member in ONE lookup.  Built here rather
+    # than derived per call because the classifier every net-worth surface
+    # reaches (``app.services.account_category.account_category``) would
+    # otherwise scan the enum, asking this cache once per member.  Empty when
+    # the table was unavailable in the bootstrap window, which the accessor
+    # answers as "no modelled category" -- the same answer it gives for a
+    # category row this application does not model.
+    _cache.acct_category_members.update({
+        db_id: member
+        for member, db_id in _cache.enum_ids.get(AcctCategoryEnum, {}).items()
+    })
 
     _cache.initialized = True
     return unavailable
@@ -411,6 +429,43 @@ def acct_category_id(member):
     """
     _require_init()
     return _cache.enum_ids[AcctCategoryEnum][member]
+
+
+def acct_category_member(category_id):
+    """Return the ``AcctCategoryEnum`` member a category PK names, or ``None``.
+
+    The inverse of :func:`acct_category_id`, and the reverse lookup the
+    canonical classifier
+    (:func:`app.services.account_category.account_category`) resolves every
+    account's category through -- so classifying an account is one dict read
+    rather than a scan asking this cache once per enum member.  Added at plan
+    step X-z6 (ruling R-CV), where that scan measured 2.3x-4.5x the cost of the
+    single comparison it replaced.
+
+    **It answers ``None`` rather than raising, and that is the difference from
+    :func:`ledger_class_is_debit_normal` beside it.**  That accessor is
+    logic-bearing over a CLOSED set -- every ``budget.ledger_accounts.class_id``
+    was written by this application from its own enum, so an unknown one is a
+    genuine data error.  This one is read against
+    ``ref.account_type_categories``, where ``init`` requires the four
+    :class:`~app.enums.AcctCategoryEnum` rows to exist and does NOT forbid
+    others; a fifth row is a state the schema permits, and the application's
+    answer for it is "no category I model" (bucketed ``other``, not a
+    liability), never a 500 on every page that classifies an account.
+
+    Args:
+        category_id: The integer primary key of a
+            ``ref.account_type_categories`` row.
+
+    Returns:
+        The :class:`~app.enums.AcctCategoryEnum` member for *category_id*, or
+        ``None`` when no member names it.
+
+    Raises:
+        RuntimeError: If the cache has not been initialized.
+    """
+    _require_init()
+    return _cache.acct_category_members.get(category_id)
 
 
 def recurrence_pattern_id(member):
