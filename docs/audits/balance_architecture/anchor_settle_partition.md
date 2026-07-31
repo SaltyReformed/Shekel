@@ -531,6 +531,32 @@ both commits. Production itself was never written to.
   and documented entirely for the DELETED instant rule, so fixing its stale name could silently
   delete the coverage. Also missing: R-DH (c)'s two envelope invariants; any test for
   `resync_all_cash_postings`. See the Section 5 status note.
+
+  > **THE BLIND TESTS ARE FIXED (2026-07-31).** The root cause of the day offset was not
+  > carelessness: `_origin_instant` returns the row's `created_at`, which is the ambient WALL CLOCK,
+  > so `origin +/- an hour` really does cross midnight on a suite run near 23:30 or 00:30 Eastern --
+  > a smaller offset would have been flaky rather than blind. The fix is therefore a **pinned
+  > opening** (`_pin_opening` over the shared `restamp_opening_assertion`, the idiom
+  > `test_cash_walk.py` already uses) at 12:00 EDT, so plus-or-minus an hour is PROVABLY the same
+  > civil day -- and each test now asserts that precondition rather than assuming it.
+  >
+  > - `test_a_settle_on_the_openings_own_day_rides_on_top` is parametrized **both directions**
+  >   (`recorded_after` / `recorded_before`), which is the order-independence pair the single
+  >   direction was missing, at the assertion most exposed to R-DH's residual.
+  > - `test_same_instant_settle_is_absorbed` is renamed
+  >   `test_a_trueup_absorbs_a_settle_the_opening_rode_on_top_of` and re-documented: one civil day,
+  >   both assertion kinds, opposite answers. It is the discriminating control that BOTH halves of
+  >   the rule can break.
+  > - The instant-partition vocabulary that made the blind test read as correct is gone from the
+  >   class docstring, the section header and `_settle_expense`.
+  >
+  > **Negative-controlled, which is the whole point:** with the amendment reverted on both walks all
+  > three now FAIL (`-200.00` and `-75.00` against the expected `0.00`); before the repair the
+  > opening test PASSED under the reverted rule. Full suite 7,677 passed / 0 failed, `pylint app/`
+  > 10.00/10, `app/` byte-unchanged.
+  >
+  > **Still owed from this finding:** R-DH (c)'s two envelope invariants, a test for
+  > `resync_all_cash_postings`, and the order-independence test at PROJECTED-BALANCE grain.
 - **F3 (High) -- "Full suite 7,676 passed / 0 failed" is not reproducible.** Actual: 6 failed /
   7,669 passed (7,675 collected, not 7,676). The 6 are `test_cross_page_balance_equality`, the known
   month-end bomb; **identical 6 failures and identical 7,669 passed at the merge base `b73e25bc`**,
@@ -650,9 +676,10 @@ both commits. Production itself was never written to.
 ### Suggested order
 
 1. **F1** -- the ruling, because everything below is cheaper once the rule is settled.
-2. **F2** -- fix the two blind tests (`+ timedelta(days=1)` -> `+ timedelta(hours=1)`), rename
-   `test_same_instant_settle_is_absorbed` for the rule it actually pins, and add the three missing
-   tests. Do this before merging: right now the amendment's only gate is a mis-titled test.
+2. ~~**F2** -- fix the two blind tests, rename `test_same_instant_settle_is_absorbed` for the rule
+   it actually pins.~~ **DONE 2026-07-31** (see the F2 note above; the fix was a PINNED opening, not
+   a smaller offset). Still owed: the three missing tests -- R-DH (c)'s two envelope invariants, a
+   test for `resync_all_cash_postings`, and order-independence at projected-balance grain.
 3. **F4** and **F6** -- two small changes that remove a hidden zone dependency and a step-2 landmine,
    and pre-pay step 3.
 4. **F7** -- clear the stale docstrings, `utc_instant` and `_attribution.py` first, since those two
