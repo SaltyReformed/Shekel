@@ -218,7 +218,50 @@ predicate arrives as a function PARAMETER. And its two instruments shared a blin
 confirmed each other: a surface that resolves the baseline itself and answers with a plausible 200
 is invisible to a census keyed on `BalanceContext` and to a sweep that fails only on 5xx.
 
-**NEXT: X-w**, then the steps after it in the order Section 5 lists.
+**X-w is DONE** (2026-07-30), in seven commits: the rulings `03272174`, then `f3d75fe4` /
+`fcc8cd36` / `c70acee5` / `88240253` / `740a005d`, then the residue rulings `5c078076` and the
+residue `38f8d879`. **The trace turned the step before a line was written**: `_net_worth` took TWO
+shapes for ONE account set on ONE render -- `compute_net_worth_today(list[AccountProjection])`
+beside `compute_net_worth_series(list[dict])` -- so finding N-114's stored liability flag was what
+that asymmetry produced, not the defect. The second per-account container is DELETED rather than
+typed: the dense period map rides on the projection for every kind including loans, and there is no
+longer anywhere to store a duplicate rule. Eight record containers on this path are value objects,
+three published fields with no reader are gone, and a series that was mutated after its producer
+returned is built once. **No figure moves**, and that was proved by ONE harness across two trees on
+both databases, at 1,377 keyed lines.
+
+**A measured side effect worth its own sentence**: one `/savings` render built **17 per-account
+dense maps for 8 accounts**; it builds **11**. SQL `276 -> 211` on `shekel` and `252 -> 195` on
+`shekel_f3_final`. That is half of N-72's redundancy half, closed as a CONSEQUENCE of deleting a
+container rather than as a fix -- X-i1 still owns the rest.
+
+**Its two adversarial reviews earned their cost an ELEVENTH time, and for the first time in this
+arc they opened NOTHING.** Everything they found was the step's own residue, and X-w6 shipped all
+of it. Both found the same two defects independently: the new cockpit-hero guard could not fire on
+the regression it named (seven occurrences of the figure, at least three from outside the hero), and
+the arc's flagship hero-vs-trend assertion carried a failure MESSAGE that raised `TypeError` at the
+one moment it exists for. **NINE of the step's own citations were wrong** -- a twelfth key against an
+eleven-key dict, "every producer here takes ONE shape" (false for two), a stated proof that two
+loaders "issue the same filter" (they do not; the conclusion holds on other grounds), a
+construction guarantee this step's own test violates, R-CJ's census of its own survivors, and the
+harness contradicting itself four times about who deletes its shims.
+
+**And the step's PREMISE was false.** It said typing a producer does not protect its template
+because Jinja renders a missing attribute as an empty string. A bare `{{ value }}` does -- but the
+`money` macro opens with `{% if value < 0 %}` and `Undefined.__lt__` RAISES, so a renamed money
+field 500s and the pre-existing `status_code == 200` assertion already covered that class. The
+guards still earn their place, against a producer returning the WRONG figure with a 200, which no
+status check can see; the reason written beside them did not.
+
+**One lesson paid here and recorded in Section 8: widening an instrument is a shape change, and it
+needs the same normalization the code does.** Ruling R-CM added the dense map to the above-seam
+harness to close a blind spot both reviews named -- the narrow producers carry a map nothing reads
+and NEITHER instrument dumped it. The first attempt made every account's map read as a diff on the
+pre-X-w tree, because the projection had no such field there. Normalizing it to the seam's own map
+turned that into the strongest evidence the step has: the cross-tree diff now proves ruling R-CG's
+map-equality DIRECTLY rather than leaving it inferred from the figures downstream.
+
+**NEXT: X-z**, then the steps after it in the order Section 5 lists.
 
 ---
 
@@ -1980,7 +2023,10 @@ preconditions cite entries in that file.
   them, and because X-v's gate is the instrument this step will need (the sweep already exercises
   the no-period user: the seeded probe user renders `/grid` through `no_periods.html`).
 
-- [ ] **X-w** `refactor(savings): the containers this read path still passes untyped` -- closes
+- [x] **X-w** `refactor(savings): the containers this read path still passes untyped` -- **SHIPPED
+  dev 2026-07-30** in seven commits: the rulings `03272174`, then `f3d75fe4` / `fcc8cd36` /
+  `c70acee5` / `88240253` / `740a005d`, then the residue rulings `5c078076` and the residue
+  `38f8d879`. Closes
   **N-114**. X-t1 typed the per-account projection; the same render still passes two untyped dicts
   between modules. The dense per-account map (`{account_id, balances, is_liability}`) STORES the
   liability flag the projection now derives, so the page single-sources that rule in one container
@@ -1999,21 +2045,21 @@ preconditions cite entries in that file.
   crossing a module boundary on this path where the finding named two, and R-CI rules which of them
   are records. **DECOMPOSED on the arc's own line**, five commits, none of which may move a figure:
 
-  * [ ] **X-w1 THE DENSE MAP** (ruling R-CG, R-CJ). `AccountProjection.balances`;
+  * [x] **X-w1 THE DENSE MAP** (ruling R-CG, R-CJ). `AccountProjection.balances`;
     `to_net_worth_account_data` and `build_account_net_worth_maps` deleted; the projection's seam
     batch covers loans; the category memo indexed rather than defaulted.
-  * [ ] **X-w2 THE ARCHIVED ROWS** (ruling R-CH). `ArchivedAccount(account, last_anchor_balance)`;
+  * [x] **X-w2 THE ARCHIVED ROWS** (ruling R-CH). `ArchivedAccount(account, last_anchor_balance)`;
     the vacuous `or ZERO` deleted. N-103's question stays X-e's.
-  * [ ] **X-w3 THE NET-WORTH REGION** (ruling R-CI). `compute_net_worth_today`,
+  * [x] **X-w3 THE NET-WORTH REGION** (ruling R-CI). `compute_net_worth_today`,
     `compute_net_worth_series` (built ONCE, so the orchestrator's post-return
     `series["current_index"] = ...` mutation dies) and `compute_property_equity`.
-  * [ ] **X-w4 THE GOAL ROW** (ruling R-CI). `_build_goal_datum`'s eleven keys, read by two
+  * [x] **X-w4 THE GOAL ROW** (ruling R-CI). `_build_goal_datum`'s eleven keys, read by two
     templates through two packages.
-  * [ ] **X-w5 THE HARNESS** . `verify_savings_producers.py`'s own docstring says "the X-t1
+  * [x] **X-w5 THE HARNESS** . `verify_savings_producers.py`'s own docstring says "the X-t1
     tolerance goes when X-v ships, the X-u tolerance when X-w does". **X-v did not delete the X-t1
     one** (verified against `dbf154c7`), so both go here, and the generic dict-or-attribute reader
     survives as X-w's OWN tolerance -- named as such, and X-x deletes it.
-  * [ ] **X-w6 THE REVIEW RESIDUE** (rulings R-CK..R-CN, plus corrections to R-CI and R-CJ).
+  * [x] **X-w6 THE REVIEW RESIDUE** (rulings R-CK..R-CN, plus corrections to R-CI and R-CJ).
     Two adversarial reviews of the frozen tree found the same two defects independently -- the new
     cockpit-hero guard cannot fire on the regression it names, and the arc's flagship hero-vs-trend
     assertion carries a failure MESSAGE that raises `TypeError` at the exact moment it is needed --
@@ -2562,10 +2608,13 @@ row, whose owner read `Section 5, Phase E2`; it is now `E2-0 / E2-n`, the phase'
 steps. Every other owner was already live, which is what the three hand-passes above bought and
 what nothing now has to buy again.
 
-**The ledger stands at 41 rows.** X-u closed N-109 and opened N-115; X-v then closed **N-112** and
+**The ledger stands at 40 rows.** X-u closed N-109 and opened N-115; X-v then closed **N-112** and
 **N-113** (both archived, `dbf154c7`) and opened **N-116** (the period-absence twin, owner X-x) and
 **N-117** (the fifteen surfaces that answer this state without the balance seam, owner X-y); X-w's
-trace opened **N-118** (the liability rule's two id-based spellings, owner X-z).
+trace opened **N-118** (the liability rule's two id-based spellings, owner X-z) and X-w then
+CLOSED **N-114**, whose row stays here as a closed pointer until the next archive extraction.
+**Its two adversarial reviews opened NOTHING**, which is a first for this arc: everything they
+found was residue of the step itself, and plan step X-w6 shipped all of it.
 **This sentence is checked by the gate**, and it needed to be: it read `38` against a 40-row table
 until 2026-07-28 -- drift left by an earlier step that updated the rows and not the prose about
 them. `stated_count_violation` makes it a predicate rather than a number somebody remembers to
@@ -2611,7 +2660,6 @@ done, and is what drifted.
 | N-93 (X-g3b review) | **Every grid render entry now pays the modelled contribution load, including the one that reads none of it.** Plan step X-g3b made `grid_balance_view` load the account's real `ContributionInputs`, which for an INVESTMENT costs an investment-params query, a deductions query and a full paycheck-engine run: measured best-of-five on both databases at `2.7 -> 14.8 ms` (an APPRECIATING asset `2.7 -> 3.7 ms`; PLAIN and INTEREST inside run-to-run noise). The grid has FOUR render entries and each pays it. **The sharpest sub-case is `subtotal_rows`**, which resolves the whole modelled fold to render three rows that read only `income` / `expense` / `net` -- and plan step X-g3a's own entry declined to hand that endpoint an `accrual_label` because "handing it a label would add a context variable nothing reads", which is the same argument one level cheaper. It also compounds finding N-89: `income_service.get_current_gross_biweekly` loads the pay-period calendar (`income_service.py:127`) on top of the route's own load and `contribution_events`', so a modelled grid render loads it THREE times where N-89 recorded two, and one `balanceChanged` firing `balance_row` + `subtotal_rows` costs ~6 loads and 2 engine runs | `~12 ms` per modelled grid render entry; 1 extra calendar load per modelled read on top of N-89's | **recorded, NOT fixed.** The load itself is not waste -- it is what the INVESTMENT kind's return is modelled FROM (ruling R-AJ (a)), so it cannot be gated away without reinstating the defect X-g3b removed. What is addressable is the per-pass repetition, and that is findings N-89 / N-92's shared fix (a context memo), plus a narrower view record for `subtotal_rows` if that endpoint's cost is ever measured to matter **TRIAGED 2026-07-27 (ruling R-AO): to X-i1.** | X-i1 |
 | N-86 (X-g2b review) | **The `/investment` limit CARD and the projection beside it read two different YTD boundaries, and only one of them is a function of the window.** `_compute_limit_info` renders `ytd_contributions` (the total THROUGH the current period -- what the user has actually put in this year), while `growth_engine.project_balance`'s `ytd_contributions_start` must hold exactly the periods the projection's window EXCLUDES. Those coincide only when the window opens past the current period, which is the case on this surface after ruling R-AF and is NOT the case on either of `retirement_projection`'s axes. X-g2b resolves the projection's half once, beside the window it depends on (`_context._projection_ytd`), so the two call sites cannot disagree; what is recorded is that the app now carries TWO correct YTD boundaries whose difference is invisible in the rendered figures. The durable version is for the engine to take the axis and derive the boundary itself, which is the same "one derivation" argument ruling R-AF made for the seed | `$1,000.00` of annual-limit room per period of divergence, compounded over the horizon -- the defect this finding's fix closed, measured on a `$23,500` limit at `$1,000`/period with today in the year's 15th period. `$0.00` on today's data: no real investment account has a contribution feed | **recorded, NOT fixed** -- the boundary is correct on both surfaces today and pinned in both directions by `TestTheAnnualLimitSeedFollowsTheWindow`. It is recorded because a THIRD projection surface would have to know the rule to get it right, and knowing a rule is what this arc replaces with structure **TRIAGED 2026-07-27 (ruling R-AO): genuine RESIDUE.** Correct on both surfaces today and pinned in both directions; its durable fix is inside the growth ENGINE's axis, which no remaining step touches. **RE-TRIAGED 2026-07-27 (ruling R-AQ): there is no deferred category: to X-m.** 'Correct on both surfaces today' is a statement about how many surfaces exist; the row's own text says a THIRD would have to KNOW the rule, and knowing a rule is what this arc replaces with structure. X-m has the engine derive the boundary from the axis it is handed, and `ytd_contributions_start` leaves the signature. | X-m |
 
-| N-114 (X-t1 review) | **The liability rule is single-sourced on the projection and STILL stored in the dense-map dict beside it.** `net_worth_account_data.to_net_worth_account_data:97` writes `is_liability` into an untyped `{account_id, balances, is_liability}` dict that `_net_worth._sum_composition_at_period:221` reads, on the SAME render where `AccountProjection.is_liability` is now derived -- so X-t1's claim that "there is now one" spelling is true of the projection and false of the page. Both call `is_liability_account` today, so the figure risk is latent rather than live; what is live is that a future refinement landing on the property leaves the trend and the sparklines on the old classification, with the hero and the chart's today point disagreeing and every test that reads one of them staying green. It is the same untyped-container class N-111 closed, one module over, and the row that X-t's thesis ("which shapes are guaranteed and which are merely tested") points at next -- alongside the archived-account rows, whose `current_balance` is `Account.current_anchor_balance` (which finding N-103 says is not a loan's balance at all) and which shared the cockpit projection's loop-variable name until X-t5 renamed it | `$0.00` today; the measured cost of the LAST container in this class was B-16 and N-98 | **OPEN**, opened 2026-07-28 by X-t's adversarial design review. Born with an owner (rule 6) | X-w |
 | N-115 (X-u review) | **The dashboard tracks section pays TWICE for three loaders, and the expensive one is a full paycheck-engine run.** Plan step X-u deleted the duplicate debt PROJECTION; the duplicate LOADS behind it stayed, because `compute_tracks_section` shares one `BalanceContext` across its two producers and sharing the context is not sharing the loads. Measured on both databases with one active goal: `_load_dashboard_core_data` (accounts query + `get_all_periods` + `get_current_period`), `_load_account_params` (the AccountType query, `LoanParams`, `EscrowLine` + versions, the investment-params load) and `_get_current_paycheck_breakdown` each run **2x**, the last of them meaning **two full `calculate_paycheck` runs per render**. Its three call sites all pass `(user_id, core.all_periods, core.current_period)`, every argument off `core`, so the arg-threading closes with the memo | the SECOND breakdown alone: **7.2 ms / 7 SQL** in-request on `shekel`, **7.2 ms / 7 SQL** on `shekel_f3_final` -- against the 9 SQL X-u's whole deletion removed | **OPEN**, opened 2026-07-28 by X-u's adversarial design review, which counted the call graph where the step's own comment had counted one loader. Born with an owner (rule 6); X-i1's input tier is widened at its entry in the same commit, since three of these are not in the five loaders N-72 / N-89 / N-92 / N-93 named | X-i1 |
 | N-116 (X-v census) | **The period preconditions are the baseline precondition's twin, at 63 branches, and nobody has read them either.** The same AST pass that re-counted N-112 measured **63** branches in `app/` on period absence (`current_period is None`, `not all_periods`, `not periods`), concentrated in `routes/accounts/detail` (5), `investment_dashboard_service/_chart` (4), `investment_projection` (4), `retirement_projection` (4), `routes/grid` (3), `dashboard_pulse_service` (3), `investment_dashboard_service/_context` (3). It is the same question X-v answers -- "what does this surface say when a precondition it needs is absent" -- and the same failure mode is already visible: `_projection_start` falls back to `date.today()` while `_current_balance_from_map` falls back to `current_anchor_balance`, two different degraded values for one state inside ONE package. **It is NOT the same ruling, which is why it is its own step and not a widening of X-v**: a missing baseline is broken setup with a one-click repair, while having no pay periods is a state a legitimately-new user is IN, so its answer may well stay a degraded render. What it must not stay is 63 answers nobody has compared | `$0.00` today and NOT re-measured beyond the count -- the branches were located, not read; that reading is the step | **OPEN**, opened 2026-07-28 by plan step X-v's AST census. Born with an owner (rule 6) | X-x |
 | N-117 (X-v reviews) | **Fifteen surfaces decide the no-baseline state WITHOUT the balance seam, and neither instrument X-v built could see one of them.** They resolve the baseline directly (`get_baseline_scenario`), so X-v's AST census -- which followed `BalanceContext` -- was blind to them, and its route sweep graded only 5xx, so a surface answering with a plausible 200 passed. Both adversarial reviews found the class independently; the correctness one reached the worst instance by walking the call graph. **The two that FABRICATED A FINANCIAL STATEMENT were fixed in X-v3 under ruling R-CC** (the balance sheet reported assets / liabilities / equity of `$0.00` **and `in_balance = True`** over a ledger it cannot read; the income statement reported a period of zeros). The remaining fifteen answer a DIFFERENT question -- "what may a WRITE do without a scenario" -- five ways: `400 "No baseline scenario"` (the two grid create fragments, the carry-forward preview AND its POST mutator), a silent commit that generates nothing (template + transfer generation, `salary/_helpers`), `return 0` / `return None` (`period_population`, `spending_report_service`), a silently narrowed scenario set (both posting syncs), and a nullable id handed onward to a query (`escrow_rates`, `loan/params`) -- plus one that tells the user to **register a new account**, a repair story that has been wrong since `/grid/create-baseline` shipped | `$0.00` today and unreachable for the same measured reason as N-112 (the only baseline-less user is a companion, kept off every owner route by the ROLE check). The measured cost of the two already fixed was a balance sheet asserting its own tie-out | **OPEN**, opened 2026-07-29 by X-v's two adversarial reviews. Born with an owner (rule 6) | X-y |
@@ -2808,6 +2856,26 @@ done, and is what drifted.
   one enumeration copied into five files so a wrong count needed five edits. Where a claim is a
   number, either recount it from the AST at writing time or cite the ONE place that carries it --
   never restate it.
+* **WIDENING AN INSTRUMENT IS A SHAPE CHANGE, AND IT NEEDS THE SAME NORMALIZATION THE CODE DOES.**
+  X-w's reviews found the classic blind spot -- the narrow producers carry a field nothing reads and
+  NEITHER real-data harness dumped it -- and ruling R-CM added it. The first attempt dumped `null`
+  on the pre-X-w tree, because the projection had no such field there, so every account's map read
+  as a diff and the cross-tree comparison the previous commit had just established was destroyed.
+  Normalizing the new key to the SEAM's own map on the old tree turned the same edit into the
+  strongest evidence the step has: the diff now proves the projection's map equals the seam's map
+  account by account, which is the step's central claim, instead of leaving it inferred from the
+  figures downstream. A harness that grows a key must answer what the OLD tree puts there before it
+  is trusted, exactly as a producer that grows a field must.
+* **A GUARD WRITTEN AGAINST THE WRONG FAILURE MODE CAN STILL BE A GOOD GUARD, AND THE REASON BESIDE
+  IT IS WHAT ROTS.** X-w added two template guards on the premise that Jinja renders a missing
+  attribute as an empty string, so a renamed producer field would ship a blank figure with the suite
+  green. Half true: a bare `{{ value }}` renders empty, but the `money` macro's first statement is
+  `{% if value < 0 %}` and `Undefined.__lt__` raises -- so those reads 500 and the pre-existing
+  status assertion already caught them. One of the two guards was ALSO unable to fire on anything
+  (a `count(...) >= 3` satisfiable three times over from outside the region it named). The guards
+  are right and now discriminate; what had to be corrected in four places is why they exist. Ask of
+  a new guard: what does the failure it names actually LOOK like, and does this arm see that and not
+  something else?
 * Documents rot in days here. This file is the only one allowed to rot, and every edit re-dates
   it.
 
