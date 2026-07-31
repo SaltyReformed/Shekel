@@ -50,7 +50,6 @@ from app.services.savings_dashboard_service._net_worth import (
 from app.services.savings_dashboard_service._display import (
     _compute_group_subtotals,
     _group_accounts_by_category,
-    category_key_by_account_id,
 )
 from app.services.savings_dashboard_service._goals import (
     GoalProgress,
@@ -422,7 +421,6 @@ def _compute_net_worth_section(
     params: _AccountParams,
     account_data: list[AccountProjection],
     user_id: int,
-    category_by_account_id: dict[int, str],
 ) -> tuple[NetWorthRegion, dict[int, list[Decimal]]]:
     """Assemble the cockpit's net-worth region, sparklines, and Horizon range.
 
@@ -445,13 +443,11 @@ def _compute_net_worth_section(
 
     The maps are still built over ALL periods (so every consumer reads whichever
     ones it wants back out by id); the per-category composition split reads each
-    account's band off the SAME map object the grid grouping buckets by -- built
-    once by :func:`compute_dashboard_data` and handed to both since plan step
-    X-z2 (ruling R-CR), where this function built its own and the grid section
-    re-derived a second one -- so a trend band and its grid group cannot
-    disagree.  The Horizon range reuses the /retirement engine, so it
-    re-projects the retirement / investment accounts -- the accepted cost of the
-    single-engine invariant.
+    account's band off the category the projection itself carries, the same
+    field the grid grouping buckets by (plan step X-z7, ruling R-CT), so a
+    trend band and its grid group cannot disagree.  The Horizon range reuses
+    the /retirement engine, so it re-projects the retirement / investment
+    accounts -- the accepted cost of the single-engine invariant.
 
     Degrades gracefully with no current period: the today figures still come
     from ``account_data``, the series is empty (``current_index`` 0), the
@@ -481,11 +477,6 @@ def _compute_net_worth_section(
             page (the today figures + the asset / liability horizon bands).
         user_id: The current user's id (for the Horizon range's /retirement
             engine reuse).
-        category_by_account_id: Each account's cockpit category key, from
-            :func:`~.._display.category_key_by_account_id` over this same
-            ``account_data``.  TAKEN rather than built (plan step X-z2, ruling
-            R-CR) so this region's bands and the grid's group cards are the same
-            classification object rather than two derivations of one classifier.
 
     Returns:
         ``(region, sparklines)`` -- the :class:`~.._net_worth.NetWorthRegion` and
@@ -508,13 +499,11 @@ def _compute_net_worth_section(
     # a dict after it was returned (plan step X-w3, ruling R-CI).
     trend_periods, current_index, _ = _build_trend_window(core, params)
     series = compute_net_worth_series(
-        account_data, trend_periods, category_by_account_id, current_index,
+        account_data, trend_periods, current_index,
     )
 
     sparklines = _compute_card_sparklines(core, account_data)
-    horizon = build_horizon(
-        user_id, core, account_data, category_by_account_id,
-    )
+    horizon = build_horizon(user_id, core, account_data)
 
     return NetWorthRegion(
         today=today, series=series, horizon=horizon,
@@ -524,7 +513,6 @@ def _compute_net_worth_section(
 def _compute_cockpit_grid_section(
     core: _DashboardCoreData,
     account_data: list[AccountProjection],
-    category_by_account_id: dict[int, str],
 ) -> dict:
     """Assemble the cockpit's account-grid context (Loop B Phase 2).
 
@@ -535,11 +523,10 @@ def _compute_cockpit_grid_section(
     :func:`app.services.savings_dashboard_service._net_worth.compute_property_equity`
     producer.  All money math lives here, never in the template.
 
-    **The grouping no longer CLASSIFIES either** (plan step X-z2, ruling R-CR).
-    It bucketed each account by calling the classifier once per category label,
-    which is 5N calls -- 48 for 8 accounts on one render, measured on both
-    databases -- beside the N-call map the net-worth region had already built.
-    The render builds that map once and both sections read it.
+    **The grouping no longer CLASSIFIES** (plan steps X-z2 and X-z7).  It
+    bucketed each account by calling the classifier once per category label --
+    5N calls, 40 for 8 accounts -- then briefly read a map this function was
+    handed, and now reads the category each projection already carries.
 
     Args:
         core: The loaded :class:`_DashboardCoreData` (its ``accounts`` feed
@@ -547,10 +534,6 @@ def _compute_cockpit_grid_section(
             resolver's scenario id, or ``None`` with no baseline scenario).
         account_data: The per-account projections already computed for the
             page (the grouping and subtotal source).
-        category_by_account_id: Each account's cockpit category key, from
-            :func:`~.._display.category_key_by_account_id` over this same
-            ``account_data`` -- the SAME object the net-worth region's bands
-            are keyed off.
 
     Returns:
         dict with ``grouped_accounts`` (category label -> projections),
@@ -558,9 +541,7 @@ def _compute_cockpit_grid_section(
         subtotal), and ``property_equity`` (a
         :class:`~.._net_worth.PropertyEquity` per Property account).
     """
-    grouped_accounts = _group_accounts_by_category(
-        account_data, category_by_account_id,
-    )
+    grouped_accounts = _group_accounts_by_category(account_data)
     group_subtotals = _compute_group_subtotals(grouped_accounts)
     return {
         "grouped_accounts": grouped_accounts,
@@ -684,22 +665,13 @@ def compute_dashboard_data(user_id):
         account_data, params.escrow_map, current_breakdown,
     )
 
-    # ── One category classification for the whole render ───────
-    # Built HERE and handed to both consumers (plan step X-z2, ruling R-CR).
-    # The net-worth section built its own for the trend and the Horizon bands
-    # while the grid section re-derived a second one by calling the classifier
-    # once per category label -- 6N calls for N accounts, measured at 48 for 8.
-    # One map means the chart band and the grid card an account appears in are
-    # the same entry, not two derivations of one classifier.
-    category_by_account_id = category_key_by_account_id(account_data)
-
     # ── Net-worth cockpit region + per-account sparklines ──────
     # One producer over the build-once dense maps: the net-worth region
     # (the 2-year trend + composition split), the per-account card sparklines
     # (slice 3c), AND the Horizon range (P-AC1 Loop B P1) -- all from this one
     # dashboard load, so the /savings request never re-loads for the horizon.
     net_worth, sparklines = _compute_net_worth_section(
-        core, params, account_data, user_id, category_by_account_id,
+        core, params, account_data, user_id,
     )
 
     return {
@@ -707,9 +679,7 @@ def compute_dashboard_data(user_id):
         # Grid grouping, per-group subtotals, and Property equity (Loop B
         # Phase 2): one helper so the grouping happens once and the money
         # math stays out of the template.
-        **_compute_cockpit_grid_section(
-            core, account_data, category_by_account_id,
-        ),
+        **_compute_cockpit_grid_section(core, account_data),
         "goal_data": goal_data,
         # The coverage figures and the two figures its caption names as their
         # basis, from one helper (plan step X-z2).

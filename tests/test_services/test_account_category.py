@@ -5,7 +5,7 @@ Direct coverage for the shared :mod:`app.services.account_category` classifier
 every net-worth surface reaches through
 :attr:`~app.services.savings_dashboard_service._types.AccountProjection.is_liability`
 and every cockpit band reaches through
-:func:`~app.services.savings_dashboard_service._display.account_category_key`
+:func:`~app.services.savings_dashboard_service._display.category_key`
 (the module was ``net_worth_account_data`` until plan step X-z, ruling R-CQ,
 and was shared with the year-end summary until plan step F2 deleted that
 package).  The asset-plus / liability-minus VALUE behavior is locked end-to-end
@@ -13,8 +13,8 @@ by the cross-page balance oracle (its loan / secured cases exercise
 ``is_liability`` True); these tests pin the classifier's own contract: the
 per-category answer, the two states with no modelled category, and the
 CONSTRUCTION property finding N-118 exists for -- that
-``account_category_key(a) == LIABILITY_KEY`` and ``is_liability_account(a)``
-are one answer rather than two rules that agree.
+``category_key(account_category(a)) == LIABILITY_KEY`` and
+``is_liability_account(a)`` are one answer rather than two rules that agree.
 
 The module's ``to_net_worth_account_data`` adapter -- and the
 ``{account_id, balances, is_liability}`` container it built beside the
@@ -33,7 +33,7 @@ from app.services.savings_dashboard_service._display import (
     LIABILITY_KEY,
     _CATEGORY_KEYS,
     _OTHER_KEY,
-    account_category_key,
+    category_key,
 )
 
 
@@ -98,7 +98,7 @@ class TestAccountCategory:
             )
             assert account_category.account_category(account) is None
             assert account_category.is_liability_account(account) is False
-            assert account_category_key(account) == _OTHER_KEY
+            assert category_key(account_category.account_category(account)) == _OTHER_KEY
 
 
 class TestIsLiabilityAccount:
@@ -142,7 +142,8 @@ class TestTheTwoSpellingsAreOneAnswer:
     """Finding N-118's construction property, asserted rather than trusted.
 
     The liability rule had TWO independent id comparisons -- this module's and
-    ``_display.account_category_key(...) == "liability"`` -- which agreed on
+    ``_display.account_category_key(...) == "liability"`` (both since
+    DELETED) -- which agreed on
     every account on both databases and were held together by nothing.  The
     Horizon is where that cost the most: its three band producers partition the
     account set with BOTH spellings, so a divergence counts an account twice
@@ -183,7 +184,8 @@ class TestTheTwoSpellingsAreOneAnswer:
         with app.app_context():
             account = _account_in(category)
             assert (
-                (account_category_key(account) == LIABILITY_KEY)
+                (category_key(account_category.account_category(account))
+                 == LIABILITY_KEY)
                 is account_category.is_liability_account(account)
             )
 
@@ -198,6 +200,8 @@ class TestTheTwoSpellingsAreOneAnswer:
         """
         with app.app_context():
             account = SimpleNamespace(account_type=None)
-            assert account_category_key(account) == _OTHER_KEY
-            assert account_category_key(account) != LIABILITY_KEY
+            assert category_key(account_category.account_category(account)) == _OTHER_KEY
+            assert category_key(
+                account_category.account_category(account),
+            ) != LIABILITY_KEY
             assert account_category.is_liability_account(account) is False

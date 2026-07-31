@@ -10,7 +10,6 @@ from collections import OrderedDict
 from decimal import Decimal
 
 from app.enums import AcctCategoryEnum
-from app.services.account_category import account_category
 from app.services.savings_dashboard_service._types import AccountProjection
 
 ZERO = Decimal("0.00")
@@ -39,9 +38,9 @@ _OTHER_KEY = "other"
 # ``_net_worth`` and ``_horizon`` import this rather than repeating the string
 # (plan step X-z, ruling R-CP; it was ``_net_worth._LIABILITY_BAND``), so the
 # band a chart stacks IS the key this module assigns -- which is what makes
-# ``account_category_key(a) == LIABILITY_KEY`` and
-# :func:`~app.services.account_category.is_liability_account` one answer rather
-# than two that agree.
+# ``category_key(ad.category) == LIABILITY_KEY`` and
+# :attr:`~.._types.AccountProjection.is_liability` one answer rather than two
+# that agree.
 LIABILITY_KEY = _CATEGORY_KEYS[AcctCategoryEnum.LIABILITY]
 
 # The cockpit's category display ORDER -- the grid's card order, and the order
@@ -69,110 +68,72 @@ _CATEGORY_ORDER = (
 )
 
 
-def account_category_key(account) -> str:
-    """Return the cockpit category key for one account (id-based).
+def category_key(category: AcctCategoryEnum | None) -> str:
+    """Return the cockpit band key for one account's resolved category.
 
-    The single per-account category classifier both the grid grouping
-    (:func:`_group_accounts_by_category`) and the net-worth composition split
-    (:func:`category_key_by_account_id`, consumed by
-    :func:`~app.services.savings_dashboard_service._net_worth.compute_net_worth_series`)
-    read, so a category band in the trend can never disagree with the group
-    the same account sits in on the grid.
+    The display half of the classification: it NAMES a category, it does not
+    decide one.  The deciding is
+    :func:`app.services.account_category.account_category`, resolved once per
+    account per render onto :attr:`~.._types.AccountProjection.category` (plan
+    step X-z7, ruling R-CT).
 
-    **It is a LOOKUP of the shared classifier's answer, not a second
-    comparison** (plan step X-z, ruling R-CP, finding N-118).  It re-derived the
-    category from ``account_type.category_id`` itself, beside
-    :func:`~app.services.account_category.is_liability_account` doing the same
-    for its own question -- one rule written twice, equivalent by reading and by
-    nothing else.  Both now read
-    :func:`~app.services.account_category.account_category`, so
-    ``account_category_key(a) == LIABILITY_KEY`` and ``is_liability_account(a)``
-    are one answer: the display mapping is injective and :data:`_OTHER_KEY` is
-    not one of its values, which the band gate asserts.
+    Both of this page's category questions read that one answer, so they cannot
+    disagree: the asset-vs-liability sign through
+    :attr:`~.._types.AccountProjection.is_liability` (the same member compared
+    against one enum value), and the chart band / grid group through this
+    lookup.  ``account_category_key(account)`` and the
+    ``{account_id: category_key}`` map built from it are both DELETED -- the map
+    was a second per-account container keyed by account id, which is ruling
+    R-CG's own defect re-created one commit after the step that removed it, and
+    both of plan step X-z's adversarial reviews said so.
 
-    Args:
-        account: The :class:`~app.models.account.Account` to classify.
-
-    Returns:
-        The account's key from :data:`_CATEGORY_KEYS`, or :data:`_OTHER_KEY`
-        when the app models no category for it (see
-        :func:`~app.services.account_category.account_category` for the two
-        states that produces).
-    """
-    return _CATEGORY_KEYS.get(account_category(account), _OTHER_KEY)
-
-
-def category_key_by_account_id(
-    account_data: list[AccountProjection],
-) -> dict[int, str]:
-    """Map each account's id to its cockpit category key.
-
-    The composition-split adapter: the net-worth trend
-    (:func:`~app.services.savings_dashboard_service._net_worth.compute_net_worth_series`)
-    and the long-horizon producer both read each account's category band by id
-    off this map, built from the SAME per-account classifier
-    (:func:`account_category_key`) the grid grouping uses, so a band and the
-    grid group cannot drift.
+    The equivalence finding N-118 exists for still holds and is now trivial:
+    ``category_key(ad.category) == LIABILITY_KEY`` iff ``ad.is_liability``,
+    because both read ONE member, the mapping is injective, and
+    :data:`_OTHER_KEY` is not one of its values.
 
     Args:
-        account_data: The per-account projections (each carrying an
-            ``account``).
+        category: The account's :class:`~app.enums.AcctCategoryEnum` member, or
+            ``None`` when this application models no category for it.
 
     Returns:
-        ``{account_id: category_key}`` over every account in *account_data*.
+        The band key from :data:`_CATEGORY_KEYS`, or :data:`_OTHER_KEY`.
     """
-    return {
-        ad.account.id: account_category_key(ad.account)
-        for ad in account_data
-    }
+    return _CATEGORY_KEYS.get(category, _OTHER_KEY)
 
 
 def _group_accounts_by_category(
     account_data: list[AccountProjection],
-    category_by_account_id: dict[int, str],
 ) -> "OrderedDict[str, list[AccountProjection]]":
     """Group the per-account projections by account type category.
 
-    Returns an OrderedDict keyed by category, preserving the display order
+    Returns an OrderedDict keyed by band, preserving the display order
     :data:`_CATEGORY_ORDER` fixes (Asset, Liability, Retirement, Investment,
     Other) and keeping only the non-empty groups.
 
-    **It TAKES the category map rather than re-deriving one** (plan step X-z2,
-    ruling R-CR).  It classified every account once per category label, so one
-    ``/savings`` render asked the classifier **48 times for 8 accounts**
-    (measured, both databases) while :func:`category_key_by_account_id` had
-    already built the same map for the net-worth trend one function away.  The
-    render now builds it ONCE and hands the same object to both, which is what
-    makes "the grid group and the chart band come from one classification"
-    structural rather than a property of two callers using one classifier.
-
-    The map is INDEXED, not defaulted -- ruling R-CJ's rule at a third reader.
-    It is built from this same ``account_data``, so a missing key is a producer
-    defect and raises here; answering it with :data:`_OTHER_KEY` would file a
-    real account under the wrong card and its balance into the wrong subtotal,
-    in silence.
+    **It reads each projection's own resolved category** (plan step X-z7,
+    ruling R-CT).  It classified every account once per category label -- 5N
+    calls, 40 for 8 accounts -- until plan step X-z2, which cut that by handing
+    it a prebuilt map; that map was itself a second per-account container, so
+    the answer now rides on the record this loop is already iterating.  No
+    classifier call, no map lookup, and no argument a caller can get wrong
+    (Section 8): there is nothing left to pass.
 
     Args:
-        account_data: The per-account projections to group.
-        category_by_account_id: Each account's category key, from
-            :func:`category_key_by_account_id` over this same *account_data*.
+        account_data: The per-account projections to group, each carrying its
+            own :attr:`~.._types.AccountProjection.category`.
 
     Returns:
-        ``OrderedDict[category_key, list[AccountProjection]]`` -- the non-empty
+        ``OrderedDict[band_key, list[AccountProjection]]`` -- the non-empty
         groups in display order.
-
-    Raises:
-        KeyError: When *category_by_account_id* has no entry for an account in
-            *account_data* -- a producer defect, never a display state.
     """
     grouped: "OrderedDict[str, list[AccountProjection]]" = OrderedDict(
-        (category_key, []) for category_key in _CATEGORY_ORDER
+        (band, []) for band in _CATEGORY_ORDER
     )
     for ad in account_data:
-        grouped[category_by_account_id[ad.account.id]].append(ad)
+        grouped[category_key(ad.category)].append(ad)
     return OrderedDict(
-        (category_key, members)
-        for category_key, members in grouped.items() if members
+        (band, members) for band, members in grouped.items() if members
     )
 
 

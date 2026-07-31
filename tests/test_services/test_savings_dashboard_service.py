@@ -17,6 +17,7 @@ from app.exceptions import BaselineMissingError
 
 from app import ref_cache
 from app.enums import (
+    AcctCategoryEnum,
     AcctTypeEnum,
     CompoundingFrequencyEnum,
     GoalModeEnum,
@@ -31,6 +32,7 @@ from app.models.scenario import Scenario
 from app.services import balance_at, savings_dashboard_service, pay_period_service
 from app.services import account_service
 from app.services.balance_at import BalanceContext
+from app.services.account_category import account_category
 from app.services.savings_dashboard_service._types import AccountProjection
 
 
@@ -45,8 +47,11 @@ def _projection(account, current_balance, balances=None):
     is finding B-17's lesson paid on this very package.
 
     Args:
-        account: The stand-in account (its ``account_type.category_id`` drives
-            the liability classification the reducer reads).
+        account: The stand-in account.  Its ``account_type.category_id`` is what
+            the projection's ``category`` is RESOLVED from, exactly as
+            production resolves it in ``_project_one_account`` -- so a fixture
+            cannot hand a reducer a category its own account contradicts (plan
+            step X-z7, ruling R-CT).
         current_balance: The account's balance today.  Non-nullable since
             plan step X-v2 (ruling R-CA).
         balances: The dense ``period_id -> Decimal`` map (plan step X-w, ruling
@@ -64,6 +69,7 @@ def _projection(account, current_balance, balances=None):
         balances=OrderedDict() if balances is None else OrderedDict(balances),
         projected={},
         needs_setup=False,
+        category=account_category(account),
     )
 
 
@@ -3774,7 +3780,7 @@ class TestNetWorthProducerEdgeCases:
             _COMPOSITION_BANDS,
             compute_net_worth_series,
         )
-        series = compute_net_worth_series([], [], {}, 0)
+        series = compute_net_worth_series([], [], 0)
         assert series.periods == []
         assert series.net == []
         assert series.current_index == 0
@@ -3868,20 +3874,25 @@ class TestNetWorthProducerEdgeCases:
 class TestCategoryClassifier:
     """Tests for the shared id-based category classifier (P-AC1 Loop B P1).
 
-    ``account_category_key`` is the ONE per-account classifier both the grid
-    grouping and the net-worth composition split read, so a band and the grid
-    group cannot disagree.  It classifies by the account type's integer
-    ``category_id`` (IDs for logic, never a ``.name`` string).
+    The classification is ONE answer per account per render since plan step
+    X-z7 (ruling R-CT): :func:`app.services.account_category.account_category`
+    resolves it onto :attr:`~.._types.AccountProjection.category`, and both
+    consumers read that member -- the grid grouping and the net-worth
+    composition split name a band through ``_display.category_key``, and the
+    asset-vs-liability sign compares the same member against one enum value.
+    So a band and the grid group cannot disagree, and neither can the sign.
+
+    It classifies by the account type's integer ``category_id`` (IDs for logic,
+    never a ``.name`` string).
     """
 
-    def test_key_by_category_id(self, app):
-        """Each real category id maps to its display key; else 'other'."""
+    def test_key_by_category_member(self, app):
+        """Each real category names its display key; no category is 'other'."""
         with app.app_context():
             # pylint: disable=import-outside-toplevel
-            from types import SimpleNamespace
             from app.enums import AcctCategoryEnum
             from app.services.savings_dashboard_service._display import (
-                account_category_key,
+                category_key,
             )
             cases = [
                 (AcctCategoryEnum.ASSET, "asset"),
@@ -3889,19 +3900,11 @@ class TestCategoryClassifier:
                 (AcctCategoryEnum.RETIREMENT, "retirement"),
                 (AcctCategoryEnum.INVESTMENT, "investment"),
             ]
-            for enum, expected in cases:
-                acct = SimpleNamespace(account_type=SimpleNamespace(
-                    category_id=ref_cache.acct_category_id(enum),
-                ))
-                assert account_category_key(acct) == expected
-            # A degenerate account (no type, or a type with no category id)
-            # is the only path to "other".
-            assert account_category_key(
-                SimpleNamespace(account_type=None),
-            ) == "other"
-            assert account_category_key(SimpleNamespace(
-                account_type=SimpleNamespace(category_id=None),
-            )) == "other"
+            for member, expected in cases:
+                assert category_key(member) == expected
+            # ``None`` -- the app models no category for this account -- is the
+            # only path to the fall-through band.
+            assert category_key(None) == "other"
 
 
 class TestNetWorthComposition:
@@ -4030,7 +4033,7 @@ class TestNetWorthHorizon:
                 balance_ctx=BalanceContext.build(seed_user["user"].id),
                 all_periods=[], current_period=None,
             )
-            assert build_horizon(seed_user["user"].id, core, [], {}) is None
+            assert build_horizon(seed_user["user"].id, core, []) is None
 
     def test_publishes_only_the_keys_the_page_reads(
         self, app, db, seed_user, seed_periods_today,
@@ -5331,12 +5334,21 @@ class TestTheProjectionShape:
         card sparklines (``compute_sparklines``), and -- for every kind but a
         loan -- the current balance and the 3 / 6 / 12-month horizons that
         ``_project_one_account`` reads out of it.
+
+        ``category`` joined at plan step X-z7 (ruling R-CT), and its consumers
+        are likewise named: :attr:`~.._types.AccountProjection.is_liability`
+        (the net-worth sign, the liability band, the revolving-debt figure and
+        the cell's danger ink) and ``_display.category_key`` (the grid group
+        card and the chart band).  It REPLACED a per-account container --
+        X-z2's ``{account_id: category_key}`` map -- rather than adding a
+        field beside one, which is the direction ruling R-CG set.
         """
         # pylint: disable=import-outside-toplevel
         from dataclasses import fields
         assert {f.name for f in fields(AccountProjection)} == {
             "account", "current_balance", "balances", "projected",
-            "needs_setup", "interest_params", "investment_params", "loan",
+            "needs_setup", "category", "interest_params", "investment_params",
+            "loan",
         }
 
     def test_it_is_frozen_and_a_mistyped_field_raises(self, app):
@@ -5462,9 +5474,22 @@ class TestTheDenseMapIsTotalAndSaysSo:
 
     @staticmethod
     def _account(account_id=1):
-        """A stand-in account: only ``id`` and the liability classifier read it."""
+        """A stand-in ASSET account: ``id`` plus the category the reducer bands on.
+
+        It carried ``account_type=None`` until plan step X-z7, when the band a
+        non-liability lands in stopped coming from a map the test supplied and
+        started coming from the account's own resolved category -- so an
+        account with no type would band as ``other`` and the ``asset``
+        assertion below would read ``$0.00`` while passing for the wrong
+        reason.  Must be called inside an app context (``ref_cache``).
+        """
         from types import SimpleNamespace  # pylint: disable=import-outside-toplevel
-        return SimpleNamespace(id=account_id, account_type=None)
+        return SimpleNamespace(
+            id=account_id,
+            account_type=SimpleNamespace(
+                category_id=ref_cache.acct_category_id(AcctCategoryEnum.ASSET),
+            ),
+        )
 
     def test_the_composition_reduction_raises_on_a_missing_column(self, app):
         """A period the map has no column for is a KeyError, not a silent $0."""
@@ -5477,11 +5502,11 @@ class TestTheDenseMapIsTotalAndSaysSo:
                 self._account(7), Decimal("100.00"), {1: Decimal("100.00")},
             )
             # Period 1 is present; period 2 is not.
-            assert _sum_composition_at_period(1, [ad], {7: "asset"})["asset"] == (
+            assert _sum_composition_at_period(1, [ad])["asset"] == (
                 Decimal("100.00")
             )
             with pytest.raises(KeyError):
-                _sum_composition_at_period(2, [ad], {7: "asset"})
+                _sum_composition_at_period(2, [ad])
 
     def test_the_sparkline_producer_raises_on_a_missing_column(self, app):
         """A window point the map lacks is a KeyError, not a shorter series.

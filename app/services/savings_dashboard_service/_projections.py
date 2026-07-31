@@ -29,6 +29,7 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
+from app.services.account_category import account_category
 from app.services.savings_dashboard_service._types import (
     AccountProjection,
     LoanDetail,
@@ -347,6 +348,15 @@ def _project_one_account(acct, ctx, batches):
         balances=balances,
         projected=projected,
         needs_setup=needs_setup,
+        # The account's category, resolved ONCE per account per render (plan
+        # step X-z7, ruling R-CT).  Both questions this page asks of it read
+        # this one answer: the asset-vs-liability sign through
+        # :attr:`~.._types.AccountProjection.is_liability`, and the chart band /
+        # grid group through ``_display``.  Plan step X-z2 threaded a parallel
+        # ``{account_id: category_key}`` dict for the second of those, which was
+        # a second per-account container keyed by account id -- ruling R-CG's
+        # own defect, re-created one commit after the step that deleted it.
+        category=account_category(acct),
         # An absent parameter row is ``None``, never a missing attribute: the
         # dict this replaced omitted the KEY, so "does this account have an APY"
         # and "is this account a loan" were both spelled as key membership, and

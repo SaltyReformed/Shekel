@@ -25,7 +25,7 @@ from app.models.loan_params import LoanParams
 from app.models.pay_period import PayPeriod
 from app.services.balance_at import LoanFigures
 from app.services.balance_at import BalanceContext
-from app.services.account_category import is_liability_account
+from app.enums import AcctCategoryEnum
 
 
 @dataclass(frozen=True)
@@ -278,6 +278,29 @@ class AccountProjection:  # pylint: disable=too-many-instance-attributes
             this a normalization smell rather than the two-containers defect
             finding N-114 records.  The step that gives this record its periods
             is the one that should collapse it.
+        category: The account type's :class:`~app.enums.AcctCategoryEnum`
+            member, or ``None`` when this application models no category for it
+            (see :func:`app.services.account_category.account_category` for the
+            two states that produces).  Resolved ONCE per account per render.
+
+            **It replaced a second per-account container** (plan step X-z7,
+            ruling R-CT).  Plan step X-z2 built a parallel
+            ``{account_id: category_key}`` dict and threaded it through the
+            orchestrator into two section helpers -- which is a per-account
+            record keyed by account id sitting beside this one, the exact shape
+            ruling R-CG deleted at plan step X-w with
+            ``{account_id, balances, is_liability}``.  The step that closed
+            finding N-114 re-created its container one commit later, and both of
+            its adversarial reviews said so.
+
+            Storing the CATEGORY rather than the display key is what lets the
+            band vocabulary stay in
+            :mod:`~app.services.savings_dashboard_service._display` where the
+            display ORDER lives: a consumer that wants the chart band asks that
+            module to name this member, and a consumer that wants the
+            asset-vs-liability rule asks :attr:`is_liability`, which is the same
+            member compared against one enum value.  One classification per
+            account per render answers both.
         needs_setup: Whether the account flags ``has_parameters`` but its
             type-specific parameter row is missing -- a DIFFERENT question from
             "did it resolve as a loan", and answerable for an AMORTIZING account
@@ -307,6 +330,7 @@ class AccountProjection:  # pylint: disable=too-many-instance-attributes
     balances: "OrderedDict[int, Decimal]"
     projected: dict[str, Decimal]
     needs_setup: bool
+    category: AcctCategoryEnum | None
     interest_params: InterestParams | None = None
     investment_params: InvestmentParams | None = None
     loan: LoanDetail | None = None
@@ -336,7 +360,7 @@ class AccountProjection:  # pylint: disable=too-many-instance-attributes
         Returns:
             ``True`` when the account's type is in the LIABILITY category.
         """
-        return is_liability_account(self.account)
+        return self.category is AcctCategoryEnum.LIABILITY
 
 
 @dataclass(frozen=True)

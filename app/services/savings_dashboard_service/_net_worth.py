@@ -73,6 +73,7 @@ from app.services.account_projection import (
 from app.services.savings_dashboard_service._display import (
     LIABILITY_KEY,
     _CATEGORY_ORDER,
+    category_key,
 )
 from app.services.savings_dashboard_service._metrics import _sum_liquid_balances
 from app.services.savings_dashboard_service._types import AccountProjection
@@ -302,13 +303,12 @@ def compute_net_worth_today(
 def _sum_composition_at_period(
     period_id: int,
     account_data: list[AccountProjection],
-    category_by_account_id: dict[int, str],
 ) -> dict[str, Decimal]:
     """Sum each category band's balance at one period.
 
     The per-band generalization of the old asset/liability split: each
     non-liability account adds its balance to its category band (asset /
-    retirement / investment / other, keyed by *category_by_account_id*),
+    retirement / investment / other, from its own resolved category),
     and each liability account accumulates its POSITIVE magnitude
     (``abs(bal)``) into the liability band.
 
@@ -325,9 +325,9 @@ def _sum_composition_at_period(
     so this reducer asked one rule two ways over one set of balances.  Both now
     read :func:`app.services.account_category.account_category`, and the display
     mapping is injective, so ``is_liability`` is exactly
-    ``category_by_account_id[id] == LIABILITY_KEY``.  Money math still reads the
-    DOMAIN predicate rather than the display key, deliberately: what an account
-    IS decides the sign, and which chart band it lands in does not.
+    ``category_key(ad.category) == LIABILITY_KEY``: since plan step X-z7 both
+    read ONE resolved member off the projection, so there is no second lookup
+    left to disagree with.
 
     This is the ONE per-period net-worth reduction.  Summing the asset-side
     bands and subtracting the liability band is exactly asset ``+bal`` /
@@ -343,13 +343,9 @@ def _sum_composition_at_period(
             ruling R-CG).  It took a parallel
             ``{account_id, balances, is_liability}`` dict built from the same
             accounts on the same render, whose stored flag is finding N-114.
-        category_by_account_id: Each account's cockpit category key, from
-            :func:`~app.services.savings_dashboard_service._display.category_key_by_account_id`.
-            INDEXED, not defaulted (plan step X-w, ruling R-CJ): the map is
-            built from this same ``account_data``, so a missing key is a defect
-            in the producer, and the ``"other"`` default this used to carry
-            would bank a real account's money in the wrong chart band in
-            silence.  Ruling R-CA's rule, applied one container over.
+        account_data: (see above) -- each projection also carries its own
+            :attr:`~.._types.AccountProjection.category`, which names the band a
+            non-liability's balance lands in
 
     Returns:
         ``{band: Decimal}`` for every band in :data:`_COMPOSITION_BANDS`.
@@ -373,7 +369,7 @@ def _sum_composition_at_period(
         if ad.is_liability:
             sums[LIABILITY_KEY] += abs(bal)
         else:
-            sums[category_by_account_id[ad.account.id]] += bal
+            sums[category_key(ad.category)] += bal
     return sums
 
 
@@ -605,7 +601,6 @@ def build_trend_periods(
 def compute_net_worth_series(
     account_data: list[AccountProjection],
     trend_periods: list[PayPeriod],
-    category_by_account_id: dict[int, str],
     current_index: int,
 ) -> NetWorthSeries:
     """Build the net-worth trend over the trend window.
@@ -648,9 +643,6 @@ def compute_net_worth_series(
             :attr:`~.._types.AccountProjection.balances` map.
         trend_periods: The trend window (history tail + current + forward),
             chronological; each must appear in the dense maps' domain.
-        category_by_account_id: Each account's cockpit category key, from
-            :func:`~app.services.savings_dashboard_service._display.category_key_by_account_id`,
-            driving the per-category ``composition`` split.
         current_index: The current period's position within *trend_periods*,
             from :func:`build_trend_periods` -- the solid/dashed boundary and
             the "Today" marker.  **It is an ARGUMENT because the result is
@@ -675,9 +667,7 @@ def compute_net_worth_series(
     }
 
     for period in trend_periods:
-        sums = _sum_composition_at_period(
-            period.id, account_data, category_by_account_id,
-        )
+        sums = _sum_composition_at_period(period.id, account_data)
         period_assets = sum((sums[band] for band in _ASSET_BANDS), ZERO)
         period_liabilities = sums[LIABILITY_KEY]
         periods.append(TrendPoint(end_date=period.end_date))
