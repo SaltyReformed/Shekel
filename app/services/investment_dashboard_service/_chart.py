@@ -155,17 +155,17 @@ def _build_history_series(account: Account, ctx: _ProjectionContext) -> dict:
 
     Modeled balances up to and including the current period, read through the
     SAME :func:`app.services.balance_at.balance_map` the headline uses (so the
-    tail meets the headline at the Today boundary).  Empty when there is no
-    current period or no map; values are stringified cent ``Decimal``.  The
-    no-scenario arm went at plan step X-v2 (ruling R-BW) -- that state is
-    answered above this route now.
+    tail meets the headline at the Today boundary).  Values are stringified cent
+    ``Decimal``.  The no-scenario arm went at plan step X-v2 (ruling R-BW) and
+    both remaining empty-returns went at X-x2 (ruling R-CY): the no-current-period
+    one because the caller resolves that period through
+    ``require_current_period``, and ``balances is None`` because the seam returns
+    it only for an account with no anchor period and
+    ``accounts.current_anchor_period_id`` is ``NOT NULL``.  Each state is
+    answered once, above this producer.
     """
     bctx = ctx.balance_ctx
-    if ctx.current_period is None:
-        return {"history_labels": [], "history_balances": []}
     balances = balance_at.balance_map(account, bctx, ctx.all_periods)
-    if balances is None:
-        return {"history_labels": [], "history_balances": []}
     labels: list[str] = []
     values: list[str] = []
     for period in ctx.all_periods:
@@ -340,7 +340,8 @@ def compute_growth_chart_data(
     if not params:
         return _empty_chart_context()
     all_periods = pay_period_service.get_all_periods(user_id)
-    current_period = pay_period_service.get_current_period(user_id)
+    # The raise IS the answer (plan step X-x2, ruling R-CY).
+    current_period = pay_period_service.require_current_period(user_id)
     ctx = _load_projection_context(
         user_id, account, params, all_periods, current_period,
     )

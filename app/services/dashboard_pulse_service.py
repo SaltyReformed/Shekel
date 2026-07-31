@@ -124,16 +124,17 @@ def compute_pulse_section(user_id: int) -> dict | None:
         user_id: Integer ID of the current user.
 
     Returns:
-        The pulse-region dict, or ``None`` when the region cannot be
-        computed (no account / scenario / current period).
+        The pulse-region dict, or ``None`` when the user has no resolvable
+        grid account.
     """
     account, balance_ctx, current_period = _resolve_section_context(user_id)
-    # The no-baseline arm this guard used to carry is GONE (plan step X-v2,
-    # ruling R-BW): the seam raises and one application-level handler answers,
-    # so this region no longer decides what a user with no computable balance
-    # sees.  What remains are the two states this producer genuinely models --
-    # no grid account, and no period containing today.
-    if account is None or current_period is None:
+    # BOTH missing-precondition arms this guard used to carry are GONE -- the
+    # no-baseline one at plan step X-v2 (ruling R-BW), the no-current-period one
+    # at X-x2 (ruling R-CY).  Each raises and one application-level handler
+    # answers it, so this region no longer decides what a user with no
+    # computable balance sees.  What remains is the ONE state this producer
+    # genuinely models: no grid account.
+    if account is None:
         return None
 
     settings = _get_user_settings(user_id)

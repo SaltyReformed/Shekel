@@ -128,18 +128,22 @@ class _CurrentPay:
     Attributes:
         all_periods: Every pay period for the user (projection horizon
             source + gap input).
-        current_period: The user's current pay period, or ``None`` when
-            no period covers today.
+        current_period: The user's current pay period.  **Not nullable since
+            plan step X-x2** (ruling R-CY): its loader takes
+            ``require_current_period``, so a calendar that does not cover today
+            raises once at the door rather than degrading four branches of the
+            projection -- one of which put every account's anchor CACHE on
+            screen as its retirement balance.
         net_biweekly: The current-period net (take-home) pay from the
             paycheck engine; ``Decimal("0")`` when there is no active
-            salary profile or no current period.
+            salary profile.
         current_breakdown: The full :class:`PaycheckBreakdown` for the
-            current period, or ``None`` in the same no-profile /
-            no-period cases; reused for the engine gross-biweekly figure.
+            current period, or ``None`` with no active profile; reused for the
+            engine gross-biweekly figure.
     """
 
     all_periods: list[PayPeriod]
-    current_period: PayPeriod | None
+    current_period: PayPeriod
     net_biweekly: Decimal
     current_breakdown: paycheck_calculator.PaycheckBreakdown | None
 
@@ -551,7 +555,11 @@ def _compute_current_pay(
         current period, the net biweekly pay, and the full breakdown.
     """
     all_periods = pay_period_service.get_all_periods(user_id)
-    current_period = pay_period_service.get_current_period(user_id)
+    # The raise IS the answer (plan step X-x2, ruling R-CY): every figure on
+    # this page is anchored on the period containing today, and the fallback
+    # this used to take put each account's anchor CACHE on screen as its
+    # balance.
+    current_period = pay_period_service.require_current_period(user_id)
     net_biweekly = Decimal("0")
     current_breakdown = None
     # F-20 / MED-06 / F-032: take the current-period net (and, via the
@@ -559,7 +567,7 @@ def _compute_current_pay(
     # so the page agrees with the engine for the current period.  The
     # pre-Commit-17 ``annual_salary / pay_periods`` recompute silently
     # dropped any applicable SalaryRaise.
-    if salary_profiles and current_period:
+    if salary_profiles:
         profile = salary_profiles[0]
         tax_configs = load_tax_configs(user_id, profile)
         current_breakdown = paycheck_calculator.calculate_paycheck(

@@ -152,15 +152,22 @@ def _resolve_grid_context(user_id, request_args, settings):
     renders that same card, so every surface answers the state identically and
     this route states no policy about it.
 
-    **Its ORDER against the no-periods answer changed with it**: a user missing
-    both now sees ``no_periods.html``, where the deleted guard put the baseline
-    card first.  Neither is a dead end (the card is one click from any balance
-    page), and a user with no periods and no baseline needs both repairs.
+    **The no-CURRENT-PERIOD answer moved the same way at plan step X-x1 (ruling
+    R-CY).**  This route was again the only surface answering that state with a
+    repair card while a dozen others substituted a figure -- worth ``$3,228.55``
+    of rendered net worth, measured on a prod-shape clone with a four-day
+    calendar hole.  Which of the two preconditions raises first is not this
+    route's to decide either; both cards are one click from the other's repair.
 
     Returns:
-        A :class:`_GridContext` on success, OR a rendered HTML string (the
-        ``no_periods.html`` early-return page) when the user has no current pay
-        period.  The caller distinguishes via ``isinstance(result, str)``.
+        A :class:`_GridContext`, OR a rendered HTML string when the requested
+        WINDOW is empty -- a different state (the caller paged past the end of
+        the schedule), which plan step X-x4 splits off under ruling R-CZ.  The
+        caller distinguishes via ``isinstance(result, str)``.
+
+    Raises:
+        PayCalendarGapError: When no pay period contains today.  Answered by the
+            application-level handler, never here.
     """
     balance_ctx = BalanceContext.build(user_id)
 
@@ -177,10 +184,9 @@ def _resolve_grid_context(user_id, request_args, settings):
     )
     start_offset = request_args.get("offset", default=0, type=int)
 
-    # Find the current period as the baseline starting point.
-    current_period = pay_period_service.get_current_period(user_id)
-    if current_period is None:
-        return render_template("grid/no_periods.html")
+    # Find the current period as the baseline starting point.  The raise IS the
+    # answer (plan step X-x1, ruling R-CY).
+    current_period = pay_period_service.require_current_period(user_id)
 
     # Load the visible period slice (offset applied to current).
     periods = pay_period_service.get_periods_in_range(
@@ -567,6 +573,8 @@ def index():
     ctx = _resolve_grid_context(
         user_id, request.args, current_user.settings,
     )
+    # The no-CURRENT-PERIOD early return is gone (plan step X-x1); the
+    # empty-WINDOW one is a different state and plan step X-x4 owns it.
     if isinstance(ctx, str):
         return ctx
 
@@ -789,20 +797,22 @@ def _resolve_partial_window(user_id):
         user_id: ID of the requesting user.
 
     Returns:
-        A :class:`_PartialWindow` on success, or ``None`` when the user has no
-        current pay period -- the transient miss on which both callers return
-        their 204 No Content no-op (an idempotent refresh that leaves the
-        existing summary DOM untouched, never a 404).  The no-BASELINE half of
-        that contract moved to the application handler at plan step X-v2, which
-        answers any HTMX request in that state with the same 204.
+        A :class:`_PartialWindow`.
+
+    Raises:
+        PayCalendarGapError: When no pay period contains today.  **Both halves of
+            this endpoint's 204 contract are now the application handler's**
+            (plan step X-x1 for this one, X-v2 for the no-baseline half): a
+            safe-method HTMX request in either state gets the same ``204``
+            no-op it always did -- an idempotent refresh leaves the existing
+            summary DOM untouched, never a 404 -- and it is decided once for
+            every fragment in the app rather than per endpoint.
     """
     base = _resolve_partial_base(user_id)
     num_periods = request.args.get("periods", default=6, type=int)
     start_offset = request.args.get("offset", default=0, type=int)
 
-    current_period = pay_period_service.get_current_period(user_id)
-    if not current_period:
-        return None
+    current_period = pay_period_service.require_current_period(user_id)
 
     start_index = current_period.period_index + start_offset
     periods = pay_period_service.get_periods_in_range(
@@ -824,18 +834,16 @@ def _resolve_partial_window(user_id):
 def balance_row():
     """HTMX partial: recalculate and return the balance summary row.
 
-    Returns 204 No Content when the user has no current pay period: the grid
-    index route renders ``no_periods.html`` for that case, so the HTMX partial
-    swap on this endpoint has nothing to render, and 204 leaves the existing
-    DOM untouched.  A user with no baseline scenario gets the same 204 from the
-    application-level ``BaselineMissingError`` handler (plan step X-v2), which
-    is where the ``AttributeError`` this route once guarded against (F-099) is
-    now made impossible -- ``BalanceContext.scenario_id`` raises rather than
-    handing out a ``None`` to dereference.
+    **This endpoint states no policy about either missing precondition.**  A
+    safe-method HTMX request gets ``204 No Content`` when the user has no
+    current pay period (plan step X-x1) or no baseline scenario (plan step
+    X-v2), from the two application-level handlers -- the swap has nothing to
+    render and 204 leaves the existing DOM untouched.  X-v2 is also where the
+    ``AttributeError`` this route once guarded against (F-099) became
+    impossible: ``BalanceContext.scenario_id`` raises rather than handing out a
+    ``None`` to dereference.
     """
     window = _resolve_partial_window(current_user.id)
-    if window is None:
-        return "", 204
 
     all_periods = pay_period_service.get_all_periods(current_user.id)
 
@@ -893,14 +901,10 @@ def subtotal_rows():
     Mirrors :func:`balance_row`'s auth, ownership, and param handling:
     ``@login_required`` + ``@require_owner``, the same
     ``account_id`` / ``periods`` / ``offset`` parse, and the same 204
-    No Content no-op (rather than 404) when the user has no current pay
-    period -- an idempotent GET refresh that leaves the existing summary DOM
-    untouched on a transient miss.  A user with no baseline scenario gets the
-    same 204 from the application handler (plan step X-v2).
+    No Content no-op (rather than 404) for both missing preconditions -- from
+    the application handlers, not from a guard here (plan steps X-x1 and X-v2).
     """
     window = _resolve_partial_window(current_user.id)
-    if window is None:
-        return "", 204
 
     # The same column set the grid index route and the balance row read --
     # never a re-derived inline loop -- so ``balance[p] - balance[p-1] ==

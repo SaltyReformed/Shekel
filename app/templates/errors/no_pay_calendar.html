@@ -1,0 +1,47 @@
+{#
+  The ONE answer to "no pay period contains this date, so nothing anchored on it
+  can be answered" (plan step X-x, ruling R-CY).  Rendered by the
+  application-level ``PayCalendarGapError`` handler for every full page request,
+  whichever surface raised it.  An HTMX request gets 204 instead, never this
+  card, so a fragment refresh cannot replace a live region with a setup page.
+
+  **It names ONE state, deliberately.**  The card it replaces
+  (``grid/no_periods.html``) said "No pay periods have been generated yet, or
+  there is no period covering today's date" -- two states in one sentence, one
+  of which no owner can be in, and it was ALSO the answer to a third state that
+  is neither (a grid window paged past the end of the schedule; ruling R-CZ
+  splits that off).  Copy that hedges across states is what a reader gets when
+  the code behind it does too.
+
+  ``as_of`` is the date that could not be placed.  It is shown because the state
+  is reachable in three different ways -- a lapsed schedule, one that opens
+  later, and a hole between two periods -- and the date is what tells the user
+  which of the three they are in.
+#}
+{% extends "base.html" %}
+{% block title %}No Pay Period -- Shekel{% endblock title %}
+
+{% block content %}
+<div class="row justify-content-center mt-5">
+  <div class="col-md-6">
+    <div class="card shadow-sm">
+      <div class="card-body text-center">
+        <h3><i class="bi bi-calendar-x text-warning"></i> No Pay Period</h3>
+        <p class="mt-3">
+          Your pay schedule does not cover
+          {% if as_of %}{{ as_of.strftime('%B %-d, %Y') }}{% else %}today{% endif %},
+          so balances and budgets anchored on that date cannot be shown.
+        </p>
+        <a href="{{ url_for('pay_periods.generate_form') }}" class="btn btn-primary">
+          <i class="bi bi-calendar-plus"></i> Generate Pay Periods
+        </a>
+        <div class="mt-3">
+          <a href="{{ url_for('settings.show', section='pay-periods') }}" class="text-muted">
+            <i class="bi bi-sliders"></i> Review my pay schedule
+          </a>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock content %}

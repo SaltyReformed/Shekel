@@ -99,10 +99,16 @@ def get_current_gross_biweekly(
         The paycheck engine's
         :attr:`~app.services.paycheck_calculator.Earnings.gross_biweekly`
         for the resolved profile + period.  Returns ``Decimal("0")``
-        when the user has no active salary profile or no pay period
-        covers ``as_of`` -- both pre-fix call sites returned
-        ``Decimal("0")`` for the missing-profile branch, so the
-        substitute preserves the contract.
+        when the user has no active salary profile -- both pre-fix call
+        sites returned ``Decimal("0")`` for that branch, so the substitute
+        preserves the contract.
+
+    Raises:
+        PayCalendarGapError: When no pay period covers ``as_of`` (plan step
+            X-x2, ruling R-CY).  A missing PROFILE is a real zero -- the user
+            has no salary to earn -- while a missing PERIOD is the app being
+            unable to tell, and reporting both as ``$0.00`` is what let a
+            fabricated gross reach the employer-match and contribution tiers.
     """
     query = (
         db.session.query(SalaryProfile)
@@ -118,11 +124,13 @@ def get_current_gross_biweekly(
         return ZERO
 
     as_of_date = as_of or date.today()
-    current_period = pay_period_service.get_current_period(
+    # **The ``ZERO`` return for a missing current period went at plan step X-x2**
+    # (ruling R-CY).  A gross of ``$0.00`` is what the growth engine prices an
+    # employer match against and what the modelled contribution tier spreads, so
+    # it is an input to money and not a display default: the raise is the answer.
+    current_period = pay_period_service.require_current_period(
         user_id, as_of=as_of_date,
     )
-    if current_period is None:
-        return ZERO
 
     all_periods = pay_period_service.get_all_periods(user_id)
     tax_configs = load_tax_configs(user_id, profile)

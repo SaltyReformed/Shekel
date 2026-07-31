@@ -52,10 +52,29 @@ def _load_dashboard_core_data(user_id, balance_ctx=None):
             LOADS: each producer still calls this function, which is finding
             N-115.
 
+    **The current period is REQUIRED, and this is the page's one door for it**
+    (plan step X-x2, ruling R-CY).  It used to be a nullable that eleven
+    branches in this package each answered for themselves, and between them they
+    answered several different things: the per-account tile substituted
+    :attr:`~app.models.account.Account.current_anchor_balance` -- the derived
+    cache -- for a balance it could not compute, the trend returned an empty
+    series carrying ``current_index = 0``, the paycheck breakdown returned
+    ``None`` and the monthly-expense metric a fabricated ``$0.00``.  Measured on
+    a prod-shape clone with a four-day hole in the calendar, that reported a net
+    worth of ``$236,325.04`` against the ``$233,096.49`` the same data gives when
+    today is covered, and ``$8,591.92`` of liquid savings against ``$4,076.92``
+    -- while ``/grid`` rendered the repair card at the same instant.  It is
+    finding N-113's class one precondition over, and it closes the same way: the
+    resolver raises, one application handler answers, and nothing here degrades.
+
     Returns:
         A :class:`_DashboardCoreData` with active accounts (ordered for
         display), the balance context, all pay periods, and the current
         period.
+
+    Raises:
+        PayCalendarGapError: When no pay period contains today, so no figure on
+            this page is computable.  Answered by the application-level handler.
     """
     accounts = (
         db.session.query(Account)
@@ -71,7 +90,7 @@ def _load_dashboard_core_data(user_id, balance_ctx=None):
             else BalanceContext.build(user_id)
         ),
         all_periods=pay_period_service.get_all_periods(user_id),
-        current_period=pay_period_service.get_current_period(user_id),
+        current_period=pay_period_service.require_current_period(user_id),
     )
 
 

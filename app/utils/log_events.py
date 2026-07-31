@@ -248,6 +248,15 @@ EVT_BASELINE_MISSING = _register(
     "every occurrence is either data changed outside the app or a caller "
     "resolving the wrong user -- alert on it.",
 )
+EVT_PAY_CALENDAR_GAP = _register(
+    "pay_calendar_gap", ERROR,
+    "A request needed the pay period containing a date and the user's calendar "
+    "has none; the setup-recovery page (or 204 for a fragment) was returned "
+    "instead of a figure.  UNLIKE baseline_missing this state is reachable -- a "
+    "lapsed schedule, one opening in the future, or a hole between two periods "
+    "-- so a steady trickle means users are falling out of their calendar and a "
+    "spike on one user_id means their schedule needs repair.",
+)
 
 
 # ── Business events: existing call sites ───────────────────────────

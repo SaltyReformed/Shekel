@@ -21,7 +21,7 @@ from decimal import Decimal
 import pytest
 
 from app import ref_cache
-from app.exceptions import BaselineMissingError
+from app.exceptions import BaselineMissingError, PayCalendarGapError
 from app.enums import StatusEnum, TxnTypeEnum
 from app.models.account import Account
 from app.models.scenario import Scenario
@@ -340,23 +340,24 @@ class TestComputeBalanceSection:
                     seed_user["user"].id,
                 )
 
-    def test_no_current_period_uses_raw_anchor(self, app, seed_user):
-        """No current period -> the hero balance is the raw anchor, not None.
+    def test_no_current_period_refuses_rather_than_showing_the_anchor(
+        self, app, seed_user,
+    ):
+        """No current period -> the producer raises; no cache reaches the hero.
 
-        ``compute_balance_section`` guards ONLY on account / scenario, not
-        current period: with account + scenario present but no period
-        containing today, the resolver cannot project to today, so the
-        balance falls back to the raw ``current_anchor_balance``.
-        ``seed_user``'s account was seeded at $1,000.00.
+        **This asserted the opposite until plan step X-x2** (ruling R-CY): that
+        the hero "falls back to the raw ``current_anchor_balance``", which put a
+        DERIVED CACHE on the dashboard's biggest number and called it a
+        projected balance.  It is the same substitution the savings cockpit and
+        the investment tile were making -- measured at ``$3,228.55`` of rendered
+        net worth on a prod-shape clone -- and it closes the same way.
+        ``seed_user``'s only period is a 2024 fortnight.
         """
         with app.app_context():
-            result = dashboard_service.compute_balance_section(
-                seed_user["user"].id,
-            )
-            hero = result["hero"]
-            assert hero is not None
-            assert hero["balance"] == Decimal("1000.00")
-            assert hero["account_id"] == seed_user["account"].id
+            with pytest.raises(PayCalendarGapError):
+                dashboard_service.compute_balance_section(
+                    seed_user["user"].id,
+                )
 
     def test_happy_path_hero_shape_matches_partial(
         self, app, seed_user, seed_periods_today,

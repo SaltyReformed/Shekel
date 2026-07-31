@@ -47,9 +47,23 @@ from app.utils.money import round_money
 from tests._test_helpers import (
     create_loan_account,
     create_settled_transfer,
+    freeze_today,
     loan_params_for,
     settle_instant_on,
 )
+
+
+#: The two ``/savings`` comparisons below freeze the clock inside
+#: ``seed_periods`` (10 biweekly periods from 2026-01-02; period 5 runs
+#: 2026-03-13..2026-03-26), matching ``tests/test_services/conftest.py``.
+#: **Added at plan step X-x2** (ruling R-CY): ``/savings`` requires a pay period
+#: containing today, and this module's fixture calendar ends in May 2026 -- so on
+#: the real wall clock the page answers with the repair card and a comparison
+#: against the loan card grades two error pages against each other.  It is the
+#: same wall-clock dependence that made ``test_cross_page_balance_equality`` a
+#: month-end time bomb; here the fixture is fixed-date, so the clock is what
+#: has to move.
+_INSIDE_SEED_PERIODS = date(2026, 3, 20)
 
 
 # -- Hand-computed reference values (mirror principal-settle ones) ---------
@@ -243,7 +257,7 @@ def _savings_debt_card_total_debt(user_id):
 
 
 def test_fixed_loan_card_equals_savings_equals_resolver_before_settle(
-    app, auth_client, seed_user, seed_periods, db,
+    app, auth_client, seed_user, seed_periods, db, monkeypatch,
 ):
     """C15-1 (pre-settle): every surface displays the same $300,000 anchor.
 
@@ -260,6 +274,7 @@ def test_fixed_loan_card_equals_savings_equals_resolver_before_settle(
     and the schedule could diverge by an arbitrary amount once any
     settle landed; see :func:`test_fixed_loan_card_equals_savings_after_settle`).
     """
+    freeze_today(monkeypatch, _INSIDE_SEED_PERIODS)
     with app.app_context():
         account, loan_params = _create_fixed_loan(
             seed_user, seed_periods[0],
@@ -287,7 +302,7 @@ def test_fixed_loan_card_equals_savings_equals_resolver_before_settle(
 
 
 def test_fixed_loan_card_equals_savings_after_settle(  # C15-1 / C15-6
-    app, auth_client, seed_user, seed_periods, db,
+    app, auth_client, seed_user, seed_periods, db, monkeypatch,
 ):
     """C15-1 (post-settle) + C15-6: after one settled PITI transfer,
     every display surface shows the same hand-computed balance.
@@ -304,6 +319,7 @@ def test_fixed_loan_card_equals_savings_after_settle(  # C15-1 / C15-6
         principal_portion = 1798.65  - 1500.00  =  298.65
         balance           = 300000.00 -  298.65 = 299,701.35
     """
+    freeze_today(monkeypatch, _INSIDE_SEED_PERIODS)
     with app.app_context():
         account, loan_params = _create_fixed_loan(
             seed_user, seed_periods[0],

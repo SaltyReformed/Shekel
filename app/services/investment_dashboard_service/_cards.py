@@ -139,17 +139,16 @@ def _compute_suggested_contribution(
     Anchoring on ``date.today()`` instead double-counted the current
     period on the single calendar day a period begins
     (``today == period start``), where it landed in BOTH the YTD window
-    and the remaining spread (deep-quality-hunt #59).  When there is no
-    current period (today falls outside every period, so YTD is zero)
-    the boundary falls back to today -- behaviour-identical there, since
-    no period can start on a day no period covers.
+    and the remaining spread (deep-quality-hunt #59).
+
+    **The no-current-period fallback to ``date.today()`` went at plan step X-x2**
+    (ruling R-CY): its caller resolves the period through
+    ``require_current_period``, so the state it covered is answered once by the
+    application handler rather than by a second boundary date here.
     """
     if investment_params.annual_contribution_limit is None:
         return Decimal("0")
-    boundary = (
-        current_period.start_date if current_period is not None
-        else date.today()
-    )
+    boundary = current_period.start_date
     remaining_periods = sum(
         1 for p in all_periods
         if p.start_date.year == boundary.year

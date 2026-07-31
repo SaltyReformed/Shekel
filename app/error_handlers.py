@@ -2,8 +2,11 @@
 Shekel Budget App -- application-level error handlers.
 
 Every response the application produces for a condition no single route owns:
-the five HTTP error pages, and the ONE answer to a user with no baseline
-scenario (plan step X-v, ruling R-BW).
+the five HTTP error pages, and the ONE answer to each of the two preconditions
+without which no figure is computable -- no baseline scenario (plan step X-v,
+ruling R-BW) and no pay period containing the date (plan step X-x, ruling
+R-CY).  The two handlers answer with the same three branches on purpose; where
+their reasons differ, the difference is stated at the second one.
 
 **Its own module because the factory has a line ceiling and this is a
 concern, not plumbing.**  ``app/__init__.py`` already extracted its Jinja
@@ -19,12 +22,13 @@ import logging
 from flask import render_template, request
 from flask_login import current_user
 
-from app.exceptions import BaselineMissingError
+from app.exceptions import BaselineMissingError, PayCalendarGapError
 from app.extensions import db
 from app.utils.log_events import (
     ACCESS,
     ERROR,
     EVT_BASELINE_MISSING,
+    EVT_PAY_CALENDAR_GAP,
     EVT_RATE_LIMIT_EXCEEDED,
     log_event,
 )
@@ -207,3 +211,65 @@ def register_error_handlers(app):
         if request.headers.get("HX-Request") and request.method in _SAFE_METHODS:
             return "", 204
         return render_template("errors/no_baseline.html")
+
+    @app.errorhandler(PayCalendarGapError)
+    def pay_calendar_gap(error):
+        """Answer "no pay period contains this date" -- once, for the whole app.
+
+        THE pay-calendar policy (plan step X-x, ruling R-CY), and it is
+        deliberately the same three branches as ``baseline_missing`` above --
+        safe-method HTMX gets ``204``, a mutating request and a page get the
+        card, status ``200`` because htmx swaps only 2xx.  Two preconditions
+        without which no figure is computable should not answer differently just
+        because one was implemented two steps after the other; where the reasons
+        are identical they are stated once, above.
+
+        **What differs is that this state is REACHABLE, and the event says so.**
+        ``baseline_missing`` is quiet on screen and loud in the log because no
+        code path produces it.  This one is produced by three ordinary
+        situations: a schedule that has lapsed, one that opens in the future, and
+        a hole between two periods.  So the ERROR event is a workload signal
+        rather than a corruption alarm -- a steady trickle means users are
+        falling out of their pay calendar, and it carries ``as_of`` because a
+        request pinned to a historical date can raise this while today is
+        perfectly well covered, and an event logging only the user could not tell
+        those apart.
+
+        **The card it replaced was reachable from ONE route** while about a dozen
+        other surfaces answered the same state by substituting a figure: the
+        savings cockpit and the investment tile presented
+        ``Account.current_anchor_balance`` -- a derived cache -- as a current
+        balance, four producers returned a fabricated ``$0.00``, and the
+        net-worth trend returned an empty series carrying an index into it.
+        Measured on a prod-shape clone, that moved a rendered net worth by
+        ``$3,228.55`` while ``/grid`` showed the repair card at the same instant.
+
+        Args:
+            error: The raised
+                :class:`~app.exceptions.PayCalendarGapError`; its message names
+                the repair and it carries the user id it was resolved for and
+                the date that could not be placed.  The DATE is rendered (it is
+                what tells the user which of the three situations they are in);
+                the message is logged, never shown.
+
+        Returns:
+            ``("", 204)`` for a safe-method HTMX request, else the rendered
+            recovery page.
+        """
+        db.session.rollback()
+        log_event(
+            _LOGGER, logging.ERROR, EVT_PAY_CALENDAR_GAP, ERROR,
+            "Figure requested for a date no pay period contains",
+            # The same read, and the same non-import, as ``baseline_missing``
+            # above: ``auth_helpers`` closes an import cycle back into this
+            # package's initialisation.
+            user_id=getattr(current_user, "id", None),
+            context_user_id=error.user_id,
+            as_of=error.as_of.isoformat() if error.as_of else None,
+            path=request.path,
+            method=request.method,
+            detail=str(error),
+        )
+        if request.headers.get("HX-Request") and request.method in _SAFE_METHODS:
+            return "", 204
+        return render_template("errors/no_pay_calendar.html", as_of=error.as_of)

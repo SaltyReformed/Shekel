@@ -128,13 +128,20 @@ def _seam_batches(accounts, ctx):
     )
 
 
-def _current_balance_from_map(balances, acct, ctx):
-    """Read the current-period balance from a seam map, anchor as fallback.
+def _current_balance_from_map(balances, ctx):
+    """Read the current-period balance from a seam map.
 
-    With a current period the tile shows that period's balance from the map;
-    with no current period at all it falls back to the account's stored anchor
-    balance (a ``NOT NULL`` column, so that is a real figure and not a
-    stand-in).
+    **The anchor-cache fallback is GONE** (plan step X-x2, ruling R-CY).  With
+    no current period this returned :attr:`~app.models.account.Account.current_anchor_balance`
+    -- a DERIVED CACHE that ``cash_ledger.resolve_anchor`` is already known to
+    find diverged from the ledger (cash D4), and for an amortizing account not a
+    balance at all (finding N-103) -- presented as the account's CURRENT
+    balance.  Its docstring called that "a real figure and not a stand-in"
+    because the column is ``NOT NULL``; being non-null is not being right.
+    Measured on a prod-shape clone with a four-day hole in the pay calendar, the
+    substitution rendered Checking at ``$2,932.41`` against ``$406.92`` and
+    moved the page's net worth by ``$3,228.55``.  ``ctx.current_period`` is not
+    nullable now, so there is no branch left to take.
 
     **The map is INDEXED, not ``.get``-defaulted** (plan step X-v2, ruling
     R-CA), which is the argument :func:`app.services.balance_at.build_maps`
@@ -146,26 +153,18 @@ def _current_balance_from_map(balances, acct, ctx):
     (finding N-113); a ``KeyError`` here fails loudly at the one place that can
     explain it.
 
-    Its documented cause was also already false: "a cash account whose anchor is
-    after the current period" carries every period in its map since the plan
-    step X-c2b2 cutover, verified by probe on a future-anchored HYSA.
-
     Args:
         balances: The seam's period_id -> balance map, built over
             ``ctx.all_periods``.
-        acct: The account whose ``current_anchor_balance`` is the
-            no-current-period fallback.
         ctx: The shared :class:`_ProjectionContext`.
 
     Returns:
         The current-period ``Decimal`` balance.
 
     Raises:
-        KeyError: When a current period exists and the map has no column for
-            it -- a seam or period-list defect, never a display state.
+        KeyError: When the map has no column for the current period -- a seam
+            or period-list defect, never a display state.
     """
-    if ctx.current_period is None:
-        return acct.current_anchor_balance
     return balances[ctx.current_period.id]
 
 
@@ -327,7 +326,7 @@ def _project_one_account(acct, ctx, batches):
     else:
         # Every non-loan kind picks the current balance and the horizons out of
         # that single map.
-        current_bal = _current_balance_from_map(balances, acct, ctx)
+        current_bal = _current_balance_from_map(balances, ctx)
         projected = project_balance_horizons(
             ctx.current_period, ctx.all_periods, balances,
         )

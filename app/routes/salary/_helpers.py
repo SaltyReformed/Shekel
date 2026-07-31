@@ -187,13 +187,16 @@ def _compute_total_pre_tax(profile):
 
     Shared by ``calibrate_preview`` and ``calibrate_confirm`` to derive the
     taxable base (gross minus pre-tax deductions) the effective tax rates
-    are computed against.  Returns ``Decimal("0")`` when the user has no
-    current pay period, so the taxable base falls back to the full gross --
-    mirroring the original inline behaviour in both handlers.
+    are computed against.
+
+    **The ``Decimal("0")`` return for a missing current period went at plan
+    step X-x2** (ruling R-CY).  It made the taxable base fall back to the FULL
+    gross, so every effective tax rate this calibration derives was computed
+    against a base that silently ignored the user's pre-tax deductions -- a
+    fabricated input to a money calculation, not a display default, and the
+    "mirroring the original inline behaviour" it cited is how it survived.
     """
-    current_period = pay_period_service.get_current_period(current_user.id)
-    if not current_period:
-        return Decimal("0")
+    current_period = pay_period_service.require_current_period(current_user.id)
     periods = pay_period_service.get_all_periods(current_user.id)
     tax_configs = load_tax_configs(current_user.id, profile)
     pay_breakdown = paycheck_calculator.calculate_paycheck(

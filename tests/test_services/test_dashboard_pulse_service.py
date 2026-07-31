@@ -32,6 +32,7 @@ import pytest
 
 from app import ref_cache
 from app.enums import GoalModeEnum, IncomeUnitEnum, StatusEnum, TxnTypeEnum
+from app.exceptions import PayCalendarGapError
 from app.models.account import AccountAnchorHistory
 from app.models.ref import AccountType
 from app.models.savings_goal import SavingsGoal
@@ -1306,17 +1307,23 @@ class TestPulseCashFlowViewForAnyKindGridAccount:
 class TestPulseSectionDegraded:
     """The pulse producer's None contract for the degraded states."""
 
-    def test_no_current_period_returns_none(self, app, seed_user):
-        """No period contains today -> None.
+    def test_no_current_period_raises_rather_than_degrading(self, app, seed_user):
+        """No period contains today -> the producer raises.
 
-        seed_user (no seed_periods) has only the 2024 bootstrap period, so
-        get_current_period returns None and the producer short-circuits.
+        **This asserted a ``None`` return until plan step X-x2** (ruling R-CY).
+        That ``None`` was the dashboard's own answer to a question five other
+        surfaces were also answering, each differently, and it routed to a
+        page-specific "No pay period covers today" CTA that has gone with it.
+        One application-level handler answers now, so the producer's remaining
+        ``None`` means exactly one thing: no resolvable grid account.
+
+        seed_user (no seed_periods) has only the 2024 bootstrap period.
         """
         with app.app_context():
-            result = dashboard_pulse_service.compute_pulse_section(
-                seed_user["user"].id,
-            )
-            assert result is None
+            with pytest.raises(PayCalendarGapError):
+                dashboard_pulse_service.compute_pulse_section(
+                    seed_user["user"].id,
+                )
 
     def test_has_all_region_keys_when_populated(
         self, app, seed_user, seed_periods, db,

@@ -13,7 +13,7 @@ from sqlalchemy import or_
 
 from app.extensions import db
 from app.models.pay_period import PayPeriod
-from app.exceptions import ValidationError
+from app.exceptions import PayCalendarGapError, ValidationError
 from app.utils.log_events import (
     BUSINESS,
     EVT_PAY_PERIODS_GENERATED,
@@ -150,7 +150,17 @@ def generate_pay_periods(user_id, start_date, num_periods=52, cadence_days=14):
 
 
 def get_current_period(user_id, as_of=None):
-    """Return the pay period that contains the given date.
+    """Return the pay period that contains the given date, or ``None``.
+
+    **A caller that cannot ANSWER without a period takes
+    :func:`require_current_period` instead** (plan step X-x, ruling R-CY).  This
+    nullable form is for the callers whose rule has a DEFINED answer for absence
+    -- a writer that legitimately no-ops, or a check of whether a date is covered
+    at all.  It is the same split
+    :func:`app.services.scenario_resolver.get_baseline_scenario` and
+    ``require_baseline_scenario`` make one precondition over, in the same
+    direction: the obvious name fails loud, and reaching for the nullable reads
+    as a decision.
 
     Args:
         user_id: The user's ID.
@@ -171,6 +181,85 @@ def get_current_period(user_id, as_of=None):
         )
         .first()
     )
+
+
+def covers(user_id, as_of=None) -> bool:
+    """Return whether the user's pay calendar covers *as_of*.
+
+    The ONE predicate behind every "does this user have a usable pay calendar"
+    question in the app (plan step X-x, ruling R-DA).  Before it, five spellings
+    answered that question and two of them answered a DIFFERENT one: the
+    onboarding checklist and eleven service guards tested whether ANY pay period
+    exists, which is true for every owner from the moment of registration and so
+    could never be false, while the surfaces beside them tested whether TODAY is
+    covered, which is reachable.  A checklist telling a user their pay periods
+    were generated, on a page telling them to generate pay periods, is what two
+    spellings of one question bought.
+
+    Deliberately a boolean and not a period: a caller that wants the period wants
+    :func:`require_current_period`, and returning the row here would grow a third
+    accessor answering the same question a third way.
+
+    Args:
+        user_id: The user's ID.
+        as_of:   The reference date (default: today).
+
+    Returns:
+        ``True`` when a pay period contains *as_of*.
+    """
+    return get_current_period(user_id, as_of=as_of) is not None
+
+
+def require_current_period(user_id, as_of=None):
+    """Return the pay period containing *as_of*, or raise the named exception.
+
+    The form every caller takes when its answer is UNDEFINED without a period
+    (plan step X-x, ruling R-CY): one application-level handler catches
+    :class:`~app.exceptions.PayCalendarGapError` and renders the setup-recovery
+    page, so the caller neither invents a degraded figure nor 500s.
+
+    **It exists because a dozen surfaces were inventing one.**  Measured
+    2026-07-31 on a prod-shape clone with a four-day hole in an otherwise
+    complete 61-period schedule: ``/savings`` reported net worth ``$236,325.04``
+    against the ``$233,096.49`` the same data gives when today is covered,
+    because every per-account tile fell back to
+    :attr:`~app.models.account.Account.current_anchor_balance` -- a derived cache
+    the app already knows can diverge from the ledger -- while ``/grid`` rendered
+    the "generate your pay periods" card at that same instant and the net-worth
+    trend collapsed to zero points carrying a ``current_index`` of ``0``.  This
+    is finding N-113's class, one precondition over.
+
+    **Unlike the baseline this state is REACHABLE**, so the raise is not a
+    belt-and-braces guard over impossible data: a lapsed schedule, a schedule
+    opening in the future, and a hole between two periods all produce it, and a
+    hole is permanent because ``pay_period_admin.top_up_rolling_window`` counts
+    periods ending on or after today and stops once the target is met.
+
+    Args:
+        user_id: The user whose pay period is required.
+        as_of:   The reference date (default: today).
+
+    Returns:
+        The :class:`~app.models.pay_period.PayPeriod` containing *as_of*.
+
+    Raises:
+        PayCalendarGapError: When no pay period contains *as_of*.  A
+            ``ValueError`` subclass; its message names the repair.
+    """
+    if as_of is None:
+        as_of = date.today()
+    period = get_current_period(user_id, as_of=as_of)
+    if period is None:
+        raise PayCalendarGapError(
+            f"user {user_id} has no pay period containing {as_of.isoformat()}, "
+            f"so nothing anchored on that date can be answered for them. The "
+            f"schedule has lapsed, opens later, or has a hole at that date: "
+            f"/pay-periods/generate extends it forward and the settings "
+            f"pay-periods section rebuilds it",
+            user_id=user_id,
+            as_of=as_of,
+        )
+    return period
 
 
 def get_periods_in_range(user_id, start_index, count):

@@ -422,10 +422,15 @@ class TestContributionLimitZeroCap:
         ``(0 / max(periods, 1)).quantize(.01) = 0.00`` regardless of the
         period list.  Pins that a zero cap suggests nothing within the
         cap rather than the legacy $500 fallback truthiness once produced.
+
+        **The ``None`` current period became a real one at plan step X-x2**
+        (ruling R-CY): the producer's ``date.today()`` fallback for that state is
+        gone, so passing ``None`` here would assert against a signature the
+        caller can no longer produce.
         """
         params = InvestmentParams(annual_contribution_limit=Decimal("0"))
         result = investment_cards._compute_suggested_contribution(
-            params, Decimal("0"), [], None,
+            params, Decimal("0"), [], SimpleNamespace(start_date=date(2026, 1, 15)),
         )
         assert result == Decimal("0.00")
 
@@ -439,7 +444,7 @@ class TestContributionLimitZeroCap:
         """
         params = InvestmentParams(annual_contribution_limit=None)
         result = investment_cards._compute_suggested_contribution(
-            params, Decimal("0"), [], None,
+            params, Decimal("0"), [], SimpleNamespace(start_date=date(2026, 1, 15)),
         )
         assert result == Decimal("0")
 
@@ -2493,16 +2498,25 @@ class TestTheAnnualLimitSeedFollowsTheWindow:
                 self._inputs("14000.00", "15000.00"), opens_on, current,
             ) == Decimal("14000.00"), f"window opening {opens_on}"
 
-    def test_no_current_period_seeds_the_strictly_before_total(self):
-        """With no current period there is nothing to be inside or outside of.
+    def test_a_window_opening_after_the_period_takes_the_through_total(self):
+        """A window that opens past the period's end includes it.
 
-        It falls back to the seed the engine has always taken, which is what the
-        surrounding context does with every other current-period-dependent
-        value.
+        **This asserted the ``current_period is None`` fallback until plan step
+        X-x2** (ruling R-CY).  That arm chose the strictly-before seed for a
+        state in which ``projection_start`` was itself fabricated -- the caller
+        substituted ``date.today()`` for the window's opening day -- so the
+        annual-limit walk was seeded from one guess to compensate for another.
+        The caller resolves the period through ``require_current_period`` now,
+        so the case cannot arise and is replaced by the boundary it was sitting
+        next to: one day past the period's end is OUTSIDE it, which is the
+        complement of the inclusive case asserted above.
         """
+        current = SimpleNamespace(
+            start_date=date(2026, 7, 16), end_date=date(2026, 7, 29),
+        )
         assert _projection_ytd(
-            self._inputs("14000.00", "15000.00"), date(2026, 7, 30), None,
-        ) == Decimal("14000.00")
+            self._inputs("14000.00", "15000.00"), date(2026, 7, 30), current,
+        ) == Decimal("15000.00")
 
     def test_the_chart_reads_the_resolved_ytd(
         self, auth_client, seed_user, db, seed_periods_today,

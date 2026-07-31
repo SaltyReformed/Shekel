@@ -184,23 +184,39 @@ def _resolve_current_balance(
     basis).  The projection seeds from the SAME curve, read one day before its
     own window opens (:func:`_resolve_seed_balance`) -- it used to seed from a
     flat cash basis, which discarded every cent earned since the last assertion
-    (finding N-80).  Falls back to :attr:`Account.current_anchor_balance` with
-    no anchor / period.
+    (finding N-80).
 
-    **The no-baseline arm of that fallback is GONE** (plan step X-v2, ruling
-    R-CA).  It presented the raw ``current_anchor_balance`` CACHE COLUMN as
-    this account's *current balance* -- a figure the app cannot know in that
-    state, which is finding N-103's complaint one screen over and the same
-    class as the ``$0.00`` net-worth hero deleted in the same pass.  The seam
-    raises and the page is answered by the repair card instead.
+    **Every fallback to :attr:`Account.current_anchor_balance` is now GONE**, in
+    two steps and for one reason: the column is a DERIVED CACHE, so presenting it
+    as this account's *current balance* is finding N-103's complaint one screen
+    over and the same class as the ``$0.00`` net-worth hero.  Plan step X-v2
+    (ruling R-CA) took the no-BASELINE arm; plan step X-x2 (ruling R-CY) takes
+    the four that were left:
+
+    * the no-current-PERIOD arm -- both callers resolve that period through
+      ``require_current_period`` now, so the calendar raises and one application
+      handler answers;
+    * ``balances is None``, which :func:`~app.services.balance_at.balance_map`
+      returns only for an account with no anchor period, and
+      ``accounts.current_anchor_period_id`` is ``NOT NULL`` (migration
+      ``cfb15e782f86``) -- an unreachable branch whose entire body was the
+      substitution;
+    * the ``.get(..., anchor_balance)`` default, for the reason
+      :func:`app.services.savings_dashboard_service._projections._current_balance_from_map`
+      gives about the same map: the seam builds a column for EVERY period it is
+      handed, so a missing key is a defect in the seam or the period list, and
+      defaulting it renders a wrong figure wearing a plausible shape;
+    * the ``or Decimal("0.00")`` on a ``nullable=False`` column carrying a
+      redundant ``CHECK`` (``account.py:54-57``, ``:91``) -- the vacuous
+      truthiness-on-money reducer ruling R-CH deleted from the archived drawer
+      and ruling R-CA deleted eight more of.
+
+    Raises:
+        KeyError: When the map has no column for the current period -- a seam or
+            period-list defect, never a display state.
     """
-    anchor_balance = account.current_anchor_balance or Decimal("0.00")
-    if current_period is None:
-        return anchor_balance
     balances = balance_at.balance_map(account, balance_ctx, all_periods)
-    if balances is None:
-        return anchor_balance
-    return balances.get(current_period.id, anchor_balance)
+    return balances[current_period.id]
 
 
 def _projection_start(current_period) -> date:
@@ -223,15 +239,17 @@ def _projection_start(current_period) -> date:
     (the near half of finding N-79).
 
     Args:
-        current_period: The current :class:`~app.models.pay_period.PayPeriod`,
-            or ``None``.
+        current_period: The current :class:`~app.models.pay_period.PayPeriod`.
 
     Returns:
-        The current period's ``end_date`` plus one day, or today when there is
-        no current period -- there is then no history line to continue.
+        The current period's ``end_date`` plus one day.
+
+        **The ``date.today()`` fallback went at plan step X-x2** (ruling R-CY).
+        It opened the window on a day with no relation to the history line --
+        which is the 10-13 day step this function's own measurement above
+        rejected, reintroduced for the one state where the page could not tell.
+        ``current_period`` is not nullable here now.
     """
-    if current_period is None:
-        return date.today()
     return current_period.end_date + timedelta(days=1)
 
 
@@ -258,19 +276,21 @@ def _resolve_seed_balance(
     Args:
         account: The investment account.
         balance_ctx: The read pass's ``BalanceContext``.
-        current_period: The current pay period, or ``None``.
+        current_period: The current pay period.
 
     Returns:
-        The seed balance, falling back to
-        :attr:`Account.current_anchor_balance` with no anchor period -- the
-        state in which the seam cannot answer.  The no-baseline arm of that
-        fallback went at plan step X-v2 (ruling R-CA), for the reason
-        :func:`_resolve_current_balance` above carries: it seeded a projection
-        CHART from a cache column, so the whole forward line was drawn from a
-        figure the app could not know.
+        The seed balance, read through the seam.
+
+        **The last anchor-cache fallback here went at plan step X-x2** (ruling
+        R-CY), after X-v2 took its no-baseline arm (ruling R-CA).  It was
+        guarded on ``account.current_anchor_period_id is None``, which the schema
+        forbids -- the column is ``NOT NULL`` (migration ``cfb15e782f86``) -- so
+        the branch was unreachable, and its body seeded a projection CHART from a
+        cache column, drawing the whole forward line from a figure the app could
+        not know.  An unreachable guard whose body is a fabrication reads as
+        coverage twice over: it looks like the state is handled, and like the
+        substitution is legitimate.
     """
-    if account.current_anchor_period_id is None:
-        return account.current_anchor_balance or Decimal("0.00")
     return balance_at.balance_at(
         account, balance_ctx,
         _projection_start(current_period) - timedelta(days=1),
@@ -314,8 +334,13 @@ def _projection_ytd(inputs: InvestmentInputs, projection_start: date,
 
     Returns:
         The ``Decimal`` YTD to seed the engine's limit accounting with.
+
+        **The ``current_period is None`` arm went at plan step X-x2** (ruling
+        R-CY): it chose the strictly-before seed for a state in which
+        ``projection_start`` was itself fabricated, so the annual-limit walk was
+        seeded from one guess to compensate for another.
     """
-    if current_period is None or projection_start <= current_period.end_date:
+    if projection_start <= current_period.end_date:
         return inputs.ytd_contributions_seed
     return inputs.ytd_contributions
 

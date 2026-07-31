@@ -49,12 +49,23 @@ class TestGridView:
             assert b"Checking Balance" in response.data
             assert b"Projected End Balance" in response.data
 
-    def test_grid_shows_no_periods_page(self, app, auth_client, seed_user):
-        """GET / shows the no-periods prompt when none exist."""
+    def test_grid_shows_the_repair_card_when_today_is_uncovered(
+        self, app, auth_client, seed_user,
+    ):
+        """GET /grid shows the pay-calendar repair card, from the handler.
+
+        Renamed and re-pointed at plan step X-x1 (ruling R-CY): the card is
+        ``errors/no_pay_calendar.html``, rendered by the application-level
+        handler for every surface rather than by this route for this one, and it
+        names the DATE that is uncovered rather than hedging across two states
+        the way ``grid/no_periods.html`` did.  ``seed_user``'s bootstrap period
+        is a 2024 fortnight, so today falls outside it.
+        """
         with app.app_context():
             response = auth_client.get("/grid")
             assert response.status_code == 200
-            assert b"No Pay Periods" in response.data
+            assert b"No Pay Period" in response.data
+            assert date.today().strftime("%B %-d, %Y").encode() in response.data
 
     def test_grid_shows_dynamic_account_name(self, app, auth_client, seed_user, seed_periods_today):
         """GET / shows the resolved account name in the header."""
@@ -247,10 +258,22 @@ class TestBalanceRow:
             assert b"Total Income" not in resp.data
 
     def test_balance_row_no_current_period(self, app, auth_client, seed_user):
-        """GET /grid/balance-row with no periods returns 204 empty."""
+        """GET /grid/balance-row returns 204 when no period contains today.
+
+        **The 204 now comes from the application-level handler, not from a guard
+        in this route** (plan step X-x1, ruling R-CY), which is the same move
+        ``test_balance_row_no_baseline_scenario`` below records one precondition
+        over -- and so this request carries the same load-bearing ``HX-Request``
+        header, for the same reason: without it the test pinned the answer to a
+        request shape no client makes.  A plain GET of this URL is a human
+        pasting it into the address bar, and gets the repair card.
+        """
         with app.app_context():
-            # No periods generated -- get_current_period returns None.
-            resp = auth_client.get("/grid/balance-row")
+            # ``seed_user``'s bootstrap period is a 2024 fortnight, so today
+            # falls outside every period this user has.
+            resp = auth_client.get(
+                "/grid/balance-row", headers={"HX-Request": "true"},
+            )
             assert resp.status_code == 204
             assert resp.data == b""
 
@@ -553,9 +576,18 @@ class TestSubtotalRowsEndpoint:
     def test_no_current_period_returns_204(
         self, app, auth_client, seed_user,
     ):
-        """No generated periods (no current period) returns 204."""
+        """No period contains today, so an HTMX refresh swaps nothing.
+
+        The 204 comes from the application-level ``PayCalendarGapError`` handler
+        since plan step X-x1 (ruling R-CY) rather than from a guard in this
+        route, and the request carries the ``HX-Request`` header this endpoint is
+        actually called with -- see ``test_no_baseline_scenario_returns_204``
+        below for why that header is the point and not a detail.
+        """
         with app.app_context():
-            resp = auth_client.get("/grid/subtotal-rows")
+            resp = auth_client.get(
+                "/grid/subtotal-rows", headers={"HX-Request": "true"},
+            )
             assert resp.status_code == 204
             assert resp.data == b""
 

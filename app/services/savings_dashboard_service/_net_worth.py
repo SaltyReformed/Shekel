@@ -582,12 +582,18 @@ def build_trend_periods(
         ``current_index`` is the position of the current period within it
         (the count of leading history points; the solid/dashed split and
         the "Today" marker key off it), and ``honest_start`` is the earliest
-        honest ``period_index`` (the change delta's gate).  ``([], 0, 0)``
-        when there is no current period (the degraded no-period state).
-    """
-    if current_period is None:
-        return [], 0, 0
+        honest ``period_index`` (the change delta's gate).
 
+        **The ``([], 0, 0)`` degraded return went at plan step X-x2** (ruling
+        R-CY).  It paired an EMPTY window with a ``current_index`` of ``0`` --
+        an index into a list with no elements, which is a fabricated position
+        rather than an absent one, and it is exactly the shape ruling R-CA
+        deleted for ``AccountProjection.current_balance``.  It was reachable:
+        with no period covering today the cockpit hero rendered a net worth
+        while this returned nothing to plot beside it, so the page's own stated
+        identity -- hero equals trend at the current period -- held only because
+        there was no trend left to contradict it.
+    """
     current_idx = current_period.period_index
     honest_start = _honest_history_start_index(
         accounts, all_periods, current_period, debt_schedules,

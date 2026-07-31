@@ -362,14 +362,17 @@ def _ytd_contributions(all_contributions, all_periods, current_period):
         all_contributions: Shadow income transactions for one account
                            (.effective_amount, .pay_period_id, .status).
         all_periods:       Period objects with .id and .start_date.
-        current_period:    The current period object, or None.
+        current_period:    The current period object.
 
     Returns:
-        The YTD contribution total (Decimal); ZERO when current_period
-        is None.
+        The YTD contribution total (Decimal).
+
+        **The ``ZERO`` return for a missing current period went at plan step
+        X-x2** (ruling R-CY): it reported "you have contributed nothing this
+        year" for a state in which the app simply could not tell, and both
+        callers of ``calculate_investment_inputs`` resolve the period through
+        ``require_current_period`` now.
     """
-    if current_period is None:
-        return ZERO
     period_ids = _current_year_period_ids(
         all_periods, current_period, inclusive=True,
     )
@@ -389,14 +392,17 @@ def _ytd_contributions_seed(all_contributions, all_periods, current_period):
         all_contributions: Shadow income transactions for one account
                            (.effective_amount, .pay_period_id, .status).
         all_periods:       Period objects with .id and .start_date.
-        current_period:    The current period object, or None.
+        current_period:    The current period object.
 
     Returns:
-        The strictly-before-current YTD total (Decimal); ZERO when
-        current_period is None.
+        The strictly-before-current YTD total (Decimal).
+
+        **The ``ZERO`` return for a missing current period went at plan step
+        X-x2** (ruling R-CY), for the reason :func:`_ytd_contributions` above
+        carries: a fabricated zero feeding the growth engine's annual-limit
+        walk prices the whole year's remaining room from a figure the app
+        could not know.
     """
-    if current_period is None:
-        return ZERO
     period_ids = _current_year_period_ids(
         all_periods, current_period, inclusive=False,
     )

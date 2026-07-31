@@ -80,9 +80,10 @@ class TestAccountsIsolation:
     """Verify accounts pages show only the logged-in user's data."""
 
     def test_user_a_savings_dashboard(
-        self, app, auth_client, seed_full_user_data, seed_full_second_user_data
+        self, app, auth_client, seed_full_user_data, seed_full_second_user_data, monkeypatch
     ):
         """User A sees 'Emergency Fund' goal but not 'Vacation Fund' on savings."""
+        _freeze_today_to_period_5(monkeypatch)
         with app.app_context():
             response = auth_client.get("/savings")
             assert response.status_code == 200
@@ -96,9 +97,11 @@ class TestAccountsIsolation:
             assert b"Vacation Fund" not in response.data
 
     def test_user_b_savings_dashboard(
-        self, app, second_auth_client, seed_full_user_data, seed_full_second_user_data
+        self, app, second_auth_client, seed_full_user_data,
+        seed_full_second_user_data, monkeypatch,
     ):
         """User B sees 'Vacation Fund' goal but not User A's goals on savings."""
+        _freeze_today_to_period_5(monkeypatch)
         with app.app_context():
             response = second_auth_client.get("/savings")
             assert response.status_code == 200
@@ -112,7 +115,7 @@ class TestAccountsIsolation:
             assert b"Edit Emergency Fund" not in response.data
 
     def test_user_a_manage_accounts(
-        self, app, auth_client, seed_full_user_data, seed_full_second_user_data
+        self, app, auth_client, seed_full_user_data, seed_full_second_user_data, monkeypatch
     ):
         """User A's accounts cockpit does not contain User B's account IDs.
 
@@ -120,6 +123,7 @@ class TestAccountsIsolation:
         management (incl. the Edit link) now lives on the cockpit cards at
         savings.dashboard, so the isolation check moved there.
         """
+        _freeze_today_to_period_5(monkeypatch)
         with app.app_context():
             response = auth_client.get("/savings")
             assert response.status_code == 200
@@ -138,7 +142,8 @@ class TestAccountsIsolation:
             )
 
     def test_user_b_manage_accounts(
-        self, app, second_auth_client, seed_full_user_data, seed_full_second_user_data
+        self, app, second_auth_client, seed_full_user_data,
+        seed_full_second_user_data, monkeypatch,
     ):
         """User B's accounts cockpit does not contain User A's account IDs.
 
@@ -146,6 +151,7 @@ class TestAccountsIsolation:
         management (incl. the Edit link) now lives on the cockpit cards at
         savings.dashboard, so the isolation check moved there.
         """
+        _freeze_today_to_period_5(monkeypatch)
         with app.app_context():
             response = second_auth_client.get("/savings")
             assert response.status_code == 200
@@ -182,7 +188,8 @@ class TestTemplatesIsolation:
             assert b"Second User Rent" not in response.data
 
     def test_user_b_sees_own_templates(
-        self, app, second_auth_client, seed_full_user_data, seed_full_second_user_data
+        self, app, second_auth_client, seed_full_user_data,
+        seed_full_second_user_data, monkeypatch,
     ):
         """User B sees 'Second User Rent' but not 'Rent Payment' on templates."""
         with app.app_context():
@@ -215,7 +222,8 @@ class TestTransfersIsolation:
             assert b"Bi-Weekly Savings" not in response.data
 
     def test_user_b_sees_own_transfers(
-        self, app, second_auth_client, seed_full_user_data, seed_full_second_user_data
+        self, app, second_auth_client, seed_full_user_data,
+        seed_full_second_user_data, monkeypatch,
     ):
         """User B sees 'Bi-Weekly Savings' but not 'Monthly Savings' on transfers."""
         with app.app_context():
@@ -248,7 +256,8 @@ class TestSalaryIsolation:
             assert b"Second Job" not in response.data
 
     def test_user_b_sees_own_profiles(
-        self, app, second_auth_client, seed_full_user_data, seed_full_second_user_data
+        self, app, second_auth_client, seed_full_user_data,
+        seed_full_second_user_data, monkeypatch,
     ):
         """User B sees 'Second Job' but not 'Day Job' on salary."""
         with app.app_context():
@@ -266,9 +275,10 @@ class TestSavingsGoalsIsolation:
     """Verify savings goals on /savings show only the logged-in user's goals."""
 
     def test_user_a_sees_own_goals(
-        self, app, auth_client, seed_full_user_data, seed_full_second_user_data
+        self, app, auth_client, seed_full_user_data, seed_full_second_user_data, monkeypatch
     ):
         """User A sees 'Emergency Fund' goal but not 'Vacation Fund'."""
+        _freeze_today_to_period_5(monkeypatch)
         with app.app_context():
             response = auth_client.get("/savings")
             assert response.status_code == 200
@@ -280,9 +290,11 @@ class TestSavingsGoalsIsolation:
             assert b"Vacation Fund" not in response.data
 
     def test_user_b_sees_own_goals(
-        self, app, second_auth_client, seed_full_user_data, seed_full_second_user_data
+        self, app, second_auth_client, seed_full_user_data,
+        seed_full_second_user_data, monkeypatch,
     ):
         """User B sees 'Vacation Fund' goal but not User A's goals."""
+        _freeze_today_to_period_5(monkeypatch)
         with app.app_context():
             response = second_auth_client.get("/savings")
             assert response.status_code == 200
@@ -312,7 +324,8 @@ class TestCategoriesIsolation:
             assert b"Groceries" in response.data
 
     def test_user_b_sees_own_categories(
-        self, app, second_auth_client, seed_full_user_data, seed_full_second_user_data
+        self, app, second_auth_client, seed_full_user_data,
+        seed_full_second_user_data, monkeypatch,
     ):
         """User B's categories page loads and shows the Categories heading."""
         with app.app_context():
@@ -362,7 +375,8 @@ class TestChartsIsolation:
             assert "/analytics" in response.headers["Location"]
 
     def test_charts_redirects_for_user_b(
-        self, app, second_auth_client, seed_full_user_data, seed_full_second_user_data
+        self, app, second_auth_client, seed_full_user_data,
+        seed_full_second_user_data, monkeypatch,
     ):
         """User B gets 301 redirect from /charts to /analytics."""
         with app.app_context():
@@ -389,7 +403,8 @@ class TestSettingsIsolation:
             assert b"Second User" not in response.data
 
     def test_user_b_sees_own_display_name(
-        self, app, second_auth_client, seed_full_user_data, seed_full_second_user_data
+        self, app, second_auth_client, seed_full_user_data,
+        seed_full_second_user_data, monkeypatch,
     ):
         """User B's settings page shows 'Second User' (via navbar) not 'Test User'."""
         with app.app_context():
@@ -418,7 +433,8 @@ class TestRetirementIsolation:
             assert b"Retirement" in response.data
 
     def test_user_b_retirement_loads(
-        self, app, second_auth_client, seed_full_user_data, seed_full_second_user_data
+        self, app, second_auth_client, seed_full_user_data,
+        seed_full_second_user_data, monkeypatch,
     ):
         """User B can load the retirement dashboard."""
         with app.app_context():

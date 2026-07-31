@@ -73,7 +73,8 @@ class _RetirementProjectionContext:  # pylint: disable=too-many-instance-attribu
         user_id: The authenticated user's ID.
         accounts: The active retirement / investment accounts to project.
         all_periods: Every pay period for the user.
-        current_period: The current pay period, or ``None``.
+        current_period: The current pay period (not nullable since plan
+            step X-x2, ruling R-CY).
         planned_retirement_date: The horizon the synthetic projection
             periods run to, or ``None`` (no horizon -> remaining real
             periods only).
@@ -92,7 +93,7 @@ class _RetirementProjectionContext:  # pylint: disable=too-many-instance-attribu
     user_id: int
     accounts: list[Account]
     all_periods: list[PayPeriod]
-    current_period: PayPeriod | None
+    current_period: PayPeriod
     planned_retirement_date: date | None
     traditional_type_ids: frozenset[int]
     return_rate_override: Decimal | None
@@ -251,7 +252,7 @@ def build_employer_salary_basis(
 def build_projection_context(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     user_id: int,
     all_periods: list[PayPeriod],
-    current_period: PayPeriod | None,
+    current_period: PayPeriod,
     planned_retirement_date: date | None,
     return_rate_override: Decimal | None,
     employer_salary_basis: Callable | None,
@@ -275,7 +276,8 @@ def build_projection_context(  # pylint: disable=too-many-arguments,too-many-pos
     Args:
         user_id: The authenticated user's ID.
         all_periods: Every pay period for the user.
-        current_period: The current pay period, or ``None``.
+        current_period: The current pay period (not nullable since plan
+            step X-x2, ruling R-CY).
         planned_retirement_date: The projection horizon, or ``None``.
         return_rate_override: Optional slider-supplied annual return.
         employer_salary_basis: Optional per-period gross resolver (P1b /
@@ -387,12 +389,10 @@ def _resolve_projection_axis(ctx: _RetirementProjectionContext) -> list:
             start_date=date.today(),
             end_date=ctx.planned_retirement_date,
         )
-    if ctx.current_period:
-        return [
-            p for p in ctx.all_periods
-            if p.period_index >= ctx.current_period.period_index
-        ]
-    return []
+    return [
+        p for p in ctx.all_periods
+        if p.period_index >= ctx.current_period.period_index
+    ]
 
 
 def load_projection_batch(
@@ -599,15 +599,20 @@ def _pick_current_period_balances(
     Returns:
         A mapping of account ID to its current-period balance.
     """
-    result: dict[int, Decimal] = {}
-    for acct in ctx.accounts:
-        anchor = acct.current_anchor_balance
-        per_period = maps_by_account.get(acct.id)
-        if per_period is not None and ctx.current_period is not None:
-            result[acct.id] = per_period.get(ctx.current_period.id, anchor)
-        else:
-            result[acct.id] = anchor
-    return result
+    # **The anchor-CACHE fallback went at plan step X-x2** (ruling R-CY).  It
+    # fired on two conditions -- no current period, and an account absent from
+    # the seam's batch -- and answered both with
+    # ``Account.current_anchor_balance``, a derived cache presented as this
+    # account's retirement balance.  The first is refused at the door now; the
+    # second is the seam omitting an account with no anchor period, which
+    # ``accounts.current_anchor_period_id`` being ``NOT NULL`` forbids.  Both
+    # reads are INDEXED, on the argument ``build_maps`` makes about its own
+    # total feed map: a missing key is a defect, and defaulting it renders a
+    # wrong figure wearing a plausible shape.
+    return {
+        acct.id: maps_by_account[acct.id][ctx.current_period.id]
+        for acct in ctx.accounts
+    }
 
 
 def _run_account_projection(  # pylint: disable=too-many-arguments,too-many-positional-arguments

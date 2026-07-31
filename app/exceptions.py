@@ -4,12 +4,14 @@ Shekel Budget App -- Domain-Specific Exceptions
 Raised by the service layer, caught and translated to HTTP responses
 by the route layer.  Keeps business logic free of Flask concerns.
 
-**One of them is translated APPLICATION-wide instead of per route**:
-:class:`BaselineMissingError` is answered by a single handler in
-:mod:`app.error_handlers` (plan step X-v, ruling R-BW), because the condition
-it reports -- this user has no baseline scenario, so no balance is computable
-for them -- has exactly one right answer on every surface, and sixteen routes
-deciding it separately is the defect that ruling exists to end.
+**TWO of them are translated APPLICATION-wide instead of per route**, and for
+one reason: each reports a precondition without which NO surface can answer, so
+each has exactly one right answer everywhere and per-surface decisions are the
+defect.  :class:`BaselineMissingError` is "this user has no baseline scenario"
+(plan step X-v, ruling R-BW); :class:`PayCalendarGapError` is "no pay period
+contains this date" (plan step X-x, ruling R-CY).  Both are answered by
+:mod:`app.error_handlers`.  Sixteen routes deciding the first separately, and
+about fifty branches deciding the second, are the defects those rulings end.
 """
 
 
@@ -81,6 +83,61 @@ class BaselineMissingError(ShekelError, ValueError):
         """Store the resolved user id alongside the message."""
         super().__init__(message)
         self.user_id = user_id
+
+
+class PayCalendarGapError(ShekelError, ValueError):
+    """A surface needed the pay period containing a date and there is none.
+
+    The pay calendar's twin of :class:`BaselineMissingError`, and it is the same
+    rule for the same reason (plan step X-x, ruling R-CY).  Almost everything the
+    app shows is anchored on "the period containing today" -- the grid's window,
+    the cockpit's current-balance column, the paycheck breakdown, the net-worth
+    trend's Today marker -- so a user whose calendar does not cover today has no
+    current figure the app can answer.  Not a zero, not last-known: an
+    UNANSWERABLE one.
+
+    :func:`app.services.pay_period_service.require_current_period` raises it and
+    ONE handler (:func:`app.error_handlers.register_error_handlers`'s
+    ``pay_calendar_gap``) turns it into the setup-recovery page for a full
+    request and ``204 No Content`` for a safe-method HTMX one.
+
+    **Unlike the baseline, this state IS reachable, and that is why it matters.**
+    Measured 2026-07-31 on a prod-shape clone: a schedule that has lapsed, one
+    that opens in the future, or a hole between two periods all produce it, and
+    a hole is permanent because the rolling top-up counts periods ending on or
+    after today and stops when the target is met.  Before this exception, the
+    surfaces that could reach the state answered it about fifty different ways,
+    the worst of which substituted :attr:`~app.models.account.Account.current_anchor_balance`
+    -- a derived cache -- for a computed balance and moved a rendered net worth
+    by ``$3,228.55``.
+
+    Carries :attr:`user_id` and :attr:`as_of` so the ERROR event can say WHICH
+    user and WHICH date could not be placed.  The date matters here where it does
+    not for the baseline: a request pinned to a historical ``as_of`` can fail
+    while today is perfectly well covered, and an event that logged only the user
+    could not tell those apart.
+
+    **It subclasses ``ValueError`` as well as :class:`ShekelError`** for the
+    reason :class:`BaselineMissingError` does: the handler catches this condition
+    and nothing else, while callers documented against ``ValueError`` stay
+    correct.
+
+    Args:
+        message: What happened, naming the repair.
+        user_id: The user the raise was resolved for.
+        as_of: The date that could not be placed in a pay period.
+
+    Attributes:
+        user_id: As above.
+        as_of: As above.
+    """
+
+    def __init__(self, message: str, user_id: int | None = None,
+                 as_of=None) -> None:
+        """Store the resolved user id and the unplaceable date."""
+        super().__init__(message)
+        self.user_id = user_id
+        self.as_of = as_of
 
 
 class RecurrenceConflict(ShekelError):

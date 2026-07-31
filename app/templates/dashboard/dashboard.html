@@ -10,8 +10,10 @@
    Context contract (dashboard.page):
      has_account: bool -- an account resolved for the user
      pulse: dict | None -- compute_pulse_section output + route
-       serialization (see _pulse.html); None when no pay period covers
-       today
+       serialization (see _pulse.html); None ONLY when no account
+       resolved, so it is None exactly when has_account is false
+       (plan step X-x2, ruling R-CY: "no pay period covers today" is
+       answered by the application handler's repair card, not here)
      tracks: dict -- compute_tracks_section output with its ``debt``
        summary mapped to the route's _DebtTrackView (see _tracks.html) #}
 
@@ -29,16 +31,12 @@
 </div>
 {% else %}
 
-{% if pulse %}
 <div id="pulse-section"
      hx-get="{{ url_for('dashboard.pulse_section') }}"
      hx-trigger="balanceChanged from:body"
      hx-swap="innerHTML">
   {% include "dashboard/_pulse.html" %}
 </div>
-{% else %}
-{% include "dashboard/_no_period.html" %}
-{% endif %}
 
 {% if tracks and (tracks.goals or tracks.debt) %}
 {% include "dashboard/_tracks.html" %}

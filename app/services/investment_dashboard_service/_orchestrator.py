@@ -49,7 +49,9 @@ def compute_dashboard_data(user_id: int, account: Account) -> dict:
     """
     params = _load_investment_params(account.id)
     all_periods = pay_period_service.get_all_periods(user_id)
-    current_period = pay_period_service.get_current_period(user_id)
+    # The raise IS the answer (plan step X-x2, ruling R-CY): every figure
+    # below is anchored on the period containing today.
+    current_period = pay_period_service.require_current_period(user_id)
     ctx = _load_projection_context(
         user_id, account, params, all_periods, current_period,
     )
@@ -112,7 +114,7 @@ def compute_balance_hero_cell(user_id: int, account_id: int) -> dict | None:
     balance_ctx = BalanceContext.build(user_id)
     balance = _resolve_current_balance(
         account, balance_ctx,
-        pay_period_service.get_current_period(user_id),
+        pay_period_service.require_current_period(user_id),
         pay_period_service.get_all_periods(user_id),
     )
     return {

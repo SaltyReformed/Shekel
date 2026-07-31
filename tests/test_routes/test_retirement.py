@@ -1753,9 +1753,16 @@ class TestReturnRateClarity:
             assert proj["is_traditional"] is False
 
     def test_gap_analysis_no_retirement_accounts(
-        self, app, auth_client, seed_user, db,
+        self, app, auth_client, seed_user, seed_periods_today, db,
     ):
-        """Gap analysis returns empty projections when no retirement accounts exist."""
+        """Gap analysis returns empty projections when no retirement accounts exist.
+
+        **``seed_periods_today`` was added at plan step X-x2** (ruling R-CY):
+        the state under test is "no retirement ACCOUNTS", and without a pay
+        period covering today this fixture was also in the "no CALENDAR" state,
+        which the producer now refuses -- so the assertion would have graded the
+        wrong absence.
+        """
         from app.services.retirement_dashboard_service import compute_gap_data
 
         with app.app_context():

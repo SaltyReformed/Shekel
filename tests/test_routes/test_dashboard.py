@@ -804,12 +804,19 @@ class TestDashboardTracks:
 class TestDashboardDegraded:
     """The two degraded states the page renders instead of the pulse."""
 
-    def test_no_account_neutral_empty_state(self, app, auth_client, seed_user, db):
+    def test_no_account_neutral_empty_state(
+        self, app, auth_client, seed_user, seed_periods_today, db,
+    ):
         """No resolvable account -> the neutral 'Set up an account' copy.
 
         Deactivate the only account; the page must render the neutral
         empty state (no account exists to name -- Gate B7) rather than the
         pulse region.
+
+        **``seed_periods_today`` was added at plan step X-x2** (ruling R-CY):
+        the state under test is "no ACCOUNT", and without it this fixture was
+        also in the "no CALENDAR" state, which the page now answers with the
+        repair card -- so the assertions would grade the wrong empty state.
         """
         # pylint: disable=import-outside-toplevel
         from app.models.account import Account
@@ -825,18 +832,30 @@ class TestDashboardDegraded:
             assert "Set up an account to see your dashboard" in html
             assert "End of this period" not in html
 
-    def test_account_no_current_period_generate_cta(self, app, auth_client, seed_user):
-        """Account but no pay period covers today -> the generate CTA.
+    def test_account_no_current_period_gets_the_one_repair_card(
+        self, app, auth_client, seed_user,
+    ):
+        """Account but no pay period covers today -> the app's ONE repair card.
 
-        seed_user (no seed_periods_today) has only the 2024 bootstrap
-        period, so no period contains today: the pulse producer returns
-        None and the page renders the 'No pay period covers today' CTA.
+        **This asserted a dashboard-specific CTA until plan step X-x2** (ruling
+        R-CY).  ``dashboard/_no_period.html`` was the app's sixth answer to one
+        question: ``/grid`` rendered its own card, ``/savings`` published a net
+        worth built from anchor caches, ``/salary`` rendered nothing, and this
+        page rendered a CTA whose copy and repair link happened to agree with
+        the grid's while nothing kept them in step.  The producer raises now and
+        one application-level handler answers, so the assertion is the shared
+        card -- which names the DATE that is uncovered, something no per-surface
+        copy did.
+
+        seed_user (no seed_periods_today) has only the 2024 bootstrap period,
+        so no period contains today.
         """
         with app.app_context():
             resp = auth_client.get("/dashboard")
             assert resp.status_code == 200
             html = resp.data.decode()
-            assert "No pay period covers today" in html
+            assert "No Pay Period" in html
+            assert date.today().strftime("%B %-d, %Y") in html
             assert "Generate Pay Periods" in html
 
 
@@ -885,27 +904,28 @@ class TestPulseSection:
             assert resp.status_code == 302
             assert "/dashboard" in resp.headers["Location"]
 
-    def test_pulse_section_no_current_period_renders_cta(
+    def test_pulse_section_no_current_period_swaps_nothing(
         self, app, auth_client, seed_user,
     ):
-        """No pay period covers today -> 200 with the generate-periods CTA.
+        """No pay period covers today -> 204, leaving the live region alone.
 
-        When the schedule lapses between page load and a ``balanceChanged``
-        refresh the producer returns ``None``; the swap target must render
-        the "No pay period covers today" CTA rather than 500 on a missing
-        hero.  seed_user (no seed_periods_today) has only the bootstrap
-        period, so no period contains today.
+        **This asserted a 200 with a dashboard-specific CTA until plan step
+        X-x2** (ruling R-CY).  Swapping a setup card into a live balance region
+        on an idempotent ``balanceChanged`` refresh is the contract the grid's
+        self-refresh fragments have always rejected, and this endpoint is the
+        same shape: the schedule lapsing between page load and a refresh is
+        exactly the transient miss ``204`` exists for.  The user still gets the
+        repair card the moment they load a page.
+
+        seed_user (no seed_periods_today) has only the bootstrap period, so no
+        period contains today.
         """
         with app.app_context():
             resp = auth_client.get(
                 "/dashboard/pulse", headers={"HX-Request": "true"},
             )
-            assert resp.status_code == 200
-            html = resp.data.decode()
-            assert "No pay period covers today" in html
-            assert "Generate Pay Periods" in html
-            # The CTA fragment carries no pulse hero markup.
-            assert 'id="balance-display"' not in html
+            assert resp.status_code == 204
+            assert resp.data == b""
 
     def test_pulse_section_companion_blocked(self, companion_client):
         """A companion is blocked from /dashboard/pulse (404, not-yours rule)."""

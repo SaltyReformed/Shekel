@@ -13,7 +13,7 @@ from decimal import ROUND_HALF_UP, Decimal
 
 import pytest
 
-from app.exceptions import BaselineMissingError
+from app.exceptions import BaselineMissingError, PayCalendarGapError
 
 from app import ref_cache
 from app.enums import (
@@ -100,19 +100,28 @@ class TestComputeDashboardData:
             }
             assert set(result.keys()) == expected_keys
 
-    def test_empty_user_returns_safe_defaults(self, app, db, seed_user):
-        """User with no periods or goals gets safe zero-value defaults.
+    def test_a_user_whose_calendar_misses_today_gets_no_figures_at_all(
+        self, app, db, seed_user,
+    ):
+        """The cockpit REFUSES rather than reporting safe-looking defaults.
 
-        The seed user has a Checking account ($1000) which is liquid,
-        so total_savings reflects that even without pay periods.
+        **This test asserted the opposite until plan step X-x2** (ruling R-CY):
+        that a user with no pay period covering today "gets safe zero-value
+        defaults", including ``total_savings`` of ``$1,000.00`` read off the
+        anchor cache.  Those defaults were not safe.  Measured on a prod-shape
+        clone with a four-day hole in the calendar, the same substitutions
+        reported a net worth of ``$236,325.04`` against the ``$233,096.49`` the
+        data actually gives, and ``$8,591.92`` of liquid savings against
+        ``$4,076.92`` -- every figure sourced from
+        ``Account.current_anchor_balance`` rather than computed.  The seed
+        user's bootstrap period is a 2024 fortnight, so this fixture is in
+        exactly that state.
         """
         with app.app_context():
-            result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
-            )
-            assert result["total_savings"] == Decimal("1000.00")
-            assert result["avg_monthly_expenses"] == Decimal("0.00")
-            assert result["goal_data"] == []
+            with pytest.raises(PayCalendarGapError):
+                savings_dashboard_service.compute_dashboard_data(
+                    seed_user["user"].id
+                )
 
     def test_checking_account_appears_in_account_data(
         self, app, db, seed_user, seed_periods
@@ -3589,8 +3598,18 @@ class TestBuildTrendPeriods:
         assert current_index == 6
         assert window[0].period_index == 3
 
-    def test_no_current_period_is_empty(self):
-        """No current period yields an empty window and indices 0."""
+    def test_the_window_is_built_from_the_current_period(self):
+        """The window opens at the honest start and indexes the current period.
+
+        **This asserted ``build_trend_periods(..., None, {}) == ([], 0, 0)``
+        until plan step X-x2** (ruling R-CY).  That return paired an EMPTY
+        window with a ``current_index`` of ``0`` -- an index into a list with no
+        elements -- and its caller now cannot supply the ``None`` that produced
+        it, so the case is gone rather than renamed.  What replaces it is the
+        positive contract the deleted branch made unverifiable: the index is the
+        count of leading history points, so reading the window at it yields the
+        current period itself.
+        """
         # pylint: disable=import-outside-toplevel
         from app.services.account_projection import AccountProjectionKind
         from app.services.savings_dashboard_service._net_worth import (
@@ -3599,7 +3618,12 @@ class TestBuildTrendPeriods:
         periods = [self._period(i) for i in range(10)]
         accounts = [self._account(AccountProjectionKind.PLAIN, 0)]
 
-        assert build_trend_periods(accounts, periods, None, {}) == ([], 0, 0)
+        window, current_index, honest_start = build_trend_periods(
+            accounts, periods, periods[5], {},
+        )
+        assert honest_start == 0
+        assert window == periods
+        assert window[current_index] is periods[5]
 
     def test_an_investment_anchor_does_not_gate_the_history_start(self):
         """Neither an INVESTMENT's anchor nor a cash one shortens the history.
@@ -4812,13 +4836,22 @@ class TestAccountBalanceCell:
             assert cell.current_balance == grid_balance
 
     def test_cell_none_for_foreign_account(
-        self, app, db, seed_user, seed_second_user,
+        self, app, db, seed_user, seed_periods_today, seed_second_user,
     ):
         """A non-owned account id yields None (the route's 404 / IDOR gate).
 
         The producer loads only the caller's active accounts, so a second
         user's account is never found -- enforcing the 404-for-both
         security rule at the producer rather than a separate ownership query.
+
+        **``seed_periods_today`` was added at plan step X-x2** (ruling R-CY),
+        matching the sibling archived-account test, which has always had it.
+        Without it the caller has no pay period covering today, so the producer
+        now refuses at its calendar door and this never reaches the ownership
+        branch it exists to grade -- a control that stops exercising what it
+        names.  The refusal leaks nothing either way: the repair card is the
+        same response for an owned id, a foreign one, and one that does not
+        exist.
         """
         with app.app_context():
             cell = savings_dashboard_service.compute_account_balance_cell(
@@ -5535,6 +5568,10 @@ class TestTheDenseMapIsTotalAndSaysSo:
         Its contract has said so since plan step X-v2 (ruling R-CA) and nothing
         asserted it; this is the third reader of the same invariant, so it is
         pinned with the other two.
+
+        **The ``account`` argument went at plan step X-x2** (ruling R-CY) with
+        the anchor-cache fallback that was its only reader, so the map and the
+        context are all this needs.
         """
         # pylint: disable=import-outside-toplevel
         from types import SimpleNamespace
@@ -5542,13 +5579,12 @@ class TestTheDenseMapIsTotalAndSaysSo:
             _current_balance_from_map,
         )
         with app.app_context():
-            acct = SimpleNamespace(current_anchor_balance=Decimal("5.00"))
             ctx = SimpleNamespace(current_period=SimpleNamespace(id=2))
             assert _current_balance_from_map(
-                {2: Decimal("42.00")}, acct, ctx,
+                {2: Decimal("42.00")}, ctx,
             ) == Decimal("42.00")
             with pytest.raises(KeyError):
-                _current_balance_from_map({1: Decimal("42.00")}, acct, ctx)
+                _current_balance_from_map({1: Decimal("42.00")}, ctx)
 
 
 def _with_badging_predicate(account_data):

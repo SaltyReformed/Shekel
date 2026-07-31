@@ -49,14 +49,19 @@ class _DashboardCoreData:
             render from eleven loan resolutions to one per loan.  Read
             ``balance_ctx.scenario`` where the scenario itself is wanted.
         all_periods: All of the user's pay periods.
-        current_period: The period containing ``balance_ctx.as_of``, or
-            ``None``.
+        current_period: The period containing ``balance_ctx.as_of``.  **Not
+            nullable since plan step X-x2** (ruling R-CY): its loader takes
+            ``pay_period_service.require_current_period``, so a calendar that
+            does not cover today raises at the door instead of handing eleven
+            branches in this package a ``None`` they each answered differently
+            -- one of them by presenting a cache column as a balance, worth
+            ``$3,228.55`` of rendered net worth.
     """
 
     accounts: list[Account]
     balance_ctx: BalanceContext
     all_periods: list[PayPeriod]
-    current_period: PayPeriod | None
+    current_period: PayPeriod
 
 
 @dataclass(frozen=True)
@@ -96,7 +101,7 @@ class _ProjectionContext:
     """
 
     all_periods: list[PayPeriod]
-    current_period: PayPeriod | None
+    current_period: PayPeriod
     params: _AccountParams
     balance_ctx: BalanceContext
 

@@ -183,11 +183,18 @@ class TestDashboardGrouping:
         # allocation bar's legend (seg.label|title), retired with P-AC1.
         assert b"Liabilities" in resp.data
 
-    def test_dashboard_no_accounts(self, app, db, seed_user):
+    def test_dashboard_no_accounts(self, app, db, seed_user, seed_periods_today):
         """Empty state renders the dashboard page with navigation elements.
 
         When no active accounts exist, the page should still render the
         Accounts heading and action buttons (New Account, etc.).
+
+        **``seed_periods_today`` was added at plan step X-x2** (ruling R-CY).
+        The state under test is "no ACCOUNTS", and without a pay period covering
+        today this fixture was also in the "no CALENDAR" state -- which the page
+        now answers with the repair card, so the assertions below would have
+        graded the wrong empty state.  Two absences in one fixture is how a test
+        stops discriminating the one it names.
         """
         # Deactivate the default checking account.
         seed_user["account"].is_active = False

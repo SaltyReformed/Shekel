@@ -333,8 +333,15 @@ class TestCalculateInvestmentInputs:
         assert result.ytd_contributions == Decimal("1500")          # <= current (display)
         assert result.ytd_contributions_seed == Decimal("1000")     # < current (engine seed)
 
-    def test_ytd_contributions_seed_none_current_period(self):
-        """deep-hunt #10: a None current period yields a ZERO engine seed."""
+    def test_ytd_contributions_seed_excludes_the_current_period(self):
+        """deep-hunt #10: the engine seed holds the STRICTLY-BEFORE total.
+
+        **This passed ``current_period=None`` until plan step X-x2** (ruling
+        R-CY) and got its zero from the deleted no-period arm rather than from
+        the rule it names.  The year's FIRST period is the discriminating case
+        for the same invariant: its $500 contribution is IN the through-current
+        total and OUT of the seed, so the engine applies it exactly once.
+        """
         params = FakeInvestmentParams(
             assumed_annual_return=Decimal("0.07"), annual_contribution_limit=Decimal("23500"),
             employer_contribution_type_id=_emp_type_id(EmployerContributionTypeEnum.NONE),
@@ -343,9 +350,11 @@ class TestCalculateInvestmentInputs:
         periods = [FakePeriod(id=1, start_date=date(2026, 1, 2), period_index=0)]
         result = calculate_investment_inputs(
             investment_params=params, deductions=[],
-            all_contributions=contributions, all_periods=periods, current_period=None,
+            all_contributions=contributions, all_periods=periods,
+            current_period=periods[0],
         )
         assert result.ytd_contributions_seed == Decimal("0")
+        assert result.ytd_contributions == Decimal("500")
 
     def test_combined_deductions_and_transfers(self):
         """Deductions and contributions both add to periodic_contribution."""
@@ -433,21 +442,26 @@ class TestCalculateInvestmentInputs:
         )
         assert result.employer_params is None
 
-    def test_empty_periods_none_current_period(self):
-        """Empty period list and None current_period does not crash.
+    def test_a_user_with_no_contributions_yet_reads_zero(self):
+        """A user with a period but no deductions or contributions gets zeros.
 
-        When no periods exist yet (fresh user), the function should still
-        return a valid InvestmentInputs with zero contributions and ytd.
-        Expected: periodic_contribution=0, ytd_contributions=0.
+        **This passed ``current_period=None`` until plan step X-x2** (ruling
+        R-CY).  That argument is no longer nullable -- both production callers
+        resolve it through ``require_current_period`` -- and the ``ZERO``
+        returns it selected reported "you have contributed nothing this year"
+        for a state in which the app could not tell.  What survives is the
+        REAL zero the case was really about: a fresh user who genuinely has
+        contributed nothing.
         """
         params = FakeInvestmentParams(
             assumed_annual_return=Decimal("0.07"),
             annual_contribution_limit=Decimal("23500"),
             employer_contribution_type_id=_emp_type_id(EmployerContributionTypeEnum.NONE),
         )
+        period = FakePeriod(id=1, start_date=date(2026, 1, 2), period_index=0)
         result = calculate_investment_inputs(
             investment_params=params, deductions=[],
-            all_contributions=[], all_periods=[], current_period=None,
+            all_contributions=[], all_periods=[period], current_period=period,
         )
         assert result.periodic_contribution == Decimal("0")
         assert result.ytd_contributions == Decimal("0")
@@ -546,12 +560,18 @@ class TestCalculateInvestmentInputs:
         # YTD only includes current_period=periods[0], which has the $200 contribution
         assert result.ytd_contributions == Decimal("200")
 
-    def test_none_current_period_with_contributions(self):
-        """None current_period skips YTD calculation but still averages contributions.
+    def test_two_contributions_average_and_both_count_toward_ytd(self):
+        """Averaging spans every contribution; YTD spans through the current one.
 
-        When current_period is None (e.g., no period is current), the
-        function should still compute periodic_contribution from contributions
-        but set ytd_contributions to 0.
+        **This passed ``current_period=None`` until plan step X-x2** (ruling
+        R-CY), and asserted ``ytd_contributions == 0`` from the deleted arm --
+        so the only thing it really graded was the averaging.  With the LATER
+        period current it now discriminates all three figures at once, and the
+        seed / through-current split is asserted rather than bypassed:
+
+          periodic = (200 + 400) / 2 periods       = 300
+          ytd      = 200 + 400 (both <= current)   = 600
+          seed     = 200 (strictly before current) = 200
         """
         params = FakeInvestmentParams(
             assumed_annual_return=Decimal("0.07"),
@@ -568,11 +588,12 @@ class TestCalculateInvestmentInputs:
         ]
         result = calculate_investment_inputs(
             investment_params=params, deductions=[],
-            all_contributions=contributions, all_periods=periods, current_period=None,
+            all_contributions=contributions, all_periods=periods,
+            current_period=periods[1],
         )
-        # (200 + 400) / 2 periods = 300
         assert result.periodic_contribution == Decimal("300")
-        assert result.ytd_contributions == Decimal("0")
+        assert result.ytd_contributions == Decimal("600")
+        assert result.ytd_contributions_seed == Decimal("200")
 
 
 class TestEstimatedVsEffectiveAlignment:

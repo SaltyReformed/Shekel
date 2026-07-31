@@ -242,14 +242,16 @@ def _get_current_paycheck_breakdown(user_id, all_periods, current_period):
 
     Returns:
         :class:`PaycheckBreakdown` for the current period under the
-        user's active salary profile, or ``None`` if ``current_period``
-        is ``None`` or no active profile exists.  Callers treat
-        ``None`` as "no income data on the page" rather than as a zero
-        amount, since absence of an income source is structurally
-        different from a real zero (E-12).
+        user's active salary profile, or ``None`` when no active profile
+        exists.  Callers treat ``None`` as "no income data on the page" rather
+        than as a zero amount, since absence of an income source is
+        structurally different from a real zero (E-12).
+
+        **The no-current-period arm went at plan step X-x2** (ruling R-CY):
+        ``_DashboardCoreData.current_period`` is not nullable, so "the user has
+        no pay period today" is answered once by the application handler and is
+        no longer one of the two things a ``None`` here could mean.
     """
-    if current_period is None:
-        return None
 
     # Pylint: ``duplicate-code`` -- resolve-active-profile ->
     # load-tax-configs -> calculate_paycheck.  ``dashboard_service`` runs
@@ -336,8 +338,15 @@ def _recent_settled_expenses_monthly(
     the AST census X-v built STILL missed it -- because the predicate arrives
     as a PARAMETER, not as an attribute or a local alias.  The census that
     replaces a grep needs the same scepticism the grep earned.
+
+    **Its no-current-period twin went the same way at plan step X-x2** (ruling
+    R-CY), and it was the same defect on the other precondition: a fabricated
+    ``$0.00`` of monthly spending feeding the emergency-fund runway, which makes
+    any savings balance look like infinite months of cover.  ``current_period``
+    is not nullable now.  The ``not checking_ids`` arm STAYS and is a real zero:
+    a user with no checking account genuinely spends nothing FROM one.
     """
-    if current_period is None or not checking_ids:
+    if not checking_ids:
         return Decimal("0.00")
 
     recent_periods = [

@@ -408,10 +408,12 @@ def _compute_card_sparklines(
     Returns:
         ``{account_id: [Decimal, ...]}`` for each informative account.
     """
+    # The ``core.current_period is not None`` conjunct went at plan step X-x2
+    # (ruling R-CY): it is loop-invariant, so it was re-evaluated once per
+    # period to answer a question the loader now answers once at the door.
     forward_periods = [
         p for p in core.all_periods
-        if core.current_period is not None
-        and p.period_index >= core.current_period.period_index
+        if p.period_index >= core.current_period.period_index
     ]
     return compute_sparklines(account_data, forward_periods)
 

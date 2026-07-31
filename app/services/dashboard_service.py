@@ -25,7 +25,6 @@ Pure aggregation service -- no Flask imports, no database writes.
 """
 
 from datetime import date
-from decimal import Decimal
 
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -41,8 +40,6 @@ from app.services.account_resolver import resolve_grid_account
 from app.services.entry_service import compute_entry_sums, compute_remaining
 from app.services.balance_at import BalanceContext
 from app.utils.balance_predicates import is_projected_clause
-
-_ZERO = Decimal("0")
 
 # Anchor-staleness fallback when the user has no settings row.  Shared
 # with ``dashboard_pulse_service._anchor_is_stale`` (the rebuild surfaces
@@ -102,18 +99,25 @@ def compute_balance_section(user_id: int) -> dict:
     Returns:
         A dict with key ``hero`` -> ``{balance, account_id}``, or
         ``{"hero": None}`` when the user has no resolvable account.
+
+    Raises:
+        PayCalendarGapError: When no pay period contains today, so there is no
+            balance to project to (plan step X-x2, ruling R-CY).  Answered by
+            the application-level handler.
     """
     account, balance_ctx, current_period = _resolve_section_context(user_id)
     if account is None:
         return {"hero": None}
 
-    if current_period is not None:
-        balance = balance_at.cash_balance_at(
-            account, balance_ctx, current_period.end_date,
-        )
-    else:
-        balance = account.current_anchor_balance or _ZERO
-
+    # **The no-current-period fallback to the anchor CACHE went at plan step
+    # X-x2** (ruling R-CY).  It put ``Account.current_anchor_balance`` on the
+    # dashboard hero -- the page's biggest number -- as a projected balance, for
+    # a state the resolver above now refuses; it is the same substitution the
+    # savings cockpit and the investment tile were making, and it carried the
+    # same vacuous ``or ZERO`` on a ``nullable=False`` column beside it.
+    balance = balance_at.cash_balance_at(
+        account, balance_ctx, current_period.end_date,
+    )
     return {"hero": {"balance": balance, "account_id": account.id}}
 
 
@@ -136,10 +140,17 @@ def _resolve_section_context(
     Returns:
         ``(account, balance_ctx, current_period)``.  ``account`` is ``None``
         when the user has no resolvable grid account, and the other two are
-        then ``None`` with it; ``current_period`` is ``None`` when no period
-        contains today.  A user with no baseline scenario is NOT reported here
-        -- the seam raises and one application-level handler answers (plan step
-        X-v2, ruling R-BW).
+        then ``None`` with it.
+
+        **Neither missing PRECONDITION is reported here any more.**  A user with
+        no baseline scenario went at plan step X-v2 (ruling R-BW); a user with
+        no pay period containing today goes at plan step X-x2 (ruling R-CY), and
+        it was the app's SIXTH answer to that one question -- ``/dashboard``
+        rendered a "No pay period covers today" CTA of its own while ``/grid``
+        rendered a card, ``/savings`` published a net worth built from anchor
+        caches, and ``/salary`` rendered nothing.  Both raise now, and one
+        application-level handler answers each.  What remains here is the ONE
+        state this function genuinely models: no resolvable grid account.
     """
     settings = _get_user_settings(user_id)
     account = resolve_grid_account(user_id, settings)
@@ -147,7 +158,7 @@ def _resolve_section_context(
         return None, None, None
 
     balance_ctx = BalanceContext.build(user_id)
-    current_period = pay_period_service.get_current_period(user_id)
+    current_period = pay_period_service.require_current_period(user_id)
     return account, balance_ctx, current_period
 
 

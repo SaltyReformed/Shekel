@@ -162,12 +162,14 @@ def _serialize_tracks(tracks: dict) -> dict:
 def _serialize_pulse(pulse: dict | None) -> dict | None:
     """Add the route-layer ``chart_json`` to the pulse region, or pass None.
 
-    The pulse producer returns ``None`` for the degraded states (no
-    account / scenario / current period); that ``None`` is propagated
-    unchanged so each consumer renders its own no-period fallback (the
-    page's ``{% if pulse %}`` else-branch and ``pulse_section``'s explicit
-    ``_no_period.html`` render -- ``_pulse.html`` itself assumes a
-    populated pulse).  Otherwise the chart series is serialized to
+    The pulse producer returns ``None`` for the ONE degraded state it still
+    models -- no resolvable grid account -- and that ``None`` is propagated
+    unchanged, because ``_pulse.html`` assumes a populated pulse and would raise
+    on a missing hero.  The page answers it with its "Set up an account" empty
+    state and the fragment with ``204``.  Its no-scenario and no-current-period
+    arms went at plan steps X-v2 and X-x2 (rulings R-BW / R-CY): each raises now
+    and one application-level handler answers it.  Otherwise the chart series is
+    serialized to
     ``pulse["chart_json"]`` (the ``data-chart`` attribute the template
     reads).
 
@@ -193,10 +195,11 @@ def page():
     ``has_account`` carries the account-resolution truth (the old
     ``has_default_account`` flag): the dashboard projects the user's
     default account, so with no resolvable account the page renders the
-    neutral "Set up an account" empty state instead.  When an account
-    exists but no period contains today, the pulse producer returns
-    ``None`` and the page renders the "No pay period covers today"
-    generate-periods CTA; the position tracks still render.
+    neutral "Set up an account" empty state instead.  That is now the ONLY
+    degraded state this page renders: the "No pay period covers today"
+    generate-periods CTA went at plan step X-x2 (ruling R-CY), because it was
+    this app's SIXTH answer to one question and the producer raises now, so one
+    application-level handler renders the repair card for every surface.
 
     Route-layer serialization (the Chart.js / rail boundary) is applied
     here: the pulse chart series to a JSON string and the debt track's
@@ -239,12 +242,14 @@ def pulse_section():
     page does, so the swapped-in markup reads the identical
     ``data-chart`` contract.
 
-    When the producer returns ``None`` (the schedule lapsed between page
-    load and a ``balanceChanged`` refresh, so no period covers today), the
-    swap target renders the same "No pay period covers today" CTA the page
-    shows -- ``_pulse.html`` assumes a populated pulse and would raise on a
-    missing hero, so the ``None`` branch routes to ``_no_period.html``
-    instead.
+    When the schedule lapses between page load and a ``balanceChanged``
+    refresh, the producer RAISES and the application-level handler answers this
+    safe-method HTMX request with ``204 No Content`` (plan step X-x2, ruling
+    R-CY) -- the same swap-nothing no-op the grid's self-refresh fragments have
+    always returned, leaving the stale region in place rather than swapping a
+    setup card into it.  ``_pulse.html`` assumes a populated pulse and would
+    raise on a missing hero, which is why this may never render it for a
+    ``None``; the remaining ``None`` means no resolvable account.
 
     Non-HTMX requests redirect to the dashboard page (the section is a
     fragment, not a standalone page), matching the old section
@@ -257,7 +262,9 @@ def pulse_section():
         dashboard_pulse_service.compute_pulse_section(current_user.id)
     )
     if pulse is None:
-        return render_template("dashboard/_no_period.html")
+        # No resolvable account -- the page's own empty state, and there is
+        # nothing to swap into a region that only exists when one does.
+        return "", 204
     return render_template("dashboard/_pulse.html", pulse=pulse)
 
 
