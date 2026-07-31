@@ -94,22 +94,25 @@ class SavingsCoverage:
     record rather than three returns -- and they are all present always: the
     zero-expenses branch returns three zeros rather than omitting anything.
 
-    **The two derived units are converted from the ROUNDED months, not from the
-    raw ratio**, so they agree with the months figure beside them at the
-    displayed grain and can differ from the raw answer by one tenth.  Measured
-    on the prod-shape clone: `$4,076.92` over `$5,667.63` is `0.7193` raw
-    months, rendered `0.7 months` / `1.5 paychecks`, where the raw ratio gives
-    `1.6`.  Which of the two is right is a real fork -- internal consistency
-    against accuracy -- and it is finding N-120, not something this record
-    settles.  This paragraph said "the same span in biweekly pay periods" until
-    plan step X-aa's adversarial review measured that it is not.
+    **Each is quantized ONCE from the raw ratio** (plan step X-z5, ruling R-CS,
+    closing finding N-120).  The two derived units were converted from the
+    ROUNDED months -- rounded twice, so each could differ from the true answer
+    by a tenth: `$4,076.92` over `$5,667.63` is `0.719334` raw months, and the
+    footer rendered `0.7 months / 1.5 paychecks` where the raw ratio gives
+    `1.6`.  The three are therefore no longer exact conversions of each other
+    at the displayed grain, which is the price of each being right about its
+    own question; :func:`calculate_savings_metrics` carries the measurement.
+    (This paragraph said "the same span in biweekly pay periods" until plan
+    step X-aa's adversarial review measured that it was not.)
 
     Attributes:
-        months_covered: Savings divided by average monthly expenses, to one
-            decimal place.  ``0`` when there are no expenses to cover.
-        paychecks_covered: :attr:`months_covered` expressed in biweekly pay
-            periods (see above -- converted from the rounded value).
-        years_covered: :attr:`months_covered` expressed in years, likewise.
+        months_covered: Savings divided by average monthly expenses, at the
+            footer's one-decimal grain.  ``0`` when there are no expenses to
+            cover.
+        paychecks_covered: How many biweekly pay periods the same savings
+            cover -- the raw ratio times ``26/12``, then rounded.
+        years_covered: The same span in years -- the raw ratio over ``12``,
+            then rounded.
     """
 
     months_covered: Decimal
@@ -231,6 +234,30 @@ def calculate_required_contribution(current_balance, target_amount, remaining_pe
     return round_money(gap / remaining_periods)
 
 
+# The grain the emergency-fund footer renders its three coverage units at: one
+# decimal place.  A display grain rather than a money one -- these are spans of
+# time, not amounts -- so it is named here and not in ``app.utils.money``, whose
+# rounding helpers are all two-place currency.
+_COVERAGE_GRAIN = Decimal("0.1")
+
+
+def _to_coverage_grain(value: Decimal) -> Decimal:
+    """Round one coverage figure to the footer's displayed grain.
+
+    The single quantization point for all three units of
+    :class:`SavingsCoverage`, so each is rounded exactly ONCE from the raw
+    ratio (plan step X-z5, ruling R-CS, finding N-120) rather than two of them
+    being converted from an already-rounded third.
+
+    Args:
+        value: The unrounded coverage figure, in whichever unit.
+
+    Returns:
+        *value* at :data:`_COVERAGE_GRAIN`, half-up.
+    """
+    return value.quantize(_COVERAGE_GRAIN, rounding=ROUND_HALF_UP)
+
+
 def calculate_savings_metrics(
     savings_balance: Decimal,
     average_monthly_expenses: Decimal,
@@ -254,6 +281,32 @@ def calculate_savings_metrics(
     no recorded expenses is a real state, and three zeros is a real answer to
     "how long would your savings last" when nothing is being spent.
 
+    **Each of the three units is quantized ONCE, from the RAW ratio** (plan step
+    X-z5, ruling R-CS, finding N-120).  The months figure was rounded to
+    :data:`_COVERAGE_GRAIN` FIRST and the other two derived from that rounded
+    value, so both were rounded twice.  That is the drift the two functions
+    beside this one forbid in terms -- :func:`resolve_goal_target`
+    ("Intermediate results are NOT quantized") and :func:`amount_to_monthly`
+    ("The result is NOT quantized -- callers are responsible for rounding at
+    their own aggregation boundary").
+
+    What the paychecks figure ANSWERS is "how many pay periods would my savings
+    cover", which is ``savings / (monthly expenses * 12/26)``.  Converting the
+    already-rounded months answers a different question -- how many pay periods
+    the DISPLAYED months figure corresponds to -- which is a fact about the
+    display, not about the user's money.  Measured on the prod-shape clone:
+    ``$4,076.92`` over ``$5,667.63`` is ``0.719334`` raw months, which rendered
+    ``0.7 months / 1.5 paychecks`` where the raw ratio gives ``1.6``.  A sweep
+    over 40,817 (savings, expenses) shapes differed on ``paychecks_covered`` in
+    53.5% of them and on ``years_covered`` in 4.2%, worst gap ``0.2`` paychecks:
+    ``$250`` against ``$1,000``/mo rendered ``0.3 months / 0.7 paychecks``
+    against a raw answer of ``0.5``, a 40% error on that figure.
+
+    The cost, stated rather than argued away: the three are no longer exact
+    conversions of each other at the displayed grain, so a reader multiplying
+    the rendered ``0.7`` by ``26/12`` gets ``1.5`` and the line beside it says
+    ``1.6``.  Each figure is the best answer to its own question instead.
+
     Args:
         savings_balance: The user's total liquid savings.
         average_monthly_expenses: The average monthly expense total.
@@ -270,18 +323,15 @@ def calculate_savings_metrics(
             years_covered=Decimal("0"),
         )
 
-    months = (savings_balance / average_monthly_expenses).quantize(
-        Decimal("0.1"), rounding=ROUND_HALF_UP
-    )
+    # The one unrounded answer all three units are expressed from.
+    months = savings_balance / average_monthly_expenses
 
     return SavingsCoverage(
-        months_covered=months,
-        paychecks_covered=(
-            months * PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR
-        ).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP),
-        years_covered=(months / MONTHS_PER_YEAR).quantize(
-            Decimal("0.1"), rounding=ROUND_HALF_UP,
+        months_covered=_to_coverage_grain(months),
+        paychecks_covered=_to_coverage_grain(
+            months * PAY_PERIODS_PER_YEAR / MONTHS_PER_YEAR,
         ),
+        years_covered=_to_coverage_grain(months / MONTHS_PER_YEAR),
     )
 
 

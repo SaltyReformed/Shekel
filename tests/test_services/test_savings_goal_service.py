@@ -132,6 +132,60 @@ class TestCalculateSavingsMetrics:
     # whose only consumer is the test written for it is the shape X-s3 deleted
     # ``DtiMetrics.gross_monthly_income`` for.
 
+    def test_a_non_divisible_ratio_converts_from_the_raw_months(self):
+        """Each unit is rounded ONCE from the raw ratio, not from the months.
+
+        **The shape none of the cases above could see** (plan step X-z5, ruling
+        R-CS, finding N-120).  Every other test here uses an exactly-divisible
+        ratio -- 12000/2000, 24000/3000, 36000/1000, 100000/0.01, 0/2000 -- so
+        the rounded months EQUALS the raw ratio and both rounding rules give
+        byte-identical answers.  The whole class was invisible to this file
+        (Section 7.4: the fixture matrix must contain the shape the feature
+        exists for).
+
+        The developer's own prod-shape figures, worked by hand:
+
+            raw months     = 4076.92 / 5667.63 = 0.7193347...
+            months_covered = 0.7193... -> 0.7
+            paychecks      = 0.7193... * 26 / 12 = 1.55855... -> 1.6
+            years          = 0.7193... / 12      = 0.05994...  -> 0.1
+
+        Under the old rule the paychecks figure came from the ROUNDED 0.7
+        (0.7 * 26 / 12 = 1.51666... -> 1.5), which is the tenth this test
+        exists to hold.
+        """
+        result = calculate_savings_metrics(
+            savings_balance=Decimal("4076.92"),
+            average_monthly_expenses=Decimal("5667.63"),
+        )
+        assert result.months_covered == Decimal("0.7")
+        assert result.paychecks_covered == Decimal("1.6")
+        assert result.years_covered == Decimal("0.1")
+
+    def test_the_worst_measured_double_rounding_gap(self):
+        """The 0.2-paycheck case from the 40,817-shape sweep.
+
+        Small balances are where double-rounding bites hardest, because the
+        months figure rounds up by nearly a full half-tenth and the ``26/12``
+        conversion then multiplies that error by 2.17:
+
+            raw months     = 250 / 1000 = 0.25
+            months_covered = 0.25 -> 0.3   (half-up)
+            paychecks      = 0.25 * 26 / 12 = 0.54166... -> 0.5
+
+        The old rule gave 0.3 * 26 / 12 = 0.65 -> 0.7, a 40% overstatement of
+        how many pay periods the money actually covers.  This is a VALUE
+        assertion on the arithmetic, not a shape check: a wrong implementation
+        returns 0.7 here and 0.5 is the only right answer.
+        """
+        result = calculate_savings_metrics(
+            savings_balance=Decimal("250"),
+            average_monthly_expenses=Decimal("1000"),
+        )
+        assert result.months_covered == Decimal("0.3")
+        assert result.paychecks_covered == Decimal("0.5")
+        assert result.years_covered == Decimal("0.0")
+
     def test_balance_zero_returns_all_zeros(self):
         """Zero balance -- nothing to cover expenses with."""
         result = calculate_savings_metrics(
