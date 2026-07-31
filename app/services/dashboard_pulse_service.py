@@ -872,7 +872,8 @@ def _track_goal_datum(goal_datum: GoalProgress) -> dict:
     account name, the progress percent and balance/target, and the
     ``calculate_trajectory`` outputs (pace, projected completion date,
     required monthly) -- so the template reads a flat dict rather than
-    reaching into the nested ``goal`` ORM object and ``trajectory`` sub-dict.
+    reaching into the nested ``goal`` ORM object and its
+    :class:`~app.services.savings_goal_service.GoalTrajectory`.
 
     Args:
         goal_datum: One
@@ -898,8 +899,8 @@ def _track_goal_datum(goal_datum: GoalProgress) -> dict:
         "current_balance": goal_datum.current_balance,
         "target_amount": goal_datum.resolved_target,
         "target_date": goal.target_date,
-        "pace": trajectory["pace"],
-        "projected_completion_date": trajectory["projected_completion_date"],
-        "required_monthly": trajectory["required_monthly"],
+        "pace": trajectory.pace,
+        "projected_completion_date": trajectory.projected_completion_date,
+        "required_monthly": trajectory.required_monthly,
         "monthly_contribution": goal_datum.monthly_contribution,
     }

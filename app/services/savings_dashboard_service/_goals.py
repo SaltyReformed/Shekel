@@ -16,6 +16,7 @@ from app.extensions import db
 from app.models.savings_goal import SavingsGoal
 from app.models.transfer_template import TransferTemplate
 from app.services import obligations_aggregator, savings_goal_service
+from app.services.savings_goal_service import GoalTrajectory
 from app.utils.money import percent_complete
 
 
@@ -80,13 +81,15 @@ class GoalProgress:  # pylint: disable=too-many-instance-attributes
             pay.  STORED rather than derived: the pay figure itself is not
             carried here, and an income-relative goal with no salary profile is
             exactly the state the card warns about.
-        trajectory: The completion projection from
-            :func:`app.services.savings_goal_service.calculate_trajectory`
-            (``months_to_goal`` / ``projected_completion_date`` / ``pace`` /
-            ``required_monthly``), or ``None``.  **Still a dict**: it is
-            produced by :mod:`app.services.savings_goal_service`, a module
-            outside this package with its own consumers and test surface, so
-            typing it is a widening this step's ruling (R-CI) does not cover.
+        trajectory: The goal's
+            :class:`~app.services.savings_goal_service.GoalTrajectory` -- when
+            it lands at the current rate, and how that reads against its target
+            date.  **NEVER absent**: its producer has three returns and every
+            one fills all four fields.  Plan step X-w4 typed this as
+            ``dict | None`` and the goal card guarded it with a truthiness
+            test; both were unreachable, and plan step X-aa deleted them with
+            the dict (ruling R-CO).  A nullable that cannot be null is ruling
+            R-CA's defect; a guard that cannot be false is not a guard.
         monthly_contribution: The committed monthly inflow discovered from the
             recurring transfer templates targeting the goal's account, through
             the one canonical obligations aggregator.
@@ -100,7 +103,7 @@ class GoalProgress:  # pylint: disable=too-many-instance-attributes
     resolved_target: Decimal
     income_descriptor: str | None
     has_salary_data: bool
-    trajectory: dict | None
+    trajectory: GoalTrajectory
     monthly_contribution: Decimal
 
 

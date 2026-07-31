@@ -140,7 +140,14 @@
       </div>
       {% endif %}
 
-      {% if gd.trajectory %}
+      {# No ``{% if gd.trajectory %}`` guard here, and that is DECIDED rather
+         than dropped (plan step X-aa, ruling R-CO).  It was a truthiness test
+         on a dict that always carried four keys, so it could never be false --
+         and a guard that cannot fail is not a guard.  ``calculate_trajectory``
+         has three returns and every one fills all four fields, so the record
+         is always there and the question is always about the FIELDS: the
+         ``months_to_goal`` branches below are the real states (met at 0,
+         projectable, and "no recurring contribution" at none). #}
       {% set traj = gd.trajectory %}
       <div class="mt-2 pt-2 border-top">
         {% if traj.months_to_goal == 0 %}
@@ -156,7 +163,7 @@
           {% endif %}
         </div>
         {{ pace_pill(traj.pace) }}
-        {% if traj.pace == 'behind' and traj.required_monthly %}
+        {% if traj.pace == 'behind' and traj.required_monthly is not none %}
         <p class="small text-muted mt-1 mb-0">
           Increase to {{ money(traj.required_monthly) }}/mo
           to reach goal by {{ gd.goal.target_date.strftime('%b %Y') }}.
@@ -168,7 +175,6 @@
         </p>
         {% endif %}
       </div>
-      {% endif %}
     </div>
     {% endfor %}
   </div>

@@ -653,10 +653,17 @@ class TestGoalTrajectoryDashboard:
     data in goal_data dicts.
     """
 
-    def test_goal_data_includes_trajectory_keys(
+    def test_goal_row_carries_a_whole_trajectory(
         self, app, db, seed_user, seed_periods
     ):
-        """Goal data dict contains trajectory and monthly_contribution keys."""
+        """The goal record carries a GoalTrajectory, and it is never absent.
+
+        The non-null arm is the point (plan step X-aa, ruling R-CO).
+        ``calculate_trajectory`` has three returns and every one fills all four
+        fields, so ``GoalProgress.trajectory`` stopped being ``dict | None`` and
+        the goal card's ``{% if gd.trajectory %}`` guard -- a truthiness test on
+        an always-four-key value -- went with it.
+        """
         with app.app_context():
             savings_type = (
                 db.session.query(AccountType)
@@ -688,7 +695,9 @@ class TestGoalTrajectoryDashboard:
                 seed_user["user"].id
             )
             gd = result["goal_data"][0]
-            assert isinstance(gd.trajectory, dict)
+            # pylint: disable=import-outside-toplevel
+            from app.services.savings_goal_service import GoalTrajectory
+            assert isinstance(gd.trajectory, GoalTrajectory)
             assert isinstance(gd.monthly_contribution, Decimal)
 
     def test_trajectory_with_no_transfer_template(
@@ -731,7 +740,7 @@ class TestGoalTrajectoryDashboard:
             )
             gd = result["goal_data"][0]
             assert gd.monthly_contribution == Decimal("0.00")
-            assert gd.trajectory["months_to_goal"] is None
+            assert gd.trajectory.months_to_goal is None
 
     def test_trajectory_with_transfer_template(
         self, app, db, seed_user, seed_periods
@@ -800,7 +809,7 @@ class TestGoalTrajectoryDashboard:
             # Monthly transfer of $500 with $3,000 remaining
             assert gd.monthly_contribution == Decimal("500.00")
             # remaining = 6000 - 3000 = 3000, months = ceil(3000/500) = 6
-            assert gd.trajectory["months_to_goal"] == 6
+            assert gd.trajectory.months_to_goal == 6
 
 
 class TestEmergencyFundMetrics:

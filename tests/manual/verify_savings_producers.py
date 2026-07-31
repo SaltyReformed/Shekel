@@ -36,8 +36,9 @@ against the tree it was written for.
 
 **What remains is X-w's OWN tolerance, and X-x deletes it**: :func:`_get` reads
 a field off a dict OR a value object, and :func:`_today_figures` and the
-archived row read both spellings of a renamed figure.  Plan step X-w turned five
-containers on this path into frozen value objects (rulings R-CG / R-CH / R-CI),
+archived row read both spellings of a renamed figure.  Plan steps X-w and X-aa
+turned SEVEN containers on this path into frozen value objects (rulings R-CG /
+R-CH / R-CI / R-CO),
 so those branches are what let this ONE file produce the same blob on the
 pre-X-w tree and the post-X-w one -- which is the only thing that makes the
 diff mean anything.
@@ -336,7 +337,18 @@ def _goal(datum):
     """One goal progress row, every money figure.
 
     Read through :func:`_get` because plan step X-w4 turned the row into a
-    frozen ``GoalProgress`` (ruling R-CI); the tolerance goes with X-w's others.
+    frozen ``GoalProgress`` (ruling R-CI) and plan step X-aa turned its nested
+    trajectory into a ``GoalTrajectory`` (ruling R-CO); both tolerances go with
+    X-w's others.
+
+    **The ``trajectory is None`` branch this carried is GONE** (X-aa's
+    adversarial review).  ``calculate_trajectory`` returned a full dict on the
+    old tree and returns a full value object on the new one -- it has never
+    returned ``None`` -- so that was not a cross-tree tolerance, it was the same
+    guard-that-cannot-fail this very step deletes from ``savings/dashboard.html``,
+    sitting in the function the step was rewriting.  (Contrast
+    :func:`_principal_fraction` below, whose ``None`` guard is LIVE: a user with
+    no loan accounts genuinely has no summary.)
     """
     trajectory = _get(datum, "trajectory")
     return {
@@ -349,13 +361,13 @@ def _goal(datum):
         "monthly_contribution": _money(_get(datum, "monthly_contribution")),
         "income_descriptor": _get(datum, "income_descriptor"),
         "has_salary_data": _get(datum, "has_salary_data"),
-        "trajectory": None if trajectory is None else {
-            "months_to_goal": trajectory["months_to_goal"],
+        "trajectory": {
+            "months_to_goal": _get(trajectory, "months_to_goal"),
             "projected_completion_date": _date(
-                trajectory["projected_completion_date"],
+                _get(trajectory, "projected_completion_date"),
             ),
-            "pace": trajectory["pace"],
-            "required_monthly": _money(trajectory["required_monthly"]),
+            "pace": _get(trajectory, "pace"),
+            "required_monthly": _money(_get(trajectory, "required_monthly")),
         },
     }
 
@@ -456,9 +468,12 @@ def _dump_user(user_id):
             for row in data["property_equity"]
         ],
         "goal_data": [_goal(datum) for datum in data["goal_data"]],
+        # The emergency-fund coverage became a frozen ``SavingsCoverage`` at
+        # plan step X-aa (ruling R-CO); read field by field so the blob is the
+        # same on either tree.  Goes with X-w's other tolerances at X-x.
         "emergency_metrics": {
-            key: _money(value) if isinstance(value, Decimal) else value
-            for key, value in sorted(data["emergency_metrics"].items())
+            name: _money(_get(data["emergency_metrics"], name))
+            for name in ("months_covered", "paychecks_covered", "years_covered")
         },
         "total_savings": _money(data["total_savings"]),
         "avg_monthly_expenses": _money(data["avg_monthly_expenses"]),

@@ -1420,12 +1420,12 @@ class TestTracksGoals:
                 )
                 if gd.goal.account_id == acct.id
             )
-            assert track["pace"] == sav.trajectory["pace"]
+            assert track["pace"] == sav.trajectory.pace
             assert (
                 track["projected_completion_date"]
-                == sav.trajectory["projected_completion_date"]
+                == sav.trajectory.projected_completion_date
             )
-            assert track["required_monthly"] == sav.trajectory["required_monthly"]
+            assert track["required_monthly"] == sav.trajectory.required_monthly
             assert track["progress_pct"] == sav.progress_pct
 
     def test_no_goals_empty_list(self, app, seed_user, seed_periods, db):
