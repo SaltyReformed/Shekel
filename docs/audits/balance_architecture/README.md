@@ -998,6 +998,40 @@ Rule 6 exists because 29 unowned rows rotted, four of them naming steps that had
 |---|---|---|
 | **R-CO** (answered 2026-07-30) | **Both records are typed at their producer, and the unreachable nullable X-w4 wrote goes with them.**  :func:`app.services.savings_goal_service.calculate_trajectory` has THREE return statements and every one returns a full four-key dict -- it can never return ``None`` -- and :func:`~app.services.savings_goal_service.calculate_savings_metrics` has two, both three-key.  So plan step X-w4's ``GoalProgress.trajectory: dict | None`` is a nullable that cannot be null, which is ruling R-CA's defect written by the step that quotes R-CA four commits earlier; and ``savings/dashboard.html``'s ``{% if gd.trajectory %}`` is a truthiness test on a dict that always carries four keys, so it can never be false.  A guard that cannot fail is what this arc deletes.  **The scope question the developer's rubric settles**: one production consumer each, both on this path, and the trajectory is NESTED INSIDE the record X-w4 typed -- so leaving it a dict makes ``GoalProgress.trajectory["pace"]`` a typed outer with a dict inner, the exact inconsistency ruling R-CI exists to remove, inside R-CI's own container.  Rejected: fixing only the nullable and the dead guard and leaving the two producers untyped (closes the defect and keeps the wart, and leaves the step's title untrue), and recording findings without fixing (the process failure this ruling is a correction OF) | X-aa |
 
+### Answered (developer ruling, 2026-07-30: X-z's four forks, all as recommended)
+
+**The trace ran first and no code was written for it.** It confirmed finding N-118's premise
+(the two spellings agree on every account on both databases -- 10 on `shekel`, 9 on
+`shekel_f3_final`, zero disagreements), and then found two things the row does not say: the
+hazard's WORST surface is the Horizon, not the trend, and there is a THIRD spelling of the rule,
+in Jinja, where no gate can see it.
+
+**The Horizon is where a divergence would cost the most.** Its composition is assembled by three
+band producers that must partition the account set exactly once, and they select with BOTH
+spellings: `_horizon._liability_band` takes `ad.is_liability`, while `_horizon._asset_bands` and
+`_retirement_investment_bands` key off `category_by_account_id`. An account the two classified
+differently is counted TWICE with opposite signs -- net worth wrong by double its balance -- or
+ZERO times. `test_net_worth_band_vocabulary.test_the_horizon_projects_every_band_it_publishes`
+pins that the BANDS are disjoint and exhaustive; nothing pins that the two ACCOUNT-selection
+rules agree.
+
+**The third spelling**: `savings/_cockpit.html:139` and `:269` compare `category_name ==
+'liability'` as a bare Jinja literal, driving the liability group's danger subtotal and the WHOLE
+debt-summary footer. The X-t3 band gate reads that same file's `category_labels` and
+`category_icons` dicts and does not see these, so a renamed key drops the debt footer with
+nothing failing.
+
+**And the classifier is asked 48 times for 8 accounts on one render** (measured, both databases):
+`_display._group_accounts_by_category` re-classifies every account once per category label (5N)
+while `category_key_by_account_id` has already built the same map one function away (N).
+
+| # | ruling | consumed by |
+|---|---|---|
+| **R-CP** (answered 2026-07-30, as recommended) | **ONE classifier answers the CATEGORY, and both existing questions BUILD ON it** -- Section 8's "a DRY refactor of a PREDICATE can move money; prove two rules answer the same question before merging them, otherwise make one BUILD ON the other".  A new `account_category(account) -> AcctCategoryEnum \| None` is the only place `account_type.category_id` is compared against a cached id; `is_liability_account` becomes `account_category(a) is LIABILITY`, and `_display.account_category_key` becomes a lookup of that answer in the display vocabulary `_CATEGORY_KEYS`.  The equivalence the two spellings have today by READING then holds by CONSTRUCTION: `account_category_key(a) == LIABILITY_KEY` iff `is_liability_account(a)`, given only that `_CATEGORY_KEYS` is injective and `_OTHER_KEY` is not one of its values -- two one-line assertions in the band gate.  `_net_worth._LIABILITY_BAND` is DELETED with the literal it held: the band IS the category key (which is already the band gate's own thesis), so `_display.LIABILITY_KEY` is the one home and `_net_worth` / `_horizon` import it.  `_CATEGORY_ORDER` is written from `_CATEGORY_KEYS` entries in display order, so the module holds one spelling of each key while the ORDER stays an explicit display decision (deriving the order from `AcctCategoryEnum`'s declaration order was rejected: reordering a ref enum would silently reorder the cockpit's cards).  **The reducer keeps `ad.is_liability` for the SIGN and the key for the BAND, deliberately**: after this the two are provably one answer, and money math reading a DOMAIN predicate rather than a display key is the honest structure.  Rejected: merging by having the reducer take its sign from `band == LIABILITY_KEY` (makes the composition's arithmetic depend on a display vocabulary), and leaving the two spellings with a test asserting they agree on the seeded fixtures (a test over a fixture set is not a construction property -- finding N-69's lesson) | X-z1 |
+| **R-CQ** (answered 2026-07-30, as recommended) | **The classifier's module is RENAMED to `app/services/account_category.py`, and it stays public at the service layer.**  `net_worth_account_data.py` has been named for a container that no longer exists since plan step X-w deleted `to_net_worth_account_data` (ruling R-CG) -- its own docstring says only the classifier remains, and the module's stated reason for living outside the cockpit package ("its importers are in two of them") describes two modules of ONE package.  The honest reason is the one that survives: the classification RULE is account metadata, not a cockpit display decision (finding N-118's own words), so the next consumer reaches a PUBLIC module instead of importing a private one -- Section 8's "a shared primitive reached through a private import is telling you the package boundary is wrong", which the W9910 checker now enforces.  Rejected: keeping the name (every future reader must read the docstring to learn the name is historical), moving it into `savings_dashboard_service/_category.py` (package-private, and the next non-cockpit consumer must either import a private module or copy the rule), and folding it into `account_projection` beside `classify_account` (that module deliberately imports no `ref_cache` and takes it by PARAMETER to stay cycle-free; a category classifier needs it, so the move would break the stated discipline of the module it joined).  **Two citations in the read-only archive go stale and are left stale**, per rule 5: an archived record was true on its write date | X-z1 |
+| **R-CR** (answered 2026-07-30, as recommended) | **ONE category map per render, and the Jinja spelling of the liability key is GATED.**  `compute_dashboard_data` builds `category_key_by_account_id` ONCE and threads it to both the net-worth section and the grid section; `_group_accounts_by_category` takes the map and buckets in one pass, so the classifier is asked N times instead of 6N (measured `48 -> 8` for 8 accounts on both databases).  The map is INDEXED, not defaulted, which is ruling R-CJ's rule at a third reader: it is built from the same `account_data`, so a missing key is a producer defect and says so.  Separately, `test_net_worth_band_vocabulary.py` gains an arm over `savings/_cockpit.html`'s bare `category_name == '<key>'` comparisons -- every such literal must be a composition band, and `LIABILITY_KEY` must be among them -- with its negative control planted in the REAL template rather than a synthetic twin, per Section 8's "a gate's pattern must be exercised against the artifact it grades".  Rejected: handing the template a `LIABILITY_KEY` context variable (the file already reads the producer's keys as microcopy dict keys, and a sixth vocabulary home is what the gate exists to avoid), and leaving the redundancy to X-i1 (it is a consequence of unifying the classifier, not a shared per-pass loader -- X-i1's subject is a memo on `BalanceContext`, and this map is not on it) | X-z2, X-z3 |
+| **R-CS** (answered 2026-07-30, as recommended) | **The three coverage units are each quantized ONCE, from the RAW ratio -- and the two inputs that cannot be `None` stop being nullable.**  `calculate_savings_metrics` rounds months to `0.1` FIRST and derives `paychecks_covered` and `years_covered` from that rounded value.  Measured on `shekel_f3_final`: `$4,076.92` over `$5,667.63` is `0.719334` raw months, rendered `0.7 months / 1.5 paychecks`, where converting the raw ratio gives `1.6`.  A sweep over **40,817** (savings, expenses) shapes -- savings `$0`-`$60,000` in `$25` steps against expenses `$1,000`-`$9,000` in `$500` steps -- differs on `paychecks_covered` in **53.5%** and on `years_covered` in **4.2%**, worst gap **0.2 paychecks** (`$250` against `$1,000`/mo renders `0.3 months / 0.7 paychecks` where the raw ratio gives `0.5`, a 40% error on that figure).  The rule is this codebase's own, stated in the two functions beside it: `resolve_goal_target` ("Intermediate results are NOT quantized -- only the final result is rounded ... to avoid penny-level rounding drift") and `amount_to_monthly` ("The result is NOT quantized -- callers are responsible for rounding at their own aggregation boundary").  "How many pay periods would my savings cover" is `savings / (monthly expenses x 12/26)`; converting the ROUNDED months answers a different question -- how many pay periods the DISPLAYED figure corresponds to -- which is a fact about the display, not about the money.  **It MOVES exactly one figure on real data**: `paychecks_covered` `1.5 -> 1.6` on `shekel_f3_final`, nothing on `shekel`.  **And no existing test can tell the two rules apart**: all five `TestCalculateSavingsMetrics` cases use exactly-divisible ratios (`12000/2000`, `24000/3000`, `36000/1000`, `100000/0.01`, `0/2000`), so every current assertion is byte-identical under either -- Section 7.4's fixture-matrix rule, and the fix adds the shape the feature exists for.  Beside it, both parameters stop being `Decimal \| None`: the ONE production caller passes `_sum_liquid_balances(...)` and `_compute_avg_monthly_expenses(...)`, which return a `Decimal` on every path, and NO test anywhere passes `savings_balance=None` -- a branch with zero exercisers, which is ruling R-CA's defect one function over from where X-aa just closed it.  The four `Decimal(str(x))` coercions go with them: they defend against types the signature forbids, and dropping them makes a float caller raise rather than silently succeed.  The `<= 0` guard STAYS -- no expenses is a real state and three zeros is a real answer.  Rejected: keeping the double-rounding for mutual convertibility at the displayed grain (buys a display property at the cost of a figure that is wrong about the user's money, and double-rounds where the two neighbouring functions forbid it), and deleting only `savings_balance`'s nullable (leaves half of one shape) | X-z4, X-z5 |
+
 ### Answered (developer ruling, 2026-07-26: X-g's five forks, all as recommended)
 
 **The trace ran first and no code was written for it** -- the step's own stated first action. Each
@@ -2136,7 +2170,8 @@ preconditions cite entries in that file.
   nullable are live residue of plan step X-w4 in the package X-w owns, and X-z is a predicate merge
   that wants a clean tree under it.
 
-- [ ] **X-z** `refactor(savings): one classifier, one liability rule` -- closes **N-118**. The
+- [ ] **X-z** `refactor(savings): one classifier, one liability rule` -- closes **N-118** and
+  **N-120** (rulings R-CP..R-CS). The
   liability rule has TWO id-based spellings and they are equivalent by reading rather than by
   construction: `net_worth_account_data.is_liability_account` (the account type's `category_id`
   against the cached LIABILITY id) and `_display.account_category_key(...) == "liability"`. The
@@ -2147,6 +2182,35 @@ preconditions cite entries in that file.
   its own commit, its own firing control, and a decision about where the shared classifier LIVES
   (the display order belongs to `_display`; the classification rule does not). Sequenced after X-w
   because X-w is what leaves both spellings visible in one reducer.
+
+  **Its trace found the hazard's worst surface and a THIRD spelling the row does not name.** The
+  Horizon's three band producers must partition the account set exactly once and they select with
+  BOTH spellings (`_liability_band` on `ad.is_liability`; `_asset_bands` and
+  `_retirement_investment_bands` on the category map), so a divergence counts an account TWICE with
+  opposite signs or ZERO times. And `savings/_cockpit.html:139` / `:269` compare
+  `category_name == 'liability'` as a bare Jinja literal -- the liability group's danger subtotal
+  and the whole debt-summary footer -- which the X-t3 band gate reads that same file for and cannot
+  see. The two Python spellings agree on every account on both databases today (10 and 9, zero
+  disagreements), which is what makes this a construction fix rather than a bug fix.
+
+  **DECOMPOSED on the arc's eight-times-proven line: four commits cannot move a cent and the fifth
+  moves a figure.**
+
+  * [ ] **X-z1 THE CLASSIFIER** (ruling R-CP, R-CQ) -- `account_category(account)` is the one place
+    a `category_id` meets a cached id; `is_liability_account` and `account_category_key` both build
+    on it; `_net_worth._LIABILITY_BAND` is deleted for `_display.LIABILITY_KEY`; the module is
+    renamed `app/services/account_category.py`.
+  * [ ] **X-z2 ONE MAP** (ruling R-CR) -- `compute_dashboard_data` builds the category map once and
+    threads it to both sections; `_group_accounts_by_category` buckets in one INDEXED pass
+    (`48 -> 8` classifier calls for 8 accounts).
+  * [ ] **X-z3 THE JINJA ARM** (ruling R-CR) -- the band gate grows an arm over the cockpit's bare
+    `category_name == '<key>'` comparisons, its negative control planted in the REAL template.
+  * [ ] **X-z4 THE TWO INPUTS THAT CANNOT BE NONE** (ruling R-CS) -- `calculate_savings_metrics`'
+    two nullable parameters and the four `Decimal(str(x))` coercions; moves nothing.
+  * [ ] **X-z5 THE COVERAGE UNITS** (ruling R-CS) -- each of the three units quantized ONCE from
+    the raw ratio. **MOVES ONE FIGURE**: `paychecks_covered` `1.5 -> 1.6` on `shekel_f3_final`,
+    nothing on `shekel`. Its own commit for that reason, and it adds the non-divisible fixture
+    shape no existing test carries.
 
 - [ ] **X-i** `refactor(balance): one read pass, one derivation, one clock` -- closes **FU-3**,
   **N-14**, **N-40**, **N-56**, **N-72**'s second half, **N-89**, **N-91**, **N-92**, **N-93**
