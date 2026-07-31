@@ -129,24 +129,51 @@ def category_key_by_account_id(
 
 def _group_accounts_by_category(
     account_data: list[AccountProjection],
+    category_by_account_id: dict[int, str],
 ) -> "OrderedDict[str, list[AccountProjection]]":
     """Group the per-account projections by account type category.
 
-    Returns an OrderedDict with category labels as keys, preserving
-    the display order: Asset, Liability, Retirement, Investment, Other.
-    Buckets each account through the shared :func:`account_category_key`
-    classifier (so the grid groups and the net-worth composition bands read
-    one taxonomy), keeping only the non-empty groups in display order.
+    Returns an OrderedDict keyed by category, preserving the display order
+    :data:`_CATEGORY_ORDER` fixes (Asset, Liability, Retirement, Investment,
+    Other) and keeping only the non-empty groups.
+
+    **It TAKES the category map rather than re-deriving one** (plan step X-z2,
+    ruling R-CR).  It classified every account once per category label, so one
+    ``/savings`` render asked the classifier **48 times for 8 accounts**
+    (measured, both databases) while :func:`category_key_by_account_id` had
+    already built the same map for the net-worth trend one function away.  The
+    render now builds it ONCE and hands the same object to both, which is what
+    makes "the grid group and the chart band come from one classification"
+    structural rather than a property of two callers using one classifier.
+
+    The map is INDEXED, not defaulted -- ruling R-CJ's rule at a third reader.
+    It is built from this same ``account_data``, so a missing key is a producer
+    defect and raises here; answering it with :data:`_OTHER_KEY` would file a
+    real account under the wrong card and its balance into the wrong subtotal,
+    in silence.
+
+    Args:
+        account_data: The per-account projections to group.
+        category_by_account_id: Each account's category key, from
+            :func:`category_key_by_account_id` over this same *account_data*.
+
+    Returns:
+        ``OrderedDict[category_key, list[AccountProjection]]`` -- the non-empty
+        groups in display order.
+
+    Raises:
+        KeyError: When *category_by_account_id* has no entry for an account in
+            *account_data* -- a producer defect, never a display state.
     """
-    grouped = OrderedDict()
-    for cat_label in _CATEGORY_ORDER:
-        cat_accounts = [
-            ad for ad in account_data
-            if account_category_key(ad.account) == cat_label
-        ]
-        if cat_accounts:
-            grouped[cat_label] = cat_accounts
-    return grouped
+    grouped: "OrderedDict[str, list[AccountProjection]]" = OrderedDict(
+        (category_key, []) for category_key in _CATEGORY_ORDER
+    )
+    for ad in account_data:
+        grouped[category_by_account_id[ad.account.id]].append(ad)
+    return OrderedDict(
+        (category_key, members)
+        for category_key, members in grouped.items() if members
+    )
 
 
 def _compute_group_subtotals(grouped_accounts):
