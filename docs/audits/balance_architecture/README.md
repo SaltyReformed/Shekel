@@ -291,7 +291,41 @@ rendered where the raw ratio gives `1.6`.
 
 **The lesson, recorded in Section 8: `hasattr` on a dataclass is not a test.**
 
-**NEXT: X-z**, then the steps after it in the order Section 5 lists.
+**X-z is DONE** (2026-07-31), in ten commits: the rulings `b6b1446e`, the code `8c8d19f6` /
+`d80e06fe` / `9e1187c3` / `8cc0656c` / `bffb18cc`, then the review rulings `2fcecdd2` and the
+residue `7c453074` / `e8bccf4f` / `5e77d0db`. **The trace turned the step before a line was
+written**: finding N-118 names two Python spellings of the liability rule and the 2-year trend as
+the surface at risk; there is a THIRD, in Jinja, and the worst surface is the HORIZON. Its three
+band producers must cover each account exactly once and they selected with BOTH spellings, so a
+divergence counts an account twice with opposite signs -- net worth wrong by double its balance --
+or drops it, silently. The rule is one resolved member on the projection now, read by both
+questions, and the two bare `category_name == 'liability'` comparisons that drive the danger
+subtotal and the WHOLE debt-summary footer are gated in the language the band gate exists for.
+
+**N-120 closed with it, and it moved exactly ONE figure**: `paychecks_covered` `1.5 -> 1.6` on
+`shekel_f3_final`, proven three ways -- one line in 61,977 across both harnesses, and a cross-tree
+HTML render of five pages on both databases where `shekel` is byte-identical and
+`shekel_f3_final` differs in that figure alone.
+
+**Its two adversarial reviews earned their cost a TWELFTH time, and both found the same three
+things independently.** The step's CENTRAL claim was false -- `account_category` is not "the ONLY
+place a `category_id` meets a cached id", and the survivor that matters is
+`ledger_class_id_for_category`, the same asset-vs-liability question on the WRITE path deciding
+which ledger class an account's postings book against. A finding was CITED in shipped code and
+never filed (`N-121`, in a sentence claiming compliance with rule 6). And the new Jinja gate arm
+could not fire on three of the four defects it names -- deleting the debt-footer guard leaves one
+liability comparison, which satisfied every assertion it made. **The step's one quoted measurement
+also pointed the wrong way**: `48 -> 8` was real, but the new classifier scanned four members with
+four cache calls where the old predicate made one (2.3x-4.5x, measured), and `is_liability` is read
+~480 times per render. Rulings **R-CT..R-CW**; findings **N-121** and **N-122** filed with owners,
+the new steps **X-ac** and **X-ab**.
+
+**What the residue bought, beyond the corrections**: the classifier is now FASTER than the code it
+replaced (`0.108` us flat against `0.136-0.139`), the category is resolved **8 times for 8
+accounts** rather than ~488, and the second per-account container X-z2 had introduced -- ruling
+R-CG's own defect, re-created one commit after the step that deleted it -- is gone.
+
+**NEXT: X-x**, then the steps after it in the order Section 5 lists.
 
 ---
 
@@ -1112,15 +1146,17 @@ its decomposed ID -- append-only, and never renumbered for readability. **Ruling
 then folded its CONTENT into `X-g4b`**, so the exception now costs no commit of its own: the entry
 stays where it is, its content is what X-g4b carries, and its box ticks with X-g4b's hash. The live
 order from here is
-**X-v -> X-w -> X-z -> X-x -> X-y -> X-i -> X-j -> X-k -> X-l -> X-m -> X-n -> X-d -> X-e -> X-f ->
-X-p ->
-E2** (X-g4a, X-g4b, X-o, all three X-q leaves, X-r, X-h, X-s, X-t and X-u, which used to open this
-line, have SHIPPED; **X-v** and **X-w** were appended 2026-07-28 out of X-t's own measurement and its
+**X-x -> X-y -> X-i -> X-j -> X-k -> X-l -> X-m -> X-n -> X-d -> X-e -> X-f -> X-p -> X-ab ->
+X-ac ->
+E2** (X-g4a, X-g4b, X-o, all three X-q leaves, X-r, X-h, X-s, X-t, X-u, X-v, X-w, X-aa and X-z, which
+used to open this line, have SHIPPED; **X-v** and **X-w** were appended 2026-07-28 out of X-t's own measurement and its
 two adversarial reviews, **X-x** the same day out of X-v's own AST census, which measured the
 period-absence family at 63 branches, **X-y** on 2026-07-29 out of X-v's two adversarial
 reviews, which found fifteen surfaces answering this state without the seam, and **X-z** on
-2026-07-30 out of X-w's own trace, which found the liability rule written twice -- all four are rule
-7's "its own step, never a deferral") (X-h .. X-k added 2026-07-27 by ruling R-AO, X-l .. X-p the same day by R-AQ,
+2026-07-30 out of X-w's own trace, which found the liability rule written twice; **X-ab** and
+**X-ac** were appended 2026-07-31 out of X-z's two adversarial reviews, which found the
+asset-vs-liability rule alive on the WRITE path and a finding cited in code but never filed -- all
+six are rule 7's "its own step, never a deferral") (X-h .. X-k added 2026-07-27 by ruling R-AO, X-l .. X-p the same day by R-AQ,
 X-q / X-r the same day by R-AV / R-AW out of X-o's trace, and X-s the same day out of X-q2's two
 adversarial reviews -- sequenced after X-h on X-h's own ground, since the controls X-h repairs are
 what grade a step that moves a client payload and a rendered caption; they
@@ -2205,8 +2241,10 @@ preconditions cite entries in that file.
   nullable are live residue of plan step X-w4 in the package X-w owns, and X-z is a predicate merge
   that wants a clean tree under it.
 
-- [ ] **X-z** `refactor(savings): one classifier, one liability rule` -- closes **N-118** and
-  **N-120** (rulings R-CP..R-CS). The
+- [x] **X-z** `refactor(savings): one classifier, one liability rule` -- **SHIPPED dev 2026-07-31**
+  (rulings `b6b1446e` / `2fcecdd2`, code `8c8d19f6` / `d80e06fe` / `9e1187c3` / `8cc0656c` /
+  `bffb18cc` / `7c453074` / `e8bccf4f` / `5e77d0db`). Closes **N-118** and
+  **N-120** (rulings R-CP..R-CW). The
   liability rule has TWO id-based spellings and they are equivalent by reading rather than by
   construction: `net_worth_account_data.is_liability_account` (the account type's `category_id`
   against the cached LIABILITY id) and `_display.account_category_key(...) == "liability"`. The
@@ -2231,29 +2269,29 @@ preconditions cite entries in that file.
   **DECOMPOSED on the arc's eight-times-proven line: four commits cannot move a cent and the fifth
   moves a figure.**
 
-  * [ ] **X-z1 THE CLASSIFIER** (ruling R-CP, R-CQ) -- `account_category(account)` is the one place
+  * [x] **X-z1 THE CLASSIFIER** (`8c8d19f6`) (ruling R-CP, R-CQ) -- `account_category(account)` is the one place
     a `category_id` meets a cached id; `is_liability_account` and `account_category_key` both build
     on it; `_net_worth._LIABILITY_BAND` is deleted for `_display.LIABILITY_KEY`; the module is
     renamed `app/services/account_category.py`.
-  * [ ] **X-z2 ONE MAP** (ruling R-CR) -- `compute_dashboard_data` builds the category map once and
+  * [x] **X-z2 ONE MAP** (`d80e06fe`) (ruling R-CR) -- `compute_dashboard_data` builds the category map once and
     threads it to both sections; `_group_accounts_by_category` buckets in one INDEXED pass
     (`48 -> 8` classifier calls for 8 accounts).
-  * [ ] **X-z3 THE JINJA ARM** (ruling R-CR) -- the band gate grows an arm over the cockpit's bare
+  * [x] **X-z3 THE JINJA ARM** (`9e1187c3`) (ruling R-CR) -- the band gate grows an arm over the cockpit's bare
     `category_name == '<key>'` comparisons, its negative control planted in the REAL template.
-  * [ ] **X-z4 THE TWO INPUTS THAT CANNOT BE NONE** (ruling R-CS) -- `calculate_savings_metrics`'
+  * [x] **X-z4 THE TWO INPUTS THAT CANNOT BE NONE** (`8cc0656c`) (ruling R-CS) -- `calculate_savings_metrics`'
     two nullable parameters and the four `Decimal(str(x))` coercions; moves nothing.
-  * [ ] **X-z5 THE COVERAGE UNITS** (ruling R-CS) -- each of the three units quantized ONCE from
+  * [x] **X-z5 THE COVERAGE UNITS** (`bffb18cc`) (ruling R-CS) -- each of the three units quantized ONCE from
     the raw ratio. **MOVES ONE FIGURE**: `paychecks_covered` `1.5 -> 1.6` on `shekel_f3_final`,
     nothing on `shekel`. Its own commit for that reason, and it adds the non-divisible fixture
     shape no existing test carries.
-  * [ ] **X-z6 THE REVERSE LOOKUP** (ruling R-CV) -- `ref_cache.acct_category_member(category_id)`,
+  * [x] **X-z6 THE REVERSE LOOKUP** (`7c453074`) (ruling R-CV) -- `ref_cache.acct_category_member(category_id)`,
     an id-keyed answer built once at `init()` on the `ledger_class_is_debit_normal` precedent, so
     the classifier is a lookup rather than a scan over four members with four cache calls.
-  * [ ] **X-z7 THE CATEGORY ON THE RECORD** (ruling R-CT) -- `AccountProjection.category`;
+  * [x] **X-z7 THE CATEGORY ON THE RECORD** (`e8bccf4f`) (ruling R-CT) -- `AccountProjection.category`;
     `category_key_by_account_id`, both threaded parameters and `_sum_composition_at_period`'s third
     argument DELETED; `is_liability` becomes a field comparison. Classifier calls per render
     **~488 -> 8**.
-  * [ ] **X-z8 THE REVIEW RESIDUE** (rulings R-CU, R-CV, R-CW) -- the false exclusivity claim in
+  * [x] **X-z8 THE REVIEW RESIDUE** (`5e77d0db`) (rulings R-CU, R-CV, R-CW) -- the false exclusivity claim in
     three homes plus R-CP, `_assemble_composition`'s false partition paragraph, four wrong counts,
     a worked quotient, a wrong exception name, the gate arm that asserts everything but the count
     (with both reviewers' surviving mutants committed as controls), the `years_covered` case a
@@ -2795,7 +2833,7 @@ row, whose owner read `Section 5, Phase E2`; it is now `E2-0 / E2-n`, the phase'
 steps. Every other owner was already live, which is what the three hand-passes above bought and
 what nothing now has to buy again.
 
-**The ledger stands at 43 rows.** X-u closed N-109 and opened N-115; X-v then closed **N-112** and
+**The ledger stands at 41 rows.** X-u closed N-109 and opened N-115; X-v then closed **N-112** and
 **N-113** (both archived, `dbf154c7`) and opened **N-116** (the period-absence twin, owner X-x) and
 **N-117** (the fifteen surfaces that answer this state without the balance seam, owner X-y); X-aa then closed **N-119** and its review opened **N-120** (the emergency-fund footer's
 double-rounded derived units, owner X-z). X-w's
@@ -2853,8 +2891,6 @@ done, and is what drifted.
 | N-115 (X-u review) | **The dashboard tracks section pays TWICE for three loaders, and the expensive one is a full paycheck-engine run.** Plan step X-u deleted the duplicate debt PROJECTION; the duplicate LOADS behind it stayed, because `compute_tracks_section` shares one `BalanceContext` across its two producers and sharing the context is not sharing the loads. Measured on both databases with one active goal: `_load_dashboard_core_data` (accounts query + `get_all_periods` + `get_current_period`), `_load_account_params` (the AccountType query, `LoanParams`, `EscrowLine` + versions, the investment-params load) and `_get_current_paycheck_breakdown` each run **2x**, the last of them meaning **two full `calculate_paycheck` runs per render**. Its three call sites all pass `(user_id, core.all_periods, core.current_period)`, every argument off `core`, so the arg-threading closes with the memo | the SECOND breakdown alone: **7.2 ms / 7 SQL** in-request on `shekel`, **7.2 ms / 7 SQL** on `shekel_f3_final` -- against the 9 SQL X-u's whole deletion removed | **OPEN**, opened 2026-07-28 by X-u's adversarial design review, which counted the call graph where the step's own comment had counted one loader. Born with an owner (rule 6); X-i1's input tier is widened at its entry in the same commit, since three of these are not in the five loaders N-72 / N-89 / N-92 / N-93 named | X-i1 |
 | N-116 (X-v census) | **The period preconditions are the baseline precondition's twin, at 63 branches, and nobody has read them either.** The same AST pass that re-counted N-112 measured **63** branches in `app/` on period absence (`current_period is None`, `not all_periods`, `not periods`), concentrated in `routes/accounts/detail` (5), `investment_dashboard_service/_chart` (4), `investment_projection` (4), `retirement_projection` (4), `routes/grid` (3), `dashboard_pulse_service` (3), `investment_dashboard_service/_context` (3). It is the same question X-v answers -- "what does this surface say when a precondition it needs is absent" -- and the same failure mode is already visible: `_projection_start` falls back to `date.today()` while `_current_balance_from_map` falls back to `current_anchor_balance`, two different degraded values for one state inside ONE package. **It is NOT the same ruling, which is why it is its own step and not a widening of X-v**: a missing baseline is broken setup with a one-click repair, while having no pay periods is a state a legitimately-new user is IN, so its answer may well stay a degraded render. What it must not stay is 63 answers nobody has compared | `$0.00` today and NOT re-measured beyond the count -- the branches were located, not read; that reading is the step | **OPEN**, opened 2026-07-28 by plan step X-v's AST census. Born with an owner (rule 6) | X-x |
 | N-117 (X-v reviews) | **Fifteen surfaces decide the no-baseline state WITHOUT the balance seam, and neither instrument X-v built could see one of them.** They resolve the baseline directly (`get_baseline_scenario`), so X-v's AST census -- which followed `BalanceContext` -- was blind to them, and its route sweep graded only 5xx, so a surface answering with a plausible 200 passed. Both adversarial reviews found the class independently; the correctness one reached the worst instance by walking the call graph. **The two that FABRICATED A FINANCIAL STATEMENT were fixed in X-v3 under ruling R-CC** (the balance sheet reported assets / liabilities / equity of `$0.00` **and `in_balance = True`** over a ledger it cannot read; the income statement reported a period of zeros). The remaining fifteen answer a DIFFERENT question -- "what may a WRITE do without a scenario" -- five ways: `400 "No baseline scenario"` (the two grid create fragments, the carry-forward preview AND its POST mutator), a silent commit that generates nothing (template + transfer generation, `salary/_helpers`), `return 0` / `return None` (`period_population`, `spending_report_service`), a silently narrowed scenario set (both posting syncs), and a nullable id handed onward to a query (`escrow_rates`, `loan/params`) -- plus one that tells the user to **register a new account**, a repair story that has been wrong since `/grid/create-baseline` shipped | `$0.00` today and unreachable for the same measured reason as N-112 (the only baseline-less user is a companion, kept off every owner route by the ROLE check). The measured cost of the two already fixed was a balance sheet asserting its own tie-out | **OPEN**, opened 2026-07-29 by X-v's two adversarial reviews. Born with an owner (rule 6) | X-y |
-| N-118 (X-w trace) | **The liability rule has TWO id-based spellings, and this page's own stated identity holds only while they agree.** `net_worth_account_data.is_liability_account` compares the account type's `category_id` against the cached LIABILITY id; `_display.account_category_key` returns `"liability"` under exactly that condition and `"other"` for the degenerate cases the first treats as a non-liability. They are equivalent BY READING -- the same column, the same cached id, the same two degenerate arms -- and by nothing else. `_net_worth.compute_net_worth_today` reduces the hero with the first; `_sum_composition_at_period` keys each account's chart band off the second and takes the SIGN from the first, so a page that asserts "the horizon net at index 0 equals the net-worth hero and the 2 years series' current point" (`_horizon`'s module docstring) is asserting that two predicates agree. It is finding N-114's thesis one axis over: N-114 was one rule STORED beside the record that derives it, this is one rule WRITTEN twice. The fix is not a merge but a build-on -- Section 8's "a DRY refactor of a PREDICATE can move money" -- plus a decision about where the shared classifier lives, since the display ORDER belongs to `_display` and the classification RULE does not | `$0.00` today: the two provably agree on every account on both databases, and the equality-of-identity is pinned by `test_current_period_point_equals_hero_for_liquid_only` and its amortizing-loan twin. The measured cost of the last two-spellings-of-one-rule in this package was finding N-111 | **OPEN**, opened 2026-07-30 by plan step X-w's trace, which found both spellings inside the one reducer it was already rewriting and deliberately did not merge them there. Born with an owner (rule 6) | X-z |
-| N-120 (X-aa review) | **The emergency-fund footer's two derived units are converted from the ROUNDED months, not from the raw ratio, and one of them is a tenth off on the developer's own data.** `savings_goal_service.calculate_savings_metrics` quantizes `months_covered` to `0.1` and then derives `paychecks_covered` and `years_covered` from that rounded value. Measured on `shekel_f3_final`: `$4,076.92` of liquid savings over `$5,667.63` of average monthly expenses is `0.7193` raw months -- rendered `0.7 months` / `1.5 paychecks`, where converting the raw ratio gives `1.6`. A sweep over 1,946 (balance, expense) shapes found 1,111 divergences. **It is a genuine FORK, not an obvious defect**, which is why it is a row and not a fix: today's figures are internally consistent (`0.7` months IS `1.5` paychecks at the displayed grain, so a reader converting between the three gets the numbers on screen), while the raw-ratio answer is more accurate and the three would stop being conversions of each other. Whichever wins, the rule has to be written down -- the docstring claimed "the same span" until X-aa's review measured it | one tenth of a pay period on the prod-shape clone TODAY (`1.5` rendered against `1.6`); 1,111 of 1,946 sampled shapes diverge. No balance, and nothing downstream reads these three -- the footer is their only consumer | **OPEN**, opened 2026-07-30 by X-aa's adversarial review, which measured it while checking a docstring X-aa had just written. PRE-EXISTING: the arithmetic is byte-identical to `fd8abc05`. Born with an owner (rule 6) | X-z |
 | N-121 (X-z2) | **The cockpit reduces its liquid-savings total TWICE per render and publishes it under two keys.**  `_orchestrator._compute_emergency_fund_section` calls `_metrics._sum_liquid_balances(account_data)` for `total_savings`, and `_net_worth.compute_net_worth_today` calls the SAME function over the SAME `account_data` on the same render for `NetWorthToday.liquid`.  Two context keys carry the identical `Decimal`: `savings/dashboard.html:194,201` reads `total_savings` for the emergency-fund footer's guard and its "Based on $X savings" caption, and the cockpit hero chip reads `net_worth.today.liquid`.  It is ruling R-AZ's "one fact under two keys" with a redundant computation attached -- the reduction is pure CPU over data already in hand, so the cost is negligible and the DUPLICATION is the finding: a refinement to what counts as liquid lands on one reader and not the other, and the footer and the hero chip disagree with nothing failing.  The fix is not a merge but a decision about which key survives, since both are template-facing | `$0.00` today -- one function, one input, so the two are equal by construction on every render.  The measured cost is one redundant reduction over 8 accounts per `/savings` render | **OPEN**, opened 2026-07-30 by plan step X-z2, which made it visible by extracting the emergency-fund section, and FILED 2026-07-30 out of X-z's two adversarial reviews -- both found that X-z2's docstring claimed this row existed when it did not, which is rule 6's own failure mode written inside a claim of compliance with rule 6.  Born with an owner (rule 6) | X-ac |
 | N-122 (X-z reviews) | **The asset-vs-liability rule has a SECOND home on the WRITE path, and plan step X-z's own docstring said it could not.**  `ledger_account_service.ledger_class_id_for_category:156` compares an account type's `category_id` against the cached LIABILITY id and answers Liability-class / Asset-class -- the same column, the same cached id and the same two-way question `account_category.is_liability_account` answers for every read surface.  `_ledger_class_id_for_account:178` applies it to a real account, `create_ledger_account_for_account` pairs the posting account with the class it returns, `:282` re-classes on a type change, and `account_validation:192-193` uses it to decide whether a type change flips an account's linked-ledger class.  The two agree by READING, which is finding N-118's condition exactly, surviving where the money is POSTED rather than displayed.  **Not fixable inside a refactor that proves itself byte-identical**: a re-class changes the class an account's postings are booked against, and `account_validation` exists to refuse that for an account that already carries them, so the trace has to answer what happens to those before the predicate is merged | `$0.00` today: `AcctCategoryEnum` has exactly four members and both spellings compare against the same id, so they cannot disagree.  A FIFTH category ruled a liability moves every cockpit surface together and leaves this one behind -- the account's postings book against an ASSET ledger account, the balance sheet reports the wrong side, and nothing raises | **OPEN**, opened 2026-07-30 by BOTH of X-z's adversarial reviews independently, each reaching it by walking the call graph rather than by grepping the predicate's spelling (Section 8).  Born with an owner (rule 6) | X-ab |
 
@@ -3080,6 +3116,32 @@ done, and is what drifted.
   guarantees, it asserts nothing; assert the VALUES, and run the mutants before believing the test.
   This is Section 7.3 with a new disguise -- the control looked like a control, passed, and was
   committed inside the step whose entire thesis is that a guard which cannot fail is not a guard.
+* **A LIST RETURNED FOR ITS COUNT MUST HAVE ITS COUNT ASSERTED.** X-z3's Jinja gate arm was built
+  on a helper whose docstring said "a list, not a set: the count is part of what the arm asserts,
+  so a site silently disappearing is a failure" -- and the arm asserted non-empty, subset and
+  membership, never the length. Deleting the guard on the entire debt-summary footer leaves one
+  liability comparison and passes all three. Both adversarial reviewers found it independently, by
+  mutating the real template rather than reading the assertions. The step's own committed control
+  renamed BOTH sites to a NON-band, which only the subset arm catches -- so the control was
+  strictly weaker than the failure it advertised. When a helper's return TYPE is justified by a
+  property, assert that property, and pick mutants that survive the arm rather than ones that
+  obviously do not.
+* **A BASELINE IS ONLY A BASELINE AGAINST THE DATABASE IT WAS TAKEN FROM.** X-z's render harness
+  authenticated and hit `/savings`, and the app's rolling window CREATED a pay period in both dev
+  databases (timestamps `02:19:52` and `02:20:20` UTC, found by reading `created_at`). Every stored
+  harness blob taken before that then diffed against every blob taken after, showing a new period
+  key in every account's dense map -- which reads exactly like a producer regression. It was
+  diagnosed only because the extra "data point" was chased instead of reported. Re-capture the
+  reference from a `git worktree` at the last shipped commit on the CURRENT database, and treat any
+  instrument that WRITES as invalidating every baseline it straddles.
+* **AN INSTRUMENT THAT CANNOT AUTHENTICATE REPORTS NO DIFFERENCES, LOUDLY AND WRONGLY.** Two
+  successive drafts of that same harness rendered the LOGIN page for all five URLs -- first from
+  wrong paths (404, `follow_redirects` swallowing it), then from a hand-built session Flask-Login's
+  strong protection discarded -- and both reported five identical files across both trees. "No diff"
+  from an instrument that graded nothing is the most dangerous result an instrument can give,
+  because it is indistinguishable from success. The assertions that caught it (`status == 200`, and
+  `"<title>Login" not in body`) are cheap, belong in every render harness, and were added only after
+  the second failure.
 * Documents rot in days here. This file is the only one allowed to rot, and every edit re-dates
   it.
 
