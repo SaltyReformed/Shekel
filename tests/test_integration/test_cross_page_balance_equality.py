@@ -89,14 +89,14 @@ from tests._test_helpers import freeze_today
 def _freeze_today_mid_month(monkeypatch):
     """Run this module MID-MONTH, because its periods are calendar months.
 
-    **Found by plan step X-x's trace on 2026-07-31, with six of this module's
-    tests red on that day, at ``HEAD`` and at all 25 preceding commits, while CI
-    had been green on 2026-07-28.**  ``_build_cross_page_calendar_periods``
-    builds one period per calendar month and the anchor is the month containing
-    today, so on the LAST day of any month ``date.today() == anchor.end_date``
-    -- and every hand-computed ``expected_balance`` in ``_CASES`` assumes today
-    is inside its period, not on its final day.  The suite was a time bomb that
-    fired roughly 12 days a year and blocked the merge gate on each of them.
+    **Found 2026-07-31 with six of this module's tests red on that day, at
+    ``HEAD`` and at every commit for weeks, while CI had last been green on
+    2026-07-28.**  ``_build_cross_page_calendar_periods`` builds one period per
+    calendar month and the anchor is the month containing today, so on the LAST
+    day of any month ``date.today() == anchor.end_date`` -- and every
+    hand-computed ``expected_balance`` in ``_CASES`` assumes today is inside its
+    period, not on its final day.  The suite was a time bomb that fired roughly
+    12 days a year and blocked the merge gate on each of them.
 
     **The production behaviour it trips over was MEASURED CORRECT and is NOT
     changed**, which is the only reason freezing the clock here is a fix and not
@@ -106,18 +106,18 @@ def _freeze_today_mid_month(monkeypatch):
     whole remaining plan legitimately rolls into the next one.  The column then
     equals the settled balance, and the money is conserved: measured on the
     prod-shape clone, the current column went ``$406.92 -> $2,824.26`` on the
-    period's last day while EVERY later column and the horizon's last stayed put.
-    Relaxing the floor to ``as_of`` was tried and REJECTED by measurement: it
-    moves the real Checking account's balance TODAY from ``$2,824.26`` to
+    period's last day while every later column and the horizon's last stayed
+    put.  Relaxing the floor to ``as_of`` was tried and REJECTED by measurement:
+    it moves the real Checking account's balance TODAY from ``$2,824.26`` to
     ``$2,978.28``, counting income merely expected today as money in hand, and
-    ``$2,824.26`` is the figure this arc verified to the cent against the
-    persisted double-entry ledger.
+    ``$2,824.26`` is the figure verified to the cent against the persisted
+    double-entry ledger.
 
     The 15th rather than a pinned calendar date (the
-    ``tests/test_services/conftest.py`` precedent freezes to ``2026-03-20``): the
-    property this module needs is "strictly inside the month", and deriving it
-    from the real month keeps the fixture's year range current instead of ageing
-    into a second kind of rot.
+    ``tests/test_services/conftest.py`` precedent freezes to ``2026-03-20``):
+    the property this module needs is "strictly inside the month", and deriving
+    it from the real month keeps the fixture's year range current instead of
+    ageing into a second kind of rot.
     """
     freeze_today(monkeypatch, date.today().replace(day=15))
 
@@ -125,10 +125,9 @@ def _freeze_today_mid_month(monkeypatch):
 def test_the_frozen_clock_is_strictly_inside_its_month():
     """The precondition the module's expectations rest on, asserted.
 
-    A fixture that silently stops exercising what it names is this arc's
-    signature defect (Section 8: "a new fixture is a new control, and it can be
-    born dead").  Without this, a future edit to the freeze above could put the
-    clock back on a month boundary and every ``expected_balance`` would be
+    A fixture that silently stops exercising what it names is this codebase's
+    signature defect.  Without this, a future edit to the freeze above could put
+    the clock back on a month boundary and every ``expected_balance`` would be
     graded against the wrong day again -- silently for 11 months of the year.
     """
     today = date.today()

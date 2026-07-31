@@ -557,11 +557,11 @@ class TestAbsoluteInvariantPerAccount:
             origin = _origin_instant(savings)
 
             _settle_expense(
-                seed_user, savings, "200.00", origin + timedelta(hours=1),
+                seed_user, savings, "200.00", origin + timedelta(days=1),
             )
-            _true_up_at(savings, "350.00", origin + timedelta(hours=2))
+            _true_up_at(savings, "350.00", origin + timedelta(days=2))
             _settle_expense(
-                seed_user, savings, "100.00", origin + timedelta(hours=3),
+                seed_user, savings, "100.00", origin + timedelta(days=3),
             )
             db.session.commit()
 
@@ -830,11 +830,11 @@ class TestRevertAfterTrueupSelfHeals:
             origin = _origin_instant(savings)
 
             spend = _settle_expense(
-                seed_user, savings, "200.00", origin + timedelta(hours=1),
+                seed_user, savings, "200.00", origin + timedelta(days=1),
             )
-            _true_up_at(savings, "350.00", origin + timedelta(hours=2))
+            _true_up_at(savings, "350.00", origin + timedelta(days=2))
             _settle_expense(
-                seed_user, savings, "100.00", origin + timedelta(hours=3),
+                seed_user, savings, "100.00", origin + timedelta(days=3),
             )
             db.session.commit()
             _assert_account_anchors_reconcile(scenario_id)
@@ -1341,11 +1341,11 @@ class TestBackfillEqualsGoForward:
             db.session.commit()
             origin = _origin_instant(savings)
             _settle_expense(
-                seed_user, savings, "200.00", origin + timedelta(hours=1),
+                seed_user, savings, "200.00", origin + timedelta(days=1),
             )
-            _true_up_at(savings, "350.00", origin + timedelta(hours=2))
+            _true_up_at(savings, "350.00", origin + timedelta(days=2))
             _settle_expense(
-                seed_user, savings, "100.00", origin + timedelta(hours=3),
+                seed_user, savings, "100.00", origin + timedelta(days=3),
             )
             db.session.commit()
             forward_total = posting_service.account_posting_total(

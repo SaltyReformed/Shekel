@@ -129,63 +129,6 @@ def to_display_civil_date(paid_at: datetime | None, fallback: date) -> date:
     return display_date
 
 
-def utc_civil_date(instant: datetime) -> date:
-    """Return the UTC calendar date of a stored instant.
-
-    The Python counterpart of the historical backfill's
-    ``(paid_at AT TIME ZONE 'UTC')::date``: a stored instant's civil date in
-    UTC, the app's STORAGE convention, NOT the display timezone
-    (:func:`to_display_date` would shift a late-evening Eastern event onto the
-    next day and diverge from the backfill and from ``journal_entries.entry_date``).
-
-    Naive values are assumed UTC (every ``timestamptz`` in this app is stored
-    UTC), matching :func:`to_display_tz`; a naive value read through
-    ``astimezone`` would otherwise be interpreted in the server's local zone.
-
-    Args:
-        instant: A stored ``paid_at`` / ``created_at`` / ``asserted_at`` instant.
-
-    Returns:
-        The UTC calendar date of *instant*.
-    """
-    if instant.tzinfo is None:
-        return instant.date()
-    return instant.astimezone(timezone.utc).date()
-
-
-def to_utc_civil_date(paid_at: datetime | None, fallback: date) -> date:
-    """Return the UTC civil date of a settle instant, or ``fallback``.
-
-    The STORAGE-timezone counterpart of :func:`to_display_civil_date`: the one
-    derivation of "which civil day did this settle on" for the balance ledgers,
-    which stay UTC because they feed the STORED ``journal_entries.entry_date``.
-
-    It is shared, deliberately, by the two producers that must agree on that day
-    or the sum-of-postings readers and the fold would diverge: the posting WRITER
-    (``app.services.posting_service._civil_settle_date``, which dates every cash
-    entry) and the fold's payment-visibility rule
-    (``app.services.loan_ledger._visible.payment_visible_on``).  One derivation is
-    what makes the balance step C2 ("one clock -- an event happens on the date it
-    happened") true by construction rather than by two copies agreeing.
-
-    A NULL ``paid_at`` (a historical settle predating the ``paid_at`` sync, or a
-    reverted row whose timestamp was cleared) falls back to the given date --
-    callers pass the source's pay-period ``start_date``, the same fallback the
-    entry dating uses, so the loan and the checking outflow still move on the same
-    day (developer ruling, 2026-07-17).
-
-    Args:
-        paid_at: The settle instant read back from the source row, or ``None``.
-            Naive values are assumed UTC (the storage convention).
-        fallback: The civil date to return when ``paid_at`` is ``None`` (the
-            source's pay-period ``start_date``).
-
-    Returns:
-        The UTC calendar date of ``paid_at``, or ``fallback``.
-    """
-    if paid_at is None:
-        return fallback
-    return utc_civil_date(paid_at)
 
 
 def utc_instant(instant: datetime) -> datetime:

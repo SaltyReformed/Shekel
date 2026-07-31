@@ -32,7 +32,7 @@ back to the source's pay period ``start_date`` when ``paid_at`` is NULL:
 
 The ``transfer_id IS NULL`` guard on the transaction bucket makes the three
 buckets a PARTITION of the live ledger identical to the write-side walk's
-(:func:`app.services.account_posting_service._walk._transaction_source_instants`):
+(:func:`app.services.account_posting_service._walk._transaction_source_days`):
 a hypothetical dual-linked entry classifies as transfer-linked, never both.
 
 **Instant vs civil date.**  The write-side walk partitions by UTC INSTANT
@@ -516,7 +516,7 @@ def _transfer_attribution_dates(transfer_ids: set[int]) -> dict[int, date]:
     """
     # Pylint: ``duplicate-code`` -- the income-shadow query mirrors the
     # write-side walk's loader
-    # (``account_posting_service._walk._transfer_source_instants``) by
+    # (``account_posting_service._walk._transfer_source_days``) by
     # construction: the reader RESTATES the walk's transfer attribution rather
     # than importing a write-package internal, keeping this read package
     # decoupled from the write package (the same independent-restatement stance

@@ -74,7 +74,11 @@ from app.posting_infrastructure import (
     apply_ledger_append_only_privileges,
     apply_posting_infrastructure,
 )
-from app.services import account_posting_service, loan_posting_service
+from app.services import (
+    account_posting_service,
+    loan_posting_service,
+    posting_service,
+)
 # pylint: enable=wrong-import-position
 
 
@@ -184,6 +188,56 @@ def migrate_existing_database():
     print("Migrations complete.")
 
 
+def resync_all_cash_postings_after_migration():
+    """Re-date every settled cash source's postings after the chain is at head.
+
+    Ruling **R-DH (b)** (2026-07-31,
+    ``docs/audits/balance_architecture/anchor_settle_partition.md``).  A journal
+    entry's ``entry_date`` is derived by
+    ``posting_service._civil_settle_date``, which moved from the UTC civil day
+    to the USER's on that date, together with both folds that read it.  Every
+    entry written before then carries the old day, so the STORED ledger and the
+    readers disagree for any settle recorded between midnight UTC and the user's
+    midnight -- on production, one ``$1,910.95`` mortgage payment stamped
+    2026-07-02 00:38:53 UTC that belongs to the evening of 2026-07-01.
+
+    Like its two siblings below this cannot run inside an Alembic migration: it
+    needs ``ref_cache`` and the service layer, and this migration host builds the
+    app with ``init_ref_cache=False`` (the pre-migration bootstrap window; see
+    the ``3104f87`` deploy fix).  And like them it must NOT be a raw-SQL
+    restatement of the dating rule -- one statement of "which civil day did this
+    settle on" is the property the whole balance arc exists to hold, so it drives
+    the go-forward sync instead
+    (:func:`app.services.posting_service.resync_all_cash_postings`).
+
+    **It runs FIRST of the three, and the order is the dependency direction.**
+    The anchor walk computes each correction's ``ledger_before`` from the source
+    postings on the account's linked ledger, so the sources are brought to target
+    before the corrections that sit on top of them are reconciled.  (The anchor
+    walk reads posting AMOUNTS grouped by source rather than their dates, so this
+    ordering is defence rather than a live coupling -- stated so a later reader
+    does not reorder it on the assumption that it is arbitrary.)
+
+    Runs only on the existing-database path (a fresh database has no settled
+    sources).  Idempotent and self-healing via reconcile-to-target, so it is safe
+    on every deploy: a source already at target posts nothing.  Commits in one
+    transaction; the deferred balanced-journal trigger validates every entry at
+    that COMMIT, so an unbalanced re-post aborts the deploy loud.
+    """
+    print("Re-dating settled cash postings (transactions + transfers)...")
+    # Fresh transaction + ref_cache init, matching the two hooks below (see the
+    # loan backfill for the idle-read-transaction rationale).  This hook runs
+    # FIRST, so it is the one that opens ref_cache for the sequence.
+    db.session.rollback()
+    ref_cache.init(db.session)
+    transactions, transfers = posting_service.resync_all_cash_postings()
+    db.session.commit()
+    print(
+        f"Cash posting re-date complete ({transactions} transaction(s), "
+        f"{transfers} transfer(s) walked)."
+    )
+
+
 def backfill_loan_payment_postings_after_migration():
     """Post the historical loan genesis ledger after the chain is at head.
 
@@ -282,5 +336,6 @@ if __name__ == "__main__":
             init_fresh_database(flask_app)
         else:
             migrate_existing_database()
+            resync_all_cash_postings_after_migration()
             backfill_loan_payment_postings_after_migration()
             backfill_all_account_anchor_postings_after_migration()

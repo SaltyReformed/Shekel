@@ -336,7 +336,7 @@ def _actual_steps(
     That cancellation depends on ``dated_deltas`` emitting the opening at exactly
     the day and amount the compensator books.  It no longer RE-DERIVES either
     (plan step X-c1): both read the correction's own
-    :attr:`~app.services.cash_ledger.CashAnchorCorrection.visible_on` /
+    :attr:`~app.services.cash_ledger.CashAnchorCorrection.observed_on` /
     :attr:`~app.services.cash_ledger.CashAnchorCorrection.delta`, so the pair is
     stated once on the record and the leaf's list is a merge of the same pair.
     The pin stays, because "one statement" is a property of today's code rather
@@ -368,7 +368,7 @@ def _actual_steps(
         return _ZERO_MONEY, steps
 
     opening = walk.anchor_corrections[0]
-    steps.append((opening.visible_on, -opening.delta))
+    steps.append((opening.observed_on, -opening.delta))
     return opening.delta, steps
 
 
@@ -867,7 +867,7 @@ def _cash_sums(
     """
     moved = spans.zeroed()
     for fact in walk.source_facts:
-        period_id = spans.containing(fact.visible_on)
+        period_id = spans.containing(fact.settled_on)
         if period_id is not None:
             moved[period_id] += fact.delta
     for day, net in day_nets.items():
@@ -904,7 +904,7 @@ def _assertion_sums(
     """
     asserted = spans.zeroed()
     for correction in walk.anchor_corrections[1:]:
-        period_id = spans.containing(correction.visible_on)
+        period_id = spans.containing(correction.observed_on)
         if period_id is not None:
             asserted[period_id] += correction.delta
     return asserted

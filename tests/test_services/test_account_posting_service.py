@@ -196,19 +196,27 @@ class TestWalkAccountLedger:
             assert corrections[0].anchor.anchor_balance == Decimal("500.00")
             assert corrections[0].ledger_before == Decimal("0.00")
 
-    def test_pre_assertion_settle_is_absorbed(self, app, db, seed_user):
-        """A settle paid BEFORE the assertion instant is inside ledger_before.
+    def test_a_settle_on_an_earlier_day_is_inside_the_opening(
+        self, app, db, seed_user,
+    ):
+        """A settle dated an EARLIER DAY than the opening is in ledger_before.
 
-        Savings anchored $500.00; a $200.00 expense settled with paid_at one
-        hour BEFORE the origination assertion: the source is absorbed, so the
-        opening's ledger_before is -200.00 (and its delta 500 - (-200) =
-        +700.00 -- the anchor already reflected that spend).
+        Savings anchored $500.00; a $200.00 expense settled the day BEFORE the
+        origination assertion: the source is absorbed, so the opening's
+        ledger_before is -200.00 (and its delta 500 - (-200) = +700.00 -- the
+        anchor already reflected that spend).
+
+        **The boundary is a DAY and it is strict for an OPENING** (ruling R-DH,
+        as amended 2026-07-31): an opening is where TRACKING STARTS, so only
+        strictly earlier days are inside it, and its own day's sources ride on
+        top.  The fixture moved from "one hour before" to "one day before" for
+        that reason -- an hour is not a unit this partition has any more.
         """
         with app.app_context():
             account = _make_account(seed_user, "500.00")
             origin = _origin_instant(account)
             _settle_expense(
-                seed_user, account, "200.00", origin - timedelta(hours=1),
+                seed_user, account, "200.00", origin - timedelta(days=1),
             )
             _db.session.commit()
 
@@ -218,18 +226,28 @@ class TestWalkAccountLedger:
             assert len(corrections) == 1
             assert corrections[0].ledger_before == Decimal("-200.00")
 
-    def test_post_assertion_settle_rides_on_top(self, app, db, seed_user):
-        """A settle paid AFTER the assertion instant is NOT absorbed.
+    def test_a_settle_on_the_openings_own_day_rides_on_top(
+        self, app, db, seed_user,
+    ):
+        """A settle dated the opening's OWN day is NOT absorbed.
 
-        Savings anchored $500.00; a $200.00 expense settled with paid_at one
-        hour AFTER the origination assertion: the opening's ledger_before
-        stays 0.00 (the settle rides on top of the asserted balance).
+        Savings anchored $500.00; a $200.00 expense settled an hour after the
+        origination assertion -- the same civil day: the opening's
+        ledger_before stays 0.00 and the settle rides on top of the asserted
+        balance.
+
+        **This is the opening's half of ruling R-DH** (as amended 2026-07-31).
+        A TRUE-UP would absorb this row, because a true-up is the day's closing
+        balance; an OPENING must not, or a brand-new account silently discards
+        the balance the user just typed -- assert an opening of $500 and record
+        a $200 expense the same day, and absorbing it would answer $500 for an
+        account holding $300.
         """
         with app.app_context():
             account = _make_account(seed_user, "500.00")
             origin = _origin_instant(account)
             _settle_expense(
-                seed_user, account, "200.00", origin + timedelta(hours=1),
+                seed_user, account, "200.00", origin + timedelta(days=1),
             )
             _db.session.commit()
 
@@ -262,12 +280,17 @@ class TestWalkAccountLedger:
     def test_transfer_attribution_uses_income_shadow_instant(
         self, app, db, seed_user,
     ):
-        """A transfer is attributed by its INCOME shadow's paid_at.
+        """A transfer is attributed by its INCOME shadow's settled day.
 
         Two Checking -> Savings transfers into a $500.00-anchored Savings:
-        $50.00 settled one hour BEFORE the origination assertion (absorbed)
-        and $150.00 one hour AFTER (rides on top).  The opening's
-        ledger_before is therefore exactly +50.00.
+        $50.00 settled the day BEFORE the origination assertion (absorbed) and
+        $150.00 the day AFTER (rides on top).  The opening's ledger_before is
+        therefore exactly +50.00.
+
+        The offsets are DAYS since ruling R-DH (2026-07-31): the partition
+        reads a civil day, and an opening absorbs only strictly earlier ones,
+        so an hour before the assertion is the opening's OWN day and would be
+        counted the other way.
         """
         with app.app_context():
             account = _make_account(seed_user, "500.00")
@@ -275,12 +298,12 @@ class TestWalkAccountLedger:
             create_settled_transfer(
                 seed_user, _db.session, seed_user["account"], account,
                 seed_user["bootstrap_period"], amount=Decimal("50.00"),
-                paid_at=origin - timedelta(hours=1),
+                paid_at=origin - timedelta(days=1),
             )
             create_settled_transfer(
                 seed_user, _db.session, seed_user["account"], account,
                 seed_user["bootstrap_period"], amount=Decimal("150.00"),
-                paid_at=origin + timedelta(hours=1), name="Post-anchor",
+                paid_at=origin + timedelta(days=1), name="Post-anchor",
             )
             _db.session.commit()
 
@@ -290,32 +313,39 @@ class TestWalkAccountLedger:
             assert len(corrections) == 1
             assert corrections[0].ledger_before == Decimal("50.00")
 
-    def test_trueup_moment_partition(self, app, db, seed_user):
-        """The CRITICAL-1 case: a true-up absorbs only pre-assertion settles.
+    def test_trueup_day_partition(self, app, db, seed_user):
+        """The CRITICAL-1 case: a true-up absorbs only settles up to its own day.
 
-        Savings anchored $500.00 (origination, instant T).  A $200.00
-        expense paid at T+1h, a true-up asserting $350.00 at T+2h, a $100.00
-        expense paid at T+3h:
+        Savings anchored $500.00 (origination, day T).  A $200.00 expense on
+        T+1, a true-up asserting $350.00 on T+2, a $100.00 expense on T+3:
 
           opening: ledger_before 0.00              (delta +500.00)
           true-up: ledger_before 500 - 200 = 300.00 (delta +50.00 -- the
                    engine's answer was 300, the user asserted 350)
 
-        The T+3h settle is attributed AFTER the true-up and perturbs
-        nothing.  A period-granular walk would have absorbed BOTH settles
-        (all three events share one period) and mis-stated the true-up.
+        The T+3 settle is dated after the true-up's day and perturbs nothing.
+        A period-granular walk would have absorbed BOTH settles (all four
+        events share one 14-day pay period) and mis-stated the true-up, which
+        is what this test exists to catch.
+
+        **The fixture spans DAYS where it used to span hours** (ruling R-DH,
+        2026-07-31).  The partition is day-granular now, so hour offsets put
+        every event on one day and the case would no longer discriminate
+        day-granular from period-granular at all -- it would pass under both.
+        The expected figures are unchanged; only the units the fixture
+        separates its events by had to move to the units the rule reads.
         """
         with app.app_context():
             account = _make_account(seed_user, "500.00")
             origin = _origin_instant(account)
             _settle_expense(
-                seed_user, account, "200.00", origin + timedelta(hours=1),
+                seed_user, account, "200.00", origin + timedelta(days=1),
             )
             _add_assertion(
-                account, "350.00", origin + timedelta(hours=2),
+                account, "350.00", origin + timedelta(days=2),
             )
             _settle_expense(
-                seed_user, account, "100.00", origin + timedelta(hours=3),
+                seed_user, account, "100.00", origin + timedelta(days=3),
             )
             _db.session.commit()
 
@@ -362,10 +392,10 @@ class TestWalkAccountLedger:
             account = _make_account(seed_user, "500.00")
             origin = _origin_instant(account)
             txn = _settle_expense(
-                seed_user, account, "200.00", origin + timedelta(hours=1),
+                seed_user, account, "200.00", origin + timedelta(days=1),
             )
             posting_service.sync_transaction_postings(txn, settled=False)
-            _add_assertion(account, "480.00", origin + timedelta(hours=2))
+            _add_assertion(account, "480.00", origin + timedelta(days=2))
             _db.session.commit()
 
             corrections = account_posting_service.walk_account_ledger(
@@ -505,8 +535,9 @@ class TestSyncAccountAnchorPostings:
     ):
         """The CRITICAL-1 fixture reconciles to the absolute invariant.
 
-        From the walk fixture (anchor 500, spend 200 at T+1h, true-up 350 at
-        T+2h, spend 100 at T+3h):
+        From the walk fixture (anchor 500, spend 200 on T+1, true-up 350 on
+        T+2, spend 100 on T+3 -- DAY offsets since ruling R-DH, see
+        ``test_trueup_day_partition`` for why hours no longer separate them):
 
           opening +500.00, true-up +50.00, sources -200.00 - 100.00
           => linked total 250.00 == latest anchor 350 + post-assertion -100
@@ -517,11 +548,11 @@ class TestSyncAccountAnchorPostings:
             account = _make_account(seed_user, "500.00")
             origin = _origin_instant(account)
             _settle_expense(
-                seed_user, account, "200.00", origin + timedelta(hours=1),
+                seed_user, account, "200.00", origin + timedelta(days=1),
             )
-            _add_assertion(account, "350.00", origin + timedelta(hours=2))
+            _add_assertion(account, "350.00", origin + timedelta(days=2))
             _settle_expense(
-                seed_user, account, "100.00", origin + timedelta(hours=3),
+                seed_user, account, "100.00", origin + timedelta(days=3),
             )
             _db.session.commit()
 
@@ -569,11 +600,11 @@ class TestSyncAccountAnchorPostings:
             account = _make_account(seed_user, "500.00")
             origin = _origin_instant(account)
             txn = _settle_expense(
-                seed_user, account, "200.00", origin + timedelta(hours=1),
+                seed_user, account, "200.00", origin + timedelta(days=1),
             )
-            _add_assertion(account, "350.00", origin + timedelta(hours=2))
+            _add_assertion(account, "350.00", origin + timedelta(days=2))
             _settle_expense(
-                seed_user, account, "100.00", origin + timedelta(hours=3),
+                seed_user, account, "100.00", origin + timedelta(days=3),
             )
             account_posting_service.sync_account_anchor_postings(
                 account.id, scenario_id,
@@ -632,10 +663,10 @@ class TestSyncAccountAnchorPostings:
             account = _make_account(seed_user, "500.00")
             origin = _origin_instant(account)
             txn = _settle_expense(
-                seed_user, account, "200.00", origin + timedelta(hours=1),
+                seed_user, account, "200.00", origin + timedelta(days=1),
             )
             trueup_row = _add_assertion(
-                account, "350.00", origin + timedelta(hours=2),
+                account, "350.00", origin + timedelta(days=2),
             )
             account_posting_service.sync_account_anchor_postings(
                 account.id, scenario_id,
@@ -645,7 +676,7 @@ class TestSyncAccountAnchorPostings:
             posting_service.sync_transaction_postings(txn, settled=False)
             _settle_expense(
                 seed_user, account, "150.00",
-                origin + timedelta(hours=1, minutes=30),
+                origin + timedelta(days=1, minutes=30),
             )
             account_posting_service.sync_account_anchor_postings(
                 account.id, scenario_id,
@@ -690,10 +721,10 @@ class TestSyncAccountAnchorPostings:
             account = _make_account(seed_user, "500.00")
             origin = _origin_instant(account)
             _settle_expense(
-                seed_user, account, "200.00", origin + timedelta(hours=1),
+                seed_user, account, "200.00", origin + timedelta(days=1),
             )
             trueup_row = _add_assertion(
-                account, "350.00", origin + timedelta(hours=2),
+                account, "350.00", origin + timedelta(days=2),
             )
             account_posting_service.sync_account_anchor_postings(
                 account.id, scenario_id,
@@ -824,7 +855,7 @@ class TestSyncEntryPoints:
                 seed_user, _db.session, seed_user["bootstrap_period"],
                 Decimal("40.00"), account=account, scenario=what_if,
             )
-            txn.paid_at = origin + timedelta(hours=1)
+            txn.paid_at = origin + timedelta(days=1)
             _db.session.commit()
 
             account_posting_service.sync_account_anchor_postings_all_scenarios(

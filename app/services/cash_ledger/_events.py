@@ -28,12 +28,46 @@ persisted ledger a function of the wall clock at the moment the sync happened to
 run, which is a corruption generator rather than a cache (plan step A3,
 ``4e46a0a8``).
 
-**One instant per fact; its civil day falls out of it.**  Attribution is resolved
-ONCE, into an instant (:func:`attribution_instant`), and the civil date an event
-counts FROM is that instant's UTC day.  Two independently-derived keys for one
-question is finding N-34's shape -- the loan split keyed its rate on the pay
-period while its ordering keyed on the due date, and the two disagreed by $500.00
-on a single payment.  Here they cannot: there is one key.
+**ONE CIVIL DAY per fact, and it is the USER'S day** (ruling R-DH,
+``docs/audits/balance_architecture/anchor_settle_partition.md``).  A settled row
+carries :attr:`CashSourceFact.settled_on` and an assertion carries
+:attr:`CashAnchorFact.observed_on`; both are resolved ONCE at construction, and
+every consumer -- the partition, the fold's sampling, the period bucketing, the
+posting writer's entry dating -- reads that one field.  Two independently-derived
+keys for one question is finding N-34's shape (the loan split keyed its rate on
+the pay period while its ordering keyed on the due date, and the two disagreed by
+$500.00 on a single payment).  Here they cannot: there is one key.
+
+**This module carried INSTANTS until 2026-07-31, and the change is ruling R-DH.**
+An assertion is the CLOSING BALANCE for its civil day, so it absorbs every
+movement dated that day whatever order the two were recorded in.  The instant
+partition it replaces decided that question by CLICK ORDER -- neither
+``Transaction.paid_at`` (``db.func.now()`` at the click,
+``status_seam.py:105``) nor ``AccountAnchorHistory.created_at`` measures when
+money moved -- and on production 2026-07-31 an ordinary bookkeeping session
+(read the bank, enter the anchor, tick off what cleared) subtracted ``$4,001.42``
+of already-cleared payments a second time, rendering the grid's projected end
+balance at ``-$4,021.37`` against a true ``-$19.95``.  Measured over four months
+of real data, the day partition cuts the correction the model must plug from
+``$40,554.34`` gross / ``-$6,998.90`` net to ``$14,286.82`` / ``-$940.06``, and
+it is the only rule under which the walk lands on the balance the bank shows.
+
+**The day is ``America/New_York``, not UTC, and that is ruling R-DH (b).**
+``pay_periods.start_date`` / ``end_date`` and ``transactions.due_date`` are plain
+``DATE`` columns meaning the USER's civil days, so deriving an event's day in UTC
+and comparing it against them compares two different calendars.  Measured: 22 of
+139 real settled rows land on a different day under UTC, 5 of them in a different
+pay period (a ``$1,910.95`` mortgage payment twice), and two Eastern evenings had
+ONE bookkeeping session split across two UTC days -- the shape that would defeat
+the partition above.  Storage is unchanged; every instant is still stored UTC.
+
+**A row with no ``paid_at`` keeps its civil date UNCONVERTED, and that is
+load-bearing rather than defensive.**  Its fallback is the pay period's
+``start_date`` -- already a civil date, never an instant -- so converting it
+would move it to the previous day.  Four of the real Checking account's settled
+rows carry the shape, and 3 of the 4 would cross a pay-period boundary.
+:func:`settled_civil_day` therefore falls back to the date itself rather than
+manufacturing an instant to convert.
 
 Services-boundary discipline (``CLAUDE.md`` Architecture / B6-01).  Plain data
 in, frozen dataclasses out; no Flask symbol, no writes.  All money is
@@ -52,50 +86,77 @@ from app.extensions import db
 from app.models.account import AccountAnchorHistory
 from app.models.transaction import Transaction
 from app.utils.balance_predicates import settled_status_ids
-from app.utils.dates import utc_civil_date, utc_day_start_instant, utc_instant
+from app.utils.dates import to_display_civil_date, to_display_date, utc_instant
 
 from ._amounts import settled_cash_leg
 from ._facts import _unwindowed_contributing_rows
 
 
-def attribution_instant(
-    paid_at: datetime | None, period_start: date,
-) -> datetime:
-    """Return the instant a settled source is attributed to.
+# Walk order WITHIN one civil day (ruling R-DH (a), as amended for the OPENING
+# on 2026-07-31).  Two assertion kinds, two placements, and the difference is
+# what each one MEANS:
+#
+# * an **OPENING** is where TRACKING STARTS, not a day's close.  It says what
+#   the account holds as recording begins, so it sorts BEFORE its own day's
+#   sources and they ride on top of it.  Absorbing them would let a brand-new
+#   account silently discard the balance the user just typed -- assert an
+#   opening of $100, record a $100 transfer in the same day, and the reset
+#   swallows it for a $100 account that holds $200.
+# * a **TRUE-UP** is the day's CLOSING balance -- the user read their bank -- so
+#   it sorts AFTER that day's sources and absorbs them.  That is R-DH (a), and
+#   it is what makes the projection independent of the order the user clicks.
+#
+# Sources on EARLIER days still precede the opening, which is what ruling R-I
+# back-projects into the fold's seed; this ordering does not touch that arm.
+_OPENING_ORDER = 0
+_SOURCE_ORDER = 1
+_TRUEUP_ORDER = 2
 
-    The ONE statement of "when did this cash actually move", shared by every
-    consumer that partitions source facts against an anchor's assertion instant:
-    this leaf's walk (:func:`app.services.cash_ledger.walk_cash_ledger`) and the
-    account posting walk (:mod:`app.services.account_posting_service`), which
-    reaches the same rule from the postings side until plan step X-d retires it
-    onto this one.  A second copy of the rule is precisely how the projection and
-    the posted ledger would drift about which settles an anchor already covers --
-    the divergence Phase X exists to close, so the rule is not written twice.
 
-    The instant is ``paid_at`` normalized to UTC, falling back to midnight UTC of
-    the source's pay-period ``start_date`` when ``paid_at`` was never recorded (a
-    historical settle predating the ``paid_at`` sync, or a row whose timestamp a
-    revert cleared).  That is the instant analogue of the
-    ``COALESCE(paid_at, start_date)`` rule
-    :func:`app.utils.dates.to_utc_civil_date` applies to civil dates, so a
-    NULL-``paid_at`` row lands on the SAME civil day in the instant partition and
-    in the date sampling instead of on two different ones.  Measured on
-    production 2026-07-25: 8 of the 146 settled balance-contributing rows across
-    ALL accounts carry no ``paid_at`` (4 of them on the 130-row Checking account),
-    so the fallback is load-bearing, not defensive.
+def settled_civil_day(paid_at: datetime | None, period_start: date) -> date:
+    """Return the civil day a settled source's cash counts from.
+
+    The ONE statement of "which day did this cash move", shared by every consumer
+    that partitions source facts against an assertion: this leaf's walk
+    (:func:`app.services.cash_ledger.walk_cash_ledger`), the fold that samples it
+    (:mod:`app.services.balance_at._cash_fold`), and the account posting walk
+    (:mod:`app.services.account_posting_service`), which reaches the same rule
+    from the postings side until plan step X-d retires it onto this one.  A
+    second copy of the rule is precisely how the projection and the posted ledger
+    would drift about which settles an assertion already covers -- the divergence
+    Phase X exists to close, so the rule is not written twice.
+
+    **It is the DISPLAY-timezone day** (ruling R-DH (b)).  This day is compared
+    against, and bucketed into, plain ``DATE`` columns that mean the user's civil
+    days (``pay_periods.start_date`` / ``end_date``); deriving it in UTC compares
+    two different calendars.  Measured on production 2026-07-31: 22 of 139
+    settled Checking rows land on a different day under UTC and 5 of those in a
+    different pay period, including a ``$1,910.95`` mortgage payment on both
+    2026-04-22 and 2026-07-01.
+
+    **A ``None`` ``paid_at`` returns *period_start* UNCONVERTED**, and that is
+    the half a naive implementation gets wrong.  The fallback is already a civil
+    date -- it was never an instant -- so converting it (or manufacturing
+    midnight-UTC to convert) shifts it a day earlier and can move the row into
+    the previous pay period.  Measured: 4 of the real Checking account's settled
+    rows carry no ``paid_at``, and 3 of the 4 would cross a period boundary.
+    Delegating to :func:`app.utils.dates.to_display_civil_date` is what keeps the
+    two arms honest, because that helper applies the fallback WITHOUT converting
+    it.
+
+    This function replaced ``attribution_instant`` at ruling R-DH; see the module
+    docstring for what the instant partition cost on production.
 
     Args:
         paid_at: The source row's settle instant, or ``None``.  Naive values are
             assumed UTC (the storage convention).
-        period_start: The source's pay-period ``start_date`` -- the fallback
-            civil day when ``paid_at`` is ``None``.
+        period_start: The source's pay-period ``start_date`` -- the civil day to
+            fall back to when ``paid_at`` is ``None``.
 
     Returns:
-        The aware-UTC attribution instant.
+        The civil day the source's cash counts from.
     """
-    if paid_at is None:
-        return utc_day_start_instant(period_start)
-    return utc_instant(paid_at)
+    return to_display_civil_date(paid_at, period_start)
 
 
 @dataclass(frozen=True)
@@ -117,8 +178,24 @@ class CashAnchorFact:
             consumers.
         pay_period_id: The history row's pay period (NOT NULL) -- the period a
             correction derived from this assertion is attributed to.
-        asserted_at: The assertion instant, aware-UTC.  A source attributed at or
-            before this instant is already INSIDE the asserted balance.
+        observed_on: The civil day this balance was TRUE (ruling R-DH) -- the
+            business date the whole partition turns on.  A source whose
+            :attr:`CashSourceFact.settled_on` is at or before it is already
+            INSIDE the asserted balance, because an assertion is the CLOSING
+            balance for its day.  Derived here from ``created_at``'s
+            display-timezone day; plan step 2 of
+            ``anchor_settle_partition.md`` replaces the derivation with a stored
+            ``account_anchor_history.observed_on`` the user supplies, which is
+            what ``LoanAnchorEvent.anchor_date`` has been on the loan side since
+            Commit 16.  Backfilling that column from this derivation is what
+            lets step 2 ship without moving a figure.
+        asserted_at: The RECORDING instant, aware-UTC.  It dates nothing and
+            partitions nothing; its one job is to order two assertions that
+            share an :attr:`observed_on`, so the LAST one recorded is the day's
+            closing balance.  Keeping it is not a second clock: one is a
+            business date and one is a tie-break over assertions about the same
+            business date.  It was the partition key until ruling R-DH, which is
+            what cost production ``$4,001.42`` (see the module docstring).
         is_opening: True for the account's first history row; False for a
             true-up.
     """
@@ -126,6 +203,7 @@ class CashAnchorFact:
     account_id: int
     anchor_balance: Decimal
     pay_period_id: int
+    observed_on: date
     asserted_at: datetime
     is_opening: bool
 
@@ -141,9 +219,9 @@ class CashSourceFact:
     identically by construction, not by two rules that happen to agree.
 
     **It carries TWO clocks, and the second one is not decoration** (plan step
-    X-c1).  :attr:`occurred_at` is the CASH clock -- when the money moved, which
-    is what a balance is folded on -- while :attr:`pay_period_id` is the BUDGET
-    clock, the column the row was budgeted in.  They are the same period for 111
+    X-c1).  :attr:`settled_on` is the CASH clock -- the day the money moved,
+    which is what a balance is folded on -- while :attr:`pay_period_id` is the
+    BUDGET clock, the column the row was budgeted in.  They are the same period for 111
     of the real Checking account's 130 settled rows and different for 19
     (measured on the prod-shape clone 2026-07-25), and that difference IS the
     grid's Reconciliation row: a row settled outside its own pay period moves the
@@ -192,38 +270,41 @@ class CashSourceFact:
             for the posting writer's attribution at plan step X-d).
         pay_period_id: The BUDGET clock -- the ``budget.pay_periods`` row the
             transaction is attributed to (NOT NULL on the column).  Never used
-            to date the event; the cash clock is :attr:`occurred_at` alone.
+            to date the event; the cash clock is :attr:`settled_on` alone.
         is_income: Whether the source row is an INCOME transaction (its
             ``transaction_type_id``), so a budget-clock reduction can split the
             income and expense legs by type rather than by the sign of
             :attr:`delta`.
-        occurred_at: The attribution instant (:func:`attribution_instant`) --
-            what the anchor partition compares against.
+        settled_on: The civil day this row's cash MOVED
+            (:func:`settled_civil_day`) -- the one date the assertion partition
+            compares against, the fold samples on, and the period index buckets
+            by.  Derived here from ``paid_at``'s display-timezone day, falling
+            back to the pay period's ``start_date`` unconverted; plan step 2 of
+            ``anchor_settle_partition.md`` replaces the derivation with a stored
+            ``transactions.settled_on`` the user supplies, at which point the
+            partition compares two real-world dates and stops guessing.
         delta: The signed confirmed cash effect
             (:func:`app.services.cash_ledger.settled_cash_leg`): positive for
             income, negative for an expense, and ``0.00`` for a row whose entries
             are entirely credit-card purchases.
+
+    **There is no instant on this record, and its absence is the ruling** (R-DH).
+    It carried ``occurred_at`` -- ``paid_at`` normalized to UTC -- until
+    2026-07-31, and every consumer that wanted a DAY re-derived one from it.  The
+    instant was never a fact about the money: ``paid_at`` is stamped
+    ``db.func.now()`` when the user clicks (``status_seam.py:105``) and the API
+    refuses any other value (``schemas/validation/transactions.py:62`` is
+    ``dump_only``), so its sub-day precision described bookkeeping keystrokes and
+    the partition that consumed it decided ``$4,001.42`` of real money by click
+    order.  Storing only what is known keeps a consumer from reaching for
+    precision the datum does not have.
     """
 
     transaction_id: int
     pay_period_id: int
     is_income: bool
-    occurred_at: datetime
+    settled_on: date
     delta: Decimal
-
-    @property
-    def visible_on(self) -> date:
-        """Return the civil day this fact COUNTS from -- its instant's UTC day.
-
-        The date key the fold samples on, derived from the one attribution
-        instant rather than resolved a second time, so the instant partition and
-        the date sampling cannot disagree about which day a settle landed on (see
-        the module docstring's "one instant per fact").
-
-        Returns:
-            The UTC calendar date of :attr:`occurred_at`.
-        """
-        return utc_civil_date(self.occurred_at)
 
 
 def cash_anchor_facts(account_id: int) -> list[CashAnchorFact]:
@@ -263,6 +344,11 @@ def cash_anchor_facts(account_id: int) -> list[CashAnchorFact]:
             account_id=account_id,
             anchor_balance=Decimal(str(row.anchor_balance)),
             pay_period_id=row.pay_period_id,
+            # The business date the partition turns on, and the recording
+            # instant that only breaks a same-day tie (ruling R-DH).  Both come
+            # off ``created_at`` today; step 2 re-points ``observed_on`` at a
+            # stored column and leaves ``asserted_at`` where it is.
+            observed_on=to_display_date(row.created_at),
             asserted_at=utc_instant(row.created_at),
             is_opening=(index == 0),
         )
@@ -319,8 +405,14 @@ def settled_cash_facts(
 
     Returns:
         One :class:`CashSourceFact` per settled row, ASCENDING by
-        ``(occurred_at, transaction_id)`` -- the order the walk consumes them in,
-        with the id breaking a same-instant tie deterministically.
+        ``(settled_on, transaction_id)`` -- the order the walk consumes them in,
+        with the id breaking a same-day tie deterministically.  Order WITHIN a
+        day is not observable: the walk only sums a day's sources before its
+        assertions close it (ruling R-DH), and the fold reads a day's boundary
+        after every step on it, so only the day's total can be read back.  The
+        sort is total anyway, because a nondeterministic order in a financial
+        replay is a reproducibility defect even where it is arithmetically
+        inert.
     """
     rows = _unwindowed_contributing_rows(
         account_id, scenario_id, Transaction.status_id.in_(settled_status_ids()),
@@ -330,69 +422,100 @@ def settled_cash_facts(
             transaction_id=txn.id,
             pay_period_id=txn.pay_period_id,
             is_income=txn.is_income,
-            occurred_at=attribution_instant(
+            settled_on=settled_civil_day(
                 txn.paid_at, txn.pay_period.start_date,
             ),
             delta=settled_cash_leg(txn),
         )
         for txn in rows
     ]
-    facts.sort(key=lambda fact: (fact.occurred_at, fact.transaction_id))
+    facts.sort(key=lambda fact: (fact.settled_on, fact.transaction_id))
     return facts
 
 
 def merge_anchor_and_cash_events(
     anchor_facts: list[CashAnchorFact],
     source_facts: list[CashSourceFact],
-) -> list[tuple[datetime, bool, CashAnchorFact | CashSourceFact]]:
+) -> list[tuple[date, bool, CashAnchorFact | CashSourceFact]]:
     """Merge assertions and settled sources into one chronological stream.
 
-    Returns ``(instant, is_anchor, item)`` tuples in the order the running-balance
+    Returns ``(day, is_anchor, item)`` tuples in the order the running-balance
     walk must process them, so each assertion's RESET lands at the right point
     relative to the cash that moved around it.
 
-    **The ordering key is the INSTANT, not the civil date, and that is the whole
-    point of the step.**  Measured on production 2026-07-25: the Checking anchor
-    was asserted at 12:57:08 UTC and two expenses settled at 13:07:11 and
-    13:07:18 -- the SAME UTC civil day, ten minutes later.  Keyed by date they
-    are absorbed into the assertion and their confirmed cash effect ($108.15 --
-    the second row's purchases are entirely credit-card, so it correctly moves
-    nothing) disappears from the projection; keyed by instant they ride on top of
-    it, which is what actually happened.  That is finding cash D1, live.
+    **An assertion CLOSES its civil day: every source dated that day is walked
+    first, and the day's assertions then reset over them** (ruling R-DH).  A
+    balance a user reads off their bank is a statement balance, and a statement
+    balance is an end-of-day figure -- so a movement dated that day is inside it
+    by definition, whichever of the two the user happened to record first.
 
-    A source at EXACTLY the assertion instant sorts BEFORE the anchor and is
-    therefore subsumed by its reset -- the ``<=`` boundary
-    :func:`app.services.account_posting_service.walk_account_ledger` already
-    applies (``sources[i][0] <= fact.asserted_at``), reproduced here so the read
-    fold and the posted ledger partition one boundary identically rather than two
-    that happen to agree.
+    **What this replaced, and what it cost.**  The key was the INSTANT until
+    2026-07-31.  Neither instant available is a fact about money:
+    ``Transaction.paid_at`` is ``db.func.now()`` at the click and
+    ``AccountAnchorHistory`` has no date column at all, only ``created_at``.  So
+    the partition asked "which button was pressed first" and answered a question
+    about cash with it.  On production that day, an ordinary session -- read the
+    bank, enter ``$1,307.66``, tick off what cleared -- recorded three already
+    cleared payments in the NINE SECONDS after the assertion and subtracted
+    ``$4,001.42`` from the balance a second time, rendering ``-$4,021.37``
+    against a true ``-$19.95``.  Across four months of that account, 65 of 139
+    settled rows (``$19,602.13`` gross) were classified by click order, and the
+    correction the model was forced to plug at each assertion totalled
+    ``$40,554.34`` gross / ``-$6,998.90`` net against ``$14,286.82`` /
+    ``-$940.06`` under this rule.
+
+    **The rule this arc's own instrument argued for was measured wrong.**  The
+    instant partition's stated evidence was one 2026-07-25 pair -- an anchor at
+    12:57:08 UTC and two expenses at 13:07 the same day, ``$108.15`` that a
+    date-keyed rule absorbs (finding cash D1).  That case is real; it is also
+    the exception.  Scored over the whole account rather than one pair, the
+    day rule books a SMALLER plug at that very assertion (``$39.27`` against
+    ``$68.88``), because the rows it absorbs were overwhelmingly recorded late
+    rather than cleared late.
+
+    **The residual is stated rather than hidden.**  A payment that genuinely
+    clears AFTER the balance was observed on the same day is absorbed, and the
+    projection reads high until the next assertion.  It is bounded (median
+    ``$184.55`` a day against the ``$4,161.47`` the instant rule produced on
+    2026-07-31), it self-corrects at the next assertion, and step 2 of
+    ``anchor_settle_partition.md`` removes the guess entirely by recording the
+    two real dates the question actually turns on.
 
     Args:
         anchor_facts: The account's :class:`CashAnchorFact` list, PRE-SORTED by
             ``(created_at, id)`` (:func:`cash_anchor_facts`).  The re-sort here
-            is by ``asserted_at`` alone and is STABLE, so two assertions sharing
-            an instant keep the loader's ``id`` order -- the fact carries no
-            ``id``, so that stability is the only thing making a same-instant
-            pair deterministic, and it is load-bearing rather than incidental.
+            is by ``(observed_on, asserted_at)`` and is STABLE, so two assertions
+            sharing both keep the loader's ``id`` order -- the fact carries no
+            ``id``, so that stability is the only thing making such a pair
+            deterministic, and it is load-bearing rather than incidental.  Two
+            assertions about one day are not a conflict: they apply in recording
+            order and the LAST is that day's closing balance, which is what a
+            user re-reading their bank later the same day means.
         source_facts: The settled :class:`CashSourceFact` list, PRE-SORTED by
-            ``(occurred_at, transaction_id)`` (:func:`settled_cash_facts`).
+            ``(settled_on, transaction_id)`` (:func:`settled_cash_facts`).
 
     Returns:
-        ``(instant, is_anchor, item)`` tuples in walk order -- ``instant`` is the
-        anchor's ``asserted_at`` or the source's ``occurred_at``, and ``item`` is
+        ``(day, is_anchor, item)`` tuples in walk order -- ``day`` is the
+        anchor's ``observed_on`` or the source's ``settled_on``, and ``item`` is
         a :class:`CashAnchorFact` when ``is_anchor``, else a
         :class:`CashSourceFact`.
     """
-    # Tag 0 = source, 1 = anchor: a source sorts before an anchor sharing its
-    # instant, so it is walked (and then overwritten) by that reset -- the
-    # posting walk's ``<=`` boundary, expressed as a sort key.  A stable sort of
-    # [sources..., anchors...] preserves each type's pre-sorted order for equal
-    # keys.
-    events: list[tuple[datetime, int, CashAnchorFact | CashSourceFact]] = [
-        (fact.occurred_at, 0, fact) for fact in source_facts
+    # An OPENING opens its day, sources fall inside it, a TRUE-UP closes it (see
+    # the order constants).  A stable sort of [sources..., anchors...] preserves
+    # each type's pre-sorted order for equal keys.
+    events: list[tuple[date, int, CashAnchorFact | CashSourceFact]] = [
+        (fact.settled_on, _SOURCE_ORDER, fact) for fact in source_facts
     ] + [
-        (anchor.asserted_at, 1, anchor)
-        for anchor in sorted(anchor_facts, key=lambda a: a.asserted_at)
+        (
+            anchor.observed_on,
+            _OPENING_ORDER if anchor.is_opening else _TRUEUP_ORDER,
+            anchor,
+        )
+        for anchor in sorted(
+            anchor_facts, key=lambda a: (a.observed_on, a.asserted_at),
+        )
     ]
     events.sort(key=lambda event: (event[0], event[1]))
-    return [(instant, tag == 1, item) for instant, tag, item in events]
+    return [
+        (day, tag != _SOURCE_ORDER, item) for day, tag, item in events
+    ]

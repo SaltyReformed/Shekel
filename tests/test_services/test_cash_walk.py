@@ -33,7 +33,7 @@ from app.services.cash_ledger import (
     settled_cash_facts,
     walk_cash_ledger,
 )
-from app.utils.dates import to_display_date
+from app.utils.dates import DISPLAY_TIMEZONE, to_display_date
 from tests._test_helpers import (
     append_balance_assertion,
     create_settled_cash_transaction,
@@ -45,10 +45,25 @@ from tests._test_helpers import (
 
 
 def _instant(year, month, day, hour=0, minute=0, second=0):
-    """Return an aware-UTC instant, for pinning assertion / settle moments."""
+    """Return the aware-UTC instant of a wall-clock moment on the USER's day.
+
+    The arguments are read as the DISPLAY timezone -- the clock the user is
+    actually looking at -- and converted to UTC for storage, which is the
+    direction production runs in: ``paid_at`` and ``created_at`` are stamped
+    when the user acts and stored UTC.
+
+    **It read them as UTC until ruling R-DH (b)** (2026-07-31), and the default
+    ``hour=0`` then meant midnight UTC -- 7pm or 8pm the PREVIOUS Eastern day.
+    So a fixture writing ``_instant(2026, 1, 15)`` to mean "this settled on the
+    15th" pinned an event the fold correctly places on the 14th, and five tests
+    in this class asserted figures for a day their own setup had not built.
+    Reading the arguments as Eastern makes the helper mean what every call site
+    already said it meant, and it preserves same-day ORDERING exactly: two
+    moments on one day shift by the same offset.
+    """
     return datetime(
-        year, month, day, hour, minute, second, tzinfo=timezone.utc,
-    )
+        year, month, day, hour, minute, second, tzinfo=DISPLAY_TIMEZONE,
+    ).astimezone(timezone.utc)
 
 
 def _restamp_opening(account, at):
@@ -93,10 +108,15 @@ def _replay_terminal_balance(account, scenario):
     """Reconstruct the walk's end balance WITHOUT :func:`dated_deltas`.
 
     The independent reference: take the LAST assertion's asserted balance and
-    add every source attributed strictly after it.  That is the replay's
-    definition read off :class:`CashLedgerWalk`'s two lists directly, so
-    comparing it against the summed dated deltas is a real cross-check rather
-    than a producer graded on itself.
+    add every source dated strictly AFTER the day that assertion closes.  That
+    is the replay's definition (ruling R-DH (a)) read off
+    :class:`CashLedgerWalk`'s two lists directly, so comparing it against the
+    summed dated deltas is a real cross-check rather than a producer graded on
+    itself.
+
+    The comparison is ``>`` on the civil DAY, not on an instant: a source
+    sharing the assertion's day is inside the closing balance, so only a
+    strictly later day rides on top.
     """
     walk = walk_cash_ledger(account.id, scenario.id)
     if not walk.anchor_corrections:
@@ -105,7 +125,7 @@ def _replay_terminal_balance(account, scenario):
     return last.anchor_balance + sum(
         (
             fact.delta for fact in walk.source_facts
-            if fact.occurred_at > last.asserted_at
+            if fact.settled_on > last.observed_on
         ),
         Decimal("0.00"),
     )
@@ -135,29 +155,47 @@ def _linked_ledger_net(account, scenario, *, transaction_id=None):
     return Decimal(str(query.scalar()))
 
 
-class TestTheInstantPartition:
-    """An assertion covers exactly the settles that PRECEDED it, to the second.
+class TestTheClosingBalancePartition:
+    """An assertion is the CLOSING BALANCE for its civil day (ruling R-DH (a)).
 
     The production shape, reproduced: opening $1,000.00, then an assertion of
-    $2,932.41 at 2026-07-24 12:57:08 UTC, with expenses settling either side of
-    it on that same UTC civil day.
+    $2,932.41 on 2026-07-24, with expenses settling either side of it on that
+    same civil day.
+
+    **This class asserted the opposite until 2026-07-31**, when the INSTANT
+    partition it pinned rendered the developer's own grid at ``-$4,021.37``
+    against a true ``-$19.95``: three payments recorded in the nine seconds
+    AFTER an anchor were subtracted from a bank balance that already contained
+    them.  Neither instant the partition compared is a fact about money --
+    ``paid_at`` is ``db.func.now()`` at the click (``status_seam.py:105``) and
+    an ``AccountAnchorHistory`` row has no date column at all -- so it decided
+    which of two BUTTONS was pressed first and spent that answer on cash.  See
+    ``docs/audits/balance_architecture/anchor_settle_partition.md``.
     """
 
-    def test_a_settle_after_the_assertion_rides_on_top(
+    def test_a_settle_recorded_after_the_assertion_is_still_absorbed(
         self, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """$108.15 and $131.60 settled 10 minutes late reduce the balance.
+        """$108.15 and $131.60 recorded 10 minutes later move NOTHING.
 
-        Hand-computed: the assertion resets to $2,932.41; both expenses are
-        attributed after it, so the walk ends at
-        ``2932.41 - 108.15 - 131.60 = 2692.66``.  Today's projection excludes
-        both (settled) and the anchor predates them, so it answers $2,932.41 --
-        money counted by NO producer, which is finding cash D1.
+        Hand-computed: both expenses carry the assertion's own civil day, so the
+        day's closing balance is the asserted $2,932.41 and the walk ends there.
 
-        Both fixture rows are PLAIN transactions, so each moves its full amount;
-        on the real account the second row's purchases were entirely
-        credit-card, so its confirmed cash effect is $0.00 and the live figure is
-        $108.15 (see :class:`TestSourceFactValuation`'s credit-entry case).
+        **The ruling, and what it costs and buys.**  It buys the developer's
+        actual workflow: read the bank, enter the anchor, then tick off what
+        cleared -- an order in which every ticked row is already inside the
+        number just entered.  It costs the case where a payment genuinely clears
+        AFTER the balance was read on the same day; that one is absorbed here and
+        surfaces at the next assertion.  Measured over four months of real data
+        the trade is decisive: the correction the model must plug falls from
+        ``$40,554.34`` gross / ``-$6,998.90`` net to ``$14,286.82`` /
+        ``-$940.06``, and this rule is the only one under which the walk lands on
+        the balance the bank actually shows.
+
+        Both fixture rows are PLAIN transactions, so each would move its full
+        amount; on the real account the second row's purchases were entirely
+        credit-card, so its confirmed cash effect is $0.00 (see
+        :class:`TestSourceFactValuation`'s credit-entry case).
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         period = seed_periods[6]
@@ -175,7 +213,7 @@ class TestTheInstantPartition:
             )
         db.session.commit()
 
-        assert _running_balance(account, scenario) == Decimal("2692.66")
+        assert _running_balance(account, scenario) == Decimal("2932.41")
 
     def test_a_settle_before_the_assertion_is_absorbed(
         self, db, seed_user, seed_periods,
@@ -228,20 +266,24 @@ class TestTheInstantPartition:
         assert before == Decimal("923.00")
         assert _running_balance(account, scenario) == Decimal("2932.41")
 
-    def test_same_day_settles_land_on_opposite_sides_of_the_assertion(
+    def test_both_same_day_settles_go_with_the_assertion_whatever_the_order(
         self, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """The discriminating control: one civil day, two different answers.
+        """The discriminating control: one civil day, ONE answer (ruling R-DH (a)).
 
-        Both expenses carry the UTC civil date 2026-07-24, exactly as the
-        assertion does, so a partition keyed on the DATE must treat them
-        identically -- and would absorb both, losing the later one.  Keyed on the
-        INSTANT the earlier is absorbed and the later rides on top.
-        Hand-computed: ``balance_before`` is ``1000.00 - 40.00 = 960.00`` and the
-        walk ends at ``2932.41 - 60.00 = 2872.41``.
+        Both expenses carry the civil date 2026-07-24, exactly as the assertion
+        does -- one recorded hours BEFORE it and one hours AFTER.  The assertion
+        is that day's closing balance, so both are inside it and neither moves
+        the walk.  Hand-computed: ``balance_before`` is
+        ``1000.00 - 40.00 - 60.00 = 900.00`` and the walk ends on the asserted
+        $2,932.41.
 
-        This test is what makes the instant partition load-bearing rather than
-        decorative: a date-keyed implementation cannot pass it.
+        **This is the order-independence property, at walk grain.**  The whole
+        defect was that these two rows got different treatment for no reason a
+        user could see or control; here they get the same one.  An
+        instant-keyed implementation cannot pass this test -- it answers
+        ``2872.41`` -- which is the same discriminating role the class had
+        before, pointed the other way.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         period = seed_periods[6]
@@ -262,15 +304,15 @@ class TestTheInstantPartition:
             fact.transaction_id: fact
             for fact in settled_cash_facts(account.id, scenario.id)
         }
-        # Same civil day for the assertion and both settles -- so a date-keyed
-        # rule has no information with which to separate them.
-        assert facts[earlier.id].visible_on == date(2026, 7, 24)
-        assert facts[later.id].visible_on == date(2026, 7, 24)
-        assert asserted_at.date() == date(2026, 7, 24)
+        # One civil day for the assertion and both settles -- which is exactly
+        # the information the rule acts on.
+        assert facts[earlier.id].settled_on == date(2026, 7, 24)
+        assert facts[later.id].settled_on == date(2026, 7, 24)
+        assert to_display_date(asserted_at) == date(2026, 7, 24)
 
         before, _delta = _corrections(account, scenario)[asserted_at]
-        assert before == Decimal("960.00")
-        assert _running_balance(account, scenario) == Decimal("2872.41")
+        assert before == Decimal("900.00")
+        assert _running_balance(account, scenario) == Decimal("2932.41")
 
 
 class TestEveryAssertionIsReplayed:
@@ -506,9 +548,19 @@ class TestAttributionIsOneKey:
     ):  # pylint: disable=unused-argument
         """8 of 146 settled prod rows carry no ``paid_at``; the fallback is real.
 
-        The instant becomes midnight UTC of the row's pay-period ``start_date``,
-        so its visible day is that start date -- the same civil day
-        ``app.utils.dates.to_utc_civil_date`` gives the entry dating.
+        The day becomes the row's pay-period ``start_date``, returned
+        UNCONVERTED -- the same civil day
+        :func:`app.services.posting_service._civil_settle_date` gives the entry
+        dating, because both delegate to
+        :func:`app.utils.dates.to_display_civil_date`.
+
+        **The "unconverted" half is the load-bearing one** (ruling R-DH (b)).
+        The fallback is already a civil date and was never an instant, so a rule
+        that manufactured midnight and converted it to the display zone would
+        shift this row a day EARLIER and could carry it into the previous pay
+        period.  Measured on production 2026-07-31: 4 of the real Checking
+        account's settled rows carry no ``paid_at`` and 3 of the 4 would cross a
+        period boundary under that mistake.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         period = seed_periods[3]
@@ -520,35 +572,43 @@ class TestAttributionIsOneKey:
         db.session.commit()
 
         fact, = settled_cash_facts(account.id, scenario.id)
-        assert fact.occurred_at == datetime.combine(
-            period.start_date, time.min, tzinfo=timezone.utc,
-        )
-        assert fact.visible_on == period.start_date
+        assert fact.settled_on == period.start_date
 
-    def test_the_visible_day_is_the_utc_day_not_the_display_day(
+    def test_the_settled_day_is_the_users_day_not_the_utc_day(
         self, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """A settle at 02:30 UTC counts from that UTC day, not the Eastern one.
+        """A settle at 23:30 Eastern counts from the user's day, not UTC's.
 
-        The discriminating instant: 2026-03-04 02:30 UTC is still 2026-03-03 in
-        ``America/New_York``.  The balance ledgers are deliberately on the
-        STORAGE clock -- they feed ``journal_entries.entry_date``, which the
-        posting writer stamps through the same ``utc_civil_date`` -- while the
-        TAX figures are on the display clock (the L9 rule).  Picking an instant
-        where the two zones agree would pin nothing.
+        The discriminating instant: 2026-03-03 23:30 Eastern is already
+        2026-03-04 in UTC.  Picking one where the two zones agree would pin
+        nothing.
+
+        **Ruling R-DH (b) inverted this test** (2026-07-31; it asserted the UTC
+        day, and was named for it).  The balance ledgers were on the STORAGE
+        clock because ``journal_entries.entry_date`` was stamped through
+        ``utc_civil_date``; that writer moved to the user's day WITH both folds,
+        so the equality this test guards still holds and now holds on the
+        calendar the ``DATE`` columns it is compared against actually mean.
+        Measured on production: 22 of 139 settled Checking rows land on a
+        different day under UTC, 5 of them in a different PAY PERIOD, and two
+        evening sessions were split across two UTC days -- the shape that
+        defeats the closing-balance partition above.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         period = seed_periods[2]
         _restamp_opening(account, _instant(2026, 1, 1))
-        create_settled_cash_transaction(
+        txn = create_settled_cash_transaction(
             seed_user, db.session, period, Decimal("5.00"),
-            paid_at=_instant(2026, 3, 4, 2, 30),
+            paid_at=_instant(2026, 3, 3, 23, 30),
         )
         db.session.commit()
 
+        # The STORED instant really is the next UTC day, so the assertion below
+        # is a zone choice and not a coincidence.
+        assert txn.paid_at.astimezone(timezone.utc).date() == date(2026, 3, 4)
+
         fact, = settled_cash_facts(account.id, scenario.id)
-        assert fact.visible_on == date(2026, 3, 4)
-        assert to_display_date(fact.occurred_at) == date(2026, 3, 3)
+        assert fact.settled_on == date(2026, 3, 3)
 
 
 class TestTheWalkSeesOnlyItsOwnRows:

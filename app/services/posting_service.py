@@ -60,6 +60,8 @@ import logging
 from datetime import date, datetime
 from decimal import Decimal
 
+from sqlalchemy.orm import selectinload
+
 from app import ref_cache
 from app.enums import (
     LedgerAccountClassEnum,
@@ -79,7 +81,8 @@ from app.services._posting_write import (
     _PostingLeg,
     emit_keyed_delta_entries,
 )
-from app.utils.dates import to_utc_civil_date
+from app.utils.balance_predicates import settled_status_ids
+from app.utils.dates import to_display_civil_date
 
 logger = logging.getLogger(__name__)
 
@@ -102,31 +105,44 @@ settled_transaction_effect = posting_reads.settled_transaction_effect
 
 
 def _civil_settle_date(paid_at: datetime | None, pay_period: PayPeriod) -> date:
-    """Return the UTC civil date of a settle ``paid_at``, or the period start.
+    """Return the civil date of a settle ``paid_at``, or the period start.
 
     The shared tail of the transfer and transaction entry-date helpers
     (:func:`_entry_date`, :func:`_transaction_entry_date`): a recorded
-    ``paid_at`` maps to its UTC civil date (the storage-timezone date, NOT the
-    display timezone); a NULL ``paid_at`` (a historical settle recorded before
-    the ``paid_at`` sync, or a reverted row whose timestamp was cleared) falls
-    back to the pay period's ``start_date``.  ``journal_entries.entry_date`` is
-    NOT NULL, so the fallback is load-bearing.  Mirrors the historical backfill's
-    ``COALESCE((paid_at AT TIME ZONE 'UTC')::date, start_date)``.
+    ``paid_at`` maps to its DISPLAY-timezone civil date; a NULL ``paid_at`` (a
+    historical settle recorded before the ``paid_at`` sync, or a reverted row
+    whose timestamp was cleared) falls back to the pay period's ``start_date``,
+    UNCONVERTED -- that fallback is already a civil date and routing it through a
+    zone would shift it a day.  ``journal_entries.entry_date`` is NOT NULL, so the
+    fallback is load-bearing.
 
-    Delegates to :func:`app.utils.dates.to_utc_civil_date` -- the ONE derivation
-    the loan fold's payment-visibility rule
-    (:func:`app.services.loan_ledger._visible.payment_visible_on`) also calls, so
-    the STORED ``entry_date`` this writes and the day the fold counts a payment on
-    cannot drift (balance step C2).
+    Delegates to :func:`app.utils.dates.to_display_civil_date` -- the ONE
+    derivation the loan fold's payment-visibility rule
+    (:func:`app.services.loan_ledger._visible.payment_visible_on`) and the cash
+    walk's settle dating (:func:`app.services.cash_ledger.settled_civil_day`) also
+    call, so the STORED ``entry_date`` this writes and the day either fold counts
+    a settle on cannot drift (balance step C2).
+
+    **The zone is ruling R-DH (b)** (2026-07-31,
+    ``docs/audits/balance_architecture/anchor_settle_partition.md``).  It was the
+    UTC civil date, mirroring the historical backfill's
+    ``COALESCE((paid_at AT TIME ZONE 'UTC')::date, start_date)``.  Storage is
+    unchanged -- every instant is still stored UTC -- but the DAY an entry is
+    filed under is now the user's, because it is compared against and bucketed by
+    plain ``DATE`` columns that mean the user's civil days
+    (``pay_periods.start_date`` / ``end_date``).  The three writers moved together
+    with the two folds; moving any one alone is what would put a transfer's two
+    legs on different days.
 
     Args:
         paid_at: The settle instant read back from the source row, or None.
         pay_period: The source row's pay period (supplies ``start_date``).
 
     Returns:
-        The UTC civil settle date, or the pay period's ``start_date``.
+        The display-timezone civil settle date, or the pay period's
+        ``start_date``.
     """
-    return to_utc_civil_date(paid_at, pay_period.start_date)
+    return to_display_civil_date(paid_at, pay_period.start_date)
 
 
 def _posted_by_period(source_filter) -> "dict[tuple[int, date], dict[int, Decimal]]":
@@ -735,3 +751,92 @@ def reverse_postings_before_delete(txn: Transaction) -> None:
             ``transaction_id`` and read the already-posted legs back.
     """
     sync_transaction_postings(txn, settled=False)
+
+
+def resync_all_cash_postings() -> tuple[int, int]:
+    """Re-reconcile every settled cash source's postings (deploy resync).
+
+    The transaction / transfer twin of
+    :func:`app.services.loan_posting_service.backfill_all_loan_postings` and
+    :func:`app.services.account_posting_service.backfill_all_account_anchor_postings`,
+    and the third of the three deploy-time reconciles that between them cover
+    every journal entry the app writes.  It exists because those two do NOT
+    reach an ordinary transaction or a NON-loan transfer: the loan package's
+    staleness detector is scoped to one loan's linked ledger
+    (``loan_posting_service._sync._resync_stale_transfers``) and the anchor
+    backfill reconciles only the corrections, so a checking-to-savings transfer
+    and every ordinary settled row were maintained per-mutation and by nothing
+    else.
+
+    **What it is FOR, and why it is a permanent hook rather than a one-off**
+    (ruling R-DH (b), ``docs/audits/balance_architecture/anchor_settle_partition.md``).
+    ``journal_entries.entry_date`` is derived by :func:`_civil_settle_date`,
+    which moved from the UTC civil day to the user's on 2026-07-31.  Every entry
+    written before that carries the old day, so the STORED ledger and the two
+    folds that now read the new one disagree for any settle recorded between
+    midnight UTC and the user's midnight -- on production, one ``$1,910.95``
+    mortgage payment stamped 2026-07-02 00:38:53 UTC that belongs to the evening
+    of 2026-07-01.  This walks every settled source back through the SAME
+    go-forward sync, so a re-dated entry is identical to a freshly posted one by
+    construction; there is no second implementation of the rule and no SQL
+    restatement of it, which is the property this whole arc exists to hold.
+
+    It stays wired on every deploy rather than being deleted after one run, for
+    the same reason its two siblings are: reconcile-to-target makes it a no-op
+    at target, so it costs one pass and converts any future drift -- a rule
+    change, a hand-edited row, a half-applied migration -- into a self-heal
+    instead of a silent divergence.
+
+    Idempotent and self-healing.  A settled row already at target posts nothing;
+    a row whose target DATE moved gets its old-date legs reversed and its new
+    -date legs posted in one balanced pair by
+    :func:`sync_transaction_postings` / :func:`sync_transfer_postings`, which
+    reconcile over the ``(period, entry_date)`` keys already in the ledger
+    unioned with the target (plan step E1a's per-date attribution) -- so a
+    moved date is an ordinary reconcile, not a special case this function has to
+    know about.
+
+    Loan payment transfers are re-synced here too and that is deliberate
+    duplication of effort, not of RULE: the loan package would reach the same
+    ones through its own detector, and both paths call this module's
+    :func:`sync_transfer_postings`, so whichever runs first leaves the other at
+    target.
+
+    Flushes but does NOT commit -- the caller owns the transaction boundary
+    (``scripts.init_database.resync_all_cash_postings_after_migration``, which
+    initialises ``ref_cache`` first because the migration host does not).
+
+    Returns:
+        ``(transactions_reconciled, transfers_reconciled)`` -- the counts
+        WALKED, not the counts changed, for the deploy log.  A no-op pass
+        reports the same numbers as the pass that moved every date, which is
+        why the deploy line names them as walked.
+    """
+    settled_ids = settled_status_ids()
+    transactions = (
+        db.session.query(Transaction)
+        .options(selectinload(Transaction.entries))
+        .filter(
+            Transaction.is_deleted.is_(False),
+            Transaction.transfer_id.is_(None),
+            Transaction.status_id.in_(settled_ids),
+        )
+        .order_by(Transaction.id)
+        .all()
+    )
+    for txn in transactions:
+        sync_transaction_postings(txn, settled=True)
+
+    transfers = (
+        db.session.query(Transfer)
+        .filter(
+            Transfer.is_deleted.is_(False),
+            Transfer.status_id.in_(settled_ids),
+        )
+        .order_by(Transfer.id)
+        .all()
+    )
+    for xfer in transfers:
+        sync_transfer_postings(xfer, settled=True)
+
+    return len(transactions), len(transfers)

@@ -576,6 +576,7 @@ import pytest
 
 from app import create_app
 from app.extensions import db as _db
+from app.utils.dates import DISPLAY_TIMEZONE
 from app.models.user import User, UserSettings
 # ``Account`` is intentionally not imported here: every test fixture
 # constructs accounts via ``app.services.account_service.create_account``,
@@ -1044,11 +1045,15 @@ def _pin_opening_to(db, account, anchor_period):
         account: The account whose opening to pin.
         anchor_period: The period the fixture is about to anchor against.
     """
+    # Day one of the anchor period IN THE USER'S ZONE -- the same meaning, and
+    # the same reason, as ``override_anchor``'s default (ruling R-DH (b)).  The
+    # two must agree: pinning one to Eastern midnight and leaving the other on
+    # UTC midnight puts the opening and the override in DIFFERENT periods.
     restamp_opening_assertion(
         db.session, account,
         datetime.combine(
-            anchor_period.start_date, time.min, tzinfo=timezone.utc,
-        ),
+            anchor_period.start_date, time.min, tzinfo=DISPLAY_TIMEZONE,
+        ).astimezone(timezone.utc),
     )
 
 

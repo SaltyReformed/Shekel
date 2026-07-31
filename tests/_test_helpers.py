@@ -2740,8 +2740,9 @@ def override_anchor(db_session, account, period, balance, *, notes, at=None):
     load-bearing, because a fix applied to one copy would have left the other
     four asserting against a state production cannot reach.
 
-    **The instant defaults to the period's first day**, and that default is the
-    point (plan step X-c2b2, the N-8 / X-c2a fixture shape a third time).
+    **The instant defaults to the period's first day IN THE USER'S ZONE**, and
+    that default is the point (plan step X-c2b2, the N-8 / X-c2a fixture shape a
+    third time; the zone is ruling R-DH (b), 2026-07-31).
     ``AccountAnchorHistory.created_at`` server-defaults to the WALL CLOCK,
     while ``tests/test_services`` freezes today to 2026-03-20 -- so a row
     written by a helper that did not stamp it was asserted MONTHS after its own
@@ -2777,15 +2778,21 @@ def override_anchor(db_session, account, period, balance, *, notes, at=None):
     # pylint: disable=import-outside-toplevel
     from datetime import datetime, time, timezone
     from app.models.account import AccountAnchorHistory
+    from app.utils.dates import DISPLAY_TIMEZONE
 
     history = AccountAnchorHistory(
         account_id=account.id,
         pay_period_id=period.id,
         anchor_balance=balance,
         notes=notes,
+        # Day one of the period IN THE USER'S ZONE, converted to UTC for
+        # storage.  Midnight UTC is the previous EVENING in Eastern, so since
+        # ruling R-DH (b) -- which reads an instant's display civil day -- it
+        # would file this true-up in the PREVIOUS period and empty the anchor
+        # column's remainder of the very assertion the fixture just made.
         created_at=at if at is not None else datetime.combine(
-            period.start_date, time.min, tzinfo=timezone.utc,
-        ),
+            period.start_date, time.min, tzinfo=DISPLAY_TIMEZONE,
+        ).astimezone(timezone.utc),
     )
     db_session.add(history)
     db_session.flush()
