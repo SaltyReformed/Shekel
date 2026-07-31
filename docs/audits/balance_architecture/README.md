@@ -261,6 +261,36 @@ pre-X-w tree, because the projection had no such field there. Normalizing it to 
 turned that into the strongest evidence the step has: the cross-tree diff now proves ruling R-CG's
 map-equality DIRECTLY rather than leaving it inferred from the figures downstream.
 
+**X-aa is DONE** (2026-07-30), in two commits: the ruling `5c2ba585` and the code `c10d5d12`.
+**The developer's QUESTION is what opened it** -- "why didn't you take action on
+`calculate_trajectory` and `calculate_savings_metrics`?" -- and X-w's answer had been three
+reasons of which one survived: the scope argument was circular (R-CI's enumeration came from X-w's
+own census, whose target list never included that module), the 64 test assertions were cost, which
+rule 7 forbids as a ground, and the real failure was leaving both records REPORTED IN PROSE and
+owned by nobody. Section 6 is the owner, not a summary.
+
+**And the question found a defect.** `calculate_trajectory` has three returns and every one is a
+full four-field answer, so X-w4's `GoalProgress.trajectory: dict | None` was a nullable that cannot
+be null -- ruling R-CA's defect written by the step that cites R-CA -- and the goal card's
+`{% if gd.trajectory %}` was a truthiness test on an always-four-key value: a guard that could never
+be false, in the package whose thesis is that such a guard is not one. Both gone, with the two
+producers typed at their producer and 69 assertions moved onto attributes.
+
+**Its adversarial review found the step's own new control was THEATRE**, which is the eleventh time
+this arc has paid for a guard nobody exercised and the sharpest instance yet, because the step
+existed to delete exactly that shape. The test looped `assert hasattr(traj, field)` over four names
+-- structurally unfalsifiable, since a frozen dataclass with four required fields hands all four to
+anything that passes `isinstance`. **Seven mutants were run and FIVE survived**, including the one
+the docstring itself named ("omits a field") and a `required_monthly` inflated tenfold. It compares
+`dataclasses.astuple` per branch now and kills all of them. The review also measured **three of the
+step's own claims false** -- the `required_monthly` rule (an actionable target inside the current
+month returns `None`, so a goal targeted later this month says "behind" with no remedy line), the
+`months_to_goal` precedence, and both "one production consumer" line citations -- and opened
+**N-120**, the emergency-fund footer's double-rounded derived units, measured at `1.5` paychecks
+rendered where the raw ratio gives `1.6`.
+
+**The lesson, recorded in Section 8: `hasattr` on a dataclass is not a test.**
+
 **NEXT: X-z**, then the steps after it in the order Section 5 lists.
 
 ---
@@ -2097,8 +2127,8 @@ preconditions cite entries in that file.
     class. The guards are still right; the reason written beside them was not, which is Section 8's
     "a correction can carry the defect it corrects" one axis over.
 
-- [ ] **X-aa** `refactor(savings): the two records the last step reported and did not take` --
-  closes **N-119**. Ruling R-CO. `calculate_trajectory` and `calculate_savings_metrics` become
+- [x] **X-aa** `refactor(savings): the two records the last step reported and did not take` --
+  **SHIPPED dev 2026-07-30** (rulings `5c2ba585`, code `c10d5d12`). Closes **N-119**. Ruling R-CO. `calculate_trajectory` and `calculate_savings_metrics` become
   value objects at their producer; `GoalProgress.trajectory` stops being nullable (its producer has
   three returns and all three are full dicts); and `savings/dashboard.html`'s
   `{% if gd.trajectory %}` guard goes, because a four-key dict is never falsy and a test that cannot
@@ -2640,7 +2670,8 @@ what nothing now has to buy again.
 
 **The ledger stands at 41 rows.** X-u closed N-109 and opened N-115; X-v then closed **N-112** and
 **N-113** (both archived, `dbf154c7`) and opened **N-116** (the period-absence twin, owner X-x) and
-**N-117** (the fifteen surfaces that answer this state without the balance seam, owner X-y); X-w's
+**N-117** (the fifteen surfaces that answer this state without the balance seam, owner X-y); X-aa then closed **N-119** and its review opened **N-120** (the emergency-fund footer's
+double-rounded derived units, owner X-z). X-w's
 trace opened **N-118** (the liability rule's two id-based spellings, owner X-z) and X-w then
 CLOSED **N-114**, whose row stays here as a closed pointer until the next archive extraction.
 **Its two adversarial reviews opened NOTHING**, which is a first for this arc: everything they
@@ -2696,7 +2727,7 @@ done, and is what drifted.
 | N-116 (X-v census) | **The period preconditions are the baseline precondition's twin, at 63 branches, and nobody has read them either.** The same AST pass that re-counted N-112 measured **63** branches in `app/` on period absence (`current_period is None`, `not all_periods`, `not periods`), concentrated in `routes/accounts/detail` (5), `investment_dashboard_service/_chart` (4), `investment_projection` (4), `retirement_projection` (4), `routes/grid` (3), `dashboard_pulse_service` (3), `investment_dashboard_service/_context` (3). It is the same question X-v answers -- "what does this surface say when a precondition it needs is absent" -- and the same failure mode is already visible: `_projection_start` falls back to `date.today()` while `_current_balance_from_map` falls back to `current_anchor_balance`, two different degraded values for one state inside ONE package. **It is NOT the same ruling, which is why it is its own step and not a widening of X-v**: a missing baseline is broken setup with a one-click repair, while having no pay periods is a state a legitimately-new user is IN, so its answer may well stay a degraded render. What it must not stay is 63 answers nobody has compared | `$0.00` today and NOT re-measured beyond the count -- the branches were located, not read; that reading is the step | **OPEN**, opened 2026-07-28 by plan step X-v's AST census. Born with an owner (rule 6) | X-x |
 | N-117 (X-v reviews) | **Fifteen surfaces decide the no-baseline state WITHOUT the balance seam, and neither instrument X-v built could see one of them.** They resolve the baseline directly (`get_baseline_scenario`), so X-v's AST census -- which followed `BalanceContext` -- was blind to them, and its route sweep graded only 5xx, so a surface answering with a plausible 200 passed. Both adversarial reviews found the class independently; the correctness one reached the worst instance by walking the call graph. **The two that FABRICATED A FINANCIAL STATEMENT were fixed in X-v3 under ruling R-CC** (the balance sheet reported assets / liabilities / equity of `$0.00` **and `in_balance = True`** over a ledger it cannot read; the income statement reported a period of zeros). The remaining fifteen answer a DIFFERENT question -- "what may a WRITE do without a scenario" -- five ways: `400 "No baseline scenario"` (the two grid create fragments, the carry-forward preview AND its POST mutator), a silent commit that generates nothing (template + transfer generation, `salary/_helpers`), `return 0` / `return None` (`period_population`, `spending_report_service`), a silently narrowed scenario set (both posting syncs), and a nullable id handed onward to a query (`escrow_rates`, `loan/params`) -- plus one that tells the user to **register a new account**, a repair story that has been wrong since `/grid/create-baseline` shipped | `$0.00` today and unreachable for the same measured reason as N-112 (the only baseline-less user is a companion, kept off every owner route by the ROLE check). The measured cost of the two already fixed was a balance sheet asserting its own tie-out | **OPEN**, opened 2026-07-29 by X-v's two adversarial reviews. Born with an owner (rule 6) | X-y |
 | N-118 (X-w trace) | **The liability rule has TWO id-based spellings, and this page's own stated identity holds only while they agree.** `net_worth_account_data.is_liability_account` compares the account type's `category_id` against the cached LIABILITY id; `_display.account_category_key` returns `"liability"` under exactly that condition and `"other"` for the degenerate cases the first treats as a non-liability. They are equivalent BY READING -- the same column, the same cached id, the same two degenerate arms -- and by nothing else. `_net_worth.compute_net_worth_today` reduces the hero with the first; `_sum_composition_at_period` keys each account's chart band off the second and takes the SIGN from the first, so a page that asserts "the horizon net at index 0 equals the net-worth hero and the 2 years series' current point" (`_horizon`'s module docstring) is asserting that two predicates agree. It is finding N-114's thesis one axis over: N-114 was one rule STORED beside the record that derives it, this is one rule WRITTEN twice. The fix is not a merge but a build-on -- Section 8's "a DRY refactor of a PREDICATE can move money" -- plus a decision about where the shared classifier lives, since the display ORDER belongs to `_display` and the classification RULE does not | `$0.00` today: the two provably agree on every account on both databases, and the equality-of-identity is pinned by `test_current_period_point_equals_hero_for_liquid_only` and its amortizing-loan twin. The measured cost of the last two-spellings-of-one-rule in this package was finding N-111 | **OPEN**, opened 2026-07-30 by plan step X-w's trace, which found both spellings inside the one reducer it was already rewriting and deliberately did not merge them there. Born with an owner (rule 6) | X-z |
-| N-119 (developer question, X-w) | **Two records on this read path are untyped, and the nullable the last step gave one of them cannot be null.** `savings_goal_service.calculate_trajectory` (`months_to_goal` / `projected_completion_date` / `pace` / `required_monthly`) is NESTED inside the `GoalProgress` value object plan step X-w4 created, so that record is a typed outer with a dict inner -- ruling R-CI's own inconsistency, in R-CI's own container. `calculate_savings_metrics` (`months_covered` / `paychecks_covered` / `years_covered`) is the emergency-fund coverage line beside it. Each has exactly ONE production consumer (`_goals.py:165`, `_orchestrator.py:639`), both on this path. **And X-w4 annotated `GoalProgress.trajectory` as `dict \| None` against a producer with three returns, every one a full four-key dict** -- ruling R-CA's defect (a nullable that cannot be null) written by the step that cites R-CA, which leaves `savings/dashboard.html:143`'s `{% if gd.trajectory %}` a truthiness test on an always-four-key dict: a guard that can never be false | `$0.00` today: no figure is wrong, and the two producers always return every key. The measured cost is a dead template branch and one impossible state in a type -- plus 64 assertions in `test_savings_goal_service.py` reading the dicts, which is the reason the last step gave for not taking it and which rule 7 says is not one | **OPEN**, opened 2026-07-30 by the developer's question about plan step X-w's scope call. It was REPORTED in prose by that step and given no owner, which is the state rule 6 exists to forbid -- recorded here for that reason as much as for the defect | X-aa |
+| N-120 (X-aa review) | **The emergency-fund footer's two derived units are converted from the ROUNDED months, not from the raw ratio, and one of them is a tenth off on the developer's own data.** `savings_goal_service.calculate_savings_metrics` quantizes `months_covered` to `0.1` and then derives `paychecks_covered` and `years_covered` from that rounded value. Measured on `shekel_f3_final`: `$4,076.92` of liquid savings over `$5,667.63` of average monthly expenses is `0.7193` raw months -- rendered `0.7 months` / `1.5 paychecks`, where converting the raw ratio gives `1.6`. A sweep over 1,946 (balance, expense) shapes found 1,111 divergences. **It is a genuine FORK, not an obvious defect**, which is why it is a row and not a fix: today's figures are internally consistent (`0.7` months IS `1.5` paychecks at the displayed grain, so a reader converting between the three gets the numbers on screen), while the raw-ratio answer is more accurate and the three would stop being conversions of each other. Whichever wins, the rule has to be written down -- the docstring claimed "the same span" until X-aa's review measured it | one tenth of a pay period on the prod-shape clone TODAY (`1.5` rendered against `1.6`); 1,111 of 1,946 sampled shapes diverge. No balance, and nothing downstream reads these three -- the footer is their only consumer | **OPEN**, opened 2026-07-30 by X-aa's adversarial review, which measured it while checking a docstring X-aa had just written. PRE-EXISTING: the arithmetic is byte-identical to `fd8abc05`. Born with an owner (rule 6) | X-z |
 
 ## 7. Verification standard (what "done" means for every step)
 
@@ -2909,6 +2940,17 @@ done, and is what drifted.
   are right and now discriminate; what had to be corrected in four places is why they exist. Ask of
   a new guard: what does the failure it names actually LOOK like, and does this arm see that and not
   something else?
+* **`hasattr` ON A DATACLASS IS NOT A TEST, AND NEITHER IS `is not None` AFTER `isinstance`.**
+  X-aa's new contract control looped `assert hasattr(traj, field)` over four field names to prove a
+  producer "fills every field". A frozen dataclass with four required fields gives all four to
+  anything that passes the `isinstance` on the line above, so the loop was structurally
+  unfalsifiable -- and its docstring promised it would catch "a future edit that omits a field",
+  which is precisely the mutant that survived it. **Seven mutants, five survivors**, including a
+  `required_monthly` inflated tenfold and an inverted pace. Comparing `dataclasses.astuple` per
+  branch killed all seven. The general form: when a test asserts a SHAPE the type system already
+  guarantees, it asserts nothing; assert the VALUES, and run the mutants before believing the test.
+  This is Section 7.3 with a new disguise -- the control looked like a control, passed, and was
+  committed inside the step whose entire thesis is that a guard which cannot fail is not a guard.
 * Documents rot in days here. This file is the only one allowed to rot, and every edit re-dates
   it.
 
