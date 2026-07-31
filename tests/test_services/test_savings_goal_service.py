@@ -125,15 +125,12 @@ class TestCalculateSavingsMetrics:
         assert result.paychecks_covered == Decimal("0")
         assert result.years_covered == Decimal("0")
 
-    def test_expenses_none_returns_all_zeros(self):
-        """None expenses -- return zeros."""
-        result = calculate_savings_metrics(
-            savings_balance=Decimal("10000"),
-            average_monthly_expenses=None,
-        )
-        assert result.months_covered == Decimal("0")
-        assert result.paychecks_covered == Decimal("0")
-        assert result.years_covered == Decimal("0")
+    # ``test_expenses_none_returns_all_zeros`` went at plan step X-z4 (ruling
+    # R-CS) with the ``None`` arm it exercised.  Neither parameter is nullable:
+    # the one production caller passes two producers that return a ``Decimal``
+    # on every path, and nothing anywhere passed a ``None`` balance.  A branch
+    # whose only consumer is the test written for it is the shape X-s3 deleted
+    # ``DtiMetrics.gross_monthly_income`` for.
 
     def test_balance_zero_returns_all_zeros(self):
         """Zero balance -- nothing to cover expenses with."""

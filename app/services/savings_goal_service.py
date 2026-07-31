@@ -232,34 +232,45 @@ def calculate_required_contribution(current_balance, target_amount, remaining_pe
 
 
 def calculate_savings_metrics(
-    savings_balance: Decimal | None,
-    average_monthly_expenses: Decimal | None,
+    savings_balance: Decimal,
+    average_monthly_expenses: Decimal,
 ) -> SavingsCoverage:
     """Calculate how long savings would cover expenses.
 
+    **Neither input is nullable, and neither was reachable as one** (plan step
+    X-z4, ruling R-CS).  Both were ``Decimal | None`` with a ``None`` arm each.
+    The ONE production caller
+    (:func:`~app.services.savings_dashboard_service._orchestrator._compute_emergency_fund_section`)
+    passes ``_sum_liquid_balances(...)`` and ``_compute_avg_monthly_expenses(...)``,
+    which return a ``Decimal`` on every path -- and NO test anywhere passed
+    ``savings_balance=None``, so that branch had zero exercisers in the whole
+    repository.  That is ruling R-CA's "a nullable that cannot be null", one
+    function over from where plan step X-aa closed it for
+    :class:`GoalTrajectory`.  The four ``Decimal(str(x))`` coercions went with
+    them: they defended against types this signature forbids, and without them
+    a float caller raises ``TypeError`` rather than silently succeeding.
+
+    The non-positive guard STAYS and is a different thing entirely: a user with
+    no recorded expenses is a real state, and three zeros is a real answer to
+    "how long would your savings last" when nothing is being spent.
+
     Args:
-        savings_balance:          Decimal -- total savings balance.
-        average_monthly_expenses: Decimal -- average monthly expense total.
+        savings_balance: The user's total liquid savings.
+        average_monthly_expenses: The average monthly expense total.
 
     Returns:
         The :class:`SavingsCoverage` (a three-key dict until plan step
         X-aa, ruling R-CO).  Three zeros when there are no expenses to
         cover -- a real answer, not an absent one.
     """
-    if savings_balance is None:
-        savings_balance = Decimal("0.00")
-    else:
-        savings_balance = Decimal(str(savings_balance))
-
-    if average_monthly_expenses is None or Decimal(str(average_monthly_expenses)) <= 0:
+    if average_monthly_expenses <= 0:
         return SavingsCoverage(
             months_covered=Decimal("0"),
             paychecks_covered=Decimal("0"),
             years_covered=Decimal("0"),
         )
 
-    avg_expenses = Decimal(str(average_monthly_expenses))
-    months = (savings_balance / avg_expenses).quantize(
+    months = (savings_balance / average_monthly_expenses).quantize(
         Decimal("0.1"), rounding=ROUND_HALF_UP
     )
 
