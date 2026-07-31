@@ -25,7 +25,8 @@ facts at a date is the seam's, exactly as plan step D-fold split the loan pair.
 **The walk (plan step X-a, ruling R-H).**  :mod:`._events` and :mod:`._walk`
 build the account's ONE event stream -- every balance ASSERTION plus every
 SETTLED row -- and replay it into per-assertion corrections, partitioned by
-INSTANT so an assertion covers exactly the settles that preceded it.  The seam's
+CIVIL DAY so an assertion covers exactly the settles dated on or before the day
+it is the closing balance for (ruling R-DH).  The seam's
 read fold TAKES it, and since plan step X-c2b2 every cash figure on every screen
 is that fold sampled at a date.  The second consumer is still to come: at step
 X-d the posting WRITER reads this walk too, replacing the postings-sourced
@@ -69,10 +70,10 @@ from ._amounts import (
 from ._events import (
     CashAnchorFact,
     CashSourceFact,
-    attribution_instant,
     cash_anchor_facts,
     merge_anchor_and_cash_events,
     settled_cash_facts,
+    settled_civil_day,
 )
 from ._facts import (
     AnchorPoint,
@@ -93,7 +94,6 @@ __all__ = [
     "CashAnchorFact",
     "CashLedgerWalk",
     "CashSourceFact",
-    "attribution_instant",
     "cash_anchor_facts",
     "dated_deltas",
     "income_amount",
@@ -103,6 +103,7 @@ __all__ = [
     "resolve_anchor",
     "settled_cash_facts",
     "settled_cash_leg",
+    "settled_civil_day",
     "sum_projected",
     "walk_cash_ledger",
 ]

@@ -40,6 +40,7 @@ implementation fails rather than a comment asserting it:
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
+from app.utils.dates import DISPLAY_TIMEZONE
 from app.enums import StatusEnum
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
@@ -70,10 +71,25 @@ _LATE_AS_OF = date(2026, 12, 31)
 
 
 def _instant(year, month, day, hour=0, minute=0, second=0):
-    """Return an aware-UTC instant, for pinning assertion / settle moments."""
+    """Return the aware-UTC instant of a wall-clock moment on the USER's day.
+
+    The arguments are read as the DISPLAY timezone -- the clock the user is
+    actually looking at -- and converted to UTC for storage, which is the
+    direction production runs in: ``paid_at`` and ``created_at`` are stamped
+    when the user acts and stored UTC.
+
+    **It read them as UTC until ruling R-DH (b)** (2026-07-31), and the default
+    ``hour=0`` then meant midnight UTC -- 7pm or 8pm the PREVIOUS Eastern day.
+    So a fixture writing ``_instant(2026, 1, 15)`` to mean "this settled on the
+    15th" pinned an event the fold correctly places on the 14th, and five tests
+    in this class asserted figures for a day their own setup had not built.
+    Reading the arguments as Eastern makes the helper mean what every call site
+    already said it meant, and it preserves same-day ORDERING exactly: two
+    moments on one day shift by the same offset.
+    """
     return datetime(
-        year, month, day, hour, minute, second, tzinfo=timezone.utc,
-    )
+        year, month, day, hour, minute, second, tzinfo=DISPLAY_TIMEZONE,
+    ).astimezone(timezone.utc)
 
 
 def _fold(account, scenario, days, as_of=_LATE_AS_OF):
@@ -388,20 +404,21 @@ class TestSettledMoneyRidesOnTheAssertionItFollowed:
         assert folded[date(2026, 2, 28)] == Decimal("1000.00")
         assert folded[date(2026, 3, 1)] == Decimal("2932.41")
 
-    def test_same_day_settles_land_on_opposite_sides_of_the_assertion(
+    def test_both_same_day_settles_go_with_the_assertion(
         self, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """The discriminating control: one civil day, two different answers.
+        """The discriminating control: one civil day, ONE answer (ruling R-DH (a)).
 
         The production shape, at the FOLD.  A -$40.00 settle at 09:00, an
         assertion of $2,932.41 at 12:57:08, and a -$60.00 settle at 20:00 --
-        all three on the SAME UTC civil day, so a partition keyed on the DATE
-        has no information with which to separate them and would absorb both
-        settles into the assertion.
+        all three on the user's SAME civil day.  The assertion is that day's
+        CLOSING balance, so both settles are inside it and the fold reads the
+        asserted $2,932.41 on 03-01.
 
-        Hand-computed: keyed on the INSTANT the earlier is absorbed and the
-        later rides on top, so the fold reads ``2932.41 - 60.00 = 2872.41`` on
-        03-01.  A date-keyed implementation answers $2,932.41 and fails.
+        An instant-keyed implementation answers ``2872.41`` and fails, which is
+        the same discriminating role this test had before ruling R-DH inverted
+        it (2026-07-31) -- see ``anchor_settle_partition.md`` for the
+        ``-$4,021.37`` the instant partition rendered on production.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         _opened_at(account, _instant(2026, 1, 1))
@@ -423,7 +440,7 @@ class TestSettledMoneyRidesOnTheAssertionItFollowed:
             date(2026, 2, 28), date(2026, 3, 1),
         ])
         assert folded[date(2026, 2, 28)] == Decimal("1000.00")
-        assert folded[date(2026, 3, 1)] == Decimal("2872.41")
+        assert folded[date(2026, 3, 1)] == Decimal("2932.41")
 
 
 class TestEveryAssertionIsReplayed:
@@ -487,19 +504,22 @@ class TestThePlannedTier:
     def test_an_overdue_bill_clamps_forward_instead_of_being_erased(
         self, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """R-G's worked Checking figures: $2,774.26, not $2,824.26.
+        """R-G's worked Checking figures, re-based on ruling R-DH (a).
 
-        The ruling's shape: an assertion of $2,932.41 at 2026-04-02 12:57:08, a
-        -$108.15 expense settling ten minutes later at 13:07:11, and a still
-        -projected $50.00 bill due four days EARLIER (2026-03-29).  Read at
+        The ruling's shape: an assertion of $2,932.41 on 2026-04-02, a -$108.15
+        expense recorded ten minutes later the same day, and a still-projected
+        $50.00 bill due four days EARLIER (2026-03-29).  Read at
         ``as_of = 2026-04-02``.
 
-        Hand-computed: the settle rides on the assertion, so 04-02 reads
-        ``2932.41 - 108.15 = 2824.26``; the overdue bill clamps to ``as_of + 1``
-        and lands 04-03, so 04-03 reads ``2824.26 - 50.00 = 2774.26``.  The
-        ruling's rejected alternative -- the reset erasing the bill -- answers
-        $2,824.26 forever, which is exactly this test's 04-02 value carried
-        forward.
+        Hand-computed: the same-day settle is inside the closing balance
+        (R-DH (a)), so 04-02 reads $2,932.41; the overdue bill clamps to
+        ``as_of + 1`` and lands 04-03, so 04-03 reads
+        ``2932.41 - 50.00 = 2882.41``.  **R-G is what this test grades and R-G
+        is untouched** -- the base moved by ``$108.15`` because the partition
+        did, and the ``-$50.00`` step one day later is the clamp arm, unchanged.
+        The ruling's rejected alternative -- the reset erasing the bill --
+        answers $2,932.41 forever, which is exactly this test's 04-02 value
+        carried forward.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         as_of = date(2026, 4, 2)
@@ -521,9 +541,9 @@ class TestThePlannedTier:
         folded = _fold(account, scenario, [
             date(2026, 4, 2), date(2026, 4, 3), date(2026, 4, 9),
         ], as_of=as_of)
-        assert folded[date(2026, 4, 2)] == Decimal("2824.26")
-        assert folded[date(2026, 4, 3)] == Decimal("2774.26")
-        assert folded[date(2026, 4, 9)] == Decimal("2774.26")
+        assert folded[date(2026, 4, 2)] == Decimal("2932.41")
+        assert folded[date(2026, 4, 3)] == Decimal("2882.41")
+        assert folded[date(2026, 4, 9)] == Decimal("2882.41")
 
     def test_a_future_bill_lands_on_its_own_due_date(
         self, db, seed_user, seed_periods,
@@ -1156,10 +1176,12 @@ def _drift_oracle(periods):
     expected = {}
     for index, period in enumerate(periods):
         if index == _DRIFT_REASSERTION_INDEX:
-            # The reset discards everything before it, INCLUDING the income
-            # settled earlier the same day; only the expense settled after it
-            # survives (ruling R-B).
-            running = _DRIFT_REASSERTION - _DRIFT_EXPENSE
+            # The reset discards everything before it AND everything else on
+            # its own civil day -- the income recorded earlier and the expense
+            # recorded later alike -- because an assertion is that day's
+            # CLOSING balance (ruling R-DH (a), which superseded R-B's instant
+            # partition on 2026-07-31).  So the column IS the asserted figure.
+            running = _DRIFT_REASSERTION
         elif index in _DRIFT_SETTLED_PERIODS:
             expense = (
                 _DRIFT_ACTUAL_EXPENSE if index == _DRIFT_ACTUAL_INDEX
@@ -1201,10 +1223,11 @@ class TestTheDriftOracleWalksFiftyTwoPeriods:
     * the **OPENING** assertion ($1,000.00 at 2026-01-02 00:00 UTC);
     * a **SETTLED** past, periods 1-16, every row stamped at a pinned instant,
       one of them (period 15) carrying an ACTUAL over its estimate;
-    * a mid-horizon **RE-ASSERTION** at 2026-07-03 09:00 UTC -- the RESET the
-      original could not express at all -- whose own period's two rows straddle
-      it on its own civil day, so ruling **R-B**'s INSTANT partition decides
-      period 13's figure and a date-keyed partition cannot reproduce it;
+    * a mid-horizon **RE-ASSERTION** on 2026-07-03 -- the RESET the original
+      could not express at all -- whose own period's two rows sit either side of
+      it on its own civil day, so ruling **R-DH (a)**'s CLOSING-BALANCE
+      partition decides period 13's figure and an instant-keyed partition
+      cannot reproduce it;
     * period 16 holding the SETTLED and PLANNED tiers at once -- two settled
       rows plus an overdue bill due 2026-08-20 that ruling **R-G** must clamp
       forward onto period 20.  That coexistence is what every user's CURRENT
@@ -1241,8 +1264,10 @@ class TestTheDriftOracleWalksFiftyTwoPeriods:
     production mutation, reverted).  EIGHT fail this class, seven of them on
     BOTH tests: the assertion no longer resetting the walked total
     (``cash_ledger._walk``); the planned tier never merging into the running
-    steps; the instant partition re-keyed onto the civil DAY
-    (``cash_ledger._events.merge_anchor_and_cash_events``); ruling R-G's clamp
+    steps; the closing-balance partition re-keyed onto the INSTANT
+    (``cash_ledger._events.merge_anchor_and_cash_events``) -- the control that
+    ran the other way until ruling R-DH (a), and still fires, because period 13
+    is built to separate the two rules; ruling R-G's clamp
     deleted; its floor off by one (``not_before = as_of``); the map sampling
     each period's START; and ``settled_cash_leg`` valuing a settled row at its
     ESTIMATE rather than its ACTUAL.  The eighth, ``attribution_date``'s clamp
@@ -1312,40 +1337,42 @@ class TestTheDriftOracleWalksFiftyTwoPeriods:
           * **period 12** (ends 2026-07-02, the last column before the reset):
             ``1,000.00 + 12 x 1,324.47 = $16,893.64``.
           * **period 13** (ends 2026-07-16, the reset's own column): the
-            assertion REPLACES that total and the income settled earlier the
-            same day goes with it, leaving only the expense settled after it --
-            ``5,412.83 - 1,175.53 = $4,237.30``.  A fold that ignored the
-            assertion would read ``16,893.64 + 1,324.47 = $18,218.11``; one
-            partitioning on the civil DAY rather than the instant would keep or
-            drop BOTH rows, reading ``$6,737.30`` or ``$5,412.83``.
+            assertion REPLACES that total and BOTH of its own day's rows go with
+            it -- the income recorded earlier and the expense recorded later --
+            so the column IS the asserted ``$5,412.83`` (ruling R-DH (a)).  A
+            fold that ignored the assertion would read
+            ``16,893.64 + 1,324.47 = $18,218.11``; one partitioning on the
+            INSTANT keeps the later expense and reads
+            ``5,412.83 - 1,175.53 = $4,237.30``, which is what this figure was
+            until 2026-07-31.
           * **period 15** (ends 2026-08-13): its settled expense is worth its
             ACTUAL $1,200.00, not its $1,175.53 estimate, so this period nets
             ``2,500.00 - 1,200.00 = 1,300.00`` --
-            ``4,237.30 + 1,324.47 + 1,300.00 = $6,861.77``.
+            ``5,412.83 + 1,324.47 + 1,300.00 = $8,037.30``.
           * **period 16** (ends 2026-08-27): settled and planned in ONE column.
             Its two settled rows net ``+1,324.47``; its overdue bill is clamped
-            OUT of it by ruling R-G -- ``6,861.77 + 1,324.47 = $8,186.24``.
+            OUT of it by ruling R-G -- ``8,037.30 + 1,324.47 = $9,361.77``.
           * **period 17** (ends 2026-09-10): holds ONLY a $600.00 Cancelled and
-            a $350.00 Credit row, so it carries ``$8,186.24`` unchanged.
+            a $350.00 Credit row, so it carries ``$9,361.77`` unchanged.
           * **period 19** (ends 2026-10-08, the read's own as-of): still
-            ``$8,186.24``.
+            ``$9,361.77``.
           * **period 20** (ends 2026-10-22): the clamp lands the overdue bill
-            here, ``8,186.24 + 1,324.47 - 412.19 = $9,098.52``.
+            here, ``9,361.77 + 1,324.47 - 412.19 = $10,274.05``.
           * **period 51** (ends 2027-12-30, the horizon): periods 21-51 add
             ``31 x 1,324.47 = 41,058.57``, the 11 of them divisible by three
             each hold back ``3 x 33.33 = 99.99``, and the two stray-dated rows
             hold back ``77.11`` (period 40) and ``88.23`` (period 44) --
-            ``9,098.52 + 41,058.57 - 1,099.89 - 77.11 - 88.23 = $48,891.86``.
+            ``10,274.05 + 41,058.57 - 1,099.89 - 77.11 - 88.23 = $50,067.39``.
         """
         _build_drift_shape(db.session, seed_user, seed_periods_52)
 
         actual = _drift_period_map(seed_user, seed_periods_52)
 
         assert actual[seed_periods_52[12].id] == Decimal("16893.64")
-        assert actual[seed_periods_52[13].id] == Decimal("4237.30")
-        assert actual[seed_periods_52[15].id] == Decimal("6861.77")
-        assert actual[seed_periods_52[16].id] == Decimal("8186.24")
-        assert actual[seed_periods_52[17].id] == Decimal("8186.24")
-        assert actual[seed_periods_52[19].id] == Decimal("8186.24")
-        assert actual[seed_periods_52[20].id] == Decimal("9098.52")
-        assert actual[seed_periods_52[51].id] == Decimal("48891.86")
+        assert actual[seed_periods_52[13].id] == Decimal("5412.83")
+        assert actual[seed_periods_52[15].id] == Decimal("8037.30")
+        assert actual[seed_periods_52[16].id] == Decimal("9361.77")
+        assert actual[seed_periods_52[17].id] == Decimal("9361.77")
+        assert actual[seed_periods_52[19].id] == Decimal("9361.77")
+        assert actual[seed_periods_52[20].id] == Decimal("10274.05")
+        assert actual[seed_periods_52[51].id] == Decimal("50067.39")

@@ -373,20 +373,28 @@ class TestSyncSettlePostsBalancedEntry:
 
 
 class TestSyncSettleEntryDate:
-    """``entry_date`` is the shadow paid_at (UTC), else the period start."""
+    """``entry_date`` is the shadow paid_at's USER day, else the period start."""
 
-    def test_entry_date_from_paid_at_utc_not_display_tz(
+    def test_entry_date_from_paid_at_is_the_users_day_not_utc(
         self, app, db, seed_user, savings,
     ):
-        """A settled paid_at maps to its UTC civil date, NOT the display tz.
+        """A settled paid_at maps to its DISPLAY civil date, NOT the UTC one.
 
         Arithmetic: paid_at 2026-05-10 02:00 UTC is 2026-05-09 22:00 in the
-        America/New_York display timezone (UTC-4 in May), so the UTC civil
-        date (2026-05-10) and the Eastern civil date (2026-05-09) differ.  The
-        entry date must be the UTC date 2026-05-10 -- the Python counterpart of
-        the backfill's ``(paid_at AT TIME ZONE 'UTC')::date`` and the app's
-        UTC storage convention.  A display-timezone conversion would wrongly
-        yield 2026-05-09 and fail this assertion (the regression guard).
+        America/New_York display timezone (UTC-4 in May), so the two civil dates
+        differ.  The entry date must be the user's 2026-05-09.  A UTC conversion
+        would wrongly yield 2026-05-10 and fail this assertion (the regression
+        guard, pointed the other way).
+
+        **Ruling R-DH (b) inverted this test** (2026-07-31,
+        ``docs/audits/balance_architecture/anchor_settle_partition.md``).  The
+        stored ``entry_date`` was the UTC civil date, matching the historical
+        backfill; it moved to the user's day TOGETHER with the cash fold and the
+        loan fold, because an entry date is compared against and bucketed by
+        plain ``DATE`` columns that mean the user's civil days.  Storage is
+        unchanged -- ``paid_at`` is still stored UTC -- and the three writers
+        moved as one, because moving any of them alone is what would put a
+        transfer's two legs on different days.
         """
         with app.app_context():
             transfer = create_settled_transfer(
@@ -397,8 +405,8 @@ class TestSyncSettleEntryDate:
             _db.session.commit()
             # Commit-5 wiring: the settle auto-posted; read the entry back.
             entry = _entries_for_transfer(transfer.id)[0]
-            # UTC civil date 2026-05-10, NOT the Eastern 2026-05-09.
-            assert entry.entry_date == date(2026, 5, 10)
+            # The user's civil date 2026-05-09, NOT the UTC 2026-05-10.
+            assert entry.entry_date == date(2026, 5, 9)
 
     def test_entry_date_falls_back_to_period_start_when_paid_at_null(
         self, app, db, seed_user, savings,
@@ -1388,19 +1396,20 @@ class TestTransactionShadowNoop:
 
 
 class TestTransactionEntryDate:
-    """``entry_date`` is the paid_at UTC civil date, else the period start."""
+    """``entry_date`` is the paid_at's USER civil date, else the period start."""
 
-    def test_entry_date_from_paid_at_utc_not_display_tz(
+    def test_entry_date_from_paid_at_is_the_users_day_not_utc(
         self, app, db, seed_user,
     ):
-        """A settled paid_at maps to its UTC civil date, NOT the display tz.
+        """A settled paid_at maps to its DISPLAY civil date, NOT the UTC one.
 
         Arithmetic: paid_at 2026-05-10 02:00 UTC is 2026-05-09 22:00 in
-        America/New_York (UTC-4 in May), so the UTC civil date (2026-05-10) and
-        the Eastern civil date (2026-05-09) differ.  The entry date must be the
-        UTC date -- the Python counterpart of the backfill's
-        ``(paid_at AT TIME ZONE 'UTC')::date`` -- read back via a query so a
+        America/New_York (UTC-4 in May), so the two civil dates differ.  The
+        entry date must be the user's 2026-05-09, read back via a query so a
         server-side ``db.func.now()`` would also materialise correctly.
+
+        The transaction twin of the transfer case above, and inverted by the
+        same ruling R-DH (b); see that docstring for why storage is untouched.
         """
         with app.app_context():
             period = seed_user["bootstrap_period"]
@@ -1415,7 +1424,7 @@ class TestTransactionEntryDate:
                 txn, settled=True,
             )
             _db.session.commit()
-            assert entry.entry_date == date(2026, 5, 10)
+            assert entry.entry_date == date(2026, 5, 9)
 
     def test_entry_date_falls_back_to_period_start_when_paid_at_null(
         self, app, db, seed_user,

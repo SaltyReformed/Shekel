@@ -10,16 +10,17 @@ reconcile / posting of those corrections lives in the sibling module
 (:mod:`._anchors`); this module only reads and computes (no writes, no
 commit).
 
-**Moment-granular, not period-granular.**  An anchor is a moment-of-assertion
-fact: the engine excludes settled items from every period's sum because the
-anchor is assumed to already reflect all settled activity known at the moment
-it was asserted (``balance_calculator.py``; ``apply_anchor_true_up``: "the
-user is declaring 'my real checking is now $X' -- every past-dated debit
-purchase is already in that number").  The walk therefore partitions source
-facts by their attribution INSTANT against each anchor's assertion instant
-(its ``created_at``), never by pay period -- a period-granular walk would
-mis-state the ledger by every pre-true-up settle in the anchor period (the
-plan review's CRITICAL-1).
+**Day-granular, not period-granular -- and not instant-granular either.**  An
+anchor is the CLOSING BALANCE for the civil day it was observed on, so it
+already reflects every settled movement dated that day or earlier
+(``apply_anchor_true_up``: "the user is declaring 'my real checking is now $X'
+-- every past-dated debit purchase is already in that number").  The walk
+therefore partitions source facts by their settled DAY against each anchor's
+``observed_on``, never by pay period -- a period-granular walk would mis-state
+the ledger by every pre-true-up settle in the anchor period (the plan review's
+CRITICAL-1) -- and never by instant, which decided the question by which button
+the user pressed first and cost production ``$4,001.42`` on 2026-07-31 (ruling
+R-DH, ``docs/audits/balance_architecture/anchor_settle_partition.md``).
 
 **Source facts are read back from the ledger, never re-derived from
 transaction rows.**  Grouping the linked ledger's own postings by source is
@@ -35,7 +36,7 @@ refuses an amortizing account outright.
 """
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, timedelta
 from decimal import Decimal
 
 from app import ref_cache
@@ -53,12 +54,16 @@ from app.services.account_projection import (
 from app.services.posting_reads import PostingError, _ledger_account_for
 from app.services.cash_ledger import (
     CashAnchorFact,
-    attribution_instant,
     cash_anchor_facts,
+    settled_civil_day,
 )
-from app.utils.dates import utc_day_start_instant
 
 _ZERO_MONEY = Decimal("0.00")
+# The step back an OPENING's absorption boundary takes, so its own day's
+# sources ride on top of it.  Spelled the same way as the cash fold's twin
+# (``balance_at._cash_fold._ONE_DAY``) because it is the same unit: the
+# civil day both partitions now read.
+_ONE_DAY = timedelta(days=1)
 
 
 @dataclass(frozen=True)
@@ -120,18 +125,20 @@ def _linked_net_rows(
     )
 
 
-def _transaction_source_instants(
+def _transaction_source_days(
     linked_ledger_id: int, scenario_id: int,
-) -> list[tuple[datetime, Decimal]]:
-    """Return (attribution instant, net) per transaction-linked source.
+) -> list[tuple[date, Decimal]]:
+    """Return (settled civil day, net) per transaction-linked source.
 
     Groups the linked ledger's postings under transaction-linked journal
     entries by ``transaction_id`` (any source kind -- the ``transaction``
     entries Step 3 posts today, and any future transaction-linked kind, by
-    construction) and attributes each nonzero net to the transaction's
-    CURRENT ``paid_at`` (aware UTC), falling back to its CURRENT pay
-    period's start at midnight UTC when ``paid_at`` is NULL.  A reverted
-    source nets to zero and is dropped before any date is resolved.
+    construction) and attributes each nonzero net to the civil day the
+    transaction's cash moved -- the SHARED
+    :func:`app.services.cash_ledger.settled_civil_day`, so this walk and the
+    read fold partition on one rule rather than two that agree (ruling R-DH).
+    A reverted source nets to zero and is dropped before any date is
+    resolved.
 
     The ``transfer_id IS NULL`` filter makes the three source loaders a
     provable PARTITION of the linked ledger: no writer produces a
@@ -147,7 +154,7 @@ def _transaction_source_instants(
         scenario_id: The budget scenario to scope to.
 
     Returns:
-        ``(instant, net)`` pairs, unordered (the walk sorts the merged set).
+        ``(day, net)`` pairs, unordered (the walk sorts the merged set).
 
     Raises:
         PostingError: If a nonzero net's ``transaction_id`` resolves no
@@ -177,41 +184,43 @@ def _transaction_source_instants(
         .filter(Transaction.id.in_(nets))
         .all()
     )
-    instants = {
-        transaction_id: attribution_instant(paid_at, start_date)
+    days = {
+        transaction_id: settled_civil_day(paid_at, start_date)
         for transaction_id, paid_at, start_date in dated
     }
-    missing = set(nets) - set(instants)
+    missing = set(nets) - set(days)
     if missing:
         raise PostingError(
             f"Ledger account {linked_ledger_id} holds a nonzero net for "
             f"transaction ids {sorted(missing)} but no such transaction "
             f"rows exist; the SET NULL linkage invariant is broken."
         )
-    return [(instants[key], nets[key]) for key in nets]
+    return [(days[key], nets[key]) for key in nets]
 
 
-def _transfer_source_instants(
+def _transfer_source_days(
     linked_ledger_id: int, scenario_id: int,
-) -> list[tuple[datetime, Decimal]]:
-    """Return (attribution instant, net) per transfer-linked source.
+) -> list[tuple[date, Decimal]]:
+    """Return (settled civil day, net) per transfer-linked source.
 
     Groups the linked ledger's postings under transfer-linked journal
     entries by ``transfer_id`` and attributes each nonzero net to the
     transfer's INCOME shadow's CURRENT ``paid_at`` (Transfer Invariant 3
     mirrors ``paid_at`` onto both shadows, and
     ``posting_service._entry_date`` already dates transfer entries off
-    exactly this shadow), falling back to the shadow's pay period start at
-    midnight UTC (== the transfer's period, Invariant 3 again) when
-    ``paid_at`` is NULL.  A reverted or reversed-before-delete transfer
-    nets to zero and is dropped before the shadow is resolved.
+    exactly this shadow), through the SHARED
+    :func:`app.services.cash_ledger.settled_civil_day` -- so it falls back to
+    the shadow's pay period start UNCONVERTED (== the transfer's period,
+    Invariant 3 again) when ``paid_at`` is NULL.  A reverted or
+    reversed-before-delete transfer nets to zero and is dropped before the
+    shadow is resolved.
 
     Args:
         linked_ledger_id: The account's LINKED ledger account id.
         scenario_id: The budget scenario to scope to.
 
     Returns:
-        ``(instant, net)`` pairs, unordered (the walk sorts the merged set).
+        ``(day, net)`` pairs, unordered (the walk sorts the merged set).
 
     Raises:
         PostingError: If a nonzero net's transfer has no active income
@@ -250,36 +259,39 @@ def _transfer_source_instants(
         )
         .all()
     )
-    instants = {
-        transfer_id: attribution_instant(paid_at, start_date)
+    days = {
+        transfer_id: settled_civil_day(paid_at, start_date)
         for transfer_id, paid_at, start_date in dated
     }
-    if len(dated) != len(instants):
+    if len(dated) != len(days):
         raise PostingError(
             f"Ledger account {linked_ledger_id} resolved more than one "
             f"active income shadow for a transfer; Transfer Invariant 1 is "
-            f"broken and the attribution instant would be arbitrary."
+            f"broken and the attribution day would be arbitrary."
         )
-    missing = set(nets) - set(instants)
+    missing = set(nets) - set(days)
     if missing:
         raise PostingError(
             f"Ledger account {linked_ledger_id} holds a nonzero net for "
             f"transfer ids {sorted(missing)} but no active income shadow "
             f"resolves them; Transfer Invariant 1 is broken."
         )
-    return [(instants[key], nets[key]) for key in nets]
+    return [(days[key], nets[key]) for key in nets]
 
 
-def _residue_source_instants(
+def _residue_source_days(
     linked_ledger_id: int, scenario_id: int,
-) -> list[tuple[datetime, Decimal]]:
-    """Return (attribution instant, net) for unlinked non-correction entries.
+) -> list[tuple[date, Decimal]]:
+    """Return (settled civil day, net) for unlinked non-correction entries.
 
     The residue bucket: journal entries on the linked ledger with BOTH
     concrete source FKs NULL and a non-correction source kind -- in
     practice hard-delete residue, whose ``transaction_id`` /
     ``transfer_id`` were SET-NULLed when the source row was deleted.  Each
-    period's residue is attributed at that period's start (midnight UTC):
+    period's residue is attributed at that period's ``start_date`` -- a civil
+    date used AS a civil date, never routed through an instant, which is the
+    same discipline :func:`app.services.cash_ledger.settled_civil_day` keeps
+    for its own NULL-``paid_at`` fallback (ruling R-DH):
     the reverse-before-delete discipline nets residue to zero per account
     AND per period (R2 stamps a reversal into the period of the postings
     it reverses), so every group here sums to zero and is dropped -- but
@@ -298,7 +310,7 @@ def _residue_source_instants(
         scenario_id: The budget scenario to scope to.
 
     Returns:
-        ``(instant, net)`` pairs, unordered (the walk sorts the merged set);
+        ``(day, net)`` pairs, unordered (the walk sorts the merged set);
         empty whenever the reverse-before-delete discipline held.
     """
     excluded_source_ids = [
@@ -328,33 +340,33 @@ def _residue_source_instants(
         .all()
     )
     return [
-        (utc_day_start_instant(start_date), nets[pay_period_id])
+        (start_date, nets[pay_period_id])
         for pay_period_id, start_date in dated
     ]
 
 
-def _source_net_instants(
+def _source_net_days(
     linked_ledger_id: int, scenario_id: int,
-) -> list[tuple[datetime, Decimal]]:
-    """Return every source fact on one linked ledger, sorted by instant.
+) -> list[tuple[date, Decimal]]:
+    """Return every source fact on one linked ledger, sorted by day.
 
     The union of the three source partitions -- transaction-linked,
     transfer-linked, and residue -- covering every posting on the linked
     ledger except the account's own anchor corrections, each as a
-    ``(attribution instant, current net)`` fact.  Sorted ascending by
-    instant, the order the walk consumes them in.
+    ``(settled civil day, current net)`` fact.  Sorted ascending by day, the
+    order the walk consumes them in.
 
     Args:
         linked_ledger_id: The account's LINKED ledger account id.
         scenario_id: The budget scenario to scope to.
 
     Returns:
-        ``(instant, net)`` pairs ascending by instant (nets are nonzero).
+        ``(day, net)`` pairs ascending by day (nets are nonzero).
     """
     sources = (
-        _transaction_source_instants(linked_ledger_id, scenario_id)
-        + _transfer_source_instants(linked_ledger_id, scenario_id)
-        + _residue_source_instants(linked_ledger_id, scenario_id)
+        _transaction_source_days(linked_ledger_id, scenario_id)
+        + _transfer_source_days(linked_ledger_id, scenario_id)
+        + _residue_source_days(linked_ledger_id, scenario_id)
     )
     sources.sort(key=lambda source: source[0])
     return sources
@@ -365,24 +377,36 @@ def walk_account_ledger(
 ) -> list[AccountAnchorCorrection]:
     """Replay a non-loan account's anchors into its genesis corrections.
 
-    The single moment-granular walk the account anchor ledger derives from.
+    The single DAY-granular walk the account anchor ledger derives from.
     Seeds the running ledger total at zero and, per anchor fact in
-    assertion order, absorbs every source fact attributed on or before that
-    fact's assertion instant, records the correction with the total JUST
+    assertion order, absorbs every source fact dated on or before that
+    fact's ``observed_on``, records the correction with the total JUST
     BEFORE the assertion (``ledger_before``), then resets the running total
     to the asserted balance -- so the corrections' cumulative effect plus
-    the absorbed sources equals each asserted balance at its assertion
-    instant, and the account's ABSOLUTE ledger total equals the latest
-    anchor plus the post-assertion source nets.
+    the absorbed sources equals each asserted balance as of the day it is
+    the closing balance for, and the account's ABSOLUTE ledger total equals
+    the latest anchor plus the later source nets.
+
+    **The partition is the READ FOLD's, and it is the same rule rather than
+    a copy** (ruling R-DH).  Both consume
+    :func:`app.services.cash_ledger.settled_civil_day` for a source's day and
+    :attr:`~app.services.cash_ledger.CashAnchorFact.observed_on` for an
+    assertion's, so the posted ledger and the projection cannot disagree
+    about which settles an assertion already covers -- the divergence Phase X
+    exists to close.  Both were INSTANT-granular until 2026-07-31, which
+    decided that question by click order and cost production ``$4,001.42``
+    (``anchor_settle_partition.md``); moving one without the other is what
+    would break the equality plan step X-a established, so they moved
+    together.
 
     Why this reproduces the go-forward chokepoint after the fact: at a
     true-up the fresh delta equals ``asserted - current live linked total``
-    (every settled source's instant precedes "now"), and ``created_at`` and
-    the posted ledger are immutable, so the pure walk re-derives the same
-    deltas.  Pre-anchor settles in ANY period are absorbed by the opening /
-    true-up deltas (the moment partition, not a period one); post-assertion
-    settles ride on top; a source reverted after a true-up nets to zero and
-    self-heals to the engine's answer on the next reconcile.
+    (every settled source's day is on or before the assertion's), and
+    ``created_at`` and the posted ledger are immutable, so the pure walk
+    re-derives the same deltas.  Pre-anchor settles in ANY period are
+    absorbed by the opening / true-up deltas (the DAY partition, not a period
+    one); later settles ride on top; a source reverted after a true-up nets
+    to zero and self-heals to the engine's answer on the next reconcile.
 
     Reads only (no writes, no commit).  All-scenario anchors, per-scenario
     sources: anchor history is per-account, so the same facts walk in every
@@ -423,15 +447,28 @@ def walk_account_ledger(
     if not facts:
         return []
     linked = _ledger_account_for(account_id)
-    sources = _source_net_instants(linked.id, scenario_id)
+    sources = _source_net_days(linked.id, scenario_id)
 
     corrections: list[AccountAnchorCorrection] = []
     running = _ZERO_MONEY
     source_index = 0
     for fact in facts:
+        # The LAST day whose sources this assertion absorbs.  An OPENING is
+        # where tracking starts, so its own day is NOT inside it and the
+        # boundary falls one day earlier; a TRUE-UP closes its day, so that day
+        # is inside (ruling R-DH (a) as amended).  Stated as a date rather than
+        # a predicate so the comparison below stays one ``<=`` for both kinds --
+        # the boundary is the read fold's, name for name (``cash_ledger._events``
+        # places the same two kinds either side of its own day's sources),
+        # because a posting walk that absorbed what the fold rides on top of is
+        # the exact drift plan step X-a exists to make impossible.
+        last_absorbed = (
+            fact.observed_on - _ONE_DAY if fact.is_opening
+            else fact.observed_on
+        )
         while (
             source_index < len(sources)
-            and sources[source_index][0] <= fact.asserted_at
+            and sources[source_index][0] <= last_absorbed
         ):
             running += sources[source_index][1]
             source_index += 1
@@ -439,7 +476,7 @@ def walk_account_ledger(
             AccountAnchorCorrection(anchor=fact, ledger_before=running)
         )
         # The correction resets the walked total to the asserted balance
-        # (the moment-of-assertion reset, the account analogue of the loan
+        # (the closing-balance reset, the account analogue of the loan
         # walk's anchor reset).
         running = fact.anchor_balance
     return corrections

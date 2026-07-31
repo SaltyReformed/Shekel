@@ -24,9 +24,13 @@ staying hard-deletable).
 **Reconciled to target, keyed by (source kind, entry date).**  An anchor
 correction has no concrete source FK to key on, so the reconcile keys each
 anchor's entry by its ``source_kind_id`` (``account_opening`` vs.
-``account_trueup``) and its ``entry_date`` (the assertion instant's UTC civil
-date -- the ``AnchorPoint.as_of_date`` convention; the late-evening-ET/UTC-day
-edge is identical to shipped loan corrections).  Two same-day same-kind
+``account_trueup``) and its ``entry_date`` -- the fact's own
+:attr:`~app.services.cash_ledger.CashAnchorFact.observed_on`, the civil day the
+assertion is the CLOSING BALANCE for (ruling R-DH).  It was
+``_utc_civil_date(asserted_at)`` until 2026-07-31: a second statement of a rule
+the fact already resolves, and one that dated a late-evening Eastern true-up
+into the next day, putting the correction on a different day from the settles it
+corrects.  Two same-day same-kind
 anchors merge to one target landing on the later value, mirroring the F-103
 unique-index semantics and the loan merge behavior.  A pre-true-up source
 whose net later changes moves the walk's ``ledger_before``; re-running the
@@ -51,7 +55,6 @@ from app.services._posting_reconcile import (
     merge_target_legs,
     posted_correction_legs,
 )
-from app.services._posting_write import _utc_civil_date
 from app.services.cash_ledger import CashAnchorFact
 from app.services.posting_reads import _ledger_account_for
 
@@ -172,8 +175,14 @@ def _account_anchor_correction_targets(
             correction.anchor,
         )
         key = (
+            # The correction's journal entry is dated the day the assertion is
+            # the CLOSING BALANCE for, read off the fact rather than re-derived
+            # from its recording instant (ruling R-DH).  It was
+            # ``_utc_civil_date(asserted_at)``, a second statement of a rule
+            # ``cash_anchor_facts`` already resolves -- and one that put a
+            # late-evening Eastern true-up on the next day's entry.
             ref_cache.posting_source_id(source_enum),
-            _utc_civil_date(correction.anchor.asserted_at),
+            correction.anchor.observed_on,
         )
         periods[key] = correction.anchor.pay_period_id
         merge_target_legs(
