@@ -58,10 +58,10 @@ from app.services.savings_dashboard_service._debt_line import (
     debt_line_loans,
     loan_payoff_outlook,
 )
+from app.services.savings_dashboard_service._display import LIABILITY_KEY
 from app.services.savings_dashboard_service._net_worth import (
     _ASSET_BANDS,
     _COMPOSITION_BANDS,
-    _LIABILITY_BAND,
     ZERO,
 )
 from app.services.savings_dashboard_service._types import AccountProjection
@@ -557,7 +557,7 @@ def _net_series(
     """
     return [
         sum((composition[band][k] for band in _ASSET_BANDS), ZERO)
-        - composition[_LIABILITY_BAND][k]
+        - composition[LIABILITY_KEY][k]
         for k in range(count)
     ]
 
@@ -729,6 +729,20 @@ def _assemble_composition(
     and other bands from per-account param growth (:func:`_asset_bands`), and
     the liability band from the loan schedules (:func:`_liability_band`).
 
+    **The three producers must partition the account set EXACTLY once, and
+    since plan step X-z that is a property of construction** (ruling R-CP,
+    finding N-118).  Two of them select by category key and the third selects
+    by :attr:`~.._types.AccountProjection.is_liability`, which were independent
+    id comparisons: an account the two classified differently would land in an
+    asset band AND the liability band -- counted twice, with opposite signs, so
+    net worth is wrong by double its balance -- or in neither, vanishing from a
+    chart whose own docstring says its index 0 equals the net-worth hero.
+    Nothing would raise either way.  Both rules now derive from
+    :func:`app.services.account_category.account_category`, so
+    ``is_liability`` and ``category_key == LIABILITY_KEY`` are one answer.
+    ``test_net_worth_band_vocabulary`` pins the complementary half: that the
+    three producers' BANDS are disjoint and exhaust the composition.
+
     Args:
         user_id: The authenticated user's id.
         core: The loaded dashboard core data.
@@ -747,7 +761,7 @@ def _assemble_composition(
     for band, series in {**engine_bands, **asset_bands}.items():
         _add_into(composition[band], series)
     _add_into(
-        composition[_LIABILITY_BAND],
+        composition[LIABILITY_KEY],
         _liability_band(account_data, core, frame),
     )
     return composition

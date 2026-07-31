@@ -25,7 +25,7 @@ from app.models.loan_params import LoanParams
 from app.models.pay_period import PayPeriod
 from app.services.balance_at import LoanFigures
 from app.services.balance_at import BalanceContext
-from app.services.net_worth_account_data import is_liability_account
+from app.services.account_category import is_liability_account
 
 
 @dataclass(frozen=True)
@@ -327,7 +327,7 @@ class AccountProjection:  # pylint: disable=too-many-instance-attributes
         (plan step X-t1, finding N-111).
 
         The classifier is the canonical id-based one
-        (:func:`app.services.net_worth_account_data.is_liability_account`,
+        (:func:`app.services.account_category.is_liability_account`,
         comparing the account type's ``category_id`` against the cached
         LIABILITY id -- IDs for logic, never a ``.name`` string), so the cell
         balance takes the danger token the group subtotal, chip and bar segment

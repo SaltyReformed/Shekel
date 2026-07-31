@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING
 
 from app.services import balance_at, savings_goal_service
 from app.services.balance_at import BalanceContext
-from app.services.net_worth_account_data import is_liability_account
+from app.services.account_category import is_liability_account
 from app.services.savings_dashboard_service._data import (
     _load_account_params,
     _load_archived_accounts,

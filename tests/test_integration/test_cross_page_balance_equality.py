@@ -80,10 +80,8 @@ from app.services import (
 from app.services.balance_at import _kernel as net_worth_kernel
 from app.services.balance_at import BalanceContext
 from app.services.balance_at._resolution import resolved_loan
-from app.services.savings_dashboard_service._net_worth import (
-    _ASSET_BANDS,
-    _LIABILITY_BAND,
-)
+from app.services.savings_dashboard_service._display import LIABILITY_KEY
+from app.services.savings_dashboard_service._net_worth import _ASSET_BANDS
 
 
 # ── Parameter matrix (cases 1..5 of the plan's Commit 11 spec) ─────
@@ -908,7 +906,7 @@ def _trend_liabilities_value(ctx):
     (see :func:`_trend_assets_value`).
     """
     series = _net_worth_series(ctx)
-    return series.composition[_LIABILITY_BAND][series.current_index]
+    return series.composition[LIABILITY_KEY][series.current_index]
 
 
 def _loan_detail_value(ctx):

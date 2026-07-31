@@ -9,38 +9,63 @@ imports.
 from collections import OrderedDict
 from decimal import Decimal
 
-from app import ref_cache
 from app.enums import AcctCategoryEnum
+from app.services.account_category import account_category
 from app.services.savings_dashboard_service._types import AccountProjection
 
 ZERO = Decimal("0.00")
 
-# The cockpit's category display order.  ``other`` is the catch-all for an
-# account with no ``account_type`` or no ``category_id`` (degenerate /
-# partially loaded); the four real categories
-# (:class:`~app.enums.AcctCategoryEnum`) exhaust every account that carries a
-# ``category_id``, so this order also enumerates every band the net-worth
-# composition can produce.
-#
-# **It is THE band vocabulary, and the net-worth producer now derives from it**
-# (plan step X-t3, finding N-108): ``_net_worth._ASSET_BANDS`` is this tuple
-# minus the liability key.  The two are the same set by construction rather
-# than by two lists agreeing, so a category added here cannot ship a chart band
-# with no grid group behind it.  The ORDER differs on purpose -- this one is the
-# grid's card order, the composition's is the chart's stack order -- and only
-# the SET is shared.  The presentation homes that cannot import it (the chart
-# script, the cockpit template's microcopy, the CSS band tokens) are held to
-# this set by ``test_net_worth_band_vocabulary.py``.
-_CATEGORY_ORDER = ("asset", "liability", "retirement", "investment", "other")
+# The DISPLAY vocabulary: one key per modelled account category.  This module
+# owns the mapping and the order because both are display decisions; what an
+# account's category IS belongs to
+# :func:`app.services.account_category.account_category`, which is the only
+# place a ``category_id`` meets a cached reference id (plan step X-z, ruling
+# R-CP, finding N-118).
+_CATEGORY_KEYS = {
+    AcctCategoryEnum.ASSET: "asset",
+    AcctCategoryEnum.LIABILITY: "liability",
+    AcctCategoryEnum.RETIREMENT: "retirement",
+    AcctCategoryEnum.INVESTMENT: "investment",
+}
 
-# The four real categories paired with their display keys, in the order the
-# key resolver checks them.  ``other`` is not here: it is the fall-through for
-# an account with no category id.
-_REAL_CATEGORIES = (
-    ("asset", AcctCategoryEnum.ASSET),
-    ("liability", AcctCategoryEnum.LIABILITY),
-    ("retirement", AcctCategoryEnum.RETIREMENT),
-    ("investment", AcctCategoryEnum.INVESTMENT),
+# The fall-through key for an account whose category this application does not
+# model -- the two states :func:`~app.services.account_category.account_category`
+# returns ``None`` for, neither of which a healthy persisted row reaches.  It is
+# a real band with real microcopy, a chart colour and a grid card, so such an
+# account's balance is rendered somewhere rather than dropped.
+_OTHER_KEY = "other"
+
+# The liability band's key, and the ONE spelling of it in this application.
+# ``_net_worth`` and ``_horizon`` import this rather than repeating the string
+# (plan step X-z, ruling R-CP; it was ``_net_worth._LIABILITY_BAND``), so the
+# band a chart stacks IS the key this module assigns -- which is what makes
+# ``account_category_key(a) == LIABILITY_KEY`` and
+# :func:`~app.services.account_category.is_liability_account` one answer rather
+# than two that agree.
+LIABILITY_KEY = _CATEGORY_KEYS[AcctCategoryEnum.LIABILITY]
+
+# The cockpit's category display ORDER -- the grid's card order, and the order
+# the composition's bands are derived in.  Written out entry by entry (never
+# derived from :class:`~app.enums.AcctCategoryEnum`'s declaration order) because
+# the order is a display decision: reordering a reference enum must not silently
+# reorder the cockpit's cards.  The KEYS come from :data:`_CATEGORY_KEYS`, so
+# this module holds exactly one spelling of each.
+#
+# **It is THE band vocabulary, and the net-worth producer derives from it**
+# (plan step X-t3, finding N-108): ``_net_worth._ASSET_BANDS`` is this tuple
+# minus :data:`LIABILITY_KEY`.  The two are the same set by construction rather
+# than by two lists agreeing, so a category added here cannot ship a chart band
+# with no grid group behind it.  The ORDER differs from the chart's stack order
+# on purpose, and only the SET is shared.  The presentation homes that cannot
+# import it (the chart script, the cockpit template's microcopy and its two
+# ``category_name == 'liability'`` tests, the CSS band tokens) are held to this
+# vocabulary by ``test_net_worth_band_vocabulary.py``.
+_CATEGORY_ORDER = (
+    _CATEGORY_KEYS[AcctCategoryEnum.ASSET],
+    LIABILITY_KEY,
+    _CATEGORY_KEYS[AcctCategoryEnum.RETIREMENT],
+    _CATEGORY_KEYS[AcctCategoryEnum.INVESTMENT],
+    _OTHER_KEY,
 )
 
 
@@ -52,29 +77,29 @@ def account_category_key(account) -> str:
     (:func:`category_key_by_account_id`, consumed by
     :func:`~app.services.savings_dashboard_service._net_worth.compute_net_worth_series`)
     read, so a category band in the trend can never disagree with the group
-    the same account sits in on the grid.  Classifies by the account type's
-    integer ``category_id`` against the cached category ids (IDs for logic,
-    never a ``.name`` string).  An account with no ``account_type`` or no
-    ``category_id`` -- degenerate / partially loaded -- classifies as
-    ``"other"``; because :class:`~app.enums.AcctCategoryEnum` has exactly the
-    four real categories, every account that DOES carry a ``category_id``
-    matches one of them, so ``"other"`` is reached only for the degenerate
-    case.
+    the same account sits in on the grid.
+
+    **It is a LOOKUP of the shared classifier's answer, not a second
+    comparison** (plan step X-z, ruling R-CP, finding N-118).  It re-derived the
+    category from ``account_type.category_id`` itself, beside
+    :func:`~app.services.account_category.is_liability_account` doing the same
+    for its own question -- one rule written twice, equivalent by reading and by
+    nothing else.  Both now read
+    :func:`~app.services.account_category.account_category`, so
+    ``account_category_key(a) == LIABILITY_KEY`` and ``is_liability_account(a)``
+    are one answer: the display mapping is injective and :data:`_OTHER_KEY` is
+    not one of its values, which the band gate asserts.
 
     Args:
         account: The :class:`~app.models.account.Account` to classify.
 
     Returns:
-        One of ``"asset"``, ``"liability"``, ``"retirement"``,
-        ``"investment"``, or ``"other"``.
+        The account's key from :data:`_CATEGORY_KEYS`, or :data:`_OTHER_KEY`
+        when the app models no category for it (see
+        :func:`~app.services.account_category.account_category` for the two
+        states that produces).
     """
-    acct_type = account.account_type
-    if acct_type is None or acct_type.category_id is None:
-        return "other"
-    for key, enum in _REAL_CATEGORIES:
-        if acct_type.category_id == ref_cache.acct_category_id(enum):
-            return key
-    return "other"
+    return _CATEGORY_KEYS.get(account_category(account), _OTHER_KEY)
 
 
 def category_key_by_account_id(

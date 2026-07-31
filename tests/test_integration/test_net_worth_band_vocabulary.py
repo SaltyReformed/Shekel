@@ -64,10 +64,10 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from app.services.savings_dashboard_service._display import LIABILITY_KEY
 from app.services.savings_dashboard_service._net_worth import (
     _ASSET_BANDS,
     _COMPOSITION_BANDS,
-    _LIABILITY_BAND,
 )
 
 JS_PATH = Path("app/static/js/net_worth_cockpit.js")
@@ -165,18 +165,27 @@ class TestBandVocabulary:
         category order minus the liability key, so the producer cannot sum a
         band the grid has no group for.  Pinned as a literal because the
         derivation is what a future edit would undo.
+
+        Since plan step X-z (ruling R-CP) the liability key has ONE home --
+        ``_display.LIABILITY_KEY``, which is ``_CATEGORY_KEYS[LIABILITY]`` --
+        and ``_net_worth._LIABILITY_BAND`` is deleted rather than kept in step
+        with it.  The literal below is now asserted against the mapping that
+        assigns it, so a renamed key moves both together or fails here.
         """
         # pylint: disable=import-outside-toplevel
+        from app.enums import AcctCategoryEnum
         from app.services.savings_dashboard_service._display import (
+            _CATEGORY_KEYS,
             _CATEGORY_ORDER,
         )
         assert set(_COMPOSITION_BANDS) == set(_CATEGORY_ORDER)
         assert _ASSET_BANDS == ("asset", "retirement", "investment", "other")
-        assert _LIABILITY_BAND == "liability"
+        assert LIABILITY_KEY == "liability"
+        assert LIABILITY_KEY == _CATEGORY_KEYS[AcctCategoryEnum.LIABILITY]
         # No band appears twice, and the split is total: the liability band is
         # exactly the categories minus the asset side.
         assert len(set(_COMPOSITION_BANDS)) == len(_COMPOSITION_BANDS)
-        assert set(_ASSET_BANDS) | {_LIABILITY_BAND} == set(_COMPOSITION_BANDS)
+        assert set(_ASSET_BANDS) | {LIABILITY_KEY} == set(_COMPOSITION_BANDS)
 
     def test_the_chart_script_stacks_every_band_the_producer_sums(self):
         """``net_worth_cockpit.js`` knows exactly the producer's bands.
@@ -188,7 +197,7 @@ class TestBandVocabulary:
         """
         source = _read(JS_PATH)
         assert _js_array(source, "ASSET_BANDS") == set(_ASSET_BANDS)
-        assert f'var LIABILITY_BAND = "{_LIABILITY_BAND}"' in source
+        assert f'var LIABILITY_BAND = "{LIABILITY_KEY}"' in source
 
     def test_the_chart_script_labels_and_shades_every_band(self):
         """Every band has a tooltip label and a fill opacity in the script.
@@ -244,13 +253,13 @@ class TestBandVocabulary:
             _PARAM_GROWTH_BANDS,
         )
         covered = set(_ENGINE_BANDS) | set(_PARAM_GROWTH_BANDS) | {
-            _LIABILITY_BAND,
+            LIABILITY_KEY,
         }
         assert covered == set(_COMPOSITION_BANDS)
         # And the three producers are disjoint: a band summed twice would
         # double-count into ``net``.
         assert not set(_ENGINE_BANDS) & set(_PARAM_GROWTH_BANDS)
-        assert _LIABILITY_BAND not in set(_ENGINE_BANDS) | set(
+        assert LIABILITY_KEY not in set(_ENGINE_BANDS) | set(
             _PARAM_GROWTH_BANDS,
         )
 

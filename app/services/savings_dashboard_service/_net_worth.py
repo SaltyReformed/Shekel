@@ -61,15 +61,19 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
-# Nothing from :mod:`app.services.net_worth_account_data` is imported here any
-# more.  Plan step X-t1 moved the today reduction onto
+# Nothing from :mod:`app.services.account_category` is imported here any more
+# (the module was ``net_worth_account_data`` until plan step X-z, ruling R-CQ).
+# Plan step X-t1 moved the today reduction onto
 # :attr:`~.._types.AccountProjection.is_liability` (which IS that module's
 # classifier), and plan step X-w deleted ``to_net_worth_account_data`` with the
 # second per-account container it built -- so every net-worth surface in this
 # module now reaches the asset/liability rule through the projection, and an
 # alias whose only remaining uses were docstrings would be a name that reads as
 # a call site and is not one (finding N-63's class).
-from app.services.savings_dashboard_service._display import _CATEGORY_ORDER
+from app.services.savings_dashboard_service._display import (
+    LIABILITY_KEY,
+    _CATEGORY_ORDER,
+)
 from app.services.savings_dashboard_service._metrics import _sum_liquid_balances
 from app.services.savings_dashboard_service._types import AccountProjection
 
@@ -233,11 +237,19 @@ class NetWorthRegion:
 # grid does not group by would put money in a chart with no card behind it.
 # The categories themselves come from :class:`~app.enums.AcctCategoryEnum` plus
 # the ``other`` fall-through; see ``_display._CATEGORY_ORDER``.
-_LIABILITY_BAND = "liability"
+#
+# **The liability band's own key came out of this module at plan step X-z**
+# (ruling R-CP, finding N-118).  It was ``_LIABILITY_BAND = "liability"`` here,
+# a second spelling of the string ``_display`` assigns -- so the band this
+# producer sums and the key that module hands each account were equal by
+# reading.  ``_display.LIABILITY_KEY`` is the one home and this module imports
+# it, which is what makes "the account in the liability band is exactly the
+# account :func:`~app.services.account_category.is_liability_account` answers
+# True for" a property of construction.
 _ASSET_BANDS = tuple(
-    key for key in _CATEGORY_ORDER if key != _LIABILITY_BAND
+    key for key in _CATEGORY_ORDER if key != LIABILITY_KEY
 )
-_COMPOSITION_BANDS = _ASSET_BANDS + (_LIABILITY_BAND,)
+_COMPOSITION_BANDS = _ASSET_BANDS + (LIABILITY_KEY,)
 
 
 def compute_net_worth_today(
@@ -258,7 +270,7 @@ def compute_net_worth_today(
     beside it read a STORED key on the same projection -- one rule asked two
     ways over one set of balances, which is the shape this arc keeps finding.
     The property IS
-    :func:`app.services.net_worth_account_data.is_liability_account`, so the
+    :func:`app.services.account_category.is_liability_account`, so the
     classifier is unchanged and the answer cannot differ.
 
     Args:
@@ -306,9 +318,16 @@ def _sum_composition_at_period(
     what makes this page's stated identity -- the hero equals this series at the
     current period equals the Horizon's index 0 -- a property of construction.
     The category key decides only which ASSET band a non-liability lands in.
-    (The two id-based spellings of "is this a liability" are equivalent by
-    reading and not by construction; finding N-118 owns that, and this reducer
-    deliberately does not pick the other one.)
+
+    **The two answers are ONE answer since plan step X-z** (ruling R-CP, finding
+    N-118).  They were independent comparisons of ``account_type.category_id``
+    against the same cached id -- equivalent by reading, and by nothing else --
+    so this reducer asked one rule two ways over one set of balances.  Both now
+    read :func:`app.services.account_category.account_category`, and the display
+    mapping is injective, so ``is_liability`` is exactly
+    ``category_by_account_id[id] == LIABILITY_KEY``.  Money math still reads the
+    DOMAIN predicate rather than the display key, deliberately: what an account
+    IS decides the sign, and which chart band it lands in does not.
 
     This is the ONE per-period net-worth reduction.  Summing the asset-side
     bands and subtracting the liability band is exactly asset ``+bal`` /
@@ -352,7 +371,7 @@ def _sum_composition_at_period(
         # X-w1 applied to the category map one line down and not to this one.
         bal = ad.balances[period_id]
         if ad.is_liability:
-            sums[_LIABILITY_BAND] += abs(bal)
+            sums[LIABILITY_KEY] += abs(bal)
         else:
             sums[category_by_account_id[ad.account.id]] += bal
     return sums
@@ -660,7 +679,7 @@ def compute_net_worth_series(
             period.id, account_data, category_by_account_id,
         )
         period_assets = sum((sums[band] for band in _ASSET_BANDS), ZERO)
-        period_liabilities = sums[_LIABILITY_BAND]
+        period_liabilities = sums[LIABILITY_KEY]
         periods.append(TrendPoint(end_date=period.end_date))
         net.append(period_assets - period_liabilities)
         for band in _COMPOSITION_BANDS:

@@ -5378,7 +5378,7 @@ class TestTheProjectionShape:
         show -- re-derived it from the account.  Derived, they cannot differ.
         """
         # pylint: disable=import-outside-toplevel
-        from app.services.net_worth_account_data import is_liability_account
+        from app.services.account_category import is_liability_account
         with app.app_context():
             loan = _create_small_loan(seed_user, db.session, name="Van")
             db.session.commit()
