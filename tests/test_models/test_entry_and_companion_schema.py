@@ -504,6 +504,7 @@ class TestTransactionEntryEdgeCases:
             assert refreshed is not None
             assert refreshed.credit_payback_id is None
 
+    @pytest.mark.server_clock
     def test_entry_date_server_default(self, app, db, seed_user, seed_periods):
         """Entry date defaults to CURRENT_DATE when not explicitly set.
 

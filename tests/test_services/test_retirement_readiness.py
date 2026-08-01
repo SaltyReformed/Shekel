@@ -29,6 +29,7 @@ from app.services.retirement_readiness import (
     funded_ratio_state,
 )
 from app.utils.money import round_money
+from app.utils.dates import add_months
 
 
 def _gap_analysis(*, required, after_tax_projected):
@@ -122,7 +123,7 @@ class TestBuildCountdown:
         1.0 (one decimal, round-half-up); the synthetic-period count passes
         straight through.
         """
-        planned = date.today().replace(year=date.today().year + 1)
+        planned = add_months(date.today(), 12)
         days = (planned - date.today()).days
         # Fabricate a synthetic-period list only for the count.
         fake_periods = [object()] * 7

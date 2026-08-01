@@ -12,6 +12,7 @@ from app.extensions import db
 from app.models.salary_profile import SalaryProfile
 from app.models.transaction import Transaction
 from app.models.ref import Status, TransactionType
+import pytest
 
 
 def _get_audit_rows(table_name=None, operation=None):
@@ -283,6 +284,7 @@ class TestAuditTriggerMetadata:
         assert last["table_schema"] == "budget"
         assert last["table_name"] == "transactions"
 
+    @pytest.mark.server_clock
     def test_executed_at_is_populated(
         self, app, db, seed_user, seed_periods
     ):

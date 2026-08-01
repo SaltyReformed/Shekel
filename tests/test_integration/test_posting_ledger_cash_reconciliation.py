@@ -614,6 +614,7 @@ _BACKFILL_MIGRATION = load_migration_module(
 class TestPerLinkedAccountReconciliation:
     """A linked account's ledger sums its transfer AND transaction legs."""
 
+    @pytest.mark.server_clock
     def test_combined_transfer_and_cash_legs_reconcile_three_ways(
         self, app, db, seed_user,
     ):
@@ -1199,6 +1200,7 @@ class TestBackfillAndGoForwardAgree:
 class TestRevertAndRecategorizeReconciles:
     """A revert+recategorize PATCH keeps the whole-ledger sweep reconciled."""
 
+    @pytest.mark.server_clock
     def test_revert_recategorize_resettle_reconciles_full_sweep(
         self, app, db, auth_client, seed_user, seed_periods_today,
     ):
@@ -1267,6 +1269,7 @@ class TestRevertAndRecategorizeReconciles:
 class TestRevertAndMoveReconciles:
     """A revert+move PATCH keeps every period's ledger attribution intact."""
 
+    @pytest.mark.server_clock
     def test_revert_move_resettle_attributes_per_period(
         self, app, db, auth_client, seed_user, seed_periods_today,
     ):

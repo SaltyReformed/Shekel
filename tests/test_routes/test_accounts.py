@@ -948,6 +948,7 @@ class TestHardDeletePostingLedgerGuard:
 class TestTrueUp:
     """Tests for the grid anchor balance true-up endpoints."""
 
+    @pytest.mark.server_clock
     def test_true_up_updates_balance(self, app, auth_client, seed_user, seed_periods_today):
         """PATCH /accounts/<id>/true-up updates the balance and creates history.
 
@@ -3153,6 +3154,7 @@ class TestCheckingDetail:
             # Verify the balance was NOT reduced by the credit expense.
             assert b"$4,000" not in resp.data
 
+    @pytest.mark.server_clock
     def test_checking_detail_shows_anchor_date(self, app, auth_client, seed_user):
         """The anchored-as-of date is displayed in the balance hero caption.
 

@@ -318,6 +318,11 @@ whole suite must pass unchanged.
 TZ=Pacific/Kiritimati ./scripts/test.sh     # process date one day AHEAD of the app's
 ```
 
+**This is a gate, not a suggestion.** `ci.yml`'s `lint-and-test` job sets `TZ: Pacific/Kiritimati`
+deliberately, so the process date runs a day ahead of the app's for eighteen hours out of every
+twenty-four and the coupling fails on most runs rather than on the four-hour window that let three
+of these reach `main`. Never "fix" a failure there by setting CI's zone to `America/New_York`.
+
 ### 2. A fixture must not depend on WHERE IN THE CALENDAR it runs
 
 Deriving fixture dates from "today" makes the SHAPE of the fixture depend on the date the suite
@@ -339,6 +344,39 @@ was true depended on the day of the month --
 day**, rather than deriving from today and hoping. Pin the read
 (`BalanceContext.build(user_id, as_of=...)`) to a date the fixture itself controls, and derive the
 other dates from THAT.
+
+Two shapes worth naming because both shipped:
+
+- **Never `date.replace(year=...)`.** On 29 February it raises
+  `ValueError: day 29 must be in range 1..28`. Use `app.utils.dates.add_months(d, 12)`, which clamps
+  to 2029-02-28.
+- **Never hard-code a date that is "in the future".** `target_date=date(2027, 6, 1)` stops being in
+  the future on 2027-06-01, and the test that depends on it starts failing that morning. Derive it:
+  `add_months(display_today(), 10)`.
+
+**The gate:** `.github/workflows/calendar-sweep.yml` runs the whole suite weekly as if today were a
+leap day, both sides of a year boundary, a month end, and the first of a month. Run one locally with
+
+```bash
+SHEKEL_FAKE_TODAY=2028-02-29 ./scripts/test.sh
+```
+
+### What the sweep cannot see, and the marker that says so
+
+`time-machine` moves Python's clock. It cannot move POSTGRES: `created_at` / `updated_at` are
+`server_default=db.func.now()` and `paid_at` is `db.func.now()`. So under a faked date a
+server-stamped row carries the REAL instant, and any test comparing it against a Python-derived date
+fails by the offset -- an artifact of the instrument, not a defect.
+
+Those tests carry `@pytest.mark.server_clock`, and the sweep deselects them. Two of them assert the
+database's clock on purpose (the `CURRENT_DATE` server default; the audit trigger's `executed_at`).
+
+**The marker is a statement about the instrument, never a way to quiet a failure.** Every marked
+test still runs in ordinary CI. A test earns the marker only after its failure has been traced to
+the two clocks -- and **"it fails at some dates but not others" is not sufficient evidence**:
+`test_two_same_day_trueups_reconcile` varies by date and is still an artifact, because its two
+clocks only diverge once the faked date moves far enough. Trace to the clocks; do not infer from the
+pattern.
 
 ---
 
