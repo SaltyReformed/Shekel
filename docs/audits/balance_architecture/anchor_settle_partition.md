@@ -13,6 +13,14 @@ standard 3 after the deploy hooks as designed.
 eight items, four of them High.** All are fixed; the largest was structural and two reviewers found
 it independently. Three remain open and are listed there, including **N-134**.
 
+**F11 is MEASURED and ANSWERED (Sections 10 and 11, 2026-08-01): R-DH (d) STANDS AS RULED.**
+It moves the current period's projected end balance from **-$19.95 to +$514.13** on live data
+(today's own balance does not move), and F11's objection to that does not survive audit: the
+settle side already carries **five times** the same exposure by explicit ruling, and outside a
+single outlier day the alternative's residual is twice as large. Two of this document's own
+recommendations were withdrawn on measurement -- see 10.6 and Section 11. **S1-c is UNBLOCKED,
+with three things that must ship with it.**
+
 **The developer ruled F1 on 2026-07-31: "Revert + date the opening now."** The EXCEPT clause is
 deleted -- an assertion is the closing balance for its civil day, opening and true-up alike -- and
 the case the exception protected is answered by the opening's own recorded date instead of by a
@@ -377,6 +385,13 @@ fact, which is the `Account.current_anchor_*` disease this arc is already removi
 >
 > R-DH (e) is what closes it, and only if the entry form's default stops being today. **Sequence the
 > two together, or ship (d) after step 2.** Do not ship (d) alone.
+>
+> **MEASURED 2026-08-01 against a fresh production clone, and this note is SUPERSEDED by Section
+> 10.6.** The residual is **$534.08** today, not $362.51 (the day's shopping continued after the
+> first measurement). But the finding's conclusion -- that this ruling should not ship alone -- does
+> not survive the audit: **the settle side already carries `$3,142.61` of the identical exposure
+> under R-DH (a)**, and the sequencing this note demands (R-DH (e) and the un-hidden entry date) is
+> kept, so the note's remedy survives while its verdict does not.
 
 **R-DH (e) -- A date means the day the money hit the account**, not the day the purchase happened.
 They differ by a day or two for a debit card. Defaults to today, user-correctable; the error when the
@@ -404,9 +419,12 @@ Today's are -$427.22 and -$160.05 respectively, summed into one unreadable -$4,5
   (`posting_service.resync_all_cash_postings` + `init_database.resync_all_cash_postings_after_migration`)
   rather than a migration, so the go-forward sync is the only statement of the rule. **The hook is
   load-bearing, not hygiene** -- see Section 7, standard 3.
-- **S1-c DEFERRED** `refactor(entries): reconciliation is derived from the entry's date`
-  R-DH (d). Deletes the bulk clear, the toggle service/route/UI, and (with the developer's approval
-  and a `Review:` line) the `is_cleared` column. **Read F11 and the R-DH (d) note before starting.**
+- **S1-c NEXT** `refactor(entries): reconciliation is derived from the entry's date`
+  R-DH (d), which stands as ruled (Section 10.6). Deletes the bulk clear, the toggle
+  service/route/UI, and (with the developer's approval and a `Review:` line) the `is_cleared`
+  column. **Three things ship with it and are not optional: the un-hidden entry date, R-DH (f)'s
+  one-line split, and the pinned test (10.5). It moves the live projected end balance by
+  `+$534.08` and that must be stated when it ships.**
 
 Tests: the 6 that pin the instant partition are re-ruled against R-DH, and the test that was missing
 is added -- **the projected balance is invariant to the order of assertion and settle within a
@@ -770,8 +788,16 @@ both commits. Production itself was never written to.
 
 ### Forward design
 
-- **F11 (Medium) -- R-DH (d) as ruled would make today's production figure worse.** Full detail
-  inline at R-DH (d). Measure the entry-side residual before building S1-c.
+- **F11 (Medium) -- MEASURED AND CLOSED 2026-08-01: Sections 10 and 11. R-DH (d) stands as ruled.**
+  It moves the current period from **-$19.95 to +$514.13** (838 of 15,682 seam leaves, all on
+  Checking, from the current period forward; today's own balance unchanged), and that is real. What
+  does not survive is the conclusion drawn from it: the settle side already carries `$3,142.61` of
+  the identical "recorded hours after the assertion" exposure against the entry side's `$623.70`,
+  accepted by explicit ruling; outside a single outlier day the alternative's residual is twice as
+  large (`$177.43` against `$89.62`); and the evidence that the ruling could never win was an
+  artifact of a hidden form field. **S1-c is unblocked, with the un-hidden entry date, R-DH (f)'s
+  one-line split, and a pinned test shipping with it.** The original finding: R-DH (d) as ruled
+  would make today's production figure worse. Measure the entry-side residual before building S1-c.
 - **F12 (Low) -- CLOSED with step 2's opening half, as the finding predicted.** The index now keys
   `(account_id, pay_period_id, anchor_balance, observed_on)`. Approved as a destructive
   drop-and-recreate by the developer 2026-07-31; migration `c4a19e7b2d80` carries the `Review:`
@@ -950,9 +976,9 @@ because `create_account` had to be able to date the opening BEFORE it posts the 
 fixture re-stamp leaves a reverse-and-repost pair in the seeded ledger) -> the F1 revert and its
 fixture work -> F4 + F6 -> F7 -> F8 + F9 -> F2's three owed tests.
 
-**What remains:** **F11 before S1-c** (measure the entry-side residual first -- it is the one
-finding this pass did not touch, and R-DH (d) as ruled would make today's figure WORSE by $362.51);
-then step 3's fence; then S2-b, the transaction half of step 2.
+**What remains:** **F11 is MEASURED and CLOSED (Sections 10 and 11) -- R-DH (d) stands as ruled and
+S1-c is unblocked**, shipping with the un-hidden entry date, R-DH (f)'s one-line split and a pinned
+test; then step 3's fence; then S2-b, the transaction half of step 2.
 
 The review's original order, for the record:
 
@@ -967,3 +993,325 @@ The review's original order, for the record:
    actively argue for the deleted rule.
 5. **F8**, **F9** -- deploy log and the N+1.
 6. **F11** before S1-c; **F12** with step 2.
+
+## 10. F11 measured: the entry-side residual, and why it is a fork rather than a number
+
+F11 asked for one measurement before S1-c is built. It was taken on 2026-08-01 and it produced a
+result the finding did not anticipate: **the ruling as written cannot be satisfied.** Two cases
+R-DH has to serve are identical in every fact the app records, and they need opposite answers.
+
+**Method.** A fresh read-only `pg_dump` of production (2026-07-31 23:00 ET) restored into
+`shekel_f11_base` on `shekel-dev-db` and upgraded to the residue head `c4a19e7b2d80`; two
+throwaway copies with `is_cleared` overwritten by each candidate rule; the whole-seam baseline
+(`tests/manual/verify_balance_baseline.py`, 15,682 figures) captured on each and diffed leaf by
+leaf. Production was never written to.
+
+### 10.1 What R-DH (d) as ruled costs, live
+
+**12 of 82 entries change, every one of them stored FALSE -> derived TRUE.** Five sit on PROJECTED
+parents, so five move money; the other seven sit on parents that had already settled and are inert
+(the entry formula only prices projected rows). **838 of 15,682 seam leaves move, all on Checking:
+837 by `+$534.08` and ONE by `-$534.08`** -- the current period's `expense` column, which falls by
+the same amount the balance rises, because the reservation IS the projected expense. No figure
+before the current period moves, which is the blast radius the reservation's Projected-only filter
+predicts.
+
+**And TODAY's own balance does not move.** `scalar_today`, `cash_scalar_today` and the daily points
+for 2026-07-30 and 2026-07-31 are all unchanged at `$1,307.66`; the first moved daily point is
+2026-08-01. What moves is the current period's END balance and everything after it. For an operator
+deciding whether this is safe to ship, that distinction is the whole risk profile.
+
+| figure | today (shipped) | R-DH (d) as ruled |
+|---|---|---|
+| current period projected end balance | **-$19.95** | **+$514.13** |
+| every later period end, every later daily point | -- | `+$534.08` |
+| anything before the current period, any other account | -- | unchanged |
+
+The arithmetic, from the two live envelopes (`Groceries` budget `$500.00` with `$485.10` recorded,
+`Gas` budget `$80.00` with `$48.98`), against the `$1,307.66` anchor observed 2026-07-31 and
+`$747.61` of other projected bills:
+
+```
+uncleared (today):  max(500 - 0, 485.10) + max(80 - 0, 48.98) = 500.00 + 80.00 = 580.00
+                    1307.66 - 580.00 - 747.61 =  -19.95
+cleared  (ruled):   max(500 - 485.10, 0) + max(80 - 48.98, 0) =  14.90 + 31.02 =  45.92
+                    1307.66 -  45.92 - 747.61 = +514.13
+```
+
+The bank balance was read at 07:58 ET. The `$534.08` was spent between 10:41 and 15:02. **The money
+is neither in the anchor nor held back from the projection**, so it is counted as available and as
+already spent at the same time. F11's `$362.51` estimate was taken at 14:42 the same day and the
+shopping continued (two entries added, one amended).
+
+### 10.2 Which rule is right, scored on the only evidence the app has
+
+Every entry classified by its own recorded facts:
+
+- **53 of 82 fall on a day that also carries an assertion for their account**: 32 recorded BEFORE
+  that day's last assertion, 21 after.
+- The 21 split cleanly by how long after -- and the gap is real, not a chosen threshold: the near
+  group tops out at **19.9 minutes** and the far group starts at **160.2 minutes**, with nothing
+  between. **14 within 20 minutes** is a bookkeeping session -- the purchase predates the reading,
+  so the asserted balance DOES contain it, and here the DAY RULE is right and the recording order
+  is wrong. **7 more than an hour later** is anchored-in-the-morning, shopped-in-the-afternoon --
+  the assertion does not contain it, and here the day rule is wrong.
+- **So on same-day entries the day rule is right 46 times in 53 and wrong 7.**
+- Restricted to DEBITS, since a credit entry reduces the reservation whatever its flag says:
+  **the day rule is wrong on `$623.70` over 7 entries, of which `$534.08` is TODAY alone --
+  `$89.62` over the other four months.** The recording-order rule is wrong on **`$177.43` over 5**,
+  spread across those months. **Outside today, the day rule's residual is half the recording-order
+  rule's.** The directions differ: the day rule errs optimistic, the recording-order rule
+  conservative.
+
+> **RETRACTED (audit, 2026-08-01).** This section first argued that **0 of 82 entries have ever
+> been backdated** -- 73 recorded on the day they carry, 9 carrying the day after -- and concluded
+> that *"the case the derived rule wins has not occurred once in four months"*. **That inference is
+> unsupportable and is withdrawn.** The create form's `entry_date` is
+> `type="hidden"` (`app/templates/grid/_transaction_entries.html:190`) and the audit trail shows
+> **0 of 74 UPDATEs on `transaction_entries` ever touched `entry_date`** (trail from 2026-05-07).
+> Every stored entry date in production is the form's default, unedited. **The measurement is a
+> property of the form, not of the user**: the app has never offered a way to backdate a purchase,
+> so the absence of backdating is evidence of nothing. Un-hiding that field -- which R-DH (e) and
+> step 2 both require -- is exactly what makes the case occur.
+>
+> The 9 day-after rows were also misattributed. They stopped on **2026-06-12**, when `15eba64f`
+> pinned `TZ: America/New_York` on the production container (`deploy/docker-compose.prod.yml`
+> names this failure mode in its own comment) -- a month before `display_today()` reached the form
+> (**2026-07-25**, `5b3764a7`). Ten evening entries in June and two in July carry the correct
+> Eastern day under the OLD code. `app/routes/entries.py:159` is a real guard; it is not what ended
+> the phenomenon.
+
+### 10.3 The impossibility, which is the actual finding
+
+R-DH (c)'s worked example and today's production state are the same two rows:
+
+| | R-DH (c)'s example (a test on this branch) | production, 2026-07-31 |
+|---|---|---|
+| assertion `observed_on` | today | today |
+| entry `entry_date` | today | today |
+| what is TRUE | the asserted balance INCLUDES the purchase | it does NOT |
+| the only difference | the entry was recorded BEFORE the assertion | AFTER |
+
+**No rule that compares only DATES can answer both correctly**, because the two rows carry the same
+dates. The options, measured (the residual column is CUMULATIVE at-recording exposure over four
+months, not the residual standing at any one instant -- at the measurement instant the rendered
+residuals are `$534.08` for option 1 and `$0.00` for the rest):
+
+| option | what it does | moves today | four-month exposure |
+|---|---|---|---|
+| **1. R-DH (d) as ruled** | derived; `entry_date <= observed_on` | **+$534.08** on the period END (today's own balance is unchanged) | `$623.70` over 7 debits, `$89.62` of it outside today; **optimistic** |
+| **2. derived + recording-order tie-break** | `entry_date < observed_on`, or `==` and the entry was recorded no later than the assertion | **$0.00 -- 0 of 15,682 leaves move, verified twice** | `$177.43` over 5 debits; **conservative** |
+| **3. strictly-before** | `entry_date < observed_on`, no tie-break | `$0.00` today | `$1,920.61` over 26 debits; contradicts R-DH (a) for no measured gain |
+| **4. status quo** | stored flag, bulk UPDATE, manual toggle | `$0.00` | same as 2, plus the flag goes stale and 7 rows never clear at all |
+| **5. ask at the true-up form** | the assertion records whether it covers what is already recorded | `$0.00` | none -- the user supplies the fact -- at one question per true-up, and it does not generalize to settles |
+
+Option 2 was run end to end and reproduced independently by the audit: `is_cleared` recomputed from
+the rule on all 82 rows, whole-seam baseline recaptured, **0 of 15,682 leaves moved**. It differs
+from the stored flag on exactly the 7 inert rows. That zero is partly STRUCTURAL and saying so is
+the honest form of it: every row it changes sits on a settled parent, and the reservation prices
+only projected rows (`cash_ledger/_amounts.py:273-274`), so it could not have moved a figure.
+
+> **Scope of the impossibility, corrected by the audit.** The claim demonstrated is over rules that
+> compare the two DATES. It was first stated over every order-blind rule, which is wider than the
+> measurement reached: the two cases are not identical in every recorded fact -- R-DH (c)'s example
+> asserts `$1,157.39` against a book of `$1,307.66` (a `-$150.27` shortfall exactly equal to the
+> recorded entries) while production asserts `$1,307.66` against a book of `$1,894.93` (a
+> `-$587.27` shortfall). The shortfall is a recorded fact and no argument was given for why it
+> cannot discriminate. It plainly does not discriminate CLEANLY here -- `$587.27` of shortfall
+> against `$534.08` of entries would over-clear -- but "no date rule can" is what was proved, and
+> that is what the section now claims.
+
+### 10.4 The asymmetry option 2 rests on -- REFUTED by measurement
+
+Option 2 needs the entry side to differ from the settle side, or it is simply a second answer to
+one question. The argument offered was: *a settle is a transcript of the same bank reading that
+produced the anchor, and an envelope entry is not a bank record at all until it posts* -- so
+recording order is informative for entries and anti-informative for settles.
+
+**That behavioural claim is not in the data.** Measured on the same clone, Checking's 135 settled
+rows carrying a `paid_at`:
+
+| | entries | settled transactions |
+|---|---|---|
+| rows on a day that also carries an assertion | 53 of 82 | **134 of 135** |
+| recorded AFTER that day's last assertion | 21 | **71** |
+| recorded MORE THAN AN HOUR after | 7 | **7** |
+| gross carried by those | `$623.70` | **`$3,142.61`** |
+
+The user ticks settles hours after anchoring exactly as they record purchases hours after
+anchoring -- `Transfer to Mortgage` `$1,910.95` at 641 minutes, `Groceries` `$501.60` at 160,
+`Transfer to Fidelity Savings` `$500.00` at 96. **The settle side carries FIVE TIMES the exposure
+of the entry side, and R-DH (a) already accepts it by explicit ruling**, having measured that the
+alternative (recording order) is far worse: gross plug `$40,554.34` against `$15,367.94`.
+
+So option 2 would reject, on the smaller surface, a residual the arc has already ruled acceptable
+on the larger one -- and would do it by reinstating the very signal R-DH (a) deleted. There is no
+measured asymmetry to fence.
+
+One thing the refutation does NOT touch: `paid_at` is used as a **money-movement time** (it dates
+the settle in the walk) and is wrong for that job, which is what step 2 fixes. Using a recording
+instant to date money and using it to decide what a balance contained are different mistakes, and
+only the first is what `-$4,001.42` was.
+
+### 10.5 Two test defects this measurement found
+
+- **`test_an_entry_alone_does_not_move_the_projected_end_balance` does not test the production
+  shape, and under S1-c it would keep passing while testing nothing.** Its docstring states the
+  semantic R-DH (d) deletes -- *"The entry is UNCLEARED -- the anchor was read before the purchase
+  and does not contain it"* -- and names `$130.32` as the wrong answer to guard against. Under
+  R-DH (d) that IS the answer whenever the assertion's observed day is on or after the entry's
+  date, which is the production case. The test survives only because `override_anchor` dates the
+  fixture's assertion to the PERIOD START (`tests/_test_helpers.py:2885-2894`) while the entry is
+  dated `display_today()`.
+
+  > **CORRECTED by the audit.** This first claimed the test would fail every Monday, when the
+  > current period's start and today coincide. It would not: `tests/test_services/conftest.py:23-27`
+  > freezes today to **2026-03-20, a Friday**, and `freeze_today`'s module-wide patch reaches
+  > `tests/conftest.py`'s own `date` symbol, so `_today_relative_start_date()` is frozen too and
+  > the two sit a fixed FOUR DAYS apart on every run. **The real defect is worse than a Monday
+  > flake**: the fixture's assertion is four days stale relative to the entry, the exact opposite
+  > of production where the anchor is same-day, so under S1-c the test would keep passing while no
+  > longer exercising the boundary it names. That is finding **R8**'s shape -- a test that silently
+  > stops testing what it says -- and it must be pinned to a same-day assertion before S1-c moves,
+  > whichever option is ruled.
+- **R-DH (c)'s "either order" is tested in one direction only.** `test_an_entry_plus_a_matching_
+  trueup_does_not_move_it_either` records the entry and THEN trues up. The reverse -- anchor, then
+  record -- returns `-$170.22` against the invariant's `-$19.95` on today's code, and under options
+  2, 3 and 4 it always will. Only option 1 (and option 5) make that direction true.
+
+### 10.6 Recommendation: R-DH (d) STANDS AS RULED
+
+**This section first recommended option 2. The adversarial audit refuted the three findings that
+recommendation rested on, and the recommendation is withdrawn.** What F11 raised is real; it does
+not survive scrutiny as a reason to amend the ruling.
+
+Four measurements decide it:
+
+1. **The asymmetry option 2 needs does not exist (10.4).** The settle side carries `$3,142.61` of
+   the identical "recorded hours after the assertion" exposure against the entry side's `$623.70`,
+   and R-DH (a) already accepts it deliberately, having measured that recording order is far worse.
+   Option 2 rejects on the small surface what the arc accepts on the large one, using the signal
+   R-DH (a) deleted.
+2. **Outside today, option 1's residual is HALF option 2's** -- `$89.62` against `$177.43` over
+   four months. Today is a single outlier: a large Friday shop after a 07:58 anchor. The
+   "five times smaller" figure that supported option 2 was `$623.70 / $177.43 = 3.5x` and it was
+   pointing the wrong way once today is separated from the four months.
+3. **The evidence that option 1 could never win was an artifact of the form (10.2).** Backdating has
+   never occurred because the create form has never permitted it. Un-hiding that field is required
+   by R-DH (e) and by step 2 -- and the moment it ships, the case option 1 wins starts occurring.
+4. **Option 1 satisfies R-DH (c) in both directions and keeps ONE predicate**, which is what step 3
+   exists to enforce. Option 2 is a second answer to Section 2.1's question with no measured
+   asymmetry to justify it -- a fifth row in that table, which is the shape this whole document
+   was written against.
+
+**So: ship R-DH (d) exactly as ruled**, with three things that are NOT optional and must ship with
+it, because they are what bounds the residual it accepts:
+
+- **Un-hide the entry date** (`app/templates/grid/_transaction_entries.html:190`). A user who
+  shops after anchoring can then date the purchase to the day it will hit, which is the residual's
+  actual fix and what R-DH (e) already rules. Today the field is hidden on create and has never
+  been edited on any row in production.
+- **Ship R-DH (f)'s split with it.** *Book vs bank* is `asserted[period]` and *Period timing* is
+  `moved - net`, both already computed in `_cash_fold._assemble_figures` (`:958-960`) -- **one
+  line**, on shipped code. The residual R-DH (d) accepts then has a named home on screen instead of
+  disappearing into an unreadable remainder.
+- **Pin the blind test first** (10.5): a same-day assertion, so the boundary S1-c moves is actually
+  exercised.
+
+**The `+$534.08` is real and must be stated plainly when it ships**: on the day it lands, the
+current period's projected end balance rises from `-$19.95` to `+$514.13` and stays optimistic
+until the next assertion. Today's own balance does not move. That is R-DH (a)'s accepted residual
+applied consistently to entries -- which is the argument for it, and the reason it is not a defect
+being introduced but an inconsistency being removed.
+
+**One contradiction to settle in the same ruling.** R-DH (e) says a date means the day the money
+HIT THE ACCOUNT; ruling R-M and `entry_service._reject_future_entry_date` say an entry records a
+purchase that HAPPENED and refuse any date after `display_today()`. For a debit card those are one
+to two days apart, so the two rulings cannot both hold. R-M's guard is load-bearing for plan step
+X-c2's deleted as-of window, so relaxing it is not a one-line change and it should not be done
+inside S1-c.
+
+> **The from-scratch design this fork prompted was built, adversarially reviewed and REJECTED --
+> Section 11.** It proposed recording the observation per movement rather than deriving it, and it
+> re-opened `-$4,001.42` by a different route. What survives from it is in 11.3.
+
+## 11. From scratch: the design that was investigated, adversarially reviewed, and REJECTED
+
+The developer's answer to Section 10's fork on 2026-08-01 was not one of the five options:
+*"How would you design this from scratch? ... Correctness is the priority."* This section is that
+design, the review that broke it, and the two pieces of it that survive. **It is recorded as a
+REJECTED design rather than deleted, because the reasons it fails are the reasons a future reader
+would otherwise propose it again.**
+
+### 11.1 The premise it corrected, which SURVIVES
+
+R-DH (d) rejects a stored reconciliation flag as *"a denormalized copy of a derivable fact, which
+is the `Account.current_anchor_*` disease this arc is already removing at step X-e"*. **That
+premise is wrong, and the correction stands whatever ships.**
+
+`current_anchor_balance` genuinely is derivable -- the history rows produce it
+(`cash_ledger/_facts.py:188-197`). **Whether the bank had posted a purchase is not.** A bank posts
+when it posts; that moment is not a function of the purchase date, the recording instant, or any
+other column in this database. A stored flag holding a bank observation would not be a
+denormalization -- it would be the only place that fact could live.
+
+R-DH (d)'s CONCLUSION still stands, but for a different reason than the one it gives: not because
+the fact is derivable, but because **the app never actually collects the observation**, and a
+stored boolean that no one observes is a guess with a database column, which is strictly worse than
+a guess computed at read time where it can be seen.
+
+### 11.2 The design, and why it fails
+
+Proposed: a nullable `cleared_by_assertion_id` FK on `budget.transaction_entries` and
+`budget.transactions` pointing at `budget.account_anchor_history` (NULL = outstanding), the walks
+partitioning on that recorded coverage instead of on civil days, and the anchor true-up form
+becoming a real reconciliation whose pre-ticks are the civil-day rule demoted from an engine rule
+to a form default.
+
+**A neutral adversarial review found four disqualifying defects. Two were verified independently
+against the code before the design was dropped.**
+
+- **It breaks the property verification standard 1 is built on, while standard 2 stays green.**
+  `dated_deltas` places every event on its OWN civil day and the fold prefix-sums by day
+  (`cash_ledger/_walk.py:333-340`, `balance_at/_cash_fold.py:362-372`). Partition the WALK on
+  coverage while the FOLD still places by date and an assertion's own day stops reading the
+  asserted balance -- yet `reconciliation = moved - net + asserted`
+  (`_cash_fold.py:958-960`) is algebraic and holds for any correction value, so the arc's
+  strongest gate would not notice. `dated_deltas`' own docstring (`:302-311`) says the walk and the
+  re-key must be on ONE granularity and that the split "is what cost production `$4,001.42`". The
+  design re-opens it. The only escapes are to fabricate a date for an uncovered movement, or to
+  keep day ordering in the fold -- in which case coverage changes the size of a correction and
+  never a balance, and buys nothing.
+- **It reproduces `-$4,001.42`.** Coverage is written at true-up; ticking a bill goes through
+  `status_seam.py:100-105`, which stamps `paid_at` and nothing else. Replay the 2026-07-31 session:
+  the user asserts `$1,307.66`, then ticks three more rows six to nine seconds later. Nothing
+  covers them. They ride on top. The claim that the defect "has no mechanism to arise" was false,
+  and a read-time total rule is not interchangeable with a write-time one-shot default.
+- **It has no correct implementation for transfers.** A transfer's two shadows sit on two different
+  accounts (`transfer_service.py:321,325`), and the posted ledger already dates a transfer's net on
+  BOTH linked ledgers from the income shadow's `paid_at` (`account_posting_service/_walk.py:245-267`).
+  "Coverage must point at an assertion for the same account" and "both shadows are covered
+  together" cannot both hold.
+- **The same-day duplicate index would silently discard a reconciliation.** Re-asserting the same
+  balance for the same day raises `IntegrityError`, which `apply_anchor_true_up` catches, rolls the
+  session back, and reports as idempotent success (`anchor_service.py:367-379`). Every coverage
+  write in that session would be lost while the UI said it saved.
+
+Nine further findings (predicate multiplied across three write sites rather than deleted; no
+provenance distinguishing a defaulted value from an observation; no lifecycle rule for
+`done -> projected` un-settles; `ON DELETE SET NULL` making an assertion deletion a silent
+money-mover; scenario scoping; and a deletion list that does not survive checking) are in the
+review and are not repeated here.
+
+### 11.3 What survives
+
+- **11.1's premise correction**, which belongs in R-DH (d)'s record.
+- **`merge_anchor_and_cash_events`' docstring promises something step 2 cannot deliver**:
+  *"step 2 ... removes the guess entirely by recording the two real dates the question actually
+  turns on"* (`cash_ledger/_events.py:526-528`). Section 10.3 disproves it -- with both real dates
+  recorded the same-day case is still two truths and one fact. That is F7's stale-rationale shape
+  and should be corrected in whichever step ships next.
+- **R-DH (f) needs no new machinery.** *Book vs bank* is `asserted[period]` and *Period timing* is
+  `moved - net`, both already computed in `_cash_fold._assemble_figures` (`:958-960`). The design
+  claimed to enable that split; it is one line on shipped code, and Section 10.6 now sequences it
+  with S1-c because it is what gives R-DH (d)'s accepted residual a visible home.

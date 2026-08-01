@@ -31,18 +31,33 @@ no rollback.
 **Branch topology, re-measured 2026-08-01:** both waiting branches merged --
 `fix/cross-page-month-end-clock` at PR #66 and `fix/anchor-settle-partition` at PR #67 -- and
 **`origin/main` and `origin/dev` are level at `fd0ddfab`**, which is live in production
-(image `sha256:414a99be`). `fix/n133-review-residue` carries the N-133 residue and is **committed, green and
-NOT yet PR'd**: the F1 ruling applied (the OPENING exception deleted from both walks), step 2's
-opening half (`account_anchor_history.observed_on`, migration `c4a19e7b2d80`), F2's remainder, and
-F4, F5, F6, F7, F8, F9, F12 -- plus the eight items its own second adversarial review found
+(image `sha256:414a99be`). `fix/n133-review-residue` carries the N-133 residue and is **open as PR #68**
+(re-verified 2026-08-01: 7,687 passed / 0 failed, `pylint app/ scripts/` 10.00/10): the F1 ruling
+applied (the OPENING exception deleted from both walks), step 2's opening half
+(`account_anchor_history.observed_on`, migration `c4a19e7b2d80`), F2's remainder, and F4, F5, F6,
+F7, F8, F9, F12 -- plus the eight items its own second adversarial review found
 (`anchor_settle_partition.md` Section 9).
 
-**NEXT, in order:** open `fix/n133-review-residue` -> `main` as its own PR (it carries a MIGRATION,
-so it must not ride with a backlog), then **F11 before S1-c** -- R-DH (d) as ruled would make
-today's production figure WORSE by `$362.51`, so the entry-side residual is measured first. After
-that: step 3's fence, then **S2-b** (the TRANSACTION half of step 2, `transactions.settled_on`, plus
-the true-up form's own date field, which is what closes N-133's write-once residue and the
-loan/cash index asymmetry). **N-134** is open and unscheduled.
+**F11 is MEASURED and CLOSED (2026-08-01, `anchor_settle_partition.md` Sections 10 and 11):
+R-DH (d) STANDS AS RULED.** Measured on a fresh production clone, it moves the current period's
+projected end balance from `-$19.95` to `+$514.13` (838 of 15,682 seam leaves, all Checking, from
+the current period forward; today's own balance does not move) -- and F11's conclusion from that
+does not survive audit. The settle side already carries **`$3,142.61`** of the identical "recorded
+hours after the assertion" exposure against the entry side's `$623.70`, accepted by explicit ruling
+in R-DH (a); outside one outlier day the alternative's residual is twice as large (`$177.43`
+against `$89.62`); and the evidence that the ruling could never win was an artifact of a hidden
+form field (0 of 74 audited entry UPDATEs ever touched `entry_date`). **Two recommendations were
+withdrawn on measurement in the course of closing it**, one of them a from-scratch redesign
+(per-movement reconciliation coverage) that an adversarial review showed re-opens `-$4,001.42` by a
+different route -- recorded as REJECTED in Section 11 rather than deleted.
+
+**NEXT, in order:** merge PR #68, then **S1-c** -- R-DH (d) as ruled, shipping with three things
+that are not optional: the un-hidden entry-date field, R-DH (f)'s split (one line:
+*Book vs bank* is `asserted[period]`, *Period timing* is `moved - net`, both already computed in
+`_cash_fold._assemble_figures`), and a pinned same-day assertion in the blind test. After that:
+step 3's fence, then **S2-b** (the TRANSACTION half of step 2, `transactions.settled_on`, plus the
+true-up form's own date field, which is what closes N-133's write-once residue and the loan/cash
+index asymmetry). **N-134** is open and unscheduled.
 
 **Both cash cutovers are DONE** -- the cash one at X-c2b2 (`d3489728`) and the modelled one at X-g2b
 (`560b3339`), after which no remaining step can move a figure except by fixing a defect. The grid
