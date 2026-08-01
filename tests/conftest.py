@@ -660,6 +660,59 @@ def disable_hibp_check(monkeypatch):
     monkeypatch.setenv("HIBP_CHECK_ENABLED", "false")
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _calendar_sweep():
+    """Run the whole session as if today were ``SHEKEL_FAKE_TODAY``.
+
+    **Opt-in, and a no-op unless the variable is set**, so an ordinary run is
+    byte-identical to one without this fixture.
+
+    Four separate defects in this suite had exactly one trigger: the day of the
+    month the suite happened to run on (findings N-131, N-132, R8, and the two
+    loan cross-surface tests that failed on 2026-08-01).  Each was found by a
+    merge gate rather than by a test, because nothing here could ask "does this
+    still pass on the 1st?".  This is that instrument::
+
+        SHEKEL_FAKE_TODAY=2026-09-01 ./scripts/test.sh
+
+    ``tick=True`` keeps the clock RUNNING from the faked instant rather than
+    freezing it, because a frozen clock makes every ``created_at`` in a session
+    identical and the fold's assertion ordering (ruling R-DH: two assertions
+    sharing a civil day apply in recording order) then has no order to read.
+
+    **What it can and cannot move, stated because the gap decides how to read a
+    failure.**  It moves the PYTHON clock -- ``date.today()``,
+    ``datetime.now()`` and therefore :func:`app.utils.dates.display_today`.  It
+    does NOT move POSTGRES: ``created_at`` / ``updated_at`` are
+    ``server_default=db.func.now()`` (``app/models/mixins.py:237-263``) and
+    ``paid_at`` is ``db.func.now()`` (``app/services/status_seam.py:105``), all
+    evaluated in the database.  So under a fake date every server-stamped row
+    carries the REAL instant, and a test comparing a fixture-built date against
+    a server-stamped one fails by the offset between them.  That failure is an
+    artifact of this instrument, not a defect in the test -- see
+    ``docs/testing-standards.md`` for how to tell the two apart.
+
+    The instant is built in ``DISPLAY_TIMEZONE`` at midday, so the faked civil
+    day is unambiguous in the user's zone and cannot straddle midnight in either
+    direction.
+    """
+    fake = os.environ.get("SHEKEL_FAKE_TODAY")
+    if not fake:
+        yield
+        return
+
+    # Pylint: ``import-outside-toplevel`` -- a test-only dependency imported
+    # only when the sweep is switched on, so an ordinary run never loads it.
+    # pylint: disable=import-outside-toplevel
+    import time_machine
+
+    target = datetime.combine(
+        date.fromisoformat(fake), time(12, 0), tzinfo=DISPLAY_TIMEZONE,
+    )
+    with time_machine.travel(target, tick=True):
+        yield
+
+
 @pytest.fixture(scope="session")
 def app():
     """Create the Flask application configured for testing."""

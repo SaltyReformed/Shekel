@@ -14,6 +14,14 @@ pytest-cov==7.0.0
 pytest-timeout==2.4.0
 pytest-xdist==3.8.0
 factory-boy==3.3.3
+# Date faking for the calendar sweep (``SHEKEL_FAKE_TODAY``, tests/conftest.py).
+# Approved by the developer 2026-08-01, for exactly this purpose: the suite has
+# produced four separate defects whose only trigger was the day of the month it
+# ran on (findings N-131, N-132, R8 and the 2026-08-01 loan pair), and a TZ shift
+# can only move the clock by about a day -- not to "the 1st", "a month end" or "a
+# leap day".  Test-only; the application never imports it, and nothing in the
+# default suite run touches it (the sweep is opt-in through the env var).
+time-machine==3.3.0
 
 # YAML parsing for the deploy-layer tests (tests/test_deploy/*) that
 # assert the structure of docker-compose / nginx config.  Test-only:

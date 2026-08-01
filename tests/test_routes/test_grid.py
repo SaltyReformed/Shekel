@@ -2920,9 +2920,20 @@ class TestPeriodHeaderDateFormat:
         """A period starting in a non-current year shows the year suffix."""
         with app.app_context():
             today = date.today()
-            # Generate enough periods to extend into next year.
             start = today - timedelta(days=28)
-            periods = self._make_periods(db, seed_user, start, num_periods=28)
+            # Generate enough periods to REACH the next calendar year on every
+            # day of the year, rather than assuming a fixed count does.  A flat
+            # ``num_periods=28`` spans ~13 months, which crosses a year boundary
+            # from most starting points but NOT from early January: on
+            # 2027-01-01 the run ends 2027-12-30 and the guard below fires with
+            # "Test requires a next-year period" -- a red suite on New Year's
+            # Day.  Covering through mid-January of next year makes the
+            # precondition hold whatever the calendar says.
+            target = date(today.year + 1, 1, 15)
+            num_periods = ((target - start).days // 14) + 2
+            periods = self._make_periods(
+                db, seed_user, start, num_periods=num_periods,
+            )
 
             # Find a period whose start_date is in the next year.
             next_year_period = None

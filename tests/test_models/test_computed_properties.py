@@ -26,6 +26,7 @@ from app.services.paycheck_calculator import (
     TaxLines,
 )
 from app.services import account_service
+from app.utils.dates import add_months
 
 
 # ── Transaction.effective_amount ─────────────────────────────────────
@@ -602,7 +603,7 @@ class TestDaysUntilDue:
     def test_days_until_due_future(self, app, db, seed_user, seed_periods):
         """Projected transaction with future due_date returns positive days."""
         with app.app_context():
-            future = date.today().replace(year=date.today().year + 1)
+            future = add_months(date.today(), 12)
             txn = self._make_txn(seed_user, seed_periods, "Projected", future)
             assert txn.days_until_due is not None
             assert txn.days_until_due > 0
@@ -618,7 +619,7 @@ class TestDaysUntilDue:
     def test_days_until_due_settled(self, app, db, seed_user, seed_periods):
         """Settled transaction returns None -- no action needed."""
         with app.app_context():
-            future = date.today().replace(year=date.today().year + 1)
+            future = add_months(date.today(), 12)
             txn = self._make_txn(seed_user, seed_periods, "Paid", future)
             assert txn.days_until_due is None
 
