@@ -54,8 +54,7 @@ from app.utils.log_events import (
     EVT_CREDIT_MARKED,
     EVT_CREDIT_UNMARKED,
     EVT_CROSS_USER_BLOCKED,
-    EVT_ENTRIES_CLEARED_ON_ANCHOR_TRUEUP,
-    EVT_ENTRY_CLEARED_TOGGLED,
+    EVT_ENTRIES_SETTLED_DAY_RECORDED,
     EVT_ENTRY_CREATED,
     EVT_ENTRY_DELETED,
     EVT_ENTRY_PAYBACK_CREATED,
@@ -456,7 +455,7 @@ class TestEntryServiceLogging:
                 details=entry_service.EntryDetails(
                     amount=Decimal("12.50"),
                     description="Coffee",
-                    entry_date=date(2026, 1, 15),
+                    purchased_on=date(2026, 1, 15),
                     is_credit=False,
                 ),
             )
@@ -479,7 +478,7 @@ class TestEntryServiceLogging:
                 details=entry_service.EntryDetails(
                     amount=Decimal("12.50"),
                     description="Coffee",
-                    entry_date=date(2026, 1, 15),
+                    purchased_on=date(2026, 1, 15),
                 ),
             )
             db.session.commit()
@@ -504,7 +503,7 @@ class TestEntryServiceLogging:
                 details=entry_service.EntryDetails(
                     amount=Decimal("12.50"),
                     description="Coffee",
-                    entry_date=date(2026, 1, 15),
+                    purchased_on=date(2026, 1, 15),
                 ),
             )
             db.session.commit()
@@ -516,8 +515,22 @@ class TestEntryServiceLogging:
         assert record is not None
         assert record.entry_id == entry_id
 
-    def test_toggle_cleared_emits_event(self, app, db, seed_user, _envelope_transaction):
-        """toggle_cleared emits ``entry_cleared_toggled`` carrying the new value."""
+    def test_record_settled_days_emits_the_reconcile_event(
+        self, app, db, seed_user, _envelope_transaction,
+    ):
+        """record_settled_days emits the reconcile event when rows match.
+
+        The SUCCESSOR to the two events the retired ``is_cleared`` flag needed
+        (plan step S1-c, ruling R-DH (d)): the bulk clear that fired at every
+        anchor true-up and the manual per-entry toggle both deleted with the
+        flag, and one event now records what the user OBSERVED on a statement.
+
+        Both counts are asserted because they are the pair an operator reads:
+        ``requested_count`` is what the form submitted and ``recorded_count``
+        is what the outstanding-set re-scope actually stamped.  A silent gap
+        between them is how a forged or already-recorded id would show up in
+        the log, so an event carrying only one of the two could not report it.
+        """
         with app.app_context():
             entry = entry_service.create_entry(
                 transaction_id=_envelope_transaction.id,
@@ -525,48 +538,57 @@ class TestEntryServiceLogging:
                 details=entry_service.EntryDetails(
                     amount=Decimal("12.50"),
                     description="Coffee",
-                    entry_date=date(2026, 1, 15),
+                    purchased_on=date(2026, 1, 1),
                 ),
             )
             db.session.commit()
-            assert entry.is_cleared is False
+            observed_on = date(2026, 1, 5)
             with _LogCapture("app.services.entry_service") as cap:
-                updated = entry_service.toggle_cleared(
-                    entry.id, seed_user["user"].id,
+                count = entry_service.record_settled_days(
+                    seed_user["user"].id, seed_user["account"].id,
+                    {entry.id}, observed_on,
                 )
 
-        record = cap.find(EVT_ENTRY_CLEARED_TOGGLED)
+        assert count == 1
+        record = cap.find(EVT_ENTRIES_SETTLED_DAY_RECORDED)
         assert record is not None
-        assert record.entry_id == entry.id
-        assert record.is_cleared is True
-        assert updated.is_cleared is True
+        assert record.user_id == seed_user["user"].id
+        assert record.account_id == seed_user["account"].id
+        assert record.observed_on == observed_on.isoformat()
+        assert record.recorded_count == 1
+        assert record.requested_count == 1
 
-    def test_clear_entries_for_anchor_trueup_emits_event(
+    def test_no_event_when_the_reconcile_stamps_nothing(
         self, app, db, seed_user, _envelope_transaction,
     ):
-        """clear_entries_for_anchor_true_up emits the bulk event when rows match."""
+        """An id that matches nothing is silent -- no event, no exception.
+
+        The negative control for the test above, and the property that makes
+        the log trustworthy: the event fires on what CHANGED, so a submission
+        the outstanding-set re-scope rejects in full leaves no trace claiming a
+        reconciliation happened.  Here the id belongs to a purchase made AFTER
+        the day the balance was read, which cannot be inside it.
+        """
         with app.app_context():
-            entry_service.create_entry(
+            entry = entry_service.create_entry(
                 transaction_id=_envelope_transaction.id,
                 user_id=seed_user["user"].id,
                 details=entry_service.EntryDetails(
                     amount=Decimal("12.50"),
                     description="Coffee",
-                    # Past-dated so it is eligible for the anchor true-up flip.
-                    entry_date=date(2026, 1, 1),
+                    purchased_on=date(2026, 1, 15),
                 ),
             )
             db.session.commit()
             with _LogCapture("app.services.entry_service") as cap:
-                count = entry_service.clear_entries_for_anchor_true_up(
+                count = entry_service.record_settled_days(
                     seed_user["user"].id, seed_user["account"].id,
+                    {entry.id}, date(2026, 1, 5),
                 )
 
-        assert count == 1
-        record = cap.find(EVT_ENTRIES_CLEARED_ON_ANCHOR_TRUEUP)
-        assert record is not None
-        assert record.user_id == seed_user["user"].id
-        assert record.cleared_count == 1
+        assert count == 0
+        assert cap.find(EVT_ENTRIES_SETTLED_DAY_RECORDED) is None
+        assert entry.settled_on is None
 
 
 # ── Entry credit workflow ──────────────────────────────────────────
@@ -590,7 +612,7 @@ class TestEntryCreditWorkflowLogging:
                     details=entry_service.EntryDetails(
                         amount=Decimal("25.00"),
                         description="Card 1",
-                        entry_date=date(2026, 1, 10),
+                        purchased_on=date(2026, 1, 10),
                         is_credit=True,
                     ),
                 )
@@ -606,7 +628,7 @@ class TestEntryCreditWorkflowLogging:
                     details=entry_service.EntryDetails(
                         amount=Decimal("10.00"),
                         description="Card 2",
-                        entry_date=date(2026, 1, 11),
+                        purchased_on=date(2026, 1, 11),
                         is_credit=True,
                     ),
                 )
@@ -919,7 +941,7 @@ class TestTransactionServiceLogging:
                 details=entry_service.EntryDetails(
                     amount=Decimal("33.00"),
                     description="Test entry",
-                    entry_date=date(2026, 1, 10),
+                    purchased_on=date(2026, 1, 10),
                 ),
             )
             db.session.commit()

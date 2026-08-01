@@ -347,7 +347,7 @@ class TestBackfillEnvelopeDebitOnlyEffect:
             _db.session.add(TransactionEntry(
                 transaction_id=txn.id, user_id=seed_user["user"].id,
                 amount=Decimal("40.00"), description="cc purchase",
-                entry_date=period.start_date, is_credit=True,
+                purchased_on=period.start_date, is_credit=True,
             ))
             _db.session.flush()
             _db.session.commit()
@@ -382,7 +382,7 @@ class TestBackfillEnvelopeDebitOnlyEffect:
             _db.session.add(TransactionEntry(
                 transaction_id=txn.id, user_id=seed_user["user"].id,
                 amount=Decimal("75.00"), description="cc purchase",
-                entry_date=period.start_date, is_credit=True,
+                purchased_on=period.start_date, is_credit=True,
             ))
             _db.session.flush()
             _db.session.commit()

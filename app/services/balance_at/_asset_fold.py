@@ -620,7 +620,7 @@ def resolve(
 
     Taking the assembled fold rather than assembling one is what lets a reader
     that ALSO needs the cash period columns share the walk (plan step X-g2a):
-    :func:`~app.services.balance_at._cash_fold.period_view_of` regroups the very
+    :func:`~app.services.balance_at._cash_periods.period_view_of` regroups the very
     same record.  The two convenience entries below assemble first, for the
     readers that want only the modelled answer.
 
@@ -784,7 +784,7 @@ def period_columns(
     """Read *periods*' columns off an ALREADY-resolved modelled fold.
 
     :func:`asset_period_view`'s body, split from its assembly for the same
-    reason :func:`~app.services.balance_at._cash_fold.period_view_of` was (plan
+    reason :func:`~app.services.balance_at._cash_periods.period_view_of` was (plan
     step X-g2a): the grid resolves the modelled tiers over the very
     :class:`~app.services.balance_at._cash_fold.AssembledCashFold` it regroups
     into cash columns, so both of its row sets come off ONE walk.

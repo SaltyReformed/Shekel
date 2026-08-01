@@ -2598,20 +2598,32 @@ def _assert_grid_view_reconciles(view):
     """Assert the view's rows reconcile to the cent, off the view alone.
 
     For every adjacent pair of periods the displayed balance delta must equal
-    the column's own net plus its remainder plus BOTH modelled tiers -- ruling
-    R-K's identity in the four-term form ruling R-AH measured::
+    the column's own net plus BOTH remainders plus BOTH modelled tiers -- ruling
+    R-K's identity in the form ruling R-AH measured, with ruling R-DH (f)'s
+    split applied::
 
         balance[p] - balance[p-1]
-            == net[p] + reconciliation[p] + contribution[p] + accrual[p]
+            == net[p] + period_timing[p] + book_vs_bank[p]
+               + contribution[p] + accrual[p]
 
-    The fourth term is the CONTRIBUTION, and it is not decoration: the
-    three-term form breaks on 53 of 59 period pairs on the real Empower 401(k),
-    worst $181.59 a column (a flat-percentage employer match), while the
-    four-term form holds on all 59.  It is written here at plan step X-g3a,
-    where the grid's kind gate still admits only INTEREST accounts and the term
-    is therefore identically $0.00, so that the oracle is already in its final
-    form when X-g3b's cutover puts a figure in it.  X-g3b supplies the
-    producer-side control that can distinguish the two forms.
+    The CONTRIBUTION term is not decoration: dropping it breaks the identity on
+    53 of 59 period pairs on the real Empower 401(k), worst $181.59 a column (a
+    flat-percentage employer match), while including it holds on all 59.  It was
+    written here at plan step X-g3a, where the grid's kind gate still admitted
+    only INTEREST accounts and the term was therefore identically $0.00, so that
+    the oracle was already in its final form when X-g3b's cutover put a figure
+    in it.  X-g3b supplies the producer-side control that can distinguish the
+    two forms.
+
+    **The remainder became two terms at plan step S1-c** (ruling R-DH (f)).
+    They are summed here rather than through a combined accessor because no
+    combined accessor survives on :class:`~app.services.balance_at.GridColumn`:
+    leaving one would invite a surface to render the sum again, which is the
+    figure the ruling exists to delete.  Splitting them cannot change whether
+    the identity holds -- both remainders are cent-quantized, so
+    ``round(a) + round(b) == round(a + b)`` -- which is why this oracle's
+    figures are unchanged by the split and its per-row discrimination lives in
+    the tests that assert each row's own value.
 
     It reads ONE GridColumn per period rather than re-running the subtotal
     producer beside the balance producer, which is the point of plan steps
@@ -2623,13 +2635,14 @@ def _assert_grid_view_reconciles(view):
     assert len(items) >= 2, "need >= 2 periods to reconcile a delta"
     for (_prev_id, prev), (pid, column) in zip(items, items[1:]):
         expected = (
-            column.net + column.reconciliation
+            column.net + column.period_timing + column.book_vs_bank
             + column.contribution + column.accrual
         )
         assert column.balance - prev.balance == expected, (
             f"period {pid}: balance delta "
             f"{column.balance - prev.balance} != net {column.net} + "
-            f"reconciliation {column.reconciliation} + contribution "
+            f"period_timing {column.period_timing} + book_vs_bank "
+            f"{column.book_vs_bank} + contribution "
             f"{column.contribution} + accrual {column.accrual}"
         )
 
@@ -2638,7 +2651,7 @@ class TestTheContributionRowOnARealFeed:
     """Plan step X-g3b's PRODUCER-side control for the fourth term.
 
     X-g3a seated ruling R-K's four-term identity and could only grade it on
-    HAND-BUILT views (``TestTheReconciliationOracleSeesAllFourTerms``), because
+    HAND-BUILT views (``TestTheRemainderOracleSeesEveryTerm``), because
     with the kind gate in place no producer could put a figure in
     ``contribution``: only an INTEREST account reached the replay, and only an
     INVESTMENT can have a payroll feed.  This is the first commit in which one
@@ -2765,15 +2778,16 @@ class TestTheContributionRowOnARealFeed:
             previous = view.columns[periods[3].id]
             column = view.columns[periods[4].id]
             delta = column.balance - previous.balance
-            three_term = (
-                column.net + column.reconciliation + column.accrual
+            without_contribution = (
+                column.net + column.period_timing + column.book_vs_bank
+                + column.accrual
             )
 
             # The retired form is short by the whole contribution, and the
-            # four-term form closes it exactly.
+            # full identity closes it exactly.
             assert column.contribution == self._EMPLOYEE
-            assert delta != three_term
-            assert delta - three_term == column.contribution
+            assert delta != without_contribution
+            assert delta - without_contribution == column.contribution
 
 
 class TestGridBalanceView:
@@ -3118,7 +3132,8 @@ class TestGridBalanceView:
 
 def _column(
     *, balance="0.00", income="0.00", expense="0.00", net="0.00",
-    reconciliation="0.00", contribution="0.00", accrual="0.00",
+    period_timing="0.00", book_vs_bank="0.00",
+    contribution="0.00", accrual="0.00",
 ):
     """Build one hand-specified :class:`GridColumn` for the flag tests.
 
@@ -3127,19 +3142,26 @@ def _column(
     data-driven oracle would have to seed a shape for each of the rule's arms
     and would still only assert the rule through whatever those shapes happen
     to produce.  ``TestTheRemainderIsWhatTheRowsCannotExplain`` grades the
-    producer-built remainder itself.
+    producer-built remainders themselves.
 
     Every parameter is a STRING and every field is a ``Decimal``: neither
     modelled tier is optional since plan step X-g3a (ruling R-AJ (c)), so
     ``None`` is not a value this builder can produce and no test can assert a
     shape the producer cannot be in.
+
+    ``reconciliation`` split into ``period_timing`` and ``book_vs_bank`` at
+    plan step S1-c (ruling R-DH (f)), and the builder takes both separately
+    rather than one figure it fans out, because R-O's visibility question is
+    now asked of each row INDEPENDENTLY -- a builder that could not set them
+    apart could not express the case the split exists for.
     """
     return balance_at.GridColumn(
         balance=Decimal(balance),
         income=Decimal(income),
         expense=Decimal(expense),
         net=Decimal(net),
-        reconciliation=Decimal(reconciliation),
+        period_timing=Decimal(period_timing),
+        book_vs_bank=Decimal(book_vs_bank),
         contribution=Decimal(contribution),
         accrual=Decimal(accrual),
     )
@@ -3169,10 +3191,11 @@ class TestGridRowFlags:
         return [SimpleNamespace(id=pid) for pid in ids]
 
     def test_all_zero_window_renders_no_row(self):
-        """Every column zero -> all three rows hidden (the ordinary cash grid)."""
+        """Every column zero -> all four rows hidden (the ordinary cash grid)."""
         view = self._view({1: _column(), 2: _column()})
         flags = view.row_flags(self._periods(1, 2))
-        assert flags.reconciliation is False
+        assert flags.period_timing is False
+        assert flags.book_vs_bank is False
         assert flags.contribution is False
         assert flags.accrual is False
 
@@ -3180,10 +3203,10 @@ class TestGridRowFlags:
         """A single non-zero column turns the row on for the whole window."""
         view = self._view({
             1: _column(),
-            2: _column(reconciliation="-788.68"),
+            2: _column(period_timing="-788.68"),
             3: _column(),
         })
-        assert view.row_flags(self._periods(1, 2, 3)).reconciliation is True
+        assert view.row_flags(self._periods(1, 2, 3)).period_timing is True
 
     def test_the_rule_is_per_window_not_per_account(self):
         """A window that excludes the non-zero column hides the row.
@@ -3193,14 +3216,58 @@ class TestGridRowFlags:
         permanently-zero line on the forward-looking windows -- the half of
         ruling R-O that rejected always-on.
         """
-        view = self._view({1: _column(reconciliation="12.00"), 2: _column()})
-        assert view.row_flags(self._periods(2)).reconciliation is False
-        assert view.row_flags(self._periods(1, 2)).reconciliation is True
+        view = self._view({1: _column(period_timing="12.00"), 2: _column()})
+        assert view.row_flags(self._periods(2)).period_timing is False
+        assert view.row_flags(self._periods(1, 2)).period_timing is True
 
     def test_a_negative_remainder_counts_as_non_zero(self):
         """The rule is non-zero, not positive -- timing swings both ways."""
-        view = self._view({1: _column(reconciliation="-0.01")})
-        assert view.row_flags(self._periods(1)).reconciliation is True
+        view = self._view({1: _column(period_timing="-0.01")})
+        assert view.row_flags(self._periods(1)).period_timing is True
+
+    def test_each_remainder_row_is_asked_the_question_separately(self):
+        """R-DH (f): a window carrying only true-ups renders ONLY that row.
+
+        The property the split exists for, and the one a shared flag could not
+        express.  A window whose columns carry a ``book_vs_bank`` correction and
+        no timing difference at all must render the "Book vs bank" row and NOT
+        the "Period timing" row: a permanently-``$0.00`` timing line beside it
+        reads as "measured, and the answer is zero" for a fact that was never in
+        question, which is the opposite of what a diagnostic row is for.
+
+        Asserted in BOTH directions, because a flag wired to the wrong field
+        passes a one-directional check by luck.
+        """
+        true_ups_only = self._view({
+            1: _column(), 2: _column(book_vs_bank="-160.05"),
+        })
+        flags = true_ups_only.row_flags(self._periods(1, 2))
+        assert flags.book_vs_bank is True
+        assert flags.period_timing is False
+
+        timing_only = self._view({
+            1: _column(period_timing="-427.22"), 2: _column(),
+        })
+        flags = timing_only.row_flags(self._periods(1, 2))
+        assert flags.period_timing is True
+        assert flags.book_vs_bank is False
+
+    def test_two_remainders_that_cancel_still_render_both_rows(self):
+        """Equal and opposite halves must not hide each other.
+
+        The exact figures ruling R-DH (f) was measured on, negated against each
+        other: ``+$427.22`` of timing beside ``-$427.22`` of book-vs-bank.  A
+        flag computed on the SUM -- the shape the combined ``reconciliation``
+        field made natural -- reads ``$0.00`` here and hides both rows, leaving
+        the user a balance change with no visible explanation on a period where
+        two real and opposite things happened.
+        """
+        view = self._view({
+            1: _column(period_timing="427.22", book_vs_bank="-427.22"),
+        })
+        flags = view.row_flags(self._periods(1))
+        assert flags.period_timing is True
+        assert flags.book_vs_bank is True
 
     def test_an_all_zero_accrual_window_hides_the_accrual_row(self):
         """A window that earns nothing hides the row -- a labelled row of zeros.
@@ -3268,11 +3335,11 @@ class TestGridRowFlags:
 
     def test_a_period_outside_the_view_contributes_nothing(self):
         """A window period the projection never produced cannot flip a flag."""
-        view = self._view({1: _column(reconciliation="5.00")})
-        assert view.row_flags(self._periods(99)).reconciliation is False
+        view = self._view({1: _column(period_timing="5.00")})
+        assert view.row_flags(self._periods(99)).period_timing is False
 
 
-class TestTheReconciliationOracleSeesAllFourTerms:
+class TestTheRemainderOracleSeesEveryTerm:
     """``_assert_grid_view_reconciles`` is the CUTOVER's oracle, so grade it.
 
     Plan step X-g3b moves every modelled account's grid balance, and this
@@ -3285,9 +3352,17 @@ class TestTheReconciliationOracleSeesAllFourTerms:
 
     The helper takes a VIEW, not an account, so the control needs no producer
     and no fixture: a hand-built view whose balance delta contains a
-    contribution reconciles under the four-term form and cannot reconcile under
-    the three-term one.  Section 7.3 -- every guard gets a negative control that
-    is shown to fire -- and this is the guard that guards the money.
+    contribution reconciles with that term and cannot reconcile without it.
+    Section 7.3 -- every guard gets a negative control that is shown to fire --
+    and this is the guard that guards the money.
+
+    **The identity is FIVE terms since plan step S1-c** (ruling R-DH (f) split
+    the remainder in two).  The two remainder terms have no dedicated negative
+    control here and do not need one: ``_two_columns`` gives them DISTINCT
+    non-zero values (``10.00`` and ``-4.00``), so an oracle that dropped either
+    one -- or read one twice -- fails ``test_a_contributing_column_reconciles``
+    directly.  Stated rather than left implied, because "controlled by the
+    fixture's shape" is only true while the shape stays asymmetric.
     """
 
     @staticmethod
@@ -3302,21 +3377,23 @@ class TestTheReconciliationOracleSeesAllFourTerms:
     # period pairs on the Empower 401(k) -- and $95.98 is the HYSA accrual this
     # file hand-derives elsewhere.
     _NET = "100.00"
-    _RECONCILIATION = "10.00"
+    _PERIOD_TIMING = "10.00"
+    _BOOK_VS_BANK = "-4.00"
     _CONTRIBUTION = "181.59"
     _ACCRUAL = "95.98"
 
     def _two_columns(self, *, contribution):
-        """Return an opening column and one whose delta is all four terms."""
+        """Return an opening column whose successor's delta is every term."""
         opening = _column(balance="1000.00")
         moved = _column(
             balance=str(
                 Decimal("1000.00") + Decimal(self._NET)
-                + Decimal(self._RECONCILIATION) + Decimal(contribution)
-                + Decimal(self._ACCRUAL)
+                + Decimal(self._PERIOD_TIMING) + Decimal(self._BOOK_VS_BANK)
+                + Decimal(contribution) + Decimal(self._ACCRUAL)
             ),
             net=self._NET,
-            reconciliation=self._RECONCILIATION,
+            period_timing=self._PERIOD_TIMING,
+            book_vs_bank=self._BOOK_VS_BANK,
             contribution=contribution,
             accrual=self._ACCRUAL,
         )
@@ -3345,7 +3422,8 @@ class TestTheReconciliationOracleSeesAllFourTerms:
             income=moved.income,
             expense=moved.expense,
             net=moved.net,
-            reconciliation=moved.reconciliation,
+            period_timing=moved.period_timing,
+            book_vs_bank=moved.book_vs_bank,
             contribution=Decimal("0.00"),
             accrual=moved.accrual,
         )
@@ -3374,7 +3452,8 @@ class TestTheReconciliationOracleSeesAllFourTerms:
             income=moved.income,
             expense=moved.expense,
             net=moved.net,
-            reconciliation=moved.reconciliation,
+            period_timing=moved.period_timing,
+            book_vs_bank=moved.book_vs_bank,
             contribution=moved.contribution,
             accrual=Decimal("0.00"),
         )
@@ -3445,6 +3524,16 @@ class TestTheRemainderIsWhatTheRowsCannotExplain:
     disagree about.  What is asserted here is the pair of properties that makes
     it trustworthy: it is ``0.00`` exactly when nothing needs explaining, and
     it is the exact size of the disagreement when something does.
+
+    **The remainder is TWO rows since plan step S1-c** (ruling R-DH (f)).
+    Every case below is a TIMING one -- rows landing in a column other than
+    the one they were budgeted to -- so each asserts its figure on
+    ``period_timing`` and pins ``book_vs_bank`` at ``$0.00`` beside it.  That
+    second assertion is the whole point of the split: these fixtures assert no
+    balance at all beyond their opening, so a figure appearing on the
+    book-vs-bank row would be the producer attributing a timing difference to
+    the bank disagreeing with the app, which is a different diagnosis with
+    different advice attached.
     """
 
     def test_a_period_where_everything_lands_in_its_own_column_has_no_remainder(
@@ -3473,10 +3562,13 @@ class TestTheRemainderIsWhatTheRowsCannotExplain:
             ]
             assert moved, "the fixture must move money or this proves nothing"
             assert all(
-                column.reconciliation == Decimal("0.00")
+                column.period_timing == Decimal("0.00")
+                and column.book_vs_bank == Decimal("0.00")
                 for column in view.columns.values()
             )
-            assert view.row_flags(periods).reconciliation is False
+            flags = view.row_flags(periods)
+            assert flags.period_timing is False
+            assert flags.book_vs_bank is False
             _assert_grid_view_reconciles(view)
 
     def test_a_row_that_settled_in_another_column_is_exactly_the_remainder(
@@ -3489,8 +3581,13 @@ class TestTheRemainderIsWhatTheRowsCannotExplain:
         ``-$300.00`` while no money moved there -- remainder ``+$300.00``.
         Period 3 counts nothing on the budget clock while ``-$300.00`` moved
         through it -- remainder ``-$300.00``.  The two net to zero across the
-        window, which is why the row is called "Timing & true-ups" and not a
+        window, which is why the row is called "Period timing" and not a
         correction.
+
+        Nobody re-anchored, so ``book_vs_bank`` is ``$0.00`` in both columns
+        and its row stays hidden (ruling R-DH (f) / R-O).  Under the combined
+        remainder the two facts were indistinguishable, and this is the shape
+        that tells them apart.
         """
         # pylint: disable=import-outside-toplevel
         from tests._test_helpers import create_settled_cash_transaction
@@ -3510,14 +3607,20 @@ class TestTheRemainderIsWhatTheRowsCannotExplain:
             view = balance_at.grid_balance_view(account, bctx, periods)
 
             assert view.columns[periods[1].id].net == Decimal("-300.00")
-            assert view.columns[periods[1].id].reconciliation == Decimal(
+            assert view.columns[periods[1].id].period_timing == Decimal(
                 "300.00",
             )
             assert view.columns[periods[3].id].net == Decimal("0.00")
-            assert view.columns[periods[3].id].reconciliation == Decimal(
+            assert view.columns[periods[3].id].period_timing == Decimal(
                 "-300.00",
             )
-            assert view.row_flags(periods).reconciliation is True
+            assert all(
+                column.book_vs_bank == Decimal("0.00")
+                for column in view.columns.values()
+            )
+            flags = view.row_flags(periods)
+            assert flags.period_timing is True
+            assert flags.book_vs_bank is False
             _assert_grid_view_reconciles(view)
 
 

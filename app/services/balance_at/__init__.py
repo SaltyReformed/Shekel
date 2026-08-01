@@ -65,7 +65,8 @@ kill.
   (``resolve_grid_account`` can point at any kind).  A modelled return may
   reach such a surface only where a ROW explains it, which is ruling R-K's
   ``balance[p] - balance[p-1]
-  == net[p] + reconciliation[p] + contribution[p] + accrual[p]`` -- whose
+  == net[p] + period_timing[p] + book_vs_bank[p] + contribution[p]
+     + accrual[p]`` -- whose
   FOURTH term is ruling R-AH's correction: a modelled asset has TWO modelled
   tiers, and on the real Empower 401(k) the CONTRIBUTION is the larger of them,
   so the three-term form breaks on 53 of 59 real period pairs.  The GRID has
@@ -144,8 +145,8 @@ completeness scope DELETE rather than shrink or travel.  ``_kernel``'s ``debt_sc
 seam entries the out-of-cluster consumers (the account-detail route, the savings
 orchestrator) read.  ``property_equity_chart`` and ``home_equity_service`` import
 FROM here, not the other way round.  Inside the package the direction is
-``_grid -> {_asset_fold, _cash_fold, _inputs}``,
-``{_cash_flow, _kind_correct} -> _cash_fold -> _fold``,
+``_grid -> {_asset_fold, _cash_fold, _cash_periods, _inputs}``,
+``{_cash_flow, _kind_correct, _cash_periods} -> _cash_fold -> _fold``,
 ``{_inputs, _positions, _loan_interest} -> _kernel -> _asset_fold ->
 {_asset_contributions, _cash_fold}``, ``_kind_correct -> {_asset_fold,
 _inputs}``,

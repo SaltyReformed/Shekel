@@ -1,0 +1,52 @@
+{# The post-true-up reconcile PROMPT.
+
+   Swapped out-of-band into ``#modal-mount`` by the anchor true-up's success
+   response and auto-opened by the ``data-modal-auto-show`` handler in
+   ``app/static/js/app.js``.  The mount lives in ``base.html`` because the
+   anchor editor opens from five different surfaces (the grid cell, the
+   dashboard card, the cockpit card, the investment hero, the cash hero) and
+   an out-of-band swap needs a target that exists on all of them.
+
+   **It only appears when there is something to reconcile.**  The true-up
+   itself stays a one-click inline edit -- that habit produces a balance
+   assertion every 2.3 days on the real data, and taxing it would cost more
+   than the prompt buys.  The route omits this fragment entirely when the
+   account has no outstanding purchases, so a routine true-up is unchanged.
+
+   Dismissing it loses nothing: the same list is a permanent section on the
+   account's detail page, rendered from the same inner partial.
+
+   Expected context: everything ``accounts/_reconcile_purchases.html`` needs.
+#}
+<div id="modal-mount" hx-swap-oob="true">
+  <div class="modal fade" id="reconcilePurchasesModal" tabindex="-1"
+       aria-labelledby="reconcilePurchasesLabel"
+       data-modal-auto-show
+       aria-hidden="true">
+    <div class="modal-dialog modal-dialog-scrollable modal-dialog-centered">
+      <div class="modal-content">
+
+        <div class="modal-header">
+          <h5 class="modal-title" id="reconcilePurchasesLabel">
+            <i class="bi bi-list-check" aria-hidden="true"></i>
+            Has your bank taken these yet?
+          </h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"
+                  aria-label="Close"></button>
+        </div>
+
+        <div class="modal-body">
+          {% include "accounts/_reconcile_purchases.html" %}
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary"
+                  data-bs-dismiss="modal">
+            Not now
+          </button>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</div>

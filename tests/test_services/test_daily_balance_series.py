@@ -54,6 +54,11 @@ from app.models.transaction_entry import TransactionEntry
 from app.services import balance_at
 from app.services.scenario_resolver import get_baseline_scenario
 from app.services.balance_at import BalanceContext
+from tests._test_helpers import (
+    append_balance_assertion,
+    mark_purchase_settled,
+    settle_instant_on,
+)
 
 _APR_FIRST = date(2026, 4, 1)
 _APR_LAST = date(2026, 4, 30)
@@ -271,38 +276,57 @@ class TestDailySeriesEdges:
         """The entry-aware reservation drives the line and still reconciles.
 
         Period 6 (carrying the $1000 anchor forward): a projected $500 grocery
-        envelope due Apr 5 with a $300 cleared purchase dated Mar 19.  The
-        cleared debit is already in the anchor, so the entry-aware
+        envelope due Apr 5 with a $300 purchase made and posted Mar 19, which
+        the user then confirmed against a balance they read that same day.  The
+        posted debit is already inside that balance, so the entry-aware
         reservation is max(500 - 300, 0) = 200: the line steps by -200 (not
         the -500 estimate), and the period end still equals the seam scalar.
         This guards the entry-aware path -- the reconciliation invariant is
         robust to the entries-aware reservation, not just the raw estimate.
 
         **The purchase is dated BEFORE the suite's frozen today (2026-03-20)
-        because a purchase that has not happened cannot have cleared the bank**
+        because a purchase that has not happened cannot have reached the bank**
         (ruling R-M / finding N-39): plan step X-c0 refuses a future
-        ``entry_date`` at both write doors, so the state this fixture used to
+        ``purchased_on`` at both write doors, so the state this fixture used to
         seed -- an entry dated ahead of today -- is no longer reachable through
         the app.  The fixture is realistic for that reason and no longer for the
         reader's: plan step X-c2c1 deleted the reservation's entry window once
         the write door made it unable to drop anything, so this row's
         reservation would be the same $200 at any ``as_of``.  Backdating stays
         allowed and is what this fixture uses.
+
+        **The Mar 19 balance assertion is what makes the purchase reconciled,
+        and it is not scenery** (plan step S1-c, ruling R-DH (d)).  The retired
+        ``is_cleared`` flag claimed the purchase was inside the January opening
+        -- an anchor read two months before the money moved, which production
+        cannot produce (finding N-132 / R8).  The assertion re-states the same
+        $1,000.00 the records already hold at that instant, so its own
+        correction is $0.00 and no figure below moves because of it; what it
+        changes is which purchases the reservation may subtract.
         """
         with app.app_context():
+            account = seed_user["account"]
             txn = _add_txn(
                 db, seed_user, seed_periods[6], "Groceries", "500.00",
                 due_date=date(2026, 4, 5),
             )
-            db.session.add(TransactionEntry(
+            entry = TransactionEntry(
                 transaction_id=txn.id,
                 user_id=seed_user["user"].id,
                 amount=Decimal("300.00"),
-                description="Cleared purchase",
-                entry_date=date(2026, 3, 19),
+                description="Confirmed purchase",
+                purchased_on=date(2026, 3, 19),
                 is_credit=False,
-                is_cleared=True,
-            ))
+            )
+            db.session.add(entry)
+            # The user read their bank balance on Mar 19 and it still showed
+            # $1,000.00 -- no settled row has moved the account, so this
+            # assertion books nothing.
+            append_balance_assertion(
+                db.session, account, seed_periods[5], Decimal("1000.00"),
+                settle_instant_on(date(2026, 3, 19)),
+            )
+            mark_purchase_settled(db.session, account, entry)
             db.session.commit()
             scenario = get_baseline_scenario(seed_user["user"].id)
             bctx = BalanceContext.build(seed_user["user"].id)

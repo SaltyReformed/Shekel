@@ -43,18 +43,18 @@ commits -- the caller owns the transaction boundary.
 
 import logging
 from collections.abc import Iterable
-from datetime import date
 
 from app import ref_cache
 from app.enums import PostingSourceEnum
 from app.extensions import db
-from app.models.account import Account, AccountAnchorHistory
+from app.models.account import Account
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.ref import AccountType
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
+from app.services.cash_ledger import latest_observed_day
 from app.services.posting_reads import _ledger_account_for
 from app.services.scenario_resolver import get_baseline_scenario
 
@@ -191,45 +191,6 @@ def sync_account_anchor_postings_all_scenarios(account_id: int) -> None:
         sync_account_anchor_postings(account_id, scenario_id)
 
 
-def _latest_observed_day(account_id: int) -> date | None:
-    """Return the latest civil day an account has asserted a balance for.
-
-    The self-heal predicate's right-hand side: ``MAX(observed_on)`` over the
-    account's :class:`~app.models.account.AccountAnchorHistory` rows -- the
-    last BUSINESS day any assertion closes, which is the boundary the walk
-    itself absorbs sources up to (ruling R-DH).
-
-    **It compares DAYS on both sides, and that is the fix for a hidden
-    timezone-sign dependency** (finding N-133 / F4).  It was
-    ``MAX(created_at)`` as an instant, tested against
-    ``min(utc_day_start_instant(entry_date))`` -- a civil date pushed back
-    through MIDNIGHT UTC and compared with a raw recording instant, a THIRD
-    form of a question the two walks already answer one way.  It happened to
-    be sound only because ``America/New_York`` is west of UTC, so midnight UTC
-    of a display day always precedes that day's real start and the predicate
-    could only OVER-fire (an over-fire costs one idempotent walk that writes
-    nothing).  For a display zone EAST of UTC it silently UNDER-fires and
-    leaves a stale anchor correction posted with no error anywhere.  Nothing
-    stated or gated that; comparing the days both walks already partition on
-    removes the dependency rather than documenting it.
-
-    One indexed lookup (``idx_anchor_history_account`` leads on
-    ``account_id``).
-
-    Args:
-        account_id: The account whose latest asserted business day to resolve.
-
-    Returns:
-        The civil day, or ``None`` for an account with no anchor history
-        (fixture-only) or a missing account.
-    """
-    return (
-        db.session.query(db.func.max(AccountAnchorHistory.observed_on))
-        .filter(AccountAnchorHistory.account_id == account_id)
-        .scalar()
-    )
-
-
 def self_heal_anchor_corrections(
     account_ids: Iterable[int],
     scenario_id: int,
@@ -318,7 +279,12 @@ def self_heal_anchor_corrections(
         return
     earliest = min(entry.entry_date for entry in delta_entries)
     for account_id in sorted(set(account_ids)):
-        latest = _latest_observed_day(account_id)
+        # ONE statement of "the account's latest asserted day", shared with the
+        # entry reservation and the reconcile panel (plan step S1-c).  This
+        # module had its own copy; a second copy of this question is what
+        # carried a silent timezone-sign dependency until finding N-133 / F4,
+        # and the leaf that owns the assertion rows is where it belongs.
+        latest = latest_observed_day(account_id)
         if latest is None:
             continue
         if earliest <= latest or not _has_posted_anchor_correction(

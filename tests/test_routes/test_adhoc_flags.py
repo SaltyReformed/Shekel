@@ -50,14 +50,14 @@ def _make_adhoc(seed_user, period, *, is_envelope=False, companion_visible=False
     return txn
 
 
-def _add_entry(txn, seed_user, amount, description, entry_date=None):
+def _add_entry(txn, seed_user, amount, description, purchased_on=None):
     """Attach a debit entry to a transaction directly via ORM."""
     entry = TransactionEntry(
         transaction_id=txn.id,
         user_id=seed_user["user"].id,
         amount=Decimal(str(amount)),
         description=description,
-        entry_date=entry_date or date.today(),
+        purchased_on=purchased_on or date.today(),
         is_credit=False,
     )
     db.session.add(entry)
@@ -84,7 +84,7 @@ class TestAdhocPurchaseTracking:
                 data={
                     "amount": "40.00",
                     "description": "Kroger",
-                    "entry_date": seed_periods_today[0].start_date.isoformat(),
+                    "purchased_on": seed_periods_today[0].start_date.isoformat(),
                 },
             )
             assert resp.status_code == 200
@@ -109,7 +109,7 @@ class TestAdhocPurchaseTracking:
                 data={
                     "amount": "40.00",
                     "description": "Kroger",
-                    "entry_date": seed_periods_today[0].start_date.isoformat(),
+                    "purchased_on": seed_periods_today[0].start_date.isoformat(),
                 },
             )
             assert resp.status_code == 400

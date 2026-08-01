@@ -21,7 +21,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.routes._render_helpers import render_transaction_cell
 from app.schemas.validation import EntryCreateSchema, EntryUpdateSchema
-from app.services import entry_service
+from app.services import cash_ledger, entry_service
 from app.exceptions import NotFoundError, ValidationError
 from app.utils.auth_helpers import get_accessible_transaction
 from app.utils.dates import display_today
@@ -142,23 +142,34 @@ def _render_entry_list(
     )
     out_of_period_ids = {
         e.id for e in entries
-        if not entry_service.check_entry_date_in_period(e.entry_date, txn)
+        if not entry_service.check_purchase_date_in_period(e.purchased_on, txn)
+    }
+    # The read-only reconciled indicator (ruling R-DH (d)).  Derived at read
+    # time from the SHARED predicate rather than from a stored flag, so what
+    # the row shows and what the projection held back cannot disagree -- the
+    # manual toggle this replaced could set either one against the other.
+    reconciled_through = cash_ledger.latest_observed_day(txn.account_id)
+    reconciled_ids = {
+        e.id for e in entries
+        if cash_ledger.is_inside_assertion(e.settled_on, reconciled_through)
     }
     return render_template(
         "grid/_transaction_entries.html",
         txn=txn,
         entries=entries,
         remaining=remaining,
-        # The add form's hidden ``entry_date`` default, and the edit form's
+        # The add form's ``purchased_on`` default, and both date pickers'
         # ``max``.  It is the USER's today (``display_today``), not the
-        # server's UTC one, because the service refuses a future entry date on
-        # that same clock (ruling R-M): with two clocks here, a UTC-running
+        # server's UTC one, because the service refuses a future purchase date
+        # on that same clock (ruling R-M): with two clocks here, a UTC-running
         # process would stamp tomorrow's date for the evening hours the frames
         # disagree, and the app's own form would post a value its own guard
         # rejects.
         today=display_today().isoformat(),
         editing_id=editing_id,
         out_of_period_ids=out_of_period_ids,
+        reconciled_ids=reconciled_ids,
+        reconciled_through=reconciled_through,
         conflict=conflict,
         error=error,
         entry_list_host=host,
@@ -333,7 +344,7 @@ def _accessible_txn_and_entry(
     """Resolve the parent transaction and its owned entry, or ``None``.
 
     The shared ownership preamble for the per-entry mutation routes
-    (:func:`update_entry`, :func:`toggle_cleared`, :func:`delete_entry`):
+    (:func:`update_entry`, :func:`delete_entry`):
     the parent must be accessible to the requester
     (:func:`get_accessible_transaction` -- owner, or companion with
     visibility) AND the entry must belong to that parent.  The second
@@ -505,50 +516,6 @@ def update_entry(txn_id, entry_id):
 
 
 @entries_bp.route(
-    "/transactions/<int:txn_id>/entries/<int:entry_id>/cleared",
-    methods=["PATCH"],
-)
-@login_required
-def toggle_cleared(txn_id, entry_id):
-    """Manually flip the is_cleared flag on a single entry.
-
-    The auto-clear on anchor true-up covers the common case, but the
-    user may need to correct a specific entry (e.g. a debit that
-    posted after their most recent true-up but was auto-cleared in
-    error, or one they want to exclude from the reservation before
-    they've formally updated the anchor).
-
-    Returns the refreshed entry list and a balanceChanged HX-Trigger
-    so the grid re-renders with the new projection.
-
-    Optimistic locking (commit C-18 / F-010): no form-side
-    ``version_id`` is shipped with the toggle button; the
-    SQLAlchemy ``version_id_col`` lock catches concurrent races at
-    flush time and the handler converts ``StaleDataError`` into a
-    409 + conflict entry list.
-    """
-    target = _accessible_txn_and_entry(txn_id, entry_id)
-    if target is None:
-        return "Not found", 404
-    txn, _entry = target
-    host = _request_host()
-
-    try:
-        entry_service.toggle_cleared(entry_id, current_user.id)
-        db.session.commit()
-    except StaleDataError:
-        logger.info(
-            "Stale-data conflict on toggle_cleared id=%d", entry_id,
-        )
-        return _stale_entry_response(txn, host)
-    except NotFoundError as exc:
-        db.session.rollback()
-        return str(exc), 404
-
-    return _entry_mutation_response(txn, host)
-
-
-@entries_bp.route(
     "/transactions/<int:txn_id>/entries/<int:entry_id>",
     methods=["DELETE"],
 )
@@ -559,7 +526,10 @@ def delete_entry(txn_id, entry_id):
     Same parameter confusion guard as update_entry: verifies the
     entry belongs to the specified transaction.
 
-    Optimistic locking: see :func:`toggle_cleared`.
+    Optimistic locking: no form-side ``version_id`` is shipped with the
+    delete button; the SQLAlchemy ``version_id_col`` lock catches
+    concurrent races at flush time and the handler converts
+    ``StaleDataError`` into a 409 + conflict entry list.
     """
     target = _accessible_txn_and_entry(txn_id, entry_id)
     if target is None:

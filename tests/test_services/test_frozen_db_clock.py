@@ -66,17 +66,25 @@ class TestTheDatabaseClockIsTheTestClock:
         # status seam -- so it must NOT appear here.  That it is frozen anyway
         # is what the settle test below proves, through the other mechanism.
         assert "paid_at" not in txn_attrs
-        # The RAW-TEXT spelling: ``entry_date`` defaults to
+        # The RAW-TEXT spelling: ``purchased_on`` defaults to
         # ``db.text("CURRENT_DATE")``, a TextClause, so an
         # ``isinstance(..., now)`` test alone is blind to it -- which is how it
         # kept landing on the real wall date while every timestamp beside it
         # was frozen (found by plan step X-h's adversarial review).  And it is
         # a DATE column, so it must be stamped with a date.
         entry_attrs = dict(_db_clock_insert_attrs(TransactionEntry))
-        assert entry_attrs.get("entry_date") is True, (
-            "transaction_entries.entry_date is a CURRENT_DATE text default on a "
-            f"DATE column; derivation found {entry_attrs!r}"
+        assert entry_attrs.get("purchased_on") is True, (
+            "transaction_entries.purchased_on is a CURRENT_DATE text default on "
+            f"a DATE column; derivation found {entry_attrs!r}"
         )
+        # ``settled_on`` is the column plan step S1-c added BESIDE it, and it
+        # must NOT appear: it is nullable with no default precisely because a
+        # NULL means "the user has not seen this purchase post yet".  A clock
+        # default on it would be the engine guessing a posting day, which is
+        # the thing ruling R-DH (d) exists to prevent -- and it would be
+        # invisible to every behavioural test here, because a stamped date is
+        # indistinguishable from a recorded one once written.
+        assert "settled_on" not in entry_attrs
 
     def test_a_server_defaulted_instant_lands_on_the_frozen_day(
         self, app, db, seed_user, seed_periods,
@@ -238,14 +246,14 @@ class TestTheDatabaseClockIsTheTestClock:
                 transaction_id=txn.id,
                 user_id=seed_user["user"].id,
                 amount=Decimal("5.00"),
-                description="N-65: no explicit entry_date",
+                description="N-65: no explicit purchased_on",
             )
             db.session.add(entry)
             db.session.commit()
 
             db.session.expire(entry)
-            assert entry.entry_date == FROZEN_DATE, (
-                f"entry_date is {entry.entry_date!r}, not the frozen "
+            assert entry.purchased_on == FROZEN_DATE, (
+                f"purchased_on is {entry.purchased_on!r}, not the frozen "
                 f"{FROZEN_DATE!r} -- a raw-text clock default escaped"
             )
 

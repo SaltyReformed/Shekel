@@ -29,12 +29,13 @@ from app.services.balance_at import BalanceContext
 from app.services import (
     account_service,
     balance_at,
+    cash_ledger,
     growth_engine,
     pay_period_service,
     paycheck_calculator,
     retirement_dashboard_service,
 )
-from tests._test_helpers import make_investment_account
+from tests._test_helpers import make_investment_account, mark_purchase_settled
 
 
 class TestComputeGapData:
@@ -338,14 +339,24 @@ class TestComputeSliderDefaults:
 # matches the grid and /investment dashboard byte-for-byte.
 
 
-def _add_envelope_expense_with_cleared_entries_ret(
+def _add_envelope_expense_with_settled_entries_ret(
     db_session, *, user_id, account, scenario_id, period, category_id,
-    estimated, cleared_amounts,
+    estimated, settled_amounts,
 ):
-    """Create a Projected envelope expense with cleared debit entries.
+    """Create a Projected envelope expense with already-posted debit entries.
 
     Same shape as the helper used in the C8 year-end / investment
     tests; copied here so this file stays standalone.
+
+    **Each purchase is dated on the account's own latest asserted day and
+    routed through ``mark_purchase_settled``** (plan step S1-c, ruling
+    R-DH (d), finding N-132 / R8).  It carried a hardcoded ``2026-05-15`` and a
+    stored ``is_cleared`` flag, which claimed the purchases were inside an
+    anchor the account asserts for the frozen today (2026-03-20) -- two months
+    EARLIER, a state production cannot reach.  Deriving the day from the
+    account's assertion also removes the fixture's calendar dependence: it
+    holds whatever day the suite runs on, which is the ``.claude/rules/testing``
+    property N-131 and N-132 are both about.
     """
     expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
     projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
@@ -376,17 +387,19 @@ def _add_envelope_expense_with_cleared_entries_ret(
     db_session.add(txn)
     db_session.flush()
 
-    for amt in cleared_amounts:
-        db_session.add(TransactionEntry(
+    observed_on = cash_ledger.latest_observed_day(account.id)
+    for amt in settled_amounts:
+        entry = TransactionEntry(
             transaction_id=txn.id,
             user_id=user_id,
             amount=amt,
-            description="Cleared purchase",
-            entry_date=date(2026, 5, 15),
+            description="Confirmed purchase",
+            purchased_on=observed_on,
             is_credit=False,
-            is_cleared=True,
-        ))
-    db_session.flush()
+        )
+        db_session.add(entry)
+        db_session.flush()
+        mark_purchase_settled(db_session, account, entry)
     return txn
 
 
@@ -498,7 +511,7 @@ class TestRetirementProjectionEntryAware:
                 employer_contribution_type_id=ref_cache.employer_contribution_type_id(EmployerContributionTypeEnum.NONE),
             ))
 
-            _add_envelope_expense_with_cleared_entries_ret(
+            _add_envelope_expense_with_settled_entries_ret(
                 db.session,
                 user_id=user.id,
                 account=acct,
@@ -506,7 +519,7 @@ class TestRetirementProjectionEntryAware:
                 period=current_period,
                 category_id=seed_user["categories"]["Groceries"].id,
                 estimated=Decimal("500.00"),
-                cleared_amounts=(
+                settled_amounts=(
                     Decimal("20.00"), Decimal("15.71"), Decimal("10.00"),
                 ),
             )

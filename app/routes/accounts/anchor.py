@@ -35,7 +35,12 @@ from flask_login import current_user, login_required
 from app.extensions import db
 from app.models.account import Account
 from app.routes.accounts._bp import accounts_bp
-from app.services import anchor_service, pay_period_service
+from app.services import (
+    anchor_service,
+    cash_ledger,
+    entry_service,
+    pay_period_service,
+)
 from app.services.anchor_service import AnchorTrueUpOutcome
 from app.utils.account_validation import _anchor_schema
 from app.utils.auth_helpers import get_or_404, require_owner
@@ -136,6 +141,167 @@ def _anchor_conflict_response(
     )
 
 
+def reconcile_context(account: Account, panel_id: str) -> dict:
+    """Assemble the reconcile panel's context for one account.
+
+    The ONE builder both surfaces read: the post-true-up prompt
+    (:func:`_reconcile_prompt_fragment`) and the permanent section on the cash
+    account's detail page.  Two builders would be two answers to "what is still
+    outstanding on this account", which is the shape plan step S1-c exists to
+    remove.
+
+    Args:
+        account: The account to reconcile.  Caller owns the ownership check.
+        panel_id: The DOM id the inner partial roots at, so a POST's re-render
+            swaps in place.
+
+    Returns:
+        The template context.  ``outstanding`` is empty (and the partial says
+        so) for an account with nothing to reconcile or no assertion at all.
+    """
+    observed_on = cash_ledger.latest_observed_day(account.id)
+    outstanding = (
+        []
+        if observed_on is None
+        else entry_service.outstanding_purchases(
+            current_user.id, account.id, observed_on,
+        )
+    )
+    return {
+        "account": account,
+        "outstanding": outstanding,
+        "outstanding_total": sum(
+            (entry.amount for entry in outstanding), Decimal("0.00"),
+        ),
+        "reconciled_through": observed_on,
+        "anchor_balance": account.current_anchor_balance,
+        "panel_id": panel_id,
+    }
+
+
+def _reconcile_prompt_fragment(account: Account) -> str:
+    """Return the out-of-band reconcile prompt, or ``""`` when there is none.
+
+    Appended to a successful true-up's body so the modal lands in
+    ``#modal-mount`` (``base.html``) whichever of the five surfaces opened the
+    editor.  It is empty whenever the account has nothing outstanding, which is
+    the steady state for a user who reconciles as they go -- the one-click
+    true-up habit is not taxed by a prompt with nothing in it.
+
+    Args:
+        account: The just-asserted account.
+
+    Returns:
+        The rendered fragment, or ``""``.
+    """
+    context = reconcile_context(account, panel_id="reconcile-panel-modal")
+    if not context["outstanding"]:
+        return ""
+    return render_template("accounts/_reconcile_modal.html", **context)
+
+
+@accounts_bp.route(
+    "/accounts/<int:account_id>/reconcile", methods=["GET"],
+)
+@login_required
+@require_owner
+def reconcile_panel(account_id):
+    """HTMX partial: re-render the account's outstanding-purchase list.
+
+    The ``balanceChanged`` refresh target on the cash detail page's section.
+    A true-up moves the day the list is computed against, so a list left
+    un-refreshed would offer purchases that are no longer outstanding -- the
+    same reason the band above it re-fetches on the same event.
+    """
+    account = get_or_404(Account, account_id)
+    if account is None:
+        return "Account not found", 404
+    return render_template(
+        "accounts/_reconcile_purchases.html",
+        **reconcile_context(account, panel_id=_panel_id(account.id)),
+    )
+
+
+@accounts_bp.route(
+    "/accounts/<int:account_id>/reconcile", methods=["POST"],
+)
+@login_required
+@require_owner
+def reconcile_purchases(account_id):
+    """Record that the ticked purchases had reached the bank.
+
+    The reconcile step's write door (ruling R-DH (d) / the R-M re-ruling).
+    Each ticked entry's ``settled_on`` becomes the civil day the account's
+    latest balance was asserted for, after which the projection stops holding
+    that purchase's budget back -- the same predicate the balance walk applies
+    to a settled transaction, on a date the USER supplied rather than one the
+    engine guessed.
+
+    **It is its own request, and that is deliberate.**  Folding it into
+    ``apply_anchor_true_up`` would put it inside that function's F-103
+    duplicate handler, which catches an ``IntegrityError``, rolls the session
+    back and reports idempotent success -- so a same-day re-assert would
+    silently discard every reconciliation the user had just made while the UI
+    said it saved.  A separate transaction cannot be swallowed by another
+    one's rollback.
+
+    Every submitted id is re-scoped in the service against the outstanding set
+    (owner, account, debit, projected parent, still unrecorded), so a forged id
+    matches nothing rather than raising -- the set-operation form of the
+    project's "404 for both not-found and not-yours" rule.
+
+    Returns the refreshed panel plus ``HX-Trigger: balanceChanged`` so every
+    surface showing a projection recomputes.
+    """
+    account = get_or_404(Account, account_id)
+    if account is None:
+        return "Account not found", 404
+
+    observed_on = cash_ledger.latest_observed_day(account.id)
+    if observed_on is None:
+        # No balance has ever been asserted for this account, so there is
+        # nothing for a purchase to be inside of.  Unreachable through the UI
+        # (the panel renders no form in that state) and answered rather than
+        # raised, because it is a legitimate empty state.
+        return render_template(
+            "accounts/_reconcile_purchases.html",
+            **reconcile_context(account, panel_id=_panel_id(account.id)),
+        )
+
+    entry_service.record_settled_days(
+        current_user.id,
+        account.id,
+        {int(raw) for raw in request.form.getlist("entry_ids") if raw.isdigit()},
+        observed_on,
+    )
+    db.session.commit()
+
+    return (
+        render_template(
+            "accounts/_reconcile_purchases.html",
+            **reconcile_context(account, panel_id=_panel_id(account.id)),
+        ),
+        200,
+        {"HX-Trigger": "balanceChanged"},
+    )
+
+
+def _panel_id(account_id: int) -> str:
+    """Return the reconcile panel's DOM id for one account.
+
+    Stated once so the POST's re-render lands on whichever copy of the panel
+    submitted it: the modal prompt roots at a fixed id, the detail page's
+    section at a per-account one, and both post to the same route.
+
+    Args:
+        account_id: The account whose panel id to compose.
+
+    Returns:
+        The DOM id string.
+    """
+    return f"reconcile-panel-{account_id}"
+
+
 def _true_up_success_response(
     account: Account, revert_context: str | None,
 ) -> tuple[str, int, dict[str, str]]:
@@ -163,14 +329,21 @@ def _true_up_success_response(
     html = render_template(
         "grid/_anchor_edit.html", account=account, editing=False,
     )
+    # The reconcile prompt rides along on EVERY surface, unlike the "as of"
+    # snippet below: its mount is in ``base.html`` rather than being a
+    # per-surface singleton, precisely so the one question worth asking after a
+    # balance reading -- which of these purchases has your bank taken? -- is
+    # asked wherever the reading was entered.  Empty when nothing is
+    # outstanding, so a routine true-up is unchanged.
+    prompt = _reconcile_prompt_fragment(account)
     if revert_context in ("accounts", "investment", "cash"):
-        return html, 200, {"HX-Trigger": "balanceChanged"}
+        return html + prompt, 200, {"HX-Trigger": "balanceChanged"}
     as_of_html = (
         f'<small class="text-muted" id="anchor-as-of" hx-swap-oob="true">'
         f'as of {to_display_tz(account.updated_at).strftime("%b %-d, %Y")}'
         f'</small>'
     )
-    return html + as_of_html, 200, {"HX-Trigger": "balanceChanged"}
+    return html + as_of_html + prompt, 200, {"HX-Trigger": "balanceChanged"}
 
 
 def _true_up_request_gates(
@@ -287,7 +460,6 @@ def true_up(account_id):
         account=account,
         new_balance=new_balance,
         anchor_period=current_period,
-        user_id=current_user.id,
     )
 
     if outcome is AnchorTrueUpOutcome.STALE_CONFLICT:

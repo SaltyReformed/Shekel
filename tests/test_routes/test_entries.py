@@ -26,14 +26,26 @@ from app.services.auth_service import hash_password
 from app.services import account_service
 from app.utils.dates import display_today
 
-from tests._test_helpers import freeze_today
+from tests._test_helpers import (
+    append_balance_assertion,
+    freeze_today,
+    settle_instant_on,
+)
+
+# The three days the derived reconciled indicator turns on.  FIXED rather
+# than today-relative: the indicator compares two STORED days, so nothing
+# about it reads a clock, and a fixture that did would be calendar-dependent
+# for no reason (.claude/rules/testing.md; findings N-131 / N-132).
+_PURCHASED_ON = date(2026, 1, 5)
+_ASSERTED_ON = date(2026, 1, 10)
+_POSTED_AFTER_THE_STATEMENT = date(2026, 1, 12)
 
 
 @pytest.fixture(autouse=True)
 def _freeze_today_inside_seed_range(monkeypatch):
     """Freeze today to date(2026, 3, 20) so seed_periods tests pass past 2026-05-22.
 
-    Entry tests use hardcoded entry_date values such as
+    Entry tests use hardcoded purchase dates such as
     date(2026, 1, 5) and date(2026, 4, 12) that must fall inside the
     calendar-anchored seed_periods range.  Freezing today inside the
     seeded range keeps get_current_period() deterministic without
@@ -43,7 +55,7 @@ def _freeze_today_inside_seed_range(monkeypatch):
 
 
 def _add_entry(txn, user, amount, description,
-               entry_date=None, is_credit=False):
+               purchased_on=None, is_credit=False):
     """Create an entry directly via ORM (bypasses service validation).
 
     Args:
@@ -51,7 +63,7 @@ def _add_entry(txn, user, amount, description,
         user: dict with 'user' key (seed_user shape) or User object.
         amount: Decimal-compatible string or Decimal.
         description: Entry description.
-        entry_date: Date object (defaults to 2026-01-05).
+        purchased_on: Date object (defaults to 2026-01-05).
         is_credit: Boolean.
 
     Returns:
@@ -63,7 +75,7 @@ def _add_entry(txn, user, amount, description,
         user_id=uid,
         amount=Decimal(str(amount)),
         description=description,
-        entry_date=entry_date or date(2026, 1, 5),
+        purchased_on=purchased_on or date(2026, 1, 5),
         is_credit=is_credit,
     )
     db.session.add(entry)
@@ -385,7 +397,7 @@ class TestListEntries:
             # Use a date well outside.
             _add_entry(
                 txn, seed_user, "50.00", "Late Purchase",
-                entry_date=date(2026, 2, 15),
+                purchased_on=date(2026, 2, 15),
             )
 
             resp = auth_client.get(f"/transactions/{txn.id}/entries")
@@ -410,7 +422,7 @@ class TestCreateEntry:
                 data={
                     "amount": "50.00",
                     "description": "Kroger",
-                    "entry_date": "2026-01-05",
+                    "purchased_on": "2026-01-05",
                 },
             )
             assert resp.status_code == 200
@@ -437,7 +449,7 @@ class TestCreateEntry:
                 data={
                     "amount": "80.00",
                     "description": "Amazon",
-                    "entry_date": "2026-01-06",
+                    "purchased_on": "2026-01-06",
                     "is_credit": "on",
                 },
             )
@@ -461,7 +473,7 @@ class TestCreateEntry:
                 data={
                     "amount": "25.50",
                     "description": "Gas Station",
-                    "entry_date": "2026-01-04",
+                    "purchased_on": "2026-01-04",
                 },
             )
             assert resp.status_code == 200
@@ -484,7 +496,7 @@ class TestCreateEntry:
                 data={
                     "amount": "0",
                     "description": "Test",
-                    "entry_date": "2026-01-05",
+                    "purchased_on": "2026-01-05",
                 },
             )
             assert resp.status_code == 422
@@ -501,7 +513,7 @@ class TestCreateEntry:
                 data={
                     "amount": "-5.00",
                     "description": "Test",
-                    "entry_date": "2026-01-05",
+                    "purchased_on": "2026-01-05",
                 },
             )
             assert resp.status_code == 422
@@ -531,7 +543,7 @@ class TestCreateEntry:
                 data={
                     "amount": "50.00",
                     "description": "",
-                    "entry_date": "2026-01-05",
+                    "purchased_on": "2026-01-05",
                 },
             )
             assert resp.status_code == 422
@@ -567,7 +579,7 @@ class TestCreateEntry:
                 data={
                     "amount": "50.00",
                     "description": "Test",
-                    "entry_date": "2026-01-05",
+                    "purchased_on": "2026-01-05",
                 },
             )
             assert resp.status_code == 400
@@ -584,7 +596,7 @@ class TestCreateEntry:
                 data={
                     "amount": "50.00",
                     "description": "Kroger",
-                    "entry_date": "2026-01-05",
+                    "purchased_on": "2026-01-05",
                 },
             )
             assert resp.status_code == 200
@@ -602,7 +614,7 @@ class TestCreateEntry:
                 data={
                     "amount": "50.00",
                     "description": "Kroger",
-                    "entry_date": "2026-01-05",
+                    "purchased_on": "2026-01-05",
                 },
             )
 
@@ -641,7 +653,7 @@ class TestAFutureEntryDateIsRefusedAtTheRoute:
                 data={
                     "amount": "150.00",
                     "description": "Costco run I have not made",
-                    "entry_date": tomorrow.isoformat(),
+                    "purchased_on": tomorrow.isoformat(),
                 },
             )
 
@@ -670,7 +682,7 @@ class TestAFutureEntryDateIsRefusedAtTheRoute:
                 data={
                     "amount": "42.87",
                     "description": "Walmart",
-                    "entry_date": today.isoformat(),
+                    "purchased_on": today.isoformat(),
                 },
             )
 
@@ -678,7 +690,7 @@ class TestAFutureEntryDateIsRefusedAtTheRoute:
             entry = db.session.query(TransactionEntry).filter_by(
                 transaction_id=txn.id,
             ).one()
-            assert entry.entry_date == today
+            assert entry.purchased_on == today
 
     def test_patch_moving_a_date_forward_is_refused(
         self, app, auth_client, seed_user, seed_periods,
@@ -689,21 +701,21 @@ class TestAFutureEntryDateIsRefusedAtTheRoute:
             txn = seed_entry_template["transaction"]
             entry = _add_entry(
                 txn, seed_user, "50.00", "Kroger",
-                entry_date=display_today() - timedelta(days=2),
+                purchased_on=display_today() - timedelta(days=2),
             )
-            original = entry.entry_date
+            original = entry.purchased_on
             tomorrow = display_today() + timedelta(days=1)
 
             resp = auth_client.patch(
                 f"/transactions/{txn.id}/entries/{entry.id}",
-                data={"entry_date": tomorrow.isoformat()},
+                data={"purchased_on": tomorrow.isoformat()},
             )
 
             assert resp.status_code == 400
             db.session.expire_all()
             assert db.session.get(
                 TransactionEntry, entry.id,
-            ).entry_date == original
+            ).purchased_on == original
 
     def test_the_edit_picker_is_bounded_at_the_users_today(
         self, app, auth_client, seed_user, seed_periods,
@@ -943,100 +955,329 @@ class TestDeleteEntry:
 
 # ---- Manual is_cleared toggle ------------------------------------------
 
-class TestToggleCleared:
-    """Tests for PATCH /transactions/<txn_id>/entries/<entry_id>/cleared."""
+class TestTheDerivedReconciledIndicator:
+    """The read-only indicator that replaced the cleared TOGGLE route.
 
-    def test_toggle_from_false_to_true(
+    ``PATCH /transactions/<txn_id>/entries/<entry_id>/cleared`` is DELETED with
+    the ``is_cleared`` column it wrote (plan step S1-c, ruling R-DH (d)).  A
+    stored flag a user could flip let the indicator and the projection be set
+    against each other, and when reconciliation is wrong the fact that is
+    actually wrong is the POSTING DAY -- which the edit form carries, and which
+    :class:`TestTheSettledOnEditPath` below grades.
+
+    So the entry row now shows a DERIVED answer:
+    ``cash_ledger.is_inside_assertion(entry.settled_on, reconciled_through)``,
+    computed per render from the account's latest asserted day.  These tests
+    drive the real ``GET`` list route and read the rendered row.
+    """
+
+    #: The screen-reader text of each arm -- the accessible name is what the
+    #: indicator MEANS, and it is stable where an icon class is decoration.
+    _INSIDE = b"Already inside your last balance"
+    _OUTSTANDING = b"Still outstanding"
+
+    @staticmethod
+    def _list(auth_client, txn_id):
+        """GET the entry list for a transaction and return its HTML bytes."""
+        resp = auth_client.get(f"/transactions/{txn_id}/entries")
+        assert resp.status_code == 200
+        return resp.data
+
+    def test_a_purchase_inside_the_asserted_balance_reads_reconciled(
         self, app, auth_client, seed_user, seed_periods,
         seed_entry_template,
     ):
-        """PATCHing toggles an uncleared entry to cleared."""
+        """settled_on <= the account's latest asserted day -> reconciled.
+
+        The account asserts a balance for 2026-01-10; the purchase was made
+        and posted on the 5th, so it is inside that balance and the row says
+        so.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = _add_entry(
+                txn, seed_user, "50.00", "Kroger",
+                purchased_on=_PURCHASED_ON,
+            )
+            entry.settled_on = _PURCHASED_ON
+            append_balance_assertion(
+                db.session, seed_user["account"], seed_periods[0],
+                Decimal("1000.00"), settle_instant_on(_ASSERTED_ON),
+            )
+            db.session.commit()
+
+            body = self._list(auth_client, txn.id)
+
+        assert self._INSIDE in body
+        assert self._OUTSTANDING not in body
+
+    def test_a_purchase_with_no_posting_day_reads_outstanding(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """A NULL settled_on is "not observed to have posted" -- outstanding.
+
+        The conservative arm, and the default a fresh purchase is in: the
+        envelope keeps holding its whole budget back until the user confirms
+        the money has left, so the row must not claim otherwise.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            _add_entry(
+                txn, seed_user, "50.00", "Kroger",
+                purchased_on=_PURCHASED_ON,
+            )
+            append_balance_assertion(
+                db.session, seed_user["account"], seed_periods[0],
+                Decimal("1000.00"), settle_instant_on(_ASSERTED_ON),
+            )
+            db.session.commit()
+
+            body = self._list(auth_client, txn.id)
+
+        assert self._OUTSTANDING in body
+        assert self._INSIDE not in body
+
+    def test_a_purchase_posted_after_the_statement_reads_outstanding(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """settled_on AFTER the asserted day -> still outstanding.
+
+        The case the retired flag could not express at all: the user knows the
+        bank will take this, but it had not when they read their balance, so
+        the budget is still held back.  A flag saying "cleared" would have
+        subtracted it from a reservation whose anchor never contained it.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = _add_entry(
+                txn, seed_user, "50.00", "Kroger",
+                purchased_on=_PURCHASED_ON,
+            )
+            entry.settled_on = _POSTED_AFTER_THE_STATEMENT
+            append_balance_assertion(
+                db.session, seed_user["account"], seed_periods[0],
+                Decimal("1000.00"), settle_instant_on(_ASSERTED_ON),
+            )
+            db.session.commit()
+
+            body = self._list(auth_client, txn.id)
+
+        assert self._OUTSTANDING in body
+        assert self._INSIDE not in body
+
+    def test_a_credit_purchase_shows_no_indicator_at_all(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """A credit-card purchase never touches checking, so the question is moot.
+
+        It leaves through its own CC Payback sibling rather than this account's
+        statement, so the reservation ignores its dates entirely.  Rendering
+        either arm of the indicator for one would be answering a question that
+        does not apply.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            _add_entry(
+                txn, seed_user, "50.00", "Amazon",
+                purchased_on=_PURCHASED_ON, is_credit=True,
+            )
+            append_balance_assertion(
+                db.session, seed_user["account"], seed_periods[0],
+                Decimal("1000.00"), settle_instant_on(_ASSERTED_ON),
+            )
+            db.session.commit()
+
+            body = self._list(auth_client, txn.id)
+
+        assert b"Amazon" in body, "the entry must actually have rendered"
+        assert self._INSIDE not in body
+        assert self._OUTSTANDING not in body
+
+    def test_the_cleared_toggle_route_is_gone(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """The deleted endpoint answers 404 -- no half-live write door.
+
+        A route left routed after its service function is deleted is how a
+        surface keeps a control the model no longer supports.  Asserted rather
+        than assumed, because a stale template button pointing here would
+        otherwise fail silently at the browser.
+        """
         with app.app_context():
             txn = seed_entry_template["transaction"]
             entry = _add_entry(txn, seed_user, "50.00", "Kroger")
-            assert entry.is_cleared is False
 
             resp = auth_client.patch(
                 f"/transactions/{txn.id}/entries/{entry.id}/cleared",
+            )
+
+        assert resp.status_code == 404
+
+
+class TestTheSettledOnEditPath:
+    """``settled_on`` on the entry edit form -- the fact the toggle stood in for.
+
+    The write door a user has for "when did my bank actually take this",
+    replacing the toggle (plan step S1-c).  It is on the EDIT form and
+    deliberately not on the ADD form: at the moment a purchase is recorded
+    there is nothing to have observed, and a value typed then would be a
+    forecast in a fact column.
+    """
+
+    def test_the_edit_form_records_a_posting_day(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """PATCHing ``settled_on`` stores it and fires ``balanceChanged``.
+
+        The trigger matters as much as the column: recording a posting day can
+        move every rendered projection (it is what lets the reservation stop
+        holding the purchase back), so a surface showing a balance must
+        recompute.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = _add_entry(
+                txn, seed_user, "50.00", "Kroger",
+                purchased_on=date(2026, 1, 5),
+            )
+            assert entry.settled_on is None
+
+            resp = auth_client.patch(
+                f"/transactions/{txn.id}/entries/{entry.id}",
+                data={"settled_on": "2026-01-07"},
             )
             assert resp.status_code == 200
             assert resp.headers.get("HX-Trigger") == "balanceChanged"
 
             db.session.expire_all()
-            reloaded = db.session.get(TransactionEntry, entry.id)
-            assert reloaded.is_cleared is True
+            assert db.session.get(
+                TransactionEntry, entry.id,
+            ).settled_on == date(2026, 1, 7)
 
-    def test_toggle_from_true_to_false(
+    def test_an_empty_value_CLEARS_the_posting_day(
         self, app, auth_client, seed_user, seed_periods,
         seed_entry_template,
     ):
-        """PATCHing toggles a cleared entry back to uncleared."""
+        """An emptied date input puts the purchase back among the outstanding.
+
+        This is a real user action -- "I marked this posted and my statement
+        does not actually show it" -- and it is the reason the schema field
+        carries ``allow_none``: without it an empty input would be dropped as
+        "not provided" and the wrong observation would be unretractable
+        through the UI.
+        """
         with app.app_context():
             txn = seed_entry_template["transaction"]
-            entry = _add_entry(txn, seed_user, "50.00", "Kroger")
-            entry.is_cleared = True
+            entry = _add_entry(
+                txn, seed_user, "50.00", "Kroger",
+                purchased_on=date(2026, 1, 5),
+            )
+            entry.settled_on = date(2026, 1, 7)
             db.session.commit()
 
             resp = auth_client.patch(
-                f"/transactions/{txn.id}/entries/{entry.id}/cleared",
+                f"/transactions/{txn.id}/entries/{entry.id}",
+                data={"settled_on": ""},
             )
             assert resp.status_code == 200
 
             db.session.expire_all()
-            reloaded = db.session.get(TransactionEntry, entry.id)
-            assert reloaded.is_cleared is False
-
-    def test_toggle_nonexistent_entry_returns_404(
-        self, app, auth_client, seed_user, seed_periods,
-        seed_entry_template,
-    ):
-        """PATCH for a nonexistent entry returns 404."""
-        with app.app_context():
-            txn = seed_entry_template["transaction"]
-
-            resp = auth_client.patch(
-                f"/transactions/{txn.id}/entries/999999/cleared",
-            )
-            assert resp.status_code == 404
-
-    def test_toggle_cross_transaction_returns_404(
-        self, app, auth_client, seed_user, seed_periods,
-        seed_entry_template,
-    ):
-        """PATCH with entry_id that doesn't belong to txn_id returns 404."""
-        with app.app_context():
-            txn = seed_entry_template["transaction"]
-            entry = _add_entry(txn, seed_user, "50.00", "Kroger")
-
-            # Create a second tracked transaction.
-            other = _create_visible_tracked_txn(seed_user, seed_periods)
-            other_txn = other["transaction"]
-
-            resp = auth_client.patch(
-                f"/transactions/{other_txn.id}/entries/{entry.id}/cleared",
-            )
-            assert resp.status_code == 404
-
-            db.session.expire_all()
-            # Entry is unchanged.
             assert db.session.get(
                 TransactionEntry, entry.id,
-            ).is_cleared is False
+            ).settled_on is None
 
-    def test_toggle_other_users_entry_returns_404(
+    def test_a_posting_day_before_the_purchase_is_refused(
         self, app, auth_client, seed_user, seed_periods,
         seed_entry_template,
     ):
-        """PATCH on another user's entry returns 404."""
+        """Money cannot leave the account before it was spent.
+
+        The door's own check (``entry_service._reject_settled_before_purchase``)
+        so the user gets a message naming both dates rather than a 500 from the
+        ``ck_transaction_entries_settled_not_before_purchase`` IntegrityError.
+
+        400, not 422: the date parses and the SCHEMA is satisfied, so this is
+        the service refusing a semantically impossible pair rather than the
+        form failing validation -- the same split every other entries route
+        makes.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = _add_entry(
+                txn, seed_user, "50.00", "Kroger",
+                purchased_on=date(2026, 1, 5),
+            )
+
+            resp = auth_client.patch(
+                f"/transactions/{txn.id}/entries/{entry.id}",
+                data={"settled_on": "2026-01-04"},
+            )
+
+            assert resp.status_code == 400
+            assert b"before you make it" in resp.data
+            db.session.expire_all()
+            assert db.session.get(
+                TransactionEntry, entry.id,
+            ).settled_on is None
+
+    def test_a_posting_day_after_today_is_ALLOWED(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """There is deliberately NO upper bound (ruling R-M as re-ruled).
+
+        "I bought this and my bank has not taken it yet" is a true statement,
+        and it is the one the single ``entry_date`` column could not express.
+        Any "at most N days ahead" ceiling would be a constant nobody can
+        justify, and a wrong forward date is visible on the row and
+        self-corrects at the next true-up.
+
+        The contrast with ``purchased_on`` is the whole split: that column
+        keeps R-M's guard verbatim, and the sibling class
+        ``TestAFutureEntryDateIsRefused`` pins its refusal.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = _add_entry(
+                txn, seed_user, "50.00", "Kroger",
+                purchased_on=date(2026, 1, 5),
+            )
+            forward = display_today() + timedelta(days=3)
+
+            resp = auth_client.patch(
+                f"/transactions/{txn.id}/entries/{entry.id}",
+                data={"settled_on": forward.isoformat()},
+            )
+
+            assert resp.status_code == 200
+            db.session.expire_all()
+            assert db.session.get(
+                TransactionEntry, entry.id,
+            ).settled_on == forward
+
+    def test_another_users_entry_cannot_be_dated(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """PATCHing another user's entry returns 404 and writes nothing.
+
+        Carried over from the retired toggle class: the ownership guard is the
+        same one on the same shape of door, and dropping the toggle must not
+        drop its IDOR coverage.
+        """
         with app.app_context():
             other = _create_other_user_txn()
-            # Manually add an entry to the other user's transaction.
             other_entry = TransactionEntry(
                 transaction_id=other["transaction"].id,
                 user_id=other["user"].id,
                 amount=Decimal("50.00"),
                 description="Other",
-                entry_date=date(2026, 1, 5),
+                purchased_on=date(2026, 1, 5),
                 is_credit=False,
             )
             db.session.add(other_entry)
@@ -1044,15 +1285,43 @@ class TestToggleCleared:
 
             resp = auth_client.patch(
                 f"/transactions/{other['transaction'].id}"
-                f"/entries/{other_entry.id}/cleared",
+                f"/entries/{other_entry.id}",
+                data={"settled_on": "2026-01-07"},
             )
             assert resp.status_code == 404
 
             db.session.expire_all()
-            # Entry is unchanged.
             assert db.session.get(
                 TransactionEntry, other_entry.id,
-            ).is_cleared is False
+            ).settled_on is None
+
+    def test_a_cross_transaction_entry_id_cannot_be_dated(
+        self, app, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """The parameter-confusion guard, carried over from the toggle class.
+
+        An entry id that does not belong to the transaction in the URL is 404,
+        so a companion cannot reach a non-visible transaction's entries by
+        pairing them with a visible transaction's id.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = _add_entry(txn, seed_user, "50.00", "Kroger")
+            other_txn = _create_visible_tracked_txn(
+                seed_user, seed_periods,
+            )["transaction"]
+
+            resp = auth_client.patch(
+                f"/transactions/{other_txn.id}/entries/{entry.id}",
+                data={"settled_on": "2026-01-07"},
+            )
+            assert resp.status_code == 404
+
+            db.session.expire_all()
+            assert db.session.get(
+                TransactionEntry, entry.id,
+            ).settled_on is None
 
 
 # ---- Surface routing: host param + desktop OOB cell refresh -------------
@@ -1090,7 +1359,7 @@ class TestEntryMutationSurfaces:
                 data={
                     "amount": "50.00",
                     "description": "Kroger",
-                    "entry_date": "2026-01-05",
+                    "purchased_on": "2026-01-05",
                 },
             )
             assert resp.status_code == 200
@@ -1146,17 +1415,29 @@ class TestEntryMutationSurfaces:
             assert f'<div id="txn-cell-{txn.id}" hx-swap-oob="true">' in html
             assert "50 / 500" not in html
 
-    def test_toggle_cleared_carries_oob_cell(
+    def test_recording_a_posting_day_carries_oob_cell(
         self, app, auth_client, seed_user, seed_periods,
         seed_entry_template,
     ):
-        """A popover-surface reconciled toggle returns the OOB cell."""
+        """A popover-surface posting-day edit returns the OOB cell.
+
+        Successor to the cleared-toggle case (plan step S1-c): the toggle
+        route is deleted and ``settled_on`` on the edit form is the door that
+        records the same fact.  It needs the OOB cell for the same reason the
+        toggle did -- recording a posting day changes what the envelope holds
+        back, so the on-grid "spent / budget" figure behind the popover goes
+        stale without it.
+        """
         with app.app_context():
             txn = seed_entry_template["transaction"]
-            entry = _add_entry(txn, seed_user, "50.00", "Kroger")
+            entry = _add_entry(
+                txn, seed_user, "50.00", "Kroger",
+                purchased_on=date(2026, 1, 5),
+            )
 
             resp = auth_client.patch(
-                f"/transactions/{txn.id}/entries/{entry.id}/cleared",
+                f"/transactions/{txn.id}/entries/{entry.id}",
+                data={"settled_on": "2026-01-07"},
             )
             assert resp.status_code == 200
             html = resp.data.decode()
@@ -1182,7 +1463,7 @@ class TestEntryMutationSurfaces:
                 data={
                     "amount": "50.00",
                     "description": "Kroger",
-                    "entry_date": "2026-01-05",
+                    "purchased_on": "2026-01-05",
                 },
             )
             assert resp.status_code == 200
@@ -1210,7 +1491,7 @@ class TestEntryMutationSurfaces:
                 data={
                     "amount": "50.00",
                     "description": "Kroger",
-                    "entry_date": "2026-01-05",
+                    "purchased_on": "2026-01-05",
                 },
             )
             assert resp.status_code == 200
@@ -1282,7 +1563,7 @@ class TestEntryMutationSurfaces:
                 data={
                     "amount": "45.00",
                     "description": "Aldi",
-                    "entry_date": "2026-01-05",
+                    "purchased_on": "2026-01-05",
                 },
             )
             assert resp.status_code == 200
@@ -1476,7 +1757,7 @@ class TestCompanionAccess:
                 data={
                     "amount": "45.00",
                     "description": "Aldi",
-                    "entry_date": "2026-01-05",
+                    "purchased_on": "2026-01-05",
                 },
             )
             assert resp.status_code == 200
@@ -1569,7 +1850,7 @@ class TestCompanionAccess:
                 data={
                     "amount": "30.00",
                     "description": "Aldi",
-                    "entry_date": "2026-01-06",
+                    "purchased_on": "2026-01-06",
                 },
             )
 

@@ -138,7 +138,7 @@ class CashAnchorCorrection:
         **Stated here so it is stated ONCE.**  Three readers need this pair --
         :func:`dated_deltas` below, the fold's R-I seed
         (``balance_at._cash_fold._actual_steps``), and the period view's
-        assertion component (``balance_at._cash_fold.cash_period_view``, plan
+        assertion component (``balance_at._cash_periods.cash_period_view``, plan
         step X-c1) -- and until X-c1 the fold RE-DERIVED it, which its own
         docstring had to pin with a test.  A property on the record retires that
         re-derivation, exactly as :class:`~._events.CashSourceFact` already
@@ -176,6 +176,39 @@ class CashLedgerWalk:
 
     source_facts: list[CashSourceFact]
     anchor_corrections: list[CashAnchorCorrection]
+
+    @property
+    def latest_observed_on(self) -> date | None:
+        """Return the civil day of the account's LAST balance assertion.
+
+        The boundary every "is this already inside the balance the user
+        declared" question compares against
+        (:func:`app.services.cash_ledger.is_inside_assertion`): the modelled
+        accrual window opens on it (ruling R-L), and the entry reservation
+        reconciles a purchase against it (ruling R-DH (d)).
+
+        **It reads the LAST element and that is only correct because of where
+        the ordering lives.**  ``cash_anchor_facts`` loads its rows
+        ``(observed_on, created_at, id)`` ascending -- BUSINESS date first --
+        so the last correction is the one the walk replayed last and the one
+        ``resolve_anchor`` calls current.  Re-deriving "the latest" with a
+        ``max()`` here would be a second statement of that order, and the two
+        agreed for free only while ``observed_on`` was derived from
+        ``created_at``; plan step 2 made the column user-supplied and broke
+        that, which is exactly how a ``$1,307.66`` true-up once posted to the
+        ledger tagged as the account's OPENING.
+
+        Returns:
+            The latest asserted civil day, or ``None`` for an account with no
+            assertion history -- production-unreachable (migration
+            ``cfb15e782f86`` plus ``account_service.create_account`` guarantee
+            an opening row), and returned rather than raised because a walk of
+            no facts is honestly empty.  A consumer that cannot proceed
+            without one refuses on its own ground.
+        """
+        if not self.anchor_corrections:
+            return None
+        return self.anchor_corrections[-1].observed_on
 
 
 def walk_cash_ledger(account_id: int, scenario_id: int) -> CashLedgerWalk:

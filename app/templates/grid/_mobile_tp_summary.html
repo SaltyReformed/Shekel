@@ -27,7 +27,7 @@
        otherwise double the totals on screen).
 
    Ruling R-P: this card renders ruling R-O's three conditional lines -- Timing
-   & true-ups, Contributions and the modelled return -- on R-O's own rule, so
+   timing, Book vs bank, Contributions and the modelled return -- on R-O's own rule, so
    the mobile summary explains its balance with the same chain the desktop
    footer does, in the same order (ruling R-AH: the money is contributed and
    then earns).  Without them the card would show a Net Cash Flow that does not
@@ -41,7 +41,7 @@
                      Missing this period's key -> the Projected Balance card
                      is omitted.
      period_row_flags -- (optional) GridRowFlags for THIS period alone.
-                     ``.reconciliation`` / ``.contribution`` / ``.accrual``
+                     ``.period_timing`` / ``.book_vs_bank`` / ``.contribution`` / ``.accrual``
                      decide the three conditional bars.  Deliberately NOT the
                      visible window's flags: this card is a one-period surface,
                      so ruling R-O's "at least one visible column" is "this
@@ -90,15 +90,26 @@
     </span>
   </div>
 
-  {# --- Timing & true-ups (ruling R-O / R-P) ---
-       Money budgeted to this period that moved in another, money that moved
-       here but is budgeted elsewhere, and the balance assertions made inside
-       it.  Rendered on the seam's one visibility rule, never a rule decided
-       here. #}
-  {% if period_row_flags is defined and period_row_flags.reconciliation %}
+  {# --- Period timing (rulings R-O / R-P / R-DH (f)) ---
+       Money budgeted to this period that moved in another, and money that
+       moved here but is budgeted elsewhere.  Rendered on the seam's one
+       visibility rule, never a rule decided here. #}
+  {% if period_row_flags is defined and period_row_flags.period_timing %}
   <div class="d-flex justify-content-between align-items-center px-3 py-2 mb-3 rounded bg-surface-raised accrual-row reconciliation-row">
-    <span class="fw-bold small"><i class="bi bi-arrow-left-right" aria-hidden="true"></i> Timing &amp; true-ups</span>
-    <span class="font-mono fw-bold">{{ money(col.reconciliation, cents=false) }}</span>
+    <span class="fw-bold small"><i class="bi bi-arrow-left-right" aria-hidden="true"></i> Period timing</span>
+    <span class="font-mono fw-bold">{{ money(col.period_timing, cents=false) }}</span>
+  </div>
+  {% endif %}
+
+  {# --- Book vs bank (rulings R-O / R-P / R-DH (f)) ---
+       What the balance true-ups made inside this period booked: the gap
+       between what the app had recorded and what the bank actually held.  A
+       SEPARATE bar from the one above because the two have different causes
+       and different fixes; summed, neither is actionable. #}
+  {% if period_row_flags is defined and period_row_flags.book_vs_bank %}
+  <div class="d-flex justify-content-between align-items-center px-3 py-2 mb-3 rounded bg-surface-raised accrual-row reconciliation-row">
+    <span class="fw-bold small"><i class="bi bi-bank2" aria-hidden="true"></i> Book vs bank</span>
+    <span class="font-mono fw-bold">{{ money(col.book_vs_bank, cents=false) }}</span>
   </div>
   {% endif %}
 

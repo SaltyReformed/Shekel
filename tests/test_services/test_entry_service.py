@@ -22,16 +22,18 @@ from app.services.auth_service import hash_password
 from app.schemas.validation import EntryCreateSchema, EntryUpdateSchema
 from app.exceptions import NotFoundError, ValidationError
 from app import ref_cache
-from app.enums import RoleEnum
-from app.services import account_service
+from app.enums import RoleEnum, StatusEnum
+from app.services import account_service, pay_period_service
 from app.utils.dates import display_today
+from app.models.account import AccountAnchorHistory
+from tests._test_helpers import mark_purchase_settled
 
 
 # ── Helper ────────────────────────────────────────────────────────
 
 
 def _make_entry(transaction, user, amount="50.00", description="Kroger",
-                entry_date=None, is_credit=False):
+                purchased_on=None, is_credit=False):
     """Create an entry directly via ORM (bypasses service validation).
 
     Used by tests that need pre-existing entries without re-testing
@@ -42,7 +44,7 @@ def _make_entry(transaction, user, amount="50.00", description="Kroger",
         user_id=user.id,
         amount=Decimal(amount),
         description=description,
-        entry_date=entry_date or date(2026, 1, 5),
+        purchased_on=purchased_on or date(2026, 1, 5),
         is_credit=is_credit,
     )
     db.session.add(entry)
@@ -68,7 +70,7 @@ class TestCreateEntry:
                 details=entry_service.EntryDetails(
                     amount=Decimal("50.00"),
                     description="Kroger",
-                    entry_date=date(2026, 1, 5),
+                    purchased_on=date(2026, 1, 5),
                 ),
             )
 
@@ -77,7 +79,7 @@ class TestCreateEntry:
             assert entry.user_id == user.id
             assert entry.amount == Decimal("50.00")
             assert entry.description == "Kroger"
-            assert entry.entry_date == date(2026, 1, 5)
+            assert entry.purchased_on == date(2026, 1, 5)
             assert entry.is_credit is False
 
     def test_create_entry_credit(self, app, db, seed_user, seed_entry_template):
@@ -92,7 +94,7 @@ class TestCreateEntry:
                 details=entry_service.EntryDetails(
                     amount=Decimal("75.00"),
                     description="Amazon order",
-                    entry_date=date(2026, 1, 6),
+                    purchased_on=date(2026, 1, 6),
                     is_credit=True,
                 ),
             )
@@ -112,7 +114,7 @@ class TestCreateEntry:
                 details=entry_service.EntryDetails(
                     amount=Decimal("10.00"),
                     description="Test",
-                    entry_date=date(2026, 1, 5),
+                    purchased_on=date(2026, 1, 5),
                 ),
             )
             assert isinstance(entry.id, int)
@@ -163,7 +165,7 @@ class TestCreateEntry:
                     details=entry_service.EntryDetails(
                         amount=Decimal("50.00"),
                         description="Test",
-                        entry_date=date(2026, 1, 5),
+                        purchased_on=date(2026, 1, 5),
                     ),
                 )
 
@@ -199,7 +201,7 @@ class TestCreateEntry:
                     details=entry_service.EntryDetails(
                         amount=Decimal("50.00"),
                         description="Test",
-                        entry_date=date(2026, 1, 5),
+                        purchased_on=date(2026, 1, 5),
                     ),
                 )
 
@@ -262,7 +264,7 @@ class TestCreateEntry:
                     details=entry_service.EntryDetails(
                         amount=Decimal("50.00"),
                         description="Test",
-                        entry_date=date(2026, 1, 5),
+                        purchased_on=date(2026, 1, 5),
                     ),
                 )
 
@@ -310,7 +312,7 @@ class TestCreateEntry:
                     details=entry_service.EntryDetails(
                         amount=Decimal("50.00"),
                         description="Test",
-                        entry_date=date(2026, 1, 5),
+                        purchased_on=date(2026, 1, 5),
                     ),
                 )
 
@@ -330,7 +332,7 @@ class TestCreateEntry:
                     details=entry_service.EntryDetails(
                         amount=Decimal("50.00"),
                         description="Test",
-                        entry_date=date(2026, 1, 5),
+                        purchased_on=date(2026, 1, 5),
                     ),
                 )
 
@@ -346,7 +348,7 @@ class TestCreateEntry:
                     details=entry_service.EntryDetails(
                         amount=Decimal("50.00"),
                         description="Test",
-                        entry_date=date(2026, 1, 5),
+                        purchased_on=date(2026, 1, 5),
                     ),
                 )
 
@@ -373,7 +375,7 @@ class TestCreateEntry:
                     details=entry_service.EntryDetails(
                         amount=Decimal("50.00"),
                         description="Test",
-                        entry_date=date(2026, 1, 5),
+                        purchased_on=date(2026, 1, 5),
                     ),
                 )
 
@@ -402,7 +404,7 @@ class TestCreateEntry:
                     details=entry_service.EntryDetails(
                         amount=Decimal("50.00"),
                         description="Test",
-                        entry_date=date(2026, 1, 5),
+                        purchased_on=date(2026, 1, 5),
                     ),
                 )
 
@@ -431,7 +433,7 @@ class TestCreateEntry:
                 details=entry_service.EntryDetails(
                     amount=Decimal("42.50"),
                     description="Late posting purchase",
-                    entry_date=date(2026, 1, 10),
+                    purchased_on=date(2026, 1, 10),
                 ),
             )
 
@@ -449,7 +451,7 @@ class TestCreateEntry:
                 details=entry_service.EntryDetails(
                     amount=Decimal("0.01"),
                     description="Penny item",
-                    entry_date=date(2026, 1, 5),
+                    purchased_on=date(2026, 1, 5),
                 ),
             )
             assert entry.amount == Decimal("0.01")
@@ -465,7 +467,7 @@ class TestCreateEntry:
                 details=entry_service.EntryDetails(
                     amount=Decimal("9999999999.99"),
                     description="Expensive item",
-                    entry_date=date(2026, 1, 5),
+                    purchased_on=date(2026, 1, 5),
                 ),
             )
             assert entry.amount == Decimal("9999999999.99")
@@ -482,7 +484,7 @@ class TestCreateEntry:
                 details=entry_service.EntryDetails(
                     amount=Decimal("10.00"),
                     description=desc,
-                    entry_date=date(2026, 1, 5),
+                    purchased_on=date(2026, 1, 5),
                 ),
             )
             assert len(entry.description) == 200
@@ -508,7 +510,7 @@ class TestCompanionAccess:
                 details=entry_service.EntryDetails(
                     amount=Decimal("35.00"),
                     description="Companion purchase",
-                    entry_date=date(2026, 1, 5),
+                    purchased_on=date(2026, 1, 5),
                 ),
             )
 
@@ -531,7 +533,6 @@ class TestCompanionAccess:
                 db.session.query(Status).filter_by(name="Projected").one()
             )
             from app.models.pay_period import PayPeriod
-            from app.services import pay_period_service
 
             periods = pay_period_service.generate_pay_periods(
                 user_id=seed_second_user["user"].id,
@@ -575,7 +576,7 @@ class TestCompanionAccess:
                     details=entry_service.EntryDetails(
                         amount=Decimal("50.00"),
                         description="Unauthorized",
-                        entry_date=date(2026, 1, 5),
+                        purchased_on=date(2026, 1, 5),
                     ),
                 )
 
@@ -681,17 +682,17 @@ class TestUpdateEntry:
     def test_update_entry_date(
         self, app, db, seed_user, seed_entry_template,
     ):
-        """Update entry_date field."""
+        """Update purchased_on field."""
         with app.app_context():
             txn = seed_entry_template["transaction"]
             entry = _make_entry(txn, seed_user["user"])
 
             new_date = date(2026, 1, 10)
             updated = entry_service.update_entry(
-                entry.id, seed_user["user"].id, entry_date=new_date,
+                entry.id, seed_user["user"].id, purchased_on=new_date,
             )
 
-            assert updated.entry_date == new_date
+            assert updated.purchased_on == new_date
 
     def test_update_entry_multiple_fields(
         self, app, db, seed_user, seed_entry_template,
@@ -796,7 +797,7 @@ class TestAFutureEntryDateIsRefused:
                     details=entry_service.EntryDetails(
                         amount=Decimal("150.00"),
                         description="Costco run I have not made",
-                        entry_date=tomorrow,
+                        purchased_on=tomorrow,
                     ),
                 )
 
@@ -829,11 +830,11 @@ class TestAFutureEntryDateIsRefused:
                 details=entry_service.EntryDetails(
                     amount=Decimal("42.87"),
                     description="Walmart",
-                    entry_date=today,
+                    purchased_on=today,
                 ),
             )
 
-            assert entry.entry_date == today
+            assert entry.purchased_on == today
 
     def test_the_create_door_accepts_a_backdated_purchase(
         self, app, db, seed_user, seed_entry_template,
@@ -853,11 +854,11 @@ class TestAFutureEntryDateIsRefused:
                 details=entry_service.EntryDetails(
                     amount=Decimal("101.06"),
                     description="Walmart, logged late",
-                    entry_date=long_ago,
+                    purchased_on=long_ago,
                 ),
             )
 
-            assert entry.entry_date == long_ago
+            assert entry.purchased_on == long_ago
 
     def test_the_update_door_refuses_moving_a_date_forward(
         self, app, db, seed_user, seed_entry_template,
@@ -871,20 +872,20 @@ class TestAFutureEntryDateIsRefused:
             txn = seed_entry_template["transaction"]
             entry = _make_entry(
                 txn, seed_user["user"],
-                entry_date=display_today() - timedelta(days=2),
+                purchased_on=display_today() - timedelta(days=2),
             )
-            original = entry.entry_date
+            original = entry.purchased_on
             tomorrow = display_today() + timedelta(days=1)
 
             with pytest.raises(ValidationError):
                 entry_service.update_entry(
-                    entry.id, seed_user["user"].id, entry_date=tomorrow,
+                    entry.id, seed_user["user"].id, purchased_on=tomorrow,
                 )
 
             # The refusal precedes the setattr loop, so the in-session object
             # is untouched -- asserted unconditionally rather than behind a
             # reload that could vacuously skip.
-            assert entry.entry_date == original
+            assert entry.purchased_on == original
 
     def test_the_update_door_accepts_a_backdated_move(
         self, app, db, seed_user, seed_entry_template,
@@ -896,10 +897,10 @@ class TestAFutureEntryDateIsRefused:
             corrected = display_today() - timedelta(days=3)
 
             updated = entry_service.update_entry(
-                entry.id, seed_user["user"].id, entry_date=corrected,
+                entry.id, seed_user["user"].id, purchased_on=corrected,
             )
 
-            assert updated.entry_date == corrected
+            assert updated.purchased_on == corrected
 
     def test_a_partial_update_that_omits_the_date_is_unaffected(
         self, app, db, seed_user, seed_entry_template,
@@ -912,7 +913,7 @@ class TestAFutureEntryDateIsRefused:
             txn = seed_entry_template["transaction"]
             entry = _make_entry(
                 txn, seed_user["user"], amount="50.00",
-                entry_date=display_today(),
+                purchased_on=display_today(),
             )
 
             updated = entry_service.update_entry(
@@ -920,7 +921,7 @@ class TestAFutureEntryDateIsRefused:
             )
 
             assert updated.amount == Decimal("75.00")
-            assert updated.entry_date == display_today()
+            assert updated.purchased_on == display_today()
 
 
 # ── Delete Tests ──────────────────────────────────────────────────
@@ -981,18 +982,18 @@ class TestGetEntries:
     def test_get_entries_ordered_by_date(
         self, app, db, seed_user, seed_entry_template,
     ):
-        """Entries returned in entry_date ASC order."""
+        """Entries returned in purchased_on ASC order."""
         with app.app_context():
             txn = seed_entry_template["transaction"]
             user = seed_user["user"]
 
             # Create entries out of chronological order.
             _make_entry(txn, user, description="Third",
-                        entry_date=date(2026, 1, 10))
+                        purchased_on=date(2026, 1, 10))
             _make_entry(txn, user, description="First",
-                        entry_date=date(2026, 1, 3))
+                        purchased_on=date(2026, 1, 3))
             _make_entry(txn, user, description="Second",
-                        entry_date=date(2026, 1, 7))
+                        purchased_on=date(2026, 1, 7))
 
             entries = entry_service.get_entries_for_transaction(
                 txn.id, user.id,
@@ -1390,8 +1391,15 @@ class TestComputeActualFromEntries:
 # ── Date Validation Tests (OP-4) ─────────────────────────────────
 
 
-class TestCheckEntryDateInPeriod:
-    """Tests for entry_service.check_entry_date_in_period()."""
+class TestCheckPurchaseDateInPeriod:
+    """Tests for entry_service.check_purchase_date_in_period().
+
+    It reads ``purchased_on`` and not ``settled_on``, and that distinction is
+    what the plan step S1-c column split is for: this warning asks "is this
+    purchase budgeted to the right pay period", which is a BUDGET-clock
+    question.  When the money reached the bank is a cash-clock fact and
+    belongs to the balance fold, not to a budgeting warning.
+    """
 
     def test_date_within_period(
         self, app, db, seed_user, seed_entry_template, seed_periods,
@@ -1402,7 +1410,7 @@ class TestCheckEntryDateInPeriod:
         """
         with app.app_context():
             txn = seed_entry_template["transaction"]
-            result = entry_service.check_entry_date_in_period(
+            result = entry_service.check_purchase_date_in_period(
                 date(2026, 1, 5), txn,
             )
             assert result is True
@@ -1413,7 +1421,7 @@ class TestCheckEntryDateInPeriod:
         """Date before the pay period start returns False."""
         with app.app_context():
             txn = seed_entry_template["transaction"]
-            result = entry_service.check_entry_date_in_period(
+            result = entry_service.check_purchase_date_in_period(
                 date(2025, 12, 31), txn,
             )
             assert result is False
@@ -1424,7 +1432,7 @@ class TestCheckEntryDateInPeriod:
         """Date after the pay period end returns False."""
         with app.app_context():
             txn = seed_entry_template["transaction"]
-            result = entry_service.check_entry_date_in_period(
+            result = entry_service.check_purchase_date_in_period(
                 date(2026, 1, 20), txn,
             )
             assert result is False
@@ -1436,7 +1444,7 @@ class TestCheckEntryDateInPeriod:
         with app.app_context():
             txn = seed_entry_template["transaction"]
             period = txn.pay_period
-            result = entry_service.check_entry_date_in_period(
+            result = entry_service.check_purchase_date_in_period(
                 period.start_date, txn,
             )
             assert result is True
@@ -1448,7 +1456,7 @@ class TestCheckEntryDateInPeriod:
         with app.app_context():
             txn = seed_entry_template["transaction"]
             period = txn.pay_period
-            result = entry_service.check_entry_date_in_period(
+            result = entry_service.check_purchase_date_in_period(
                 period.end_date, txn,
             )
             assert result is True
@@ -1467,11 +1475,11 @@ class TestEntryCreateSchema:
             data = schema.load({
                 "amount": "50.00",
                 "description": "Kroger",
-                "entry_date": "2026-01-05",
+                "purchased_on": "2026-01-05",
             })
             assert data["amount"] == Decimal("50.00")
             assert data["description"] == "Kroger"
-            assert data["entry_date"] == date(2026, 1, 5)
+            assert data["purchased_on"] == date(2026, 1, 5)
             assert data["is_credit"] is False
 
     def test_schema_rejects_zero_amount(self, app):
@@ -1483,7 +1491,7 @@ class TestEntryCreateSchema:
                 schema.load({
                     "amount": "0",
                     "description": "Test",
-                    "entry_date": "2026-01-05",
+                    "purchased_on": "2026-01-05",
                 })
             assert "amount" in exc_info.value.messages
 
@@ -1496,7 +1504,7 @@ class TestEntryCreateSchema:
                 schema.load({
                     "amount": "-10.00",
                     "description": "Test",
-                    "entry_date": "2026-01-05",
+                    "purchased_on": "2026-01-05",
                 })
             assert "amount" in exc_info.value.messages
 
@@ -1507,7 +1515,7 @@ class TestEntryCreateSchema:
             data = schema.load({
                 "amount": "0.01",
                 "description": "Penny",
-                "entry_date": "2026-01-05",
+                "purchased_on": "2026-01-05",
             })
             assert data["amount"] == Decimal("0.01")
 
@@ -1520,7 +1528,7 @@ class TestEntryCreateSchema:
                 schema.load({
                     "amount": "50.00",
                     "description": "",
-                    "entry_date": "2026-01-05",
+                    "purchased_on": "2026-01-05",
                 })
             # strip_empty_strings removes "" -> missing required field
             assert "description" in exc_info.value.messages
@@ -1534,7 +1542,7 @@ class TestEntryCreateSchema:
                 schema.load({
                     "amount": "50.00",
                     "description": "A" * 201,
-                    "entry_date": "2026-01-05",
+                    "purchased_on": "2026-01-05",
                 })
             assert "description" in exc_info.value.messages
 
@@ -1545,7 +1553,7 @@ class TestEntryCreateSchema:
             data = schema.load({
                 "amount": "10.00",
                 "description": "X",
-                "entry_date": "2026-01-05",
+                "purchased_on": "2026-01-05",
             })
             assert data["description"] == "X"
 
@@ -1557,7 +1565,7 @@ class TestEntryCreateSchema:
             data = schema.load({
                 "amount": "10.00",
                 "description": desc,
-                "entry_date": "2026-01-05",
+                "purchased_on": "2026-01-05",
             })
             assert data["description"] == desc
 
@@ -1568,7 +1576,7 @@ class TestEntryCreateSchema:
             data = schema.load({
                 "amount": "50.00",
                 "description": "Test",
-                "entry_date": "2026-01-05",
+                "purchased_on": "2026-01-05",
             })
             assert data["is_credit"] is False
 
@@ -1579,7 +1587,7 @@ class TestEntryCreateSchema:
             data = schema.load({
                 "amount": "50.00",
                 "description": "Test",
-                "entry_date": "2026-01-05",
+                "purchased_on": "2026-01-05",
                 "is_credit": True,
             })
             assert data["is_credit"] is True
@@ -1591,7 +1599,7 @@ class TestEntryCreateSchema:
             data = schema.load({
                 "amount": "50.00",
                 "description": "Kroger",
-                "entry_date": "2026-01-05",
+                "purchased_on": "2026-01-05",
                 "is_credit": "",  # Empty string from unchecked checkbox
             })
             # is_credit reverts to default (False) after strip
@@ -1607,7 +1615,7 @@ class TestEntryCreateSchema:
             data = schema.load({
                 "amount": "50.999",
                 "description": "Test",
-                "entry_date": "2026-01-05",
+                "purchased_on": "2026-01-05",
             })
             # Marshmallow with places=2 quantizes to 2 decimal places.
             assert data["amount"] == Decimal("51.00")
@@ -1745,3 +1753,564 @@ class TestPctComplete:
         assert isinstance(result, Decimal)
         # Hand arithmetic: 55.50 / 100 * 100 = 55.50.
         assert result == Decimal("55.50")
+
+
+# ── The reconcile step (plan step S1-c, ruling R-DH (d) / 12.5) ────
+
+
+_OBSERVED_ON = date(2026, 1, 10)
+_BEFORE_THE_STATEMENT = date(2026, 1, 5)
+_AFTER_THE_STATEMENT = date(2026, 1, 12)
+
+
+def _outstanding_debit(txn, seed_user, amount="50.00",
+                       purchased_on=_BEFORE_THE_STATEMENT):
+    """Attach one debit purchase with NO recorded posting day."""
+    return _make_entry(
+        txn, seed_user["user"], amount=amount,
+        description="Kroger", purchased_on=purchased_on,
+    )
+
+
+class TestTheOutstandingSet:
+    """``outstanding_purchases`` / ``record_settled_days`` -- ONE definition.
+
+    The reconcile step's reader and its writer share
+    ``entry_service._outstanding_scope``, and that sharing is the security
+    property, not a tidiness one: a purchase the panel does not OFFER can never
+    be stamped by a forged id, because the writer re-applies the same five
+    clauses to whatever ids arrive from the form.  So each clause is graded
+    from BOTH doors -- listed-or-not, and stamped-or-not -- and a clause that
+    held on one side only would fail here.
+
+    An out-of-scope id is silently skipped rather than raising: this is a set
+    operation, and the project's "404 for both not-found and not-yours" posture
+    expressed as a filter.  ``record_settled_days`` returns what actually
+    CHANGED, never what was asked for, which is what makes the skip observable.
+
+    **Scope: this grades the SET OPERATION, not its consequence.**
+    ``_OBSERVED_ON`` is passed in rather than resolved from the account, so a
+    row stamped here may still read as outstanding to the projection -- which
+    is correct for a unit test of the filter and is why the figures a tick
+    MOVES are graded end to end in
+    ``test_anchor_settle_partition.py::TestRecordingAPurchaseDoesNotMoveTheProjection``
+    and the route's day-resolution in ``test_routes/test_accounts.py``.
+    """
+
+    @staticmethod
+    def _reconcile(seed_user, entry_ids):
+        """Run the writer against the seed user's own checking account."""
+        return entry_service.record_settled_days(
+            seed_user["user"].id, seed_user["account"].id,
+            set(entry_ids), _OBSERVED_ON,
+        )
+
+    @staticmethod
+    def _listed(seed_user):
+        """Return the ids the reader offers for the seed user's account."""
+        return [
+            entry.id for entry in entry_service.outstanding_purchases(
+                seed_user["user"].id, seed_user["account"].id, _OBSERVED_ON,
+            )
+        ]
+
+    def test_an_outstanding_debit_is_listed_and_stamped(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """The happy path, so every refusal below is a real discrimination.
+
+        A debit purchase made before the statement day with no recorded posting
+        day is offered, and ticking it stamps ``settled_on`` with the
+        assertion's own ``observed_on`` -- an upper bound on the true posting
+        day, and the only bound the reconciliation predicate consumes.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = _outstanding_debit(txn, seed_user)
+            db.session.commit()
+
+            assert self._listed(seed_user) == [entry.id]
+            assert self._reconcile(seed_user, [entry.id]) == 1
+
+            db.session.expire_all()
+            assert db.session.get(
+                TransactionEntry, entry.id,
+            ).settled_on == _OBSERVED_ON
+
+    def test_an_already_recorded_purchase_matches_nothing(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """``settled_on IS NULL`` -- the definition of outstanding itself.
+
+        A purchase whose posting day is already recorded is not outstanding
+        whatever that day is, so re-submitting its id must not overwrite the
+        user's own sharper date with the assertion's coarser upper bound.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = _outstanding_debit(txn, seed_user)
+            entry.settled_on = _BEFORE_THE_STATEMENT
+            db.session.commit()
+
+            assert self._listed(seed_user) == []
+            assert self._reconcile(seed_user, [entry.id]) == 0
+
+            db.session.expire_all()
+            assert db.session.get(
+                TransactionEntry, entry.id,
+            ).settled_on == _BEFORE_THE_STATEMENT
+
+    def test_a_credit_purchase_matches_nothing(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """A credit-card purchase never touches checking, so it is not on the
+        statement being reconciled.
+
+        It leaves through its own CC Payback sibling transaction, so the
+        reservation ignores its dates entirely -- recording one would be
+        recording a fact nothing reads, against a statement it never appeared
+        on.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = _make_entry(
+                txn, seed_user["user"], amount="50.00", description="Amazon",
+                purchased_on=_BEFORE_THE_STATEMENT, is_credit=True,
+            )
+            db.session.commit()
+
+            assert self._listed(seed_user) == []
+            assert self._reconcile(seed_user, [entry.id]) == 0
+
+            db.session.expire_all()
+            assert db.session.get(
+                TransactionEntry, entry.id,
+            ).settled_on is None
+
+    def test_a_purchase_made_after_the_statement_matches_nothing(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """``purchased_on <= observed_on`` -- and the DB backstop it fronts.
+
+        A purchase made after the day the balance was read cannot be inside it.
+        Stamping it would write a ``settled_on`` earlier than its own
+        ``purchased_on``, which
+        ``ck_transaction_entries_settled_not_before_purchase`` refuses at the
+        database; filtering here makes that constraint a backstop rather than a
+        reachable 500 on a form submission.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = _outstanding_debit(
+                txn, seed_user, purchased_on=_AFTER_THE_STATEMENT,
+            )
+            db.session.commit()
+
+            assert self._listed(seed_user) == []
+            assert self._reconcile(seed_user, [entry.id]) == 0
+
+            db.session.expire_all()
+            assert db.session.get(
+                TransactionEntry, entry.id,
+            ).settled_on is None
+
+    def test_a_purchase_on_a_settled_parent_matches_nothing(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """The entry reservation prices only PROJECTED rows.
+
+        A purchase on a settled parent is inert -- offering it would ask the
+        user to reconcile something that cannot move a figure, and its parent's
+        confirmed cash effect already counts it in full.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = _outstanding_debit(txn, seed_user)
+            # Re-fetch against the live session: the fixture object is
+            # loaded upstream and an assignment on a stale instance is not
+            # reliably marked dirty for the next flush (the same reason
+            # ``test_anchor_service`` re-gets its account).
+            db.session.get(
+                Transaction, txn.id,
+            ).status_id = ref_cache.status_id(StatusEnum.DONE)
+            db.session.commit()
+
+            assert self._listed(seed_user) == []
+            assert self._reconcile(seed_user, [entry.id]) == 0
+
+            db.session.expire_all()
+            assert db.session.get(
+                TransactionEntry, entry.id,
+            ).settled_on is None
+
+    def test_a_purchase_on_a_soft_deleted_parent_matches_nothing(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """A deleted row is not in the plan, so its purchases are not either.
+
+        Its entries survive on the row (the delete is soft), so without the
+        filter they would be offered for a bill the user has already removed
+        from their budget.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = _outstanding_debit(txn, seed_user)
+            db.session.get(Transaction, txn.id).is_deleted = True
+            db.session.commit()
+
+            assert self._listed(seed_user) == []
+            assert self._reconcile(seed_user, [entry.id]) == 0
+
+            db.session.expire_all()
+            assert db.session.get(
+                TransactionEntry, entry.id,
+            ).settled_on is None
+
+    def test_another_accounts_purchase_matches_nothing(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """A balance assertion declares the real balance of ONE account.
+
+        A user may hold more than one checking account (there is no per-type
+        uniqueness), and reconciling across them would drop the other account's
+        reservation without ever raising its anchor -- inflating its projected
+        balance by the purchase.  The forged id is submitted to account A's
+        reconcile and must change nothing on B.
+        """
+        with app.app_context():
+            account_b = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=seed_user["account"].account_type_id,
+                    name="Checking 2",
+                    anchor_balance=Decimal("2000.00"),
+                    anchor_period_id=seed_periods[0].id,
+                ),
+            )
+            db.session.flush()
+            # An AD-HOC envelope rather than a second row off the shared
+            # template: ``idx_transactions_template_period_scenario`` is
+            # unique, so one template cannot carry two rows in one period.
+            txn_b = Transaction(
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=account_b.id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="Groceries B",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=(
+                    seed_entry_template["transaction"].transaction_type_id
+                ),
+                estimated_amount=Decimal("500.00"),
+                is_envelope=True,
+            )
+            db.session.add(txn_b)
+            db.session.flush()
+            entry_b = _outstanding_debit(txn_b, seed_user)
+            db.session.commit()
+
+            assert self._listed(seed_user) == []
+            assert self._reconcile(seed_user, [entry_b.id]) == 0
+
+            db.session.expire_all()
+            assert db.session.get(
+                TransactionEntry, entry_b.id,
+            ).settled_on is None
+
+    def test_another_users_purchase_matches_nothing(
+        self, app, db, seed_user, seed_second_user, seed_periods,
+        seed_entry_template,
+    ):
+        """A forged id from another user's data changes nothing.
+
+        The IDOR case at its natural shape: the other user's purchase sits on
+        the other user's account, in the other user's pay period.
+
+        **It is OVER-DETERMINED, and that is stated rather than left to be
+        discovered** (finding N-69's lesson).  Two clauses reject this row --
+        ``Transaction.account_id == account_id`` and
+        ``PayPeriod.user_id == owner_id`` -- so deleting either one alone still
+        leaves this test green.  The account clause has its own firing control
+        (``test_another_accounts_purchase_matches_nothing``); the user clause is
+        isolated by the test below, which is the only shape that can.
+        """
+        with app.app_context():
+            other_period = pay_period_service.generate_pay_periods(
+                user_id=seed_second_user["user"].id,
+                start_date=date(2026, 1, 2), num_periods=1, cadence_days=14,
+            )[0]
+            other_txn = Transaction(
+                pay_period_id=other_period.id,
+                scenario_id=seed_second_user["scenario"].id,
+                account_id=seed_second_user["account"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="Their groceries",
+                transaction_type_id=(
+                    seed_entry_template["transaction"].transaction_type_id
+                ),
+                estimated_amount=Decimal("500.00"),
+                is_envelope=True,
+            )
+            db.session.add(other_txn)
+            db.session.flush()
+            other_entry = _make_entry(
+                other_txn, seed_second_user["user"], amount="50.00",
+                description="Theirs", purchased_on=_BEFORE_THE_STATEMENT,
+            )
+            db.session.commit()
+
+            assert self._listed(seed_user) == []
+            assert self._reconcile(seed_user, [other_entry.id]) == 0
+
+            db.session.expire_all()
+            assert db.session.get(
+                TransactionEntry, other_entry.id,
+            ).settled_on is None
+
+    def test_the_OWNER_clause_is_load_bearing_on_its_own(
+        self, app, db, seed_user, seed_second_user, seed_periods,
+        seed_entry_template,
+    ):
+        """The one shape that isolates ``PayPeriod.user_id == owner_id``.
+
+        A transaction on THIS user's account whose pay period belongs to
+        ANOTHER user.  Nothing in the schema forbids the row --
+        ``Transaction.account_id`` and ``Transaction.pay_period_id`` are
+        independent foreign keys with no composite constraint tying them to one
+        owner -- and nothing in the app creates it, so this is a forged /
+        corrupt row and the owner clause is the defence in depth against it.
+
+        It is the ONLY shape that grades that clause.  Every other cross-user
+        fixture puts the foreign row on the foreign ACCOUNT too, which the
+        account clause rejects first, so the owner clause could be deleted and
+        the whole reconcile suite would stay green (measured, in this step's
+        adversarial review).  Here the account clause PASSES by construction and
+        only the owner clause can reject it.
+
+        The consequence if it were dropped: whoever holds the corrupt row's id
+        could have another user's purchase stamped as reconciled against a
+        balance that user never asserted -- and, because ``settled_on`` is then
+        non-NULL, that user's own panel would stop offering it.
+        """
+        with app.app_context():
+            other_period = pay_period_service.generate_pay_periods(
+                user_id=seed_second_user["user"].id,
+                start_date=date(2026, 1, 2), num_periods=1, cadence_days=14,
+            )[0]
+            crossed = Transaction(
+                # THIS user's account ...
+                account_id=seed_user["account"].id,
+                # ... under the OTHER user's pay period.
+                pay_period_id=other_period.id,
+                scenario_id=seed_second_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="Cross-owner groceries",
+                transaction_type_id=(
+                    seed_entry_template["transaction"].transaction_type_id
+                ),
+                estimated_amount=Decimal("500.00"),
+                is_envelope=True,
+            )
+            db.session.add(crossed)
+            db.session.flush()
+            entry = _make_entry(
+                crossed, seed_second_user["user"], amount="50.00",
+                description="Crossed", purchased_on=_BEFORE_THE_STATEMENT,
+            )
+            db.session.commit()
+
+            # The account clause cannot reject this row -- it IS on this
+            # account.  Stated so the test cannot silently stop isolating.
+            assert crossed.account_id == seed_user["account"].id
+
+            assert self._listed(seed_user) == []
+            assert self._reconcile(seed_user, [entry.id]) == 0
+
+            db.session.expire_all()
+            assert db.session.get(
+                TransactionEntry, entry.id,
+            ).settled_on is None
+
+    def test_a_mixed_submission_stamps_only_what_is_in_scope(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """A partly-forged submission is neither rejected nor obeyed in full.
+
+        One real outstanding purchase and one out-of-scope id in the same
+        request: the count returned is what CHANGED (1), not what was asked for
+        (2), so the log records the gap instead of the whole request being
+        thrown away or waved through.  A submission that raised on the bad id
+        would lose the user's good ticks too.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            good = _outstanding_debit(txn, seed_user, amount="20.00")
+            forged = _outstanding_debit(
+                txn, seed_user, amount="30.00",
+                purchased_on=_AFTER_THE_STATEMENT,
+            )
+            db.session.commit()
+
+            assert self._reconcile(seed_user, [good.id, forged.id]) == 1
+
+            db.session.expire_all()
+            assert db.session.get(
+                TransactionEntry, good.id,
+            ).settled_on == _OBSERVED_ON
+            assert db.session.get(
+                TransactionEntry, forged.id,
+            ).settled_on is None
+
+    def test_an_empty_submission_is_a_no_op(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """Ticking nothing changes nothing and issues no UPDATE.
+
+        The state a user is in when they open the panel and dismiss it, so it
+        must not be an error -- and it must not fall through to an unfiltered
+        bulk update, which is precisely what the retired
+        ``clear_entries_for_anchor_true_up`` was.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = _outstanding_debit(txn, seed_user)
+            db.session.commit()
+
+            assert self._reconcile(seed_user, []) == 0
+
+            db.session.expire_all()
+            assert db.session.get(
+                TransactionEntry, entry.id,
+            ).settled_on is None
+
+    def test_the_list_is_ordered_oldest_purchase_first(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """Deterministic order, with ``id`` breaking a same-day tie.
+
+        The panel is a checklist read against a paper statement, which is
+        chronological; an unordered list would shuffle between renders of the
+        same data and make the two impossible to walk together.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            second = _outstanding_debit(
+                txn, seed_user, amount="20.00",
+                purchased_on=date(2026, 1, 7),
+            )
+            first = _outstanding_debit(
+                txn, seed_user, amount="30.00",
+                purchased_on=date(2026, 1, 3),
+            )
+            same_day_as_second = _outstanding_debit(
+                txn, seed_user, amount="40.00",
+                purchased_on=date(2026, 1, 7),
+            )
+            db.session.commit()
+
+            assert self._listed(seed_user) == [
+                first.id, second.id, same_day_as_second.id,
+            ]
+
+
+class TestTheMarkPurchaseSettledHelperGuardsItsPrecondition:
+    """``tests._test_helpers.mark_purchase_settled`` -- the helper's own guard.
+
+    A TEST helper, graded here because its failure mode is what finding
+    N-132 / R8 is about and an untested failure mode is one a future edit
+    weakens for free.  It is the successor to ``add_entry(..., is_cleared=True)``,
+    and the flag it replaced was an UNCONDITIONAL claim that a purchase was
+    inside the anchor -- so fixtures set it on accounts whose only assertion
+    PREDATED the purchase by months, a state production cannot reach, and those
+    fixtures passed for years while silently no longer discriminating the case
+    they named.
+
+    The helper does what the flag did AND asserts the precondition the flag let
+    fixtures skip.  These are its two refusals, each with the failure message
+    checked, because a helper that failed with a bare ``AssertionError`` would
+    send the next reader hunting through the balance fold instead of at the
+    fixture.
+    """
+
+    def test_it_refuses_when_the_assertion_predates_the_purchase(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """The N-132 shape itself: settled AFTER the account's latest assertion.
+
+        The seeded account asserts its opening balance for the first period's
+        start day; a purchase settled a week later is not inside it, however
+        the fixture is spelled, so a suite expecting the settled bucket is
+        asking for a state its own account cannot be in.  The message names
+        BOTH days so the fix -- move the assertion, or accept the outstanding
+        bucket -- is visible without reading the helper.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = _outstanding_debit(txn, seed_user)
+            db.session.commit()
+            too_late = seed_periods[0].start_date + timedelta(days=7)
+
+            with pytest.raises(AssertionError) as excinfo:
+                mark_purchase_settled(
+                    db.session, seed_user["account"], entry,
+                    settled_on=too_late,
+                )
+
+            message = str(excinfo.value)
+            assert too_late.isoformat() in message
+            assert seed_periods[0].start_date.isoformat() in message
+            db.session.expire_all()
+            assert db.session.get(
+                TransactionEntry, entry.id,
+            ).settled_on is None
+
+    def test_it_refuses_when_the_account_has_asserted_nothing(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """No assertion at all means there is nothing to be inside of.
+
+        ``is_inside_assertion`` is total in both arguments and answers False
+        for a missing assertion, so a fixture that skipped this check would
+        build a purchase the projection reads as outstanding while the test
+        asserted the settled figure -- failing later, in the balance, with no
+        indication that the ACCOUNT was the problem.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = _outstanding_debit(txn, seed_user)
+            account = seed_user["account"]
+            db.session.query(AccountAnchorHistory).filter_by(
+                account_id=account.id,
+            ).delete()
+            db.session.commit()
+
+            with pytest.raises(AssertionError) as excinfo:
+                mark_purchase_settled(db.session, account, entry)
+
+            assert "has asserted no balance" in str(excinfo.value)
+
+    def test_it_records_the_day_when_the_assertion_covers_it(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """The positive control: it still does what the flag did.
+
+        Without this the two refusals above would be satisfied by a helper that
+        refused everything.  A purchase settled on the account's own asserted
+        day passes, and ``settled_on`` defaults to the purchase's own
+        ``purchased_on`` -- "it posted the day I bought it", the shape a
+        same-day debit has.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = _outstanding_debit(
+                txn, seed_user, purchased_on=seed_periods[0].start_date,
+            )
+            db.session.commit()
+
+            mark_purchase_settled(db.session, seed_user["account"], entry)
+            db.session.commit()
+
+            db.session.expire_all()
+            assert db.session.get(
+                TransactionEntry, entry.id,
+            ).settled_on == seed_periods[0].start_date

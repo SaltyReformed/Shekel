@@ -796,7 +796,7 @@ class TestSyncEntryPaybackTOCTOUPrevention:
             app, "c19-concurrent@shekel.local", "c19concurrent",
         )
 
-        # The APP's today.  ``entry_service._reject_future_entry_date`` refuses
+        # The APP's today.  ``entry_service._reject_future_purchase_date`` refuses
         # an entry dated after ``display_today()`` (ruling R-M), so posting the
         # PROCESS date makes this a 400 for the four hours a day the two
         # calendars disagree -- which is exactly how it failed CI at 23:39 ET
@@ -809,7 +809,7 @@ class TestSyncEntryPaybackTOCTOUPrevention:
                 data={
                     "amount": amount,
                     "description": "Concurrent purchase",
-                    "entry_date": today_iso,
+                    "purchased_on": today_iso,
                     "is_credit": "true",
                 },
             )

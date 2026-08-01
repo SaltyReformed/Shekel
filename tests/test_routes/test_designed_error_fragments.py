@@ -290,7 +290,7 @@ class TestEntryListErrorFragment:
                 data={
                     "amount": "abc",
                     "description": "Bad amount",
-                    "entry_date": "2026-07-11",
+                    "purchased_on": "2026-07-11",
                 },
             )
             assert resp.status_code == 422

@@ -13,14 +13,16 @@ rows above it.
 
 **ONE per-period column, from ONE producer pass** (plan steps X-c2b1 / X-c2b2,
 ruling R-K).  Every figure the grid renders for one pay period -- the projected
-end balance, the income and expense subtotals, the "Timing & true-ups"
-remainder, the modelled contribution and the modelled accrual -- is one
+end balance, the income and expense subtotals, the two remainders ("Period
+timing" and "Book vs bank"), the modelled contribution and the modelled
+accrual -- is one
 :class:`GridColumn`, and all but the last two come from a single
-:func:`~app.services.balance_at._cash_fold.cash_period_view`: one walk, one
+:func:`~app.services.balance_at._cash_periods.cash_period_view`: one walk, one
 plan load, one valuation, grouped on the two clocks the identity binds.
 
     balance[p] - balance[p-1]
-        == net[p] + reconciliation[p] + contribution[p] + accrual[p]
+        == net[p] + period_timing[p] + book_vs_bank[p]
+           + contribution[p] + accrual[p]
 
 The grid used to compute those figures in three independent producer passes a
 test then had to keep in step (finding N-48), against a subtotal that counted
@@ -107,22 +109,32 @@ from decimal import Decimal
 from app.models.account import Account
 
 from ._context import BalanceContext
-from . import _asset_fold, _cash_fold
+from . import _asset_fold, _cash_fold, _cash_periods
 from ._inputs import _contribution_inputs_for_account, _require_scenario
 
 _ZERO_MONEY = Decimal("0.00")
 
 
 @dataclass(frozen=True)
-class GridColumn:
+class GridColumn:  # pylint: disable=too-many-instance-attributes
     """Every figure the grid renders for ONE pay period.
 
     The per-period unit of :class:`GridBalanceView`, and ruling R-K's row set
     expressed as one record: the same valued rows grouped on the budget clock
-    (:attr:`income` / :attr:`expense` / :attr:`net`), what the cash clock and
-    the assertions add on top of that (:attr:`reconciliation`), the two modelled
-    tiers (:attr:`contribution` and :attr:`accrual`), and the balance all four
-    roll forward to (:attr:`balance`).
+    (:attr:`income` / :attr:`expense` / :attr:`net`), what the cash clock adds
+    on top of that (:attr:`period_timing`), what the user's own balance
+    readings booked (:attr:`book_vs_bank`), the two modelled tiers
+    (:attr:`contribution` and :attr:`accrual`), and the balance all five roll
+    forward to (:attr:`balance`).
+
+    Pylint: ``too-many-instance-attributes`` (8/7) -- suppressed because this
+    is the flat per-period bundle the grid's footer renders row by row
+    (``columns[period.id].<figure>``, one template row per attribute); every
+    field is a line on screen and the identity below names all of them, so
+    nesting a sub-bundle would add an access level no template reads as a unit
+    while splitting one visible row set across two objects.  It reached 8 at
+    plan step S1-c, when ruling R-DH (f) split the single "Timing & true-ups"
+    remainder into the two figures a user can actually act on.
 
     Attributes:
         balance: The projected end balance the surface displays, cent-quantized
@@ -141,10 +153,14 @@ class GridColumn:
             rather than as the difference of two separately-rounded legs,
             because it is the figure the balance roll-forward has to reconcile
             with.
-        reconciliation: Ruling R-K's remainder, rendered as "Timing &
-            true-ups": money budgeted to this period that moved in another (or
-            has not moved yet), money that moved here but is budgeted
-            elsewhere, and the balance ASSERTIONS made inside the period.
+        period_timing: Ruling R-K's remainder from the ROWS, rendered as
+            "Period timing": money budgeted to this period that moved in
+            another (or has not moved yet), and money that moved here but is
+            budgeted elsewhere.
+        book_vs_bank: Ruling R-K's remainder from the ASSERTIONS, rendered as
+            "Book vs bank": what each balance true-up inside the period booked
+            -- the gap between what the app had recorded and what the bank
+            actually showed.
         contribution: The period's modelled CONTRIBUTION -- what the account's
             payroll puts in, employee plus employer (the read-only
             "Contributions" row).  ``0.00`` for every kind but INVESTMENT, whose
@@ -165,7 +181,7 @@ class GridColumn:
     """
 
     # The four subtotal figures are the cash view's verbatim, so this record
-    # and :class:`~app.services.balance_at._cash_fold.CashPeriodFigures` share
+    # and :class:`~app.services.balance_at._cash_periods.CashPeriodFigures` share
     # five field declarations.  Composing instead (``GridColumn.cash``) was
     # REJECTED: it would put TWO balances on the one object the templates read
     # -- the kind-blind cash balance beside the displayed modelled one
@@ -174,19 +190,21 @@ class GridColumn:
     # silently wrong figure.  Inheriting was rejected for the same reason one
     # level up: a subclass whose ``balance`` means something the parent's does
     # not is a substitution defect, and the two carry DIFFERENT identities
-    # (``net + reconciliation`` there, ``+ contribution + accrual`` here).
+    # (``net + the two remainders`` there, ``+ contribution + accrual``
+    # here).
     # There is no shared BEHAVIOUR to extract -- only names -- and the two
     # contracts are free to diverge (this one is what the grid renders; that one
     # is what the fold produces).
     # Pylint: ``duplicate-code`` -- incidental field-name overlap with
-    # ``_cash_fold.CashPeriodFigures``; one-sided disable so the producer's own
+    # ``_cash_periods.CashPeriodFigures``; one-sided disable so the producer's own
     # declaration stays un-disabled.
     # pylint: disable=duplicate-code
     balance: Decimal
     income: Decimal
     expense: Decimal
     net: Decimal
-    reconciliation: Decimal
+    period_timing: Decimal
+    book_vs_bank: Decimal
     # pylint: enable=duplicate-code
     contribution: Decimal
     accrual: Decimal
@@ -228,14 +246,23 @@ class GridRowFlags:
     period's ``start_date`` and the day's accrual is then taken on the balance
     that day ENDS holding, so the money is contributed and then earns.
 
+    **Each of the two remainder rows carries its OWN flag** (ruling R-DH (f)).
+    They were one row and one flag until plan step S1-c.  Sharing a flag would
+    have been cheaper and is wrong for the same reason the split itself is: a
+    period that carries only true-ups would render a permanently-``$0.00``
+    timing row beside them, which reads as "measured and zero" for a fact that
+    was never in question.  R-O's rule is per ROW, so it is asked per row.
+
     Attributes:
-        reconciliation: Whether ruling R-O's "Timing & true-ups" row renders.
+        period_timing: Whether ruling R-O's "Period timing" row renders.
+        book_vs_bank: Whether the "Book vs bank" row renders.
         contribution: Whether the "Contributions" row renders.
         accrual: Whether the modelled-return row renders (labelled "Interest" /
             "Growth" / "Appreciation" by the route, ruling R-AI).
     """
 
-    reconciliation: bool
+    period_timing: bool
+    book_vs_bank: bool
     contribution: bool
     accrual: bool
 
@@ -293,8 +320,11 @@ class GridBalanceView:
         # R-AJ (c)).  The comparison itself IS ruling R-O's visibility rule and
         # stays load-bearing -- only the impossible-shape half went.
         return GridRowFlags(
-            reconciliation=any(
-                column.reconciliation != _ZERO_MONEY for column in columns
+            period_timing=any(
+                column.period_timing != _ZERO_MONEY for column in columns
+            ),
+            book_vs_bank=any(
+                column.book_vs_bank != _ZERO_MONEY for column in columns
             ),
             contribution=any(
                 column.contribution != _ZERO_MONEY for column in columns
@@ -307,16 +337,17 @@ class GridBalanceView:
 
 def _assemble_columns(
     periods: list,
-    figures: "OrderedDict[int, _cash_fold.CashPeriodFigures]",
+    figures: "OrderedDict[int, _cash_periods.CashPeriodFigures]",
     modelled: "OrderedDict[int, _asset_fold.AssetPeriodFigures]",
 ) -> "OrderedDict[int, GridColumn]":
     """Combine each period's cash and modelled figures into one :class:`GridColumn`.
 
     Args:
         periods: The pay periods to report, in display order.
-        figures: The period view's :class:`~app.services.balance_at._cash_fold.CashPeriodFigures`
-            per period (the budget-clock subtotals and ruling R-K's remainder).
-            Total over *periods*.
+        figures: The period view's
+            :class:`._cash_periods.CashPeriodFigures` per period (the
+            budget-clock subtotals and ruling R-K's two remainders).  Total
+            over *periods*.
         modelled: The :class:`._asset_fold.AssetPeriodFigures` per period -- the
             DISPLAYED balance and the two modelled tiers.  Total over *periods*,
             so a missing key is a defect rather than a blank column; it is
@@ -335,7 +366,8 @@ def _assemble_columns(
             income=cash.income,
             expense=cash.expense,
             net=cash.net,
-            reconciliation=cash.reconciliation,
+            period_timing=cash.period_timing,
+            book_vs_bank=cash.book_vs_bank,
             contribution=tiers.contribution,
             accrual=tiers.accrual,
         )
@@ -349,13 +381,14 @@ def grid_balance_view(
 
     The single entry the budget grid reads to project one account's column set.
     ONE :func:`~app.services.balance_at._cash_fold.assemble` supplies every
-    figure the surface renders: :func:`._cash_fold.period_view_of` regroups it
+    figure the surface renders: :func:`._cash_periods.period_view_of` regroups it
     into the income and expense subtotals and ruling R-K's remainder, and
     :func:`._asset_fold.resolve` resolves the modelled tiers over the SAME
     record for the balance, the accrual and the contribution.  So
 
         balance[p] - balance[p-1]
-            == net[p] + reconciliation[p] + contribution[p] + accrual[p]
+            == net[p] + period_timing[p] + book_vs_bank[p]
+               + contribution[p] + accrual[p]
 
     is a property of the construction rather than an invariant a test polices
     across three independent producer passes (finding N-48).
@@ -435,7 +468,7 @@ def grid_balance_view(
         # :func:`._asset_fold.period_columns` already carry.
         return empty_grid_view()
     folded = _cash_fold.assemble(account, ctx.scenario_id, ctx.as_of)
-    view = _cash_fold.period_view_of(folded, periods)
+    view = _cash_periods.period_view_of(folded, periods)
     modelled = _asset_fold.period_columns(
         _asset_fold.resolve(
             account, folded,

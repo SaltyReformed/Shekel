@@ -3,14 +3,25 @@
 
    Expected context:
      txn               -- parent Transaction object
-     entries           -- list of TransactionEntry objects (ordered by entry_date)
+     entries           -- list of TransactionEntry objects (ordered by purchased_on)
      remaining         -- Decimal remaining budget (negative = overspent)
      today             -- the USER's today (display timezone): the add form's
-                          default entry_date AND the edit form's picker ``max``.
+                          default purchased_on AND both pickers' ``max``.
                           Must be the same clock entry_service refuses a future
-                          entry date on (ruling R-M), or the form could offer a
-                          value the service rejects.
+                          purchase date on (ruling R-M), or the form could
+                          offer a value the service rejects.
      editing_id        -- int or None -- entry ID to show inline edit form
+     reconciled_ids    -- set of entry IDs the account's latest asserted
+                          balance already contains (ruling R-DH (d), derived in
+                          the route through the shared
+                          ``cash_ledger.is_inside_assertion``).  Read-only: the
+                          user corrects reconciliation by correcting the
+                          purchase's POSTING DATE, which is the fact that was
+                          actually wrong.
+     reconciled_through -- the civil day of the account's latest balance
+                          assertion, or None -- named in the indicator's
+                          tooltip so the boundary is visible rather than
+                          implied.
      out_of_period_ids -- set of entry IDs with dates outside the pay period
      conflict          -- bool, optional -- when True, surface a warning
                           banner because a previous PATCH submission
@@ -79,17 +90,36 @@
                value="{{ entry.description }}"
                class="form-control form-control-sm">
       </div>
-      <div class="d-flex gap-1 align-items-center">
-        {# ``max`` is the user's today: a purchase entry records a purchase
-           that has already happened, so a forward date is refused by
+      <div class="d-flex gap-1 align-items-center flex-wrap">
+        {# The PURCHASE date.  ``max`` is the user's today: an entry records a
+           purchase that has already happened, so a forward date is refused by
            entry_service (ruling R-M).  The picker bound is a courtesy that
            keeps the control from offering a value the server will reject --
            the service guard is the actual gate, since a hand-built PATCH
            never sees this attribute. #}
-        <input type="date" name="entry_date"
-               value="{{ entry.entry_date.isoformat() }}"
+        <label class="form-label small text-muted mb-0 me-1"
+               for="purchased-{{ entry_list_host_id }}-{{ entry.id }}">Bought</label>
+        <input type="date" name="purchased_on"
+               id="purchased-{{ entry_list_host_id }}-{{ entry.id }}"
+               value="{{ entry.purchased_on.isoformat() }}"
                max="{{ today }}"
                class="form-control form-control-sm mw-px-130">
+        {# The POSTING date -- the day the bank actually took the money
+           (ruling R-DH (e)).  Deliberately NOT on the add form: at the moment
+           a purchase is entered there is nothing to have observed, and a
+           value typed then would be a forecast in a fact column.  It carries
+           no ``max``: "I bought this and my bank has not taken it yet" is a
+           true statement, and it is the one ruling R-M could not express while
+           one column held both facts.  Empty clears it, putting the purchase
+           back among the outstanding ones. #}
+        <label class="form-label small text-muted mb-0 me-1"
+               for="settled-{{ entry_list_host_id }}-{{ entry.id }}">Posted</label>
+        <input type="date" name="settled_on"
+               id="settled-{{ entry_list_host_id }}-{{ entry.id }}"
+               value="{{ entry.settled_on.isoformat() if entry.settled_on else '' }}"
+               min="{{ entry.purchased_on.isoformat() }}"
+               class="form-control form-control-sm mw-px-130"
+               title="The day your bank took the money.  Leave blank until you see it on a statement.">
         <div class="form-check form-check-inline mb-0">
           <input type="checkbox" name="is_credit" value="true"
                  class="form-check-input" id="edit-cc-{{ entry_list_host_id }}-{{ entry.id }}"
@@ -117,7 +147,7 @@
     </div>
     <div class="d-flex align-items-center gap-1">
       <span class="text-muted fs-xs">
-        {{ entry.entry_date.strftime('%m/%d') }}
+        {{ entry.purchased_on.strftime('%m/%d') }}
       </span>
       {% if entry.is_credit %}
       <span class="badge bg-warning-subtle text-warning" title="Credit card">CC</span>
@@ -130,20 +160,25 @@
       {% endif %}
       <span class="font-mono">{{ money(entry.amount) }}</span>
       {% if not entry.is_credit %}
-      {# Reconciled toggle: a cleared entry is already reflected in the
-         checking anchor balance and is subtracted from the budget
-         reservation.  An uncleared entry keeps the full reservation
-         until the user trues up the anchor (which auto-clears past
-         debits).  Hidden for credit entries -- those are handled by
-         the CC Payback workflow and the flag is ignored there. #}
-      <button class="btn btn-link btn-sm p-0 {% if entry.is_cleared %}text-success{% else %}text-muted{% endif %}"
-              hx-patch="{{ url_for('entries.toggle_cleared', txn_id=txn.id, entry_id=entry.id, host=entry_list_host) }}"
-              hx-target="#{{ entry_list_host_id }}"
-              hx-swap="outerHTML"
-              title="{% if entry.is_cleared %}Reconciled with checking anchor -- click to mark as not reconciled{% else %}Not yet reconciled with checking anchor -- click to mark as reconciled{% endif %}"
-              aria-label="{% if entry.is_cleared %}Mark entry as not reconciled{% else %}Mark entry as reconciled{% endif %}">
-        <i class="bi bi-{% if entry.is_cleared %}check-circle-fill{% else %}circle{% endif %}"></i>
-      </button>
+      {# Read-only reconciled indicator (ruling R-DH (d)).  A reconciled
+         purchase is already inside the balance the user last declared, so it
+         is subtracted from the budget reservation; an outstanding one keeps
+         the full reservation.  It is DERIVED at read time from the purchase's
+         own posting date, not a stored flag, and it is not clickable: the
+         manual toggle it replaced let the indicator and the projection be set
+         against each other, and when reconciliation is wrong the fact that
+         was actually wrong is the POSTING DATE -- which the edit form above
+         carries.  Hidden for credit entries: those never touch checking (the
+         CC Payback workflow settles them) so the question does not apply. #}
+      {% set is_reconciled = entry.id in reconciled_ids %}
+      <span class="{% if is_reconciled %}text-success{% else %}text-muted{% endif %}"
+            title="{% if is_reconciled %}Posted {{ entry.settled_on.strftime('%b %-d') }} -- already inside your balance as of {{ reconciled_through.strftime('%b %-d') }}, so it is not held back again{% elif entry.settled_on %}Posts {{ entry.settled_on.strftime('%b %-d') }} -- after the balance you last entered, so the budget is still held back{% else %}Not yet seen on a statement, so the budget is still held back.  Confirm it at your next balance true-up.{% endif %}">
+        <i class="bi bi-{% if is_reconciled %}check-circle-fill{% else %}circle{% endif %}"
+           aria-hidden="true"></i>
+        <span class="visually-hidden">
+          {%- if is_reconciled %}Already inside your last balance{% else %}Still outstanding{% endif -%}
+        </span>
+      </span>
       {% endif %}
       <button class="btn btn-link btn-sm p-0 text-primary"
               hx-get="{{ url_for('entries.list_entries', txn_id=txn.id, editing=entry.id, host=entry_list_host) }}"
@@ -182,12 +217,23 @@
         hx-target="#{{ entry_list_host_id }}"
         hx-swap="outerHTML"
         hx-disabled-elt="find button[type=submit]">
-    <div class="d-flex gap-1 align-items-end">
+    <div class="d-flex gap-1 align-items-end flex-wrap">
       <input type="number" step="0.01" inputmode="decimal" name="amount" min="0.01"
              class="form-control form-control-sm mw-px-80" placeholder="$" required>
       <input type="text" name="description"
              class="form-control form-control-sm" placeholder="Store" required>
-      <input type="hidden" name="entry_date" value="{{ today }}">
+      {# The purchase date is VISIBLE (ruling R-DH (e), plan step S1-c).  It was
+         a hidden input fixed to today, which meant every stored purchase date
+         in production was the form's default and backdating a purchase you
+         logged late was impossible -- so the app's own reconciliation rule
+         could never be told the truth.  ``max`` is the user's today: the
+         service refuses a forward purchase date (ruling R-M), and the day the
+         BANK takes the money is a separate field on the edit form. #}
+      <input type="date" name="purchased_on" value="{{ today }}"
+             max="{{ today }}" required
+             class="form-control form-control-sm mw-px-130"
+             aria-label="Purchase date"
+             title="The day you made this purchase">
       <div class="form-check form-check-inline mb-0">
         <input type="checkbox" name="is_credit" class="form-check-input"
                id="cc-{{ entry_list_host_id }}">

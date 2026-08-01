@@ -222,7 +222,7 @@ class TestDashboardPulseRendering:
                 user_id=seed_user["user"].id,
                 amount=Decimal("130.00"),
                 description="overspend",
-                entry_date=cur.start_date + timedelta(days=1),
+                purchased_on=cur.start_date + timedelta(days=1),
             ))
 
             # Projected transfer-out from checking -> savings, $200.00.
@@ -345,7 +345,7 @@ class TestDashboardPulseRendering:
                 user_id=seed_user["user"].id,
                 amount=Decimal("200.00"),
                 description="groceries",
-                entry_date=cur.start_date + timedelta(days=1),
+                purchased_on=cur.start_date + timedelta(days=1),
             ))
             db.session.commit()
 

@@ -26,7 +26,8 @@ where two tests agreed over an account holding no rows.
   of the six dates are deliberately outside the seeded horizon, which is where
   a period-keyed producer and a total fold differ most;
 * for every non-loan account: the whole ``GridBalanceView`` -- balance, income,
-  expense, net, ruling R-K's reconciliation remainder, and BOTH modelled tiers
+  expense, net, ruling R-K's remainder (as its pre-S1-c total AND ruling
+  R-DH (f)'s two halves, see :func:`_grid_columns`), and BOTH modelled tiers
   (contribution and accrual, plan step X-g3a) -- plus the live override map the
   projection was computed with (ruling R-Q).  The two tiers are captured at
   X-g3a, which moves no figure, precisely so plan step X-g3b's cutover can be
@@ -131,7 +132,24 @@ def _money(value):
 
 
 def _grid_columns(account, ctx, periods):
-    """Return the whole grid view for *account*, as JSON-ready primitives."""
+    """Return the whole grid view for *account*, as JSON-ready primitives.
+
+    **The remainder is captured as THREE keys since plan step S1-c** (ruling
+    R-DH (f)).  ``GridColumn.reconciliation`` split into ``period_timing`` and
+    ``book_vs_bank``, and no combined accessor survives on the dataclass --
+    leaving one would invite a surface to render the sum again, which is the
+    figure the ruling exists to delete.  This script is not a surface: it is the
+    instrument the verification standard diffs a change against, and a baseline
+    captured BEFORE the split carries the single ``reconciliation`` key.  So the
+    sum is composed HERE, once, under that key, purely so a pre-split baseline
+    stays diffable -- and the two halves are captured beside it so the split
+    itself is visible in the same diff rather than argued.
+
+    **The ``reconciliation`` key is a dated compatibility shim: delete it once
+    a post-S1-c baseline has been re-cut**, which is the last moment any
+    comparison needs it.  A shim with no stated end is how the deleted name
+    survives its own deletion.
+    """
     view = balance_at.grid_balance_view(account, ctx, periods)
     return {
         "columns": {
@@ -140,7 +158,13 @@ def _grid_columns(account, ctx, periods):
                 "income": _money(col.income),
                 "expense": _money(col.expense),
                 "net": _money(col.net),
-                "reconciliation": _money(col.reconciliation),
+                # The PRE-SPLIT total, for diffing against a baseline captured
+                # before S1-c.  No production surface may read this sum.
+                "reconciliation": _money(
+                    col.period_timing + col.book_vs_bank,
+                ),
+                "period_timing": _money(col.period_timing),
+                "book_vs_bank": _money(col.book_vs_bank),
                 "contribution": _money(col.contribution),
                 "accrual": _money(col.accrual),
             }
