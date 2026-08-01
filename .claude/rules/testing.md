@@ -41,7 +41,8 @@ rationale).
   derive the rest from that. Findings N-131, N-132, R8 and the 2026-08-01 loan
   failures are all this shape.
 - **Check both:** `TZ=Pacific/Kiritimati ./scripts/test.sh` must pass unchanged.
-  Full rationale and worked cases: `docs/testing-standards.md`.
+  Full rationale and worked cases: `docs/testing-standards.md`; the gates, the
+  `server_clock` marker and the debugging pitfalls: `docs/test-suite-clocks.md`.
 
 ## What a test must assert
 
