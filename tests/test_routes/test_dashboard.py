@@ -39,6 +39,7 @@ from app.enums import StatusEnum, TxnTypeEnum
 from app.models.account import AccountAnchorHistory
 from app.models.transaction import Transaction
 from app.services import pay_period_service
+from app.utils.dates import add_months, display_today
 from tests._test_helpers import (
     add_anchor_history as _add_anchor_history,
     add_txn as _add_txn,
@@ -636,7 +637,14 @@ class TestDashboardTracks:
                 account_id=acct.id,
                 name="House Fund",
                 target_amount=Decimal("10000.00"),
-                target_date=date(2027, 6, 1),
+                # Relative to the APP's today, never a hard-coded calendar
+                # date.  ``date(2027, 6, 1)`` was in the future when it was
+                # written and becomes the PAST on 2027-06-01, after which
+                # ``calculate_trajectory`` resolves no pace and the pill this
+                # test exists to lock never renders -- so the test would have
+                # started failing that morning.  Caught by the calendar sweep
+                # at SHEKEL_FAKE_TODAY=2028-02-29.
+                target_date=add_months(display_today(), 10),
             )
             db.session.add(goal)
             db.session.commit()

@@ -528,6 +528,7 @@ def _settle_expense(seed_user, account, amount, paid_at):
 class TestAbsoluteInvariantPerAccount:
     """A multi-anchor account reconciles to latest anchor + post-assertion sources."""
 
+    @pytest.mark.server_clock
     def test_critical1_absorb_and_ride_reconciles_three_ways(
         self, app, db, seed_user,
     ):
@@ -599,6 +600,7 @@ class TestAbsoluteInvariantPerAccount:
 
             _assert_account_anchors_reconcile(scenario_id)
 
+    @pytest.mark.server_clock
     def test_source_at_exact_assertion_instant_is_absorbed(
         self, app, db, seed_user,
     ):
@@ -670,6 +672,7 @@ class TestAbsoluteInvariantPerAccount:
 class TestTransferSourceRidesOnTop:
     """A settled transfer reconciles on both linked ledgers by its shadow effect."""
 
+    @pytest.mark.server_clock
     def test_transfer_into_savings_reconciles_both_accounts(
         self, app, db, seed_user,
     ):
@@ -733,6 +736,7 @@ class TestTransferSourceRidesOnTop:
 class TestLedgerThroughEachAssertionInstant:
     """At every historical assertion instant the ledger equalled that anchor."""
 
+    @pytest.mark.server_clock
     def test_as_of_each_assertion_lands_on_the_asserted_balance(
         self, app, db, seed_user,
     ):
@@ -808,6 +812,7 @@ class TestLedgerThroughEachAssertionInstant:
 class TestRevertAfterTrueupSelfHeals:
     """Reverting a pre-true-up settle re-bases the true-up and stays reconciled."""
 
+    @pytest.mark.server_clock
     def test_revert_pre_trueup_settle_reconciles(self, app, db, seed_user):
         """The CRITICAL-1 fixture, then revert the pre-true-up spend; sweep ties.
 
@@ -947,6 +952,7 @@ class TestPreAnchorAbsorption:
 class TestSameDayAnchorMerge:
     """Two same-UTC-day true-ups merge to one entry on the later value."""
 
+    @pytest.mark.server_clock
     def test_two_same_day_trueups_reconcile(self, app, db, seed_user):
         """$600 then $550 on one future UTC day merge to a single +50.00 entry.
 
@@ -1005,6 +1011,7 @@ class TestSameDayAnchorMerge:
 class TestNegativelyAnchoredLiability:
     """A non-loan liability anchor posts ledger-native, with no sign branch."""
 
+    @pytest.mark.server_clock
     def test_credit_card_negative_anchor_reconciles(self, app, db, seed_user):
         """A Credit Card anchored -500.00, then a $120 charge, reconciles absolutely.
 
@@ -1262,6 +1269,7 @@ class TestScenarioAndOwnerIsolation:
             _assert_account_anchors_reconcile(baseline.id)
             _assert_account_anchors_reconcile(whatif.id)
 
+    @pytest.mark.server_clock
     def test_owners_reconcile_independently(
         self, app, db, seed_user, seed_second_user,
     ):
@@ -1323,6 +1331,7 @@ class TestScenarioAndOwnerIsolation:
 class TestBackfillEqualsGoForward:
     """Clearing then backfilling reproduces the go-forward ledger exactly."""
 
+    @pytest.mark.server_clock
     def test_backfill_restores_the_absolute_ledger(self, app, db, seed_user):
         """A multi-anchor account's ledger is identical after clear + backfill.
 
@@ -1534,6 +1543,7 @@ def _transfer_net_in_period(account_id, scenario_id, period_id) -> Decimal:
 class TestSettledTransferAttributionMutation:
     """A settled transfer's period / paid_at edit keeps the anchor sound (F1)."""
 
+    @pytest.mark.server_clock
     def test_settled_period_move_reposts_and_reconciles(
         self, app, db, seed_user,
     ):
@@ -1594,6 +1604,7 @@ class TestSettledTransferAttributionMutation:
             ) == Decimal("350.00")
             _assert_account_anchors_reconcile(scenario_id)
 
+    @pytest.mark.server_clock
     def test_settled_paid_at_move_across_anchor_reconciles(
         self, app, db, seed_user,
     ):

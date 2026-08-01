@@ -90,6 +90,27 @@ jobs:
       TEST_ADMIN_DATABASE_URL: postgresql://shekel_test:shekel_test@localhost:5432/postgres
       # TOTP_ENCRYPTION_KEY is auto-generated per test by conftest.py.
       # No need to set it here.
+      #
+      # ── The process clock is skewed off the app's ON PURPOSE ──────
+      # ``date.today()`` reads the PROCESS timezone; the app's civil day is
+      # ``app.utils.dates.display_today()`` (America/New_York).  Production and
+      # docker-compose.dev.yml both pin ``TZ: America/New_York``, so a test that
+      # mixes the two passes everywhere a human runs it and fails only here --
+      # and, before this line, only for the four hours a night UTC and Eastern
+      # disagreed.  That is how three "flaky" tests reached main: each was a
+      # deterministic failure with a four-hour window (2026-08-01).
+      #
+      # Kiritimati is UTC+14, so the process date runs a day ahead of the app's
+      # for eighteen hours out of every twenty-four.  The coupling now fails on
+      # most runs instead of a few, at no extra cost and with no second job.
+      #
+      # Do NOT "fix" a failure here by setting this to America/New_York.  That
+      # hides the coupling rather than removing it, and the coupling is what
+      # breaks the moment any environment differs.  The fix is always to use the
+      # app's clock in the test -- see docs/testing-standards.md, "The ambient
+      # clock and the ambient calendar".  Reproduce locally with:
+      #     TZ=Pacific/Kiritimati ./scripts/test.sh
+      TZ: Pacific/Kiritimati
 
     steps:
       # ── 1. Check out the repository ──────────────────────────────

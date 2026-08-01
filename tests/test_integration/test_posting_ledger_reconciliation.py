@@ -386,6 +386,7 @@ _BACKFILL_MIGRATION = load_migration_module(
 class TestPerAccountReconciliation:
     """Each account's ledger sum equals its settled transfer-shadow effect."""
 
+    @pytest.mark.server_clock
     def test_asset_and_liability_legs_reconcile_three_ways(
         self, app, db, seed_user,
     ):
@@ -484,6 +485,7 @@ class TestPerAccountReconciliation:
             ) == 2
             _assert_full_reconciliation(scenario_id)
 
+    @pytest.mark.server_clock
     def test_divergent_actual_amount_reconciles_on_effective(
         self, app, db, seed_user,
     ):
@@ -655,6 +657,7 @@ class TestPerEntryAndTrialBalance:
 class TestMultiScenarioIsolation:
     """Postings in one scenario never reconcile against another scenario."""
 
+    @pytest.mark.server_clock
     def test_postings_are_isolated_per_scenario(self, app, db, seed_user):
         """A $100 baseline and a $70 what-if transfer never bleed together.
 
@@ -728,6 +731,7 @@ class TestMultiScenarioIsolation:
 class TestOwnerIsolationViaJournalEntry:
     """A posting's owner is its journal entry's; owners never cross-contaminate."""
 
+    @pytest.mark.server_clock
     def test_two_owners_reconcile_independently_and_posting_has_no_user_id(
         self, app, db, seed_user, seed_second_user,
     ):
@@ -804,6 +808,7 @@ class TestOwnerIsolationViaJournalEntry:
 class TestBackfillAndGoForwardAgree:
     """The raw-SQL backfill and the posting_service builder produce equal legs."""
 
+    @pytest.mark.server_clock
     def test_same_transfer_posts_identically_both_ways(
         self, app, db, seed_user,
     ):
@@ -878,6 +883,7 @@ class TestBackfillAndGoForwardAgree:
 class TestOracleIsNotVacuous:
     """Prove the reconciliation and trial-balance checks catch real breakage."""
 
+    @pytest.mark.server_clock
     def test_per_account_reconciliation_catches_a_tampered_shadow(
         self, app, db, seed_user,
     ):

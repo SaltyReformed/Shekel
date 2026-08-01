@@ -306,6 +306,7 @@ class TestBalanceRow:
             assert b"Projected End Balance" in resp.data
             assert b"Total Expenses" not in resp.data
 
+    @pytest.mark.server_clock
     def test_a_settled_post_anchor_row_raises_the_balance_not_a_banner(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
@@ -2911,10 +2912,32 @@ class TestPeriodHeaderDateFormat:
             # format (no year suffix) since it's in the current year.
             expected = current.start_date.strftime("%-m/%-d")
             assert expected in html
-            # Should NOT contain a range separator for this period.
+            # Should NOT contain a range separator IN THE HEADER.  The scope
+            # matters and this assertion did not have it: the mobile
+            # "this period" card renders ``period.label`` -- a real range --
+            # by design (``grid/_mobile_this_period.html``), so searching the
+            # whole document asserts something the app never promised.
+            #
+            # It passed anyway, by a FORMATTING COINCIDENCE.  ``label`` is
+            # zero-padded (``%m/%d``) while this built the string unpadded
+            # (``%-m/%-d``), and the two are identical only when the month and
+            # the day are both >= 10 -- so the assertion fired for the first
+            # time on 2026-11-30 and would fire on roughly sixty days a year,
+            # every one of them in October, November or December.
+            #
+            # The class's contract is about the period HEADER, which is inside
+            # the table head (``grid/grid.html`` thead) and renders
+            # ``start_date`` alone.  Scope the search there and the assertion
+            # says what it means.
+            head = html[html.index("<thead"):html.index("</thead>")]
             end = current.start_date + timedelta(days=13)
             range_str = f"{current.start_date.strftime('%-m/%-d')} - {end.strftime('%-m/%-d')}"
-            assert range_str not in html
+            assert range_str not in head
+            padded_range = (
+                f"{current.start_date.strftime('%m/%d')} - "
+                f"{end.strftime('%m/%d')}"
+            )
+            assert padded_range not in head
 
     def test_period_header_full_format_for_cross_year(self, app, auth_client, seed_user):
         """A period starting in a non-current year shows the year suffix."""
