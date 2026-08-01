@@ -280,6 +280,8 @@ raised.
 
 ## The ambient clock and the ambient calendar
 
+**Depth, pitfalls and how to read a failure from either gate: `docs/test-suite-clocks.md`.**
+
 **A test that passes on some days and fails on others is not a flaky test. It is a broken test with
 a schedule.** Every "flake" this suite has produced has turned out to be one of the two couplings
 below, and each was diagnosed only after it blocked a merge gate. Both are cheap to avoid and
