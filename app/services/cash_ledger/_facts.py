@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy.orm import joinedload, selectinload
@@ -72,21 +72,37 @@ class AnchorPoint:
             authoritative; the resolver returns the relationship-loaded
             object so callers can read ``period.id``, ``period.start_date``,
             ``period.end_date``, etc. without re-querying.
-        as_of_date: The UTC calendar date the anchor event was created
-            (``AccountAnchorHistory.created_at`` truncated to a UTC
-            day).  UTC is chosen for consistency with the
-            ``uq_anchor_history_account_period_balance_day`` partial
-            unique index (see ``app/models/account.py``), which
-            truncates the same column at UTC.  A canonical UTC identity,
-            not a display value (convert ``created_at`` instead).
-        created_at: The anchor event's stored UTC instant, carried so a
-            reader renders the anchor "as of" in the DISPLAY timezone via
-            ``local_datetime`` (not the UTC-day ``as_of_date``).
+        observed_on: The civil day the asserted balance was TRUE -- the
+            stored ``AccountAnchorHistory.observed_on`` (ruling R-DH, plan
+            step 2).  **This is the "as of" a caption means.**  It was the same
+            day as ``created_at``'s until the column became user-supplied; now
+            an account opened today and back-dated to 2026-01-01 is a balance
+            that was true on Jan 1, and a surface captioning it "anchored Jul
+            31" is naming the keystroke rather than the fact.  On a modelled
+            account it is also the day the return starts accruing from
+            (``balance_at._asset_fold``), so a "growth since" caption that
+            reads ``created_at`` contradicts the figure beside it.
+        created_at: The anchor event's RECORDING instant, aware-UTC.  For a
+            surface that genuinely shows when the row was entered; a reader
+            wanting the day the balance was true wants
+            :attr:`observed_on`.
+
+    **It carried an ``as_of_date`` until 2026-07-31, and deleting it is
+    finding N-133 / F12's other half.**  That field was ``created_at``
+    truncated to a UTC day, justified in its own docstring by matching the
+    ``uq_anchor_history_account_period_balance_day`` index -- which now keys
+    on the stored ``observed_on`` instead, so the justification was gone.
+    No production code read it: the account-detail route deliberately reads
+    ``created_at`` and says why (a UTC day renders a late-evening Eastern
+    anchor on the wrong day), and its only reader in the repository was one
+    test assertion.  A reader that wants the day an assertion was TRUE reads
+    ``CashAnchorFact.observed_on``, which is a stored fact rather than a
+    seventh derivation of "which day".
     """
 
     balance: Decimal
     period: PayPeriod
-    as_of_date: date
+    observed_on: date
     created_at: datetime
 
 
@@ -145,17 +161,23 @@ def resolve_anchor(account: Account, scenario_id: int) -> AnchorPoint:
             divergence is traceable.
 
     Returns:
-        :class:`AnchorPoint` -- balance, period, and as-of-date.
+        :class:`AnchorPoint` -- balance, period, the day the balance was true,
+        and the recording instant.
 
-    **Ties break on ``id``, the way the WALK breaks them.**  Two assertions
-    can share an instant (a same-second true-up, or any fixture that stamps
-    both), and ``created_at DESC`` alone then returns whichever row the plan
-    happens to yield -- so the resolver could name one row as "latest" while
-    :func:`app.services.cash_ledger.merge_anchor_and_cash_events` (which
-    orders ``(created_at, id)``) replays the other one last.  One question
-    answered two ways by a query-plan artifact, silently swapping which
-    balance is authoritative.  Ordering by ``id`` second makes the two agree
-    by construction.
+    **"Latest" is the latest BUSINESS day, and the tie-breaks are the WALK's,
+    key for key.**  The order here is ``(observed_on, created_at, id)``
+    descending -- the exact reverse of
+    :func:`app.services.cash_ledger.cash_anchor_facts` -- so the row this names
+    as current is by construction the row the walk replays LAST.  Both halves
+    are load-bearing.  Two assertions can share an instant (a same-second
+    true-up, or any fixture that stamps both), and ``created_at DESC`` alone
+    returns whichever row the plan happens to yield, so ``id`` breaks it.  And
+    since plan step 2 made ``observed_on`` a user-supplied column, the
+    RECORDING order and the BUSINESS order can differ outright: a balance
+    asserted for an earlier day but recorded later is not the current one, and
+    ordering on ``created_at`` first would have named it.  One question answered
+    two ways is how the resolver and the fold come to disagree about which
+    balance is authoritative.
 
     Raises:
         RuntimeError: When no ``AccountAnchorHistory`` row exists for
@@ -167,6 +189,7 @@ def resolve_anchor(account: Account, scenario_id: int) -> AnchorPoint:
         db.session.query(AccountAnchorHistory)
         .filter_by(account_id=account.id)
         .order_by(
+            AccountAnchorHistory.observed_on.desc(),
             AccountAnchorHistory.created_at.desc(),
             AccountAnchorHistory.id.desc(),
         )
@@ -211,18 +234,10 @@ def resolve_anchor(account: Account, scenario_id: int) -> AnchorPoint:
             history_created_at=latest.created_at.isoformat(),
         )
 
-    # ``created_at`` is TIMESTAMPTZ NOT NULL with a server default of
-    # NOW() (see ``CreatedAtMixin``), so it is always populated and
-    # always timezone-aware.  Convert to UTC before truncating to a
-    # date so the resolver's as-of-date matches the
-    # ``uq_anchor_history_account_period_balance_day`` index's UTC-day
-    # bucket exactly.
-    as_of_date = latest.created_at.astimezone(timezone.utc).date()
-
     return AnchorPoint(
         balance=history_balance,
         period=latest.pay_period,
-        as_of_date=as_of_date,
+        observed_on=latest.observed_on,
         created_at=latest.created_at,
     )
 

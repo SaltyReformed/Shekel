@@ -52,17 +52,21 @@ Two failure modes are part of the contract:
     plan; the SQLAlchemy-tier check here covers the truly-concurrent
     interleavings the form-side check cannot see.
 
-  * **F-103 / C-22 same-day same-balance idempotency.** The partial
-    unique expression index
-    ``uq_anchor_history_account_period_balance_day`` on
-    ``(account_id, pay_period_id, anchor_balance,
-    ((created_at AT TIME ZONE 'UTC')::date))`` rejects a second history
-    INSERT with identical values inserted on the same calendar day --
-    a network retry, a double-click on Save, or a back-and-resubmit.
+  * **F-103 / C-22 same-day same-balance idempotency.** The unique
+    index ``uq_anchor_history_account_period_balance_day`` on
+    ``(account_id, pay_period_id, anchor_balance, observed_on)``
+    rejects a second history INSERT asserting the same balance for the
+    same BUSINESS day -- a network retry, a double-click on Save, or a
+    back-and-resubmit.
     We translate that ``IntegrityError`` into ``DUPLICATE_SAME_DAY``
     so the caller renders an idempotent success (the prior request
     committed the same value the current request was trying to
-    submit).  The loan path uses the analogous expression index
+    submit).  Its last column was ``((created_at AT TIME ZONE
+    'UTC')::date)`` until ``observed_on`` existed, which keyed the guard
+    to a UTC day while ruling R-DH's day is the user's -- so two
+    assertions on two different Eastern days sharing one UTC day were
+    rejected as duplicates (finding N-133 / F12).  The loan path uses
+    the analogous expression index
     ``uq_loan_anchor_events_acct_date_bal_day`` covering
     ``(account_id, anchor_date, anchor_balance,
     ((created_at AT TIME ZONE 'UTC')::date))`` -- mirrors the checking
@@ -114,17 +118,21 @@ from app.services import (
     entry_service,
     loan_posting_service,
 )
+from app.utils.dates import display_today
 from app.utils.db_errors import is_unique_violation
 
 
 logger = logging.getLogger(__name__)
 
 
-# Name of the partial unique expression index that backstops the F-103
-# / C-22 same-day same-balance idempotency rule.  Mirrors the literal
-# in ``app/models/account.py:AccountAnchorHistory.__table_args__``
-# and ``migrations/versions/e8b14f3a7c22_c22_idempotency_uniqueness_constraints.py``;
-# renaming the index requires a coordinated edit across all three sites.
+# Name of the unique index that backstops the F-103 / C-22 same-day
+# same-balance idempotency rule.  It keys ``(account_id, pay_period_id,
+# anchor_balance, observed_on)`` -- the BUSINESS day; it was a PARTIAL
+# EXPRESSION index on a UTC-day truncation of ``created_at`` until plan step 2
+# gave the row a stored day (finding N-133 / F12).  Mirrors the literal in
+# ``app/models/account.py:AccountAnchorHistory.__table_args__``, its creating
+# migration ``e8b14f3a7c22`` and its re-keying migration ``c4a19e7b2d80``;
+# renaming the index requires a coordinated edit across all four sites.
 ANCHOR_HISTORY_UNIQUE_INDEX = "uq_anchor_history_account_period_balance_day"
 
 
@@ -168,9 +176,11 @@ class AnchorTrueUpOutcome(enum.Enum):
             ``Account`` from the database (the in-memory mutations
             were discarded by the rollback) and renders the 409
             conflict partial.
-        DUPLICATE_SAME_DAY: The F-103 partial unique index rejected
-            the second INSERT for the same ``(account, period, balance,
-            UTC day)`` tuple; the session was rolled back.  Route
+        DUPLICATE_SAME_DAY: The F-103 unique index rejected the second
+            INSERT for the same ``(account, period, balance,
+            observed_on)`` tuple -- the same BUSINESS day, not the same
+            UTC recording day (finding N-133 / F12); the session was
+            rolled back.  Route
             treats this as idempotent success (the first request
             committed the same value the second was trying to submit)
             and renders the success partial without re-issuing the
@@ -237,6 +247,16 @@ def stage_anchor_true_up(
         account_id=account.id,
         pay_period_id=anchor_period.id,
         anchor_balance=new_balance,
+        # The civil day this balance is asserted TRUE for (ruling R-DH).  A
+        # true-up is the user reading their bank NOW, so it is today in the
+        # USER's zone -- not ``date.today()``, which is the server's UTC day
+        # and files an 8pm-Eastern true-up under tomorrow.  It is the same day
+        # ``cash_anchor_facts`` derived from ``created_at`` before the column
+        # existed, so this write moves no figure.  Plan step 2's remaining half
+        # (the true-up form's own date field) is what makes it user-supplied,
+        # exactly as ``account_service.create_account`` already takes it for an
+        # opening; the parameter arrives with that consumer, not before it.
+        observed_on=display_today(),
         notes=notes,
     ))
 

@@ -993,6 +993,28 @@ def seed_user(app, db):
             name="Checking",
             anchor_balance=Decimal("1000.00"),
             anchor_period_id=bootstrap_period.id,
+            # Day one of the period the account is anchored to -- the
+            # production shape, an account opened on day one of its own period
+            # (ruling R-DH, plan step 2).  Without it the origination asserts a
+            # balance on the WALL-CLOCK day while its ``pay_period_id`` points
+            # at the 2024 bootstrap: two clocks on one row, years apart.
+            #
+            # **It is what makes "and then things happened" say so.**  An
+            # assertion is the CLOSING balance for its civil day, so a settle
+            # dated that day is INSIDE it.  ``tests/test_services/conftest.py``
+            # freezes today, and the ordinary settle idiom is
+            # ``paid_at = db.func.now()`` -- so an origination left on the
+            # frozen clock lands on the very civil day the settles do, and every
+            # fixture meaning "an account existed, then money moved" silently
+            # became "money moved on the opening's own day".  Those fixtures
+            # passed only while the OPENING carried a partition exception
+            # (finding N-133 / F1); this is N-132's shape one layer up.
+            #
+            # Supplied to the factory rather than re-stamped afterwards,
+            # because ``create_account`` posts the opening's anchor correction
+            # keyed on this day: a later re-stamp would leave the ledger
+            # holding a stale key plus its reversal in every seeded database.
+            observed_on=bootstrap_period.start_date,
             notes="seed_user fixture origination",
         ),
     )
@@ -1113,9 +1135,18 @@ def _drop_seed_user_bootstrap(db, seed_user, account, new_anchor_period):
         account_id=account.id, pay_period_id=bootstrap_id,
     ).update({
         "pay_period_id": new_anchor_period.id,
+        # The BUSINESS day moves with the period and the instant.  Leaving it
+        # behind is the "two clocks on one row" shape ``seed_user`` states it
+        # is eliminating, recreated one layer down: the row would assert a
+        # 2026 period from a 2024 day, and its posted correction would carry a
+        # 2024 ``entry_date`` inside a 2026 ``pay_period_id``.
+        "observed_on": new_anchor_period.start_date,
+        # Eastern midnight, converted for storage -- NOT midnight UTC, which
+        # is the previous EVENING in the display zone and would file the
+        # opening one day before its own period (finding N-132).
         "created_at": datetime.combine(
-            new_anchor_period.start_date, time.min, tzinfo=timezone.utc,
-        ),
+            new_anchor_period.start_date, time.min, tzinfo=DISPLAY_TIMEZONE,
+        ).astimezone(timezone.utc),
     })
     db.session.flush()
     # Step 2: delete the bootstrap row.
@@ -2047,6 +2078,9 @@ def second_user(app, db):
             name="Other Checking",
             anchor_balance=Decimal("500.00"),
             anchor_period_id=bootstrap_period.id,
+            # Day one of its own period -- see ``seed_user`` above for why
+            # the origination must not share a civil day with the settles.
+            observed_on=bootstrap_period.start_date,
             notes="second_user fixture origination",
         ),
     )
@@ -2172,6 +2206,9 @@ def seed_second_user(app, db):
             name="Checking",
             anchor_balance=Decimal("2000.00"),
             anchor_period_id=bootstrap_period.id,
+            # Day one of its own period -- see ``seed_user`` above for why
+            # the origination must not share a civil day with the settles.
+            observed_on=bootstrap_period.start_date,
             notes="seed_second_user fixture origination",
         ),
     )

@@ -1,0 +1,443 @@
+"""Ruling R-DH's invariants, at the grain the user actually reads.
+
+``docs/audits/balance_architecture/anchor_settle_partition.md``.  R-DH answers
+one question -- *is this settled row already inside the balance the user
+asserted?* -- and the three properties below are the ones the ruling STATES as
+its acceptance criteria.  None of them existed in ``tests/`` when the fix
+shipped: the adversarial review's finding N-133 / F2 measured ZERO net new tests
+in the commit, and ``grep`` found these sentences only in the audit document.
+A property named in a ruling and pinned nowhere is a property the next change
+deletes for free.
+
+Every assertion here is at the **projected end balance** grain -- the figure the
+grid renders and the one production got wrong by ``-$4,001.42`` -- not at the
+walk grain underneath it.  The walk has its own controls
+(``test_cash_walk.py``, ``test_account_posting_service.py``); what those cannot
+show is that the seam, the entries-aware reservation and the anchor reset
+compose to a stable number, because each of the three is individually correct
+about a different thing.
+
+Figures are HAND-COMPUTED from the ruling's own worked example, which is the
+developer's real bookkeeping session on 2026-07-31.
+"""
+from __future__ import annotations
+
+from datetime import timedelta
+from decimal import Decimal
+
+from app.extensions import db as _db
+from app.models.journal_entry import JournalEntry, Posting
+from app.services import (
+    anchor_service,
+    balance_at,
+    pay_period_service,
+    posting_service,
+)
+from app.services.balance_at import BalanceContext
+from app.utils.dates import display_today, to_display_date
+from tests._test_helpers import (
+    add_entry,
+    add_txn,
+    create_account_of_type,
+    create_envelope_txn,
+    create_settled_cash_transaction,
+    linked_ledger_account,
+    override_anchor,
+    settle_instant_on,
+)
+
+
+# The ruling's worked example, verbatim (R-DH (c)):
+#
+#     before:  1307.66 - 500.00 - 827.61  =  -19.95
+#     record a $150.27 purchase and anchor to $1,157.39:
+#     after:   1157.39 - 349.73 - 827.61  =  -19.95
+#
+_ANCHOR = Decimal("1307.66")
+_ENVELOPE_BUDGET = Decimal("500.00")
+_OTHER_BILLS = Decimal("827.61")
+_PURCHASE = Decimal("150.27")
+_ANCHOR_AFTER = _ANCHOR - _PURCHASE          # 1157.39
+_PROJECTED_END = Decimal("-19.95")
+
+
+def _current_period(user_id):
+    """Return the pay period containing today in the USER's zone."""
+    return pay_period_service.get_current_period(
+        user_id, as_of=display_today(),
+    )
+
+
+def _linked_net_on(linked_ledger_id, scenario_id, day):
+    """Return the net posted on one linked ledger for ONE ``entry_date``.
+
+    Per-DATE rather than per-account, because the property under test is where
+    the effect LANDS: a reconcile that reverses a stale day and posts the
+    correct one leaves both dates present, one summing to zero.  An
+    account-total assertion cannot tell that apart from a no-op.
+    """
+    return _db.session.query(
+        _db.func.coalesce(_db.func.sum(Posting.amount), Decimal("0.00")),
+    ).join(
+        JournalEntry, Posting.journal_entry_id == JournalEntry.id,
+    ).filter(
+        Posting.ledger_account_id == linked_ledger_id,
+        JournalEntry.scenario_id == scenario_id,
+        JournalEntry.entry_date == day,
+    ).scalar()
+
+
+def _projected_end_balance(account, user_id, period):
+    """Return the grid's projected end balance for ONE period.
+
+    Read through ``balance_at.grid_balance_view`` -- the entry the grid ROUTE
+    calls -- so these invariants are pinned at the figure the user sees rather
+    than at an intermediate the route does not render.  The context is rebuilt
+    per call because a true-up between two reads must be visible to the second.
+    """
+    periods = pay_period_service.get_all_periods(user_id)
+    view = balance_at.grid_balance_view(
+        account, BalanceContext.build(user_id), periods,
+    )
+    return view.columns[period.id].balance
+
+
+class TestRecordingAPurchaseDoesNotMoveTheProjection:
+    """R-DH (c): the envelope process is order-independent AND value-neutral.
+
+    The ruling keeps the developer's process unchanged -- record an entry per
+    purchase against the envelope, true up the anchor, either order -- and
+    states the price of keeping it: **recording a purchase and truing up the
+    anchor by the same amount must not move the projected end balance**, and it
+    must not move if only the entry is recorded and no anchor follows.
+
+    Both halves turn on the reservation formula
+    (``cash_ledger._amounts._entry_aware_amount``):
+
+        checking_impact = max(estimated - cleared_debit - credit, uncleared_debit)
+
+    An UNCLEARED debit leaves the reservation at the full budget (the money left
+    checking but the anchor does not know), so the projection is unchanged.  A
+    CLEARED debit reduces the reservation by exactly what the anchor dropped by,
+    so the two moves cancel.  The invariant is what makes those two behaviours
+    ONE design instead of two separately-plausible rules.
+    """
+
+    def _seed(self, seed_user, period):
+        """Anchor $1,307.66, budget a $500 envelope and $827.61 of other bills."""
+        account = seed_user["account"]
+        override_anchor(
+            _db.session, account, period, _ANCHOR,
+            notes="R-DH (c) worked example",
+        )
+        envelope = create_envelope_txn(
+            seed_user, _db.session, period, "Groceries", _ENVELOPE_BUDGET,
+        )
+        add_txn(
+            _db.session, seed_user, period, "Every other bill", _OTHER_BILLS,
+        )
+        _db.session.commit()
+        return account, envelope
+
+    def test_an_entry_alone_does_not_move_the_projected_end_balance(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """Recording a purchase with NO anchor true-up leaves the figure alone.
+
+        Anchor $1,307.66, a $500.00 Groceries envelope with nothing recorded,
+        $827.61 of other projected bills:
+
+            1307.66 - 500.00 - 827.61 = -19.95
+
+        Record a $150.27 purchase against the envelope and record NOTHING else.
+        The entry is UNCLEARED -- the anchor was read before the purchase and
+        does not contain it -- so the reservation stays at the full $500.00
+        (``max(500 - 0 - 0, 150.27)``) and the figure is still -$19.95.
+
+        The wrong answer to guard against is $130.32 (``1307.66 - 349.73 -
+        827.61``): reducing the reservation by a purchase the anchor has not
+        seen counts the money as still available AND as already spent.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            period = _current_period(user_id)
+            account, envelope = self._seed(seed_user, period)
+
+            before = _projected_end_balance(account, user_id, period)
+            assert before == _PROJECTED_END
+
+            add_entry(
+                _db.session, seed_user, envelope, _PURCHASE, display_today(),
+            )
+            _db.session.commit()
+
+            assert _projected_end_balance(
+                account, user_id, period,
+            ) == _PROJECTED_END
+
+    def test_an_entry_plus_a_matching_trueup_does_not_move_it_either(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """Recording the purchase AND truing up by the same amount cancels out.
+
+        The same start (-$19.95).  Record the $150.27 purchase, then true the
+        anchor up to $1,157.39 -- exactly $150.27 lower, which is what the bank
+        now shows.  The true-up reconciles the entry, so:
+
+            1157.39 - 349.73 - 827.61 = -19.95
+
+        The anchor fell by $150.27 and the reservation fell by $150.27, and the
+        projected end balance does not move.  This is the invariant the whole
+        envelope design rests on: the user's bookkeeping session changes what
+        the app KNOWS without changing what it PREDICTS.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            period = _current_period(user_id)
+            account, envelope = self._seed(seed_user, period)
+            assert _projected_end_balance(
+                account, user_id, period,
+            ) == _PROJECTED_END
+
+            add_entry(
+                _db.session, seed_user, envelope, _PURCHASE, display_today(),
+            )
+            _db.session.commit()
+            anchor_service.apply_anchor_true_up(
+                account=account,
+                new_balance=_ANCHOR_AFTER,
+                anchor_period=period,
+                user_id=user_id,
+            )
+
+            # The true-up reconciled the entry, which is what makes the two
+            # moves cancel; asserting it here means a regression that stops
+            # reconciling reports as itself rather than as a balance drift.
+            assert envelope.entries[0].is_cleared is True
+            assert _projected_end_balance(
+                account, user_id, period,
+            ) == _PROJECTED_END
+
+
+class TestTheProjectionIgnoresTheOrderOfABookkeepingSession:
+    """R-DH's verification standard 4, at the PROJECTED-BALANCE grain.
+
+    The defect that opened the ruling was decided by click order: three
+    already-cleared payments recorded in the NINE SECONDS after an anchor were
+    subtracted from a bank balance that already contained them, and the grid
+    reported ``-$4,021.37`` against a hand-computed ``-$19.95``.
+
+    There is a control for this at WALK grain
+    (``test_cash_walk.py::test_both_same_day_settles_go_with_the_assertion_whatever_the_order``).
+    A walk-grain control cannot see the projection: the walk is one of four
+    inputs to the rendered figure, and the defect was reported as a rendered
+    figure.  This permutes the recording order of a session and asserts the
+    thing the user actually looked at.
+    """
+
+    def test_the_same_session_recorded_in_either_order_gives_one_answer(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """Anchor-then-settle and settle-then-anchor render the same balance.
+
+        The session, in miniature: the bank shows $1,307.66 and two payments
+        totalling $500.00 have already cleared today.  Whether the user enters
+        the anchor first and then ticks the payments off, or ticks them off
+        first and then enters the anchor, the same three facts are true -- so
+        the projection must be the same number.
+
+        With $827.61 of other projected bills the answer is ``1307.66 - 827.61
+        = 480.05`` both ways: the two cleared payments are INSIDE the asserted
+        balance (they are dated its civil day) and are not subtracted again.
+        Under the instant partition the second ordering answered ``-$19.95``,
+        a $500.00 swing decided by which button was pressed first.
+
+        **The permutation runs on TWO accounts rather than by re-asserting one**,
+        because re-asserting the same balance for the same business day is a
+        DOUBLE-SUBMIT and the F-103 unique index rejects it -- correctly.  Two
+        accounts holding identical facts in opposite recording orders is the
+        same experiment without fighting a guard that is doing its job.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            period = _current_period(user_id)
+            noon = settle_instant_on(display_today())
+            cleared = (Decimal("300.00"), Decimal("200.00"))
+
+            anchor_first = create_account_of_type(
+                seed_user, _db.session, "Checking", "Anchor first",
+                anchor_balance=Decimal("0.00"),
+                observed_on=period.start_date - timedelta(days=1),
+            )
+            settles_first = create_account_of_type(
+                seed_user, _db.session, "Checking", "Settles first",
+                anchor_balance=Decimal("0.00"),
+                observed_on=period.start_date - timedelta(days=1),
+            )
+            _db.session.commit()
+
+            # ORDER A: the anchor is recorded BEFORE the payments are ticked.
+            override_anchor(
+                _db.session, anchor_first, period, _ANCHOR,
+                notes="order A: anchor first", at=noon,
+            )
+            _db.session.flush()
+            for index, amount in enumerate(cleared):
+                create_settled_cash_transaction(
+                    seed_user, _db.session, period, amount,
+                    account=anchor_first, name=f"A cleared {index}",
+                    paid_at=noon + timedelta(hours=1 + index),
+                )
+
+            # ORDER B: the same two payments are ticked BEFORE the anchor.
+            for index, amount in enumerate(cleared):
+                create_settled_cash_transaction(
+                    seed_user, _db.session, period, amount,
+                    account=settles_first, name=f"B cleared {index}",
+                    paid_at=noon - timedelta(hours=2 - index),
+                )
+            override_anchor(
+                _db.session, settles_first, period, _ANCHOR,
+                notes="order B: anchor last", at=noon + timedelta(hours=3),
+            )
+
+            for account in (anchor_first, settles_first):
+                add_txn(
+                    _db.session, seed_user, period, "Every other bill",
+                    _OTHER_BILLS, account=account,
+                )
+            _db.session.commit()
+
+            # The precondition the whole case rests on: every event in both
+            # sessions is on ONE civil day, so what differs between the two
+            # accounts is RECORDING ORDER and nothing else.  Stated rather than
+            # assumed -- an unstated day relationship is how a fixture stops
+            # exercising the rule it names (finding N-132 / N-133 F2).
+            for instant in (noon, noon + timedelta(hours=3),
+                            noon - timedelta(hours=2)):
+                assert to_display_date(instant) == display_today()
+
+            order_a = _projected_end_balance(anchor_first, user_id, period)
+            order_b = _projected_end_balance(settles_first, user_id, period)
+
+            assert order_a == Decimal("480.05")
+            assert order_b == order_a
+
+
+class TestTheDeployResyncIsSafeToRunOnEveryDeploy:
+    """``posting_service.resync_all_cash_postings`` -- the untested deploy hook.
+
+    It re-posts every settled transaction and transfer in the database on every
+    deploy, and finding N-133 / F8 measured what its absence costs: on a
+    pristine production clone the read fold and the posted ledger disagreed on
+    **36 of 56 dates** for Checking without it, and on 0 of 56 with it.  Both of
+    its siblings (the loan backfill and the account-anchor backfill) carry
+    integration tests; this one carried none.
+
+    Two properties, and they are the two an operator relies on: running it
+    changes no rendered figure, and running it twice is the same as running it
+    once.
+    """
+
+    def test_a_second_pass_writes_nothing_and_moves_no_ledger_total(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """Idempotent: the first pass is at target, so the second changes 0.
+
+        A settled $300.00 expense posted go-forward is ALREADY at target, so
+        even the first resync pass reports zero changes and the linked ledger's
+        total is untouched.  The counts are what the deploy log prints, and a
+        steady-state deploy printing anything but zeroes is the signal that
+        something re-dated (finding N-133 / F8).
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            period = _current_period(user_id)
+            account = seed_user["account"]
+            create_settled_cash_transaction(
+                seed_user, _db.session, period, Decimal("300.00"),
+                account=account, name="already posted",
+            )
+            _db.session.commit()
+
+            scenario_id = seed_user["scenario"].id
+            before = posting_service.account_posting_total(
+                account.id, scenario_id,
+            )
+
+            first = posting_service.resync_all_cash_postings()
+            _db.session.commit()
+            second = posting_service.resync_all_cash_postings()
+            _db.session.commit()
+
+            assert first == (0, 0)
+            assert second == (0, 0)
+            assert posting_service.account_posting_total(
+                account.id, scenario_id,
+            ) == before
+
+    def test_it_re_dates_an_entry_whose_stored_day_is_wrong_and_says_so(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A stale entry_date is re-posted onto the right day, and COUNTED.
+
+        This is the hook's whole reason to exist, reproduced: an entry whose
+        stored ``entry_date`` is a day off -- the shape every pre-R-DH (b) entry
+        carried, where a settle between midnight UTC and the user's midnight was
+        filed on the next day -- is walked back through the go-forward sync and
+        lands on the day the readers now derive.
+
+        The stale day is written directly, because that is the only way to
+        reproduce a row the CURRENT writer cannot produce.  What the hook does
+        with it is entirely production code.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            period = _current_period(user_id)
+            account = seed_user["account"]
+            txn = create_settled_cash_transaction(
+                seed_user, _db.session, period, Decimal("300.00"),
+                account=account, name="mis-dated",
+            )
+            _db.session.commit()
+
+            posted_day = (
+                _db.session.query(JournalEntry)
+                .filter_by(transaction_id=txn.id)
+                .one()
+            ).entry_date
+            # Move the SOURCE's settle instant behind the ledger's back, so the
+            # day the writer would now derive differs from the day already
+            # stored -- exactly the state every pre-R-DH (b) entry was left in
+            # when the derivation moved zones.  Raw UPDATE because routing it
+            # through the service would re-post it, which is the thing under
+            # test.  The journal entry itself is append-only and is not touched.
+            _db.session.execute(
+                _db.text(
+                    "UPDATE budget.transactions SET paid_at = :at "
+                    "WHERE id = :id"
+                ),
+                {"at": settle_instant_on(posted_day - timedelta(days=1)),
+                 "id": txn.id},
+            )
+            _db.session.commit()
+            correct_day = posted_day - timedelta(days=1)
+
+            changed_txns, changed_xfers = (
+                posting_service.resync_all_cash_postings()
+            )
+            _db.session.commit()
+
+            assert (changed_txns, changed_xfers) == (1, 0)
+            # The stale day is reversed to zero and the correct day carries the
+            # whole effect -- a reconcile over the UNION of both dates, not an
+            # UPDATE of the stored one, which is what makes a re-dated entry
+            # identical to a freshly posted one.
+            linked = linked_ledger_account(_db.session, account.id)
+            scenario_id = seed_user["scenario"].id
+            assert _linked_net_on(
+                linked.id, scenario_id, posted_day,
+            ) == Decimal("0.00")
+            assert _linked_net_on(
+                linked.id, scenario_id, correct_day,
+            ) == Decimal("-300.00")

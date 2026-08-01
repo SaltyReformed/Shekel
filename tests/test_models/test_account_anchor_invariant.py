@@ -104,6 +104,16 @@ def nullable_anchor_columns(db):
     legacy-shaped row.  The teardown reverses both changes so the
     next test sees the production-tightened schema.  The fixture's
     yielded value is unused; the test depends on the side effect.
+
+    **It also widens ``account_anchor_history.observed_on``**, added by a LATER
+    revision (``c4a19e7b2d80``, ruling R-DH's plan step 2).  These tests run
+    ``cfb15e782f86``'s own ``INSERT_HISTORY_SQL`` text verbatim against a
+    database at HEAD -- that is the point of them, exercising the production
+    string rather than a paraphrase -- so the schema has to be relaxed to the
+    shape that revision actually ran against.  On a real upgrade the ordering
+    does this for free: ``cfb15e782f86`` runs, and only later does
+    ``c4a19e7b2d80`` add the column and backfill every row it finds.  A
+    historical migration is never edited to satisfy a newer schema.
     """
     db.session.commit()  # close any open transaction
     _db.session.execute(_db.text(
@@ -117,6 +127,10 @@ def nullable_anchor_columns(db):
     _db.session.execute(_db.text(
         "ALTER TABLE budget.accounts "
         "ALTER COLUMN current_anchor_period_id DROP NOT NULL"
+    ))
+    _db.session.execute(_db.text(
+        "ALTER TABLE budget.account_anchor_history "
+        "ALTER COLUMN observed_on DROP NOT NULL"
     ))
     _db.session.commit()
     try:
@@ -164,6 +178,19 @@ def nullable_anchor_columns(db):
             "ALTER TABLE budget.accounts "
             "ADD CONSTRAINT ck_accounts_anchor_balance_present "
             "CHECK (current_anchor_balance IS NOT NULL)"
+        ))
+        # Re-tighten the history column the same way ``c4a19e7b2d80`` does:
+        # backfill the rows the historical INSERT left NULL from the derivation
+        # that revision uses, then restore NOT NULL.  Deleting them instead
+        # would hide a row a test asserted on.
+        _db.session.execute(_db.text(
+            "UPDATE budget.account_anchor_history "
+            "SET observed_on = (created_at AT TIME ZONE 'America/New_York')::date "
+            "WHERE observed_on IS NULL"
+        ))
+        _db.session.execute(_db.text(
+            "ALTER TABLE budget.account_anchor_history "
+            "ALTER COLUMN observed_on SET NOT NULL"
         ))
         _db.session.commit()
 

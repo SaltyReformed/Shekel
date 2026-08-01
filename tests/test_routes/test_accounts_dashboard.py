@@ -18,6 +18,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
 from app.models.user import User, UserSettings
+from app.utils.dates import display_today
 from app.services.auth_service import hash_password
 from app.services import account_service
 
@@ -639,6 +640,7 @@ class TestAccountHardDelete:
                 account_id=savings.id,
                 pay_period_id=seed_periods_today[0].id,
                 anchor_balance=Decimal("5000.00"),
+                observed_on=display_today(),
             )
             db.session.add(history)
             db.session.commit()

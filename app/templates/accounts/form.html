@@ -54,6 +54,30 @@
         </div>
       </div>
 
+      {# Create only.  An edit re-asserts the balance AS OF NOW (the update
+         route stages a true-up dated today), so offering a date there would
+         imply a back-dating the anchor form does not do. #}
+      {% if not account %}
+      <div class="mb-3">
+        <label for="observed_on" class="form-label">Balance as of</label>
+        <input type="date" id="observed_on" name="observed_on"
+               class="form-control"
+               value="{{ today.isoformat() }}"
+               min="{{ observed_on_min.isoformat() }}"
+               max="{{ today.isoformat() }}"
+               aria-describedby="observed-on-help">
+        <div id="observed-on-help" class="form-text">
+          The day that balance was true, treated as the <strong>end</strong> of
+          that day: anything that cleared on or before it counts as already
+          inside the balance above.
+          <strong>Opening a brand-new account and putting money in it
+          today? Pick yesterday</strong> -- otherwise today's deposit is
+          treated as already included, and the account will read low until
+          your next balance update.
+        </div>
+      </div>
+      {% endif %}
+
       <div class="d-flex gap-2 mt-4">
         <button type="submit" class="btn btn-primary">
           <i class="bi bi-check-circle"></i> {{ 'Update' if account else 'Create' }}

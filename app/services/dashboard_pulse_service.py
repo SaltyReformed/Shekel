@@ -32,7 +32,7 @@ Pure aggregation service -- no Flask imports, no database writes.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from decimal import Decimal
 from itertools import groupby
 from typing import TYPE_CHECKING
@@ -276,10 +276,11 @@ def _pulse_hero(
         ``period_end_date``, ``account_name``, ``account_id``,
         ``last_updated_date``, ``is_stale``, ``next_paycheck_date``.
     """
-    # One fetch of the raw anchor instant, two truncations: staleness
-    # counts days in the UTC frame (storage convention, unchanged), the
-    # caption shows the day in the user's display timezone so a late-
-    # evening Eastern true-up does not read as "tomorrow".
+    # One fetch of the raw anchor instant and ONE truncation, in the user's
+    # zone, feeding both the caption and the staleness count.  They were two
+    # truncations in two zones -- UTC for the arithmetic, display for the
+    # caption -- so for four hours each evening the two disagreed about which
+    # day the anchor was set (ruling R-DH (b), finding N-133).
     last_anchor_dt = _get_last_anchor_date(account.id)
 
     return {
@@ -289,7 +290,7 @@ def _pulse_hero(
         "account_name": account.name,
         "account_id": account.id,
         "last_updated_date": to_display_date(last_anchor_dt),
-        "is_stale": _anchor_is_stale(_utc_day(last_anchor_dt), settings),
+        "is_stale": _anchor_is_stale(_anchor_day(last_anchor_dt), settings),
         "next_paycheck_date": _next_paycheck_date(account.user_id),
     }
 
@@ -312,8 +313,8 @@ def _anchor_is_stale(
     production -- but the branch is defensive and worth pinning).
 
     Args:
-        last_updated_date: The UTC date of the latest anchor event, or
-            ``None`` when the anchor has never been set.
+        last_updated_date: The display-timezone date of the latest anchor
+            event, or ``None`` when the anchor has never been set.
         settings: The user's settings, or ``None``.
 
     Returns:
@@ -725,47 +726,54 @@ def _pulse_due_soon_stations(due_soon: list[dict]) -> list[dict]:
     return stations
 
 
-def _utc_day(last_anchor_dt: datetime | None) -> date | None:
-    """Truncate a stored UTC anchor instant to its UTC calendar day.
+def _anchor_day(last_anchor_dt: datetime | None) -> date | None:
+    """Truncate a stored anchor instant to its DISPLAY-timezone calendar day.
 
-    The storage-domain convention shared by the staleness math and
-    ``balance_resolver``: normalize to UTC before truncating so the day
-    cannot shift by the server's local timezone.  ``None``-safe (an
-    account whose anchor has never been set).  Distinct from
-    ``app.utils.dates.to_display_date``, which truncates in the user's
-    DISPLAY timezone -- staleness counts days in the UTC frame, the
-    caption shows the day in the user's frame.
+    The day the staleness count measures FROM.  ``None``-safe (an account
+    whose anchor has never been set).
+
+    **It was a UTC day, and the mismatch was live** (ruling R-DH (b), finding
+    N-133).  This day is compared against a display-timezone "today" to decide
+    whether the anchor is stale, and it sat beside a ``last_updated_date`` the
+    hero renders with :func:`~app.utils.dates.to_display_date` -- so for the
+    four hours each evening when the two zones disagree, the caption showed one
+    day and the staleness arithmetic used another.  One instant, two
+    derivations, one comparison: the shape ruling R-DH (b) exists to delete.
+
+    **A better source exists and is not reached from here.**  What staleness
+    really wants is ``AccountAnchorHistory.observed_on`` -- the day the balance
+    was TRUE -- not the day the row was recorded; since plan step 2 those can
+    differ by any amount for a back-dated opening.  Moving to it means changing
+    ``dashboard_service._get_last_anchor_date``'s contract, which has callers
+    beyond this module, so it is recorded rather than done here.
 
     Args:
         last_anchor_dt: The latest anchor ``created_at`` instant, or
             ``None``.
 
     Returns:
-        The UTC calendar day, or ``None`` when ``last_anchor_dt`` is
-        ``None``.
+        The display-timezone calendar day, or ``None`` when ``last_anchor_dt``
+        is ``None``.
     """
-    if last_anchor_dt is None:
-        return None
-    return last_anchor_dt.astimezone(timezone.utc).date()
+    return to_display_date(last_anchor_dt)
 
 
 def _last_anchor_update_date(account_id: int) -> date | None:
     """Return the UTC calendar date of the account's most recent anchor event.
 
     A thin date-only wrapper over ``dashboard_service._get_last_anchor_date``
-    (which returns the raw ``created_at`` timestamp): UTC-normalizes the
-    timestamp before truncating to a day (via :func:`_utc_day`) so the
-    date matches ``balance_resolver``'s UTC-day convention and cannot
-    shift by the server's local timezone.  ``None`` when the account has
-    no anchor history (never set).
+    (which returns the raw ``created_at`` timestamp): truncates it to the
+    USER's calendar day (via :func:`_anchor_day`), the same day the hero's
+    "last updated" caption renders and the same zone the staleness comparison
+    runs in.  ``None`` when the account has no anchor history (never set).
 
     Args:
         account_id: The account whose latest anchor date is wanted.
 
     Returns:
-        The UTC date of the latest anchor event, or ``None``.
+        The display-timezone date of the latest anchor event, or ``None``.
     """
-    return _utc_day(_get_last_anchor_date(account_id))
+    return _anchor_day(_get_last_anchor_date(account_id))
 
 
 def _next_paycheck_date(user_id: int) -> date | None:

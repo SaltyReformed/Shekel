@@ -15,7 +15,7 @@ import hashlib
 import logging
 import os
 import re
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import bcrypt
@@ -45,6 +45,7 @@ from app.services.tax_seed_data import (
     build_tax_bracket_set,
     build_tax_brackets,
 )
+from app.utils.dates import display_today
 from app.utils.log_events import (
     AUTH,
     EVT_ACCOUNT_LOCKED,
@@ -688,7 +689,13 @@ def register_user(email, password, display_name):
     # and is preserved so the anchor reference stays valid.  Start
     # date is today and cadence is the project-default 14 days so the
     # grid shows a current-period balance immediately after sign-up.
-    today = date.today()
+    #
+    # The day is the USER's, not the process's (ruling R-DH (b)).  The
+    # origination assertion this period anchors is dated ``display_today()``
+    # by ``create_account``, so building the period from ``date.today()``
+    # would, in any process not pinned to the display zone, open the schedule
+    # on the day AFTER the assertion it exists to hold.
+    today = display_today()
     bootstrap_period = PayPeriod(
         user_id=user.id,
         start_date=today,
@@ -721,6 +728,11 @@ def register_user(email, password, display_name):
             name="Checking",
             anchor_balance=Decimal("0.00"),
             anchor_period_id=bootstrap_period.id,
+            # Day one of the period it is anchored to -- the same clock that
+            # built the period above, so the row's two statements of "when"
+            # agree by construction rather than by both happening to read the
+            # same wall clock in the same second.
+            observed_on=bootstrap_period.start_date,
             notes="origination (sign-up)",
         ),
     )

@@ -5,7 +5,7 @@ Tests for account CRUD, anchor balance true-up, and account type
 management endpoints (§2.1 of the test plan).
 """
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -21,6 +21,7 @@ from app.enums import (
 )
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
+from app.utils.dates import display_today
 from app.models.interest_params import InterestParams
 from app.models.investment_params import InvestmentParams
 from app.models.user import User, UserSettings
@@ -189,6 +190,173 @@ class TestAccountCreate:
                 .one()
             )
             assert acct.current_anchor_balance == Decimal("500.00")
+
+    def test_create_account_stores_the_submitted_observed_on(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A back-dated "Balance as of" is stored, and sets the anchor period.
+
+        The user is entering an account they already had: they type today's
+        balance but say it was true on a day inside an EARLIER pay period.  Two
+        things must follow (ruling R-DH, plan step 2):
+
+        * the origination row's ``observed_on`` is the submitted day, not the
+          day the form was submitted -- it is the day the whole anchor/settle
+          partition compares settled rows against;
+        * the anchor PERIOD is resolved FROM that day, not from today.  A row
+          asserting an earlier day while filed against today's period would put
+          its correction's journal entry in a period its own ``entry_date``
+          falls outside.
+        """
+        with app.app_context():
+            savings_type = (
+                db.session.query(AccountType).filter_by(name="Savings").one()
+            )
+            earlier = seed_periods_today[0]
+            observed = earlier.start_date + timedelta(days=1)
+
+            response = auth_client.post("/accounts", data={
+                "name": "Old Savings",
+                "account_type_id": savings_type.id,
+                "anchor_balance": "500.00",
+                "observed_on": observed.isoformat(),
+            }, follow_redirects=True)
+            assert response.status_code == 200
+
+            acct = (
+                db.session.query(Account)
+                .filter_by(user_id=seed_user["user"].id, name="Old Savings")
+                .one()
+            )
+            row = (
+                db.session.query(AccountAnchorHistory)
+                .filter_by(account_id=acct.id)
+                .one()
+            )
+            assert row.observed_on == observed
+            # Non-vacuity: the submitted day is genuinely not today, so this
+            # cannot pass by the default coinciding with the assertion.
+            assert observed != display_today()
+            # The period is the one CONTAINING that day, not today's.
+            assert row.pay_period_id == earlier.id
+            assert acct.current_anchor_period_id == earlier.id
+
+    def test_create_account_refuses_a_future_observed_on(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A balance cannot be observed on a day that has not happened.
+
+        The route surfaces the service's own message and returns the user to
+        the form -- not to /pay-periods/generate, which is the other shape that
+        raises the same exception type.
+        """
+        with app.app_context():
+            savings_type = (
+                db.session.query(AccountType).filter_by(name="Savings").one()
+            )
+            tomorrow = display_today() + timedelta(days=1)
+
+            response = auth_client.post("/accounts", data={
+                "name": "Future Savings",
+                "account_type_id": savings_type.id,
+                "anchor_balance": "500.00",
+                "observed_on": tomorrow.isoformat(),
+            }, follow_redirects=True)
+
+            assert response.status_code == 200
+            assert b"has not happened yet" in response.data
+            # Back to the account form, NOT to /pay-periods/generate -- the
+            # other shape that raises the same exception type.
+            assert b"New Account -- Shekel" in response.data
+            assert (
+                db.session.query(Account)
+                .filter_by(user_id=seed_user["user"].id, name="Future Savings")
+                .first()
+            ) is None
+
+    def test_create_account_refuses_an_observed_on_before_the_schedule(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A day before the recorded history has no period to be filed against.
+
+        Unbounded back-dating is not a cosmetic problem: ``observed_on`` opens
+        the modelled-return accrual window and the contribution model's first
+        period, so a day in the distant past fabricates history and folds over
+        every calendar day since (finding N-133, the review of the F1 revert).
+        """
+        with app.app_context():
+            savings_type = (
+                db.session.query(AccountType).filter_by(name="Savings").one()
+            )
+            too_early = seed_periods_today[0].start_date - timedelta(days=1)
+            assert too_early < display_today()
+
+            response = auth_client.post("/accounts", data={
+                "name": "Ancient Savings",
+                "account_type_id": savings_type.id,
+                "anchor_balance": "500.00",
+                "observed_on": too_early.isoformat(),
+            }, follow_redirects=True)
+
+            assert response.status_code == 200
+            assert b"recorded history starts on" in response.data
+            assert (
+                db.session.query(Account)
+                .filter_by(user_id=seed_user["user"].id, name="Ancient Savings")
+                .first()
+            ) is None
+
+    def test_create_account_defaults_observed_on_to_today(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """An omitted "Balance as of" means today, applied by the factory.
+
+        The schema drops the empty input, so the route passes ``None`` and the
+        default is stated once in ``account_service.create_account`` rather
+        than per caller.
+        """
+        with app.app_context():
+            savings_type = (
+                db.session.query(AccountType).filter_by(name="Savings").one()
+            )
+            auth_client.post("/accounts", data={
+                "name": "Today Savings",
+                "account_type_id": savings_type.id,
+                "anchor_balance": "500.00",
+                "observed_on": "",
+            }, follow_redirects=True)
+
+            acct = (
+                db.session.query(Account)
+                .filter_by(user_id=seed_user["user"].id, name="Today Savings")
+                .one()
+            )
+            row = (
+                db.session.query(AccountAnchorHistory)
+                .filter_by(account_id=acct.id)
+                .one()
+            )
+            assert row.observed_on == display_today()
+
+    def test_new_account_form_bounds_the_observed_on_input(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The date input carries the same two bounds the service enforces.
+
+        The browser refuses what the service would refuse, rather than
+        round-tripping a rejection -- and both bounds come from
+        ``account_service.earliest_observable_day`` / ``display_today`` so the
+        form cannot drift from the validation behind it.
+        """
+        with app.app_context():
+            html = auth_client.get("/accounts/new").data.decode()
+
+            assert 'name="observed_on"' in html
+            assert f'value="{display_today().isoformat()}"' in html
+            assert f'max="{display_today().isoformat()}"' in html
+            assert (
+                f'min="{seed_periods_today[0].start_date.isoformat()}"' in html
+            )
 
     def test_create_account_zero_anchor_balance(self, app, auth_client, seed_user):
         """POST /accounts with anchor_balance "0" stores an exact zero.
@@ -3802,8 +3970,13 @@ class TestCashDetailContext:
         anchor EVENT date (today) differs from the anchor PERIOD's start
         date.  The context must carry the event INSTANT (the audit's
         finding #2 fix), NOT the period start; the template renders that
-        instant in the user's display timezone (``AnchorPoint.as_of_date``
-        stays UTC for anchor logic, so the context passes ``created_at``).
+        instant in the user's display timezone.
+
+        **The non-vacuity check reads the event's DISPLAY day**, which is what
+        the caption shows.  It read ``AnchorPoint.as_of_date`` -- a UTC day --
+        until that field was deleted (finding N-133 / F12): it had no
+        production reader, and its own docstring justified the UTC choice by an
+        index that now keys on the stored ``observed_on`` instead.
         """
         # Pylint: import-outside-toplevel -- deferred import is the file-wide
         # test convention.
@@ -3828,16 +4001,16 @@ class TestCashDetailContext:
                 acct, seed_user["scenario"].id,
             )
             # Non-vacuity: the event date and the period start genuinely differ.
-            assert anchor.as_of_date != anchor.period.start_date
+            assert to_display_date(anchor.created_at) != anchor.period.start_date
 
             context = _capture_cash_detail_context(app, auth_client, acct.id)
-            # The context carries the anchor EVENT instant (created_at); the
-            # template converts it to the display timezone for the caption.
-            assert context["anchor_as_of"] == anchor.created_at
-            assert (
-                to_display_date(context["anchor_as_of"])
-                != anchor.period.start_date
-            )
+            # The context carries the day the balance was TRUE
+            # (``AnchorPoint.observed_on``), not the day the row was recorded.
+            # The two were the same day by construction until ``observed_on``
+            # became a stored, user-supplied column (ruling R-DH, plan step 2);
+            # a caption reading ``created_at`` would name the keystroke.
+            assert context["anchor_as_of"] == anchor.observed_on
+            assert context["anchor_as_of"] != anchor.period.start_date
 
     def test_interest_next_year_zero_for_zero_apy(
         self, app, auth_client, seed_user, db,

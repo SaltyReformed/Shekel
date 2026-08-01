@@ -56,7 +56,7 @@ primitives -- ``create_account`` (fires the C6 opening sync),
 seam + posting builder), ``apply_anchor_true_up`` (the true-up chokepoint) --
 so every reconciled row was produced exactly as production produces it.  The one
 non-production affordance is pinning an anchor row's ``created_at`` (via
-:func:`_assert_balance_at`) so the moment partition under test is deterministic
+:func:`_assert_balance_at`) so the civil-day partition under test is deterministic
 regardless of the test clock or timezone -- the same technique the C5 unit suite
 uses.  Assertion instants are always built RELATIVE to the factory origination
 row's stored ``created_at`` (the one instant the test cannot choose).
@@ -102,6 +102,7 @@ from tests._test_helpers import (
     ledger_net,
     linked_ledger_account,
     load_migration_module,
+    observed_day_of,
     restamp_opening_assertion,
 )
 
@@ -195,7 +196,7 @@ def _linked_ledger_sum_as_of(
 
     The "ledger through an assertion instant" reader: every linked-ledger entry
     -- a source OR an anchor correction -- carries ``entry_date`` equal to the
-    UTC civil date of its attribution instant (``posting_service._entry_date`` /
+    display-timezone civil date of its ``paid_at`` (``posting_service._entry_date`` /
     ``_transaction_entry_date`` date sources off ``paid_at``; corrections off
     the anchor's ``created_at``), so summing legs with ``entry_date <=
     civil_date`` reconstructs the ledger as of the END of that civil day.  When
@@ -465,7 +466,7 @@ def _assert_balance_at(account, balance, created_at) -> AccountAnchorHistory:
 
     Mirrors ``anchor_service.stage_anchor_true_up`` (the history row plus the
     ``current_anchor_balance`` cache write) but pins ``created_at`` explicitly
-    so the moment partition under test is exact -- the one non-production
+    so the civil-day partition under test is exact -- the one non-production
     affordance, the same the C5 unit suite uses.  Anchors against the account's
     current anchor period; flushes.  The caller drives the reconcile
     (``sync_account_anchor_postings_all_scenarios``) afterward, exactly as the
@@ -476,6 +477,9 @@ def _assert_balance_at(account, balance, created_at) -> AccountAnchorHistory:
         pay_period_id=account.current_anchor_period_id,
         anchor_balance=Decimal(str(balance)),
         created_at=created_at,
+        # The civil day this assertion is the closing balance FOR, kept in step
+        # with the pinned instant by the shared rule (ruling R-DH, plan step 2).
+        observed_on=observed_day_of(created_at),
     )
     account.current_anchor_balance = Decimal(str(balance))
     _db.session.add(row)
@@ -489,7 +493,7 @@ def _true_up_at(account, balance, created_at) -> None:
     The deterministic stand-in for ``anchor_service.apply_anchor_true_up``: it
     stages the history row + cache (:func:`_assert_balance_at`) at a PINNED
     ``created_at`` and then drives the SAME all-scenarios reconcile the true-up
-    chokepoint calls.  Pinning the instant is what makes the moment partition
+    chokepoint calls.  Pinning the instant is what makes the civil-day partition
     exact -- ``apply_anchor_true_up`` stamps ``created_at = now()``, which cannot
     be placed between two synthetic settles; the C5 unit suite uses the same
     affordance for the same reason.  The chokepoint itself is covered end to end
@@ -517,7 +521,7 @@ def _settle_expense(seed_user, account, amount, paid_at):
 
 
 # ---------------------------------------------------------------------------
-# 1. The absolute invariant: moment partition (CRITICAL-1)
+# 1. The absolute invariant: civil-day partition (CRITICAL-1)
 # ---------------------------------------------------------------------------
 
 
