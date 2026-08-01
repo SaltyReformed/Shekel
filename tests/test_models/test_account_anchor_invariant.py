@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import importlib.util
 import pathlib
-from datetime import date, timedelta
+from datetime import timedelta
 from decimal import Decimal
 
 import pytest
@@ -52,6 +52,7 @@ from app.models.ref import AccountType
 from app.models.scenario import Scenario
 from app.models.user import User, UserSettings
 from app.services.auth_service import hash_password
+from app.utils.dates import display_today
 
 
 # ---------------------------------------------------------------------------
@@ -486,6 +487,16 @@ class TestCreationPathsWriteAnchor:
         ``current_anchor_balance=Decimal("0.00")`` and
         ``current_anchor_period_id`` equal to the bootstrap.id.  The
         history row mirrors the column cache.
+
+        **"Today" here is the USER's, not the process's** (finding R2,
+        ``anchor_settle_partition.md`` Section 9).  ``register_user`` builds the
+        bootstrap period from :func:`~app.utils.dates.display_today`
+        (``auth_service.py:698``) so the period and the origination assertion
+        ``create_account`` dates come off ONE clock.  Asserting ``date.today()``
+        here pinned the PROCESS zone instead: it passes in a dev shell running
+        Eastern and FAILS in CI, which runs UTC, for the four hours a day the two
+        calendars disagree -- which is exactly how it failed the merge gate at
+        03:56 UTC on 2026-08-01, reading ``2026-07-31 != 2026-08-01``.
         """
         from app.services import auth_service
 
@@ -506,12 +517,13 @@ class TestCreationPathsWriteAnchor:
             # The bootstrap period covers today (cadence 14 days from
             # today).  The signup path picks period_index 0 because
             # this is the user's first period.
+            signup_day = display_today()
             period = db.session.get(PayPeriod, account.current_anchor_period_id)
             assert period is not None
             assert period.user_id == user.id
             assert period.period_index == 0
-            assert period.start_date == date.today()
-            assert period.end_date == date.today() + timedelta(days=13)
+            assert period.start_date == signup_day
+            assert period.end_date == signup_day + timedelta(days=13)
 
             histories = db.session.query(AccountAnchorHistory).filter_by(
                 account_id=account.id,
