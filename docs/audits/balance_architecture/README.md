@@ -35,11 +35,12 @@ residue shipped the F1 ruling (the OPENING exception deleted from both walks), s
 F6, F7, F8, F9, F12 -- plus the eight items its own second adversarial review found
 (`anchor_settle_partition.md` Section 9).
 
-> **PRODUCTION IS ONE MIGRATION BEHIND `main`.** Merging does not deploy: prod sits at
-> `b2d8f3a6c541` and `main` is at `c4a19e7b2d80`. The image is built and signed on merge; rolling it
-> out is a manual `shekel-deploy` run. **Nothing in the residue moves a rendered figure** (0 of
-> 15,682 seam leaves), so the deploy is safe to sequence whenever convenient -- but S1-c's `+$534.08`
-> must NOT ship on top of an undeployed residue without saying so.
+> **THE RESIDUE IS IN PRODUCTION** (2026-08-01, merge `9703b77c`, image `sha256:a6f6b4ebfd77`,
+> `414a99be -> a6f6b4ebfd77`, healthy in 15s, 0 restarts, no rollback). Migration `c4a19e7b2d80`
+> applied: the entrypoint runs `flask db upgrade` before gunicorn, so a healthy container IS the
+> proof. **It moved no rendered figure** (0 of 15,682 seam leaves), which is why it could ship on its
+> own. **S1-c is the next thing to ship and it DOES move one** -- the current period's projected end
+> balance goes `-$19.95 -> +$514.13` -- so it ships saying so.
 
 **The test suite grew two clock gates on 2026-08-01** and they matter to this arc specifically,
 because three of the five defects behind them were fixture-clock bugs this arc's own work created
@@ -62,8 +63,7 @@ withdrawn on measurement in the course of closing it**, one of them a from-scrat
 (per-movement reconciliation coverage) that an adversarial review showed re-opens `-$4,001.42` by a
 different route -- recorded as REJECTED in Section 11 rather than deleted.
 
-**NEXT, in order:** deploy `main` to production (one migration behind; see the note above), then
-**S1-c** -- R-DH (d) as ruled, shipping with three things
+**NEXT: S1-c** -- R-DH (d) as ruled, shipping with three things
 that are not optional: the un-hidden entry-date field, R-DH (f)'s split (one line:
 *Book vs bank* is `asserted[period]`, *Period timing* is `moved - net`, both already computed in
 `_cash_fold._assemble_figures`), and a pinned same-day assertion in the blind test. After that:

@@ -1,8 +1,9 @@
 # The anchor/settle partition: when is a settled row already inside an asserted balance?
 
 Status: **Steps S1-a and S1-b SHIPPED TO PRODUCTION 2026-07-31 (PR #67, merge `fd0ddfab`);
-the residue MERGED to `main` 2026-08-01 at PR #68 but NOT YET DEPLOYED -- prod is at
-`b2d8f3a6c541`, `main` at `c4a19e7b2d80`, and the residue moves no rendered figure.
+**the residue is IN PRODUCTION as of 2026-08-01** (PR #68, deployed at merge `9703b77c`,
+image `sha256:a6f6b4ebfd77`, healthy in 15s, 0 restarts, no rollback; migration `c4a19e7b2d80`
+applied by the entrypoint, which a healthy container proves). It moved no rendered figure.
 The residue: F1 RULED and applied, the opening now carries a stored user-supplied DATE (step 2's
 opening half), and F2's remainder, F4, F5, F6, F7, F8, F9 and F12 are all closed. **S1-c is
 UNBLOCKED and is NEXT** (F11 measured and closed -- Sections 10 and 11); steps 3-4 and step 2's
