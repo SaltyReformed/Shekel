@@ -543,13 +543,25 @@ def test_arm_payoff_date_consistent_across_surfaces(
         # The chip's producer since C8d: the fold to zero.  Hand-checked -- the
         # loan has paid nothing, so its balance is still $400,000.00 and the
         # contractual payment amortizes exactly that over exactly 360
-        # installments; the first one the plan synthesizes is the next one after
-        # today (a strictly-past installment with no record pays nothing, D1), so
-        # the loan clears 360 months after it.
+        # installments; the first one the plan synthesizes is the first one NOT
+        # already past (a strictly-past installment with no record pays nothing,
+        # D1), so the loan clears 360 months after it.
+        #
+        # "Not already past" is ON OR AFTER today, not "next month".  The fixture
+        # pays on the 1st, so on the 1st of a month today's own installment is
+        # still owed and the plan synthesizes it -- the payoff is then 359 months
+        # from TODAY, not from next month.  Hard-coding ``add_months(first of this
+        # month, 1)`` assumed today is never an installment date and failed CI on
+        # 2026-08-01, reading 2056-07-01 against an expected 2056-08-01.
         seam_payoff = balance_at.loan_payoff_date(account, ctx)
         assert seam_payoff is not None
-        first_forward = add_months(
-            date(date.today().year, date.today().month, 1), 1,
+        this_months_installment = date(
+            date.today().year, date.today().month, 1,
+        )
+        first_forward = (
+            this_months_installment
+            if this_months_installment >= date.today()
+            else add_months(this_months_installment, 1)
         )
         assert seam_payoff == add_months(first_forward, 359), (
             f"Derived payoff {seam_payoff} is not 360 installments from the "
@@ -816,10 +828,33 @@ def test_standing_extra_folds_past_the_shadow_horizon(
 
         ctx = BalanceContext.build(seed_user["user"].id)
 
-        # The fold reproduces the committed forward on EVERY month, including the
-        # ESTIMATED tail -- an independent producer (project_forward) agreeing with
-        # the fold that the extra is applied for the whole term.
-        for row in committed_forward:
+        # The fold reproduces the committed forward on EVERY month the forward
+        # projection OWNS, including the ESTIMATED tail -- an independent producer
+        # (project_forward) agreeing with the fold that the extra is applied for
+        # the whole term.
+        #
+        # Rows dated at or before the resolver's NOW are excluded, and the
+        # exclusion is the seam's own rule rather than a convenience: a date at or
+        # before ``ctx.as_of`` reads the LEDGER (``balance_at._positions`` routes
+        # ``on_date <= ctx.as_of`` to the fold -- "the past is the ledger's"),
+        # while both plan tiers clamp a still-projected item to
+        # ``as_of + 1 day`` (``balance_at._plan`` for loans, ``_cash_fold`` for
+        # cash, ruling D1 / R-G: "a plan cannot have already happened").  So on a
+        # day that IS an installment due date, ``balance_at(today)`` is the
+        # still-owed balance while the committed row for that same day is the
+        # post-payment projection.  Both are right and they answer different
+        # questions; comparing them is a category error, and it fired as a real
+        # CI failure on 2026-08-01 because this fixture originates at the current
+        # period with ``payment_day=1``.  On every other day of the month the
+        # filter removes nothing.
+        comparable = [
+            row for row in committed_forward if row.payment_date > ctx.as_of
+        ]
+        assert len(comparable) > 1, (
+            "the forward projection owns no comparable rows; the parallel-run "
+            "would be vacuous"
+        )
+        for row in comparable:
             folded = balance_at.balance_at(account, ctx, row.payment_date)
             assert folded == row.remaining_balance, (
                 f"Fold {folded} != committed {row.remaining_balance} at "
