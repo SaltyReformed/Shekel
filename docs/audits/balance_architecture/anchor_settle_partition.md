@@ -1,21 +1,23 @@
 # The anchor/settle partition: when is a settled row already inside an asserted balance?
 
 Status: **Steps S1-a, S1-b and the N-133 residue are IN PRODUCTION (PR #67 `fd0ddfab`,
-PR #68 -- prod and `main` both at `c4a19e7b2d80`, deployed 2026-08-01).**
+PR #68 -- prod at `c4a19e7b2d80`, deployed 2026-08-01).**
 
-**S1-c is BUILT and IN PROGRESS on branch `feat/entry-posting-date`.  Ruling R-M was RE-RULED in
-the course of it and the shape changed: `transaction_entries.entry_date` SPLITS into
-`purchased_on` + `settled_on`, and reconciliation is derived from an OBSERVED posting day rather
-than from a guess.  See Section 12 for the rulings and Section 13 for what remains.**
-Application code is complete and `pylint app/` is 10.00/10; migration `d7c1f4a9e603` is verified
-both directions against a production clone; **the suite is mid-conversion at 7,424 passed /
-157 failed** and the branch must not be opened as a PR until it is green.
+**S1-c is COMPLETE and GREEN on branch `feat/entry-posting-date` (`b305b7b5`, 2026-08-01), awaiting
+its PR to `main` and the deploy.  Ruling R-M was RE-RULED in the course of it and the shape
+changed: `transaction_entries.entry_date` SPLITS into `purchased_on` + `settled_on`, and
+reconciliation is derived from an OBSERVED posting day rather than from a guess.  See Section 12
+for the rulings and Section 13 for what was built, what the conversion cost, and what a neutral
+adversarial review found in it.**  The whole step is ONE commit: the migration and the tests
+written against its schema cannot revert separately without leaving a tree that fails.
 
 Steps 3-4 and step 2's transaction half (`transactions.settled_on`) remain OPEN.
 
-`pylint app/ scripts/` 10.00/10. Full suite **7,687 passed / 0 failed** (7,677 at the merge base;
-10 net new). Production-clone verification is Section 7: **standards 1, 2, 3, 5 and 6 all pass**,
-standard 3 after the deploy hooks as designed.
+`pylint app/ scripts/` 10.00/10. Full suite **7,724 passed / 0 failed**, under both
+`America/New_York` and CI's `TZ=Pacific/Kiritimati` (7,687 before S1-c). Production-clone
+verification is Section 7 for the residue and Section 13.5 for S1-c: **standards 1, 2, 3, 5 and 6
+all pass**, standard 3 after the deploy hooks as designed, and S1-c moves **0 of 15,682 seam
+leaves**.
 
 **A SECOND adversarial review (Section 9) ran against the residue before it was committed and found
 eight items, four of them High.** All are fixed; the largest was structural and two reviewers found
@@ -1522,14 +1524,27 @@ precisely to catch this -- the form defaults to a date its own server refuses. L
 - **R-DH (e) vs R-M is settled for entries only.** A transaction still has one date doing both jobs
   until S2-b.
 
-## 13. S1-c: what remains, and the ruling each conversion must satisfy
+## 13. S1-c as BUILT: the conversion, what it cost, and what the review found
 
-The application is complete. The suite is **7,424 passed / 157 failed** and every failure is a
-deliberate re-ruling rather than a rename -- the renames are done. A conversion is CORRECT when it
-satisfies the ruling named in its row; a conversion that merely makes a test green is not.
+**COMPLETE and GREEN, 2026-08-01, commit `b305b7b5` on `feat/entry-posting-date`.** This section
+was a work-list -- 157 failures across 20 files, with the ruling each conversion had to satisfy --
+and it is kept as the as-built record of what that cost, because three of the entries below were
+not renames and one of them was a defect the conversion itself introduced.
 
-> **Rebuild the test template first.** Migration `d7c1f4a9e603` invalidates
-> `shekel_test_template`; before this rebuild the suite showed 1,007 failures that were entirely
+The standard the conversion was held to: **a conversion is CORRECT when it satisfies the ruling
+named in its row; a conversion that merely makes a test green is not.**
+
+| gate | result |
+|---|---|
+| the suite | **7,724 passed / 0 failed** |
+| the suite under CI's clock (`TZ=Pacific/Kiritimati`) | **7,724 passed / 0 failed** |
+| `pylint app/` (with every custom checker as `--fail-on`) | **10.00/10** |
+| `pylint scripts/`, cross-tree `duplicate-code`, `tests/` Decimal gate | **clean** |
+| whole-seam clone diff, 9 accounts / 427 grid cells / 5,978 daily points | **0 of 15,682 leaves moved** |
+| the migration, both directions | **PASS** -- and the downgrade REFUSES once any row carries an observed `settled_on`, naming the row and the recovery SQL |
+
+> **Rebuild the test template before running the suite.** Migration `d7c1f4a9e603` invalidates
+> `shekel_test_template`; without the rebuild the suite shows ~1,007 failures that are entirely
 > `column transaction_entries.purchased_on does not exist`. The invocation needs the admin URL
 > derived from `.env`:
 >
@@ -1540,51 +1555,142 @@ satisfies the ruling named in its row; a conversion that merely makes a test gre
 > python scripts/build_test_template.py
 > ```
 
-| file | count | the ruling it must satisfy |
+### 13.1 The conversion, by file
+
+Each row's ruling is the one its conversion had to satisfy, not merely the symptom that made it
+red.
+
+| file | count | the ruling it satisfies |
 |---|---|---|
-| `test_services/test_entry_service.py` | 35 | 12.3, 12.4. `check_entry_date_in_period` is `check_purchase_date_in_period`; `clear_entries_for_anchor_true_up` and `toggle_cleared` are DELETED -- their tests are deleted with them, replaced by tests for `outstanding_purchases` / `record_settled_days` (including that a forged id from another user, another account, a credit purchase or a settled parent matches nothing) |
-| `test_services/test_cash_amounts.py` | 23 | 12.4. The reservation's third bucket is `settled_on <= reconciled_through`, so every case needs a `ProjectedBasis`. The three buckets are now settled / outstanding / credit, and a NULL `settled_on` is OUTSTANDING |
-| `test_routes/test_grid.py` | 23 | 12.7. `col.reconciliation` -> `col.period_timing` + `col.book_vs_bank`; `row_flags.reconciliation` -> the two flags |
+| `test_services/test_entry_service.py` | 35 | 12.3, 12.4. `check_entry_date_in_period` is `check_purchase_date_in_period`; the `toggle_cleared` and `clear_entries_for_anchor_true_up` classes are gone with the functions, replaced by `outstanding_purchases` / `record_settled_days` coverage (13.3) |
+| `test_services/test_cash_amounts.py` | 23 | 12.4. Every case takes a `reconciled_through`; the fixture triples carry a DATE where they carried a bool, so each test's bucket is readable at its call site. Three cases were not expressible under a flag and are new: NULL is outstanding, a posting day AFTER the statement is outstanding, and an account that never asserted reconciles nothing |
+| `test_routes/test_grid.py` | 23 | 12.7. `col.reconciliation` -> `col.period_timing` + `col.book_vs_bank`, and the render tests tell the two rows apart by the LABEL a user reads, because the `reconciliation-row` class now marks both |
 | `test_services/test_balance_at.py` | 22 | 12.7, plus `cash_period_view` / `CashPeriodFigures` moved to `balance_at._cash_periods` |
 | `test_services/test_transaction_service.py` | 8 | mechanical: the entry fixtures' renamed kwargs |
-| `test_services/test_cash_flows.py` | 8 | 12.4. `sum_projected` takes a REQUIRED `ProjectedBasis`, not an optional override map |
-| `test_services/test_anchor_service.py` | 7 | 12.4, 12.5. A true-up NO LONGER TOUCHES ENTRIES; `apply_anchor_true_up` lost its `user_id` parameter. The two tests asserting the flip are re-ruled to assert the opposite, and the reconcile step gets its own tests |
-| `test_routes/test_accounts.py` | 6 | 12.4, 12.5. The whole bulk-clear class covers a deleted function; re-rule to the reconcile route, keeping the per-account scoping case (a true-up on account A must not reconcile account B's purchases) which is still a real invariant |
-| `test_routes/test_entries.py` | 5 | 12.4. The toggle route is deleted; replace with the read-only derived indicator's render and the `settled_on` edit path (including that an empty value CLEARS it) |
+| `test_services/test_cash_flows.py` | 8 | 12.4. `sum_projected` takes a REQUIRED `ProjectedBasis` |
+| `test_services/test_anchor_service.py` | 7 | 12.4, 12.5. A true-up NO LONGER TOUCHES ENTRIES; `apply_anchor_true_up` lost its `user_id`. The two tests asserting the flip now assert the opposite |
+| `test_routes/test_accounts.py` | 6 | 12.4, 12.5. The bulk-clear class covered a deleted function; re-ruled to the reconcile route, keeping the per-account scoping invariant |
+| `test_routes/test_entries.py` | 5 | 12.4. The toggle route is deleted; replaced by the read-only derived indicator's render and the `settled_on` edit path (including that an empty value CLEARS it) |
 | `test_integration/test_cross_page_balance_equality.py` | 5 | 12.7 |
 | `test_services/test_posting_service.py` | 3 | mechanical: `TransactionEntry.purchased_on` vs the unchanged `JournalEntry.entry_date` |
-| `test_services/test_cash_fold.py`, `test_cash_period_view.py`, `test_daily_balance_series.py`, `test_asset_fold.py`, `test_account_posting_service.py`, `test_retirement_dashboard_service.py`, `test_models/test_posting_cash_backfill.py`, `test_transaction_posting_lifecycle.py`, `test_frozen_db_clock.py` | ~12 | 12.4. These fixtures set `is_cleared=True` on accounts whose only assertion PREDATES the purchase -- see the finding below. Each needs its assertion moved to cover the purchase, via `mark_purchase_settled`, which fails loudly rather than building the unreachable row |
-| `test_services/test_anchor_settle_partition.py` | 2 | 12.6. Re-rule to the three-row table: an entry alone does NOT move the projection (NULL is outstanding), and the anchor-then-record order now cancels |
-| `test_services/test_service_log_events.py`, `test_utils/test_log_events.py`, `test_services/test_cash_period_view.py` | 3 errors | import errors: the two deleted log events, and the moved `cash_period_view` |
+| `test_cash_fold`, `test_cash_period_view`, `test_daily_balance_series`, `test_asset_fold`, `test_account_posting_service`, `test_retirement_dashboard_service`, `test_models/test_posting_cash_backfill`, `test_transaction_posting_lifecycle`, `test_frozen_db_clock` | ~12 | 12.4, and the finding in 13.2 |
+| `test_services/test_anchor_settle_partition.py` | 2 | 12.6, re-ruled to the three-row table |
+| `test_service_log_events`, `test_utils/test_log_events`, `test_cash_period_view` | 3 errors | the two deleted log events, and the moved `cash_period_view` |
 
-### 13.1 A finding the conversion surfaced, and the helper that records it
+**The rename had been over-applied, and the conversion corrected it in both directions.**
+`JournalEntry.entry_date` is UNCHANGED by this step -- only `TransactionEntry.entry_date` became
+`purchased_on` -- but 15 sites across `test_posting_service.py`, `test_posting_cash_backfill.py`
+and `test_anchor_settle_partition.py` had been swept along with it, and three helper signatures
+kept the old parameter name against a renamed body (`E0602: Undefined variable 'purchased_on'`,
+which pylint reported at the pre-conversion commit). A grep in both directions now finds no
+`TransactionEntry.entry_date` and no `JournalEntry.purchased_on` anywhere in `app/`, `tests/`,
+`scripts/`, `migrations/`, `tools/` or the templates.
+
+**One consumer outside the suite was missed by the same sweep.**
+`tests/manual/verify_balance_baseline.py` -- the instrument this arc's verification standard
+diffs every change against -- still read `col.reconciliation` and would have raised
+`AttributeError` before writing a line. It now emits both halves plus their sum under the old key,
+so a baseline captured BEFORE the split stays diffable; the shim is documented as
+delete-on-next-recut. Ruling 12.7 forbids a combined accessor on the DATACLASS, so that a surface
+cannot render the sum; composing it once inside a diff instrument that also emits both halves is
+the one place that genuinely needs it.
+
+### 13.2 The finding the conversion surfaced, and the helper that records it
 
 **`is_cleared=True` let fixtures assert a state production cannot reach.** The flag was an
 unconditional claim that a purchase was inside the anchor; the derived rule needs the account's
 latest assertion to actually cover it. Several suites set it on accounts whose only assertion was
 months EARLIER than the purchase -- a state the app cannot produce, because the way a purchase gets
-inside a declared balance is that the user declared the balance after it posted.
-
-This is **finding N-132 / R8's shape from a third direction**: a fixture asserting an unreachable
-state passes for years and silently stops discriminating the case it names.
+inside a declared balance is that the user declared the balance after it posted. This is **finding
+N-132 / R8's shape from a third direction**: a fixture asserting an unreachable state passes for
+years and silently stops discriminating the case it names.
 
 `tests/_test_helpers.mark_purchase_settled` is the successor to `add_entry(..., is_cleared=True)`.
-It does what the flag did AND asserts the precondition the flag let fixtures skip, failing with
-both days named. **Every converted fixture must go through it**, so the conversion cannot recreate
-the shape it is fixing.
+It does what the flag did AND asserts the precondition the flag let fixtures skip.
 
-### 13.2 Tests this step still OWES, beyond the conversion
+**Its guard is TWO-SIDED, and the upper half was added because the one-sided version let the same
+class of defect back in.** Checking only `settled_on <= observed_on` invites the obvious escape:
+move the ASSERTION forward until it covers the purchase. But an assertion is itself bounded --
+`account_service._reject_undatable_observation` refuses an `observed_on` after the user's today --
+so an assertion dated into the app's future is exactly as unreachable as the anchor-months-earlier
+row the guard was written to stop. The conversion took that escape on two `test_cash_fold`
+fixtures (assertions dated 2026-04-01 and 2026-04-06 against a suite frozen at 2026-03-20), and
+the review below caught it. The second bound named both fixtures the moment it was added; they were
+reshaped to sit inside the frozen clock, the N-39 firing control now sliding the READER back nine
+days instead of dating the purchase into the future -- the same experiment on a state production
+can hold. Both still fail with `$800.00` against `$920.00` when the deleted `as_of` window is
+re-introduced.
 
-Section 10.6 named three things that must ship with S1-c; two are built and their tests are owed:
+### 13.3 The five tests this step OWED, and where they landed
 
-1. **The invariant table in 12.6, all three rows**, at PROJECTED-BALANCE grain, negative-controlled.
-   The third row (true up, then record, then tick) is the defect S1-c fixes and has never had a test.
-2. **`mark_purchase_settled`'s own guard** -- that it refuses when the assertion does not cover the
-   day. A helper whose failure mode is untested is a helper that will be quietly weakened.
-3. **The reconcile step's scoping**, per bullet in `_outstanding_scope`: a forged id belonging to
-   another user, another account, a credit purchase, a settled parent or an already-recorded entry
-   must match nothing rather than raise.
-4. **The two-clock pin** for `_helpers.py`'s `display_today()` fix (12.10), which is only observable
-   under a non-Eastern `TZ` -- the CI gate that exists for exactly this.
-5. **`latest_observed_day` == `CashLedgerWalk.latest_observed_on`** on a multi-assertion account
-   (12.9), so the two statements cannot drift.
+Section 10.6 named three things that had to ship with S1-c; these are their controls.
+
+1. **The invariant table in 12.6, all three rows**, at PROJECTED-BALANCE grain --
+   `test_anchor_settle_partition.py`. The third row (true up, then record, then tick) is the defect
+   S1-c fixes and had never had a test; it asserts the OLD figure (`_PROJECTED_END - _PURCHASE`,
+   `-$170.22`) at the intermediate step, so it cannot pass on a build that reconciles nothing.
+2. **`mark_purchase_settled`'s own guard** -- `test_entry_service.py`, all three refusals plus a
+   positive control, because two refusals alone are satisfied by a helper that refuses everything.
+3. **The reconcile step's scoping**, clause by clause from `_outstanding_scope` --
+   `test_entry_service.py::TestTheOutstandingSet`, each graded from BOTH doors (listed-or-not and
+   stamped-or-not), plus the route's own contract in `test_routes/test_accounts.py`.
+4. **The two-clock pin** for `_helpers.py`'s `display_today()` fix (12.10) --
+   `test_grid.py::TestTheAddPurchaseFormReadsTheUsersClock`. It substitutes `display_today` for a
+   sentinel rather than mutating `TZ`: the C library's zone is process-global and survives
+   `monkeypatch`'s env restore, so a leak silently re-zones every later test in the same xdist
+   worker. That was measured, not theorised -- the first draft of this test broke an unrelated MFA
+   test three files away.
+5. **`latest_observed_day` == `CashLedgerWalk.latest_observed_on`** -- `test_cash_walk.py`, on a
+   multi-assertion account, on an account whose BUSINESS day defies its recording order (the shape
+   that broke the third statement N-133 / F4 deleted), and on one that has asserted nothing.
+
+### 13.4 What a neutral adversarial review then found in the conversion
+
+Run against the finished conversion before the commit. Each finding was confirmed by mutation --
+the reviewer deleted the rule and watched the suite stay green -- and each fix carries a negative
+control that was then shown to fire.
+
+- **The reconcile route's day resolution was unpinned.** Substituting `display_today()` for
+  `cash_ledger.latest_observed_day(account.id)` in `reconcile_purchases` left the ENTIRE 7,721-test
+  suite green. Every test in the class trued up *today*, so the two clocks were indistinguishable
+  in all of them. The production cost is not cosmetic: `observed_on` has been user-supplied since
+  step 2, so a back-dated assertion is ordinary, and under the wrong clock the tick writes
+  `settled_on = today > observed_on` -- the reservation never drops, AND the row stops matching
+  `settled_on IS NULL`, so the panel can never offer it again. A back-dated-assertion test now pins
+  the stamped day.
+- **`_outstanding_scope`'s owner clause had no firing control.** Deleting
+  `PayPeriod.user_id == owner_id` left all 19 reconcile tests green, including the one whose
+  docstring called itself "the IDOR case" -- because every cross-user fixture also crossed
+  ACCOUNTS, and the account clause rejected the row first. The clause is now isolated by the only
+  shape that can: a transaction on THIS user's account under ANOTHER user's pay period, which the
+  schema permits (two independent FKs, no composite constraint) and nothing in the app creates. The
+  older test is now labelled over-determined rather than left to be rediscovered.
+- **The clean-grid end-to-end guard had narrowed.** It was tightened from `b"Timing"` to the full
+  row labels, which silently dropped the mobile Plan recap -- whose chips read "Timing" and "Bank"
+  and are gated on `plan_row_flags`, computed over a DIFFERENT window from the tfoot's. Both
+  spellings are asserted again.
+- Plus the `mark_purchase_settled` upper bound (13.2), a companion refusal that was being probed
+  with an unrelated user rather than a companion, a dropped non-cash-account case, and five
+  documentation and hygiene items.
+
+**One item was reported and deliberately NOT actioned:** the reconcile POST parses `entry_ids` with
+an inline `isdigit()` filter rather than a Marshmallow schema, which deviates from the
+schema-before-DB-work convention on state-changing routes. No reachable crash (a 23-digit forged id
+returns 200), so it is a standards question rather than a defect, and it is left for a ruling
+rather than folded into this step.
+
+### 13.5 What the clone measured
+
+A fresh prod-shape clone at `main`'s head, captured from a `git worktree` at `main`, upgraded to
+`d7c1f4a9e603`, captured again from the branch.
+
+- **15,682 shared leaf figures, ZERO moved. No key disappeared.**
+- **854 keys are new, and 854 = 427 grid cells x 2** -- exactly R-DH (f)'s split, nothing else.
+- **0 identity breaks**: `period_timing + book_vs_bank` equals `main`'s pre-split `reconciliation`
+  on every one of the 427 cells.
+- Checking's current period reads **`-$19.95`** with `period_timing -$427.22` /
+  `book_vs_bank -$160.05` -- the decomposition Section 3 predicted for the `-$587.27` single row --
+  against a cash anchor of `$1,307.66`, the ruling's own worked example.
+- **`period_timing` nets to `$0.00` across all history** (period 9's `+$427.22` cancels period 10's
+  `-$427.22`), which is the design claim that a row is counted once as budget and once as cash and
+  never twice. `book_vs_bank` carries the rest.
