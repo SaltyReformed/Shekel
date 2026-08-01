@@ -1,9 +1,12 @@
 # The anchor/settle partition: when is a settled row already inside an asserted balance?
 
-Status: **Steps S1-a and S1-b SHIPPED TO PRODUCTION 2026-07-31 (PR #67, merge `fd0ddfab`).
-The review's residue is on `fix/n133-review-residue`: F1 RULED and applied, the opening now carries
-a stored user-supplied DATE (step 2's opening half), and F2's remainder, F4, F5, F6, F7, F8, F9 and
-F12 are all closed. S1-c DEFERRED; steps 3-4 and step 2's transaction half OPEN.**
+Status: **Steps S1-a and S1-b SHIPPED TO PRODUCTION 2026-07-31 (PR #67, merge `fd0ddfab`);
+the residue MERGED to `main` 2026-08-01 at PR #68 but NOT YET DEPLOYED -- prod is at
+`b2d8f3a6c541`, `main` at `c4a19e7b2d80`, and the residue moves no rendered figure.
+The residue: F1 RULED and applied, the opening now carries a stored user-supplied DATE (step 2's
+opening half), and F2's remainder, F4, F5, F6, F7, F8, F9 and F12 are all closed. **S1-c is
+UNBLOCKED and is NEXT** (F11 measured and closed -- Sections 10 and 11); steps 3-4 and step 2's
+transaction half OPEN.**
 
 `pylint app/ scripts/` 10.00/10. Full suite **7,687 passed / 0 failed** (7,677 at the merge base;
 10 net new). Production-clone verification is Section 7: **standards 1, 2, 3, 5 and 6 all pass**,

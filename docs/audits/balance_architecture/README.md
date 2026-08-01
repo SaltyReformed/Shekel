@@ -28,15 +28,26 @@ CASH half shipped 2026-07-28 at **PR #65** (merge `69a527cd`, image `sha256:5cb8
 commits, **zero migrations**, CI green on its first sight of any of them, prod healthy in 10s with
 no rollback.
 
-**Branch topology, re-measured 2026-08-01:** both waiting branches merged --
-`fix/cross-page-month-end-clock` at PR #66 and `fix/anchor-settle-partition` at PR #67 -- and
-**`origin/main` and `origin/dev` are level at `fd0ddfab`**, which is live in production
-(image `sha256:414a99be`). `fix/n133-review-residue` carries the N-133 residue and is **open as PR #68**
-(re-verified 2026-08-01: 7,687 passed / 0 failed, `pylint app/ scripts/` 10.00/10): the F1 ruling
-applied (the OPENING exception deleted from both walks), step 2's opening half
-(`account_anchor_history.observed_on`, migration `c4a19e7b2d80`), F2's remainder, and F4, F5, F6,
-F7, F8, F9, F12 -- plus the eight items its own second adversarial review found
+**Branch topology, re-measured 2026-08-01 (evening):** everything is MERGED. `origin/main` carries
+PR #66, #67, **#68 (the N-133 residue)**, and three test-infrastructure PRs (#69, #70, #71). The
+residue shipped the F1 ruling (the OPENING exception deleted from both walks), step 2's opening half
+(`account_anchor_history.observed_on`, **migration `c4a19e7b2d80`**), F2's remainder, and F4, F5,
+F6, F7, F8, F9, F12 -- plus the eight items its own second adversarial review found
 (`anchor_settle_partition.md` Section 9).
+
+> **PRODUCTION IS ONE MIGRATION BEHIND `main`.** Merging does not deploy: prod sits at
+> `b2d8f3a6c541` and `main` is at `c4a19e7b2d80`. The image is built and signed on merge; rolling it
+> out is a manual `shekel-deploy` run. **Nothing in the residue moves a rendered figure** (0 of
+> 15,682 seam leaves), so the deploy is safe to sequence whenever convenient -- but S1-c's `+$534.08`
+> must NOT ship on top of an undeployed residue without saying so.
+
+**The test suite grew two clock gates on 2026-08-01** and they matter to this arc specifically,
+because three of the five defects behind them were fixture-clock bugs this arc's own work created
+(N-131, N-132, R8). CI now runs with `TZ: Pacific/Kiritimati` so a `date.today()` /
+`display_today()` mix fails there, and a weekly calendar sweep runs the suite at a leap day, both
+sides of a year boundary, a month end and the first of a month. **Read `docs/test-suite-clocks.md`
+before writing a fixture that touches an anchor, an assertion instant or a due date** -- this arc
+writes more of those than anything else in the codebase.
 
 **F11 is MEASURED and CLOSED (2026-08-01, `anchor_settle_partition.md` Sections 10 and 11):
 R-DH (d) STANDS AS RULED.** Measured on a fresh production clone, it moves the current period's
@@ -51,7 +62,8 @@ withdrawn on measurement in the course of closing it**, one of them a from-scrat
 (per-movement reconciliation coverage) that an adversarial review showed re-opens `-$4,001.42` by a
 different route -- recorded as REJECTED in Section 11 rather than deleted.
 
-**NEXT, in order:** merge PR #68, then **S1-c** -- R-DH (d) as ruled, shipping with three things
+**NEXT, in order:** deploy `main` to production (one migration behind; see the note above), then
+**S1-c** -- R-DH (d) as ruled, shipping with three things
 that are not optional: the un-hidden entry-date field, R-DH (f)'s split (one line:
 *Book vs bank* is `asserted[period]`, *Period timing* is `moved - net`, both already computed in
 `_cash_fold._assemble_figures`), and a pinned same-day assertion in the blind test. After that:
