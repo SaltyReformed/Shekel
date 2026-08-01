@@ -27,6 +27,22 @@ rationale).
 - Tests are **independent** -- each sets up its own preconditions, no ordering or
   shared mutable state. Tests that mutate cluster state use `@pytest.mark.xdist_group`.
 
+## The ambient clock and calendar (a test that fails on some days is BROKEN, not flaky)
+
+- **Use the app's clock, never the process's.** `date.today()` reads the PROCESS
+  timezone; the app's civil day is `app.utils.dates.display_today()`. Prod and dev
+  pin `TZ: America/New_York`, CI does NOT -- so anything a test builds that the app
+  compares against its own "today" (a posted `entry_date`, a period window that must
+  contain the current day, an `observed_on`) must use `display_today()`. Never fix
+  this by pinning CI's timezone; that hides the coupling.
+- **A fixture must not depend on where in the calendar it runs.** State the property
+  the fixture needs and construct it so it holds on every day -- pin the read
+  (`BalanceContext.build(user_id, as_of=...)`) to a date the fixture controls and
+  derive the rest from that. Findings N-131, N-132, R8 and the 2026-08-01 loan
+  failures are all this shape.
+- **Check both:** `TZ=Pacific/Kiritimati ./scripts/test.sh` must pass unchanged.
+  Full rationale and worked cases: `docs/testing-standards.md`.
+
 ## What a test must assert
 
 - **Route tests assert response content, not just the status code:** correct
