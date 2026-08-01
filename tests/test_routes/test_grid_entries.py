@@ -94,7 +94,7 @@ def _add_entry(txn, seed_user, amount, is_credit=False,
         user_id=seed_user["user"].id,
         amount=amount,
         description=description,
-        entry_date=date(2026, 4, 12),
+        purchased_on=date(2026, 4, 12),
         is_credit=is_credit,
     )
     db.session.add(entry)

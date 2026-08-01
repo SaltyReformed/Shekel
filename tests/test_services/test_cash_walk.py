@@ -30,6 +30,7 @@ from app.models.account import AccountAnchorHistory
 from app.services.cash_ledger import (
     cash_anchor_facts,
     dated_deltas,
+    latest_observed_day,
     settled_cash_facts,
     walk_cash_ledger,
 )
@@ -481,9 +482,9 @@ class TestSourceFactValuation:
                 user_id=seed_user["user"].id,
                 amount=amount,
                 description="purchase",
-                entry_date=day,
+                purchased_on=day,
                 is_credit=is_credit,
-                is_cleared=True,
+                settled_on=day,
             ))
         db.session.flush()
         # Routed through PRODUCTION's own rule rather than hand-set: the
@@ -641,9 +642,9 @@ class TestTheWalkSeesOnlyItsOwnRows:
             user_id=seed_user["user"].id,
             amount=Decimal("80.00"),
             description="credit purchase",
-            entry_date=date(2026, 2, 1),
+            purchased_on=date(2026, 2, 1),
             is_credit=True,
-            is_cleared=True,
+            settled_on=date(2026, 2, 1),
         ))
         txn.is_deleted = True
         db.session.commit()
@@ -967,3 +968,117 @@ class TestDatedDeltasReconstructTheWalk:
         # The source (-30.00) first, then the assertion's correction
         # (5000.00 - 970.00 = 4030.00).
         assert same_day == [Decimal("-30.00"), Decimal("4030.00")]
+
+
+class TestTheTwoStatementsOfTheLatestAssertedDay:
+    """``latest_observed_day`` (SQL) == ``CashLedgerWalk.latest_observed_on``.
+
+    The arc's central question -- *is this movement already inside the balance
+    the user declared?* -- compares against ONE day, and that day has two
+    statements on purpose (plan step S1-c, 12.9):
+
+    * :attr:`~app.services.cash_ledger.CashLedgerWalk.latest_observed_on` reads
+      the last element of a list the walk already holds, so the seam's cash fold
+      pays no query for a day it is standing on; and
+    * :func:`~app.services.cash_ledger.latest_observed_day` is one indexed
+      ``MAX`` for the callers that hold no walk -- the posting self-heal's skip
+      predicate, the entry list's reconciled indicator, and the reconcile panel,
+      none of which should walk an account to render one row.
+
+    **A THIRD statement is what this pins against.**  ``account_posting_service``
+    grew its own (``MAX(created_at)`` as an instant, compared against a civil
+    date pushed through midnight UTC) and it carried a silent timezone-sign
+    dependency for the whole time it lived -- finding N-133 / F4.  Plan step S1-c
+    deleted that copy; these two are what remain, and "two statements that
+    happen to agree" is precisely the shape this arc exists to remove, so the
+    agreement is pinned rather than argued.
+
+    The shapes below are the ones the two could disagree on: several assertions,
+    a BUSINESS day that does not follow the recording order, and none at all.
+    """
+
+    def test_they_agree_on_an_account_with_several_assertions(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """Three assertions on three different days -- both answer the last.
+
+        Hand-computed: the opening on 2026-01-01 plus true-ups on 02-15 and
+        03-20, so the latest asserted day is 2026-03-20.  The figure is
+        asserted absolutely as well as for equality: two implementations that
+        both returned the OPENING would agree with each other and be wrong
+        together, which equality alone cannot catch.
+        """
+        account, scenario = seed_user["account"], seed_user["scenario"]
+        _restamp_opening(account, _instant(2026, 1, 1))
+        _assert_balance(
+            account, seed_periods[0], Decimal("1200.00"),
+            _instant(2026, 2, 15, 9, 0, 0),
+        )
+        _assert_balance(
+            account, seed_periods[0], Decimal("1400.00"),
+            _instant(2026, 3, 20, 9, 0, 0),
+        )
+        db.session.commit()
+
+        walk = walk_cash_ledger(account.id, scenario.id)
+
+        assert walk.latest_observed_on == date(2026, 3, 20)
+        assert latest_observed_day(account.id) == date(2026, 3, 20)
+
+    def test_they_agree_when_the_business_day_defies_the_recording_order(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """The shape that broke the retired third statement, reproduced.
+
+        ``observed_on`` has been USER-SUPPLIED since plan step 2, so a user can
+        correct a balance for an EARLIER day after recording a later one: here
+        the 03-20 reading is entered first and a forgotten 02-15 reading is
+        back-filled afterwards.  The answer is the latest BUSINESS day
+        (2026-03-20), not the latest recording instant.
+
+        An implementation ordering by ``created_at`` -- which is what the
+        deleted ``account_posting_service`` copy did, and what the walk's own
+        loader did before ``observed_on`` existed -- answers 2026-02-15 here and
+        would reconcile purchases against a balance five weeks stale.  Both
+        statements are asserted against the literal, so neither can drift onto
+        the recording clock without failing.
+        """
+        account, scenario = seed_user["account"], seed_user["scenario"]
+        _restamp_opening(account, _instant(2026, 1, 1))
+        # Recorded FIRST, for the LATER business day.
+        _assert_balance(
+            account, seed_periods[0], Decimal("1400.00"),
+            _instant(2026, 3, 20, 9, 0, 0),
+        )
+        # Recorded SECOND, for an EARLIER business day -- the back-fill.
+        _assert_balance(
+            account, seed_periods[0], Decimal("1200.00"),
+            _instant(2026, 2, 15, 9, 0, 0),
+        )
+        db.session.commit()
+
+        walk = walk_cash_ledger(account.id, scenario.id)
+
+        assert walk.latest_observed_on == date(2026, 3, 20)
+        assert latest_observed_day(account.id) == date(2026, 3, 20)
+
+    def test_they_agree_that_an_unasserted_account_has_no_day(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """Both answer ``None``, which reconciles nothing.
+
+        The honest answer for an account with no declared balance to be inside
+        of, and the arm ``is_inside_assertion`` is total over.  A statement that
+        raised, or returned a sentinel date, would make every caller carry a
+        precondition -- and one of them would forget.
+        """
+        account, scenario = seed_user["account"], seed_user["scenario"]
+        db.session.query(AccountAnchorHistory).filter_by(
+            account_id=account.id,
+        ).delete()
+        db.session.commit()
+
+        walk = walk_cash_ledger(account.id, scenario.id)
+
+        assert walk.latest_observed_on is None
+        assert latest_observed_day(account.id) is None

@@ -29,6 +29,15 @@ The rule under test: only rows the shared ``is_projected`` predicate admits
 contribute; income counts at :func:`~app.services.cash_ledger.income_amount`
 and expense at the entries-aware reservation, and the split follows the
 transaction TYPE.
+
+**The basis is a REQUIRED argument since plan step S1-c** (ruling R-DH (d)).
+``sum_projected`` took one optional ``amount_overrides`` map defaulting to
+``None``; the entry reservation now also needs the day through which the
+account's purchases are reconciled, and two optional arguments is two ways for a
+caller to hand this reduction half a basis -- which would silently value every
+purchase as outstanding and hold whole budgets back.  Every call below therefore
+states its :class:`~app.services.cash_ledger.ProjectedBasis` explicitly, and the
+day it states is what decides the bucket each purchase falls in.
 """
 
 from datetime import date
@@ -36,7 +45,7 @@ from decimal import Decimal
 
 from app.enums import StatusEnum
 from app.models.transaction import Transaction
-from app.services.cash_ledger import sum_projected
+from app.services.cash_ledger import ProjectedBasis, sum_projected
 from tests._test_helpers import (
     add_entry,
     add_txn,
@@ -46,8 +55,18 @@ from tests._test_helpers import (
 )
 
 
-_ENTRY_DAY = date(2026, 1, 20)
+_PURCHASED_ON = date(2026, 1, 20)
 _ZERO = Decimal("0.00")
+
+# The reduction's basis for every test that does not exercise the override
+# seam: no live-recompute candidate, and a statement day EARLIER than every
+# purchase below, so each one is OUTSTANDING unless its own test says
+# otherwise.  Stating the day rather than leaving it ``None`` keeps this file's
+# subject -- which rows are counted, and on which leg -- separate from
+# ``test_cash_amounts.py``'s -- what one row is worth.
+_UNRECONCILED = ProjectedBasis(
+    amount_overrides={}, reconciled_through=date(2026, 1, 1),
+)
 
 
 def _set_status(txn, status_enum):
@@ -74,9 +93,11 @@ def _envelope(db_session, seed_user, period, name, estimated, entries=()):
         period: The :class:`~app.models.pay_period.PayPeriod` to place it in.
         name: The template / transaction name.
         estimated: The envelope's budgeted amount, as a string.
-        entries: An iterable of ``(amount, is_credit)`` pairs; every entry is
-            uncleared, which is the shape these reduction tests were written
-            on (the cleared flag is ``test_cash_amounts.py``'s subject).
+        entries: An iterable of ``(amount, is_credit)`` pairs.  Every purchase
+            is left with a NULL ``settled_on`` -- not yet seen on a statement,
+            and so OUTSTANDING -- which is the shape these reduction tests were
+            written on: which BUCKET a purchase falls in is
+            ``test_cash_amounts.py``'s subject, not this file's.
 
     Returns:
         The flushed :class:`~app.models.transaction.Transaction`.
@@ -86,7 +107,7 @@ def _envelope(db_session, seed_user, period, name, estimated, entries=()):
     )
     for amount, is_credit in entries:
         add_entry(
-            db_session, seed_user, txn, Decimal(amount), _ENTRY_DAY,
+            db_session, seed_user, txn, Decimal(amount), _PURCHASED_ON,
             is_credit=is_credit,
         )
     return txn
@@ -135,7 +156,7 @@ class TestOnlyProjectedRowsContribute:
             txn.actual_amount = Decimal("450.00")
             db.session.commit()
 
-            assert sum_projected([txn]) == (_ZERO, _ZERO)
+            assert sum_projected([txn], _UNRECONCILED) == (_ZERO, _ZERO)
 
     def test_a_cancelled_row_contributes_nothing(
         self, app, db, seed_user, seed_periods,
@@ -152,7 +173,7 @@ class TestOnlyProjectedRowsContribute:
             _set_status(txn, StatusEnum.CANCELLED)
             db.session.commit()
 
-            assert sum_projected([txn]) == (_ZERO, _ZERO)
+            assert sum_projected([txn], _UNRECONCILED) == (_ZERO, _ZERO)
 
     def test_a_credit_status_row_contributes_nothing(
         self, app, db, seed_user, seed_periods,
@@ -171,7 +192,7 @@ class TestOnlyProjectedRowsContribute:
             _set_status(txn, StatusEnum.CREDIT)
             db.session.commit()
 
-            assert sum_projected([txn]) == (_ZERO, _ZERO)
+            assert sum_projected([txn], _UNRECONCILED) == (_ZERO, _ZERO)
 
 
 class TestTheTwoLegs:
@@ -208,24 +229,33 @@ class TestTheTwoLegs:
                 is_income=True, category_key="Salary",
             )
             add_entry(
-                db.session, seed_user, txn, Decimal("500.00"), _ENTRY_DAY,
+                db.session, seed_user, txn, Decimal("500.00"), _PURCHASED_ON,
                 is_credit=True,
             )
             db.session.commit()
 
-            assert sum_projected([txn]) == (Decimal("2000.00"), _ZERO)
+            assert sum_projected([txn], _UNRECONCILED) == (Decimal("2000.00"), _ZERO)
 
     def test_every_loaded_entry_counts(self, app, db, seed_user, seed_periods):
         """The reduction sees every loaded entry, whatever date each carries.
 
-        est=500 with cleared debits of 200.00 (Jan 5) and 250.00 (Jan 20):
-        cleared_debit = 450.00, uncleared = 0, credit = 0, so
+        est=500 with debits of 200.00 (bought and posted Jan 5) and 250.00
+        (Jan 20), read against a balance the user declared for Jan 31:
+        settled_debit = 450.00, outstanding = 0, credit = 0, so
         max(500.00 - 450.00 - 0, 0) = 50.00.
 
         The dates span a range on purpose: this test carried an ``as_of``
         bound until plan step X-c2c1 deleted it (ruling R-M refused a future
-        ``entry_date`` at the write door instead), and what it pins now is
-        that no bound remains.
+        ``purchased_on`` at the write door instead), and what it pins now is
+        that no bound remains -- BOTH purchases count, fifteen days apart,
+        because what a row is worth is a function of the row and its account
+        rather than of the reader's clock.
+
+        This is the one test in the file with its own basis, and it is the one
+        that needs a reconciled-through day covering both purchases; the shared
+        ``_UNRECONCILED`` would leave both on the floor and answer 500.00.  The
+        day is stated here rather than widened globally so every other test's
+        bucket stays fixed.
         """
         with app.app_context():
             txn = create_envelope_txn(
@@ -235,11 +265,14 @@ class TestTheTwoLegs:
             for amount, day in (("200.00", 5), ("250.00", 20)):
                 add_entry(
                     db.session, seed_user, txn, Decimal(amount),
-                    date(2026, 1, day), is_cleared=True,
+                    date(2026, 1, day), settled_on=date(2026, 1, day),
                 )
             db.session.commit()
+            basis = ProjectedBasis(
+                amount_overrides={}, reconciled_through=date(2026, 1, 31),
+            )
 
-            assert sum_projected([txn]) == (_ZERO, Decimal("50.00"))
+            assert sum_projected([txn], basis) == (_ZERO, Decimal("50.00"))
 
 
 class TestTheReductionIsAdditiveOverRows:
@@ -274,7 +307,7 @@ class TestTheReductionIsAdditiveOverRows:
             )
             db.session.commit()
 
-            assert sum_projected([groceries, gas]) == (
+            assert sum_projected([groceries, gas], _UNRECONCILED) == (
                 _ZERO, Decimal("480.00"),
             )
 
@@ -305,7 +338,7 @@ class TestTheReductionIsAdditiveOverRows:
             )
             db.session.commit()
 
-            assert sum_projected([groceries, rent, paycheck]) == (
+            assert sum_projected([groceries, rent, paycheck], _UNRECONCILED) == (
                 Decimal("2000.00"), Decimal("1600.00"),
             )
 
@@ -349,6 +382,6 @@ class TestTheReductionIsAdditiveOverRows:
                 .one()
             )
 
-            assert sum_projected([groceries, shadow]) == (
+            assert sum_projected([groceries, shadow], _UNRECONCILED) == (
                 _ZERO, Decimal("700.00"),
             )

@@ -510,7 +510,7 @@ class TestEntryEagerLoading:
             user_id=seed_user["user"].id,
             amount=Decimal("42.50"),
             description="Kroger",
-            entry_date=date(2026, 1, 5),
+            purchased_on=date(2026, 1, 5),
         )
         db.session.add(entry)
         db.session.commit()
@@ -554,12 +554,12 @@ class TestEntryDataComputation:
         db.session.add(TransactionEntry(
             transaction_id=txn.id, user_id=seed_user["user"].id,
             amount=Decimal("100.00"), description="Kroger",
-            entry_date=date(2026, 1, 5),
+            purchased_on=date(2026, 1, 5),
         ))
         db.session.add(TransactionEntry(
             transaction_id=txn.id, user_id=seed_user["user"].id,
             amount=Decimal("50.00"), description="Walmart",
-            entry_date=date(2026, 1, 6),
+            purchased_on=date(2026, 1, 6),
         ))
         db.session.commit()
 
@@ -597,12 +597,12 @@ class TestEntryDataComputation:
         db.session.add(TransactionEntry(
             transaction_id=txn.id, user_id=seed_user["user"].id,
             amount=Decimal("70.00"), description="Shell",
-            entry_date=date(2026, 1, 5),
+            purchased_on=date(2026, 1, 5),
         ))
         db.session.add(TransactionEntry(
             transaction_id=txn.id, user_id=seed_user["user"].id,
             amount=Decimal("50.00"), description="BP",
-            entry_date=date(2026, 1, 6),
+            purchased_on=date(2026, 1, 6),
         ))
         db.session.commit()
 

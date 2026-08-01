@@ -1192,7 +1192,7 @@ def _drop_seed_user_bootstrap(db, seed_user, account, new_anchor_period):
         # behind is the "two clocks on one row" shape ``seed_user`` states it
         # is eliminating, recreated one layer down: the row would assert a
         # 2026 period from a 2024 day, and its posted correction would carry a
-        # 2024 ``entry_date`` inside a 2026 ``pay_period_id``.
+        # 2024 ``purchased_on`` inside a 2026 ``pay_period_id``.
         "observed_on": new_anchor_period.start_date,
         # Eastern midnight, converted for storage -- NOT midnight UTC, which
         # is the previous EVENING in the display zone and would file the
@@ -1508,8 +1508,12 @@ def seed_cross_page_account(app, db, seed_user):
     Returns:
         Callable ``(anchor_balance, expense_amount, entries) ->
         dict``.  Each entry is a 3-tuple ``(amount, is_credit,
-        is_cleared)`` -- amount as ``Decimal`` (from string),
+        is_settled)`` -- amount as ``Decimal`` (from string), and the two
         booleans as the entries-aware reduction's discriminants.
+        ``is_settled`` stamps the purchase's ``settled_on`` with the anchor
+        period's start day, which is the assertion's own ``observed_on``
+        here, so the purchase reads as already inside the asserted balance
+        (ruling R-DH (d)); ``False`` leaves it NULL and outstanding.
     """
     # pylint: disable=import-outside-toplevel
     from app.models.account import Account
@@ -1603,15 +1607,20 @@ def seed_cross_page_account(app, db, seed_user):
         # surface evaluates, so the E-27 entry-date cut is a no-op
         # for this fixture and the calendar surface's balance equals
         # the resolver's anchor-period balance by construction.
-        for amount, is_credit, is_cleared in entries:
+        for amount, is_credit, is_settled in entries:
             db.session.add(TransactionEntry(
                 transaction_id=txn.id,
                 user_id=user.id,
                 amount=amount,
                 description="PT-01 entry",
-                entry_date=anchor_period.start_date,
+                purchased_on=anchor_period.start_date,
+                # The assertion ``override_anchor`` wrote is observed on this
+                # same day, so a purchase settled on it is INSIDE that balance
+                # -- the state the retired ``settled_on=anchor_period.start_date`` flag named.
+                settled_on=(
+                    anchor_period.start_date if is_settled else None
+                ),
                 is_credit=is_credit,
-                is_cleared=is_cleared,
             ))
         db.session.commit()
 

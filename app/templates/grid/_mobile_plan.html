@@ -43,7 +43,7 @@
                                   line.
      plan_row_flags            -- (optional) GridRowFlags for the PLAN
                                   window (rulings R-O / R-P): which of
-                                  "Timing & true-ups", "Contributions" and
+                                  "Period timing", "Book vs bank", "Contributions" and
                                   the modelled-return figure the recap adds
                                   after Net.
      accrual_label             -- the modelled-return figure's per-kind
@@ -122,15 +122,20 @@
                 <span class="{{ 'balance-negative' if col.net < 0 else '' }}">
                   {{ money(col.net, cents=false) }}
                 </span>
-                {# The three conditional figures (rulings R-O / R-P / R-AH), on
-                   the seam's one visibility rule and in the order the replay
-                   resolves them: Timing & true-ups explains the part of the
-                   balance change the budget columns cannot, Contributions what
-                   payroll put in, and the modelled return what that money then
-                   earned.  Net + those three is the whole balance change. #}
-                {% if plan_row_flags is defined and plan_row_flags.reconciliation %}
+                {# The four conditional figures (rulings R-O / R-P / R-AH /
+                   R-DH (f)), on the seam's one visibility rule and in the
+                   order the replay resolves them: Period timing and Book vs
+                   bank explain the part of the balance change the budget
+                   columns cannot, Contributions what payroll put in, and the
+                   modelled return what that money then earned.  Net + those
+                   four is the whole balance change. #}
+                {% if plan_row_flags is defined and plan_row_flags.period_timing %}
                 &middot;
-                Timing {{ money(col.reconciliation, cents=false) }}
+                Timing {{ money(col.period_timing, cents=false) }}
+                {% endif %}
+                {% if plan_row_flags is defined and plan_row_flags.book_vs_bank %}
+                &middot;
+                Bank {{ money(col.book_vs_bank, cents=false) }}
                 {% endif %}
                 {% if plan_row_flags is defined and plan_row_flags.contribution %}
                 &middot;

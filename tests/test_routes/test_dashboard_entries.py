@@ -137,7 +137,7 @@ def _add_entry(
         user_id=seed_user["user"].id,
         amount=amount,
         description=description,
-        entry_date=txn.pay_period.start_date,
+        purchased_on=txn.pay_period.start_date,
         is_credit=is_credit,
     )
     db.session.add(entry)

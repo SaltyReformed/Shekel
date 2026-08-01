@@ -2703,9 +2703,15 @@ def _make_projected_envelope_expense(
 
 def _add_entry(
     db_session, *, txn, user_id, amount,
-    is_cleared=False, is_credit=False, description="Purchase",
+    is_settled=False, is_credit=False, description="Purchase",
 ):
-    """Add a :class:`TransactionEntry` to ``txn`` with the given flags."""
+    """Add a :class:`TransactionEntry` to ``txn``.
+
+    ``is_settled`` stamps the purchase's ``settled_on`` with its own
+    purchase day, which the callers' accounts assert on or after, so the
+    projection reads it as already inside the declared balance (ruling
+    R-DH (d)) -- the state the retired ``is_cleared`` flag named.
+    """
     from app.models.transaction_entry import TransactionEntry  # pylint: disable=import-outside-toplevel
 
     db_session.add(TransactionEntry(
@@ -2713,9 +2719,9 @@ def _add_entry(
         user_id=user_id,
         amount=amount,
         description=description,
-        entry_date=date(2026, 1, 15),
+        purchased_on=date(2026, 1, 15),
+        settled_on=date(2026, 1, 15) if is_settled else None,
         is_credit=is_credit,
-        is_cleared=is_cleared,
     ))
     db_session.flush()
 
@@ -2789,7 +2795,7 @@ class TestCanonicalProducerRouting:
                     txn=txn,
                     user_id=seed_user["user"].id,
                     amount=amt,
-                    is_cleared=True,
+                    is_settled=True,
                     is_credit=False,
                 )
             db.session.commit()
@@ -2898,7 +2904,7 @@ class TestCanonicalProducerRouting:
                     txn=txn,
                     user_id=seed_user["user"].id,
                     amount=amt,
-                    is_cleared=True,
+                    is_settled=True,
                     is_credit=False,
                 )
             db.session.commit()

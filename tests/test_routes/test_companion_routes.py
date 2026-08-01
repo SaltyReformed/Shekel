@@ -333,7 +333,7 @@ class TestEntryIntegration:
         resp = comp.post(f"/transactions/{txn.id}/entries", data={
             "amount": "42.50",
             "description": "Kroger",
-            "entry_date": "2026-01-05",
+            "purchased_on": "2026-01-05",
         })
         assert resp.status_code == 200
 
@@ -364,7 +364,7 @@ class TestEntryIntegration:
         resp = comp.post(f"/transactions/{txn.id}/entries", data={
             "amount": "25.00",
             "description": "Target",
-            "entry_date": "2026-01-05",
+            "purchased_on": "2026-01-05",
         })
         assert resp.status_code == 200
 
@@ -387,7 +387,7 @@ class TestEntryIntegration:
         resp = comp.post(f"/transactions/{txn.id}/entries", data={
             "amount": "10.00",
             "description": "Test",
-            "entry_date": "2026-01-05",
+            "purchased_on": "2026-01-05",
         })
         assert resp.status_code == 404
 
@@ -399,7 +399,7 @@ class TestEntryIntegration:
         resp = comp.post("/transactions/999999/entries", data={
             "amount": "10.00",
             "description": "Test",
-            "entry_date": "2026-01-05",
+            "purchased_on": "2026-01-05",
         })
         assert resp.status_code == 404
 
@@ -416,7 +416,7 @@ class TestEntryIntegration:
             user_id=seed_companion["user"].id,
             amount=Decimal("30.00"),
             description="Kroger",
-            entry_date=date(2026, 1, 5),
+            purchased_on=date(2026, 1, 5),
         )
         db.session.add(entry)
         db.session.commit()
@@ -443,7 +443,7 @@ class TestEntryIntegration:
             user_id=seed_companion["user"].id,
             amount=Decimal("30.00"),
             description="Kroger",
-            entry_date=date(2026, 1, 5),
+            purchased_on=date(2026, 1, 5),
         )
         db.session.add(entry)
         db.session.commit()
@@ -578,12 +578,12 @@ class TestMarkDoneIntegration:
         db.session.add(TransactionEntry(
             transaction_id=txn.id, user_id=seed_user["user"].id,
             amount=Decimal("100.00"), description="Kroger",
-            entry_date=date(2026, 1, 5),
+            purchased_on=date(2026, 1, 5),
         ))
         db.session.add(TransactionEntry(
             transaction_id=txn.id, user_id=seed_user["user"].id,
             amount=Decimal("50.00"), description="Walmart",
-            entry_date=date(2026, 1, 6),
+            purchased_on=date(2026, 1, 6),
         ))
         db.session.commit()
 
@@ -619,7 +619,7 @@ class TestEntryDataInHTML:
         db.session.add(TransactionEntry(
             transaction_id=txn.id, user_id=seed_user["user"].id,
             amount=Decimal("200.00"), description="Kroger",
-            entry_date=date(2026, 1, 5),
+            purchased_on=date(2026, 1, 5),
         ))
         db.session.commit()
 
@@ -692,7 +692,7 @@ class TestEntryDataInHTML:
         db.session.add(TransactionEntry(
             transaction_id=txn.id, user_id=seed_user["user"].id,
             amount=Decimal("120.00"), description="Shell",
-            entry_date=date(2026, 1, 5),
+            purchased_on=date(2026, 1, 5),
         ))
         db.session.commit()
 
@@ -730,7 +730,7 @@ class TestEntryDataInHTML:
         db.session.add(TransactionEntry(
             transaction_id=txn.id, user_id=seed_user["user"].id,
             amount=Decimal("55.50"), description="Kroger",
-            entry_date=date(2026, 1, 5),
+            purchased_on=date(2026, 1, 5),
         ))
         db.session.commit()
 

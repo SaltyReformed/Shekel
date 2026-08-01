@@ -30,7 +30,7 @@ it (finding N-41).  Ruling R-K changed what a subtotal COUNTS: the subtotals now
 count EVERY row attributed to a period and the balance counts money that MOVED,
 so the identity gained a named remainder and lives with the producer that derives
 both sides from ONE valued row set,
-:class:`app.services.balance_at._cash_fold.CashPeriodFigures`.  That makes it
+:class:`app.services.balance_at._cash_periods.CashPeriodFigures`.  That makes it
 their SUCCESSOR rather than their peer, which is why they deleted instead of
 surviving as a second per-period basis: plan step X-c2b1 took their last
 production caller (the grid footer) and X-c2b3 deleted them.  Their
@@ -58,10 +58,10 @@ from decimal import Decimal
 
 from app.utils.balance_predicates import is_projected
 
-from ._amounts import _expense_amount, income_amount
+from ._amounts import ProjectedBasis, _expense_amount, income_amount
 
 
-def sum_projected(transactions, amount_overrides=None):
+def sum_projected(transactions, basis: ProjectedBasis):
     """Sum projected (unsettled) income and expenses for one pay period.
 
     Part of this module's public surface (no leading underscore): the seam's
@@ -96,13 +96,22 @@ def sum_projected(transactions, amount_overrides=None):
     entries and honors a live override, falling back to effective_amount
     otherwise.
 
+    **The basis is REQUIRED, and that is the point of bundling it** (plan step
+    S1-c).  It used to be one optional ``amount_overrides`` map defaulting to
+    ``None``; the entry reservation now also needs the day through which the
+    account's purchases are reconciled, and two optional arguments is two ways
+    for a caller to hand this reduction half a basis -- which would silently
+    value every purchase as outstanding and hold whole budgets back.  One
+    required record, built once per account by the reader that owns the walk,
+    makes that shape unwritable.
+
     **It takes no date (plan step X-c2c1).**  D1c had unified two loops --
     ``balance_resolver``'s private ``_sum_period_as_of``, whose own docstring
     said it "mirrors ``sum_projected``" and differed in exactly one expression
     -- into one reduction with an optional ``as_of`` bounding ENTRY inclusion
     inside the expense leg (E-27 / HIGH-02).  Ruling R-M then closed the fork
     that bound existed for at the SOURCE (plan step X-c0 refuses a future
-    ``entry_date`` at both write doors), so it provably dropped nothing and
+    PURCHASE date at both write doors), so it provably dropped nothing and
     deleted; the rationale is stated once, at
     :func:`~app.services.cash_ledger._amounts._entry_aware_amount`.  What a row
     is WORTH is now a function of the row, so ruling R-G's clamp in the seam's
@@ -118,9 +127,10 @@ def sum_projected(transactions, amount_overrides=None):
 
     Args:
         transactions: Transaction objects for a single pay period.
-        amount_overrides: Optional ``{transaction_id: Decimal}`` live
-            projected-net map (Workstream B); None preserves the
-            stored-amount behavior byte-identical.
+        basis: The account's
+            :class:`~app.services.cash_ledger._amounts.ProjectedBasis` -- the
+            live override map and the day through which its purchases are
+            reconciled, built once per account by the caller that walked it.
 
     Returns:
         (total_income, total_expenses) as a Decimal tuple.
@@ -133,8 +143,8 @@ def sum_projected(transactions, amount_overrides=None):
             continue
 
         if txn.is_income:
-            income += income_amount(txn, amount_overrides)
+            income += income_amount(txn, basis)
         elif txn.is_expense:
-            expenses += _expense_amount(txn, amount_overrides)
+            expenses += _expense_amount(txn, basis)
 
     return income, expenses

@@ -31,7 +31,7 @@ from tests._test_helpers import freeze_today
 def _freeze_today_inside_seed_range(monkeypatch):
     """Freeze today to date(2026, 3, 20) so seed_periods tests pass past 2026-05-22.
 
-    Mark-paid entry tests use hardcoded entry_date values like
+    Mark-paid entry tests use hardcoded purchase dates like
     date(2026, 1, 5) and date(2026, 1, 10) that must fall inside the
     calendar-anchored seed_periods range.  Freezing today inside the
     seeded range keeps get_current_period() deterministic without
@@ -45,7 +45,7 @@ from app.services import entry_service
 
 
 def _make_entry(txn_id, user_id, amount="50.00", description="Kroger",
-                entry_date=None, is_credit=False):
+                purchased_on=None, is_credit=False):
     """Create an entry directly via ORM (bypasses service validation).
 
     Uses IDs rather than ORM objects to avoid session detachment
@@ -56,7 +56,7 @@ def _make_entry(txn_id, user_id, amount="50.00", description="Kroger",
         user_id=user_id,
         amount=Decimal(amount),
         description=description,
-        entry_date=entry_date or date(2026, 1, 5),
+        purchased_on=purchased_on or date(2026, 1, 5),
         is_credit=is_credit,
     )
     db.session.add(entry)
@@ -369,7 +369,7 @@ class TestPostPaidEntryMutation:
                 details=entry_service.EntryDetails(
                     amount=Decimal("50.00"),
                     description="Late purchase",
-                    entry_date=date(2026, 1, 10),
+                    purchased_on=date(2026, 1, 10),
                 ),
             )
             db.session.commit()
@@ -476,7 +476,7 @@ class TestPostPaidEntryMutation:
                 details=entry_service.EntryDetails(
                     amount=Decimal("100.00"),
                     description="Projected period purchase",
-                    entry_date=date(2026, 1, 5),
+                    purchased_on=date(2026, 1, 5),
                 ),
             )
             db.session.commit()

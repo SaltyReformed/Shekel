@@ -563,7 +563,7 @@ class TestDeactivateCompanion:
             user_id=comp.id,
             amount=Decimal("42.50"),
             description="Kroger",
-            entry_date=date.today(),
+            purchased_on=date.today(),
         )
         db.session.add(entry)
         db.session.commit()

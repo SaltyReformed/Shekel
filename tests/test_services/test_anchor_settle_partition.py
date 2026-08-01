@@ -30,6 +30,8 @@ from app.models.journal_entry import JournalEntry, Posting
 from app.services import (
     anchor_service,
     balance_at,
+    cash_ledger,
+    entry_service,
     pay_period_service,
     posting_service,
 )
@@ -111,17 +113,55 @@ class TestRecordingAPurchaseDoesNotMoveTheProjection:
     anchor by the same amount must not move the projected end balance**, and it
     must not move if only the entry is recorded and no anchor follows.
 
-    Both halves turn on the reservation formula
+    All three rows turn on the reservation formula
     (``cash_ledger._amounts._entry_aware_amount``):
 
-        checking_impact = max(estimated - cleared_debit - credit, uncleared_debit)
+        impact = max(estimated - settled_debit - credit, outstanding_debit)
 
-    An UNCLEARED debit leaves the reservation at the full budget (the money left
-    checking but the anchor does not know), so the projection is unchanged.  A
-    CLEARED debit reduces the reservation by exactly what the anchor dropped by,
-    so the two moves cancel.  The invariant is what makes those two behaviours
-    ONE design instead of two separately-plausible rules.
+    An OUTSTANDING debit leaves the reservation at the full budget (the money
+    left checking but the anchor does not know), so the projection is
+    unchanged.  A SETTLED debit reduces the reservation by exactly what the
+    anchor dropped by, so the two moves cancel.  The invariant is what makes
+    those two behaviours ONE design instead of two separately-plausible rules.
+
+    **Section 12.6's table, all three rows, and the third one is what plan step
+    S1-c FIXES:**
+
+    ======================================  ==========================
+    what happens                            invariant
+    ======================================  ==========================
+    record a purchase, nothing else         holds -- projection unmoved
+    record it, then true up and tick it     holds -- the two cancel
+    true up FIRST, then record it, tick it  holds -- "either order" is
+                                            finally true
+    ======================================  ==========================
+
+    Section 10.5 recorded that R-DH (c)'s two promises could not both be kept
+    under a stored ``is_cleared`` flag, and Section 10.6 accepted breaking the
+    second.  Under the observed-date design neither is broken.  The third row is
+    what today's shipped code gets wrong: the bulk clear ran before the entry
+    existed, so it never cleared and the projection read ``-$170.22`` against a
+    true ``-$19.95`` until the NEXT true-up.  That defect is 14 of the
+    developer's 53 same-day entries and it has never had a test.
     """
+
+    @staticmethod
+    def _tick(seed_user, account, envelope):
+        """Reconcile the envelope's purchases through the real service door.
+
+        The user ticking the purchase off their statement
+        (``entry_service.record_settled_days``) -- the step that replaced the
+        bulk clear.  Returns how many rows were actually stamped, which the
+        callers assert on: a reconcile that silently matched nothing would make
+        every figure below hold for the wrong reason.
+        """
+        observed_on = cash_ledger.latest_observed_day(account.id)
+        recorded = entry_service.record_settled_days(
+            seed_user["user"].id, account.id,
+            {entry.id for entry in envelope.entries}, observed_on,
+        )
+        _db.session.commit()
+        return recorded
 
     def _seed(self, seed_user, period):
         """Anchor $1,307.66, budget a $500 envelope and $827.61 of other bills."""
@@ -142,7 +182,7 @@ class TestRecordingAPurchaseDoesNotMoveTheProjection:
     def test_an_entry_alone_does_not_move_the_projected_end_balance(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """Recording a purchase with NO anchor true-up leaves the figure alone.
+        """Row 1: recording a purchase with NO true-up leaves the figure alone.
 
         Anchor $1,307.66, a $500.00 Groceries envelope with nothing recorded,
         $827.61 of other projected bills:
@@ -150,9 +190,10 @@ class TestRecordingAPurchaseDoesNotMoveTheProjection:
             1307.66 - 500.00 - 827.61 = -19.95
 
         Record a $150.27 purchase against the envelope and record NOTHING else.
-        The entry is UNCLEARED -- the anchor was read before the purchase and
-        does not contain it -- so the reservation stays at the full $500.00
-        (``max(500 - 0 - 0, 150.27)``) and the figure is still -$19.95.
+        The purchase is OUTSTANDING -- its ``settled_on`` is NULL, because the
+        user has not seen it on a statement -- so the reservation stays at the
+        full $500.00 (``max(500 - 0 - 0, 150.27)``) and the figure is still
+        -$19.95.
 
         The wrong answer to guard against is $130.32 (``1307.66 - 349.73 -
         827.61``): reducing the reservation by a purchase the anchor has not
@@ -175,14 +216,14 @@ class TestRecordingAPurchaseDoesNotMoveTheProjection:
                 account, user_id, period,
             ) == _PROJECTED_END
 
-    def test_an_entry_plus_a_matching_trueup_does_not_move_it_either(
+    def test_recording_then_truing_up_then_ticking_cancels_out(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """Recording the purchase AND truing up by the same amount cancels out.
+        """Row 2: record the purchase, true up, tick it -- the two cancel.
 
         The same start (-$19.95).  Record the $150.27 purchase, then true the
         anchor up to $1,157.39 -- exactly $150.27 lower, which is what the bank
-        now shows.  The true-up reconciles the entry, so:
+        now shows -- then tick the purchase off that statement:
 
             1157.39 - 349.73 - 827.61 = -19.95
 
@@ -190,6 +231,15 @@ class TestRecordingAPurchaseDoesNotMoveTheProjection:
         projected end balance does not move.  This is the invariant the whole
         envelope design rests on: the user's bookkeeping session changes what
         the app KNOWS without changing what it PREDICTS.
+
+        **The tick is a separate step now, and asserting the INTERMEDIATE is
+        what makes this test discriminating** (plan step S1-c).  A true-up used
+        to reconcile the entry as a side effect; it no longer touches one, so
+        the balance is asserted BETWEEN the true-up and the tick as well -- at
+        that point the anchor has fallen while the reservation has not, and the
+        figure is $150.27 lower.  Without that intermediate the final -$19.95
+        could be produced by a build that reconciled nothing and never moved
+        the anchor either.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -207,13 +257,73 @@ class TestRecordingAPurchaseDoesNotMoveTheProjection:
                 account=account,
                 new_balance=_ANCHOR_AFTER,
                 anchor_period=period,
-                user_id=user_id,
             )
 
-            # The true-up reconciled the entry, which is what makes the two
+            # The true-up alone reconciles NOTHING (ruling R-DH (d)), so the
+            # anchor has dropped and the reservation has not.
+            assert envelope.entries[0].settled_on is None
+            assert _projected_end_balance(
+                account, user_id, period,
+            ) == _PROJECTED_END - _PURCHASE
+
+            assert self._tick(seed_user, account, envelope) == 1
+
+            # The tick reconciled the purchase, which is what makes the two
             # moves cancel; asserting it here means a regression that stops
             # reconciling reports as itself rather than as a balance drift.
-            assert envelope.entries[0].is_cleared is True
+            assert envelope.entries[0].settled_on is not None
+            assert _projected_end_balance(
+                account, user_id, period,
+            ) == _PROJECTED_END
+
+    def test_truing_up_FIRST_then_recording_then_ticking_also_cancels(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """Row 3: the order that was WRONG until plan step S1-c.
+
+        The same session in the other order: the user reads their bank balance
+        and enters $1,157.39 FIRST, then records the $150.27 purchase it
+        already reflects, then ticks it off.  The same three facts are true, so
+        the projection must be the same number -- ``-$19.95``.
+
+        **This is the defect S1-c fixes, and it has never had a test.**  The
+        bulk clear fired inside the true-up, so it ran BEFORE the entry existed
+        and the entry was never reconciled; the projection then read the whole
+        envelope budget against an anchor that had already dropped by the
+        purchase -- ``-$170.22`` here (``_PROJECTED_END - _PURCHASE``), wrong by
+        exactly the purchase, until the NEXT true-up happened to sweep it.  On
+        the developer's real data that is 14 of 53 same-day entries.
+
+        The negative control is stated as a figure rather than left implicit:
+        ``-$170.22`` is what the shipped code answered and what this test fails
+        with if the reconcile step is ever folded back into the true-up.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            period = _current_period(user_id)
+            account, envelope = self._seed(seed_user, period)
+            assert _projected_end_balance(
+                account, user_id, period,
+            ) == _PROJECTED_END
+
+            # The anchor comes FIRST this time.
+            anchor_service.apply_anchor_true_up(
+                account=account,
+                new_balance=_ANCHOR_AFTER,
+                anchor_period=period,
+            )
+            add_entry(
+                _db.session, seed_user, envelope, _PURCHASE, display_today(),
+            )
+            _db.session.commit()
+
+            # Before the tick the projection is the OLD defect's figure.
+            assert _projected_end_balance(
+                account, user_id, period,
+            ) == _PROJECTED_END - _PURCHASE
+
+            assert self._tick(seed_user, account, envelope) == 1
+
             assert _projected_end_balance(
                 account, user_id, period,
             ) == _PROJECTED_END
@@ -379,7 +489,7 @@ class TestTheDeployResyncIsSafeToRunOnEveryDeploy:
     def test_it_re_dates_an_entry_whose_stored_day_is_wrong_and_says_so(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """A stale entry_date is re-posted onto the right day, and COUNTED.
+        """A stale journal entry_date is re-posted onto the right day, and COUNTED.
 
         This is the hook's whole reason to exist, reproduced: an entry whose
         stored ``entry_date`` is a day off -- the shape every pre-R-DH (b) entry

@@ -146,7 +146,7 @@ def _add_purchase(seed_user, txn, amount, *, is_credit=False):
         user_id=seed_user["user"].id,
         amount=Decimal(amount),
         description="purchase",
-        entry_date=txn.pay_period.start_date,
+        purchased_on=txn.pay_period.start_date,
         is_credit=is_credit,
     )
     db.session.add(entry)
@@ -536,7 +536,7 @@ class TestEnvelopePostingLifecycle:
                 txn_id, user_id,
                 EntryDetails(
                     amount=Decimal("30.00"), description="late",
-                    entry_date=seed_periods[0].start_date, is_credit=False,
+                    purchased_on=seed_periods[0].start_date, is_credit=False,
                 ),
             )
             db.session.commit()
@@ -617,14 +617,33 @@ class TestEnvelopePostingLifecycle:
             ) == Decimal("960.00")
             _assert_reconciles(seed_user["scenario"].id, checking)
 
-    def test_toggle_cleared_does_not_change_ledger(
+    def test_recording_a_posting_day_does_not_change_the_ledger(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """Toggling an entry's cleared flag leaves the ledger untouched.
+        """Recording when the bank took a purchase leaves the ledger untouched.
 
-        The cleared/uncleared split does not change ``effective - credit_sum``,
-        so ``toggle_cleared`` is deliberately NOT a posting boundary: the single
-        posted entry (-40 / +40) is unchanged, no second entry appears.
+        Successor to the ``toggle_cleared`` control (plan step S1-c, ruling
+        R-DH (d)): the flag and its toggle are deleted, and the fact they stood
+        in for is now the purchase's own ``settled_on``.  The PROPERTY is
+        unchanged and is why the test survives the rename -- a settled row's
+        confirmed cash effect is ``effective_amount - Sigma(credit entries)``,
+        which the posting day does not appear in, so recording one cannot move
+        a posted total.
+
+        It is a STRONGER control than the one it replaces.  ``toggle_cleared``
+        was documented as deliberately not a posting boundary and never called
+        the resync at all; ``update_entry`` calls
+        ``_resync_postings_if_settled`` on every mutation of a settled
+        envelope's entries, so this exercises the resync and asserts it
+        reconciles to the SAME target: the single posted entry (-40 / +40)
+        stands, no second entry appears, and the checking total holds at
+        ``1000 - 40 = 960.00``.
+
+        The parent is SETTLED, so ``record_settled_days`` is deliberately not
+        the door used here -- its outstanding scope admits only projected
+        parents (``entry_service._outstanding_scope``), which
+        ``test_entry_service.py`` pins directly.  ``update_entry`` is the door a
+        user has for a purchase on an already-settled envelope.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -635,13 +654,19 @@ class TestEnvelopePostingLifecycle:
             entry = _add_purchase(seed_user, txn, "40.00", is_credit=False)
             db.session.commit()
             entry_id = entry.id
+            purchased_on = entry.purchased_on
             txn_id = txn.id
             auth_client.post(f"/transactions/{txn_id}/mark-done")
             assert len(_entries_for_transaction(txn_id)) == 1
 
-            entry_service.toggle_cleared(entry_id, user_id)
+            updated = entry_service.update_entry(
+                entry_id, user_id, settled_on=purchased_on,
+            )
             db.session.commit()
 
+            # The fact really was recorded -- otherwise "the ledger did not
+            # move" would be true of a no-op and prove nothing.
+            assert updated.settled_on == purchased_on
             # No new entry; the ledger is unchanged.
             assert len(_entries_for_transaction(txn_id)) == 1
             assert posting_service.account_posting_total(

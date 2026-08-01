@@ -29,7 +29,6 @@ from flask_login import current_user, login_required
 
 from app import ref_cache
 from app.enums import (
-    AcctTypeEnum,
     CompoundingFrequencyEnum,
     EmployerContributionTypeEnum,
 )
@@ -59,7 +58,6 @@ from app.services import (
     account_posting_service,
     account_service,
     anchor_service,
-    entry_service,
     ledger_account_service,
     pay_period_service,
     transfer_service,
@@ -449,31 +447,32 @@ def update_account(account_id):
             setattr(account, field, value)
     type_changed = account.account_type_id != old_type_id
 
-    # Reconcile entries on checking true-ups and commit.  Both
-    # operations live inside the same try/except because
-    # ``clear_entries_for_anchor_true_up`` autoflushes the pending
-    # Account mutation before issuing its own bulk UPDATE -- the
-    # version-pinned WHERE clause is checked at autoflush time, so
+    # The side effects and the commit live inside the same try/except
+    # because the resync below flushes the pending Account mutation -- the
+    # version-pinned WHERE clause is checked at flush time, so
     # ``StaleDataError`` would otherwise escape outside the catch.
     # See the matching comment in :func:`true_up`.
-    checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
 
     def _reconcile_anchor_and_type_effects():
         """Reconcile the anchor / type side effects (in-transaction step).
 
-        On an anchor change: clear the checking entries (the true-up
-        contract) and re-base the account's Step-5 anchor corrections.
+        On an anchor change: re-base the account's Step-5 anchor corrections.
         On a type change: re-class the (empty) linked ledger row when the
         Asset/Liability boundary was crossed -- ``_validate_update_account``
         already refused a crossing on a posted account -- and re-sync the
         corrections so an amortizing-boundary crossing swaps correction
         families instead of stranding one (the sync structurally no-ops
         for the loan side).
+
+        **It no longer touches entries** (ruling R-DH (d), plan step S1-c).
+        An anchor change here used to bulk-flip ``is_cleared``, which made
+        "is this purchase already inside the balance the user typed" an
+        answer decided by recording order.  Reconciliation is derived from
+        each purchase's own recorded posting day now, and confirming which
+        ones a statement showed is the user's own step on the account's
+        reconcile panel -- not a side effect of an account EDIT, which is
+        not even the surface a balance reading is entered on.
         """
-        if anchor_changed and account.account_type_id == checking_type_id:
-            entry_service.clear_entries_for_anchor_true_up(
-                current_user.id, account.id,
-            )
         if type_changed:
             # Flush the new FK and expire the stale ``account_type``
             # relationship so the re-class and the resync's classifier both

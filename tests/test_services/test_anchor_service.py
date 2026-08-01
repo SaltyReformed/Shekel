@@ -103,13 +103,12 @@ def _make_savings_account(seed_user, periods, anchor_balance="500.00"):
 
 
 def _make_projected_expense_with_past_dated_entry(seed_user, period, amount):
-    """Create a Projected expense with one uncleared past-dated debit entry.
+    """Create a Projected expense with one unobserved past-dated debit entry.
 
-    Used by the checking-clears-entries test: the helper's contract is
-    that a checking true-up flips ``is_cleared = TRUE`` on past-dated
-    debit entries of projected parents.  Returns the
-    :class:`TransactionEntry` so the caller can re-read its
-    ``is_cleared`` flag after the true-up.
+    Used by the two tests that pin what a true-up does NOT do: its
+    ``settled_on`` starts NULL -- the bank has not been seen to take it -- and
+    it must still be NULL afterwards.  Returns the
+    :class:`TransactionEntry` so the caller can re-read that column.
     """
     projected = db.session.query(Status).filter_by(name="Projected").one()
     expense_type = db.session.query(TransactionType).filter_by(
@@ -147,9 +146,9 @@ def _make_projected_expense_with_past_dated_entry(seed_user, period, amount):
         user_id=seed_user["user"].id,
         amount=Decimal(amount),
         description="Past-dated debit",
-        entry_date=date.today() - timedelta(days=1),
+        purchased_on=date.today() - timedelta(days=1),
         is_credit=False,
-        is_cleared=False,
+        settled_on=None,
     )
     db.session.add(entry)
     db.session.commit()
@@ -159,22 +158,21 @@ def _make_projected_expense_with_past_dated_entry(seed_user, period, amount):
 class TestApplyAnchorTrueUpCommitted:
     """COMMITTED outcome: helper writes balance + history and commits."""
 
-    def test_savings_true_up_committed_no_entries_cleared(
+    def test_savings_true_up_commits_without_touching_entries(
         self, app, db, seed_user, seed_periods_today,
     ):
         """Non-checking account: helper commits without touching entries.
 
         Setup: a Savings account anchored at periods[0]; one
-        projected checking-account expense with an uncleared past-
+        projected checking-account expense with an unobserved past-
         dated debit entry (created on the seed_user checking account,
         NOT on the savings account being trued up).
 
         Hand-check: after ``apply_anchor_true_up`` on the savings
         account, the outcome is COMMITTED, the savings anchor balance
         is the new value, exactly one new history row exists for the
-        savings account, and the unrelated checking entry's
-        ``is_cleared`` is unchanged (debit entries only hit checking
-        and the savings true-up must not touch them).
+        savings account, and the unrelated checking purchase still has
+        NO recorded posting day.
         """
         with app.app_context():
             savings = _make_savings_account(
@@ -201,7 +199,6 @@ class TestApplyAnchorTrueUpCommitted:
                 account=savings,
                 new_balance=Decimal("750.00"),
                 anchor_period=current_period,
-                user_id=seed_user["user"].id,
             )
 
             assert outcome is AnchorTrueUpOutcome.COMMITTED
@@ -220,30 +217,46 @@ class TestApplyAnchorTrueUpCommitted:
                 "Savings true-up must append exactly one history row."
             )
 
-            # Debit entry untouched: savings true-up does NOT clear
-            # checking-only past-dated entries.
+            # The purchase is untouched.  This was true before plan step S1-c
+            # too -- the bulk clear was checking-only -- so this arm is a
+            # rename rather than a re-ruling; the checking test beside it is
+            # the one whose expectation INVERTED.
             entry_after = db.session.get(TransactionEntry, entry.id)
-            assert entry_after.is_cleared is False, (
-                "Savings true-up must not flip is_cleared on debit entries "
-                "(debits only hit checking; only a checking true-up "
-                "reconciles them)."
+            assert entry_after.settled_on is None, (
+                "A true-up records no posting day on any account's "
+                "purchases (ruling R-DH (d))."
             )
 
-    def test_checking_true_up_committed_clears_past_dated_entries(
+    def test_checking_true_up_records_no_posting_day(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """Checking account: helper commits AND clears past-dated entries.
+        """RE-RULED: a checking true-up touches NO entry (ruling R-DH (d)).
 
         Setup: the seed_user account is Checking; one projected
-        envelope expense with one uncleared past-dated debit entry of
+        envelope expense with one unobserved past-dated debit entry of
         ``$50.00`` on the current period.
 
         Hand-check: after ``apply_anchor_true_up`` on the seed_user
         checking account, the outcome is COMMITTED, the anchor
         balance is the new value, exactly one new history row exists,
-        AND the past-dated debit entry's ``is_cleared`` flipped to
-        True (the entry-reconcile contract -- see
-        ``entry_service.clear_entries_for_anchor_true_up``).
+        AND the purchase still has NO recorded posting day.
+
+        **This test asserted the OPPOSITE until plan step S1-c**, and the
+        inversion is the point of the step.  A bulk ``UPDATE`` flipped
+        ``is_cleared = TRUE`` on every entry dated on or before the SERVER's
+        today at every true-up, so whether a purchase counted as reconciled
+        was decided by the order two buttons were pressed: record then true up
+        and it cleared, true up then record and it never did.  The engine now
+        never guesses a posting day; the user supplies it by ticking the
+        purchase off a statement (``entry_service.record_settled_days``, whose
+        own tests live with that service and whose ROUTE is graded in
+        ``test_routes/test_accounts.py``).
+
+        That reconcile step is deliberately a SEPARATE request: folding it in
+        here would put it inside this function's F-103 duplicate handler, which
+        catches an ``IntegrityError``, rolls the session back and reports
+        idempotent success -- so a same-day re-assert would silently discard
+        every reconciliation just made while the UI said it saved.
 
         Re-fetches the account via ``db.session.get`` so it is
         attached to the current scoped session.  The conftest's ``db``
@@ -271,7 +284,6 @@ class TestApplyAnchorTrueUpCommitted:
                 account=account,
                 new_balance=Decimal("2500.00"),
                 anchor_period=current_period,
-                user_id=seed_user["user"].id,
             )
 
             assert outcome is AnchorTrueUpOutcome.COMMITTED
@@ -289,9 +301,10 @@ class TestApplyAnchorTrueUpCommitted:
             assert history_count_after == history_count_before + 1
 
             entry_after = db.session.get(TransactionEntry, entry.id)
-            assert entry_after.is_cleared is True, (
-                "Checking true-up MUST flip past-dated debit entries "
-                "(entry_service.clear_entries_for_anchor_true_up contract)."
+            assert entry_after.settled_on is None, (
+                "A true-up must record NO posting day: whether the bank has "
+                "taken a purchase is not derivable from a balance reading "
+                "(ruling R-DH (d) / plan step S1-c)."
             )
 
 
@@ -354,7 +367,6 @@ class TestApplyAnchorTrueUpStaleConflict:
                     account=account,
                     new_balance=Decimal("9999.99"),
                     anchor_period=current_period,
-                    user_id=seed_user["user"].id,
                 )
             finally:
                 event.remove(Account, "before_update", make_stale)
@@ -414,7 +426,6 @@ class TestApplyAnchorTrueUpDuplicateSameDay:
                 account=account,
                 new_balance=Decimal("1234.56"),
                 anchor_period=current_period,
-                user_id=seed_user["user"].id,
             )
             assert outcome_first is AnchorTrueUpOutcome.COMMITTED
 
@@ -425,7 +436,6 @@ class TestApplyAnchorTrueUpDuplicateSameDay:
                 account=account,
                 new_balance=Decimal("1234.56"),
                 anchor_period=current_period,
-                user_id=seed_user["user"].id,
             )
             assert outcome_second is AnchorTrueUpOutcome.DUPLICATE_SAME_DAY
 
@@ -467,13 +477,11 @@ class TestApplyAnchorTrueUpDuplicateSameDay:
                 account=account,
                 new_balance=Decimal("1000.00"),
                 anchor_period=current_period,
-                user_id=seed_user["user"].id,
             )
             outcome_b = apply_anchor_true_up(
                 account=account,
                 new_balance=Decimal("1100.00"),
                 anchor_period=current_period,
-                user_id=seed_user["user"].id,
             )
             assert outcome_a is AnchorTrueUpOutcome.COMMITTED
             assert outcome_b is AnchorTrueUpOutcome.COMMITTED
@@ -527,7 +535,6 @@ class TestApplyAnchorTrueUpReraisesUnknownIntegrityError:
                 account=account,
                 new_balance=Decimal("2222.22"),
                 anchor_period=current_period,
-                user_id=seed_user["user"].id,
             )
             assert outcome_first is AnchorTrueUpOutcome.COMMITTED
 
@@ -542,7 +549,6 @@ class TestApplyAnchorTrueUpReraisesUnknownIntegrityError:
                         account=account,
                         new_balance=Decimal("2222.22"),
                         anchor_period=current_period,
-                        user_id=seed_user["user"].id,
                     )
 
             # And the session is clean (the helper rolled back before
@@ -1044,7 +1050,6 @@ class TestApplyAnchorTrueUpKindGate:
                     account=loan,
                     new_balance=Decimal("1.00"),
                     anchor_period=current_period,
-                    user_id=seed_user["user"].id,
                 )
 
             # The message names the correct path for the caller.

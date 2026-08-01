@@ -54,9 +54,10 @@
                             missing the txn's id, the inline entries
                             section is skipped (matching the
                             non-envelope render path).
-     today               -- (optional) `datetime.date` used as the
-                            default value of the add-entry form's
-                            hidden `entry_date` input inside
+     today               -- (optional) the USER's civil day
+                            (`display_today()`) used as the default
+                            value of the add-entry form's
+                            `purchased_on` input inside
                             `_transaction_entries.html`.  Only
                             consumed indirectly through
                             `render_row_card`; required whenever
@@ -72,8 +73,8 @@
                             gracefully omitted.
      period_row_flags    -- (optional) GridRowFlags for `periods[0]`, the
                             ONE period this partial renders, forwarded to the
-                            summary partial for ruling R-O / R-P's THREE
-                            conditional bars (Timing & true-ups,
+                            summary partial for ruling R-O / R-P's FOUR
+                            conditional bars (Period timing, Book vs bank,
                             Contributions, and the modelled return).  Scoped
                             to that period rather than to the grid's visible
                             window so the initial include and the self-refresh

@@ -1,12 +1,17 @@
 # The anchor/settle partition: when is a settled row already inside an asserted balance?
 
-Status: **Steps S1-a and S1-b SHIPPED TO PRODUCTION 2026-07-31 (PR #67, merge `fd0ddfab`);
-the residue MERGED to `main` 2026-08-01 at PR #68 but NOT YET DEPLOYED -- prod is at
-`b2d8f3a6c541`, `main` at `c4a19e7b2d80`, and the residue moves no rendered figure.
-The residue: F1 RULED and applied, the opening now carries a stored user-supplied DATE (step 2's
-opening half), and F2's remainder, F4, F5, F6, F7, F8, F9 and F12 are all closed. **S1-c is
-UNBLOCKED and is NEXT** (F11 measured and closed -- Sections 10 and 11); steps 3-4 and step 2's
-transaction half OPEN.**
+Status: **Steps S1-a, S1-b and the N-133 residue are IN PRODUCTION (PR #67 `fd0ddfab`,
+PR #68 -- prod and `main` both at `c4a19e7b2d80`, deployed 2026-08-01).**
+
+**S1-c is BUILT and IN PROGRESS on branch `feat/entry-posting-date`.  Ruling R-M was RE-RULED in
+the course of it and the shape changed: `transaction_entries.entry_date` SPLITS into
+`purchased_on` + `settled_on`, and reconciliation is derived from an OBSERVED posting day rather
+than from a guess.  See Section 12 for the rulings and Section 13 for what remains.**
+Application code is complete and `pylint app/` is 10.00/10; migration `d7c1f4a9e603` is verified
+both directions against a production clone; **the suite is mid-conversion at 7,424 passed /
+157 failed** and the branch must not be opened as a PR until it is green.
+
+Steps 3-4 and step 2's transaction half (`transactions.settled_on`) remain OPEN.
 
 `pylint app/ scripts/` 10.00/10. Full suite **7,687 passed / 0 failed** (7,677 at the merge base;
 10 net new). Production-clone verification is Section 7: **standards 1, 2, 3, 5 and 6 all pass**,
@@ -1318,3 +1323,268 @@ review and are not repeated here.
   `moved - net`, both already computed in `_cash_fold._assemble_figures` (`:958-960`). The design
   claimed to enable that split; it is one line on shipped code, and Section 10.6 now sequences it
   with S1-c because it is what gives R-DH (d)'s accepted residual a visible home.
+
+## 12. S1-c as RULED: one column carried two facts, and it splits
+
+Ruled by the developer 2026-08-01, in the session that built S1-c. Section 10.6 had recommended
+shipping R-DH (d) exactly as written; tracing the code to build it surfaced a defect underneath the
+fork that neither Section 10 nor Section 11 had named, and the developer re-ruled on it.
+
+### 12.1 The defect: `entry_date` meant two different things
+
+```
+app/models/transaction_entry.py:26   entry_date -- "Date the purchase occurred"
+ruling R-M (README.md)               "an entry ... is something that HAPPENED" -> refuse > today
+ruling R-DH (e)                      "A date means the day the money HIT THE ACCOUNT, not the day
+                                      the purchase happened.  They differ by a day or two for a
+                                      debit card."
+```
+
+Two rulings, one column, opposite definitions. **Every reconciliation rule built on that column
+inherits the ambiguity**, which is why Section 10.3's "no date rule can answer both cases" felt
+like an impossibility result: it was measuring one field being asked two questions.
+
+The rest of the app had already drawn this line. `CashSourceFact` carries a cash clock beside a
+budget clock and says so in its own docstring -- *"It carries TWO clocks, and the second one is not
+decoration"*; a loan payment carries a `due_date` beside its pay period (ruling in
+`project_loan_due_date_is_a_posting_input`); and S2-b is about to add `transactions.settled_on` for
+exactly this reason. **The transaction entry was the last cash-moving record in the app answering
+both clocks with one column.**
+
+### 12.2 A correction to Section 10.6, which is what made the split reachable
+
+Section 10.6 defers the R-M fork on the ground that *"R-M's guard is load-bearing for plan step
+X-c2's deleted as-of window"*. That was true when the guard was written and **is no longer the
+reason the window stays deleted.** X-c2c1's own as-built, quoted verbatim in
+`cash_ledger/_amounts.py`, replaced it with a sharper one:
+
+> *"a purchase that happened belongs in the reservation whatever date the reader is asking from"*
+> ... *"What a row is WORTH is a function of the row ... the reader's clock decides WHEN the row
+> lands, never what it is worth."*
+
+So the window stays deleted on the ROW's semantics, not on the guard. The guard's real job is
+narrower and still valid -- stop a purchase you have not made from moving a rendered balance,
+measured at R-M as `-$89.45` as a debit or `+$60.55` as a CC entry -- and that job is about the
+PURCHASE date. It says nothing about the POSTING date.
+
+### 12.3 R-M -- AMENDED. The column splits; the guard does not move.
+
+**`transaction_entries.entry_date` becomes `purchased_on`, and a nullable `settled_on` joins it.**
+
+- **`purchased_on`** -- NOT NULL, the day the purchase was MADE. R-M's guard is **unchanged** and
+  now sits on the column it was always about: a value after the user's today is refused at both
+  write doors (`entry_service._reject_future_purchase_date`). Budget consumption (`remaining`), the
+  out-of-period warning and the entry list's ordering all read it, which is what they always meant.
+- **`settled_on`** -- NULLABLE, the day the bank TOOK the money, recorded only when the user has
+  SEEN it. `CHECK (settled_on IS NULL OR settled_on >= purchased_on)`: money cannot leave the
+  account before it was spent. **No upper bound** -- any "at most N days ahead" ceiling would be an
+  unjustifiable constant, and a wrong forward date is visible on the row and self-corrects at the
+  next true-up.
+
+*Rejected:* **widening R-M's bound on one column** (the column would then mean "purchase day" on
+some rows and "posting day" on others with nothing in the schema recording which -- contradictory
+data by construction, and `remaining` plus the out-of-period warning both read it as the purchase
+day); and **keeping R-M exactly as it stood** (the forward case a debit-card float actually
+produces would remain inexpressible, so the app could not be told the truth).
+
+### 12.4 R-DH (d) -- RESTATED. Derived from an OBSERVATION, not from a guess.
+
+An entry is reconciled iff `settled_on` is on or before the account's latest asserted `observed_on`
+-- `cash_ledger.is_inside_assertion`, the same predicate in the same units the read fold and the
+posting walk apply to a settled transaction, **evaluated at read time**.
+
+**A NULL `settled_on` means "not observed to have posted", and it is NOT reconciled.** That is the
+conservative arm: the envelope keeps holding its whole budget back until the user confirms the money
+has left. **The engine never guesses a posting day on a user's behalf.**
+
+This is what Section 11.1's surviving premise demanded and Section 10.6 could not deliver. 11.1
+established that *whether the bank had posted a purchase is not derivable* -- it is not a function
+of the purchase date, the recording instant, or any other column -- and concluded that a stored flag
+holding an unobserved value is *"a guess with a database column, which is strictly worse than a
+guess computed at read time where it can be seen"*. Both halves are now satisfied at once: the
+FLAG is gone (derived), and the DATE it derives from is observed rather than guessed.
+
+*Rejected:* falling back to the civil-day rule on `purchased_on` when `settled_on` is NULL. It
+would have kept Section 10.6's `+$534.08` and put the engine back in the business of guessing, on
+a field whose whole purpose is to record what was seen.
+
+### 12.5 The reconcile step -- how an observation gets recorded
+
+When you enter a balance, the app lists the purchases it still thinks are outstanding and you tick
+the ones your statement shows. **A tick stamps `settled_on` with the assertion's `observed_on`** --
+an UPPER BOUND on the true posting day, and the only bound the reconciliation predicate consumes,
+so no answer changes by sharpening it. The exact day is editable on the entry afterwards.
+
+*Where it lives:* the one-click inline anchor editor is **untouched** (that habit produces an
+assertion every 2.3 days on the real data and taxing it would cost more than a prompt buys). A
+successful true-up appends an out-of-band reconcile modal **only when there is something to
+reconcile**; the same partial is a permanent section on the cash account detail page, so dismissing
+the prompt loses nothing.
+
+*It is its own request, deliberately.* Folding it into `apply_anchor_true_up` would put it inside
+that function's F-103 duplicate handler, which catches an `IntegrityError`, rolls the session back
+and reports idempotent success -- so a same-day re-assert would silently discard every
+reconciliation just made while the UI said it saved. **That is Section 11.2's fourth disqualifying
+defect, carried forward and designed around rather than rediscovered.**
+
+*Rejected:* replacing the inline editor with a true-up panel (taxes the habit on all five opener
+surfaces); and a detail-page-only list with no prompt (nothing catches the user at the moment they
+are holding the statement).
+
+### 12.6 R-DH (c) -- BOTH invariants now hold, in both orders
+
+Section 10.5 recorded that R-DH (c)'s two promises could not both be kept, and Section 10.6
+accepted breaking the second. **Under the observed-date design neither is broken:**
+
+| | what happens | invariant |
+|---|---|---|
+| record a purchase, nothing else | `settled_on` NULL -> outstanding -> reservation holds the full budget | **holds** -- the projection does not move |
+| record it, then true up and tick it | reconciled -> reservation falls by the purchase; the anchor fell by the same | **holds** -- the two cancel |
+| true up first, then record it, then tick it | same -> reservation falls by the purchase | **holds** -- "either order" is finally true |
+
+The third row is what today's shipped code gets wrong: the bulk clear ran before the entry existed,
+so it never cleared and the projection read `-$170.22` against a true `-$19.95` until the NEXT
+true-up. That defect is 14 of the developer's 53 same-day entries (Section 10.2) and it is the one
+S1-c actually fixes.
+
+### 12.7 R-DH (f) -- the remainder splits into TWO rows with independent visibility
+
+`CashPeriodFigures.reconciliation` becomes **`period_timing`** (`moved - net`: money budgeted here
+that moved elsewhere, or has not moved yet) and **`book_vs_bank`** (`asserted[period]`: what the
+user's own balance readings booked). `GridColumn` and `GridRowFlags` carry both, and **each row is
+asked R-O's visibility question separately** -- a window carrying only true-ups must not also render
+a permanently-`$0.00` timing row, which reads as "measured and zero" for a fact that was never in
+question.
+
+No combined `reconciliation` accessor survives. Leaving one would invite a surface to render the
+sum again, which is the figure the ruling exists to delete.
+
+The identity becomes:
+
+```
+balance[p] - balance[p-1]
+    == net[p] + period_timing[p] + book_vs_bank[p] + contribution[p] + accrual[p]
+```
+
+### 12.8 What was measured on the production clone
+
+A fresh `pg_dump` of production (2026-08-01, read-only) restored into dev and upgraded to
+`d7c1f4a9e603`.
+
+| standard | result |
+|---|---|
+| the migration runs both directions | **PASS** -- upgrade, downgrade, upgrade; `downgrade` REFUSES when any row carries an observed `settled_on` and names the row plus the recovery path |
+| no figure moves on the day it ships | **PASS** -- current period `-$19.95` before and after |
+| the backfill invents no date | **PASS** -- `settled_on` starts NULL on all 82 rows; measured, **0 of the 70 `is_cleared = TRUE` rows sat on a Projected parent** (53 debit + 17 credit, all on already-settled parents), and the reservation prices only Projected rows, so the dropped flag could not have moved a figure |
+| R-DH (f)'s split lands on the hand-computed halves | **PASS** -- `period_timing = -$427.22`, `book_vs_bank = -$160.05`, exactly the decomposition Section 3 predicted for the `-$587.27` single row |
+| `pylint app/` | **PASS** -- 10.00/10, including the two new W9909 classifications and the W9910 boundary |
+
+### 12.9 Structural work this step forced, and why it belongs
+
+- **`balance_at._cash_fold` split.** Adding R-DH (f)'s second field pushed it past the 1,000-line
+  ceiling. The period-view half moved whole to **`balance_at._cash_periods`**: assembling a running
+  total and regrouping it into columns are two jobs sharing exactly one input
+  (`AssembledCashFold`), and the dependency runs one way. Growing past a gate is a signal, and the
+  seam it was measuring is real.
+- **`cash_ledger.is_inside_assertion`** -- the ONE statement of the arc's central question, public
+  so the read fold, the posting walk and the entry reservation cannot each grow their own. This is
+  step 3's convergence, arriving early because S1-c is the site step 3 names.
+- **`cash_ledger.latest_observed_day`** -- one accessor for "the account's latest asserted day",
+  which **deleted a duplicate**: `account_posting_service._sync` had its own copy, and a second copy
+  of this question is what carried the timezone-sign dependency finding N-133 / F4 closed.
+- **`CashLedgerWalk.latest_observed_on`** -- the in-memory twin for callers already holding a walk,
+  so the fold pays no query. Its equality with the SQL form is pinned by a test rather than assumed.
+- **`ProjectedBasis`** -- the two per-account facts a still-Projected valuation needs (the live
+  override map, and the day through which purchases are reconciled), bundled and **REQUIRED**. Two
+  optional arguments would be two ways to hand the reduction half a basis, which would silently
+  value every purchase as outstanding.
+- **`#modal-mount`** -- the body-level modal target generalised from `#carry-forward-modal-mount`,
+  because an out-of-band prompt needs a mount on every page the anchor editor opens from.
+
+### 12.10 One defect found in passing, fixed here
+
+`app/routes/transactions/_helpers.py` passed `today=date.today()` into the add-purchase form, whose
+own contract requires `display_today()` and whose value `entry_service` judges on the display clock
+(ruling R-M). On any process not pinned to `America/New_York` -- CI runs `TZ=Pacific/Kiritimati`
+precisely to catch this -- the form defaults to a date its own server refuses. Latent in production
+(the container pins the zone); the same two-clock shape as finding N-133 / R2.
+
+### 12.11 What this does NOT close
+
+- **The settle side still guesses.** `transactions.settled_on` (S2-b) gives a settle the same second
+  clock a purchase now has, but Section 10.3's result stands for it: with both dates recorded, a
+  movement made after the balance was read still carries the same civil day as one made before it.
+  Only an observation ends that, and on the settle side there is no reconcile step yet.
+- **A bank import (OFX/CSV/Plaid) is the terminal state** and the only thing that removes the guess
+  without asking the user anything. It is outside this arc and is named here so the arc stops
+  implying that step 2 achieves it -- `merge_anchor_and_cash_events`' docstring made exactly that
+  claim and is corrected in this branch.
+- **R-DH (e) vs R-M is settled for entries only.** A transaction still has one date doing both jobs
+  until S2-b.
+
+## 13. S1-c: what remains, and the ruling each conversion must satisfy
+
+The application is complete. The suite is **7,424 passed / 157 failed** and every failure is a
+deliberate re-ruling rather than a rename -- the renames are done. A conversion is CORRECT when it
+satisfies the ruling named in its row; a conversion that merely makes a test green is not.
+
+> **Rebuild the test template first.** Migration `d7c1f4a9e603` invalidates
+> `shekel_test_template`; before this rebuild the suite showed 1,007 failures that were entirely
+> `column transaction_entries.purchased_on does not exist`. The invocation needs the admin URL
+> derived from `.env`:
+>
+> ```bash
+> export TEST_DATABASE_URL=$(grep -h '^TEST_DATABASE_URL=' .env | cut -d= -f2-)
+> export TEST_ADMIN_DATABASE_URL="$(printf '%s' "$TEST_DATABASE_URL" \
+>     | sed -E 's#(/)[^/?]+(\?|$)#\1postgres\2#')"
+> python scripts/build_test_template.py
+> ```
+
+| file | count | the ruling it must satisfy |
+|---|---|---|
+| `test_services/test_entry_service.py` | 35 | 12.3, 12.4. `check_entry_date_in_period` is `check_purchase_date_in_period`; `clear_entries_for_anchor_true_up` and `toggle_cleared` are DELETED -- their tests are deleted with them, replaced by tests for `outstanding_purchases` / `record_settled_days` (including that a forged id from another user, another account, a credit purchase or a settled parent matches nothing) |
+| `test_services/test_cash_amounts.py` | 23 | 12.4. The reservation's third bucket is `settled_on <= reconciled_through`, so every case needs a `ProjectedBasis`. The three buckets are now settled / outstanding / credit, and a NULL `settled_on` is OUTSTANDING |
+| `test_routes/test_grid.py` | 23 | 12.7. `col.reconciliation` -> `col.period_timing` + `col.book_vs_bank`; `row_flags.reconciliation` -> the two flags |
+| `test_services/test_balance_at.py` | 22 | 12.7, plus `cash_period_view` / `CashPeriodFigures` moved to `balance_at._cash_periods` |
+| `test_services/test_transaction_service.py` | 8 | mechanical: the entry fixtures' renamed kwargs |
+| `test_services/test_cash_flows.py` | 8 | 12.4. `sum_projected` takes a REQUIRED `ProjectedBasis`, not an optional override map |
+| `test_services/test_anchor_service.py` | 7 | 12.4, 12.5. A true-up NO LONGER TOUCHES ENTRIES; `apply_anchor_true_up` lost its `user_id` parameter. The two tests asserting the flip are re-ruled to assert the opposite, and the reconcile step gets its own tests |
+| `test_routes/test_accounts.py` | 6 | 12.4, 12.5. The whole bulk-clear class covers a deleted function; re-rule to the reconcile route, keeping the per-account scoping case (a true-up on account A must not reconcile account B's purchases) which is still a real invariant |
+| `test_routes/test_entries.py` | 5 | 12.4. The toggle route is deleted; replace with the read-only derived indicator's render and the `settled_on` edit path (including that an empty value CLEARS it) |
+| `test_integration/test_cross_page_balance_equality.py` | 5 | 12.7 |
+| `test_services/test_posting_service.py` | 3 | mechanical: `TransactionEntry.purchased_on` vs the unchanged `JournalEntry.entry_date` |
+| `test_services/test_cash_fold.py`, `test_cash_period_view.py`, `test_daily_balance_series.py`, `test_asset_fold.py`, `test_account_posting_service.py`, `test_retirement_dashboard_service.py`, `test_models/test_posting_cash_backfill.py`, `test_transaction_posting_lifecycle.py`, `test_frozen_db_clock.py` | ~12 | 12.4. These fixtures set `is_cleared=True` on accounts whose only assertion PREDATES the purchase -- see the finding below. Each needs its assertion moved to cover the purchase, via `mark_purchase_settled`, which fails loudly rather than building the unreachable row |
+| `test_services/test_anchor_settle_partition.py` | 2 | 12.6. Re-rule to the three-row table: an entry alone does NOT move the projection (NULL is outstanding), and the anchor-then-record order now cancels |
+| `test_services/test_service_log_events.py`, `test_utils/test_log_events.py`, `test_services/test_cash_period_view.py` | 3 errors | import errors: the two deleted log events, and the moved `cash_period_view` |
+
+### 13.1 A finding the conversion surfaced, and the helper that records it
+
+**`is_cleared=True` let fixtures assert a state production cannot reach.** The flag was an
+unconditional claim that a purchase was inside the anchor; the derived rule needs the account's
+latest assertion to actually cover it. Several suites set it on accounts whose only assertion was
+months EARLIER than the purchase -- a state the app cannot produce, because the way a purchase gets
+inside a declared balance is that the user declared the balance after it posted.
+
+This is **finding N-132 / R8's shape from a third direction**: a fixture asserting an unreachable
+state passes for years and silently stops discriminating the case it names.
+
+`tests/_test_helpers.mark_purchase_settled` is the successor to `add_entry(..., is_cleared=True)`.
+It does what the flag did AND asserts the precondition the flag let fixtures skip, failing with
+both days named. **Every converted fixture must go through it**, so the conversion cannot recreate
+the shape it is fixing.
+
+### 13.2 Tests this step still OWES, beyond the conversion
+
+Section 10.6 named three things that must ship with S1-c; two are built and their tests are owed:
+
+1. **The invariant table in 12.6, all three rows**, at PROJECTED-BALANCE grain, negative-controlled.
+   The third row (true up, then record, then tick) is the defect S1-c fixes and has never had a test.
+2. **`mark_purchase_settled`'s own guard** -- that it refuses when the assertion does not cover the
+   day. A helper whose failure mode is untested is a helper that will be quietly weakened.
+3. **The reconcile step's scoping**, per bullet in `_outstanding_scope`: a forged id belonging to
+   another user, another account, a credit purchase, a settled parent or an already-recorded entry
+   must match nothing rather than raise.
+4. **The two-clock pin** for `_helpers.py`'s `display_today()` fix (12.10), which is only observable
+   under a non-Eastern `TZ` -- the CI gate that exists for exactly this.
+5. **`latest_observed_day` == `CashLedgerWalk.latest_observed_on`** on a multi-assertion account
+   (12.9), so the two statements cannot drift.

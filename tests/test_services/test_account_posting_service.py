@@ -1160,7 +1160,6 @@ class TestSyncEntryPoints:
                 account=account,
                 new_balance=Decimal("350.00"),
                 anchor_period=seed_user["bootstrap_period"],
-                user_id=seed_user["user"].id,
             )
             assert outcome is AnchorTrueUpOutcome.COMMITTED
             assert posting_service.account_posting_total(

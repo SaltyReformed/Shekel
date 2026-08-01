@@ -12,7 +12,6 @@ preserving the pre-split monolith's behaviour.
 import logging
 
 from dataclasses import dataclass
-from datetime import date
 
 from flask import render_template
 from flask_login import current_user
@@ -34,6 +33,7 @@ from app.services.entry_service import (
     build_entry_sums_dict,
 )
 from app.utils.auth_helpers import get_accessible_transaction
+from app.utils.dates import display_today
 from app.utils.db_errors import is_unique_violation
 from app.utils.error_fragments import INVALID_REFERENCE_MSG, designed_error
 
@@ -148,7 +148,17 @@ def _render_mobile_card(txn, *, card_prefix, can_edit, error=None):
         entry_lists=build_entry_lists_dict([txn]),
         can_edit=can_edit,
         id_prefix=card_prefix,
-        today=date.today(),
+        # The USER's civil day, never the process's.  This reaches
+        # ``grid/_transaction_entries.html``'s add-purchase form as the
+        # ``purchased_on`` default and both pickers' ``max``, and
+        # ``entry_service._reject_future_purchase_date`` judges that field
+        # against ``display_today()`` (ruling R-M).  With ``date.today()`` here
+        # the two clocks disagree on any process not pinned to
+        # ``America/New_York`` -- CI runs ``TZ=Pacific/Kiritimati`` precisely to
+        # catch this -- and the app's own form would default to a date its own
+        # server rejects.  Prod pins the zone, so this was latent rather than
+        # live; it is the same two-clock shape as finding N-133 / R2.
+        today=display_today(),
         error=error,
     )
 

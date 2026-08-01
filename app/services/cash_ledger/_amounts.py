@@ -45,10 +45,51 @@ in, ``Decimal`` out; no Flask import, no writes.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 
 from app.models.transaction import Transaction
 from app.utils.balance_predicates import is_balance_contributing, is_projected
+
+
+@dataclass(frozen=True)
+class ProjectedBasis:
+    """What a reader knows about ONE account that changes its plan's WORTH.
+
+    The two per-account facts every still-Projected valuation in this module
+    needs, bundled so they travel together and are built ONCE per account
+    rather than passed as two arguments a caller could mismatch (plan
+    Section 8: an argument a caller can get wrong is a defect, not a
+    contract).  It is REQUIRED rather than defaulted, deliberately: a
+    forgotten basis would silently make every purchase read as outstanding and
+    every envelope hold its whole budget back -- a wrong balance from an
+    omission, which is exactly the ``selectinload`` seam CRIT-01 / F-009 closed
+    one field over.
+
+    Neither field is a clock.  ``reconciled_through`` is a fact about the
+    ACCOUNT (the latest day its owner asserted a balance for it), so what a row
+    is worth stays a function of the row and its account -- ruling R-M's
+    "the reader's clock decides WHEN a row lands, never what it is worth",
+    which is why plan step X-c2c1 could delete the reservation's ``as_of``
+    window and why nothing here brings one back.
+
+    Attributes:
+        amount_overrides: The live ``{transaction_id: Decimal}`` map
+            (:func:`live_amount_overrides`) -- recomputed salary income and
+            derived loan debits.  ``{}`` when the account has no candidate.
+        reconciled_through: The civil day of the account's LATEST balance
+            assertion (``AccountAnchorHistory.observed_on``), or ``None`` for
+            an account that has never asserted one.  A purchase whose recorded
+            posting day is at or before it is already inside the balance the
+            user declared; every other purchase is still outstanding and its
+            envelope keeps holding the whole budget back.  ``None`` reconciles
+            nothing, which is the honest answer for an account with no
+            declared balance to be inside of.
+    """
+
+    amount_overrides: dict[int, Decimal]
+    reconciled_through: date | None
 
 
 def _override_for(txn, amount_overrides):
@@ -72,7 +113,46 @@ def _override_for(txn, amount_overrides):
     return amount_overrides.get(txn.id)
 
 
-def _entry_checking_impact(entries, estimated_amount):
+def is_inside_assertion(
+    event_day: date | None, observed_on: date | None,
+) -> bool:
+    """Return whether an event dated *event_day* is inside an assertion.
+
+    **The ONE statement of the question this whole arc turns on** -- *is this
+    movement already reflected in the balance the user declared?* -- and ruling
+    R-DH (a)'s answer to it: an assertion is the CLOSING balance for its civil
+    day, so a movement dated at or before that day is inside it by definition.
+
+    It is stated here, once, because the question had FOUR implementations when
+    ``docs/audits/balance_architecture/anchor_settle_partition.md`` was written
+    and three of them compared different things in different units.  Answering
+    it by comparing two data-entry timestamps is what rendered production's
+    projected end balance at ``-$4,021.37`` against a true ``-$19.95`` on
+    2026-07-31 (finding N-130).
+
+    Both sides are OPTIONAL and both absences mean "not inside", which is what
+    makes this total rather than a rule with a precondition each caller must
+    remember.  A ``None`` *event_day* is a purchase whose posting day has never
+    been observed -- still outstanding, whatever any balance says.  A ``None``
+    *observed_on* is an account that has never had a balance declared, so
+    there is nothing for anything to be inside of.
+
+    Args:
+        event_day: The civil day the money moved (a settled row's
+            ``settled_on``, a purchase's ``settled_on``), or ``None`` when it
+            has not been observed.
+        observed_on: The civil day the assertion is the closing balance for,
+            or ``None`` when there is no assertion.
+
+    Returns:
+        True when the event is already inside the asserted balance.
+    """
+    if event_day is None or observed_on is None:
+        return False
+    return event_day <= observed_on
+
+
+def _entry_checking_impact(entries, estimated_amount, reconciled_through):
     """Three-bucket checking reservation for a sequence of debit/credit entries.
 
     The core of the entry-aware reduction, with exactly ONE caller:
@@ -92,19 +172,35 @@ def _entry_checking_impact(entries, estimated_amount):
     Partitions the supplied entries into three buckets and returns the portion
     of the budget still held back against checking:
 
-        cleared_debit   = sum(amount where not is_credit and     is_cleared)
-        uncleared_debit = sum(amount where not is_credit and not is_cleared)
-        sum_credit      = sum(amount where is_credit)
+        settled_debit     = sum(debit amounts already inside the anchor)
+        outstanding_debit = sum(debit amounts the bank has not been seen to take)
+        sum_credit        = sum(amount where is_credit)
 
-        impact = max(estimated_amount - cleared_debit - sum_credit,
-                     uncleared_debit)
+        impact = max(estimated_amount - settled_debit - sum_credit,
+                     outstanding_debit)
 
-    Cleared debits are already reflected in the checking anchor balance,
-    so they are subtracted from the reservation.  Uncleared debits act
-    as a floor -- the reservation can never be smaller than uncleared
-    checking hits, which also handles overspend.  A credit entry never
-    hits checking directly (it flows through a CC Payback sibling
-    transaction), so it only reduces the reservation.
+    A SETTLED debit is already reflected in the checking anchor balance, so it
+    is subtracted from the reservation.  An OUTSTANDING debit acts as a floor --
+    the reservation can never be smaller than the checking hits the anchor does
+    not know about, which also handles overspend.  A credit entry never hits
+    checking directly (it flows through a CC Payback sibling transaction), so it
+    only reduces the reservation and its own dates are irrelevant.
+
+    **Which bucket a debit falls in is DERIVED, and that is ruling R-DH (d)**
+    (plan step S1-c).  It was a stored ``is_cleared`` boolean, written by a bulk
+    UPDATE at every anchor true-up over "every entry dated on or before the
+    SERVER's today" -- so a purchase recorded BEFORE the true-up was reconciled
+    and the identical purchase recorded after it never was, and the difference
+    was which button the user pressed first.  Now the purchase carries the day
+    the bank was SEEN to have taken it (``settled_on``) and the answer is
+    :func:`is_inside_assertion` against the account's latest asserted day: the
+    same predicate, in the same units, that the read fold and the posting walk
+    apply to a settled transaction.
+
+    A purchase whose ``settled_on`` is NULL has never been observed on a
+    statement and is OUTSTANDING, which is the conservative arm: the envelope
+    keeps holding its whole budget back until the user confirms the money has
+    actually left.  Nothing here guesses a posting day on the user's behalf.
 
     This function sees whatever entry set it is handed and applies the
     bucketing to all of it.  Short-circuiting an empty set belongs to the
@@ -113,68 +209,76 @@ def _entry_checking_impact(entries, estimated_amount):
 
     Args:
         entries: An iterable of entry rows, each exposing ``amount``
-            (Decimal), ``is_credit`` (bool), and ``is_cleared`` (bool).
-            The caller is responsible for short-circuiting an empty
-            sequence before calling.
+            (Decimal), ``is_credit`` (bool), and ``settled_on``
+            (``date | None``).  The caller is responsible for short-circuiting
+            an empty sequence before calling.
         estimated_amount: Decimal -- the transaction's budgeted amount,
             the reservation ceiling before debits and credits reduce it.
+        reconciled_through: The civil day of the account's latest balance
+            assertion, or ``None`` when it has never asserted one.  A debit
+            whose ``settled_on`` is at or before it is inside that balance.
 
     Returns:
         Decimal -- the amount this transaction's entries hold back from
         the checking balance.
     """
-    cleared_debit = Decimal("0")
-    uncleared_debit = Decimal("0")
+    settled_debit = Decimal("0")
+    outstanding_debit = Decimal("0")
     sum_credit = Decimal("0")
     for entry in entries:
         if entry.is_credit:
             sum_credit += entry.amount
-        elif entry.is_cleared:
-            cleared_debit += entry.amount
+        elif is_inside_assertion(entry.settled_on, reconciled_through):
+            settled_debit += entry.amount
         else:
-            uncleared_debit += entry.amount
+            outstanding_debit += entry.amount
 
     return max(
-        estimated_amount - cleared_debit - sum_credit,
-        uncleared_debit,
+        estimated_amount - settled_debit - sum_credit,
+        outstanding_debit,
     )
 
 
-def _entry_aware_amount(txn):
+def _entry_aware_amount(txn, reconciled_through):
     """Compute the checking-balance impact for a single expense transaction.
 
     For projected expenses with entries (loaded eagerly or
     lazy-loaded on demand), the formula partitions debit entries into
-    cleared and uncleared buckets, then holds back only the portion
-    of the budget that has not yet been reconciled with the anchor:
+    settled and outstanding buckets, then holds back only the portion
+    of the budget the anchor does not already account for:
 
-        cleared_debit   = sum(entries where not is_credit and     is_cleared)
-        uncleared_debit = sum(entries where not is_credit and not is_cleared)
-        sum_credit      = sum(entries where is_credit)
+        settled_debit     = debits whose recorded posting day is inside the
+                            account's latest asserted balance
+        outstanding_debit = every other debit
+        sum_credit        = sum(entries where is_credit)
 
         checking_impact = max(
-            estimated_amount - cleared_debit - sum_credit,
-            uncleared_debit,
+            estimated_amount - settled_debit - sum_credit,
+            outstanding_debit,
         )
 
     Semantics:
-      - A cleared debit is already reflected in the checking anchor
+      - A SETTLED debit is already reflected in the checking anchor
         balance, so it should not come out of the projection again --
         we subtract it from the reservation.
-      - An uncleared debit has hit real checking but is NOT yet in the
-        anchor, so the full estimated amount must still be held back
-        (the max() floor handles this and also handles overspend where
-        uncleared debits exceed the remaining reservation).
+      - An OUTSTANDING debit may or may not have left the account, and
+        either way the anchor does not know about it, so the full
+        estimated amount must still be held back (the max() floor
+        handles this and also handles overspend where outstanding
+        debits exceed the remaining reservation).
       - A credit entry never hits checking directly -- it flows through
         a CC Payback sibling transaction -- so it only reduces the
-        reservation.
-      - With every is_cleared = FALSE (the default for new entries),
-        cleared_debit = 0 and the formula reduces to
-        max(estimated - sum_credit, uncleared_debit), which matches
-        the pre-cleared-flag behavior from scope doc section 4.2.
+        reservation, whatever its dates say.
+      - With every ``settled_on`` NULL (the state a fresh purchase is in,
+        and the state migration ``d7c1f4a9e603`` left every existing row
+        in), settled_debit = 0 and the formula reduces to
+        max(estimated - sum_credit, outstanding_debit) -- the whole budget
+        held back, which is the conservative arm and matches the
+        pre-cleared-flag behavior from scope doc section 4.2.
 
     Example (the user's grocery bug):
-      est = 500, three cleared debit purchases summing to 462.34.
+      est = 500, three debit purchases summing to 462.34, all confirmed
+      against a statement whose balance the user then entered.
       checking_impact = max(500 - 462.34 - 0, 0) = 37.66, which is the
       remaining budget to hold back now that the anchor reflects the
       first three purchases.
@@ -221,8 +325,8 @@ def _entry_aware_amount(txn):
     / W-277) that dropped entries dated after the reader's now, so a purchase
     that had not happened could not clear the reservation early.  Ruling R-M
     answered that at the SOURCE instead: an entry RECORDS a purchase that
-    happened, so plan step X-c0 refuses ``entry_date > display_today()`` at both
-    write doors (:func:`app.services.entry_service._reject_future_entry_date`)
+    happened, so plan step X-c0 refuses a future purchase date at both write
+    doors (:func:`app.services.entry_service._reject_future_purchase_date`)
     -- and a purchase that happened belongs in the reservation whatever date the
     reader is asking from.  What a row is WORTH is a function of the row, as
     :func:`settled_cash_leg` beside it already is; the reader's clock decides
@@ -230,8 +334,8 @@ def _entry_aware_amount(txn):
     is worth.
 
     Two measured facts, so the deletion is not read as merely tidy.  It moves
-    nothing: no stored entry is dated after any reader's now -- the write guard
-    bounds every row at ``display_today()``, which is never after the UTC
+    nothing: no stored purchase is dated after any reader's now -- the write
+    guard bounds every row at ``display_today()``, which is never after the UTC
     ``date.today()`` a :class:`~app.services.balance_at.BalanceContext` pins by
     default, and zero rows in either database carry a future date (0 of 74 and 0
     of 47, re-verified 2026-07-26).  And the only read it could ever have
@@ -239,11 +343,24 @@ def _entry_aware_amount(txn):
     clamped forward rather than the plan as it stood then -- so windowing their
     entries was a partial as-of purity inside a tier that has none.
 
+    **The R-M re-ruling of 2026-08-01 did not bring that window back, and could
+    not.**  ``settled_on`` -- the day the bank was seen to take the money -- MAY
+    now be after today, because "I bought this and my bank has not taken it yet"
+    is a true statement the app previously had no field to hold.  Such a
+    purchase is simply not inside any asserted balance, so it lands in the
+    OUTSTANDING bucket and raises the floor by exactly what it will cost.  That
+    is a function of the row and the account, not of the reader's clock, so this
+    rule stays clock-free.
+
     Args:
         txn: A Transaction object.  The ``entries`` relationship may
             be eager-loaded (canonical producer), unloaded
             (transitional caller; lazy-loads on demand), or absent
             (test fake).
+        reconciled_through: The civil day of the account's latest balance
+            assertion, or ``None`` when it has never asserted one.  Only
+            consulted for a projected row carrying entries; every other arm
+            returns ``effective_amount`` without reading it.
 
     Returns:
         Decimal -- the amount this transaction contributes to checking
@@ -276,7 +393,9 @@ def _entry_aware_amount(txn):
     # Partition the entries and hold back the unreconciled budget.  The
     # bucketing rule and the reservation formula live once, in
     # ``_entry_checking_impact`` (E-27).
-    return _entry_checking_impact(entries, txn.estimated_amount)
+    return _entry_checking_impact(
+        entries, txn.estimated_amount, reconciled_through,
+    )
 
 
 def _credit_entry_sum(txn: Transaction) -> Decimal:
@@ -363,67 +482,70 @@ def settled_cash_leg(txn: Transaction) -> Decimal:
     return net if txn.is_income else -net
 
 
-def income_amount(txn, amount_overrides):
+def income_amount(txn, basis: ProjectedBasis):
     """Return the income contribution for ``txn``, honoring a live override.
 
-    Part of this module's public surface (no leading underscore): the
-    canonical cash producer ``balance_resolver``'s date-cut income leg
-    reuses it so the override seam resolves identically on both paths.
-    (The expense analogue stays private -- the resolver's date-cut expense
-    leg has its own variant rather than calling ``_expense_amount``.)
+    Part of this module's public surface (no leading underscore): the seam's
+    cash fold reaches it from another package, so the override seam resolves
+    in one place rather than per reader.
 
-    ``amount_overrides`` is the live projected-net seam (Workstream B):
+    ``basis.amount_overrides`` is the live projected-net seam (Workstream B):
     a dict mapping transaction id -> Decimal produced by
     :func:`live_amount_overrides` below.  When the
     transaction's id is present, the live-recomputed net is used in
     place of the stored ``effective_amount`` so a projected salary
     paycheck reflects the current salary profile rather than a cached
     amount a later profile/calibration/code change may have invalidated.
-    ``amount_overrides=None`` (the default everywhere this module is
-    called without the seam) returns ``effective_amount`` unchanged, so
-    the pre-seam behavior is byte-identical.
+    An empty map returns ``effective_amount`` unchanged.
+
+    It takes the whole :class:`ProjectedBasis` although it reads only one of
+    the two fields, and that is deliberate: the income and expense legs are
+    handed the SAME object by the same reduction, so there is no shape in which
+    one leg can be valued on a basis the other was not.  A signature that took
+    only what it happens to need today would let a future reader thread the two
+    facts separately, which is the "two producers that agree by coincidence"
+    shape this module exists to prevent.
 
     Args:
         txn: An income Transaction.
-        amount_overrides: Optional ``{transaction_id: Decimal}`` map, or
-            None.
+        basis: The account's :class:`ProjectedBasis`.
 
     Returns:
         Decimal -- the override amount when present, else
         ``txn.effective_amount``.
     """
-    override = _override_for(txn, amount_overrides)
+    override = _override_for(txn, basis.amount_overrides)
     return txn.effective_amount if override is None else override
 
 
-def _expense_amount(txn, amount_overrides):
+def _expense_amount(txn, basis: ProjectedBasis):
     """Return the expense contribution for ``txn``, honoring a live override.
 
     The expense-leg analogue of :func:`income_amount`.  When the
-    transaction's id is in ``amount_overrides`` (the live-derive seam --
+    transaction's id is in ``basis.amount_overrides`` (the live-derive seam --
     e.g. a recurring loan-payment transfer whose cash debit is derived
     from the destination loan via
     :func:`app.services.loan_payment_service.live_loan_transfer_amounts`),
     the live amount replaces the stored figure.  Otherwise it falls back
     to :func:`_entry_aware_amount`, preserving the entry-checking formula
-    for envelope expenses.  ``amount_overrides=None`` (or a txn id absent
-    from the map) returns the entry-aware amount unchanged, so non-loan
-    expenses and the pre-seam behavior are byte-identical.
+    for envelope expenses.  An empty override map returns the entry-aware
+    amount unchanged.
 
     An override WINS over the entry formula: a live-derived amount is what
     the row is worth now, and it carries no entries to reduce.
 
     Args:
         txn: An expense Transaction.
-        amount_overrides: Optional ``{transaction_id: Decimal}`` map, or
-            None.
+        basis: The account's :class:`ProjectedBasis`.
 
     Returns:
         Decimal -- the override amount when present, else
         :func:`_entry_aware_amount`.
     """
-    override = _override_for(txn, amount_overrides)
-    return _entry_aware_amount(txn) if override is None else override
+    override = _override_for(txn, basis.amount_overrides)
+    if override is not None:
+        return override
+    return _entry_aware_amount(txn, basis.reconciled_through)
 
 
 def live_amount_overrides(account, scenario_id, transactions):

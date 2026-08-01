@@ -795,7 +795,7 @@ def _get_display_day(
     on the real Checking account (finding N-42).  The two agreed by
     construction before the cutover because the retired ramp distributed the
     same still-projected rows over these same attribution days.  The grid met
-    the identical split and answered it with ruling R-K's "Timing & true-ups"
+    the identical split and answered it with ruling R-K's remainder rows
     row; the calendar has no such row yet, and which way it should go -- move
     the chip to the cash clock, add a reconciling figure, or label the
     divergence -- is the developer's to rule.

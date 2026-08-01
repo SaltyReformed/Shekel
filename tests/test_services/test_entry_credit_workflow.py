@@ -39,7 +39,7 @@ class TestSyncEntryPayback:
             user_id=user.id,
             amount=Decimal(amount),
             description=desc,
-            entry_date=date(2026, 1, 5),
+            purchased_on=date(2026, 1, 5),
             is_credit=True,
         )
         db.session.add(entry)
@@ -56,7 +56,7 @@ class TestSyncEntryPayback:
             user_id=user.id,
             amount=Decimal(amount),
             description=desc,
-            entry_date=date(2026, 1, 5),
+            purchased_on=date(2026, 1, 5),
             is_credit=False,
         )
         db.session.add(entry)
@@ -388,7 +388,7 @@ class TestPaybackCorrectness:
                 user_id=user.id,
                 amount=Decimal("100.00"),
                 description="Field parity",
-                entry_date=date(2026, 1, 5),
+                purchased_on=date(2026, 1, 5),
                 is_credit=True,
             )
             db.session.add(entry)
@@ -434,7 +434,7 @@ class TestPaybackCorrectness:
                 user_id=user.id,
                 amount=Decimal("50.00"),
                 description="Period check",
-                entry_date=date(2026, 1, 5),
+                purchased_on=date(2026, 1, 5),
                 is_credit=True,
             )
             db.session.add(entry)
@@ -461,7 +461,7 @@ class TestPaybackCorrectness:
                 user_id=user.id,
                 amount=Decimal("50.00"),
                 description="Name check",
-                entry_date=date(2026, 1, 5),
+                purchased_on=date(2026, 1, 5),
                 is_credit=True,
             )
             db.session.add(entry)
@@ -505,12 +505,12 @@ class TestPaybackCorrectness:
             e1 = TransactionEntry(
                 transaction_id=txn1.id, user_id=user.id,
                 amount=Decimal("100.00"), description="Txn1",
-                entry_date=date(2026, 1, 5), is_credit=True,
+                purchased_on=date(2026, 1, 5), is_credit=True,
             )
             e2 = TransactionEntry(
                 transaction_id=txn2.id, user_id=user.id,
                 amount=Decimal("200.00"), description="Txn2",
-                entry_date=date(2026, 1, 30), is_credit=True,
+                purchased_on=date(2026, 1, 30), is_credit=True,
             )
             db.session.add_all([e1, e2])
             db.session.flush()
@@ -541,7 +541,7 @@ class TestPaybackCorrectness:
                     user_id=user.id,
                     amount=Decimal(amt),
                     description="Split",
-                    entry_date=date(2026, 1, 5),
+                    purchased_on=date(2026, 1, 5),
                     is_credit=True,
                 )
                 db.session.add(e)
@@ -567,7 +567,7 @@ class TestPaybackCorrectness:
                 user_id=user.id,
                 amount=Decimal("0.01"),
                 description="Penny",
-                entry_date=date(2026, 1, 5),
+                purchased_on=date(2026, 1, 5),
                 is_credit=True,
             )
             db.session.add(e)
@@ -599,7 +599,7 @@ class TestEntryLinkIntegrity:
                     user_id=user.id,
                     amount=Decimal(amt),
                     description=f"Store {i}",
-                    entry_date=date(2026, 1, 5),
+                    purchased_on=date(2026, 1, 5),
                     is_credit=True,
                 )
                 db.session.add(e)
@@ -628,7 +628,7 @@ class TestEntryLinkIntegrity:
                 user_id=user.id,
                 amount=Decimal("100.00"),
                 description="First",
-                entry_date=date(2026, 1, 5),
+                purchased_on=date(2026, 1, 5),
                 is_credit=True,
             )
             db.session.add(e1)
@@ -642,7 +642,7 @@ class TestEntryLinkIntegrity:
                 user_id=user.id,
                 amount=Decimal("50.00"),
                 description="Second",
-                entry_date=date(2026, 1, 6),
+                purchased_on=date(2026, 1, 6),
                 is_credit=True,
             )
             db.session.add(e2)
@@ -670,7 +670,7 @@ class TestEntryLinkIntegrity:
                 user_id=user.id,
                 amount=Decimal("100.00"),
                 description="Toggle",
-                entry_date=date(2026, 1, 5),
+                purchased_on=date(2026, 1, 5),
                 is_credit=True,
             )
             db.session.add(entry)
@@ -707,7 +707,7 @@ class TestEntryLinkIntegrity:
                 user_id=user.id,
                 amount=Decimal("200.00"),
                 description="Debit",
-                entry_date=date(2026, 1, 5),
+                purchased_on=date(2026, 1, 5),
                 is_credit=False,
             )
             credit = TransactionEntry(
@@ -715,7 +715,7 @@ class TestEntryLinkIntegrity:
                 user_id=user.id,
                 amount=Decimal("100.00"),
                 description="Credit",
-                entry_date=date(2026, 1, 5),
+                purchased_on=date(2026, 1, 5),
                 is_credit=True,
             )
             db.session.add_all([debit, credit])
@@ -742,12 +742,12 @@ class TestEntryLinkIntegrity:
             e1 = TransactionEntry(
                 transaction_id=txn.id, user_id=user.id,
                 amount=Decimal("100.00"), description="A",
-                entry_date=date(2026, 1, 5), is_credit=True,
+                purchased_on=date(2026, 1, 5), is_credit=True,
             )
             e2 = TransactionEntry(
                 transaction_id=txn.id, user_id=user.id,
                 amount=Decimal("50.00"), description="B",
-                entry_date=date(2026, 1, 5), is_credit=True,
+                purchased_on=date(2026, 1, 5), is_credit=True,
             )
             db.session.add_all([e1, e2])
             db.session.flush()
@@ -793,17 +793,17 @@ class TestPaybackLifecycle:
             e1 = TransactionEntry(
                 transaction_id=txn.id, user_id=user.id,
                 amount=Decimal("100.00"), description="A",
-                entry_date=date(2026, 1, 5), is_credit=True,
+                purchased_on=date(2026, 1, 5), is_credit=True,
             )
             e2 = TransactionEntry(
                 transaction_id=txn.id, user_id=user.id,
                 amount=Decimal("50.00"), description="B",
-                entry_date=date(2026, 1, 6), is_credit=True,
+                purchased_on=date(2026, 1, 6), is_credit=True,
             )
             e3 = TransactionEntry(
                 transaction_id=txn.id, user_id=user.id,
                 amount=Decimal("75.00"), description="C",
-                entry_date=date(2026, 1, 7), is_credit=True,
+                purchased_on=date(2026, 1, 7), is_credit=True,
             )
             db.session.add_all([e1, e2, e3])
             db.session.flush()
@@ -844,7 +844,7 @@ class TestPaybackLifecycle:
             entry = TransactionEntry(
                 transaction_id=txn.id, user_id=user.id,
                 amount=Decimal("100.00"), description="Toggle",
-                entry_date=date(2026, 1, 5), is_credit=True,
+                purchased_on=date(2026, 1, 5), is_credit=True,
             )
             db.session.add(entry)
             db.session.flush()
@@ -875,7 +875,7 @@ class TestPaybackLifecycle:
                 e = TransactionEntry(
                     transaction_id=txn.id, user_id=user.id,
                     amount=Decimal("50.00"), description=f"Debit {i}",
-                    entry_date=date(2026, 1, 5), is_credit=False,
+                    purchased_on=date(2026, 1, 5), is_credit=False,
                 )
                 db.session.add(e)
             db.session.flush()
@@ -1003,7 +1003,7 @@ class TestEntryServiceHooks:
                 details=entry_service.EntryDetails(
                     amount=Decimal("100.00"),
                     description="Credit purchase",
-                    entry_date=date(2026, 1, 5),
+                    purchased_on=date(2026, 1, 5),
                     is_credit=True,
                 ),
             )
@@ -1030,7 +1030,7 @@ class TestEntryServiceHooks:
                 details=entry_service.EntryDetails(
                     amount=Decimal("100.00"),
                     description="Debit purchase",
-                    entry_date=date(2026, 1, 5),
+                    purchased_on=date(2026, 1, 5),
                     is_credit=False,
                 ),
             )
@@ -1056,7 +1056,7 @@ class TestEntryServiceHooks:
                 details=entry_service.EntryDetails(
                     amount=Decimal("100.00"),
                     description="Toggle test",
-                    entry_date=date(2026, 1, 5),
+                    purchased_on=date(2026, 1, 5),
                     is_credit=False,
                 ),
             )
@@ -1085,7 +1085,7 @@ class TestEntryServiceHooks:
                 details=entry_service.EntryDetails(
                     amount=Decimal("100.00"),
                     description="Toggle test",
-                    entry_date=date(2026, 1, 5),
+                    purchased_on=date(2026, 1, 5),
                     is_credit=True,
                 ),
             )
@@ -1124,7 +1124,7 @@ class TestEntryServiceHooks:
                 details=entry_service.EntryDetails(
                     amount=Decimal("100.00"),
                     description="First",
-                    entry_date=date(2026, 1, 5),
+                    purchased_on=date(2026, 1, 5),
                     is_credit=True,
                 ),
             )
@@ -1134,7 +1134,7 @@ class TestEntryServiceHooks:
                 details=entry_service.EntryDetails(
                     amount=Decimal("50.00"),
                     description="Second",
-                    entry_date=date(2026, 1, 6),
+                    purchased_on=date(2026, 1, 6),
                     is_credit=True,
                 ),
             )
@@ -1166,7 +1166,7 @@ class TestEntryServiceHooks:
                 details=entry_service.EntryDetails(
                     amount=Decimal("100.00"),
                     description="Only",
-                    entry_date=date(2026, 1, 5),
+                    purchased_on=date(2026, 1, 5),
                     is_credit=True,
                 ),
             )
@@ -1198,7 +1198,7 @@ class TestEntryServiceHooks:
                 details=entry_service.EntryDetails(
                     amount=Decimal("100.00"),
                     description="Amount change",
-                    entry_date=date(2026, 1, 5),
+                    purchased_on=date(2026, 1, 5),
                     is_credit=True,
                 ),
             )
@@ -1234,7 +1234,7 @@ class TestEntryServiceHooks:
                 details=entry_service.EntryDetails(
                     amount=Decimal("100.00"),
                     description="Companion purchase",
-                    entry_date=date(2026, 1, 5),
+                    purchased_on=date(2026, 1, 5),
                     is_credit=True,
                 ),
             )
@@ -1274,7 +1274,7 @@ class TestSessionState:
                 details=entry_service.EntryDetails(
                     amount=Decimal("100.00"),
                     description="Session test",
-                    entry_date=date(2026, 1, 5),
+                    purchased_on=date(2026, 1, 5),
                     is_credit=True,
                 ),
             )
@@ -1309,7 +1309,7 @@ class TestSessionState:
                 details=entry_service.EntryDetails(
                     amount=Decimal("100.00"),
                     description="First",
-                    entry_date=date(2026, 1, 5),
+                    purchased_on=date(2026, 1, 5),
                     is_credit=True,
                 ),
             )
@@ -1319,7 +1319,7 @@ class TestSessionState:
                 details=entry_service.EntryDetails(
                     amount=Decimal("50.00"),
                     description="Second",
-                    entry_date=date(2026, 1, 6),
+                    purchased_on=date(2026, 1, 6),
                     is_credit=True,
                 ),
             )

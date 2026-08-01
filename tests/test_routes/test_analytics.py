@@ -716,7 +716,7 @@ class TestBalanceSheetTab:
         A $500 income settled with a ``paid_at`` inside the frozen range
         (2026-02-15) folds into the default as-of (2026-03-20): Checking
         +500 (Asset) and Retained Earnings +500 (Income closed into
-        equity).  The seed opening's entry_date is the real-clock
+        equity).  The seed opening's journal entry_date is the real-clock
         origination ``created_at`` (after the frozen today), so it is
         excluded -- but as a WHOLE entry (both its Asset and Equity legs),
         so the tie-out still closes.  A far-future refreeze is avoided

@@ -242,6 +242,48 @@ def resolve_anchor(account: Account, scenario_id: int) -> AnchorPoint:
     )
 
 
+def latest_observed_day(account_id: int) -> date | None:
+    """Return the latest civil day *account_id* has asserted a balance for.
+
+    The boundary every "is this already inside the balance the user declared"
+    question compares against
+    (:func:`~app.services.cash_ledger.is_inside_assertion`), for the callers
+    that do NOT already hold a walk: the posting self-heal's skip predicate,
+    the entry list's reconciled indicator, and the reconcile panel.  One
+    indexed lookup (``idx_anchor_history_account`` leads on ``account_id``),
+    no rows materialised, no anchor resolution.
+
+    **It is the SQL twin of
+    :attr:`~app.services.cash_ledger.CashLedgerWalk.latest_observed_on`, and
+    the two exist for a reason rather than by accident.**  A caller holding the
+    walk already has the answer in memory and must not pay a query for it; a
+    caller rendering one template row must not walk an account to get it.  They
+    are provably equal -- ``MAX`` over the same column against the last element
+    of a list the loader orders ``(observed_on, created_at, id)`` ascending --
+    and that equality is pinned by a test rather than assumed, because "two
+    statements that happen to agree" is the exact shape this arc exists to
+    remove.  A THIRD statement is not acceptable: the account posting sync
+    grew one (``MAX(created_at)`` as an instant, compared against a civil date
+    pushed through midnight UTC) and it carried a silent timezone-sign
+    dependency for the whole time it lived (finding N-133 / F4).
+
+    Args:
+        account_id: The account whose latest asserted business day to resolve.
+
+    Returns:
+        The civil day, or ``None`` for an account with no anchor history
+        (fixture-only -- migration ``cfb15e782f86`` plus
+        ``account_service.create_account`` guarantee production accounts one)
+        or a missing account.  ``None`` reconciles nothing, which is the honest
+        answer when no balance has ever been declared.
+    """
+    return (
+        db.session.query(db.func.max(AccountAnchorHistory.observed_on))
+        .filter(AccountAnchorHistory.account_id == account_id)
+        .scalar()
+    )
+
+
 def planned_cash_rows(
     account_id: int, scenario_id: int,
 ) -> list[Transaction]:

@@ -219,7 +219,10 @@ class Transaction(
         "TransactionEntry", back_populates="transaction",
         foreign_keys="TransactionEntry.transaction_id",
         lazy="select", cascade="all, delete-orphan",
-        order_by="TransactionEntry.entry_date",
+        # Ordered by the day the purchase was MADE, not the day the bank took
+        # it: this list is what the user reads back as "what I spent on this
+        # envelope", which is a budget-clock question.
+        order_by="TransactionEntry.purchased_on",
     )
 
     @property

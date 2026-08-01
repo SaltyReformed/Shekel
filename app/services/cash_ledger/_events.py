@@ -523,9 +523,19 @@ def merge_anchor_and_cash_events(
     clears AFTER the balance was observed on the same day is absorbed, and the
     projection reads high until the next assertion.  It is bounded (median
     ``$184.55`` a day against the ``$4,161.47`` the instant rule produced on
-    2026-07-31), it self-corrects at the next assertion, and step 2 of
-    ``anchor_settle_partition.md`` removes the guess entirely by recording the
-    two real dates the question actually turns on.
+    2026-07-31) and it self-corrects at the next assertion.
+
+    **What removes the residual is an OBSERVATION, not a second derived date,
+    and this docstring claimed otherwise until 2026-08-01.**  It said step 2 of
+    ``anchor_settle_partition.md`` "removes the guess entirely by recording the
+    two real dates the question actually turns on".  Section 10.3 of that
+    document disproves it: with both dates recorded, a movement made after the
+    balance was read still carries the same civil day as one made before it, so
+    no rule comparing the two dates can tell them apart.  The guess ends only
+    where the user says what their statement showed -- which is what plan step
+    S1-c built for PURCHASES (``entry_service.record_settled_days``) and what a
+    bank import would do for settles.  Until then this rule is the best
+    available guess on the settle side, and saying so is the honest form of it.
 
     Args:
         anchor_facts: The account's :class:`CashAnchorFact` list, PRE-SORTED by

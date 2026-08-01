@@ -1,0 +1,88 @@
+{% from "_money_macros.html" import money %}
+{# Outstanding purchases: which of them has the bank actually taken?
+
+   The reconcile step ruled with plan step S1-c (ruling R-DH (d) / the R-M
+   re-ruling, ``docs/audits/balance_architecture/anchor_settle_partition.md``).
+   A purchase recorded against an envelope holds its whole budget back until
+   the app is told the money has left the account; ticking one records its
+   posting day, and the projection stops holding it back twice.
+
+   This is the INNER partial, rendered in two places from one file: the
+   post-true-up prompt (``accounts/_reconcile_modal.html``, an out-of-band swap
+   into ``#modal-mount``) and the permanent section on the cash account detail
+   page.  One implementation, so the two cannot come to say different things.
+
+   Expected context:
+     account            -- the Account whose balance was asserted.
+     outstanding        -- list[TransactionEntry], oldest purchase first
+                           (``entry_service.outstanding_purchases``).  Already
+                           scoped to debit purchases on still-projected parents
+                           for THIS account, dated on or before
+                           ``reconciled_through``.
+     outstanding_total  -- Decimal, the sum of their amounts.
+     reconciled_through -- the civil day of the account's latest asserted
+                           balance.  Ticking stamps this day, which is an upper
+                           bound on the true posting day and the only bound the
+                           reconciliation predicate consumes.
+     anchor_balance     -- the balance asserted for that day, for context.
+     panel_id           -- DOM id of this partial's root, so the POST's
+                           re-render swaps in place.
+#}
+<div id="{{ panel_id }}">
+  {% if outstanding %}
+  <form hx-post="{{ url_for('accounts.reconcile_purchases', account_id=account.id) }}"
+        hx-target="#{{ panel_id }}"
+        hx-swap="outerHTML"
+        hx-disabled-elt="find button[type=submit]">
+    <p class="small text-body-secondary mb-2">
+      Your balance for
+      <strong>{{ reconciled_through.strftime('%b %-d') }}</strong> is
+      <strong>{{ money(anchor_balance) }}</strong>.  These
+      {{ outstanding|length }}
+      purchase{{ '' if outstanding|length == 1 else 's' }} totalling
+      <strong>{{ money(outstanding_total) }}</strong> have not been marked as
+      having reached your bank, so their budget is still being held back.
+      Tick the ones your statement shows.
+    </p>
+
+    <ul class="list-group mb-3">
+      {% for entry in outstanding %}
+      <li class="list-group-item d-flex align-items-center gap-2">
+        <input class="form-check-input mt-0 flex-shrink-0" type="checkbox"
+               name="entry_ids" value="{{ entry.id }}"
+               id="reconcile-{{ panel_id }}-{{ entry.id }}">
+        <label class="form-check-label flex-grow-1 text-truncate"
+               for="reconcile-{{ panel_id }}-{{ entry.id }}">
+          <span class="text-body-secondary fs-xs me-1">
+            {{ entry.purchased_on.strftime('%m/%d') }}
+          </span>
+          {{ entry.description }}
+          <span class="text-body-secondary fs-xs">
+            -- {{ entry.transaction.name }}
+          </span>
+        </label>
+        <span class="font-mono flex-shrink-0">{{ money(entry.amount) }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+
+    <div class="d-flex justify-content-end gap-2">
+      {# Dismissal is the caller's affordance (the modal has a Close button,
+         the detail page needs none), so this partial ships only the action
+         that writes. #}
+      <button type="submit" class="btn btn-sm btn-primary">
+        <i class="bi bi-check-circle" aria-hidden="true"></i>
+        Mark ticked as posted
+      </button>
+    </div>
+  </form>
+  {% else %}
+  <p class="small text-body-secondary mb-0">
+    <i class="bi bi-check-circle text-success" aria-hidden="true"></i>
+    Every purchase recorded on this account
+    {%- if reconciled_through %} up to
+    {{ reconciled_through.strftime('%b %-d') }}{% endif %}
+    has been matched to your bank.  Nothing is being held back twice.
+  </p>
+  {% endif %}
+</div>

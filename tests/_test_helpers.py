@@ -327,7 +327,7 @@ _DB_CLOCK_BOUND_ENGINES = weakref.WeakSet()
 #: A statement asking PostgreSQL what time it is, in each spelling this schema
 #: can produce, so the rule tests the QUESTION and not one way of writing it.
 #: ``now()`` and ``current_timestamp`` yield an instant; ``current_date`` yields
-#: a DATE and must be answered with one (``transaction_entries.entry_date``).
+#: a DATE and must be answered with one (``transaction_entries.purchased_on``).
 #:
 #: Each alternative carries only the word boundary it can actually have.  The
 #: first draft wrapped the group in ``\b...\b`` and matched nothing at all: the
@@ -341,7 +341,7 @@ _DB_CLOCK_CALL_RX = re.compile(
 
 #: The same question as :data:`_DB_CLOCK_CALL_RX`, asked of a ``server_default``
 #: written as raw SQL text rather than as a SQLAlchemy function.
-#: ``transaction_entries.entry_date`` is ``db.text("CURRENT_DATE")``, which is a
+#: ``transaction_entries.purchased_on`` is ``db.text("CURRENT_DATE")``, which is a
 #: ``TextClause`` and therefore invisible to an ``isinstance(..., now)`` test --
 #: the gap this arm closes (found by plan step X-h's adversarial review, which
 #: caught the row landing on the real wall date while its siblings were frozen).
@@ -396,7 +396,7 @@ def _db_clock_insert_attrs(model_class):
 
     **Both spellings of a default are read**, because the app uses both: a
     SQLAlchemy ``now()`` function, and raw SQL text (``db.text("CURRENT_DATE")``
-    on ``transaction_entries.entry_date``).  An ``isinstance(..., now)`` test
+    on ``transaction_entries.purchased_on``).  An ``isinstance(..., now)`` test
     alone is blind to the second, which is how that column kept landing on the
     real wall date while every timestamp beside it was frozen.
 
@@ -2625,8 +2625,8 @@ def create_envelope_txn(seed_user, db_session, period, name, estimated):
 
 
 def add_entry(  # pylint: disable=too-many-arguments,too-many-positional-arguments
-    db_session, seed_user, txn, amount, entry_date,
-    *, is_credit=False, is_cleared=False, description="purchase",
+    db_session, seed_user, txn, amount, purchased_on,
+    *, is_credit=False, settled_on=None, description="purchase",
 ):
     """Attach one :class:`TransactionEntry` of ``amount`` to ``txn``.
 
@@ -2634,26 +2634,39 @@ def add_entry(  # pylint: disable=too-many-arguments,too-many-positional-argumen
     copied per suite (a duplicate-code finding).  Flushes; the caller commits.
 
     **The three bucket flags are parameters (plan step X-c2c2a).**  It built a
-    DEBIT-only, uncleared entry until the per-row valuation tests moved to
+    DEBIT-only, outstanding entry until the per-row valuation tests moved to
     ``test_cash_amounts.py``, which needs all three buckets of
-    ``cash_ledger._amounts._entry_checking_impact`` -- cleared debit, uncleared
-    debit, and credit.  Narrowness is why the helper had not displaced the
-    hand-rolled copies it exists to prevent: seven suites still define their own
-    ``_add_entry`` because this one could not express their shape.  Widening it
-    is additive; those suites are not touched here (scope).
+    ``cash_ledger._amounts._entry_checking_impact`` -- settled debit,
+    outstanding debit, and credit.  Narrowness is why the helper had not
+    displaced the hand-rolled copies it exists to prevent: seven suites still
+    define their own ``_add_entry`` because this one could not express their
+    shape.  Widening it is additive; those suites are not touched here (scope).
+
+    **The reconciled bucket is a DATE, not a flag** (plan step S1-c, ruling
+    R-DH (d)).  The stored ``is_cleared`` boolean this replaced was written by
+    a bulk UPDATE at anchor true-up, so which bucket a purchase fell in
+    depended on the order two buttons were pressed.  A fixture that wants the
+    "already inside the asserted balance" bucket therefore passes a
+    ``settled_on`` on or before the account's latest ``observed_on`` -- which
+    makes the precondition it depends on VISIBLE at the call site instead of
+    hidden behind a boolean.
 
     Args:
         db_session: The test ``db.session``.
         seed_user: The ``seed_user`` fixture dict (supplies ``user_id``).
         txn: The parent :class:`~app.models.transaction.Transaction`.
         amount: The entry amount (Decimal).
-        entry_date: The entry's ``entry_date``.
+        purchased_on: The day the purchase was made.  Never after the user's
+            today, which the service refuses (ruling R-M).
         is_credit: True for a credit-card purchase, which never hits checking
             directly (it leaves via the CC Payback sibling) and so only
-            REDUCES the reservation.
-        is_cleared: True when the purchase is already reflected in the
-            account's anchor balance, so it is subtracted from the
-            reservation rather than acting as its floor.
+            REDUCES the reservation whatever its dates say.
+        settled_on: The day the bank took the money, or ``None`` (the default)
+            for a purchase not yet seen on a statement.  A purchase whose
+            ``settled_on`` is at or before the account's latest asserted day is
+            already inside that balance and is SUBTRACTED from the reservation;
+            every other purchase acts as its floor.  Must not precede
+            *purchased_on* (``ck_transaction_entries_settled_not_before_purchase``).
         description: The entry description; the default suits a test that
             does not assert on it.
     """
@@ -2666,11 +2679,100 @@ def add_entry(  # pylint: disable=too-many-arguments,too-many-positional-argumen
         user_id=seed_user["user"].id,
         amount=amount,
         description=description,
-        entry_date=entry_date,
+        purchased_on=purchased_on,
+        settled_on=settled_on,
         is_credit=is_credit,
-        is_cleared=is_cleared,
     ))
     db_session.flush()
+
+
+def mark_purchase_settled(db_session, account, entry, settled_on=None):
+    """Record the day the bank took *entry*, and CHECK the anchor covers it.
+
+    The successor to ``add_entry(..., is_cleared=True)`` (plan step S1-c,
+    ruling R-DH (d)).  The retired boolean asserted "this purchase is already
+    inside the anchor balance" unconditionally, so a fixture could set it on an
+    account whose only assertion PREDATED the purchase -- a state production
+    cannot reach, because the way a purchase gets inside a declared balance is
+    that the user declared the balance after it posted.  That is finding
+    N-132 / R8's shape: a fixture asserting a state the app cannot produce
+    passes for years and stops discriminating the case it names.
+
+    So this helper does what the flag did AND states the precondition the flag
+    let fixtures skip.  It fails loudly rather than silently building an
+    unreachable row, and the failure message names both days.
+
+    **The bound is TWO-SIDED, and the upper half was added after the guard's
+    first pass let an unreachable row through anyway.**  Checking only
+    ``settled_on <= observed_on`` invites the obvious escape: move the
+    ASSERTION forward until it covers the purchase.  But an assertion is itself
+    bounded -- ``account_service._reject_undatable_observation`` refuses an
+    ``observed_on`` after the user's today, because a balance you have not read
+    yet is not an observation -- so an assertion dated into the app's future is
+    exactly as unreachable as the anchor-months-earlier row the guard was
+    written to stop.  A one-sided guard turns finding N-132's defect into a
+    different N-132 defect, which is what the S1-c conversion's own review
+    measured on two ``test_cash_fold`` fixtures.  Both halves are checked here
+    so neither escape is open.
+
+    The clock is :func:`app.utils.dates.display_today` -- the same one the
+    service guard reads, and the one a suite's ``freeze_today`` moves -- never
+    ``date.today()``, which would judge a fixture on the process timezone.
+
+    Args:
+        db_session: The test ``db.session``.
+        account: The :class:`~app.models.account.Account` the purchase's parent
+            transaction belongs to -- the account whose assertions decide
+            whether the purchase is inside a declared balance.
+        entry: The :class:`~app.models.transaction_entry.TransactionEntry` to
+            settle.
+        settled_on: The day the bank took it.  Defaults to the entry's own
+            ``purchased_on`` -- "it posted the day I bought it", the shape a
+            same-day debit has.
+
+    Returns:
+        The updated entry (flushed).
+
+    Raises:
+        AssertionError: When the account has never asserted a balance, when its
+            latest assertion is for a day BEFORE *settled_on*, or when that
+            assertion is dated after the user's today.  In the first two the
+            purchase reads as OUTSTANDING however this helper is spelled; in
+            the third the account is in a state its own write door refuses.
+            Either way a fixture expecting the settled bucket is asking for
+            something production cannot produce.
+    """
+    # pylint: disable=import-outside-toplevel  -- same circular-dep
+    # avoidance as the loan helpers above.
+    from app.services.cash_ledger import latest_observed_day
+    from app.utils.dates import display_today
+
+    settled_on = settled_on or entry.purchased_on
+    observed_on = latest_observed_day(account.id)
+    assert observed_on is not None, (
+        f"account id={account.id} has asserted no balance, so no purchase can "
+        f"be inside one; give it an assertion before settling entry "
+        f"id={entry.id}"
+    )
+    assert settled_on <= observed_on, (
+        f"entry id={entry.id} settled {settled_on} is AFTER account "
+        f"id={account.id}'s latest asserted day {observed_on}, so the "
+        f"projection reads it as outstanding.  Move the account's assertion to "
+        f"{settled_on} or later, or the fixture is asserting a state "
+        f"production cannot produce."
+    )
+    today = display_today()
+    assert observed_on <= today, (
+        f"account id={account.id}'s latest assertion is dated {observed_on}, "
+        f"which is AFTER the user's today ({today}); "
+        f"account_service._reject_undatable_observation refuses that at the "
+        f"write door, so no production account can be in this state.  Move the "
+        f"assertion (and entry id={entry.id}'s dates) back inside the clock "
+        f"this suite runs on rather than forward past it."
+    )
+    entry.settled_on = settled_on
+    db_session.flush()
+    return entry
 
 
 def add_txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments

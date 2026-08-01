@@ -63,7 +63,9 @@ in, frozen dataclasses out; no Flask symbol, no writes.  All money is
 """
 
 from ._amounts import (
+    ProjectedBasis,
     income_amount,
+    is_inside_assertion,
     live_amount_overrides,
     settled_cash_leg,
 )
@@ -77,6 +79,7 @@ from ._events import (
 )
 from ._facts import (
     AnchorPoint,
+    latest_observed_day,
     planned_cash_rows,
     resolve_anchor,
 )
@@ -94,9 +97,12 @@ __all__ = [
     "CashAnchorFact",
     "CashLedgerWalk",
     "CashSourceFact",
+    "ProjectedBasis",
     "cash_anchor_facts",
     "dated_deltas",
     "income_amount",
+    "is_inside_assertion",
+    "latest_observed_day",
     "live_amount_overrides",
     "merge_anchor_and_cash_events",
     "planned_cash_rows",

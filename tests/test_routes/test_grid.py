@@ -30,10 +30,13 @@ from app.utils.error_fragments import DESIGNED_FRAGMENT_HEADER
 from app.services.balance_at import BalanceContext
 
 from tests._test_helpers import (
+    append_balance_assertion,
     create_hysa_account,
     field_is_disabled,
     freeze_today,
+    mark_purchase_settled,
     posted_loan_balance_at,
+    settle_instant_on,
 )
 
 
@@ -4556,8 +4559,8 @@ class TestGridPeriodSubtotalCanonical:
     the balance row and the subtotal rows ONE ``GridColumn`` per period off ONE
     valued row set, so a Projected envelope expense with cleared entries reports
     the same entries-aware impact on both rows and ``balance[p] - balance[p-1]
-    == net[p] + reconciliation[p] + contribution[p] + accrual[p]``
-    holds by construction rather than by two producers agreeing.
+    == net[p] + period_timing[p] + book_vs_bank[p] + contribution[p] +
+    accrual[p]`` holds by construction rather than by two producers agreeing.
     """
 
     def test_grid_subtotal_entry_aware_for_projected_expense(
@@ -4606,19 +4609,35 @@ class TestGridPeriodSubtotalCanonical:
             db.session.add(txn)
             db.session.flush()
 
+            # The user read their bank balance on the day they shopped, so
+            # the purchases are inside it (plan step S1-c, ruling R-DH (d)).
+            # Re-stating the $1,000.00 the records already hold books a
+            # $0.00 correction, so no figure below moves because of it --
+            # what it changes is which purchases the reservation may
+            # subtract.  Under the retired ``is_cleared`` flag this fixture
+            # claimed the purchases were inside an anchor asserted four
+            # periods earlier (finding N-132 / R8).
+            append_balance_assertion(
+                db.session, seed_user["account"], current,
+                Decimal("1000.00"), settle_instant_on(current.start_date),
+            )
             for amt in (
                 Decimal("20.00"),
                 Decimal("442.34"),
             ):
-                db.session.add(TransactionEntry(
+                entry = TransactionEntry(
                     transaction_id=txn.id,
                     user_id=seed_user["user"].id,
                     amount=amt,
-                    description="cleared purchase",
-                    entry_date=current.start_date,
+                    description="confirmed purchase",
+                    purchased_on=current.start_date,
                     is_credit=False,
-                    is_cleared=True,
-                ))
+                )
+                db.session.add(entry)
+                db.session.flush()
+                mark_purchase_settled(
+                    db.session, seed_user["account"], entry,
+                )
             db.session.commit()
 
             resp = auth_client.get("/grid")
@@ -4639,12 +4658,12 @@ class TestGridPeriodSubtotalCanonical:
     def test_grid_subtotal_reconciles_balance_delta(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """``balance delta == net + reconciliation + contribution + accrual``.
+        """``delta == net + timing + book_vs_bank + contribution + accrual``.
 
         Same-formula invariant E-25 / Q-10, on ruling R-K's basis: ONE valued
         row set supplies the grid's balance row and its subtotal rows, so the
         period-to-period balance delta must equal the column's own net plus the
-        remainder no row can explain plus the accrual, to the penny.  The
+        remainders no row can explain plus the accrual, to the penny.  The
         inline loop this replaced violated it whenever a Projected envelope
         expense carried cleared entries (the subtotal showed the raw estimate,
         the balance row showed the entry-aware impact).
@@ -4654,7 +4673,7 @@ class TestGridPeriodSubtotalCanonical:
         between two producers: it was ``balances_for`` differenced against
         ``cash_ledger.period_subtotal``, and both deleted -- the first replaced
         by the fold at X-c2b2, the second by ``cash_period_view``, whose
-        remainder term is the one R-K added.
+        remainder terms are the ones R-K added and ruling R-DH (f) split in two.
 
         Setup: anchor $1000 at periods[0]; one Projected $300.00
         envelope expense in the CURRENT period with two cleared debits
@@ -4676,7 +4695,7 @@ class TestGridPeriodSubtotalCanonical:
         entry-date window): an entry dated after today cannot have cleared the
         bank, so a future-dated purchase reserves nothing yet and the same
         fixture reads ``$300.00``.  Both halves of that are the shipped rule --
-        ruling R-M / plan step X-c0 now REFUSES a future ``entry_date`` at both
+        ruling R-M / plan step X-c0 now REFUSES a future ``purchased_on`` at both
         write doors, so the state this fixture built directly through the ORM is
         one production cannot reach, and the sibling test above (which renders
         the figure through ``GET /grid``) always dated its entries on the
@@ -4720,16 +4739,30 @@ class TestGridPeriodSubtotalCanonical:
             )
             db.session.add(txn)
             db.session.flush()
+            # As in the sibling test above: the balance the user read that
+            # day is what puts the purchases inside it, and re-stating the
+            # $1,000.00 the records already hold books a $0.00 correction --
+            # so ``book_vs_bank`` stays $0.00 and the identity below is
+            # unchanged by it.
+            append_balance_assertion(
+                db.session, seed_user["account"], target_period,
+                Decimal("1000.00"),
+                settle_instant_on(target_period.start_date),
+            )
             for amt in (Decimal("100.00"), Decimal("150.00")):
-                db.session.add(TransactionEntry(
+                entry = TransactionEntry(
                     transaction_id=txn.id,
                     user_id=seed_user["user"].id,
                     amount=amt,
-                    description="cleared purchase",
-                    entry_date=target_period.start_date,
+                    description="confirmed purchase",
+                    purchased_on=target_period.start_date,
                     is_credit=False,
-                    is_cleared=True,
-                ))
+                )
+                db.session.add(entry)
+                db.session.flush()
+                mark_purchase_settled(
+                    db.session, seed_user["account"], entry,
+                )
             db.session.commit()
 
             # Exercise the grid route to prove the wiring is in place
@@ -4755,16 +4788,23 @@ class TestGridPeriodSubtotalCanonical:
                 f"expected $50.00 entry-aware expense, got {column.expense!r}"
             )
             assert column.net == Decimal("-50.00")
-            # Nothing settled and nobody re-anchored, so the remainder is zero
-            # and a PLAIN account carries no accrual: asserting both is what
-            # keeps the identity below from passing on a remainder that quietly
-            # absorbed a mis-grouped row (Section 7.2's forbidden residual).
-            assert column.reconciliation == Decimal("0.00")
+            # Nothing settled and nobody re-anchored, so BOTH remainders are
+            # zero and a PLAIN account carries no accrual: asserting all of
+            # them is what keeps the identity below from passing on a
+            # remainder that quietly absorbed a mis-grouped row (Section
+            # 7.2's forbidden residual).  They are asserted separately since
+            # plan step S1-c (ruling R-DH (f)) -- a combined figure could be
+            # zero with two non-zero halves cancelling inside it.
+            assert column.period_timing == Decimal("0.00")
+            assert column.book_vs_bank == Decimal("0.00")
             assert column.accrual == Decimal("0.00")
             assert column.contribution == Decimal("0.00")
-            assert delta == column.net + column.reconciliation, (
+            assert delta == (
+                column.net + column.period_timing + column.book_vs_bank
+            ), (
                 f"balance delta {delta!r} must equal net {column.net!r} + "
-                f"reconciliation {column.reconciliation!r}"
+                f"period_timing {column.period_timing!r} + book_vs_bank "
+                f"{column.book_vs_bank!r}"
             )
 
     def test_grid_inline_subtotal_loop_removed(self):
@@ -6578,7 +6618,8 @@ class TestMobilePlanTab:
                 period.id: balance_at.GridColumn(
                     balance=balance,
                     income=Decimal("0"), expense=Decimal("0"),
-                    net=Decimal("0"), reconciliation=Decimal("0.00"),
+                    net=Decimal("0"), period_timing=Decimal("0.00"),
+                    book_vs_bank=Decimal("0.00"),
                     contribution=Decimal("0.00"), accrual=Decimal("0.00"),
                 )
                 for period, balance in (
@@ -6596,7 +6637,8 @@ class TestMobilePlanTab:
                 plan_matched_by_row_period={},
                 plan_columns=plan_columns,
                 plan_row_flags=balance_at.GridRowFlags(
-                    reconciliation=False, contribution=False, accrual=False,
+                    period_timing=False, book_vs_bank=False,
+                    contribution=False, accrual=False,
                 ),
                 low_balance_threshold=500,
             )
@@ -6740,13 +6782,15 @@ class TestMobilePlanTab:
                         income=Decimal("0"),
                         expense=Decimal("1200"),
                         net=Decimal("-1200"),
-                        reconciliation=Decimal("0.00"),
+                        period_timing=Decimal("0.00"),
+                        book_vs_bank=Decimal("0.00"),
                         contribution=Decimal("0.00"),
                         accrual=Decimal("0.00"),
                     ),
                 },
                 plan_row_flags=balance_at.GridRowFlags(
-                    reconciliation=False, contribution=False, accrual=False,
+                    period_timing=False, book_vs_bank=False,
+                    contribution=False, accrual=False,
                 ),
                 low_balance_threshold=500,
             )
@@ -6800,13 +6844,15 @@ class TestMobilePlanTab:
                         income=Decimal("2500"),
                         expense=Decimal("0"),
                         net=Decimal("2500"),
-                        reconciliation=Decimal("0.00"),
+                        period_timing=Decimal("0.00"),
+                        book_vs_bank=Decimal("0.00"),
                         contribution=Decimal("0.00"),
                         accrual=Decimal("0.00"),
                     ),
                 },
                 plan_row_flags=balance_at.GridRowFlags(
-                    reconciliation=False, contribution=False, accrual=False,
+                    period_timing=False, book_vs_bank=False,
+                    contribution=False, accrual=False,
                 ),
                 low_balance_threshold=500,
             )
@@ -6868,13 +6914,15 @@ class TestMobilePlanTab:
                         income=Decimal("0"),
                         expense=Decimal("125"),
                         net=Decimal("-125"),
-                        reconciliation=Decimal("0.00"),
+                        period_timing=Decimal("0.00"),
+                        book_vs_bank=Decimal("0.00"),
                         contribution=Decimal("0.00"),
                         accrual=Decimal("0.00"),
                     ),
                 },
                 plan_row_flags=balance_at.GridRowFlags(
-                    reconciliation=False, contribution=False, accrual=False,
+                    period_timing=False, book_vs_bank=False,
+                    contribution=False, accrual=False,
                 ),
                 low_balance_threshold=500,
             )
@@ -7118,7 +7166,8 @@ def _summary_periods():
 
 
 def _summary_columns(
-    periods, *, reconciliation="0.00", contribution="0.00", accrual="0.00",
+    periods, *, period_timing="0.00", book_vs_bank="0.00",
+    contribution="0.00", accrual="0.00",
 ):
     """Return one hand-built GridColumn per period, all carrying the same figures.
 
@@ -7137,7 +7186,8 @@ def _summary_columns(
             income=Decimal("2400.00"),
             expense=Decimal("1450.00"),
             net=Decimal("950.00"),
-            reconciliation=Decimal(reconciliation),
+            period_timing=Decimal(period_timing),
+            book_vs_bank=Decimal(book_vs_bank),
             contribution=Decimal(contribution),
             accrual=Decimal(accrual),
         )
@@ -7145,10 +7195,21 @@ def _summary_columns(
     }
 
 
-def _row_flags(*, reconciliation=False, contribution=False, accrual=False):
-    """Return GridRowFlags with every arm explicit (no defaulted visibility)."""
+def _row_flags(
+    *, period_timing=False, book_vs_bank=False,
+    contribution=False, accrual=False,
+):
+    """Return GridRowFlags with every arm explicit (no defaulted visibility).
+
+    The single ``reconciliation`` arm became two at plan step S1-c (ruling
+    R-DH (f)) and they are separate PARAMETERS rather than one value fanned
+    out, because R-O's visibility question is now asked of each row
+    independently -- and the render tests below have to be able to turn one on
+    with the other off.
+    """
     return balance_at.GridRowFlags(
-        reconciliation=reconciliation,
+        period_timing=period_timing,
+        book_vs_bank=book_vs_bank,
         contribution=contribution,
         accrual=accrual,
     )
@@ -7200,72 +7261,129 @@ def _render_plan_recap(app, period, columns, flags, accrual_label="Interest"):
         )
 
 
-class TestTimingAndTrueUpsRow:
-    """Ruling R-O / R-P: the "Timing & true-ups" row, on every surface.
+class TestTheTwoRemainderRows:
+    """Ruling R-O / R-P / R-DH (f): the two remainder rows, on every surface.
 
-    The row carries what the Total Income / Total Expenses rows structurally
-    cannot say about the balance change -- money budgeted to one period that
-    moved in another, and the balance assertions made inside it.  Plan step
-    X-c2b2 is where a producer first puts a non-zero figure in it (measured
-    ``-$788.68`` in the real Checking account's current column); until then
-    every column reports ``0.00`` and ruling R-O's rule hides the row, which is
-    exactly why the RENDER is graded here on hand-built columns.  A row whose
-    template nobody ever executed would arrive at the cutover unproven, and the
-    cutover is the commit where money moves.
+    They carry what the Total Income / Total Expenses rows structurally cannot
+    say about the balance change.  Plan step X-c2b2 is where a producer first
+    put a non-zero figure in them (measured ``-$788.68`` combined in the real
+    Checking account's current column); ruling R-O's rule hides a row whose
+    every visible column reports ``0.00``, which is why the RENDER is graded
+    here on hand-built columns.  A row whose template nobody ever executed
+    would arrive at a cutover unproven, and a cutover is where money moves.
 
-    ``$0.00`` in every column plus the row hidden is the state the whole grid
-    is in today, so these also pin that the shipped page is unchanged.
+    **This was ONE row, "Timing & true-ups", until plan step S1-c** (ruling
+    R-DH (f)).  It summed two facts with different causes and different fixes:
+    money landing in a column other than the one it was budgeted to ("Period
+    timing", fixed by re-budgeting the row or dating it correctly), and the gap
+    between what the app had recorded and what the bank actually held ("Book vs
+    bank", fixed by recording the spending it did not know about).  On the
+    developer's own data the single row read ``-$4,588.69`` in a column whose
+    halves were ``-$427.22`` and ``-$4,161.47`` -- a figure with no action
+    attached to it.
+
+    So every test below asserts the two rows SEPARATELY, and the pair that
+    matters most is ``test_desktop_footer_renders_one_row_without_the_other``:
+    the shared ``reconciliation-row`` class now marks both rows, so the rows
+    are told apart here by the LABEL a user reads, which is the thing the
+    ruling is actually about.
     """
 
+    #: The labels as the templates escape them into the rendered HTML.
+    _TIMING = "Period timing"
+    _BOOK = "Book vs bank"
+
     @staticmethod
-    def _columns(*, reconciliation, periods):
-        """Return one GridColumn per period, all carrying *reconciliation*."""
-        return _summary_columns(periods, reconciliation=reconciliation)
+    def _columns(*, periods, period_timing="0.00", book_vs_bank="0.00"):
+        """Return one GridColumn per period carrying the two remainders."""
+        return _summary_columns(
+            periods, period_timing=period_timing, book_vs_bank=book_vs_bank,
+        )
 
     @staticmethod
     def _periods():
         """Two period stand-ins carrying what the footer template reads."""
         return _summary_periods()
 
-    def _render_footer(self, app, reconciliation, flag):
-        """Render the desktop ``<tfoot>`` with a given remainder + flag."""
+    def _render_footer(self, app, *, period_timing="0.00", book_vs_bank="0.00",
+                       timing_flag=False, book_flag=False):
+        """Render the desktop ``<tfoot>`` with given remainders + flags."""
         periods = self._periods()
         return _render_grid_footer(
             app, periods,
-            self._columns(reconciliation=reconciliation, periods=periods),
-            _row_flags(reconciliation=flag),
+            self._columns(
+                periods=periods, period_timing=period_timing,
+                book_vs_bank=book_vs_bank,
+            ),
+            _row_flags(period_timing=timing_flag, book_vs_bank=book_flag),
         )
 
-    def test_desktop_footer_renders_the_row_above_the_balance(self, app):
-        """The row sits in the tfoot ABOVE Projected End Balance (ruling R-O).
+    def test_desktop_footer_renders_both_rows_above_the_balance(self, app):
+        """Both rows sit in the tfoot ABOVE Projected End Balance (ruling R-O).
 
         Placement is the ruling, not a preference: the whole "how this balance
-        is reached" chain has to read as one block, so the row the identity
-        binds must be above the balance it explains rather than in the flow
+        is reached" chain has to read as one block, so the rows the identity
+        binds must be above the balance they explain rather than in the flow
         tbody two sections up.
+
+        The two figures are the halves R-DH (f) was measured on, scaled to this
+        fixture, and they are DIFFERENT so a template rendering one column's
+        value into both rows fails rather than passing on a coincidence.
         """
         with app.app_context():
-            html = self._render_footer(app, "-788.68", True)
+            html = self._render_footer(
+                app, period_timing="-427.22", book_vs_bank="-160.05",
+                timing_flag=True, book_flag=True,
+            )
 
-        assert "Timing &amp; true-ups" in html
+        assert self._TIMING in html
+        assert self._BOOK in html
         assert "reconciliation-row" in html
-        assert "-$789" in html
-        assert html.index("Timing &amp; true-ups") < html.index(
-            "Projected End Balance",
-        )
+        assert "-$427" in html
+        assert "-$160" in html
+        # Timing first, then book-vs-bank, then the balance they explain.
+        assert html.index(self._TIMING) < html.index(self._BOOK)
+        assert html.index(self._BOOK) < html.index("Projected End Balance")
 
-    def test_desktop_footer_hides_an_all_zero_row(self, app):
-        """An all-zero window renders no row at all -- today's shipped grid."""
+    def test_desktop_footer_renders_one_row_without_the_other(self, app):
+        """R-DH (f)'s point: a window with only true-ups shows only that row.
+
+        The property a SHARED flag could not express, and the reason the two
+        rows exist.  A period carrying a balance assertion and no timing
+        difference renders "Book vs bank" and must NOT render a permanently
+        ``$0.00`` "Period timing" line beside it -- a labelled row of zeros
+        reads as "measured, and the answer is zero" for a fact that was never
+        in question.
+
+        Asserted in both directions, because a template wired to the wrong flag
+        passes a one-directional check by luck.
+        """
         with app.app_context():
-            html = self._render_footer(app, "0.00", False)
+            book_only = self._render_footer(
+                app, book_vs_bank="-160.05", book_flag=True,
+            )
+            timing_only = self._render_footer(
+                app, period_timing="-427.22", timing_flag=True,
+            )
 
-        assert "Timing &amp; true-ups" not in html
+        assert self._BOOK in book_only
+        assert self._TIMING not in book_only
+        assert self._TIMING in timing_only
+        assert self._BOOK not in timing_only
+
+    def test_desktop_footer_hides_an_all_zero_pair(self, app):
+        """An all-zero window renders neither row -- the ordinary cash grid."""
+        with app.app_context():
+            html = self._render_footer(app)
+
+        assert self._TIMING not in html
+        assert self._BOOK not in html
         assert "reconciliation-row" not in html
         # The rest of the footer is untouched.
         assert "Projected End Balance" in html
 
     def test_desktop_footer_shows_zero_in_the_columns_that_carry_none(self, app):
-        """Once the row renders it shows $0 where a column has none.
+        """Once a row renders it shows $0 where a column has none.
 
         The other half of ruling R-O: the row is present for the WHOLE visible
         window, so a column with nothing to explain reads ``$0`` rather than
@@ -7273,15 +7391,16 @@ class TestTimingAndTrueUpsRow:
         """
         with app.app_context():
             periods = self._periods()
-            columns = self._columns(reconciliation="0.00", periods=periods)
+            columns = self._columns(periods=periods)
             columns[periods[0].id] = balance_at.GridColumn(
                 balance=Decimal("3000.00"), income=Decimal("2400.00"),
                 expense=Decimal("1450.00"), net=Decimal("950.00"),
-                reconciliation=Decimal("-788.68"),
+                period_timing=Decimal("-788.68"),
+                book_vs_bank=Decimal("0.00"),
                 contribution=Decimal("0.00"), accrual=Decimal("0.00"),
             )
             html = _render_grid_footer(
-                app, periods, columns, _row_flags(reconciliation=True),
+                app, periods, columns, _row_flags(period_timing=True),
             )
 
         row = html[html.index("reconciliation-row"):]
@@ -7289,65 +7408,98 @@ class TestTimingAndTrueUpsRow:
         assert "-$789" in row
         assert "$0" in row
 
-    def test_mobile_this_period_card_renders_the_row(self, app):
-        """Ruling R-P: the mobile summary carries the same line.
+    def test_mobile_this_period_card_renders_both_rows(self, app):
+        """Ruling R-P: the mobile summary carries the same two lines.
 
-        Without it the card shows a Net Cash Flow that does not account for the
-        balance printed beside it -- the visible contradiction ruling R-K
+        Without them the card shows a Net Cash Flow that does not account for
+        the balance printed beside it -- the visible contradiction ruling R-K
         refused to ship, on the form factor Mark Paid is used from.
         """
         period = self._periods()[0]
         with app.app_context():
             html = _render_mobile_card(
                 app, period,
-                self._columns(reconciliation="-788.68", periods=[period]),
-                _row_flags(reconciliation=True),
+                self._columns(
+                    periods=[period], period_timing="-427.22",
+                    book_vs_bank="-160.05",
+                ),
+                _row_flags(period_timing=True, book_vs_bank=True),
             )
 
-        assert "Timing &amp; true-ups" in html
-        assert "-$789" in html
-        assert html.index("Net Cash Flow") < html.index("Timing &amp; true-ups")
-        assert html.index("Timing &amp; true-ups") < html.index(
-            "Projected Balance",
-        )
+        assert self._TIMING in html
+        assert self._BOOK in html
+        assert "-$427" in html
+        assert "-$160" in html
+        assert html.index("Net Cash Flow") < html.index(self._TIMING)
+        assert html.index(self._BOOK) < html.index("Projected Balance")
 
-    def test_mobile_this_period_card_hides_an_all_zero_row(self, app):
-        """The mobile card follows the SAME rule, not its own."""
+    def test_mobile_this_period_card_asks_each_row_separately(self, app):
+        """The card follows the SAME per-row rule, not a shared one."""
         period = self._periods()[0]
         with app.app_context():
             html = _render_mobile_card(
                 app, period,
-                self._columns(reconciliation="0.00", periods=[period]),
-                _row_flags(),
+                self._columns(periods=[period], book_vs_bank="-160.05"),
+                _row_flags(book_vs_bank=True),
             )
 
-        assert "Timing &amp; true-ups" not in html
+        assert self._BOOK in html
+        assert self._TIMING not in html
+
+    def test_mobile_this_period_card_hides_an_all_zero_pair(self, app):
+        """The mobile card follows the SAME rule, not its own."""
+        period = self._periods()[0]
+        with app.app_context():
+            html = _render_mobile_card(
+                app, period, self._columns(periods=[period]), _row_flags(),
+            )
+
+        assert self._TIMING not in html
+        assert self._BOOK not in html
         assert "Net Cash Flow" in html
 
-    def test_plan_recap_renders_the_row(self, app):
-        """Ruling R-P again: the Plan tab recap carries the figure too."""
+    def test_plan_recap_renders_both_rows(self, app):
+        """Ruling R-P again: the Plan tab recap carries both figures too."""
         period = self._periods()[0]
         with app.app_context():
             html = _render_plan_recap(
                 app, period,
-                self._columns(reconciliation="-788.68", periods=[period]),
-                _row_flags(reconciliation=True),
+                self._columns(
+                    periods=[period], period_timing="-427.22",
+                    book_vs_bank="-160.05",
+                ),
+                _row_flags(period_timing=True, book_vs_bank=True),
+            )
+
+        # The recap is space-constrained, so it abbreviates the two labels.
+        assert "Timing" in html
+        assert "Bank" in html
+        assert "-$427" in html
+        assert "-$160" in html
+
+    def test_plan_recap_asks_each_row_separately(self, app):
+        """One chip on, the other off -- the recap does not share a flag."""
+        period = self._periods()[0]
+        with app.app_context():
+            html = _render_plan_recap(
+                app, period,
+                self._columns(periods=[period], period_timing="-427.22"),
+                _row_flags(period_timing=True),
             )
 
         assert "Timing" in html
-        assert "-$789" in html
+        assert "Bank" not in html
 
-    def test_plan_recap_hides_an_all_zero_row(self, app):
-        """And hides it on the same rule."""
+    def test_plan_recap_hides_an_all_zero_pair(self, app):
+        """And hides both on the same rule."""
         period = self._periods()[0]
         with app.app_context():
             html = _render_plan_recap(
-                app, period,
-                self._columns(reconciliation="0.00", periods=[period]),
-                _row_flags(),
+                app, period, self._columns(periods=[period]), _row_flags(),
             )
 
         assert "Timing" not in html
+        assert "Bank" not in html
 
     def test_the_mobile_card_reads_its_OWN_period_not_the_grid_window(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -7404,19 +7556,33 @@ class TestTimingAndTrueUpsRow:
         assert "Net Cash Flow" in card, "the card must actually have rendered"
         assert "modelled-accrual-row" not in card
 
-    def test_the_shipped_grid_shows_no_row_today(
+    def test_the_shipped_grid_shows_no_remainder_row_on_a_clean_account(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """End to end: the real page renders no remainder row at this step.
+        """End to end: the real page renders neither remainder row here.
 
-        X-c2b1 is a refactor, so the rendered grid must be unchanged.  The
-        producer cannot yet put a figure in the row (the shipping balance and
-        subtotal producers count the same rows), and the page proves it.
+        The seeded account has one opening assertion (which ruling R-I keeps
+        out of every column) and no rows that settled outside their own period,
+        so both remainders are ``$0.00`` throughout and R-O hides both rows.
+
+        **The ABBREVIATED labels are asserted too, and they are not redundant.**
+        ``/grid`` also renders ``grid/_mobile_plan.html``, whose space-constrained
+        chips say "Timing" and "Bank" rather than the full row labels -- and they
+        are gated on ``plan_row_flags``, computed over the PLAN window
+        (``app/routes/grid.py``) rather than the tfoot's visible window.  So a
+        regression could light a permanently-``$0`` chip on the Plan tab while
+        the desktop ``reconciliation-row`` stayed hidden and the two full-label
+        assertions below stayed green.  HEAD asserted ``b"Timing"``; narrowing to
+        the full labels alone would have dropped that surface silently.
         """
         resp = auth_client.get("/grid")
         assert resp.status_code == 200
         assert b"reconciliation-row" not in resp.data
+        assert self._TIMING.encode() not in resp.data
+        assert self._BOOK.encode() not in resp.data
+        # The mobile Plan recap's abbreviated chips, on their own flag window.
         assert b"Timing" not in resp.data
+        assert b"Bank" not in resp.data
 
 
 class TestTheContributionsRow:
@@ -7459,17 +7625,20 @@ class TestTheContributionsRow:
             html = _render_grid_footer(
                 app, periods,
                 _summary_columns(
-                    periods, reconciliation="-788.68",
+                    periods, period_timing="-788.68",
                     contribution="181.59", accrual="95.98",
                 ),
                 _row_flags(
-                    reconciliation=True, contribution=True, accrual=True,
+                    period_timing=True, book_vs_bank=True,
+                    contribution=True, accrual=True,
                 ),
             )
 
         assert "modelled-contribution-row" in html
         assert "$181.59" in html
-        assert html.index("Timing &amp; true-ups") < html.index("Contributions")
+        # The two remainder rows come first, in ruling R-DH (f)'s order.
+        assert html.index("Period timing") < html.index("Book vs bank")
+        assert html.index("Book vs bank") < html.index("Contributions")
         assert html.index("Contributions") < html.index(
             "modelled-accrual-row",
         )
@@ -7508,7 +7677,8 @@ class TestTheContributionsRow:
             columns[periods[0].id] = balance_at.GridColumn(
                 balance=Decimal("3000.00"), income=Decimal("2400.00"),
                 expense=Decimal("1450.00"), net=Decimal("950.00"),
-                reconciliation=Decimal("0.00"),
+                period_timing=Decimal("0.00"),
+                book_vs_bank=Decimal("0.00"),
                 contribution=Decimal("181.59"), accrual=Decimal("0.00"),
             )
             html = _render_grid_footer(
@@ -7534,19 +7704,21 @@ class TestTheContributionsRow:
             html = _render_mobile_card(
                 app, period,
                 _summary_columns(
-                    [period], reconciliation="-788.68",
+                    [period], period_timing="-788.68",
                     contribution="181.59", accrual="95.98",
                 ),
                 _row_flags(
-                    reconciliation=True, contribution=True, accrual=True,
+                    period_timing=True, book_vs_bank=True,
+                    contribution=True, accrual=True,
                 ),
                 accrual_label="Growth",
             )
 
         assert "modelled-contribution-row" in html
         assert "$181.59" in html
-        assert html.index("Net Cash Flow") < html.index("Timing &amp; true-ups")
-        assert html.index("Timing &amp; true-ups") < html.index("Contributions")
+        assert html.index("Net Cash Flow") < html.index("Period timing")
+        assert html.index("Period timing") < html.index("Book vs bank")
+        assert html.index("Book vs bank") < html.index("Contributions")
         assert html.index("Contributions") < html.index("Growth")
         assert html.index("Growth") < html.index("Projected Balance")
 
@@ -7569,11 +7741,12 @@ class TestTheContributionsRow:
             html = _render_plan_recap(
                 app, period,
                 _summary_columns(
-                    [period], reconciliation="-788.68",
+                    [period], period_timing="-788.68",
                     contribution="181.59", accrual="95.98",
                 ),
                 _row_flags(
-                    reconciliation=True, contribution=True, accrual=True,
+                    period_timing=True, book_vs_bank=True,
+                    contribution=True, accrual=True,
                 ),
                 accrual_label="Appreciation",
             )
@@ -7710,7 +7883,8 @@ class TestTheAccrualRowSignReachesItsStyling:
             columns[periods[0].id] = balance_at.GridColumn(
                 balance=Decimal("3000.00"), income=Decimal("2400.00"),
                 expense=Decimal("1450.00"), net=Decimal("950.00"),
-                reconciliation=Decimal("0.00"),
+                period_timing=Decimal("0.00"),
+                book_vs_bank=Decimal("0.00"),
                 contribution=Decimal("0.00"), accrual=Decimal("95.98"),
             )
             footer = _render_grid_footer(
@@ -8122,3 +8296,111 @@ class TestGridKindGate:
             assert response.status_code == 200
             assert b"Checking Balance" in response.data
             assert b"Gate Mortgage Balance" not in response.data
+
+
+class TestTheAddPurchaseFormReadsTheUsersClock:
+    """The mobile card's ``today`` is ``display_today()``, never the process's.
+
+    Plan step S1-c / 12.10.  ``app/routes/transactions/_helpers.py``'s
+    ``_render_mobile_card`` passed ``today=date.today()`` into a form whose
+    ``purchased_on`` value the SERVICE judges against ``display_today()``
+    (ruling R-M, ``entry_service._reject_future_purchase_date``).
+    ``date.today()`` reads the PROCESS timezone; ``display_today()`` converts
+    UTC now into ``America/New_York``.  On any process not pinned to that zone
+    the two disagree for part of every day, and the app's own form then
+    defaults to -- and caps at -- a date its own server refuses.
+
+    Latent in production, because the container pins ``TZ: America/New_York``.
+    NOT latent in CI, which runs ``TZ=Pacific/Kiritimati`` (UTC+14) precisely to
+    catch this shape.  It is the same two-clock defect as finding N-133 / R2.
+
+    **The test pins WHICH CLOCK the route reads, rather than arranging for the
+    two to disagree.**  Mutating ``TZ`` + ``time.tzset()`` would reproduce the
+    disagreement, but the C library's zone is process-global and survives
+    ``monkeypatch``'s env restore (only another ``tzset()`` clears it), so a
+    leak would silently re-zone every later test in the same xdist worker --
+    measured, while writing this: it broke an unrelated MFA test three files
+    away.  A test that can corrupt its neighbours to prove a point about clocks
+    is the wrong instrument.  Substituting ``display_today`` for a sentinel is
+    exact and side-effect free: the rendered form carries the sentinel if and
+    only if the route reads that function, which IS the defect.
+    """
+
+    #: A date no clock can produce on its own, so its appearance in the
+    #: rendered form can only have come from ``display_today``.
+    _SENTINEL = date(2019, 7, 4)
+
+    @staticmethod
+    def _envelope_txn(seed_user, period):
+        """A Projected envelope row, so the card renders the entries block."""
+        from app import ref_cache  # pylint: disable=import-outside-toplevel
+        from app.enums import (  # pylint: disable=import-outside-toplevel
+            StatusEnum, TxnTypeEnum,
+        )
+
+        txn = Transaction(
+            account_id=seed_user["account"].id,
+            pay_period_id=period.id,
+            scenario_id=seed_user["scenario"].id,
+            status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            name="Two-clock Groceries",
+            category_id=seed_user["categories"]["Groceries"].id,
+            transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+            estimated_amount=Decimal("500.00"),
+            is_envelope=True,
+        )
+        db.session.add(txn)
+        db.session.commit()
+        return txn
+
+    def test_the_mobile_card_form_defaults_to_the_users_civil_day(
+        self, app, auth_client, seed_user, seed_periods_today, monkeypatch,
+    ):
+        """The rendered add-purchase input comes from ``display_today``.
+
+        The card is re-rendered through the real ``mark-done`` route with
+        ``render=mobile_card``, which is the request ``_render_mobile_card``
+        serves.  Its add-purchase input must read ``value`` and ``max`` off the
+        substituted ``display_today``, and must not carry the process's own
+        ``date.today()``.
+
+        Both halves are asserted.  The positive alone would pass a build that
+        rendered the sentinel somewhere unrelated; the negative alone would
+        pass a form that rendered no date at all.
+
+        Negative-controlled (Section 7.3): restoring ``today=date.today()`` in
+        ``_render_mobile_card`` fails this with
+        ``assert 'value="2019-07-04"' in ...``, measured 2026-08-01.
+        """
+        # pylint: disable=import-outside-toplevel
+        from app.routes.transactions import _helpers
+
+        with app.app_context():
+            period = pay_period_service.get_current_period(
+                seed_user["user"].id,
+            )
+            assert period is not None
+            txn_id = self._envelope_txn(seed_user, period).id
+
+        # The premise: the sentinel is not what any real clock answers, so a
+        # route reading ``date.today()`` cannot produce it by coincidence.
+        assert date.today() != self._SENTINEL
+        monkeypatch.setattr(_helpers, "display_today", lambda: self._SENTINEL)
+
+        resp = auth_client.post(
+            f"/transactions/{txn_id}/mark-done",
+            data={
+                "render": "mobile_card",
+                "card_prefix": "tp",
+                "can_edit": "1",
+            },
+        )
+        assert resp.status_code == 200
+        html = resp.data.decode()
+
+        assert 'name="purchased_on"' in html, (
+            "the add-purchase form must actually have rendered"
+        )
+        assert f'value="{self._SENTINEL.isoformat()}"' in html
+        assert f'max="{self._SENTINEL.isoformat()}"' in html
+        assert date.today().isoformat() not in html

@@ -1403,7 +1403,7 @@ def _add_entry(txn, seed_user, amount, *, description="Test purchase",
         user_id=seed_user["user"].id,
         amount=Decimal(amount),
         description=description,
-        entry_date=_date(2026, 1, 5),
+        purchased_on=_date(2026, 1, 5),
         is_credit=is_credit,
     )
     db.session.add(entry)

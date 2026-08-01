@@ -22,6 +22,10 @@ from app.enums import (
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.utils.dates import display_today
+from tests._test_helpers import (
+    append_balance_assertion,
+    settle_instant_on,
+)
 from app.models.interest_params import InterestParams
 from app.models.investment_params import InvestmentParams
 from app.models.user import User, UserSettings
@@ -1179,18 +1183,33 @@ class TestTrueUpSameDayDuplicate:
             )
 
 
-class TestTrueUpClearsEntries:
-    """Tests for the auto-clear behavior on checking anchor true-up.
+class TestTheReconcileRoute:
+    """The reconcile step's two doors -- plan step S1-c, ruling R-DH (d) / 12.5.
 
-    When the user trues up a checking anchor balance, the service
-    flips is_cleared=TRUE on every past-dated entry whose parent
-    transaction is Projected.  See the rationale in
-    app/services/entry_service.py::clear_entries_for_anchor_true_up.
+    **This class covered a DELETED function.**  It graded
+    ``entry_service.clear_entries_for_anchor_true_up``: a bulk ``UPDATE`` that
+    flipped ``is_cleared = TRUE`` on every past-dated entry of a projected
+    parent, fired as a side effect of every checking anchor true-up.  Whether a
+    purchase counted as reconciled was therefore decided by the order two
+    buttons were pressed -- record then true up and it cleared, true up then
+    record and it never did -- which is 14 of the developer's 53 same-day
+    entries.  The flag, the bulk update and its two log events are gone.
 
-    These tests verify the scope of the update: past-dated entries on
-    projected parents are cleared, while future-dated entries, entries
-    on non-projected parents, and entries on non-checking-account
-    true-ups are left alone.
+    What replaced it is an ASKED question rather than a guessed one: after a
+    successful true-up the app lists the purchases it still thinks are
+    outstanding and the user ticks the ones their statement shows
+    (``GET`` / ``POST /accounts/<id>/reconcile``).  A tick stamps
+    ``settled_on`` with the assertion's own ``observed_on`` -- an upper bound on
+    the true posting day, and the only bound the reconciliation predicate
+    consumes, so no answer changes by sharpening it.
+
+    The per-account scoping case SURVIVES the re-ruling because the invariant
+    it names is unchanged and still real: reconciling account A must not touch
+    account B's purchases.  The exhaustive scoping matrix (another user, a
+    credit purchase, a settled parent, an already-recorded entry) is graded at
+    the service in ``test_services/test_entry_service.py``; what is graded here
+    is the ROUTE -- that it resolves the assertion day itself, refuses a
+    non-owner, and commits.
     """
 
     def _make_grocery_txn_with_entries(
@@ -1201,12 +1220,14 @@ class TestTrueUpClearsEntries:
         Args:
             seed_user: seed_user fixture dict.
             seed_periods_today: list of PayPeriods.
-            entries: list of (amount, entry_date, is_credit, is_cleared)
-                tuples.
+            entries: list of ``(amount, purchased_on, is_credit, settled_on)``
+                tuples.  ``settled_on`` is the day the bank was seen to take
+                the purchase, or ``None`` for one not yet seen -- the fourth
+                element was a ``is_cleared`` bool until plan step S1-c.
             account: the Account the template and transaction belong
                 to.  Defaults to the seed_user's primary checking
                 account; pass a second account to exercise the
-                per-account scope of the true-up clear.
+                per-account scope of the reconcile.
 
         Returns:
             The Transaction object.
@@ -1246,211 +1267,259 @@ class TestTrueUpClearsEntries:
         db.session.add(txn)
         db.session.flush()
 
-        for amount, entry_date, is_credit, is_cleared in entries:
+        for amount, purchased_on, is_credit, settled_on in entries:
             db.session.add(TransactionEntry(
                 transaction_id=txn.id,
                 user_id=seed_user["user"].id,
                 amount=Decimal(amount),
                 description="Test purchase",
-                entry_date=entry_date,
+                purchased_on=purchased_on,
                 is_credit=is_credit,
-                is_cleared=is_cleared,
+                settled_on=settled_on,
             ))
         db.session.commit()
         return txn
 
-    def test_past_dated_projected_entries_get_cleared(
-        self, app, auth_client, seed_user, seed_periods_today,
-    ):
-        """True-up flips past-dated uncleared debits on projected parents."""
-        from app.models.transaction_entry import TransactionEntry
+    @staticmethod
+    def _true_up(auth_client, account_id, balance):
+        """Assert *balance* for today through the real PATCH route.
 
-        with app.app_context():
-            past = date.today() - __import__("datetime").timedelta(days=1)
-            txn = self._make_grocery_txn_with_entries(
-                seed_user, seed_periods_today, [
-                    ("106.86", past, False, False),
-                    ("249.71", past, False, False),
-                    ("105.77", past, False, False),
-                ],
-            )
-
-            response = auth_client.patch(
-                f"/accounts/{seed_user['account'].id}/true-up",
-                data={"anchor_balance": "4537.66"},
-            )
-            assert response.status_code == 200
-
-            db.session.expire_all()
-            entries = (
-                db.session.query(TransactionEntry)
-                .filter_by(transaction_id=txn.id)
-                .all()
-            )
-            assert len(entries) == 3
-            assert all(e.is_cleared for e in entries)
-
-    def test_future_dated_entries_not_cleared(
-        self, app, auth_client, seed_user, seed_periods_today,
-    ):
-        """Entries with entry_date > today must NOT be flipped by true-up."""
-        from app.models.transaction_entry import TransactionEntry
-
-        with app.app_context():
-            future = date.today() + __import__("datetime").timedelta(days=7)
-            txn = self._make_grocery_txn_with_entries(
-                seed_user, seed_periods_today, [
-                    ("50.00", future, False, False),
-                ],
-            )
-
-            response = auth_client.patch(
-                f"/accounts/{seed_user['account'].id}/true-up",
-                data={"anchor_balance": "5000.00"},
-            )
-            assert response.status_code == 200
-
-            db.session.expire_all()
-            entry = (
-                db.session.query(TransactionEntry)
-                .filter_by(transaction_id=txn.id)
-                .one()
-            )
-            assert entry.is_cleared is False
-
-    def test_entries_on_non_projected_parent_not_cleared(
-        self, app, auth_client, seed_user, seed_periods_today,
-    ):
-        """Entries on settled (Paid) parents are not touched by true-up.
-
-        They're already excluded from the balance formula, but leaving
-        their is_cleared alone is the correct behavior -- we only flip
-        what the anchor change actually reconciles.
+        The reconcile route reads the account's LATEST asserted day and stamps
+        it, so the fixtures true up first rather than hand-writing a history
+        row: that is the production sequence (read your bank balance, enter it,
+        then tick off what it contained) and it is the sequence whose ORDER the
+        retired flag got wrong.
         """
+        response = auth_client.patch(
+            f"/accounts/{account_id}/true-up",
+            data={"anchor_balance": balance},
+        )
+        assert response.status_code == 200
+        return response
+
+    @staticmethod
+    def _entries_of(txn_id):
+        """Return a transaction's entries, freshest read, ordered by id."""
         from app.models.transaction_entry import TransactionEntry
 
+        db.session.expire_all()
+        return (
+            db.session.query(TransactionEntry)
+            .filter_by(transaction_id=txn_id)
+            .order_by(TransactionEntry.id)
+            .all()
+        )
+
+    def test_a_true_up_alone_records_no_posting_day(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """RE-RULED: the true-up route reconciles NOTHING (ruling R-DH (d)).
+
+        The inversion this whole class turns on.  Three past-dated purchases,
+        one true-up through the real route: every ``settled_on`` is still NULL
+        afterwards, because whether the bank has taken a purchase is not
+        derivable from the fact that a balance was entered.
+
+        The response carries the reconcile PROMPT instead -- the question the
+        engine used to answer on the user's behalf, now asked.
+        """
         with app.app_context():
-            past = date.today() - __import__("datetime").timedelta(days=1)
+            past = display_today() - timedelta(days=1)
             txn = self._make_grocery_txn_with_entries(
                 seed_user, seed_periods_today, [
-                    ("100.00", past, False, False),
+                    ("106.86", past, False, None),
+                    ("249.71", past, False, None),
+                    ("105.77", past, False, None),
                 ],
             )
-            # Flip the parent to Paid after entry creation.
+
+            response = self._true_up(
+                auth_client, seed_user["account"].id, "4537.66",
+            )
+
+            entries = self._entries_of(txn.id)
+            assert len(entries) == 3
+            assert all(e.settled_on is None for e in entries)
+            # The prompt rides along on the true-up's own response.
+            assert b"Tick the ones your statement shows" in response.data
+
+    def test_ticking_a_purchase_stamps_the_asserted_day(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """POST reconcile records the assertion's own day on the ticked rows.
+
+        Two outstanding purchases; the user ticks one.  Its ``settled_on``
+        becomes the day the balance was asserted for (today, via the true-up
+        route), and the other is untouched -- the whole point of asking rather
+        than guessing is that the answer can be partial.
+        """
+        with app.app_context():
+            past = display_today() - timedelta(days=1)
+            txn = self._make_grocery_txn_with_entries(
+                seed_user, seed_periods_today, [
+                    ("106.86", past, False, None),
+                    ("249.71", past, False, None),
+                ],
+            )
+            self._true_up(auth_client, seed_user["account"].id, "4537.66")
+            ticked, untouched = self._entries_of(txn.id)
+            ticked_id, untouched_id = ticked.id, untouched.id
+
+            response = auth_client.post(
+                f"/accounts/{seed_user['account'].id}/reconcile",
+                data={"entry_ids": [str(ticked_id)]},
+            )
+            assert response.status_code == 200
+            assert response.headers.get("HX-Trigger") == "balanceChanged"
+
+            by_id = {e.id: e for e in self._entries_of(txn.id)}
+            assert by_id[ticked_id].settled_on == display_today()
+            assert by_id[untouched_id].settled_on is None
+            # The re-rendered panel still offers the one left outstanding.
+            assert b"249.71" in response.data
+
+    def test_the_panel_lists_only_what_is_still_outstanding(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """GET reconcile offers the unrecorded purchases and drops the rest.
+
+        One purchase already carries a posting day and one does not.  Only the
+        second is offered: a purchase whose posting day is recorded is not
+        outstanding, whatever that day is, so listing it would ask the user to
+        confirm something they already have.
+        """
+        with app.app_context():
+            past = display_today() - timedelta(days=1)
+            self._make_grocery_txn_with_entries(
+                seed_user, seed_periods_today, [
+                    ("106.86", past, False, past),
+                    ("249.71", past, False, None),
+                ],
+            )
+            self._true_up(auth_client, seed_user["account"].id, "4537.66")
+
+            response = auth_client.get(
+                f"/accounts/{seed_user['account'].id}/reconcile",
+            )
+
+            assert response.status_code == 200
+            assert b"249.71" in response.data
+            assert b"106.86" not in response.data
+
+    def test_a_purchase_made_after_the_statement_is_not_offered(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """RE-RULED from "future-dated entries are not cleared".
+
+        A purchase made AFTER the day the balance was read cannot be inside it,
+        so it is neither listed nor stamped -- and a forged id for it changes
+        nothing.  The bound is real rather than cosmetic: stamping it would
+        write a ``settled_on`` earlier than its own ``purchased_on``, which
+        ``ck_transaction_entries_settled_not_before_purchase`` refuses at the
+        database.  Filtering here makes that constraint a backstop instead of a
+        reachable 500.
+        """
+        with app.app_context():
+            future = display_today() + timedelta(days=7)
+            txn = self._make_grocery_txn_with_entries(
+                seed_user, seed_periods_today, [
+                    ("50.00", future, False, None),
+                ],
+            )
+            self._true_up(auth_client, seed_user["account"].id, "5000.00")
+            entry_id = self._entries_of(txn.id)[0].id
+
+            listed = auth_client.get(
+                f"/accounts/{seed_user['account'].id}/reconcile",
+            )
+            assert b"50.00" not in listed.data
+
+            response = auth_client.post(
+                f"/accounts/{seed_user['account'].id}/reconcile",
+                data={"entry_ids": [str(entry_id)]},
+            )
+
+            assert response.status_code == 200
+            assert self._entries_of(txn.id)[0].settled_on is None
+
+    def test_a_purchase_on_a_settled_parent_is_not_offered(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """RE-RULED from "entries on non-projected parents are not cleared".
+
+        The entry reservation prices only PROJECTED rows, so a purchase on a
+        settled parent is inert -- listing it would ask the user to reconcile
+        something that cannot move a figure, and stamping it would record a
+        fact nothing reads.
+        """
+        with app.app_context():
+            past = display_today() - timedelta(days=1)
+            txn = self._make_grocery_txn_with_entries(
+                seed_user, seed_periods_today, [
+                    ("100.00", past, False, None),
+                ],
+            )
             paid = db.session.query(Status).filter_by(name="Paid").one()
             txn.status_id = paid.id
             db.session.commit()
+            self._true_up(auth_client, seed_user["account"].id, "5000.00")
+            entry_id = self._entries_of(txn.id)[0].id
 
-            response = auth_client.patch(
-                f"/accounts/{seed_user['account'].id}/true-up",
-                data={"anchor_balance": "5000.00"},
+            listed = auth_client.get(
+                f"/accounts/{seed_user['account'].id}/reconcile",
             )
-            assert response.status_code == 200
+            assert b"100.00" not in listed.data
 
-            db.session.expire_all()
-            entry = (
-                db.session.query(TransactionEntry)
-                .filter_by(transaction_id=txn.id)
-                .one()
+            auth_client.post(
+                f"/accounts/{seed_user['account'].id}/reconcile",
+                data={"entry_ids": [str(entry_id)]},
             )
-            assert entry.is_cleared is False
 
-    def test_non_checking_true_up_does_not_clear(
+            assert self._entries_of(txn.id)[0].settled_on is None
+
+    def test_an_already_recorded_purchase_is_not_re_stamped(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """A true-up on a non-checking account does not affect entries.
+        """RE-RULED from "already cleared entries unchanged" -- idempotence.
 
-        Debit entries only hit checking, so anchor updates on savings
-        or loan accounts must not touch is_cleared.
+        A purchase whose exact posting day the user already sharpened on the
+        entry form keeps that day.  Re-submitting its id must not overwrite it
+        with the assertion's coarser upper bound: the outstanding scope is
+        ``settled_on IS NULL``, so the row simply does not match.
         """
-        from app.models.transaction_entry import TransactionEntry
-
         with app.app_context():
-            past = date.today() - __import__("datetime").timedelta(days=1)
+            past = display_today() - timedelta(days=2)
             txn = self._make_grocery_txn_with_entries(
                 seed_user, seed_periods_today, [
-                    ("100.00", past, False, False),
+                    ("100.00", past, False, past),
                 ],
             )
+            self._true_up(auth_client, seed_user["account"].id, "5000.00")
+            entry_id = self._entries_of(txn.id)[0].id
 
-            # Create a non-checking account for the user.
-            savings_type = db.session.query(AccountType).filter_by(
-                name="Savings",
-            ).one()
-            savings = account_service.create_account(
-                account_service.AccountSpec(
-                    user_id=seed_user["user"].id,
-                    account_type_id=savings_type.id,
-                    name="Savings",
-                    anchor_balance=Decimal("1000.00"),
-                    anchor_period_id=seed_periods_today[0].id,
-                ),
+            auth_client.post(
+                f"/accounts/{seed_user['account'].id}/reconcile",
+                data={"entry_ids": [str(entry_id)]},
             )
-            db.session.add(savings)
-            db.session.commit()
 
-            response = auth_client.patch(
-                f"/accounts/{savings.id}/true-up",
-                data={"anchor_balance": "1500.00"},
-            )
-            assert response.status_code == 200
+            assert self._entries_of(txn.id)[0].settled_on == past
 
-            db.session.expire_all()
-            entry = (
-                db.session.query(TransactionEntry)
-                .filter_by(transaction_id=txn.id)
-                .one()
-            )
-            # Debit entries untouched because savings != checking.
-            assert entry.is_cleared is False
-
-    def test_already_cleared_entries_unchanged(
+    def test_reconciling_one_account_does_not_touch_another(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """Entries that are already cleared remain cleared -- true-up is idempotent."""
-        from app.models.transaction_entry import TransactionEntry
+        """A reconcile records ONLY the reconciled account's purchases.
 
-        with app.app_context():
-            past = date.today() - __import__("datetime").timedelta(days=1)
-            txn = self._make_grocery_txn_with_entries(
-                seed_user, seed_periods_today, [
-                    ("100.00", past, False, True),
-                ],
-            )
-
-            response = auth_client.patch(
-                f"/accounts/{seed_user['account'].id}/true-up",
-                data={"anchor_balance": "5000.00"},
-            )
-            assert response.status_code == 200
-
-            db.session.expire_all()
-            entry = (
-                db.session.query(TransactionEntry)
-                .filter_by(transaction_id=txn.id)
-                .one()
-            )
-            assert entry.is_cleared is True
-
-    def test_true_up_on_one_account_does_not_clear_other_checking_account(
-        self, app, auth_client, seed_user, seed_periods_today,
-    ):
-        """A true-up reconciles ONLY the trued-up account's entries.
-
-        Accounts carry no per-type uniqueness, so a user may hold more
-        than one checking account.  Trueing up account A declares A's
-        real balance; it must not flip is_cleared on account B's
-        entries, because B's anchor was never raised -- clearing B's
-        debits there would drop B's reservation and silently inflate
-        B's projected balance (#8).  This is the regression guard for
-        the per-account scope of clear_entries_for_anchor_true_up: it
-        fails under the prior owner-only filter (which cleared B too)
-        and passes once the filter is scoped by account_id.
+        KEPT verbatim in intent from the retired bulk-clear class, because the
+        invariant is unchanged by the re-ruling and is still the one that
+        misprices real money.  Accounts carry no per-type uniqueness, so a user
+        may hold more than one checking account.  Reconciling account A records
+        what A's statement showed; recording B's purchases there would drop B's
+        reservation without ever raising B's anchor, silently inflating B's
+        projected balance (#8).  It fails under an owner-only filter and passes
+        once the filter is scoped by ``account_id``.
         """
-        from app.models.transaction_entry import TransactionEntry
-
         with app.app_context():
-            past = date.today() - __import__("datetime").timedelta(days=1)
+            past = display_today() - timedelta(days=1)
 
             # Second checking account on the SAME user.
             checking_type = db.session.query(AccountType).filter_by(
@@ -1467,40 +1536,171 @@ class TestTrueUpClearsEntries:
             )
             db.session.add(account_b)
             db.session.commit()
+            account_b_id = account_b.id
 
-            # Past-dated uncleared debit entry on each account.
             txn_a = self._make_grocery_txn_with_entries(
                 seed_user, seed_periods_today,
-                [("60.00", past, False, False)],
+                [("60.00", past, False, None)],
             )
             txn_b = self._make_grocery_txn_with_entries(
                 seed_user, seed_periods_today,
-                [("75.00", past, False, False)],
+                [("75.00", past, False, None)],
                 account=account_b,
             )
 
-            # True up account A only.
-            response = auth_client.patch(
-                f"/accounts/{seed_user['account'].id}/true-up",
-                data={"anchor_balance": "5000.00"},
+            # BOTH accounts have an asserted day, so B's purchase failing to
+            # be recorded cannot be blamed on B having no assertion.
+            self._true_up(auth_client, seed_user["account"].id, "5000.00")
+            self._true_up(auth_client, account_b_id, "3000.00")
+
+            entry_a_id = self._entries_of(txn_a.id)[0].id
+            entry_b_id = self._entries_of(txn_b.id)[0].id
+
+            # Reconcile account A, submitting BOTH ids -- the cross-account id
+            # is exactly the forged submission the scope has to reject.
+            response = auth_client.post(
+                f"/accounts/{seed_user['account'].id}/reconcile",
+                data={"entry_ids": [str(entry_a_id), str(entry_b_id)]},
             )
             assert response.status_code == 200
 
-            db.session.expire_all()
-            entry_a = (
-                db.session.query(TransactionEntry)
-                .filter_by(transaction_id=txn_a.id)
-                .one()
+            assert self._entries_of(txn_a.id)[0].settled_on == display_today()
+            assert self._entries_of(txn_b.id)[0].settled_on is None
+
+    def test_the_stamped_day_is_the_ASSERTED_day_not_today(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The route resolves the account's asserted day; it does not use today.
+
+        **The two are the same day in every other test in this class**, because
+        each trues up through the PATCH route and ``apply_anchor_true_up``
+        stamps ``display_today()``.  So none of them can tell
+        ``cash_ledger.latest_observed_day(account.id)`` apart from
+        ``display_today()`` -- measured: substituting the latter in
+        ``accounts.anchor.reconcile_purchases`` left the whole 7,721-test suite
+        green.  This is the case that separates them, and it is the only one.
+
+        ``observed_on`` is USER-SUPPLIED (plan step 2), so a back-dated
+        assertion is an ordinary state: "my statement is dated the 3rd, not
+        today".  Here the account's latest assertion is for the day after the
+        first period started -- weeks in the past -- and the ticked purchase
+        must be stamped with THAT day.
+
+        What the wrong clock costs, and why it is not merely untidy: the
+        purchase would get ``settled_on = today``, which is AFTER the asserted
+        day, so ``is_inside_assertion`` answers False, the reservation never
+        drops, and the projection stays low by the whole purchase.  Worse, the
+        row now fails ``_outstanding_scope``'s ``settled_on IS NULL`` clause, so
+        the panel can never offer it again -- the user cannot fix it from the
+        surface that broke it.
+        """
+        with app.app_context():
+            account = seed_user["account"]
+            asserted_on = seed_periods_today[0].start_date + timedelta(days=1)
+            purchased_on = seed_periods_today[0].start_date
+            # The premise: the asserted day is genuinely in the past, so
+            # "stamped the asserted day" and "stamped today" are different
+            # answers rather than the same one twice.
+            assert asserted_on < display_today()
+
+            txn = self._make_grocery_txn_with_entries(
+                seed_user, seed_periods_today,
+                [("64.20", purchased_on, False, None)],
             )
-            entry_b = (
-                db.session.query(TransactionEntry)
-                .filter_by(transaction_id=txn_b.id)
-                .one()
+            append_balance_assertion(
+                db.session, account, seed_periods_today[0],
+                Decimal("1000.00"), settle_instant_on(asserted_on),
             )
-            # A's entry is reconciled by its own true-up.
-            assert entry_a.is_cleared is True
-            # B's entry is untouched -- B was never trued up.
-            assert entry_b.is_cleared is False
+            db.session.commit()
+            entry_id = self._entries_of(txn.id)[0].id
+
+            # The panel offers it against the BACK-DATED day.
+            listed = auth_client.get(f"/accounts/{account.id}/reconcile")
+            assert b"64.20" in listed.data
+
+            response = auth_client.post(
+                f"/accounts/{account.id}/reconcile",
+                data={"entry_ids": [str(entry_id)]},
+            )
+            assert response.status_code == 200
+
+            stamped = self._entries_of(txn.id)[0].settled_on
+            assert stamped == asserted_on
+            assert stamped != display_today()
+
+    def test_a_companion_cannot_reach_the_reconcile_route(
+        self, app, companion_client, seed_user, seed_periods_today,
+    ):
+        """Owner-only, and a companion gets 404 rather than 403.
+
+        The COMPANION is the case that matters, not an unrelated stranger: a
+        companion is authenticated AND holds granted access to this owner's
+        transactions and their entries (``TestCompanionAccess`` in
+        ``test_routes/test_entries.py``), so ``@require_owner`` refusing them is
+        a real decision rather than a trivial one.  Reconciling is an owner
+        judgement about the owner's own bank statement.
+
+        The project's security response rule: 404 for both "not found" and
+        "not yours", so a probe cannot use the status code as an existence
+        oracle.  Both doors carry ``@require_owner``, so both are asserted --
+        a read that leaked the outstanding list would disclose the owner's
+        spending even if the write were refused.
+        """
+        with app.app_context():
+            account_id = seed_user["account"].id
+
+        assert companion_client.get(
+            f"/accounts/{account_id}/reconcile",
+        ).status_code == 404
+        assert companion_client.post(
+            f"/accounts/{account_id}/reconcile",
+            data={"entry_ids": ["1"]},
+        ).status_code == 404
+
+    def test_reconciling_a_savings_account_leaves_checking_alone(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Successor to the retired "a non-checking true-up does not clear".
+
+        The bulk clear was checking-only by construction; the reconcile is
+        scoped by ``account_id`` instead, so the property survives the re-ruling
+        with a different mechanism and is re-asserted rather than assumed
+        covered by the two-checking-accounts case beside it.  A debit purchase
+        never reaches a savings statement, so reconciling savings must offer
+        nothing and record nothing.
+        """
+        with app.app_context():
+            past = display_today() - timedelta(days=1)
+            txn = self._make_grocery_txn_with_entries(
+                seed_user, seed_periods_today, [("90.00", past, False, None)],
+            )
+            savings_type = db.session.query(AccountType).filter_by(
+                name="Savings",
+            ).one()
+            savings = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="Savings",
+                    anchor_balance=Decimal("1000.00"),
+                    anchor_period_id=seed_periods_today[0].id,
+                ),
+            )
+            db.session.commit()
+            savings_id = savings.id
+            entry_id = self._entries_of(txn.id)[0].id
+
+            self._true_up(auth_client, savings_id, "1500.00")
+
+            listed = auth_client.get(f"/accounts/{savings_id}/reconcile")
+            assert b"90.00" not in listed.data
+
+            auth_client.post(
+                f"/accounts/{savings_id}/reconcile",
+                data={"entry_ids": [str(entry_id)]},
+            )
+
+            assert self._entries_of(txn.id)[0].settled_on is None
 
 
 # ── Account Type CRUD ─────────────────────────────────────────────
@@ -3298,9 +3498,9 @@ def _add_cleared_debit_entry(db_session, *, txn, user_id, amount):
         user_id=user_id,
         amount=amount,
         description="Cleared purchase",
-        entry_date=date(2026, 1, 15),
+        purchased_on=date(2026, 1, 15),
         is_credit=False,
-        is_cleared=True,
+        settled_on=date(2026, 1, 15),
     ))
     db_session.flush()
 
