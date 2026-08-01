@@ -278,6 +278,70 @@ raised.
 
 ---
 
+## The ambient clock and the ambient calendar
+
+**A test that passes on some days and fails on others is not a flaky test. It is a broken test with
+a schedule.** Every "flake" this suite has produced has turned out to be one of the two couplings
+below, and each was diagnosed only after it blocked a merge gate. Both are cheap to avoid and
+expensive to find.
+
+### 1. Use the APPLICATION's clock, never the process's
+
+`date.today()` reads the PROCESS timezone. The application's civil day is
+`app.utils.dates.display_today()` (`America/New_York`). Production and `docker-compose.dev.yml` both
+pin `TZ: America/New_York`, so the two agree there -- **CI does not pin it and runs UTC**, so for
+the four hours a day the calendars disagree, a test that mixes them fails.
+
+> **Whenever a test builds a date that the application will compare against its own "today", the
+> test must use `display_today()`.**
+
+That covers an `entry_date` posted to a route (`entry_service._reject_future_entry_date` refuses
+anything after `display_today()`, ruling R-M), a pay-period window that must contain the day
+`get_current_period` looks for, an anchor's `observed_on`, and any assertion on a date the app
+derived. Three live examples, all of which failed CI on 2026-08-01 and none of which was
+reproducible in a dev shell:
+
+| site | was | is |
+|---|---|---|
+| `test_c19_credit_payback_unique.py` -- posted `entry_date` | `date.today()` | `display_today()` |
+| `test_c19_credit_payback_unique.py` -- period window | `date.today()` | `display_today()` |
+| `test_optimistic_locking_c18.py::_make_entry` | `date.today()` | `display_today()` |
+| `test_account_anchor_invariant.py` -- signup period | `date.today()` | `display_today()` |
+
+**Do not "fix" this class by pinning CI's timezone.** That hides the coupling instead of removing
+it, and the coupling is what breaks the moment any environment differs.
+
+**How to check your work:** run the suite with the process clock shifted off the display clock. The
+whole suite must pass unchanged.
+
+```bash
+TZ=Pacific/Kiritimati ./scripts/test.sh     # process date one day AHEAD of the app's
+```
+
+### 2. A fixture must not depend on WHERE IN THE CALENDAR it runs
+
+Deriving fixture dates from "today" makes the SHAPE of the fixture depend on the date the suite
+runs. Findings N-131 (six cross-page tests failing on the last days of a month), N-132 (fixtures
+separating events by hours against a rule that reads civil days), R8 (an offset that silently became
+a duplicate of its sibling) and the 2026-08-01 loan failures are all this.
+
+The 2026-08-01 case is the clearest: a fixture originated a loan at the current period's start with
+`payment_day=1`, and its own docstring promised *"clean past: no overdue installment"*. Whether that
+was true depended on the day of the month --
+
+- on the **1st** the first installment fell on today, where `balance_at` reads the ledger
+  (`balance_at/_positions.py`) and the committed schedule shows the post-payment projection;
+- on the days **between the 1st and the month's first Monday** it was overdue and unpaid, so the
+  fold pays nothing for it (D1 / B-9) while the schedule still lists it -- and every later row
+  diverges.
+
+**State the property the fixture needs, then construct it so the property holds on every calendar
+day**, rather than deriving from today and hoping. Pin the read
+(`BalanceContext.build(user_id, as_of=...)`) to a date the fixture itself controls, and derive the
+other dates from THAT.
+
+---
+
 ## Problem Reporting Protocol
 
 You are the only automated safeguard this project has. If you see a problem and say nothing, that

@@ -52,6 +52,7 @@ from app.services import credit_workflow
 from app.services.auth_service import hash_password
 from app.services.entry_credit_workflow import sync_entry_payback
 from app.services import account_service
+from app.utils.dates import display_today
 
 
 # ---------------------------------------------------------------------------
@@ -184,7 +185,11 @@ def _create_concurrent_user(db_session):
     # Indices 1, 2, 3 -- offset past the bootstrap period (index 0) so the
     # uq_pay_periods_user_index constraint holds; the account re-anchors to
     # periods[0] (index 1) below, leaving the bootstrap unreferenced.
-    today = date.today()
+    # The APP's today, not the process's.  Every period boundary below has to
+    # contain the day ``get_current_period`` will look for, and that lookup is
+    # on the display clock -- so building the window from ``date.today()``
+    # leaves the app's today outside it whenever the two calendars disagree.
+    today = display_today()
     base = today - timedelta(days=today.weekday())  # Monday this week
     periods = []
     for i in range(3):
@@ -791,7 +796,12 @@ class TestSyncEntryPaybackTOCTOUPrevention:
             app, "c19-concurrent@shekel.local", "c19concurrent",
         )
 
-        today_iso = date.today().isoformat()
+        # The APP's today.  ``entry_service._reject_future_entry_date`` refuses
+        # an entry dated after ``display_today()`` (ruling R-M), so posting the
+        # PROCESS date makes this a 400 for the four hours a day the two
+        # calendars disagree -- which is exactly how it failed CI at 23:39 ET
+        # on 2026-07-31.
+        today_iso = display_today().isoformat()
 
         def _post_entry(amount):
             return client.post(
