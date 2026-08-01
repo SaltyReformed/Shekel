@@ -522,7 +522,7 @@ Also verified in this run:
 - **The migration runs both directions** on the dev database and on two production clones, with the
   backfill exact: 0 rows where `observed_on <> (created_at AT TIME ZONE 'America/New_York')::date`
   over 67 rows.
-- **`pylint app/ scripts/` 10.00/10; full suite 7,682 passed / 0 failed** (7,677 at the merge base).
+- **`pylint app/ scripts/` 10.00/10 with zero messages; full suite 7,687 passed / 0 failed** (7,677 at the merge base).
 
 ### 7.1 Adversarial review run (2026-07-31)
 
