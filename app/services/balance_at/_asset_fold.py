@@ -250,7 +250,7 @@ class _AccrualWindow:
         rule: The per-day accrual rule (:class:`_InterestAccrual` or
             :class:`_CompoundAccrual`).
         start: The first day the return may accrue on -- the LATEST balance
-            assertion's UTC civil day, INCLUSIVE (ruling R-L as sharpened at
+            assertion's ``observed_on``, INCLUSIVE (ruling R-L as sharpened at
             plan step X-c2a: the assertion's own day accrues; ruling R-Y
             extends that from INTEREST to all three modelled kinds).
         end: The last day to resolve -- the caller's furthest requested date.
@@ -434,15 +434,17 @@ def _modelled_return(
 def _latest_assertion_day(
     account: Account, walk: "_cash_fold.CashLedgerWalk",
 ) -> date:
-    """Return the UTC civil day of *account*'s LATEST balance assertion.
+    """Return the civil day of *account*'s LATEST balance assertion.
 
     The day ruling R-L's window opens on, read off the WALK the fold was already
     built from rather than through a second
     :func:`~app.services.cash_ledger.resolve_anchor` query.  The two are the same
-    row by construction -- both order the account's
-    :class:`~app.models.account.AccountAnchorHistory` rows by ``(created_at,
-    id)`` and take the last -- which is what makes ruling R-L "one line of the
-    event builder" rather than a rule each modelled layer restates.
+    row by construction -- the walk's facts are loaded ``(observed_on,
+    created_at, id)`` ascending and the resolver takes that exact key
+    descending -- which is what makes ruling R-L "one line of the event
+    builder" rather than a rule each modelled layer restates.  The shared key
+    became BUSINESS-date-first at plan step 2, when ``observed_on`` stopped
+    being derived from ``created_at`` and the two orders could differ.
 
     **It fails loud for an account with no assertion history, and that asymmetry
     is deliberate.**  The cash fold answers such an account from a zero seed
@@ -458,7 +460,8 @@ def _latest_assertion_day(
         walk: Its :class:`~app.services.cash_ledger.CashLedgerWalk`.
 
     Returns:
-        The assertion's UTC calendar date.
+        The assertion's ``observed_on`` -- the civil day, in the user's
+        timezone, that it is the closing balance for (ruling R-DH).
 
     Raises:
         RuntimeError: When the account carries no assertion at all.

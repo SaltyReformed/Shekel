@@ -92,13 +92,31 @@ class LoanAnchorEvent(AccountScopedMixin, CreatedAtMixin, db.Model):
             "idx_loan_anchor_events_account",
             "account_id", "anchor_date",
         ),
-        # Same-day duplicate prevention; mirrors
+        # Same-day duplicate prevention, the loan twin of
         # ``uq_anchor_history_account_period_balance_day`` on
-        # :class:`AccountAnchorHistory`.  Truncating ``created_at``
-        # (timestamptz) to a civil date requires pinning the timezone
-        # via ``AT TIME ZONE 'UTC'`` because PostgreSQL refuses to use
-        # the bare ``::date`` cast in an index -- the cast depends on
-        # the session's TimeZone and is not IMMUTABLE.  UTC matches
+        # :class:`AccountAnchorHistory`.  **It keys the BUSINESS date
+        # (``anchor_date``) and the RECORDING day separately, and the
+        # checking twin now keys only the business date
+        # (``observed_on``)** -- not a drift, but the difference the two
+        # tables' shapes force: an ``anchor_date`` is user-supplied and
+        # re-assertable, so a second assertion of the same date and
+        # balance on a LATER recording day is a legitimate correction
+        # here, while a checking assertion has one business day per
+        # submission and a repeat of it is a double-submit
+        # (finding N-133 / F12).
+        #
+        # **That asymmetry EXPIRES at plan step 2's second half.**  When the
+        # checking true-up form gains its own date field, ``observed_on``
+        # becomes user-supplied and re-assertable exactly as ``anchor_date``
+        # is, and the checking index will then reject the same legitimate
+        # correction this one permits.  Re-key it back onto
+        # ``(observed_on, utc_day(created_at))`` at that step -- recorded here
+        # because this comment is the justification a reader will find first.
+        #
+        # Truncating ``created_at`` (timestamptz) to a civil date requires
+        # pinning the timezone via ``AT TIME ZONE 'UTC'`` because PostgreSQL
+        # refuses to use the bare ``::date`` cast in an index -- the cast
+        # depends on the session's TimeZone and is not IMMUTABLE.  UTC matches
         # ``CreatedAtMixin``'s storage convention exactly.
         db.Index(
             "uq_loan_anchor_events_acct_date_bal_day",

@@ -63,6 +63,12 @@ class AccountCreateSchema(BaseSchema):
     name = fields.String(required=True, validate=validate.Length(min=1, max=100))
     account_type_id = fields.Integer(required=True)
     anchor_balance = fields.Decimal(places=2, as_string=True)
+    # The civil day ``anchor_balance`` was TRUE (ruling R-DH, plan step 2).
+    # Optional: blank means today, applied by ``account_service.create_account``
+    # so every caller shares the default.  The "not in the future" rule is
+    # enforced there too rather than here, because it compares against the
+    # DISPLAY timezone's today and a schema has no business owning that clock.
+    observed_on = fields.Date()
 
 
 class AccountUpdateSchema(BaseSchema):

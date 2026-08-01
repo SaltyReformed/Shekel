@@ -4,10 +4,12 @@
 assertions into the double-entry ledger: the once-per-account OPENING (its
 earliest ``AccountAnchorHistory`` row) and a TRUE-UP per later row, each a
 balanced correction driving the linked ledger's total to the asserted balance
-at the assertion MOMENT.  The walk partitions source facts by attribution
-INSTANT (``paid_at``, transfers by the income shadow's, period-start fallback)
-against each anchor's ``created_at`` -- never by pay period (the plan review's
-CRITICAL-1).  These tests drive the walk and the sync entry points directly;
+as of the day it is the closing balance for.  The walk partitions source facts
+by their settled CIVIL DAY (``paid_at``'s display-timezone day, transfers by the
+income shadow's, period-start fallback) against each anchor's stored
+``observed_on`` -- never by pay period (the plan review's CRITICAL-1) and never
+by instant, which decided the question by click order and cost production
+$4,001.42 (ruling R-DH).  These tests drive the walk and the sync entry points directly;
 since C6 the lifecycle chokepoints are ALSO live underneath them --
 ``create_account`` posts each opening at fixture time and the effect-time
 self-heal reconciles at every settle / revert -- so the explicit sync calls
@@ -15,14 +17,18 @@ double as idempotency proofs, and the step-count assertions reflect the eager
 per-mutation reconcile (each intermediate state lands exactly on the anchor).
 
 Fixtures are SYNTHETIC with HAND-COMPUTED literals, each docstring showing the
-arithmetic.  Assertion instants are constructed RELATIVE to the factory
-origination row's stored ``created_at`` (the one instant the test cannot
-choose), so every pre/post/tie partition is deterministic regardless of clock
-or timezone.  All money is ``Decimal`` from strings.
+arithmetic.  Events are placed RELATIVE to the origination assertion's own
+``observed_on`` (:func:`_origin_day`) in whole DAYS, through
+``settle_instant_on`` so each lands at noon UTC on the intended civil day; a
+case needing two events on ONE day uses a PINNED opening instead.  Both
+conventions exist because a fixture that offsets from a RECORDING instant grades
+a different case than it names -- twice now, from two different causes
+(finding N-133 / F2, and the review of the F1 revert).  All money is ``Decimal``
+from strings.
 """
 from __future__ import annotations
 
-from datetime import timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -48,12 +54,16 @@ from app.services import (
 )
 from app.services.anchor_service import AnchorTrueUpOutcome
 from app.services.auth_service import hash_password
+from app.utils.dates import to_display_date
 from tests._test_helpers import (
     create_account_of_type,
     create_loan_account,
     create_settled_cash_transaction,
     create_settled_transfer,
     ledger_net,
+    observed_day_of,
+    restamp_opening_assertion,
+    settle_instant_on,
 )
 
 
@@ -72,35 +82,74 @@ def _make_account(seed_user, balance, type_name="Savings", name="Anchor Acct"):
     return account
 
 
-def _origin_instant(account):
-    """Return the factory origination row's stored assertion instant (UTC).
+# A controlled mid-day instant for the fixtures that must place two events on
+# ONE civil day (ruling R-DH).  12:00 EDT, so plus-or-minus an hour is provably
+# the same ``America/New_York`` day -- which a whole-DAY offset from
+# :func:`_origin_day` cannot express, since the two events must share one day.
+# Deriving such an offset from the ambient clock is exactly how
+# ``test_a_settle_on_the_openings_own_day_is_absorbed_either_order`` came to use
+# a DAY offset and stop discriminating the rule it names (finding N-133 / F2).
+_PINNED_OPENING_AT = datetime(2026, 3, 17, 16, 0, tzinfo=timezone.utc)
+_PINNED_OPENING_DAY = date(2026, 3, 17)
+_ONE_HOUR = timedelta(hours=1)
 
-    The one instant a test cannot choose (the row's ``created_at`` is the
-    INSERT transaction's ``now()``); every other instant in a fixture is
-    built relative to it so the pre/post/tie partitions are deterministic.
+
+def _pin_opening(account, at=_PINNED_OPENING_AT):
+    """Re-stamp the factory opening assertion to a controlled instant; return it.
+
+    The shared builder ``tests/_test_helpers.restamp_opening_assertion``, which
+    the cash-walk suite uses for the same reason: an event stream whose anchor
+    is the wall clock is not a deterministic fixture.
+    """
+    restamp_opening_assertion(_db.session, account, at)
+    return at
+
+
+def _origin_day(account):
+    """Return the civil day the factory origination assertion is ABOUT.
+
+    The day the partition actually reads (``AccountAnchorHistory.observed_on``),
+    which is what a fixture placing a settle "the day before" or "the day
+    after" the opening must offset from.
+
+    **It is NOT the origination's ``created_at``, and that distinction is this
+    helper's whole reason to exist** (finding N-133, the review of the F1
+    revert).  The two were the same day by construction while ``observed_on``
+    was DERIVED from ``created_at``; plan step 2 made it a stored column and
+    ``create_account_of_type`` began opening its accounts the day BEFORE today,
+    so a fixture offsetting from ``created_at`` by one day landed on the
+    opening's OWN day and silently graded the opposite case.  Measured on two
+    tests here: ``test_a_settle_on_an_earlier_day_is_inside_the_opening`` and
+    ``test_transfer_attribution_uses_income_shadow_day`` both stopped
+    testing the strictly-earlier arm their docstrings name.  Offsetting from
+    the day the rule reads makes the fixture say what it means.
     """
     row = (
         _db.session.query(AccountAnchorHistory)
         .filter_by(account_id=account.id)
-        .order_by(AccountAnchorHistory.created_at, AccountAnchorHistory.id)
+        .order_by(AccountAnchorHistory.observed_on, AccountAnchorHistory.id)
         .first()
     )
-    return row.created_at.astimezone(timezone.utc)
+    return row.observed_on
 
 
 def _add_assertion(account, balance, created_at):
     """Append a true-up ``AccountAnchorHistory`` row at a controlled instant.
 
     Mirrors ``anchor_service.stage_anchor_true_up`` (history row + the
-    ``current_anchor_*`` cache write) but pins ``created_at`` explicitly so
-    the moment partition under test is exact.  Anchors against the
-    account's current anchor period (the fixture bootstrap).  Flushes.
+    ``current_anchor_*`` cache write) but pins ``created_at`` explicitly, with
+    ``observed_on`` derived from it, so the civil-day partition under test is
+    exact.  Anchors against the account's current anchor period (the fixture
+    bootstrap).  Flushes.
     """
     row = AccountAnchorHistory(
         account_id=account.id,
         pay_period_id=account.current_anchor_period_id,
         anchor_balance=Decimal(str(balance)),
         created_at=created_at,
+        # The civil day this assertion is the closing balance FOR, kept in step
+        # with the pinned instant by the shared rule (ruling R-DH, plan step 2).
+        observed_on=observed_day_of(created_at),
     )
     account.current_anchor_balance = Decimal(str(balance))
     _db.session.add(row)
@@ -161,9 +210,9 @@ def _settle_expense(seed_user, account, amount, paid_at):
     test), pinned BEFORE the ledger emission so the posted entry and the
     walk's attribution agree, as in production (the C6 effect-time
     self-heal reads the emitted ``entry_date``s).  The transaction is
-    placed in the seed bootstrap period; the walk attributes by instant,
-    so the period placement is immaterial except for the NULL-``paid_at``
-    fallback.
+    placed in the seed bootstrap period; the walk attributes by the
+    ``paid_at``'s DISPLAY-timezone civil day (ruling R-DH), so the period
+    placement is immaterial except for the NULL-``paid_at`` fallback.
     """
     return create_settled_cash_transaction(
         seed_user, _db.session, seed_user["bootstrap_period"],
@@ -172,12 +221,22 @@ def _settle_expense(seed_user, account, amount, paid_at):
 
 
 # ---------------------------------------------------------------------------
-# walk_account_ledger -- the moment partition (the core)
+# walk_account_ledger -- the civil-day partition (the core)
 # ---------------------------------------------------------------------------
 
 
 class TestWalkAccountLedger:
-    """The pure walk partitions sources by instant and resets at assertions."""
+    """The pure walk partitions sources by CIVIL DAY and resets at assertions.
+
+    The day is the user's (``America/New_York``) and an assertion is the
+    closing balance for it -- EVERY assertion, opening and true-up alike --
+    ruling R-DH, ``docs/audits/balance_architecture/anchor_settle_partition.md``.
+    It was an INSTANT partition until 2026-07-31, which decided the question by
+    which button the user pressed first and cost production $4,001.42; the
+    OPENING then carried an exception for one day, until finding N-133 / F1
+    scored it against four months of that same account and found it the
+    second-worst correction in the history.
+    """
 
     def test_opening_only_walk(self, app, db, seed_user):
         """A fresh account walks to one opening correction from zero.
@@ -206,17 +265,18 @@ class TestWalkAccountLedger:
         ledger_before is -200.00 (and its delta 500 - (-200) = +700.00 -- the
         anchor already reflected that spend).
 
-        **The boundary is a DAY and it is strict for an OPENING** (ruling R-DH,
-        as amended 2026-07-31): an opening is where TRACKING STARTS, so only
-        strictly earlier days are inside it, and its own day's sources ride on
-        top.  The fixture moved from "one hour before" to "one day before" for
-        that reason -- an hour is not a unit this partition has any more.
+        **The boundary is a DAY, inclusive, for every assertion kind** (ruling
+        R-DH (a)).  This case is the strictly-earlier one, which no variant of
+        the rule has ever disputed; the opening's OWN day is the case
+        :meth:`test_a_settle_on_the_openings_own_day_is_absorbed_either_order`
+        pins.  The fixture moved from "one hour before" to "one day before"
+        because an hour is not a unit this partition has any more.
         """
         with app.app_context():
             account = _make_account(seed_user, "500.00")
-            origin = _origin_instant(account)
+            origin = _origin_day(account)
             _settle_expense(
-                seed_user, account, "200.00", origin - timedelta(days=1),
+                seed_user, account, "200.00", settle_instant_on(origin - timedelta(days=1)),
             )
             _db.session.commit()
 
@@ -226,36 +286,70 @@ class TestWalkAccountLedger:
             assert len(corrections) == 1
             assert corrections[0].ledger_before == Decimal("-200.00")
 
-    def test_a_settle_on_the_openings_own_day_rides_on_top(
-        self, app, db, seed_user,
+    @pytest.mark.parametrize(
+        "offset, label",
+        [(_ONE_HOUR, "an hour AFTER"), (-_ONE_HOUR, "an hour BEFORE")],
+        ids=["recorded_after", "recorded_before"],
+    )
+    def test_a_settle_on_the_openings_own_day_is_absorbed_either_order(
+        self, app, db, seed_user, offset, label,
     ):
-        """A settle dated the opening's OWN day is NOT absorbed.
+        """A settle dated the opening's OWN day is ABSORBED, either order.
 
-        Savings anchored $500.00; a $200.00 expense settled an hour after the
-        origination assertion -- the same civil day: the opening's
-        ledger_before stays 0.00 and the settle rides on top of the asserted
-        balance.
+        Savings anchored $500.00 with its opening pinned to 12:00 EDT; a $200.00
+        expense settled an hour after it, and again an hour before it -- both the
+        SAME civil day.  The opening's ``ledger_before`` is -200.00 both times:
+        the settle is inside the asserted balance, so the opening's own delta is
+        ``500 - (-200) = +700.00`` and the walk lands on $500.00, the balance
+        the user typed.
 
-        **This is the opening's half of ruling R-DH** (as amended 2026-07-31).
-        A TRUE-UP would absorb this row, because a true-up is the day's closing
-        balance; an OPENING must not, or a brand-new account silently discards
-        the balance the user just typed -- assert an opening of $500 and record
-        a $200 expense the same day, and absorbing it would answer $500 for an
-        account holding $300.
+        **This is ruling R-DH (a) with no exception for the opening** (finding
+        N-133 / F1, ruled 2026-07-31).  An assertion is the CLOSING balance for
+        its civil day, opening and true-up alike.  The opening carried an
+        exception for one day -- it rode on top of its own day's sources -- and
+        the exception was reverted once scored against production: on the
+        developer's real Checking, four settles share the opening's civil day
+        and stacking them on top made the walk read $4,804.00 for a day the bank
+        showed $2,746.58, then book a -$1,986.16 correction at the next
+        assertion where absorbing them books +$71.26.
+
+        **Both directions, because the rule is about the DAY and not the order**
+        (F2, finding N-133).  Under the CURRENT walk the two parameters feed
+        byte-identical inputs -- ``_source_net_days`` aggregates a day's sources
+        to one ``(day, net)`` pair before the partition runs, so the settle's
+        time of day is gone by then -- and the pair is therefore regression
+        insurance rather than two live cases: it is what fails first if an
+        instant partition is ever reintroduced, at the assertion where R-DH's
+        residual is largest.  Saying that plainly beats implying a
+        discrimination the code cannot currently make.
+
+        **This test could not fail before 2026-07-31.**  It passed
+        ``origin + timedelta(days=1)`` while claiming "an hour after -- the same
+        civil day", so it graded a settle on a LATER day, which rides on top
+        under either rule.  The day offset was not careless -- the origination's
+        instant is the ambient wall clock, so an hour offset really can cross
+        midnight -- which is why the fix is a PINNED opening rather than a
+        smaller offset.
         """
         with app.app_context():
             account = _make_account(seed_user, "500.00")
-            origin = _origin_instant(account)
-            _settle_expense(
-                seed_user, account, "200.00", origin + timedelta(days=1),
+            pinned = _pin_opening(account)
+            settle = _settle_expense(
+                seed_user, account, "200.00", pinned + offset,
             )
             _db.session.commit()
+
+            # The precondition the whole case rests on: ONE civil day for both
+            # events.  Without it this grades a different partition entirely,
+            # which is the defect being repaired here.
+            assert to_display_date(pinned) == _PINNED_OPENING_DAY, label
+            assert to_display_date(settle.paid_at) == _PINNED_OPENING_DAY, label
 
             corrections = account_posting_service.walk_account_ledger(
                 account.id, seed_user["scenario"].id,
             )
             assert len(corrections) == 1
-            assert corrections[0].ledger_before == Decimal("0.00")
+            assert corrections[0].ledger_before == Decimal("-200.00"), label
 
     def test_null_paid_at_falls_back_to_period_start(
         self, app, db, seed_user,
@@ -277,10 +371,10 @@ class TestWalkAccountLedger:
             )
             assert corrections[0].ledger_before == Decimal("-200.00")
 
-    def test_transfer_attribution_uses_income_shadow_instant(
+    def test_transfer_attribution_uses_income_shadow_day(
         self, app, db, seed_user,
     ):
-        """A transfer is attributed by its INCOME shadow's settled day.
+        """A transfer is attributed by its INCOME shadow's settled civil day.
 
         Two Checking -> Savings transfers into a $500.00-anchored Savings:
         $50.00 settled the day BEFORE the origination assertion (absorbed) and
@@ -288,22 +382,21 @@ class TestWalkAccountLedger:
         therefore exactly +50.00.
 
         The offsets are DAYS since ruling R-DH (2026-07-31): the partition
-        reads a civil day, and an opening absorbs only strictly earlier ones,
-        so an hour before the assertion is the opening's OWN day and would be
-        counted the other way.
+        reads a civil day, so an hour before the assertion is the SAME day and
+        would no longer discriminate the two sides this test is about.
         """
         with app.app_context():
             account = _make_account(seed_user, "500.00")
-            origin = _origin_instant(account)
+            origin = _origin_day(account)
             create_settled_transfer(
                 seed_user, _db.session, seed_user["account"], account,
                 seed_user["bootstrap_period"], amount=Decimal("50.00"),
-                paid_at=origin - timedelta(days=1),
+                paid_at=settle_instant_on(origin - timedelta(days=1)),
             )
             create_settled_transfer(
                 seed_user, _db.session, seed_user["account"], account,
                 seed_user["bootstrap_period"], amount=Decimal("150.00"),
-                paid_at=origin + timedelta(days=1), name="Post-anchor",
+                paid_at=settle_instant_on(origin + timedelta(days=1)), name="Post-anchor",
             )
             _db.session.commit()
 
@@ -337,15 +430,15 @@ class TestWalkAccountLedger:
         """
         with app.app_context():
             account = _make_account(seed_user, "500.00")
-            origin = _origin_instant(account)
+            origin = _origin_day(account)
             _settle_expense(
-                seed_user, account, "200.00", origin + timedelta(days=1),
+                seed_user, account, "200.00", settle_instant_on(origin + timedelta(days=1)),
             )
             _add_assertion(
-                account, "350.00", origin + timedelta(days=2),
+                account, "350.00", settle_instant_on(origin + timedelta(days=2)),
             )
             _settle_expense(
-                seed_user, account, "100.00", origin + timedelta(days=3),
+                seed_user, account, "100.00", settle_instant_on(origin + timedelta(days=3)),
             )
             _db.session.commit()
 
@@ -358,25 +451,63 @@ class TestWalkAccountLedger:
             assert corrections[1].anchor.is_opening is False
             assert corrections[1].ledger_before == Decimal("300.00")
 
-    def test_same_instant_settle_is_absorbed(self, app, db, seed_user):
-        """A settle at EXACTLY the assertion instant is absorbed (<= is inclusive).
+    def test_two_assertions_on_one_day_both_absorb_it_in_recording_order(
+        self, app, db, seed_user,
+    ):
+        """One civil day, both assertion kinds, ONE rule -- and the tie-break.
 
-        Savings anchored $500.00; a $75.00 expense whose paid_at EQUALS the
-        true-up's created_at (T+2h); the true-up asserts $425.00.  Absorbed:
-        ledger_before 500 - 75 = 425.00 (a strict < partition would report
-        500.00 and book a spurious -75.00 correction).
+        Savings anchored $500.00 with its opening pinned to 12:00 EDT; a $75.00
+        expense two hours later; a TRUE-UP asserting $425.00 an hour after that.
+        All three share one civil day.  Both assertions close that day, so the
+        day's sources walk FIRST and each assertion resets over what it finds:
+
+          opening: ledger_before -75.00   (the $75 is inside the $500 typed)
+          true-up: ledger_before 500.00   (the opening's reset, nothing after)
+
+        **This is the discriminating control for ruling R-DH (a), and each
+        figure is broken by a different mutant.**  Give the OPENING back its
+        one-day-old exception and the first reads 0.00; drop the reset that
+        makes each assertion supersede the walked total and the second reads
+        -75.00.  (Making the TRUE-UP alone ride on top does NOT move the second
+        figure -- the opening has already consumed the day's source through the
+        monotonic pointer -- so that arm is covered by the sibling above, not
+        here.)  It also pins
+        the same-day tie-break the rule depends on: two assertions about one day
+        apply in RECORDING order and the last is that day's closing balance,
+        which is why the true-up sees the opening's $500.00 rather than the
+        other way round.
+
+        It was named ``test_same_instant_settle_is_absorbed`` -- the vocabulary
+        of the INSTANT partition ruling R-DH deleted on 2026-07-31 -- and then
+        ``test_a_trueup_absorbs_a_settle_the_opening_rode_on_top_of``, for the
+        amendment reverted at finding N-133 / F1.  Both names described a rule
+        the code no longer has.
         """
         with app.app_context():
             account = _make_account(seed_user, "500.00")
-            instant = _origin_instant(account) + timedelta(hours=2)
-            _settle_expense(seed_user, account, "75.00", instant)
-            _add_assertion(account, "425.00", instant)
+            pinned = _pin_opening(account)
+            settle = _settle_expense(
+                seed_user, account, "75.00", pinned + 2 * _ONE_HOUR,
+            )
+            _add_assertion(account, "425.00", pinned + 3 * _ONE_HOUR)
             _db.session.commit()
+
+            # ONE civil day for all three events -- the precondition that makes
+            # the two figures below a statement about the RULE rather than
+            # about their dates.
+            assert to_display_date(pinned) == _PINNED_OPENING_DAY
+            assert to_display_date(settle.paid_at) == _PINNED_OPENING_DAY
+            assert to_display_date(
+                pinned + 3 * _ONE_HOUR,
+            ) == _PINNED_OPENING_DAY
 
             corrections = account_posting_service.walk_account_ledger(
                 account.id, seed_user["scenario"].id,
             )
-            assert corrections[1].ledger_before == Decimal("425.00")
+            assert corrections[0].anchor.is_opening is True
+            assert corrections[0].ledger_before == Decimal("-75.00")
+            assert corrections[1].anchor.is_opening is False
+            assert corrections[1].ledger_before == Decimal("500.00")
 
     def test_reverted_source_drops_out(self, app, db, seed_user):
         """A reverted settle nets to zero in the ledger and leaves the walk.
@@ -390,12 +521,12 @@ class TestWalkAccountLedger:
         """
         with app.app_context():
             account = _make_account(seed_user, "500.00")
-            origin = _origin_instant(account)
+            origin = _origin_day(account)
             txn = _settle_expense(
-                seed_user, account, "200.00", origin + timedelta(days=1),
+                seed_user, account, "200.00", settle_instant_on(origin + timedelta(days=1)),
             )
             posting_service.sync_transaction_postings(txn, settled=False)
-            _add_assertion(account, "480.00", origin + timedelta(days=2))
+            _add_assertion(account, "480.00", settle_instant_on(origin + timedelta(days=2)))
             _db.session.commit()
 
             corrections = account_posting_service.walk_account_ledger(
@@ -440,8 +571,8 @@ class TestSyncAccountAnchorPostings:
 
         Savings anchored $500.00: ONE ``account_opening`` entry with legs
         linked +500.00 / anchor-equity -500.00 (both kind ``opening``), both
-        concrete source FKs NULL, ``entry_date`` the assertion instant's UTC
-        civil date, and ``pay_period_id`` the history row's own period.
+        concrete source FKs NULL, ``entry_date`` the assertion's stored
+        ``observed_on``, and ``pay_period_id`` the history row's own period.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -481,8 +612,14 @@ class TestSyncAccountAnchorPostings:
                 .one()
             )
             assert entry.pay_period_id == history_row.pay_period_id
-            assert entry.entry_date == (
-                history_row.created_at.astimezone(timezone.utc).date()
+            # The correction is dated the day the assertion is the CLOSING
+            # BALANCE for -- the stored ``observed_on``, read rather than
+            # re-derived from ``created_at`` (ruling R-DH, plan step 2).  The
+            # two are independent since the column shipped: this account's
+            # opening is observed YESTERDAY while its row was recorded today.
+            assert entry.entry_date == history_row.observed_on
+            assert history_row.observed_on != to_display_date(
+                history_row.created_at,
             )
             assert _correction_entries(
                 account.id, scenario_id, PostingSourceEnum.ACCOUNT_TRUEUP,
@@ -546,13 +683,13 @@ class TestSyncAccountAnchorPostings:
         with app.app_context():
             scenario_id = seed_user["scenario"].id
             account = _make_account(seed_user, "500.00")
-            origin = _origin_instant(account)
+            origin = _origin_day(account)
             _settle_expense(
-                seed_user, account, "200.00", origin + timedelta(days=1),
+                seed_user, account, "200.00", settle_instant_on(origin + timedelta(days=1)),
             )
-            _add_assertion(account, "350.00", origin + timedelta(days=2))
+            _add_assertion(account, "350.00", settle_instant_on(origin + timedelta(days=2)))
             _settle_expense(
-                seed_user, account, "100.00", origin + timedelta(days=3),
+                seed_user, account, "100.00", settle_instant_on(origin + timedelta(days=3)),
             )
             _db.session.commit()
 
@@ -598,13 +735,13 @@ class TestSyncAccountAnchorPostings:
         with app.app_context():
             scenario_id = seed_user["scenario"].id
             account = _make_account(seed_user, "500.00")
-            origin = _origin_instant(account)
+            origin = _origin_day(account)
             txn = _settle_expense(
-                seed_user, account, "200.00", origin + timedelta(days=1),
+                seed_user, account, "200.00", settle_instant_on(origin + timedelta(days=1)),
             )
-            _add_assertion(account, "350.00", origin + timedelta(days=2))
+            _add_assertion(account, "350.00", settle_instant_on(origin + timedelta(days=2)))
             _settle_expense(
-                seed_user, account, "100.00", origin + timedelta(days=3),
+                seed_user, account, "100.00", settle_instant_on(origin + timedelta(days=3)),
             )
             account_posting_service.sync_account_anchor_postings(
                 account.id, scenario_id,
@@ -639,9 +776,11 @@ class TestSyncAccountAnchorPostings:
     ):
         """A true-up whose walked delta becomes zero reverses via its empty-target key.
 
-        Anchor 500; a $200.00 expense paid T+1h; true-up 350.00 at T+2h
+        Anchor 500; a $200.00 expense dated T+1d; true-up 350.00 on T+2d
         posts +50.00 (ledger_before 300).  The user then reverts the $200
-        and instead settles $150.00 paid T+1.5h (still pre-true-up).  The
+        and instead settles $150.00, also dated T+1d (still strictly before
+        the true-up's day, which is what "pre-true-up" means now that the
+        partition reads civil days rather than instants).  The
         C6 effect-time self-heal reconciles at EACH mutation, landing the
         ledger exactly on the anchor at every step:
 
@@ -661,12 +800,12 @@ class TestSyncAccountAnchorPostings:
         with app.app_context():
             scenario_id = seed_user["scenario"].id
             account = _make_account(seed_user, "500.00")
-            origin = _origin_instant(account)
+            origin = _origin_day(account)
             txn = _settle_expense(
-                seed_user, account, "200.00", origin + timedelta(days=1),
+                seed_user, account, "200.00", settle_instant_on(origin + timedelta(days=1)),
             )
             trueup_row = _add_assertion(
-                account, "350.00", origin + timedelta(days=2),
+                account, "350.00", settle_instant_on(origin + timedelta(days=2)),
             )
             account_posting_service.sync_account_anchor_postings(
                 account.id, scenario_id,
@@ -676,7 +815,7 @@ class TestSyncAccountAnchorPostings:
             posting_service.sync_transaction_postings(txn, settled=False)
             _settle_expense(
                 seed_user, account, "150.00",
-                origin + timedelta(days=1, minutes=30),
+                settle_instant_on(origin + timedelta(days=1)),
             )
             account_posting_service.sync_account_anchor_postings(
                 account.id, scenario_id,
@@ -719,12 +858,12 @@ class TestSyncAccountAnchorPostings:
         with app.app_context():
             scenario_id = seed_user["scenario"].id
             account = _make_account(seed_user, "500.00")
-            origin = _origin_instant(account)
+            origin = _origin_day(account)
             _settle_expense(
-                seed_user, account, "200.00", origin + timedelta(days=1),
+                seed_user, account, "200.00", settle_instant_on(origin + timedelta(days=1)),
             )
             trueup_row = _add_assertion(
-                account, "350.00", origin + timedelta(days=2),
+                account, "350.00", settle_instant_on(origin + timedelta(days=2)),
             )
             account_posting_service.sync_account_anchor_postings(
                 account.id, scenario_id,
@@ -761,19 +900,23 @@ class TestSyncAccountAnchorPostings:
     ):
         """Two same-UTC-day true-ups merge to one target on the LATER value.
 
-        Both assertions sit on one future UTC day (06:00 and 07:00, so no
-        midnight crossing): $600.00 then $550.00 on a $500.00-anchored
-        account.  Their deltas +100.00 and -50.00 share the (trueup, day)
-        key and merge to ONE +50.00 entry; the ledger lands on 550.00.
+        Both assertions sit on ONE future civil day, an hour apart: $600.00
+        then $550.00 on a $500.00-anchored account.  Their deltas +100.00 and
+        -50.00 share the (trueup, day) key and merge to ONE +50.00 entry; the
+        ledger lands on 550.00.
+
+        Noon UTC plus an hour is provably one ``America/New_York`` day (08:00
+        and 09:00 EDT), which is the property the merge turns on -- the pair
+        must not straddle midnight in the zone the partition reads.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
             account = _make_account(seed_user, "500.00")
-            day = (_origin_instant(account) + timedelta(days=30)).replace(
-                hour=6, minute=0, second=0, microsecond=0,
-            )
+            day = settle_instant_on(_origin_day(account) + timedelta(days=30))
             _add_assertion(account, "600.00", day)
-            _add_assertion(account, "550.00", day + timedelta(hours=1))
+            _add_assertion(account, "550.00", day + _ONE_HOUR)
+            # The precondition the merge rests on: ONE civil day for both.
+            assert to_display_date(day) == to_display_date(day + _ONE_HOUR)
             _db.session.commit()
 
             account_posting_service.sync_account_anchor_postings(
@@ -850,12 +993,12 @@ class TestSyncEntryPoints:
             _db.session.add(what_if)
             _db.session.flush()
             account = _make_account(seed_user, "500.00")
-            origin = _origin_instant(account)
+            origin = _origin_day(account)
             txn = create_settled_cash_transaction(
                 seed_user, _db.session, seed_user["bootstrap_period"],
                 Decimal("40.00"), account=account, scenario=what_if,
             )
-            txn.paid_at = origin + timedelta(days=1)
+            txn.paid_at = settle_instant_on(origin + timedelta(days=1))
             _db.session.commit()
 
             account_posting_service.sync_account_anchor_postings_all_scenarios(

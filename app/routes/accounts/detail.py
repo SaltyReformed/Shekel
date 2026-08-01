@@ -397,15 +397,19 @@ def _cash_detail_context(account: Account) -> dict:
         "is_interest": is_interest,
         "current_balance": current_balance,
         "current_period": current_period,
-        # ``anchor_as_of`` is the anchor EVENT instant
-        # (``AnchorPoint.created_at``, the dated ``AccountAnchorHistory`` row),
-        # NOT the anchor period's start date -- fixing the audit's finding #2
-        # (a mid-period true-up used to show the period start instead of the
-        # true-up date).  It is passed as the stored UTC INSTANT (not the
-        # UTC-day ``as_of_date``) so the template renders it in the user's
-        # display timezone via ``local_datetime`` -- a late-evening-Eastern
-        # anchor otherwise shows on the next UTC day.
-        "anchor_as_of": anchor.created_at if anchor is not None else None,
+        # ``anchor_as_of`` is the day the asserted balance was TRUE
+        # (``AnchorPoint.observed_on``), NOT the anchor period's start date --
+        # fixing the audit's finding #2 (a mid-period true-up used to show the
+        # period start instead of the true-up date).
+        #
+        # It reads the BUSINESS day, not the recording instant (ruling R-DH,
+        # plan step 2).  The two were the same day by construction until
+        # ``observed_on`` became user-supplied; now an account back-dated to
+        # 2026-01-01 would caption "anchored Jul 31" off ``created_at`` while
+        # the engine treats the balance as Jan 1's closing balance.  The
+        # template renders a plain date, so no timezone conversion applies --
+        # the day is already the user's.
+        "anchor_as_of": anchor.observed_on if anchor is not None else None,
         "horizons": _build_horizons(
             current_balance, current_period, all_periods, balances,
         ),

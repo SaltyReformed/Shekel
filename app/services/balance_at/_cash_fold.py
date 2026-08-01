@@ -852,8 +852,9 @@ def _cash_sums(
     """Return ``{period_id: net}`` on the CASH clock -- what MOVED in the period.
 
     The same rows :func:`_budget_legs` groups by budget column, grouped instead
-    by the day each one's money moves: a settled row on the civil day its
-    attribution instant fell on, a planned row on the day ruling R-G lands it.
+    by the day each one's money moves: a settled row on its ``settled_on``
+    (``paid_at``'s display-timezone civil day, resolved once on the fact --
+    ruling R-DH), a planned row on the day ruling R-G lands it.
     Assertions are NOT here -- they are :func:`_assertion_sums`, because an
     assertion is not a row.
 

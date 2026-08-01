@@ -236,7 +236,7 @@ def contribution_events(
             classifier and its ``user_id`` the period calendar.
         scenario_id: The budget scenario the recorded contributions live in.
         inputs: The account's :class:`ContributionInputs`.
-        accrual_start: The latest assertion's UTC civil day -- the boundary
+        accrual_start: The latest assertion's ``observed_on`` -- the boundary
             :func:`_dated_events` admits an event strictly after (ruling R-Z).
 
     Returns:
@@ -296,7 +296,7 @@ def _dated_events(
             ``period_index``), and the whole calendar rather than a caller's
             window -- the year-boundary reset and the limit accounting are
             wrong over a slice.
-        accrual_start: The latest assertion's UTC civil day.
+        accrual_start: The latest assertion's ``observed_on``.
 
     Returns:
         ``[(payday, amount), ...]`` in period order, one entry per period that

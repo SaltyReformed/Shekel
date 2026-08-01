@@ -51,6 +51,7 @@ from app.models.account import AccountAnchorHistory
 from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
 from app.services.cash_ledger import AnchorPoint, resolve_anchor
+from app.utils.dates import display_today
 
 
 class _LogCapture:
@@ -95,6 +96,9 @@ def _make_anchor_history(
         pay_period_id=pay_period_id,
         anchor_balance=anchor_balance,
         notes=notes,
+        # No explicit instant: the row means "asserted now", so its business
+        # day is today in the USER's zone (ruling R-DH (b)).
+        observed_on=display_today(),
     )
     db.session.add(history)
     db.session.flush()
@@ -404,7 +408,7 @@ class TestAnchorPointDataclass:
         anchor = AnchorPoint(
             balance=Decimal("100.00"),
             period=period,
-            as_of_date=_date(2026, 1, 1),
+            observed_on=_date(2026, 1, 1),
             created_at=_datetime(2026, 1, 1, 12, tzinfo=_timezone.utc),
         )
         with pytest.raises(FrozenInstanceError):

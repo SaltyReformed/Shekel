@@ -124,7 +124,7 @@ def field_is_disabled(html: str, field_name: str) -> bool:
     return "disabled" in html[idx:tag_end]
 
 
-def freeze_today(monkeypatch, target_date, modules=None):
+def freeze_today(monkeypatch, target_date, modules=None, at_time=None):
     """Patch ``date.today()`` and ``datetime.now()`` to ``target_date``.
 
     Production services import ``date`` (and sometimes ``datetime``) at
@@ -135,8 +135,22 @@ def freeze_today(monkeypatch, target_date, modules=None):
 
     Patches BOTH ``date`` and ``datetime`` so that test helpers using
     ``datetime.now() - timedelta(days=N)`` align with production code
-    using ``date.today()``.  ``datetime.now()`` returns midnight UTC
-    of ``target_date`` (timezone-aware when ``tz`` is passed).
+    using ``date.today()``.  ``datetime.now()`` returns NOON of
+    ``target_date`` (timezone-aware when ``tz`` is passed).
+
+    **Noon, not midnight, and the DATABASE half of this freeze has always
+    said so.**  :func:`_freeze_db_clock` pins PostgreSQL's clock with
+    :func:`settle_instant_on` -- noon UTC -- precisely "so the frozen date the
+    test reads from ``date.today()`` and the date the app RENDERS for these
+    rows are the same date".  This half used MIDNIGHT UTC, which is the
+    previous EVENING in ``America/New_York``: under ruling R-DH (b) every
+    display-timezone reader (``app.utils.dates.display_today``, the analytics
+    tax year, the loan YTD chips, and since plan step 2 the day an anchor
+    assertion is filed under) then answered ``target_date - 1``.  Two halves of
+    one freeze, twelve hours and one civil date apart, with the rule stated
+    correctly in one of them.  It is finding N-132's shape a sixth time --
+    midnight UTC used to MEAN a civil day -- and it is fixed here rather than
+    worked around at each reader.
 
     Args:
         monkeypatch:
@@ -154,6 +168,15 @@ def freeze_today(monkeypatch, target_date, modules=None):
             that imported ``date`` inline, and ``tests.conftest``
             itself, ensuring all layers see the same frozen "today".
             Pass an explicit tuple to patch only specific modules.
+        at_time:
+            Optional wall time on ``target_date`` for the frozen ``now``,
+            overriding the noon default.  For a test that means a specific
+            INSTANT rather than a day -- the New Year boundary cases, where
+            ``time.min`` (midnight UTC) is deliberately the previous EVENING in
+            the display timezone.  Saying it beats relying on the default: the
+            boundary tests read midnight out of this helper as an undocumented
+            implementation detail, and one of their own siblings already hand-
+            rolled a stub because the helper offered no way to ask.
     """
     # Custom metaclass so ``isinstance(real_date_obj, _FrozenDate)``
     # returns True.  Without this, production code that does
@@ -175,8 +198,14 @@ def freeze_today(monkeypatch, target_date, modules=None):
             """Return the frozen date instead of the wall-clock date."""
             return target_date
 
+    # Noon by default, so this half agrees with ``_freeze_db_clock``'s -- see
+    # the docstring.  Naive here because ``now(tz=None)`` must stay naive; the
+    # ``tz``-aware branch below stamps it without shifting the wall time, which
+    # is the same instant ``settle_instant_on`` builds for a UTC caller.
     target_datetime = _real_datetime.combine(
-        target_date, _real_datetime.min.time()
+        target_date,
+        at_time if at_time is not None
+        else _real_datetime.min.time().replace(hour=12),
     )
 
     class _DateTimeMeta(type(_real_datetime)):
@@ -190,19 +219,19 @@ def freeze_today(monkeypatch, target_date, modules=None):
 
         @classmethod
         def now(cls, tz=None):
-            """Return midnight of target_date (with tz if provided)."""
+            """Return noon of target_date (with tz if provided)."""
             if tz is None:
                 return target_datetime
             return target_datetime.replace(tzinfo=tz)
 
         @classmethod
         def utcnow(cls):
-            """Return midnight UTC of target_date (naive, like real utcnow)."""
+            """Return noon UTC of target_date (naive, like real utcnow)."""
             return target_datetime
 
         @classmethod
         def today(cls):
-            """Return midnight of target_date."""
+            """Return noon of target_date."""
             return target_datetime
 
     date_modules = None
@@ -1035,6 +1064,13 @@ def create_loan_account(
             anchor_period_id=(
                 anchor_period.id if anchor_period is not None else None
             ),
+            # ``observed_on`` is left to the factory (today).  A loan's balance
+            # is ledger-derived from dated ``LoanAnchorEvent`` rows, not from
+            # this cash assertion, so the civil-day partition R-DH governs does
+            # not reach it -- and the suites that DO care restamp the opening
+            # themselves.  Recorded rather than "fixed": a blanket day-before
+            # default here trips the create-time floor for a fixture whose pay
+            # periods start today or later.
         ),
     )
     db_session.add(account)
@@ -1234,6 +1270,9 @@ def create_savings_account(
         "account_type_id": savings_type.id,
         "name": name,
         "anchor_balance": anchor_balance,
+        # ``observed_on`` is left to the factory (today).  See
+        # ``create_loan_account`` for why this helper does not take
+        # ``create_account_of_type``'s day-before default.
     }
     if anchor_period_id is not None:
         spec_kwargs["anchor_period_id"] = anchor_period_id
@@ -1351,6 +1390,7 @@ _LEDGER_SUITE_ANCHOR_BALANCE = Decimal("100.00")
 
 def create_account_of_type(
     seed_user, db_session, type_name, name, anchor_balance=None,
+    observed_on=None,
 ):
     """Create an account of any built-in type via the canonical factory.
 
@@ -1363,8 +1403,21 @@ def create_account_of_type(
     defaults to a fixed sentinel (the ledger-pairing suites assert on
     pairing, never on balance); the Step-5 account-anchor suites pass an
     explicit ``anchor_balance`` because the opening correction posts exactly
-    that value.  The anchor period is resolved by the factory from the
-    user's pay periods.
+    that value.  The anchor period is resolved by the factory from the day the
+    opening is observed on.
+
+    **The opening defaults to the day BEFORE today, and that default is the
+    point** (ruling R-DH (a), finding N-133 / F1).  An assertion is the CLOSING
+    balance for its civil day, so a settle dated that same day is INSIDE it --
+    and the ordinary settle idiom in these suites is ``paid_at =
+    db.func.now()``, which under a frozen clock is TODAY.  An account opened
+    "today" therefore swallows every settle the test then records, and the
+    fixture stops exercising the thing it names.  Opening the account
+    yesterday is the production shape (an account exists before money moves in
+    it) and makes "and then things happened" true in the data rather than only
+    in the docstring.  A test that specifically needs a settle on the opening's
+    OWN day passes ``observed_on`` explicitly, which is the honest way to ask
+    for the case rather than inheriting it by accident.
 
     Args:
         seed_user: The ``seed_user`` fixture dict.
@@ -1374,6 +1427,8 @@ def create_account_of_type(
         name: The account name.
         anchor_balance: Optional opening anchor balance (``Decimal``);
             ``None`` uses the ledger-suite sentinel.
+        observed_on: Optional civil day the opening balance was TRUE.
+            Defaults to the DAY BEFORE the frozen today -- see below.
 
     Returns:
         The created :class:`~app.models.account.Account` (flushed,
@@ -1383,8 +1438,10 @@ def create_account_of_type(
     # symbols at top level (its collection-time-safety convention); load
     # the models / service lazily, the same way the factory helpers above do.
     # pylint: disable=import-outside-toplevel
+    from datetime import timedelta
     from app.models.ref import AccountType
     from app.services import account_service
+    from app.utils.dates import display_today
 
     acct_type = (
         db_session.query(AccountType).filter_by(name=type_name).one()
@@ -1397,6 +1454,10 @@ def create_account_of_type(
             anchor_balance=(
                 _LEDGER_SUITE_ANCHOR_BALANCE if anchor_balance is None
                 else anchor_balance
+            ),
+            observed_on=(
+                display_today() - timedelta(days=1)
+                if observed_on is None else observed_on
             ),
         ),
     )
@@ -2689,6 +2750,41 @@ def add_txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     return txn
 
 
+def observed_day_of(instant):
+    """Return the civil day an assertion stamped at ``instant`` is ABOUT.
+
+    The ONE place the test helpers state how a pinned recording instant maps to
+    an ``AccountAnchorHistory.observed_on``, and every anchor builder below
+    routes through it.
+
+    **Why the helpers derive it rather than take it.**  ``observed_on`` is a
+    stored, user-supplied column since plan step 2 (ruling R-DH), so a fixture
+    CAN set the two independently -- and a handful deliberately should, because
+    "the user corrected an anchor's date" is now a reachable state.  But every
+    fixture written before the column existed meant "an assertion recorded at
+    instant X, about the day X falls on", and each of their hand-computed
+    figures depends on that.  Deriving keeps all of them valid unchanged;
+    a fixture that wants the two APART says so explicitly, which is exactly the
+    right way round for a state that used to be unreachable.
+
+    It is the display-timezone day, not the UTC one (ruling R-DH (b)): midnight
+    UTC is the previous EVENING in Eastern, and a fixture that took the UTC day
+    would file a late-evening assertion in the next pay period -- the N-132
+    shape this suite has now been bitten by five times.
+
+    Args:
+        instant: The aware-UTC instant the assertion is stamped at.
+
+    Returns:
+        The :class:`datetime.date` the assertion is the closing balance for.
+    """
+    # pylint: disable=import-outside-toplevel  -- same circular-dep
+    # avoidance as the loan helpers above.
+    from app.utils.dates import to_display_date
+
+    return to_display_date(instant)
+
+
 def add_anchor_history(db_session, account, period, balance, days_ago=0):
     """Append an :class:`AccountAnchorHistory` row ``days_ago`` before now.
 
@@ -2723,6 +2819,7 @@ def add_anchor_history(db_session, account, period, balance, days_ago=0):
         pay_period_id=period.id,
         anchor_balance=Decimal(str(balance)),
         created_at=created,
+        observed_on=observed_day_of(created),
     )
     db_session.add(entry)
     db_session.flush()
@@ -2780,19 +2877,21 @@ def override_anchor(db_session, account, period, balance, *, notes, at=None):
     from app.models.account import AccountAnchorHistory
     from app.utils.dates import DISPLAY_TIMEZONE
 
+    # Day one of the period IN THE USER'S ZONE, converted to UTC for storage.
+    # Midnight UTC is the previous EVENING in Eastern, so since ruling R-DH (b)
+    # -- which reads an instant's display civil day -- it would file this
+    # true-up in the PREVIOUS period and empty the anchor column's remainder of
+    # the very assertion the fixture just made.
+    asserted_at = at if at is not None else datetime.combine(
+        period.start_date, time.min, tzinfo=DISPLAY_TIMEZONE,
+    ).astimezone(timezone.utc)
     history = AccountAnchorHistory(
         account_id=account.id,
         pay_period_id=period.id,
         anchor_balance=balance,
         notes=notes,
-        # Day one of the period IN THE USER'S ZONE, converted to UTC for
-        # storage.  Midnight UTC is the previous EVENING in Eastern, so since
-        # ruling R-DH (b) -- which reads an instant's display civil day -- it
-        # would file this true-up in the PREVIOUS period and empty the anchor
-        # column's remainder of the very assertion the fixture just made.
-        created_at=at if at is not None else datetime.combine(
-            period.start_date, time.min, tzinfo=DISPLAY_TIMEZONE,
-        ).astimezone(timezone.utc),
+        created_at=asserted_at,
+        observed_on=observed_day_of(asserted_at),
     )
     db_session.add(history)
     db_session.flush()
@@ -2888,6 +2987,11 @@ def _restamp_assertion(db_session, account, at, *, newest):
         .first()
     )
     row.created_at = at
+    # The BUSINESS day moves with the recording instant.  Pinning one and
+    # leaving the other is now a reachable state (``observed_on`` is a stored
+    # column since plan step 2), and it is not what any caller of a *restamp*
+    # helper means: they are placing the whole assertion, not editing its date.
+    row.observed_on = observed_day_of(at)
     db_session.flush()
     return row
 
@@ -2922,6 +3026,7 @@ def append_balance_assertion(db_session, account, period, balance, at):
         pay_period_id=period.id,
         anchor_balance=Decimal(str(balance)),
         notes="test assertion",
+        observed_on=observed_day_of(at),
     )
     db_session.add(row)
     db_session.flush()

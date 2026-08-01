@@ -6,7 +6,7 @@ rate history, and payoff calculator across multiple loan types.
 """
 
 import re
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -7628,9 +7628,11 @@ class TestLoanDetailMeasuredSurfaces:
         assert interest_2026 > Decimal("0.00")
         assert interest_2027 == Decimal("0.00")
 
-        # Re-freeze onto the New Year boundary (the autouse fixture froze
-        # 2026-03-20): midnight UTC Jan 1 2027 is still Dec 31 2026 Eastern.
-        freeze_today(monkeypatch, date(2027, 1, 1))
+        # Re-freeze onto the New Year boundary: midnight UTC Jan 1 2027 is
+        # still Dec 31 2026 Eastern.  ``at_time`` is explicit because this test
+        # means that INSTANT -- ``freeze_today``'s default is noon, so that a
+        # test meaning "today is D" gets D from the display-tz readers too.
+        freeze_today(monkeypatch, date(2027, 1, 1), at_time=time.min)
 
         html = auth_client.get(f"/accounts/{loan.id}/loan").data.decode()
         match = re.search(

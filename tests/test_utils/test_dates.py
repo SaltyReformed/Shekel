@@ -12,7 +12,7 @@ contract so every caller shares one tested definition:
 - The inclusive ``+ 1`` and zero-floor that individual callers add stay
   the caller's concern (verified here by composing them with the helper).
 """
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timezone
 
 from app.utils.dates import (
     DISPLAY_TIMEZONE,
@@ -149,22 +149,32 @@ class TestDisplayToday:
     def test_new_year_boundary_is_the_eastern_day(self, monkeypatch):
         """Midnight UTC on Jan 1 is still Dec 31 in Eastern, so the year is 2026.
 
-        ``freeze_today`` sets ``datetime.now(utc)`` to 2027-01-01 00:00 UTC.
-        That instant is 7:00 PM EST on 2026-12-31, so ``display_today()`` is
-        Dec 31 2026 -- year 2026 -- even though ``date.today()`` (UTC) has
+        ``at_time=time.min`` pins ``datetime.now(utc)`` to 2027-01-01 00:00
+        UTC.  That instant is 7:00 PM EST on 2026-12-31, so ``display_today()``
+        is Dec 31 2026 -- year 2026 -- even though ``date.today()`` (UTC) has
         already rolled to 2027.  This is the exact skew the loan YTD chips must
         follow to agree with the Taxes tab.
+
+        The instant is stated rather than inherited: ``freeze_today``'s default
+        is NOON, the same instant it pins the database clock to, so that a test
+        meaning "today is D" gets D from every reader including the display-tz
+        ones.  A test meaning a specific instant asks for one.
         """
-        freeze_today(monkeypatch, date(2027, 1, 1), modules=["app.utils.dates"])
+        freeze_today(
+            monkeypatch, date(2027, 1, 1),
+            modules=["app.utils.dates"], at_time=time.min,
+        )
         assert display_today() == date(2026, 12, 31)
         assert display_today().year == 2026
 
     def test_daytime_utc_is_the_same_eastern_day(self, monkeypatch):
         """A mid-day UTC instant maps to the same calendar day in Eastern.
 
-        ``freeze_today`` freezes ``now`` at midnight UTC, but a manual
-        mid-afternoon stub proves the non-boundary case: 2026-06-12 18:00 UTC is
-        14:00 EDT, still June 12, so ``display_today()`` is 2026-06-12.
+        A manual mid-afternoon stub, independent of ``freeze_today`` entirely:
+        2026-06-12 18:00 UTC is 14:00 EDT, still June 12, so
+        ``display_today()`` is 2026-06-12.  ``freeze_today`` would also serve
+        now that its default is NOON; the hand-rolled stub predates that and is
+        kept because pinning the instant explicitly is what this case is about.
         """
         class _FixedDateTime(datetime):
             """A datetime whose ``now`` is a fixed mid-day UTC instant."""

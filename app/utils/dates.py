@@ -9,7 +9,7 @@ only, so they import cleanly into any service or test without the app
 stack.
 """
 import calendar
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
 # Single source of truth for the timezone the UI presents instants in.
@@ -20,11 +20,12 @@ from zoneinfo import ZoneInfo
 # is a DST-aware zone, so the rendered clock is EDT (UTC-4) in summer and
 # EST (UTC-5) in winter rather than a wrong fixed offset.
 #
-# Note: the anchor-history dedupe index buckets ``created_at`` by UTC day
-# in SQL (``app/models/account.py``); that IMMUTABLE expression cannot
-# reference this constant and is deliberately independent of the display
-# zone -- it is an internal same-day-double-submit guard, not a user
-# surface.
+# Note: the anchor-history dedupe index keys the STORED ``observed_on``
+# column (``app/models/account.py``) since plan step 2, so it needs no
+# timezone expression at all and buckets the same civil day this constant
+# defines.  It bucketed ``created_at`` by UTC day until then -- an
+# independent zone, which is what made two assertions on two Eastern days
+# sharing a UTC day collide (finding N-133 / F12).
 DISPLAY_TIMEZONE = ZoneInfo("America/New_York")
 
 
@@ -98,14 +99,18 @@ def display_today() -> date:
 def to_display_civil_date(paid_at: datetime | None, fallback: date) -> date:
     """Return the display-timezone civil date of a settle instant, or ``fallback``.
 
-    The display-timezone counterpart of
-    ``app.services.posting_service._civil_settle_date`` (which stays UTC
-    because it feeds the STORED ``journal_entries.entry_date``).  Readers
-    that attribute money to a tax year or calendar window use THIS helper
-    instead, per the L9 decision (2026-07-03): tax-year figures follow the
-    user's wall-clock day, so a settle clicked 8:05pm Eastern on Dec 31
-    attributes to Dec 31, not to the Jan 1 it becomes in UTC.  Storage is
-    unchanged -- the conversion happens only at the reading boundary.
+    The ONE derivation of "which civil day did this cash move on", and every
+    consumer now shares it: ``posting_service._civil_settle_date`` (the STORED
+    ``journal_entries.entry_date``), ``cash_ledger.settled_civil_day`` (the
+    balance walk's partition), ``loan_ledger._visible.payment_visible_on``, and
+    the confirmed-statement reader's attribution.  ``_civil_settle_date`` was
+    the exception -- it stayed UTC because it fed a stored column -- until
+    ruling R-DH (b) moved the stored day to the user's too, on the grounds that
+    it is compared against and bucketed by plain ``DATE`` columns that mean the
+    user's civil days.  Per the L9 decision (2026-07-03): a settle clicked
+    8:05pm Eastern on Dec 31 attributes to Dec 31, not to the Jan 1 it becomes
+    in UTC.  Storage is unchanged -- every instant is still stored UTC and the
+    conversion happens only when a DAY is derived from one.
 
     Mirrors ``_civil_settle_date``'s NULL handling: a source whose
     ``paid_at`` was never recorded (a historical settle predating the
@@ -129,30 +134,30 @@ def to_display_civil_date(paid_at: datetime | None, fallback: date) -> date:
     return display_date
 
 
-
-
 def utc_instant(instant: datetime) -> datetime:
     """Return *instant* as an aware-UTC ``datetime``.
 
-    The INSTANT-level counterpart of :func:`utc_civil_date`, sharing its
-    convention: an aware value converts to UTC, a naive value is assumed UTC
-    (every ``timestamptz`` in this app is stored UTC).  Normalizing every
-    attribution and assertion instant through this one helper is what makes an
-    instant-vs-instant ``<=`` comparison well-defined -- Python refuses to
+    The storage convention, applied once: an aware value converts to UTC, a
+    naive value is assumed UTC (every ``timestamptz`` in this app is stored
+    UTC).  Normalizing every stored instant through this one helper is what
+    makes an instant-vs-instant comparison well-defined -- Python refuses to
     compare a naive datetime with an aware one, so a single un-normalized value
     is a ``TypeError`` at read time rather than a wrong answer.
 
-    **Why the balance ledgers need instants and not just civil dates.**  The
-    anchor partition asks "was this settle already inside the balance the user
-    asserted?", and the answer turns on ORDER WITHIN A DAY: measured on
-    production 2026-07-25, the Checking anchor was asserted at 12:57:08 UTC and
-    two expenses settled at 13:07:11 and 13:07:18 -- the same UTC civil day, ten
-    minutes later.  A date-keyed comparison calls them absorbed and drops their
-    $108.15 of confirmed cash effect; this instant-keyed one rides them on top of
-    the assertion, which is what actually happened.  The civil DATE each event
-    then counts FROM is a
-    different question, answered by :func:`utc_civil_date` /
-    :func:`to_utc_civil_date`.
+    **It no longer answers "was this settle inside the asserted balance", and
+    the paragraph that said it did was the deleted rule's argument** (ruling
+    R-DH, 2026-07-31).  That paragraph cited one production pair -- an anchor at
+    12:57:08 UTC and two expenses at 13:07 the same day, $108.15 -- as proof
+    that the partition must turn on ORDER WITHIN A DAY.  Scored over the whole
+    account rather than that one pair, the instant partition cost ``$4,001.42``
+    on a single day and ``$40,554.34`` gross across four months, and the day
+    rule books a SMALLER correction at that very assertion ($39.27 against
+    $68.88).  The question is now answered by comparing two civil days --
+    ``CashSourceFact.settled_on`` against ``CashAnchorFact.observed_on``, both
+    stored or resolved once -- and the instants this helper normalizes only
+    break a tie between two assertions about the SAME day.  Leaving the old
+    argument here is how the old rule gets reintroduced, which is why the
+    helpers that implemented it were deleted rather than kept.
 
     Args:
         instant: A stored ``paid_at`` / ``created_at`` / ``asserted_at``
@@ -164,33 +169,6 @@ def utc_instant(instant: datetime) -> datetime:
     if instant.tzinfo is None:
         return instant.replace(tzinfo=timezone.utc)
     return instant.astimezone(timezone.utc)
-
-
-def utc_day_start_instant(day: date) -> datetime:
-    """Return the earliest instant of the UTC civil day *day* (midnight UTC).
-
-    The attribution fallback for a source with no recorded ``paid_at`` -- a
-    historical settle predating the ``paid_at`` sync, or ledger residue
-    attributed by its entry's period -- and the instant analogue of the
-    ``COALESCE(paid_at, start_date)`` rule the civil-date helpers apply
-    (:func:`to_utc_civil_date`).  Pairing the two means a NULL-``paid_at`` row
-    lands on the same civil day in both the instant partition and the date
-    sampling, instead of on two different ones.
-
-    **Named for what it computes, not for one caller's argument.**  It was
-    ``account_posting_service._walk._period_start_instant``, but of its three call
-    sites (``cash_ledger.attribution_instant``, the posting walk's residue
-    bucket, and ``account_posting_service._sync``) the last passes a journal
-    entry's ``entry_date``, not a pay-period ``start_date`` -- so the old name
-    misdescribed the rule where it was used.
-
-    Args:
-        day: Any civil date to take the opening instant of.
-
-    Returns:
-        The aware-UTC midnight instant of *day*.
-    """
-    return datetime.combine(day, time.min, tzinfo=timezone.utc)
 
 
 def add_months(start: date, months: int) -> date:
