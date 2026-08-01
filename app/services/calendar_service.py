@@ -787,10 +787,11 @@ def _get_display_day(
     **It no longer places a flow on the same day as the balance step for it,
     and that is an open fork rather than a settled rule** (plan step X-c2b2,
     finding N-58).  The balance line under these cells is the cash fold now:
-    a SETTLED row steps it on the day its money moved (``paid_at``'s UTC civil
-    day) and a still-projected one on ``max(attribution, as_of + 1)`` (ruling
-    R-G).  Neither is the budget attribution date this function returns, so a
-    chip and its own balance step can sit days apart -- median 2, p75 6, max 25
+    a SETTLED row steps it on the day its money moved (``paid_at``'s
+    display-timezone civil day since ruling R-DH (b)) and a still-projected one
+    on ``max(attribution, as_of + 1)`` (ruling R-G).  Neither is the budget
+    attribution date this function returns, so a chip and its own balance step
+    can sit days apart -- median 2, p75 6, max 25
     on the real Checking account (finding N-42).  The two agreed by
     construction before the cutover because the retired ramp distributed the
     same still-projected rows over these same attribution days.  The grid met

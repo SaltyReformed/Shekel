@@ -60,7 +60,7 @@ import logging
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import joinedload, selectinload
 
 from app import ref_cache
 from app.enums import (
@@ -299,13 +299,16 @@ def _settle_effective(xfer: Transfer) -> Decimal:
 def _entry_date(xfer: Transfer) -> date:
     """Return the civil date to stamp on a transfer's journal entry.
 
-    The UTC civil date of the transfer's ``paid_at`` (which lives on the
-    shadows -- the ``Transfer`` model has none), falling back to the pay
+    The DISPLAY-timezone civil date of the transfer's ``paid_at`` (which lives
+    on the shadows -- the ``Transfer`` model has none), falling back to the pay
     period's ``start_date`` when ``paid_at`` is NULL (a historical settle
     recorded before the ``paid_at`` sync, or a reverted transfer whose
     ``paid_at`` was cleared).  ``entry_date`` is NOT NULL, so the fallback is
-    load-bearing.  Mirrors the Commit-3 backfill's
-    ``COALESCE((paid_at AT TIME ZONE 'UTC')::date, start_date)``.
+    load-bearing.  It mirrored the Commit-3 backfill's
+    ``COALESCE((paid_at AT TIME ZONE 'UTC')::date, start_date)`` until ruling
+    R-DH (b) moved the stored day to the user's zone; the derivation is
+    :func:`_civil_settle_date`, shared with the transaction path and both
+    balance folds.
 
     The query auto-flushes before reading, so a ``paid_at`` the caller set to
     a server-side ``db.func.now()`` (the ``mark_done`` path) is materialised
@@ -316,8 +319,8 @@ def _entry_date(xfer: Transfer) -> date:
         xfer: The transfer being posted.
 
     Returns:
-        The UTC civil settle date, or the pay period's ``start_date`` when no
-        ``paid_at`` is recorded.
+        The display-timezone civil settle date, or the pay period's
+        ``start_date`` when no ``paid_at`` is recorded.
     """
     # Read the to-account (income) shadow's paid_at.  The Commit-3 backfill
     # reads the from-account (expense) shadow's paid_at instead; the two are
@@ -361,10 +364,11 @@ def _transfer_description(xfer: Transfer) -> str:
 def _transaction_entry_date(txn: Transaction) -> date:
     """Return the civil date to stamp on a transaction's journal entry.
 
-    The UTC civil date of the transaction's ``paid_at``, falling back to the
-    pay period's ``start_date`` when ``paid_at`` is NULL (a historical settle,
-    or a reverted transaction whose ``paid_at`` was cleared).  The transaction
-    analog of :func:`_entry_date`, sharing :func:`_civil_settle_date`.
+    The DISPLAY-timezone civil date of the transaction's ``paid_at`` (ruling
+    R-DH (b)), falling back to the pay period's ``start_date`` when ``paid_at``
+    is NULL (a historical settle, or a reverted transaction whose ``paid_at``
+    was cleared).  The transaction analog of :func:`_entry_date`, sharing
+    :func:`_civil_settle_date`.
 
     ``paid_at`` is read back via a query (not off the ORM attribute) so a value
     the caller set to a server-side ``db.func.now()`` (the ``mark_done`` path)
@@ -376,8 +380,8 @@ def _transaction_entry_date(txn: Transaction) -> date:
         txn: The transaction being posted (must be flushed, ``txn.id`` set).
 
     Returns:
-        The UTC civil settle date, or the pay period's ``start_date`` when no
-        ``paid_at`` is recorded.
+        The display-timezone civil settle date, or the pay period's
+        ``start_date`` when no ``paid_at`` is recorded.
     """
     paid_at = (
         db.session.query(Transaction.paid_at)
@@ -806,16 +810,42 @@ def resync_all_cash_postings() -> tuple[int, int]:
     (``scripts.init_database.resync_all_cash_postings_after_migration``, which
     initialises ``ref_cache`` first because the migration host does not).
 
+    **The counts are sources CHANGED, not sources walked** (finding N-133 / F8).
+    A hook that rewrites the whole production ledger on every deploy and reports
+    the same number whether it moved every date or nothing at all tells the
+    operator only that it ran.  Both sync functions return the journal entries
+    they emitted -- empty when already at target -- so "changed" is observable
+    without a second query, and a healthy deploy logs ``0, 0``.  The FIRST
+    deploy after a dating rule moves is the one that logs a non-zero count, and
+    that line is the only evidence the one-time re-date happened.
+
+    **The re-date is ONE-WAY, and that is a stated risk rather than a
+    discovered one.**  ``entrypoint.sh`` runs ``set -eEuo pipefail`` and calls
+    ``scripts/init_database.py``, so a failure here aborts the container and the
+    auto-rollback fires before anything commits.  But if the healthcheck fails
+    AFTER this commits, the rolled-back image reads a display-dated ledger with
+    the previous image's UTC rules, and only the entries whose two days differ
+    are affected (on production at the cutover: one payment, one day).  Rolling
+    back ACROSS a dating change therefore needs this hook re-run under the old
+    image, not just a container swap.
+
     Returns:
-        ``(transactions_reconciled, transfers_reconciled)`` -- the counts
-        WALKED, not the counts changed, for the deploy log.  A no-op pass
-        reports the same numbers as the pass that moved every date, which is
-        why the deploy line names them as walked.
+        ``(transactions_changed, transfers_changed)`` -- how many settled
+        sources this pass actually re-posted, for the deploy log.
     """
     settled_ids = settled_status_ids()
     transactions = (
         db.session.query(Transaction)
-        .options(selectinload(Transaction.entries))
+        .options(
+            selectinload(Transaction.entries),
+            # ``pay_period`` is a plain lazy relationship, and BOTH
+            # ``_transaction_entry_date`` (its ``start_date`` fallback) and
+            # ``_settled_target`` (``pay_period.user_id``) dereference it once
+            # per row -- 122 extra SELECTs on production's settled set with the
+            # eager ``entries`` load right beside it doing the same job for the
+            # other relationship (finding N-133 / F9).
+            joinedload(Transaction.pay_period),
+        )
         .filter(
             Transaction.is_deleted.is_(False),
             Transaction.transfer_id.is_(None),
@@ -824,11 +854,14 @@ def resync_all_cash_postings() -> tuple[int, int]:
         .order_by(Transaction.id)
         .all()
     )
-    for txn in transactions:
-        sync_transaction_postings(txn, settled=True)
+    transactions_changed = sum(
+        1 for txn in transactions
+        if sync_transaction_postings(txn, settled=True)
+    )
 
     transfers = (
         db.session.query(Transfer)
+        .options(joinedload(Transfer.pay_period))
         .filter(
             Transfer.is_deleted.is_(False),
             Transfer.status_id.in_(settled_ids),
@@ -836,7 +869,9 @@ def resync_all_cash_postings() -> tuple[int, int]:
         .order_by(Transfer.id)
         .all()
     )
-    for xfer in transfers:
-        sync_transfer_postings(xfer, settled=True)
+    transfers_changed = sum(
+        1 for xfer in transfers
+        if sync_transfer_postings(xfer, settled=True)
+    )
 
-    return len(transactions), len(transfers)
+    return transactions_changed, transfers_changed

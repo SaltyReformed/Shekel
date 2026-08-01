@@ -20,7 +20,7 @@ cheat" made visible as an explicit equity adjustment.
 
 Mirrors :mod:`app.services.loan_posting_service` (split by concern):
 
-* :mod:`._walk` -- the pure moment-granular walk: replay the account's
+* :mod:`._walk` -- the pure DAY-granular walk: replay the account's
   :class:`~app.models.account.AccountAnchorHistory` rows against the source
   facts read back from its linked ledger, producing one
   :class:`AccountAnchorCorrection` per assertion.

@@ -39,7 +39,7 @@ Every account and settle is produced through the REAL go-forward primitives --
 ``_true_up_at`` (the anchor-true-up chokepoint's two steps) -- so every
 reconciled statement was posted exactly as production posts it.  The one
 non-production affordance is pinning an anchor row's ``created_at`` (via
-:func:`_true_up_at`, the C8 technique) so a true-up's moment partition is
+:func:`_true_up_at`, the C8 technique) so a true-up's civil-day partition is
 deterministic regardless of the test clock.  Sources are pinned to noon-UTC
 paid dates so their storage (UTC) civil date and their display-timezone
 attribution date coincide -- except the dedicated display-timezone case, which
@@ -84,6 +84,7 @@ from tests._test_helpers import (
     create_settled_cash_transaction,
     create_settled_transfer,
     linked_ledger_account,
+    observed_day_of,
 )
 
 # A far-future as-of that folds every posted source into the balance sheet,
@@ -339,7 +340,7 @@ def _origin_instant(account) -> datetime:
 
     The one instant a test cannot choose (the origination ``created_at`` is the
     INSERT's server ``now()``); a fixture's pinned true-up instants are built
-    relative to it so the moment partition is deterministic.
+    relative to it, in whole DAYS, so the civil-day partition is deterministic.
     """
     row = (
         _db.session.query(AccountAnchorHistory)
@@ -378,6 +379,9 @@ def _true_up_at(account, balance, created_at) -> None:
         pay_period_id=account.current_anchor_period_id,
         anchor_balance=Decimal(str(balance)),
         created_at=created_at,
+        # The civil day this assertion is the closing balance FOR, kept in step
+        # with the pinned instant by the shared rule (ruling R-DH, plan step 2).
+        observed_on=observed_day_of(created_at),
     )
     account.current_anchor_balance = Decimal(str(balance))
     _db.session.add(row)
@@ -716,7 +720,7 @@ class TestAccountingIdentityAtMultipleAsOf:
         inclusive ``<= as_of`` fold is pinned (a ``< as_of`` mutant mis-states
         Savings by that day's whole entry).  One as-of falls inside the anchor
         period BEFORE the assertion (2099-06-05, the first spend) and one AFTER
-        it (2099-06-12) -- the balance-sheet case of the moment partition.  With
+        it (2099-06-12) -- the balance-sheet case of the civil-day partition.  With
         the seeded Checking ($1000.00):
 
           2099-06-01  A = 1000 + 500 = 1500  (only openings folded)

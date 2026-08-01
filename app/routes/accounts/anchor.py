@@ -39,7 +39,7 @@ from app.services import anchor_service, pay_period_service
 from app.services.anchor_service import AnchorTrueUpOutcome
 from app.utils.account_validation import _anchor_schema
 from app.utils.auth_helpers import get_or_404, require_owner
-from app.utils.dates import to_display_tz
+from app.utils.dates import display_today, to_display_tz
 
 logger = logging.getLogger(__name__)
 
@@ -218,7 +218,11 @@ def _true_up_request_gates(
         )
         return None, None, _anchor_conflict_response(account, revert_context)
 
-    current_period = pay_period_service.get_current_period(current_user.id)
+    # One clock for the period and for the assertion's day -- see the
+    # matching comment in ``accounts.crud.update_account``.
+    current_period = pay_period_service.get_current_period(
+        current_user.id, as_of=display_today(),
+    )
     if current_period is None:
         return None, None, ("No current pay period found", 400)
 

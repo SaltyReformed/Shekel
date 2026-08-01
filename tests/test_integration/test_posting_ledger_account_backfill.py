@@ -3,7 +3,7 @@
 Commit C7 posts every NON-loan account's opening / true-up anchor corrections
 that predate the C6 go-forward wiring, so the ledger is complete on real
 historical data and the trial balance closes app-wide.  Because an anchor
-correction is a moment-granular walk of the account's assertions against its
+correction is a DAY-granular walk of the account's assertions against its
 linked ledger -- not a one-line SQL formula -- the backfill cannot be raw SQL
 like the Step-2 / Step-3 cash backfills; it reuses the go-forward per-account
 sync (:func:`account_posting_service.sync_account_anchor_postings_all_scenarios`)

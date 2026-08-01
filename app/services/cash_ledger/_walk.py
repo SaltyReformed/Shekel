@@ -325,7 +325,11 @@ def dated_deltas(walk: CashLedgerWalk) -> list[tuple[date, Decimal]]:
         applied.  Empty for a walk with no facts.
     """
     # Tag 0 = source, 1 = assertion: the same tie-break the walk applies, so a
-    # source sharing an assertion's day reads before it here too.
+    # source sharing an assertion's day reads before it here too.  It holds for
+    # BOTH anchor kinds because the walk has one placement for both -- while the
+    # OPENING was excepted there and not here (finding N-133 / F5) these two
+    # orders were opposite for an opening, and the Returns docstring below
+    # asserted a chronology this list did not have.
     tagged: list[tuple[date, int, Decimal]] = [
         (fact.settled_on, 0, fact.delta) for fact in walk.source_facts
     ] + [

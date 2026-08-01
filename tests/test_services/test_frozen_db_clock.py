@@ -31,6 +31,7 @@ from app.extensions import db as _db
 from app.models.account import AccountAnchorHistory
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
+from app.utils.dates import display_today
 from tests._test_helpers import (
     _db_clock_insert_attrs,
     _rewrite_db_clock_calls,
@@ -95,6 +96,7 @@ class TestTheDatabaseClockIsTheTestClock:
                 pay_period_id=seed_periods[5].id,
                 anchor_balance=Decimal("1234.56"),
                 notes="N-65: no explicit instant",
+                observed_on=display_today(),
             )
             db.session.add(row)
             db.session.commit()
@@ -294,6 +296,7 @@ class TestTheDatabaseClockIsTheTestClock:
                 pay_period_id=seed_periods[5].id,
                 anchor_balance=Decimal("200.00"),
                 notes="N-65 ordering: second",
+                observed_on=display_today(),
             )
             db.session.add(second)
             db.session.commit()
@@ -302,6 +305,7 @@ class TestTheDatabaseClockIsTheTestClock:
                 pay_period_id=seed_periods[5].id,
                 anchor_balance=Decimal("300.00"),
                 notes="N-65 ordering: third",
+                observed_on=display_today(),
             )
             db.session.add(third)
             db.session.commit()

@@ -246,8 +246,8 @@ class TestTheClosingBalancePartition:
     ):  # pylint: disable=unused-argument
         """The boundary is ``<=``, matching the account posting walk.
 
-        A source attributed at the very instant of the assertion is subsumed by
-        its reset -- the same ``sources[i][0] <= fact.asserted_at`` boundary
+        A source dated the assertion's own civil day is subsumed by its reset
+        -- the same ``sources[i][0] <= fact.observed_on`` boundary
         ``account_posting_service.walk_account_ledger`` applies, so the read fold
         and the posted ledger partition one boundary rather than two.
         """
