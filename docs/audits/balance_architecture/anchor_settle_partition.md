@@ -3,15 +3,38 @@
 Status: **Steps S1-a, S1-b and the N-133 residue are IN PRODUCTION (PR #67 `fd0ddfab`,
 PR #68 -- prod at `c4a19e7b2d80`, deployed 2026-08-01).**
 
-**S1-c is COMPLETE and GREEN on branch `feat/entry-posting-date` (`b305b7b5`, 2026-08-01), awaiting
-its PR to `main` and the deploy.  Ruling R-M was RE-RULED in the course of it and the shape
-changed: `transaction_entries.entry_date` SPLITS into `purchased_on` + `settled_on`, and
-reconciliation is derived from an OBSERVED posting day rather than from a guess.  See Section 12
-for the rulings and Section 13 for what was built, what the conversion cost, and what a neutral
-adversarial review found in it.**  The whole step is ONE commit: the migration and the tests
-written against its schema cannot revert separately without leaving a tree that fails.
+**S1-c IS IN PRODUCTION** (PR #75, merge `51e07e74`; prod at migration `d7c1f4a9e603`, confirmed
+on a fresh clone 2026-08-01).  Ruling R-M was RE-RULED in the course of it and the shape changed:
+`transaction_entries.entry_date` SPLITS into `purchased_on` + `settled_on`, and reconciliation is
+derived from an OBSERVED posting day rather than from a guess.  See Section 12 for the rulings and
+Section 13 for what was built, what the conversion cost, and what a neutral adversarial review
+found in it.
 
-Steps 3-4 and step 2's transaction half (`transactions.settled_on`) remain OPEN.
+**Step 3 is COMPLETE and GREEN on branch `fix/one-partition-implementation` (2026-08-01), and it
+did NOT ship the pylint checker the step specified.**  The developer ruled the fence must be
+structural rather than a detector, and an AST census then showed the checker would have been blind
+to `account_posting_service/_sync.py`'s `earliest <= latest` -- the one site with a history.  What
+shipped is `cash_ledger.ReconciledThrough`, a type with no ordering against a civil day, so a
+restatement of the rule is a `TypeError` rather than a lint finding.  **Section 14** carries the
+census, the fenced shapes, the converged sites and the negative controls.  Measured on a production
+clone: **0 of 16,536 seam leaves move**, and the anchor backfill re-derives the ledger the OLD walk
+wrote without writing anything.
+
+**Three neutral adversarial reviews then ran against it and changed it in four ways** (Section
+14.5).  They found a SEVENTH implementation of the rule that this step's own census was blind to --
+the modelled contribution feed, deciding with a bare date whether a payroll contribution is already
+inside the asserted balance -- now converged, and figure-neutral on the clone.  They found the new
+fence test blind to half a symmetric operator: a `__le__`-ONLY mutant passed all six pinned
+spellings, so the control is now eleven and fails naming the two that escaped.  They found Section
+14.4 citing an instrument that cannot observe its own claim.  And they refuted **three** of this
+document's claims about the fence, including its central one -- the type and a checker cover
+COMPLEMENTARY holes and neither substitutes for the other, because the bare `observed_on` field a
+new module could still compare is exactly what a checker sees and the type does not.  One review
+finding did not survive measurement and is recorded as refuted rather than dropped.
+
+Step 4 and step 2's transaction half (`transactions.settled_on`) remain OPEN.  **X-d** now owns the
+last duplication step 3 could not remove: two representations of the same events, and with them
+`_attribution.py`'s duplicate loaders.
 
 `pylint app/ scripts/` 10.00/10. Full suite **7,724 passed / 0 failed**, under both
 `America/New_York` and CI's `TZ=Pacific/Kiritimati` (7,687 before S1-c). Production-clone
@@ -481,11 +504,15 @@ promoted from "after X-d" to "now" by R-DH.
   `observed_on` still defaults to today, which is exactly what the derivation gave: figure-neutral,
   and the residual below is still a guess on the settle side.
 
-### Step 3 -- one predicate, fenced
+### Step 3 -- one predicate, and the fence is STRUCTURAL
 
-A single `is_inside_assertion` shared by the read fold, the posting walk and the entry reconcile,
-backed by a custom pylint checker on the `shekel-refname-compare` pattern, so a fourth answer to
-section 2.1's question cannot be written.
+**DONE, 2026-08-01. The checker this step specified was BUILT AS A TYPE INSTEAD, on the
+developer's ruling (Section 14).** The original text follows, because the reason the checker was
+rejected is a measurement, not a preference.
+
+*As specified:* a single `is_inside_assertion` shared by the read fold, the posting walk and the
+entry reconcile, backed by a custom pylint checker on the `shekel-refname-compare` pattern, so a
+fourth answer to section 2.1's question cannot be written.
 
 > **This step is now smaller than the review found it, and what remains is the FENCE.** F4's fourth
 > answer is converged (the self-heal skip compares days), F5's `dated_deltas` tie-break is correct
@@ -498,6 +525,22 @@ section 2.1's question cannot be written.
 > - the checker that makes a fifth answer un-writable, which is the part no convergence buys.
 > - `ledger_report_service/_attribution.py` restates the day derivation twice (`:445`, `:548`)
 >   behind a justification that R-DH (b) has now falsified (F7).
+
+> **The two fences cover DIFFERENT holes and neither is a substitute for the other. Section 14
+> first claimed otherwise and an adversarial review refuted it.** A name-vocabulary census of
+> `app/` finds five ordering comparisons on the assertion-day vocabulary and is blind to
+> `account_posting_service/_sync.py`'s `earliest <= latest`, whose operands are both bare locals --
+> the site finding F4 was about. That is a real limit, but it is a limit of the VOCABULARY chosen,
+> not of lint: adding the two local names catches it, at the cost of ~9 more exemptions, and one
+> astroid hop of intra-function assignment tracking catches it without them.
+>
+> What the TYPE fences is the derived accessor. What it does NOT fence is the bare field --
+> `CashAnchorFact.observed_on` is still a plain `date`, so the exact line this step deleted
+> (`x <= fact.observed_on`) compiles today in any new module. **That is the shape that shipped
+> implementation #2**, and only a checker sees it. See Section 14.
+>
+> `_attribution.py`'s duplicate loaders are NOT closed by this step and are re-owned by **X-d**
+> (Section 14.6), which deletes their twin rather than extracting a third shared home.
 
 ### Step 4 -- the remainder is named
 
@@ -1694,3 +1737,251 @@ A fresh prod-shape clone at `main`'s head, captured from a `git worktree` at `ma
 - **`period_timing` nets to `$0.00` across all history** (period 9's `+$427.22` cancels period 10's
   `-$427.22`), which is the design claim that a row is counted once as budget and once as cash and
   never twice. `book_vs_bank` carries the rest.
+
+## 14. Step 3 as BUILT: the fence is a type, because a checker could not see the site that mattered
+
+**COMPLETE and GREEN, 2026-08-01, branch `fix/one-partition-implementation`.** Step 3 specified a
+custom pylint checker. The developer ruled the checker out before it was written -- *"I want to make
+the fences structurally unnecessary"* -- and tracing what a checker could actually see showed the
+ruling was also the correct engineering call, for a reason the plan had not recorded.
+
+### 14.1 Why the checker was rejected, measured
+
+An AST census of `app/` for ordering comparisons (`<`, `<=`, `>`, `>=`) touching the assertion-day
+vocabulary returns five sites:
+
+| site | what it compares | verdict |
+|---|---|---|
+| `cash_ledger/_amounts.py` | `event_day <= observed_on` | the rule itself |
+| `account_posting_service/_walk.py:479` | `sources[i][0] <= fact.observed_on` | a RESTATEMENT |
+| `entry_service.py:872` | `TransactionEntry.purchased_on <= observed_on` | a different question, in SQL, on the BUDGET clock |
+| `account_service.py:192` | `observed_on > today` | a validation bound |
+| `account_service.py:208` | `observed_on < floor` | a validation bound |
+
+**And it does not return `account_posting_service/_sync.py:290` -- `earliest <= latest` -- which is
+the site finding N-133 / F4 was about.** Both operands are bare locals, so this vocabulary does not
+match them.
+
+**The first draft of this section drew a stronger conclusion than the table supports, and an
+adversarial review corrected it on three counts.** (1) It said the checker would have caught "the
+three sites with no history and missed the one with it" -- but the table's second row, the posting
+walk's `<=`, IS a site with history and IS a live catch, so the ratio is three exemptions to ONE
+catch, not to zero. (2) It said "a lint rule cannot see through a local binding": adding `earliest`
+and `latest` to the vocabulary does match them, at roughly nine more exemptions, and resolving a
+`Name` operand to its in-scope `Assign` is one astroid hop rather than value inference -- less
+exotic than what `package_privacy.py` already does. The honest reason to prefer syntax here is this
+project's own stated convention (`money.py`: *"matched syntactically by name rather than by
+inference ... avoids inference flakiness"*), which is a preference, not an impossibility. (3) The
+SQL site genuinely cannot call a Python predicate, so it would need a permanent exemption -- that
+one stands.
+
+**What survives is the developer's ruling, which was never a claim about lint**: the fence must be
+structural rather than a detector. And what the review added is that the two are COMPLEMENTARY --
+see 14.5.
+
+### 14.2 What was built instead
+
+**`cash_ledger.ReconciledThrough`** -- a frozen dataclass carrying one field, `observed_day:
+date | None`, and one method, `covers(event_day) -> bool`. It defines no ordering against a civil
+day, so `settled_on <= reconciled_through` raises `TypeError`. Asking the arc's central question
+correctly and asking it wrongly stopped being the same keystroke.
+
+**Verified over ELEVEN shapes, which is both operand orders of all four
+comparisons plus `sorted`, `max` and `min`** -- the list `TestTheRuleCannotBeAskedAnyOtherWay`
+carries, so this transcript and the committed control cannot drift:
+
+```
+day <= boundary  -> TypeError     boundary <= day  -> TypeError
+day <  boundary  -> TypeError     boundary <  day  -> TypeError
+boundary >= day  -> TypeError     day >= boundary  -> TypeError
+boundary >  day  -> TypeError     day >  boundary  -> TypeError
+sorted([boundary, day]) -> TypeError   max(day, boundary) -> TypeError
+min(day, boundary)      -> TypeError
+
+covers(earlier) True   covers(same day) True   covers(later) False
+covers(None) False     ReconciledThrough(None).covers(day) False
+```
+
+The first draft listed six, all of which resolve to `__ge__` / `__gt__` because Python reaches the
+boundary by REFLECTION -- so a one-sided mutant passed every one of them. Both orders are pinned
+now (14.5).
+
+The rule stays TOTAL in both the argument and the boundary, which is what keeps it a rule rather
+than one with a precondition each caller must remember.
+
+**The escape hatch is named.** `observed_day` is read where a raw date is genuinely needed -- the
+reconcile panel's SQL offer bound, the stamp `record_settled_days` writes, and one rendered
+caption. Reaching for it is a visible act at the call site, which a `<=` was not.
+
+### 14.3 The sites, converged -- and the SEVENTH one a review found
+
+| site | before | after |
+|---|---|---|
+| read replay (`cash_ledger/_walk.py`) | a stable SORT with `_SOURCE_ORDER < _ASSERTION_ORDER` | an absorb loop over `anchor.reconciled_through.covers(...)` |
+| posted ledger (`account_posting_service/_walk.py`) | `sources[i][0] <= fact.observed_on` | the same loop, over the same rule |
+| self-heal skip (`_sync.py`) | `earliest <= latest` | `boundary.covers(earliest)` |
+
+**The read side's rule was expressed as a SORT and the write side's as a LOOP, and that was the
+duplication no one had named** -- the two were the same algorithm in two spellings, held in step by
+convention. This is finding F5's shape (`dated_deltas`' tie-break) one level up. Both are now the
+same loop over the same call, which is what makes X-d a deletion rather than a rewrite.
+
+`merge_anchor_and_cash_events` is DELETED: with the walk advancing its own pointer, publishing the
+merged stream as a separate public fact bought a hop and a second place for the order to be stated.
+
+**A FOURTH site existed and this step's own census could not see it.** An adversarial review found
+`balance_at._asset_contributions._dated_events` deciding, with a bare
+`period.start_date <= accrual_start`, whether a modelled payroll contribution is already inside the
+asserted balance -- the same rule, the same units, the same inclusivity, reached through
+`walk.anchor_corrections[-1].observed_on` as a loose date. Its own docstring states the question
+verbatim and names the cost: *"an over-count that looks exactly like real growth and so cannot be
+detected later."* It is now `reconciled_through.covers(period.start_date)`, and
+`_asset_fold._latest_assertion_boundary` returns the boundary so the two consumers there are
+visibly different questions: the contribution feed asks `covers`, and the ACCRUAL window takes the
+raw day because tiling a calendar with no gap is ruling R-Z's own inclusive boundary and is
+deliberately not routed through R-DH's rule.
+
+**Two things this cost the step's own claims.** The `<`-mutant control below could not reach the
+contribution feed, so "35 tests fail" understated what had NOT converged; and 14.1's census was
+blind to this site for precisely the reason 14.1 gives for rejecting the checker -- `accrual_start`
+is a bare local outside the vocabulary. **A census is only as wide as its vocabulary, and this one
+was measured against the wrong assumption that the cash package bounded the question.** Measured on
+the clone after converging it: **0 of 16,536 leaves move**, which is what a same-rule same-
+inclusivity substitution should do and is why it was measured rather than asserted.
+
+**The self-heal skip is a COST guard, and the point is that it is now a CALLER rather than a second
+implementation.** Its own docstring records that `sync_account_anchor_postings` is idempotent and
+reconciles to target, so running it is always correct; the predicate only avoids the cost of
+discovering that. A cost guard that spells the money rule itself can come to disagree with it --
+and this one already had, silently, for the whole time it carried F4's timezone-sign dependency.
+
+### 14.4 What was measured
+
+| gate | result |
+|---|---|
+| full suite | **7,728 passed / 0 failed** (7,724 before; this step adds four, three of them the reviews' findings) |
+| the suite under CI's clock (`TZ=Pacific/Kiritimati`) | **7,728 passed / 0 failed** |
+| `pylint app/ scripts/` with every custom checker as `--fail-on` | **10.00/10** |
+| `tests/` Decimal gate, cross-tree `duplicate-code`, checker package, checker unit tests | **clean; 146 passed** |
+| whole-seam clone diff, 9 accounts / 427 grid cells / 5,978 daily points | **0 of 16,536 leaves moved; no key added or removed** -- re-run after the reviews, including the modelled contribution feed's convergence |
+| the posted ledger, reconciled by the NEW walk against the ledger the OLD walk wrote | **`backfill_all_account_anchor_postings` reconciled 7 accounts and wrote NOTHING: 317 journal entries / 641 postings before and after, trial balance `$0.00`** |
+
+The clone is a fresh read-only `pg_dump` of production restored into a throwaway database on
+`shekel-dev-db` at `d7c1f4a9e603` (the deployed head), never written back. The ledger check is the
+sharper of the two: production's corrections were written by the OLD walk, so any disagreement
+would have surfaced as a reconcile-to-target delta rather than as a rendered figure.
+
+> **This row first quoted `resync_all_cash_postings` reporting `(0, 0)` changed, and an adversarial
+> review showed that instrument cannot observe the claim**: that function re-posts transaction and
+> transfer legs and never calls `walk_account_ledger`, so a `(0, 0)` from it is consistent with the
+> anchor walk being entirely broken. The evidence that DOES bear on it is the anchor backfill --
+> which routes through the changed walk for every non-loan account -- writing nothing, plus the
+> entry/posting counts and the closed trial balance either side of it. Same conclusion, correct
+> instrument. Recorded rather than silently swapped, because citing an instrument that cannot see
+> the thing it is offered as evidence for is the shape Section 8 exists to catch.
+
+**Negative controls, each planted and then reverted.**
+
+- **`covers` changed from `<=` to `<`** (an assertion no longer closes its own day):
+  **35 tests fail**, spanning `test_cash_walk`, `test_posting_service`,
+  `test_posting_ledger_account_anchor_reconciliation`, `test_cash_fold`, `test_grid` and
+  `test_cross_page_balance_equality`. One edit reaching both walks, the reservation, the grid and
+  the cross-page identity is the convergence proving itself -- before this step the same edit would
+  have broken one site's tests.
+- **A hand-written `__ge__` on the boundary**: `TestTheRuleCannotBeAskedAnyOtherWay` fails and
+  names the two spellings that started working.
+- **A hand-written `__le__` ALONE: escaped the first draft of that test entirely.** The review
+  planted it and all six pinned spellings still raised, because Python reaches `__le__` and
+  `__ge__` by reflection and the control pinned one direction of a symmetric operator. The
+  orderings are now eleven -- both operand orders of all four comparisons, plus `sorted`, `max` and
+  `min` -- and the one-sided mutant fails with `['boundary <= day', 'day >= boundary']` named. **A
+  control that pins half a rule is the blind-test shape a fifth time**, and it was in the very test
+  written to stop it.
+- **`@dataclass(order=True)`: DOES NOT reopen the hole, and the first draft of the test claimed it
+  did.** The generated dunders compare the same class only and return `NotImplemented` against a
+  `date`, so every spelling still raises. The test's stated threat model was corrected to the
+  mutant that actually fires. Recorded because it is this arc's own lesson -- a control whose
+  threat model is assumed rather than measured is the blind-test shape of findings N-132, F2 and
+  R8, arriving a fourth time.
+
+### 14.5 The three adversarial reviews, and the one finding a measurement refuted
+
+Three neutral reviewers ran against the branch before it was committed: the project's
+`code-reviewer` (correctness, IDOR, Decimal), a test-integrity auditor (mutation-testing every new
+and changed control), and a design reviewer (attacking the fence itself). **Between them they found
+one live defect, one blind control, one mis-cited instrument and four overstated claims -- all
+fixed above and in 14.1 / 14.3 / 14.4.**
+
+What they confirmed clean: the two-pointer merge is exactly equivalent to the deleted stable sort
+(one reviewer's 20,000 randomized cases and this step's own exhaustive 1,225-case enumeration, both
+0 mismatches); the dropped terminal `running` is unobservable (no consumer of either walk reads
+it); `_sync.py` is behaviourally identical, including the `None` short-circuit; ownership and IDOR
+unchanged on both changed routes; no `float` anywhere in the diff.
+
+**One finding did NOT survive measurement, and it is recorded rather than quietly dropped.** The
+design review rated the case-only pair `ReconciledThrough` (class) / `reconciled_through`
+(function) a SILENT failure: passing a date to the function was said to run
+`WHERE account_id = <date>`, return `None`, and reconcile nothing -- every envelope holding its
+full budget, the projection reading low in the plausible direction. Run against the clone, it
+raises: `ProgrammingError: operator does not exist: integer = date`. **It fails LOUD**, so the
+naming pair is a readability question and not a correctness one, and no code changed for it.
+
+**The test-integrity audit found THREE mutants that survived the whole 7,726-test suite**, and
+each is now a test with its own control. They are recorded individually because two of them are
+this step's own doing:
+
+| mutant that survived | what it costs | closed by |
+|---|---|---|
+| `settled_cash_facts` sorted by `transaction_id` instead of `(settled_on, transaction_id)` | **This step made the loader's sort load-bearing for the first time** by deleting the merge's defensive re-sort, and nothing tested it. A monotonic pointer over a list not non-decreasing in its day HALTS at the first out-of-order row: a purchase entered late (higher id, earlier `paid_at`) is never absorbed and is subtracted a second time. **That is `-$4,001.42`'s shape reached by a different route.** | `TestTheSourceOrderIsLoadBearing`, which fails at the MONEY (`$1,000.00` against a hand-computed `$900.00`) rather than at the sort |
+| the account scope deleted from `reconciled_through`'s `MAX(observed_on)` | It becomes the MAX over every account of every user. The reconcile panel uses that day as an SQL bound **and stamps it onto every ticked purchase as its posting day**, so a savings account trued up today would empty a checking envelope's reservation and write the wrong `settled_on`. Invisible because every fixture in the class held one asserted account | `test_the_sql_form_answers_for_ONE_account`, which fails showing `2026-09-09` for an account that asserted `2026-03-01` |
+| `covers(earliest)` unboxed to `earliest <= boundary.observed_day` | Nothing: semantically identical. Recorded because it is Finding 3 above made concrete -- the escape hatch unboxes in one token at the site that carried N-133 / F4, and no gate reports it | nothing; it is the stated limit, not a defect |
+
+**And a FOURTH: `test_they_agree_when_the_business_day_defies_the_recording_order` was BLIND.**
+Its docstring claims an implementation ordering by `created_at` "answers 2026-02-15 here"; it did
+not, because `append_balance_assertion` derived `observed_on` AND stamped `created_at` from the
+same argument, so the two clocks agreed row for row and the business day never defied anything.
+The helper now takes `recorded_at` separately, the back-fill row is recorded six weeks after the
+day it is true for, and the recording-order mutant fails the test. **This is N-132 / F2 / R8's
+shape a fourth time, guarding the exact regression the retired third statement had** -- and it was
+a fixture DEFAULT that disarmed it, not a wrong offset.
+
+**The fence's limits are now stated at the fence** (`ReconciledThrough`'s own docstring) rather
+than only here: the type fences the derived accessor, a checker would fence the bare
+`CashAnchorFact.observed_on` / `CashSourceFact.settled_on` fields, and **the two are complementary
+rather than substitutes.** The developer's ruling was "structural over detector", which stands; the
+claim that a checker *could not have worked* did not, and is withdrawn in 14.1.
+
+### 14.6 What this step does NOT close
+
+- **The two EVENT representations survive.** The read walk folds transaction rows; the posting walk
+  folds the posted copy of the same events. One rule, two source sets. **X-d is what deletes the
+  second**, and ruling R-H already ruled it -- *"the posting writer consumes the SAME walk, so the
+  projection and the posted ledger cannot drift by construction rather than by a test keeping two
+  implementations in step"*. The two absorb loops are now textually the same, which is deliberate:
+  it makes X-d a deletion.
+- **The two FACT FIELDS are still bare `date`s**, so `x <= fact.observed_on` compiles in a new
+  module -- the shape a checker would catch and this type does not (14.5). **Ruled 2026-08-01:
+  wrap them, SEQUENCED AT X-d**, whose entry in `README.md` now carries it as an explicit
+  obligation. The measurement behind the sequencing: after this step every remaining read of the
+  two is a legitimate raw-date use, the wrap needs two distinct types rather than one, and X-d
+  deletes one of the two consumers.
+- **`ledger_report_service/_attribution.py`'s two date loaders** still duplicate
+  `account_posting_service/_walk.py`'s, behind a `# pylint: disable=duplicate-code` whose rationale
+  named step 3 as its resolver. It is re-owned by **X-d**: extracting a third shared home now would
+  be scaffolding for a caller X-d deletes.
+- **X-d's ship gate is MEASURED and CLEAN, which is the one thing this step could usefully do for
+  it.** Its entry requires a production sweep for walk-invisible legacy rows. Run on the same
+  clone, in both directions:
+
+  | sweep | result |
+  |---|---|
+  | entries with BOTH concrete FKs NULL and a non-correction source kind (the `_residue_source_days` bucket) | **0 entries** |
+  | entries whose `transaction_id` resolves to a MISSING, soft-deleted, or non-contributing (`Projected` / `Credit` / `Cancelled`) row -- what the posted ledger carries and a source-row walk filters out | **0 entries** |
+
+  Positive-controlled, because a zero from a hand-written query is worth nothing on its own: the
+  same joins return **170** transaction-linked entries, **19** transfer-linked and **128** with
+  both FKs NULL (every one of the 128 a correction, which is why the residue sweep excludes that
+  kind). So **no F1-class human decision is waiting for X-d on today's data.** That is a fact about
+  the data, not about the mechanism: the reverse-before-delete discipline has held, and X-d must
+  still decide whether the residue arm's defence moves to the checked-projection assert or is
+  ceded.

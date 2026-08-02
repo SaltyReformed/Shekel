@@ -54,6 +54,134 @@ from app.utils.balance_predicates import is_balance_contributing, is_projected
 
 
 @dataclass(frozen=True)
+class ReconciledThrough:
+    """The day through which an account's movements are inside a declared balance.
+
+    **The ONE statement of the question this whole arc turns on** -- *is this
+    movement already reflected in the balance the user declared?* -- and ruling
+    R-DH (a)'s answer to it: an assertion is the CLOSING balance for its civil
+    day, so a movement dated at or before that day is inside it by definition.
+    :meth:`covers` is that rule, and it is the only implementation of it in the
+    codebase -- including the MODELLED side, where an adversarial review found
+    a seventh statement of it hiding behind a loose date
+    (``balance_at._asset_contributions``: a payroll contribution on a payday
+    the assertion already covers is money the asserted balance contains, and
+    modelling it again double counts).
+
+    **What is NOT fenced, stated because a fence whose limits are unstated
+    reads as stronger than it is.**  :attr:`~._events.CashAnchorFact.observed_on`
+    and :attr:`~._events.CashSourceFact.settled_on` are still plain ``date``
+    fields -- they have to be, to key a day, sort a stream and date a journal
+    entry -- so ``x <= fact.observed_on`` compiles today in any new module.
+    That is the shape a lint checker over the assertion-day vocabulary WOULD
+    catch, and this type would not: the two fences are complementary rather
+    than substitutes (``anchor_settle_partition.md`` Section 14.5).
+
+    **It is a TYPE rather than a bare date because the mistake it prevents is
+    the one that cost production ``$4,001.42``.**  The question had FOUR
+    implementations when
+    ``docs/audits/balance_architecture/anchor_settle_partition.md`` was
+    written, three of them comparing different things in different units, and
+    the plan's answer was a pylint checker that would flag a fifth.  A checker
+    cannot see through ``earliest <= latest``, which is the very site finding
+    N-133 / F4 was about, so it would have fenced everything except the one
+    with the history.  This class fences it structurally instead: with no
+    ordering methods, ``settled_on <= reconciled_through`` raises
+    ``TypeError`` rather than silently answering the question a fifth way.
+    Asking it correctly and asking it wrongly stopped being the same keystroke.
+
+    A caller that genuinely needs the raw civil day -- an SQL bound, a rendered
+    caption -- reads :attr:`observed_day` and says so at the call site.  That
+    is the deliberate escape hatch, and naming it is the point: reaching for it
+    is visible in review, where a ``<=`` was not.
+
+    **Why the day and not the instant, measured.**  Neither instant available
+    is a fact about money: ``Transaction.paid_at`` is ``db.func.now()`` at the
+    click and an assertion's ``created_at`` is when it was typed.  So the
+    instant partition asked "which button was pressed first" and answered a
+    question about cash with it.  On production 2026-07-31 an ordinary session
+    -- read the bank, enter ``$1,307.66``, tick off what cleared -- recorded
+    three already-cleared payments in the NINE SECONDS after the assertion and
+    subtracted ``$4,001.42`` a second time, rendering ``-$4,021.37`` against a
+    true ``-$19.95``.  Across four months of that account, 65 of 139 settled
+    rows (``$19,602.13`` gross) were classified by click order, and the
+    correction the model was forced to plug at each assertion totalled
+    ``$40,554.34`` gross / ``-$6,998.90`` net against ``$15,367.94`` /
+    ``-$940.06`` under this rule.  The instant partition's own stated evidence
+    was ONE 2026-07-25 pair (an anchor at 12:57 UTC, two expenses at 13:07,
+    ``$108.15`` a date-keyed rule absorbs -- finding cash D1); scored over the
+    whole account rather than that pair, the day rule books a SMALLER plug at
+    that very assertion (``$39.27`` against ``$68.88``), because the rows it
+    absorbs were overwhelmingly recorded late rather than cleared late.
+
+    **The residual is stated rather than hidden.**  A payment that genuinely
+    clears AFTER the balance was observed on the same day is absorbed anyway,
+    and the projection reads high until the next assertion.  It is bounded
+    (median ``$184.55`` a day against the ``$4,161.47`` the instant rule
+    produced on 2026-07-31) and it self-corrects at the next assertion.
+
+    **What removes it is an OBSERVATION, not a second derived date.**  With
+    both real dates recorded, a movement made after the balance was read still
+    carries the same civil day as one made before it, so no rule comparing two
+    dates can tell them apart (``anchor_settle_partition.md`` Section 10.3).
+    The guess ends only where the user says what their statement showed --
+    which plan step S1-c built for PURCHASES
+    (``entry_service.record_settled_days``) and which a bank import would do
+    for settles.  Until then this is the best available guess on the settle
+    side, and saying so is the honest form of it.
+
+    Attributes:
+        observed_day: The civil day the account's latest balance assertion is
+            the closing balance for (``AccountAnchorHistory.observed_on``), or
+            ``None`` when no balance has ever been declared for it.  Read it
+            only to render or to bound a query; to ask whether a movement is
+            inside the balance, call :meth:`covers`.
+    """
+
+    observed_day: date | None
+
+    def covers(self, event_day: date | None) -> bool:
+        """Return whether an event dated *event_day* is inside this balance.
+
+        Ruling R-DH (a): an assertion is the closing balance for its civil day,
+        so a movement dated at or before that day is inside it.
+
+        **Total in both the argument and the boundary**, so it is a rule rather
+        than one with a precondition each caller must remember.  A ``None``
+        *event_day* is a purchase whose posting day has never been observed --
+        still outstanding, whatever any balance says (ruling R-DH (d) as
+        restated at plan step S1-c: the engine never guesses a posting day).  A
+        ``None`` :attr:`observed_day` is an account that has never had a
+        balance declared, so there is nothing for anything to be inside of.
+
+        **Totality means something different to the two caller shapes, and the
+        absorb loops rely on an invariant rather than on this arm.**  For the
+        entry reservation a ``None`` day means "this purchase is outstanding",
+        which is the answer wanted.  Inside the two walks' ``while`` loops a
+        False HALTS absorption for that assertion and every later one, so a
+        ``None`` day there would silently short the ledger where the bare
+        ``<=`` it replaced would have raised.  It cannot arise:
+        :attr:`~app.services.cash_ledger.CashSourceFact.settled_on` is typed
+        non-optional and derives from ``to_display_civil_date(paid_at,
+        period.start_date)`` over a NOT NULL ``pay_periods.start_date``, and
+        the posting walk's three source loaders resolve NOT NULL dates the
+        same way.  Stated because a fail-open substitution in a money path is
+        not something a reader should have to re-derive.
+
+        Args:
+            event_day: The civil day the money moved -- a settled row's or a
+                purchase's ``settled_on`` -- or ``None`` when it has not been
+                observed.
+
+        Returns:
+            True when the event is already inside the declared balance.
+        """
+        if event_day is None or self.observed_day is None:
+            return False
+        return event_day <= self.observed_day
+
+
+@dataclass(frozen=True)
 class ProjectedBasis:
     """What a reader knows about ONE account that changes its plan's WORTH.
 
@@ -78,18 +206,15 @@ class ProjectedBasis:
         amount_overrides: The live ``{transaction_id: Decimal}`` map
             (:func:`live_amount_overrides`) -- recomputed salary income and
             derived loan debits.  ``{}`` when the account has no candidate.
-        reconciled_through: The civil day of the account's LATEST balance
-            assertion (``AccountAnchorHistory.observed_on``), or ``None`` for
-            an account that has never asserted one.  A purchase whose recorded
-            posting day is at or before it is already inside the balance the
-            user declared; every other purchase is still outstanding and its
-            envelope keeps holding the whole budget back.  ``None`` reconciles
-            nothing, which is the honest answer for an account with no
-            declared balance to be inside of.
+        reconciled_through: The account's :class:`ReconciledThrough` boundary
+            -- the day its owner last declared a balance for it.  A purchase
+            whose recorded posting day it ``covers`` is already inside that
+            declared balance; every other purchase is still outstanding and its
+            envelope keeps holding the whole budget back.
     """
 
     amount_overrides: dict[int, Decimal]
-    reconciled_through: date | None
+    reconciled_through: ReconciledThrough
 
 
 def _override_for(txn, amount_overrides):
@@ -113,46 +238,10 @@ def _override_for(txn, amount_overrides):
     return amount_overrides.get(txn.id)
 
 
-def is_inside_assertion(
-    event_day: date | None, observed_on: date | None,
-) -> bool:
-    """Return whether an event dated *event_day* is inside an assertion.
-
-    **The ONE statement of the question this whole arc turns on** -- *is this
-    movement already reflected in the balance the user declared?* -- and ruling
-    R-DH (a)'s answer to it: an assertion is the CLOSING balance for its civil
-    day, so a movement dated at or before that day is inside it by definition.
-
-    It is stated here, once, because the question had FOUR implementations when
-    ``docs/audits/balance_architecture/anchor_settle_partition.md`` was written
-    and three of them compared different things in different units.  Answering
-    it by comparing two data-entry timestamps is what rendered production's
-    projected end balance at ``-$4,021.37`` against a true ``-$19.95`` on
-    2026-07-31 (finding N-130).
-
-    Both sides are OPTIONAL and both absences mean "not inside", which is what
-    makes this total rather than a rule with a precondition each caller must
-    remember.  A ``None`` *event_day* is a purchase whose posting day has never
-    been observed -- still outstanding, whatever any balance says.  A ``None``
-    *observed_on* is an account that has never had a balance declared, so
-    there is nothing for anything to be inside of.
-
-    Args:
-        event_day: The civil day the money moved (a settled row's
-            ``settled_on``, a purchase's ``settled_on``), or ``None`` when it
-            has not been observed.
-        observed_on: The civil day the assertion is the closing balance for,
-            or ``None`` when there is no assertion.
-
-    Returns:
-        True when the event is already inside the asserted balance.
-    """
-    if event_day is None or observed_on is None:
-        return False
-    return event_day <= observed_on
-
-
-def _entry_checking_impact(entries, estimated_amount, reconciled_through):
+def _entry_checking_impact(
+    entries, estimated_amount: Decimal,
+    reconciled_through: ReconciledThrough,
+) -> Decimal:
     """Three-bucket checking reservation for a sequence of debit/credit entries.
 
     The core of the entry-aware reduction, with exactly ONE caller:
@@ -192,10 +281,10 @@ def _entry_checking_impact(entries, estimated_amount, reconciled_through):
     SERVER's today" -- so a purchase recorded BEFORE the true-up was reconciled
     and the identical purchase recorded after it never was, and the difference
     was which button the user pressed first.  Now the purchase carries the day
-    the bank was SEEN to have taken it (``settled_on``) and the answer is
-    :func:`is_inside_assertion` against the account's latest asserted day: the
-    same predicate, in the same units, that the read fold and the posting walk
-    apply to a settled transaction.
+    the bank was SEEN to have taken it (``settled_on``) and the answer is the
+    account's own :class:`ReconciledThrough` boundary: the same rule, in the
+    same units, that the read replay and the posting walk apply to a settled
+    transaction.
 
     A purchase whose ``settled_on`` is NULL has never been observed on a
     statement and is OUTSTANDING, which is the conservative arm: the envelope
@@ -214,9 +303,8 @@ def _entry_checking_impact(entries, estimated_amount, reconciled_through):
             an empty sequence before calling.
         estimated_amount: Decimal -- the transaction's budgeted amount,
             the reservation ceiling before debits and credits reduce it.
-        reconciled_through: The civil day of the account's latest balance
-            assertion, or ``None`` when it has never asserted one.  A debit
-            whose ``settled_on`` is at or before it is inside that balance.
+        reconciled_through: The account's :class:`ReconciledThrough` boundary.
+            A debit whose ``settled_on`` it ``covers`` is inside that balance.
 
     Returns:
         Decimal -- the amount this transaction's entries hold back from
@@ -228,7 +316,7 @@ def _entry_checking_impact(entries, estimated_amount, reconciled_through):
     for entry in entries:
         if entry.is_credit:
             sum_credit += entry.amount
-        elif is_inside_assertion(entry.settled_on, reconciled_through):
+        elif reconciled_through.covers(entry.settled_on):
             settled_debit += entry.amount
         else:
             outstanding_debit += entry.amount
@@ -239,7 +327,7 @@ def _entry_checking_impact(entries, estimated_amount, reconciled_through):
     )
 
 
-def _entry_aware_amount(txn, reconciled_through):
+def _entry_aware_amount(txn, reconciled_through: ReconciledThrough) -> Decimal:
     """Compute the checking-balance impact for a single expense transaction.
 
     For projected expenses with entries (loaded eagerly or
@@ -357,10 +445,9 @@ def _entry_aware_amount(txn, reconciled_through):
             be eager-loaded (canonical producer), unloaded
             (transitional caller; lazy-loads on demand), or absent
             (test fake).
-        reconciled_through: The civil day of the account's latest balance
-            assertion, or ``None`` when it has never asserted one.  Only
-            consulted for a projected row carrying entries; every other arm
-            returns ``effective_amount`` without reading it.
+        reconciled_through: The account's :class:`ReconciledThrough` boundary.
+            Only consulted for a projected row carrying entries; every other
+            arm returns ``effective_amount`` without reading it.
 
     Returns:
         Decimal -- the amount this transaction contributes to checking

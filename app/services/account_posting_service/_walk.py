@@ -463,23 +463,25 @@ def walk_account_ledger(
 
     corrections: list[AccountAnchorCorrection] = []
     running = _ZERO_MONEY
-    source_index = 0
+    absorbed = 0
     for fact in facts:
-        # Every source dated on or before this assertion's own civil day is
-        # inside it -- opening and true-up alike, because an assertion is the
-        # CLOSING BALANCE for its day (ruling R-DH (a)).  ONE boundary for both
-        # kinds is the whole point: the read fold states the same rule as a sort
-        # position (``cash_ledger._events``), and while the OPENING carried an
-        # exception the two had to be hand-mirrored in two different forms and
-        # held in step by convention (finding N-133 / F1).  A posting walk that
-        # absorbed what the fold rode on top of is the exact drift plan step X-a
-        # exists to make impossible.
-        while (
-            source_index < len(sources)
-            and sources[source_index][0] <= fact.observed_on
+        # Absorb every source this assertion RECONCILES -- opening and true-up
+        # alike, because an assertion is the CLOSING BALANCE for its day
+        # (ruling R-DH (a)).  ``ReconciledThrough.covers`` is the ONE
+        # implementation of that rule, and this loop is deliberately the same
+        # shape as the read replay's in
+        # :func:`app.services.cash_ledger.walk_cash_ledger`, over the same
+        # assertions.  It restated the rule as a bare ``<=`` until the
+        # one-partition step: while the OPENING also carried an exception, the
+        # two walks had to be hand-mirrored in two different forms and held in
+        # step by convention (finding N-133 / F1), and a posting walk that
+        # absorbed what the fold rode on top of is the exact drift plan step
+        # X-a exists to make impossible.
+        while absorbed < len(sources) and fact.reconciled_through.covers(
+            sources[absorbed][0],
         ):
-            running += sources[source_index][1]
-            source_index += 1
+            running += sources[absorbed][1]
+            absorbed += 1
         corrections.append(
             AccountAnchorCorrection(anchor=fact, ledger_before=running)
         )

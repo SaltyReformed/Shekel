@@ -55,6 +55,8 @@ from app.utils.log_events import (
     log_event,
 )
 
+from ._amounts import ReconciledThrough
+
 
 logger = logging.getLogger(__name__)
 
@@ -242,19 +244,19 @@ def resolve_anchor(account: Account, scenario_id: int) -> AnchorPoint:
     )
 
 
-def latest_observed_day(account_id: int) -> date | None:
-    """Return the latest civil day *account_id* has asserted a balance for.
+def reconciled_through(account_id: int) -> ReconciledThrough:
+    """Return the coverage boundary *account_id*'s latest assertion establishes.
 
     The boundary every "is this already inside the balance the user declared"
-    question compares against
-    (:func:`~app.services.cash_ledger.is_inside_assertion`), for the callers
-    that do NOT already hold a walk: the posting self-heal's skip predicate,
-    the entry list's reconciled indicator, and the reconcile panel.  One
-    indexed lookup (``idx_anchor_history_account`` leads on ``account_id``),
-    no rows materialised, no anchor resolution.
+    question is asked through
+    (:meth:`~app.services.cash_ledger.ReconciledThrough.covers`), for the
+    callers that do NOT already hold a walk: the posting self-heal's skip
+    predicate, the entry list's reconciled indicator, and the reconcile panel.
+    One indexed lookup (``idx_anchor_history_account`` leads on
+    ``account_id``), no rows materialised, no anchor resolution.
 
     **It is the SQL twin of
-    :attr:`~app.services.cash_ledger.CashLedgerWalk.latest_observed_on`, and
+    :attr:`~app.services.cash_ledger.CashLedgerWalk.reconciled_through`, and
     the two exist for a reason rather than by accident.**  A caller holding the
     walk already has the answer in memory and must not pay a query for it; a
     caller rendering one template row must not walk an account to get it.  They
@@ -268,16 +270,17 @@ def latest_observed_day(account_id: int) -> date | None:
     dependency for the whole time it lived (finding N-133 / F4).
 
     Args:
-        account_id: The account whose latest asserted business day to resolve.
+        account_id: The account whose coverage boundary to resolve.
 
     Returns:
-        The civil day, or ``None`` for an account with no anchor history
+        The account's :class:`~app.services.cash_ledger.ReconciledThrough`.
+        Its ``observed_day`` is ``None`` for an account with no anchor history
         (fixture-only -- migration ``cfb15e782f86`` plus
         ``account_service.create_account`` guarantee production accounts one)
-        or a missing account.  ``None`` reconciles nothing, which is the honest
-        answer when no balance has ever been declared.
+        or a missing account, and such a boundary reconciles nothing, which is
+        the honest answer when no balance has ever been declared.
     """
-    return (
+    return ReconciledThrough(
         db.session.query(db.func.max(AccountAnchorHistory.observed_on))
         .filter(AccountAnchorHistory.account_id == account_id)
         .scalar()

@@ -69,11 +69,11 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
+from ._amounts import ReconciledThrough
 from ._events import (
     CashAnchorFact,
     CashSourceFact,
     cash_anchor_facts,
-    merge_anchor_and_cash_events,
     settled_cash_facts,
 )
 
@@ -178,14 +178,14 @@ class CashLedgerWalk:
     anchor_corrections: list[CashAnchorCorrection]
 
     @property
-    def latest_observed_on(self) -> date | None:
-        """Return the civil day of the account's LAST balance assertion.
+    def reconciled_through(self) -> ReconciledThrough:
+        """Return the coverage boundary the account's LAST assertion establishes.
 
         The boundary every "is this already inside the balance the user
-        declared" question compares against
-        (:func:`app.services.cash_ledger.is_inside_assertion`): the modelled
-        accrual window opens on it (ruling R-L), and the entry reservation
-        reconciles a purchase against it (ruling R-DH (d)).
+        declared" question is asked through
+        (:meth:`app.services.cash_ledger.ReconciledThrough.covers`): the
+        modelled accrual window opens on it (ruling R-L), and the entry
+        reservation reconciles a purchase against it (ruling R-DH (d)).
 
         **It reads the LAST element and that is only correct because of where
         the ordering lives.**  ``cash_anchor_facts`` loads its rows
@@ -199,25 +199,26 @@ class CashLedgerWalk:
         ledger tagged as the account's OPENING.
 
         Returns:
-            The latest asserted civil day, or ``None`` for an account with no
-            assertion history -- production-unreachable (migration
-            ``cfb15e782f86`` plus ``account_service.create_account`` guarantee
-            an opening row), and returned rather than raised because a walk of
-            no facts is honestly empty.  A consumer that cannot proceed
-            without one refuses on its own ground.
+            The account's :class:`~app.services.cash_ledger.ReconciledThrough`.
+            Its ``observed_day`` is ``None`` for an account with no assertion
+            history -- production-unreachable (migration ``cfb15e782f86`` plus
+            ``account_service.create_account`` guarantee an opening row) -- so
+            such an account reconciles nothing rather than raising, because a
+            walk of no facts is honestly empty.  A consumer that cannot proceed
+            without an assertion refuses on its own ground.
         """
         if not self.anchor_corrections:
-            return None
-        return self.anchor_corrections[-1].observed_on
+            return ReconciledThrough(None)
+        return self.anchor_corrections[-1].anchor.reconciled_through
 
 
 def walk_cash_ledger(account_id: int, scenario_id: int) -> CashLedgerWalk:
     """Replay an account's assertions and settled rows into one running balance.
 
-    Seeds the running balance at zero and, in event order
-    (:func:`._events.merge_anchor_and_cash_events`), either records an assertion's
-    correction and RESETS the balance to the asserted value, or advances the
-    balance by a settled source's signed delta.
+    Seeds the running balance at zero and, per assertion in business-date
+    order, advances the balance by every settled source that assertion
+    RECONCILES (:meth:`app.services.cash_ledger.ReconciledThrough.covers`),
+    records the correction, then RESETS the balance to the asserted value.
 
     **Resetting at EVERY assertion -- not seeding from the latest one -- is the
     step's point.**  The shipping projection reads only the newest anchor
@@ -236,6 +237,19 @@ def walk_cash_ledger(account_id: int, scenario_id: int) -> CashLedgerWalk:
     re-asserts the balance: measured on production 2026-07-25, ``$2,108.15``
     invisible at that instant, and ``$53,880.81`` gross across 130 rows over 45
     assertion gaps historically (finding cash D1).
+
+    **The absorb loop's precondition is the LOADERS' ordering, and it is stated
+    once where the rows are read rather than restated as a re-sort here**
+    (finding N-133 / R1).  ``cash_anchor_facts`` returns assertions ascending by
+    ``(observed_on, created_at, id)`` -- BUSINESS date first -- and
+    ``settled_cash_facts`` returns sources ascending by
+    ``(settled_on, transaction_id)``.  The monotonic ``absorbed`` pointer below
+    depends on both: a fact list not non-decreasing in its day would make it
+    skip sources it should absorb.  Two assertions about ONE day are not a
+    conflict -- they apply in recording order, the first absorbs the day's
+    sources and the second absorbs nothing, so the LAST is that day's closing
+    balance, which is what a user re-reading their bank later the same day
+    means.
 
     Reads only (no writes, no commit).
 
@@ -263,18 +277,30 @@ def walk_cash_ledger(account_id: int, scenario_id: int) -> CashLedgerWalk:
     sources = settled_cash_facts(account_id, scenario_id)
     corrections: list[CashAnchorCorrection] = []
     running = _ZERO_MONEY
-    for _day, is_anchor, item in merge_anchor_and_cash_events(
-        anchors, sources,
-    ):
-        if is_anchor:
-            corrections.append(
-                CashAnchorCorrection(anchor=item, balance_before=running)
-            )
-            # The assertion resets the walked total to the asserted balance --
-            # the user's declaration outranks the recorded facts before it.
-            running = item.anchor_balance
-            continue
-        running += item.delta
+    absorbed = 0
+    for anchor in anchors:
+        # Absorb every source this assertion RECONCILES -- one implementation
+        # of that rule (``ReconciledThrough.covers``) rather than a placement
+        # convention.  This loop is deliberately the same shape as the posted
+        # ledger's in
+        # :func:`app.services.account_posting_service.walk_account_ledger`,
+        # which walks the SAME assertions against the SAME rule over the
+        # POSTED copy of these events; plan step X-d deletes that copy and
+        # this becomes the only walk.
+        while absorbed < len(sources) and anchor.reconciled_through.covers(
+            sources[absorbed].settled_on,
+        ):
+            running += sources[absorbed].delta
+            absorbed += 1
+        corrections.append(
+            CashAnchorCorrection(anchor=anchor, balance_before=running)
+        )
+        # The assertion resets the walked total to the asserted balance --
+        # the user's declaration outranks the recorded facts before it.
+        running = anchor.anchor_balance
+    # Sources dated after the LAST assertion ride on top of it and move no
+    # correction, so the walk stops here: ``running`` is not returned, and the
+    # fold re-derives the balance from ``dated_deltas`` rather than from it.
     return CashLedgerWalk(sources, corrections)
 
 
@@ -339,9 +365,9 @@ def dated_deltas(walk: CashLedgerWalk) -> list[tuple[date, Decimal]]:
     This function's own prior text stated the split as a design -- "which settles
     an assertion already covers turns on order within a day" -- and that sentence
     is what cost production ``$4,001.42`` on 2026-07-31 (see
-    :func:`._events.merge_anchor_and_cash_events`).  Both halves key on the day
-    now, so the collapse below is not merely safe, it is the same rule the walk
-    applied.
+    :class:`app.services.cash_ledger.ReconciledThrough`).  Both halves key on
+    the day now, so the collapse below is not merely safe, it is the same rule
+    the walk applied.
 
     **Dated FACTS, not a balance-at-T** (the W9909 ruling): each pair says what
     ONE event contributed and when it counts, both readable off the public source

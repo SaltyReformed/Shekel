@@ -257,12 +257,6 @@ _FENCED_MODULE_RULINGS = {
         # date), not a computed projection.  Consumers read it for the "as of"
         # caption; their balances come from the seam.
         "resolve_anchor",
-        # The stored ``MAX(observed_on)`` for one account -- the day every
-        # "already inside the declared balance" question compares against
-        # (ruling R-DH), for the callers that hold no walk.  A DATE read off
-        # the assertion table: it says WHEN the user last declared a balance,
-        # never what that balance was, and it materialises no row.
-        "latest_observed_day",
         # The PLAN loader (plan step X-b), a non-producer on the same ground
         # as its settled twin ``settled_cash_facts`` below: it SELECTS rows and
         # returns them unchanged.  Its WINDOWED sibling
@@ -288,13 +282,24 @@ _FENCED_MODULE_RULINGS = {
         "live_amount_overrides",
         "income_amount",
         # The ONE statement of "is this movement already inside the balance the
-        # user declared" (ruling R-DH (a), plan step S1-c).  A date comparison,
-        # public precisely so the read fold, the posting walk and the entry
-        # reservation cannot each grow their own -- which they had, in three
-        # different units, and one of them cost production ``$4,001.42``.  It
-        # answers nothing about how much an account HOLDS; it answers whether
-        # one event precedes one assertion.
-        "is_inside_assertion",
+        # user declared" (ruling R-DH (a)), and since the one-partition step it
+        # is a METHOD on ``ReconciledThrough`` rather than a free function, so
+        # that a raw ``<=`` against the boundary is a TypeError instead of a
+        # fifth answer.  The read fold, the posting walk and the entry
+        # reservation all reach this one implementation -- they had three, in
+        # three different units, and one of them cost production ``$4,001.42``.
+        # It answers nothing about how much an account HOLDS; it answers
+        # whether one event precedes one assertion.
+        "covers",
+        # THREE surfaces, one name, because it is one question asked of one
+        # assertion, of a whole walk, or of an account: the property on
+        # ``CashAnchorFact``, the property on ``CashLedgerWalk``, and the
+        # module-level SQL form in ``_facts`` for callers holding no walk (one
+        # indexed ``MAX(observed_on)``, no rows materialised, no anchor
+        # resolution).  All three return a ``ReconciledThrough`` over a date;
+        # none reads a balance.  It says WHEN the user last declared one,
+        # never what it was.
+        "reconciled_through",
         # The SETTLED per-row rule (plan step X-a), moved here from
         # ``posting_service._signed_cash_leg`` so the ledger WRITER and the cash
         # WALK value one row the same way by construction.  A non-producer for
@@ -320,8 +325,11 @@ _FENCED_MODULE_RULINGS = {
         # ONE statement of which civil day a settled source's cash moved on (a
         # chronology rule returning a ``date``); ``cash_anchor_facts`` and
         # ``settled_cash_facts`` are LOADERS returning stored assertions and
-        # per-row signed effects; ``merge_anchor_and_cash_events`` orders those
-        # two fact kinds against each other and returns them unchanged.
+        # per-row signed effects.  The stream ORDERING that
+        # ``merge_anchor_and_cash_events`` used to return as a third list is
+        # gone: both walks now advance their own sources against
+        # ``ReconciledThrough.covers``, so the order is applied where the
+        # replay happens rather than published as a fact of its own.
         # ``observed_on`` is a public METHOD on ``CashAnchorCorrection`` (W9909
         # sees public methods of public classes, which is the surface D3's review
         # found W9910 structurally blind to): it returns the civil DAY one
@@ -342,7 +350,6 @@ _FENCED_MODULE_RULINGS = {
         # unchanged in substance: a day is not a balance.
         "cash_anchor_facts",
         "delta",
-        "merge_anchor_and_cash_events",
         "observed_on",
         "settled_civil_day",
         "settled_cash_facts",
@@ -360,13 +367,6 @@ _FENCED_MODULE_RULINGS = {
         # into corrections at plan step X-d.
         "dated_deltas",
         "walk_cash_ledger",
-        # The walk's own accessor for the LAST assertion's business day -- the
-        # boundary ruling R-L opens an accrual window on and ruling R-DH (d)
-        # reconciles a purchase against.  A date read off the fact the walk
-        # already holds, stated where the ordering that makes "last" meaningful
-        # is stated.  Not a balance: it says WHEN the user last declared one,
-        # never what it was.
-        "latest_observed_on",
     })),
     # The account-KIND classifier -- why it is scoped is recorded once, at
     # :data:`_KIND_CLASSIFIER_MODULES`.  Its ``find_period_containing_date``

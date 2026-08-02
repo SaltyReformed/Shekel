@@ -2744,17 +2744,22 @@ def mark_purchase_settled(db_session, account, entry, settled_on=None):
     """
     # pylint: disable=import-outside-toplevel  -- same circular-dep
     # avoidance as the loan helpers above.
-    from app.services.cash_ledger import latest_observed_day
+    from app.services.cash_ledger import reconciled_through
     from app.utils.dates import display_today
 
     settled_on = settled_on or entry.purchased_on
-    observed_on = latest_observed_day(account.id)
+    # The guard asks the PRODUCTION rule, not a lookalike: if this helper
+    # spelled the comparison itself it could come to disagree with the
+    # reservation it exists to set up, which is the whole shape plan step X-f
+    # is about.
+    boundary = reconciled_through(account.id)
+    observed_on = boundary.observed_day
     assert observed_on is not None, (
         f"account id={account.id} has asserted no balance, so no purchase can "
         f"be inside one; give it an assertion before settling entry "
         f"id={entry.id}"
     )
-    assert settled_on <= observed_on, (
+    assert boundary.covers(settled_on), (
         f"entry id={entry.id} settled {settled_on} is AFTER account "
         f"id={account.id}'s latest asserted day {observed_on}, so the "
         f"projection reads it as outstanding.  Move the account's assertion to "
@@ -3098,7 +3103,9 @@ def _restamp_assertion(db_session, account, at, *, newest):
     return row
 
 
-def append_balance_assertion(db_session, account, period, balance, at):
+def append_balance_assertion(
+    db_session, account, period, balance, at, recorded_at=None,
+):
     """Append one balance ASSERTION (a true-up) at a pinned instant.
 
     The instant-precise true-up builder the cash-ledger suites share.  See
@@ -3108,13 +3115,28 @@ def append_balance_assertion(db_session, account, period, balance, at):
     The row is inserted and then re-stamped, because ``created_at`` carries a
     server default that the INSERT would otherwise fill with the wall clock.
 
+    **The row carries TWO clocks and this helper can now separate them**
+    (*recorded_at*).  ``observed_on`` is the BUSINESS day the balance was true
+    for and ``created_at`` is when it was typed; since plan step 2 made
+    ``observed_on`` user-supplied they can disagree, which is precisely the
+    shape the retired third statement of "the latest assertion" got wrong
+    (finding N-133 / F4).  Defaulting *recorded_at* to *at* keeps every
+    existing caller's two clocks equal -- and an adversarial review found that
+    default silently disarming the one test written to exercise the
+    disagreement, which is why the parameter exists.
+
     Args:
         db_session: The test ``db.session``.
         account: The :class:`~app.models.account.Account` asserting.
         period: The :class:`~app.models.pay_period.PayPeriod` the assertion is
             filed against.
         balance: The asserted balance (str or Decimal-coercible).
-        at: The aware-UTC assertion instant.
+        at: The aware-UTC instant whose display-timezone day becomes the
+            BUSINESS day (``observed_on``).
+        recorded_at: The aware-UTC instant to stamp as ``created_at`` -- when
+            the row was TYPED.  Defaults to *at*, which makes the two clocks
+            agree; pass it to build a back-dated assertion, where the business
+            day precedes the recording instant.
 
     Returns:
         The inserted :class:`AccountAnchorHistory` row (flushed).
@@ -3132,7 +3154,7 @@ def append_balance_assertion(db_session, account, period, balance, at):
     )
     db_session.add(row)
     db_session.flush()
-    row.created_at = at
+    row.created_at = at if recorded_at is None else recorded_at
     db_session.flush()
     return row
 

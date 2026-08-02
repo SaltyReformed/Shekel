@@ -35,10 +35,8 @@ residue shipped the F1 ruling (the OPENING exception deleted from both walks), s
 F6, F7, F8, F9, F12 -- plus the eight items its own second adversarial review found
 (`anchor_settle_partition.md` Section 9).
 
-> **PRODUCTION IS ONE MIGRATION BEHIND `main`.** Prod is at `c4a19e7b2d80` (deployed 2026-08-01);
-> `main` advances to `d7c1f4a9e603` when S1-c merges. The residue moved no rendered figure (0 of
-> 15,682 seam leaves), and neither does S1-c -- so the gap is a schema gap, not a figure gap, and
-> the next deploy closes it.
+> **PRODUCTION IS CURRENT WITH `main`.** S1-c merged at PR #75 (`51e07e74`) and deployed the same
+> day; prod carries migration `d7c1f4a9e603`, confirmed against a fresh clone on 2026-08-01.
 
 **The test suite grew two clock gates on 2026-08-01** and they matter to this arc specifically,
 because three of the five defects behind them were fixture-clock bugs this arc's own work created
@@ -83,12 +81,29 @@ conversion, the five tests Section 13.2 owed, and the three holes a neutral adve
 found in it are all recorded in Section 13. **The whole step is ONE commit** -- the migration and
 the tests written against its schema cannot revert separately without leaving a tree that fails.
 
-**NEXT, in order:** ship S1-c to production (PR `feat/entry-posting-date` -> `main`, then the
-digest-pinned deploy), then step 3's fence -- much of which S1-c already built
-(`cash_ledger.is_inside_assertion` is the one predicate; what remains is the checker) -- then
-**S2-b** (the TRANSACTION half of step 2, `transactions.settled_on`, plus the true-up form's own
-date field, which is what closes N-133's write-once residue and the loan/cash index asymmetry).
-**N-134** is open and unscheduled.
+**Step 3 IS BUILT and it did NOT ship the checker this document specified** (2026-08-01, branch
+`fix/one-partition-implementation`, `anchor_settle_partition.md` Section 14). The developer ruled
+the fence must be structural rather than a detector, and an AST census then found the checker would
+have been BLIND to `account_posting_service/_sync.py`'s `earliest <= latest` -- the one site with a
+history (finding N-133 / F4), because both its operands are bare locals. A fence that reports
+success while missing the site it exists for is worse than no fence. What shipped instead is
+`cash_ledger.ReconciledThrough`: a type carrying one day and one method, `covers`, with **no
+ordering defined against a civil day**, so a restatement of the rule is a `TypeError` rather than a
+lint finding. The read replay's stable SORT and the posting walk's `<=` LOOP -- the same algorithm
+in two spellings, which nothing had named -- are now the same loop over the same call, and
+`merge_anchor_and_cash_events` is deleted. Measured on a production clone: **0 of 16,536 seam
+leaves move**, and the new posting walk reconciles the ledger the OLD walk wrote to `(0, 0)`
+changed with the trial balance at `$0.00`.
+
+**NEXT, in order:** ship step 3, then **X-d**, PULLED FORWARD past nine steps because it is the
+structural resolver for the last duplication step 3 could not remove -- **two representations of
+the same events**, which is ruling R-H's own words (*"the posting writer consumes the SAME walk, so
+the projection and the posted ledger cannot drift by construction rather than by a test keeping two
+implementations in step"*). It takes `_attribution.py`'s duplicate loaders with it. None of the
+nine steps it passes is stated as a prerequisite; its own gate is a production sweep for
+walk-invisible legacy rows. Then **S2-b** (the TRANSACTION half of step 2, `transactions.settled_on`,
+plus the true-up form's own date field, which is what closes N-133's write-once residue and the
+loan/cash index asymmetry). **N-134** is open and unscheduled.
 
 **Both cash cutovers are DONE** -- the cash one at X-c2b2 (`d3489728`) and the modelled one at X-g2b
 (`560b3339`), after which no remaining step can move a figure except by fixing a defect. The grid
@@ -2882,6 +2897,38 @@ preconditions cite entries in that file.
   (`sum(postings) == fold(ACTUAL events)`) makes a stale posting a detectable, repairable cache
   inconsistency. Ship-gated on a prod-data sweep for walk-invisible legacy rows, exactly as E1a
   was; any found row is an F1-class human decision, never a silent exclusion.
+
+  **PULLED FORWARD 2026-08-01, past X-ad / X-x / X-y / X-i / X-j / X-k / X-l / X-m / X-n, by the
+  developer's ruling that the partition's fence be structural rather than a detector**
+  (`anchor_settle_partition.md` Section 14). Step 3 removed the duplicate RULE; what survives is
+  the duplicate DATA -- the read walk folds transaction rows and this walk folds the posted copy of
+  the same events -- and R-H already ruled that only one walk closes it. **None of the nine steps
+  it passes is stated as a prerequisite**; that order is priority, not dependency, and it was
+  re-checked at this ruling. Two things make the step smaller than its entry implies: the two
+  absorb loops are now textually identical (step 3 made them so deliberately, so this is a
+  DELETION), and `cash_ledger._walk.dated_deltas`' docstring already specifies what the writer
+  books and in which sign. Two things make it no smaller: it changes a WRITER, so it rides alone
+  in its own PR per this document's own rule; and its residue arm has no counterpart on the read
+  side -- `_residue_source_days` reads postings whose source row is gone, which a source-row walk
+  cannot see by construction, so this step must decide whether that defence moves to the
+  checked-projection assert or is ceded (named at `cash_ledger._walk`'s module docstring so the
+  decision is made rather than discovered). It also inherits `ledger_report_service/_attribution.py`'s
+  two duplicate date loaders and the `duplicate-code` disable holding them apart, which step 3
+  deliberately did not extract into a third shared home.
+
+  **X-d CARRIES AN EXPLICIT OBLIGATION from step 3, ruled 2026-08-01: make
+  `CashAnchorFact.observed_on` and `CashSourceFact.settled_on` non-bare.** Step 3 fenced the
+  derived boundary (`cash_ledger.ReconciledThrough` has no ordering against a civil day) but left
+  those two FIELDS as plain `date`s, so `x <= fact.observed_on` -- the exact line step 3 deleted --
+  still compiles in any new module. The developer ruled the fields must be wrapped too and ruled it
+  SEQUENCED HERE rather than done at step 3, on a measurement: after step 3 every remaining read of
+  the two is a legitimate raw-date use (period bucketing x2, day-keying x3, the journal entry's
+  `entry_date` column, the loader's sort key), it needs TWO distinct types rather than one (a single
+  shared type would still compare a settled day against an observed one), and the hazard it closes
+  needs a THIRD walk over `cash_anchor_facts` -- which this step deletes, halving the surface the
+  wrap has to cover. Doing it here wraps a settled surface once instead of wrapping and re-cutting.
+  **It is an obligation, not a nice-to-have: a fence whose limits are stated only in a docstring is
+  a convention, and this document's own Section 8 rules a label weaker than a predicate.**
 - [ ] **X-e** (old **X4**) `refactor(accounts): current_anchor_balance is a reconciled cache or it
   is nothing` -- today `cash_ledger.resolve_anchor` detects the divergence from the history table
   and only LOGS it (`EVT_ANCHOR_CACHE_RECONCILED`), never repairs it. Decide the column's fate once

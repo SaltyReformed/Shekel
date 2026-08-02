@@ -54,7 +54,7 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
-from app.services.cash_ledger import latest_observed_day
+from app.services.cash_ledger import reconciled_through
 from app.services.posting_reads import _ledger_account_for
 from app.services.scenario_resolver import get_baseline_scenario
 
@@ -220,13 +220,15 @@ def self_heal_anchor_corrections(
        attributed at-or-before an account's latest anchor assertion moves
        that anchor's walked ``ledger_before``, so its posted correction is
        stale until re-derived; a change attributed after every assertion
-       adds to the ledger without moving any correction.  The test compares
-       CIVIL DAYS on both sides -- the earliest emitted ``entry_date``
-       against the account's latest ``observed_on`` -- which is the same
-       ``settled day <= observed day`` partition both walks apply, asked once
-       more rather than in a third form (finding N-133 / F4; see
-       :func:`_latest_observed_day` for the timezone-sign bug the third form
-       carried).  A settle-side entry is dated at the source's CURRENT
+       adds to the ledger without moving any correction.  The test asks the
+       account's own boundary
+       (:meth:`app.services.cash_ledger.ReconciledThrough.covers`) about the
+       earliest emitted ``entry_date`` -- the SAME rule both walks apply to a
+       source, called rather than re-spelled, so a cost guard cannot come to
+       disagree with the money rule it is a guard for (finding N-133 / F4; see
+       :func:`app.services.cash_ledger.reconciled_through` for the
+       timezone-sign bug the third form carried).  A settle-side entry is
+       dated at the source's CURRENT
        attribution civil date, and a reversal entry inherits the latest date
        it reverses (the R2 rule) -- the OLD attribution's civil date -- so
        both sides of every lifecycle delta are covered, including the revert
@@ -279,15 +281,17 @@ def self_heal_anchor_corrections(
         return
     earliest = min(entry.entry_date for entry in delta_entries)
     for account_id in sorted(set(account_ids)):
-        # ONE statement of "the account's latest asserted day", shared with the
-        # entry reservation and the reconcile panel (plan step S1-c).  This
-        # module had its own copy; a second copy of this question is what
-        # carried a silent timezone-sign dependency until finding N-133 / F4,
-        # and the leaf that owns the assertion rows is where it belongs.
-        latest = latest_observed_day(account_id)
-        if latest is None:
+        # ONE statement of "the account's coverage boundary", shared with the
+        # entry reservation and the reconcile panel (plan step S1-c), and asked
+        # through the rule's ONE implementation rather than re-spelled as a
+        # ``<=`` here.  This module had its own copy of both; a second copy of
+        # this question is what carried a silent timezone-sign dependency until
+        # finding N-133 / F4, and it is the site a lint-based fence could never
+        # have seen, because both of its operands were bare locals.
+        boundary = reconciled_through(account_id)
+        if boundary.observed_day is None:
             continue
-        if earliest <= latest or not _has_posted_anchor_correction(
+        if boundary.covers(earliest) or not _has_posted_anchor_correction(
             account_id, scenario_id,
         ):
             sync_account_anchor_postings(account_id, scenario_id)

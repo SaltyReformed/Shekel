@@ -476,7 +476,7 @@ def _cash_plan(
     **The reconciled-through day comes off the WALK, not off a second query**
     (plan step S1-c).  A projected envelope's reservation must know which of
     its purchases the account's latest asserted balance already contains, and
-    that day is :attr:`~app.services.cash_ledger.CashLedgerWalk.latest_observed_on`
+    that boundary is :attr:`~app.services.cash_ledger.CashLedgerWalk.reconciled_through`
     -- read off the facts :func:`assemble` has already loaded.  Taking it from
     the walk rather than resolving the anchor again is the same
     one-assembly discipline ``_asset_fold`` follows for its accrual window: two
@@ -499,7 +499,7 @@ def _cash_plan(
         account's reconciled-through day so the record is self-describing
         either way.
     """
-    reconciled_through = walk.latest_observed_on
+    reconciled_through = walk.reconciled_through
     rows = planned_cash_rows(account.id, scenario_id)
     if not rows:
         return _CashPlan(

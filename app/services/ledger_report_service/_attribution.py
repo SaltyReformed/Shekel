@@ -531,8 +531,12 @@ def _transfer_attribution_dates(transfer_ids: set[int]) -> dict[int, date]:
     # the reconciliation oracles rely on).  Both sides now derive the SAME
     # display-timezone civil day from the shadow (ruling R-DH deleted the
     # walk's instant partition), so what is restated here is the LOADER, not
-    # the rule -- plan step 3's one-predicate sweep is where the two stop being
-    # two.  One-sided disable so the walk stays un-disabled.
+    # the rule.  **Plan step 3 SHIPPED and deliberately did not resolve this**:
+    # it converged the partition RULE, and extracting a third shared home for
+    # these loaders would be scaffolding for a caller plan step X-d deletes --
+    # X-d retires the write-side walk onto the read walk, taking its twin of
+    # this query with it.  X-d owns it.  One-sided disable so the walk stays
+    # un-disabled.
     # pylint: disable=duplicate-code
     rows = (
         db.session.query(

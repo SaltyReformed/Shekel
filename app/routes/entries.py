@@ -148,10 +148,9 @@ def _render_entry_list(
     # time from the SHARED predicate rather than from a stored flag, so what
     # the row shows and what the projection held back cannot disagree -- the
     # manual toggle this replaced could set either one against the other.
-    reconciled_through = cash_ledger.latest_observed_day(txn.account_id)
+    boundary = cash_ledger.reconciled_through(txn.account_id)
     reconciled_ids = {
-        e.id for e in entries
-        if cash_ledger.is_inside_assertion(e.settled_on, reconciled_through)
+        e.id for e in entries if boundary.covers(e.settled_on)
     }
     return render_template(
         "grid/_transaction_entries.html",
@@ -169,7 +168,10 @@ def _render_entry_list(
         editing_id=editing_id,
         out_of_period_ids=out_of_period_ids,
         reconciled_ids=reconciled_ids,
-        reconciled_through=reconciled_through,
+        # The DAY, for the tooltip that names it.  Which entries the boundary
+        # reconciles is decided above, in Python; the template renders the
+        # answer and never re-derives it.
+        reconciled_through=boundary.observed_day,
         conflict=conflict,
         error=error,
         entry_list_host=host,

@@ -1575,7 +1575,7 @@ class TestTheReconcileRoute:
         **The two are the same day in every other test in this class**, because
         each trues up through the PATCH route and ``apply_anchor_true_up``
         stamps ``display_today()``.  So none of them can tell
-        ``cash_ledger.latest_observed_day(account.id)`` apart from
+        ``cash_ledger.reconciled_through(account.id)`` apart from
         ``display_today()`` -- measured: substituting the latter in
         ``accounts.anchor.reconcile_purchases`` left the whole 7,721-test suite
         green.  This is the case that separates them, and it is the only one.
@@ -1588,7 +1588,7 @@ class TestTheReconcileRoute:
 
         What the wrong clock costs, and why it is not merely untidy: the
         purchase would get ``settled_on = today``, which is AFTER the asserted
-        day, so ``is_inside_assertion`` answers False, the reservation never
+        day, so ``ReconciledThrough.covers`` answers False, the reservation never
         drops, and the projection stays low by the whole purchase.  Worse, the
         row now fails ``_outstanding_scope``'s ``settled_on IS NULL`` clause, so
         the panel can never offer it again -- the user cannot fix it from the
