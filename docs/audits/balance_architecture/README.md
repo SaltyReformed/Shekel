@@ -109,8 +109,10 @@ in two spellings, which nothing had named -- are now the same loop over the same
 leaves move**, and the new posting walk reconciles the ledger the OLD walk wrote to `(0, 0)`
 changed with the trial balance at `$0.00`.
 
-**X-ae IS BUILT AND GREEN, awaiting its PR** (2026-08-02), and it SHIPPED WIDER THAN IT WAS
-SCOPED. As ruled it closed **N-136** -- a reachable unhandled 500 at four `str.isdigit()` doors, one
+**X-ae IS MERGED TO `main`** (2026-08-02; **PR #79**, merge `a778703f`; `main` == `dev` ==
+`a778703f`), **and it SHIPPED WIDER THAN IT WAS SCOPED.**  CI green on its first sight of it,
+including the `TZ=Pacific/Kiritimati` clock gate.  **NOT YET DEPLOYED** -- the ship carries no
+migration, so it is a pure image swap and a rollback is a pure digest revert. As ruled it closed **N-136** -- a reachable unhandled 500 at four `str.isdigit()` doors, one
 of them the LOGIN path -- and every one of the four raises was REPRODUCED against a real request
 before anything was written. Then two neutral adversarial reviews refuted its central claim
 independently: it called itself *"the ONE answer to what row does this string name"* while two
@@ -2681,8 +2683,9 @@ preconditions cite entries in that file.
   publishes, so it wants its own commit and its own render diff.
 
 - [x] **X-ae** `fix(app): a submitted digit string is parsed, not predicated` -- closes
-  **N-136**, **N-140** and **N-141**, and opened **N-139** and **N-142**. **BUILT AND GREEN, not
-  yet PR'd** (see the as-built note at the end of this entry). **The step SHIPPED WIDER THAN IT
+  **N-136**, **N-140**, **N-141** and **N-143**, and opened **N-139** and **N-142**.
+  **MERGED TO `main` 2026-08-02: PR #79, merge `a778703f`, commit `cbca7eed`** (see the
+  as-built note at the end of this entry).  Not yet deployed; no migration. **The step SHIPPED WIDER THAN IT
   WAS SCOPED, on the developer's ruling of 2026-08-02**, because two adversarial reviews
   independently proved its central claim false; the original four-door scope is recorded first
   and what actually shipped follows it. **`str.isdigit()` is used as the guard for an operation
