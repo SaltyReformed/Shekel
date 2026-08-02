@@ -11,16 +11,16 @@ Section 13 for what was built, what the conversion cost, and what a neutral adve
 found in it.
 
 **Step 3 is COMPLETE and GREEN, committed as `d3e3d82a` on branch
-`fix/one-partition-implementation` (2026-08-01).  It is NOT pushed and has NO PR: the branch sits
-one commit ahead of `origin/dev`, awaiting the developer's own read of the diff.  It
-did NOT ship the pylint checker the step specified.**  The developer ruled the fence must be
-structural rather than a detector, and an AST census then showed the checker would have been blind
-to `account_posting_service/_sync.py`'s `earliest <= latest` -- the one site with a history.  What
-shipped is `cash_ledger.ReconciledThrough`, a type with no ordering against a civil day, so a
-restatement of the rule is a `TypeError` rather than a lint finding.  **Section 14** carries the
-census, the fenced shapes, the converged sites and the negative controls.  Measured on a production
-clone: **0 of 16,536 seam leaves move**, and the anchor backfill re-derives the ledger the OLD walk
-wrote without writing anything.
+`fix/one-partition-implementation` (2026-08-01), and open as PR #76 to `main` -- the first time CI
+has graded it, because CI runs only on pull requests and pushes to `main`, so no push to this
+branch could ever have graded it.  It did NOT ship the pylint checker the step specified.**  The
+developer ruled the fence must be structural rather than a detector, and an AST census then showed
+the checker would have been blind to `account_posting_service/_sync.py`'s `earliest <= latest` --
+the one site with a history.  What shipped is `cash_ledger.ReconciledThrough`, a type with no
+ordering against a civil day, so a restatement of the rule is a `TypeError` rather than a lint
+finding.  **Section 14** carries the census, the fenced shapes, the converged sites and the
+negative controls.  Measured on a production clone: **0 of 16,536 seam leaves move**, and the
+anchor backfill re-derives the ledger the OLD walk wrote without writing anything.
 
 **Three neutral adversarial reviews then ran against it and changed it in four ways** (Section
 14.5).  They found a SEVENTH implementation of the rule that this step's own census was blind to --
@@ -38,11 +38,11 @@ Step 4 and step 2's transaction half (`transactions.settled_on`) remain OPEN.  *
 last duplication step 3 could not remove: two representations of the same events, and with them
 `_attribution.py`'s duplicate loaders.
 
-`pylint app/ scripts/` 10.00/10. Full suite **7,724 passed / 0 failed**, under both
-`America/New_York` and CI's `TZ=Pacific/Kiritimati` (7,687 before S1-c). Production-clone
-verification is Section 7 for the residue and Section 13.5 for S1-c: **standards 1, 2, 3, 5 and 6
-all pass**, standard 3 after the deploy hooks as designed, and S1-c moves **0 of 15,682 seam
-leaves**.
+`pylint app/ scripts/` 10.00/10. Full suite **7,728 passed / 0 failed**, under both
+`America/New_York` and CI's `TZ=Pacific/Kiritimati` (7,724 at S1-c, 7,687 before it; step 3 adds
+four, two of them its reviews' findings). Production-clone verification is Section 7 for the
+residue and Section 13.5 for S1-c: **standards 1, 2, 3, 5 and 6 all pass**, standard 3 after the
+deploy hooks as designed, and S1-c moves **0 of 15,682 seam leaves**.
 
 **A SECOND adversarial review (Section 9) ran against the residue before it was committed and found
 eight items, four of them High.** All are fixed; the largest was structural and two reviewers found
@@ -1739,6 +1739,29 @@ schema-before-DB-work convention on state-changing routes. No reachable crash (a
 returns 200), so it is a standards question rather than a defect, and it is left for a ruling
 rather than folded into this step.
 
+> **BOTH halves of that paragraph were wrong, and TWO successive neutral reviews were needed to see
+> how wrong** (2026-08-01, while pushing step 3). *"No reachable crash"* is false: of the 888
+> characters with `isdigit() == True`, **128 make `int()` raise** (`'\N{SUPERSCRIPT TWO}'` among
+> them), and `app/error_handlers.py` registers no `ValueError` arm, so the parse is an unhandled
+> 500 on forged input. A census then found the same unsound guard at **four** doors, not one --
+> `accounts/anchor.py:282`, `loan/params.py:469`, `settings.py:442`, and `mfa_service.py:251` on
+> the LOGIN path, where a 6-character all-`isdigit()` code reaches `hmac.compare_digest` and raises
+> `TypeError` on non-ASCII. So it was never a property of this step's route. And *"left for a
+> ruling"* named no owner, so nothing would ever have carried a ruling to it: what ruling R-AO
+> forbids (*an unowned row does not wait, it rots*), and the shape that produced four stale
+> resolvers on 2026-07-27. It is now **N-136**, owned by plan step **X-ae**, whose fix is ruled:
+> ONE shared helper for the three int parses, in its own PR. No money moves and nothing is written
+> -- the raise precedes all DB WRITES at every site, and the service-side re-scoping that is the
+> actual authorization guard is untouched.
+>
+> **The correction itself needed correcting, twice, and that is the entry worth keeping.** Its
+> first draft said `str.isdecimal()` was the sound predicate; it is not
+> (`('1' * 4301).isdecimal()` is `True` and `int()` raises on CPython's 4,300-digit limit), so the
+> only sound form is to attempt the parse. Its second said the fix touched "two route files no
+> balance step opens"; `loan/params.py` is in plan step X-y's stated scope. **A finding downgraded
+> to a style item, then corrected three times before it was true, is the case FOR the adversarial
+> pass** -- and each correction came from measurement, not from re-reading.
+
 ### 13.5 What the clone measured
 
 A fresh prod-shape clone at `main`'s head, captured from a `git worktree` at `main`, upgraded to
@@ -1757,11 +1780,11 @@ A fresh prod-shape clone at `main`'s head, captured from a `git worktree` at `ma
 
 ## 14. Step 3 as BUILT: the fence is a type, because a checker could not see the site that mattered
 
-**COMPLETE and GREEN, 2026-08-01, commit `d3e3d82a` on branch `fix/one-partition-implementation`
-(unpushed, no PR).** Step 3 specified a
-custom pylint checker. The developer ruled the checker out before it was written -- *"I want to make
-the fences structurally unnecessary"* -- and tracing what a checker could actually see showed the
-ruling was also the correct engineering call, for a reason the plan had not recorded.
+**COMPLETE and GREEN, 2026-08-01, commit `d3e3d82a` on branch `fix/one-partition-implementation`,
+open as PR #76 to `main`.** Step 3 specified a custom pylint checker. The developer ruled the
+checker out before it was written -- *"I want to make the fences structurally unnecessary"* -- and
+tracing what a checker could actually see showed the ruling was also the correct engineering call,
+for a reason the plan had not recorded.
 
 ### 14.1 Why the checker was rejected, measured
 
@@ -1877,12 +1900,35 @@ and this one already had, silently, for the whole time it carried F4's timezone-
 
 | gate | result |
 |---|---|
-| full suite | **7,728 passed / 0 failed** (7,724 before; this step adds four, three of them the reviews' findings) |
+| full suite | **7,728 passed / 0 failed** (7,724 before; this step adds four, TWO of them the reviews' findings -- corrected 2026-08-01 by a node-id diff against `main`, which was three in the first draft: the other two additions are this step's own fence controls, and 14.5's own record has the reviews' remaining fixes ARMING existing tests (the `__le__` control widened in place, the blind fixture re-armed) rather than adding any.  The step is ONE commit, so that last clause is 14.5's account plus the node-id diff, not an independent measurement of a pre-review tree) |
 | the suite under CI's clock (`TZ=Pacific/Kiritimati`) | **7,728 passed / 0 failed** |
 | `pylint app/ scripts/` with every custom checker as `--fail-on` | **10.00/10** |
 | `tests/` Decimal gate, cross-tree `duplicate-code`, checker package, checker unit tests | **clean; 146 passed** |
 | whole-seam clone diff, 9 accounts / 427 grid cells / 5,978 daily points | **0 of 16,536 leaves moved; no key added or removed** -- re-run after the reviews, including the modelled contribution feed's convergence |
 | the posted ledger, reconciled by the NEW walk against the ledger the OLD walk wrote | **`backfill_all_account_anchor_postings` reconciled 7 accounts and wrote NOTHING: 317 journal entries / 641 postings before and after, trial balance `$0.00`** |
+| CI on PR #76 | **PASS on the second attempt -- 7,756 passed / 0 failed** (7,728 plus the 28 `docker` tests a local run deselects).  The FIRST attempt was RED and the diagnosis is below |
+
+**CI's first attempt failed, and it was NOT this step -- measured rather than assumed.** Run
+`30730598715` came back `2 failed, 7754 passed`, both
+`subprocess.TimeoutExpired: 'scripts/seed_user.py' timed out after 20 seconds`
+(`test_seed_redaction.py::...::test_seed_user_does_not_log_email_on_first_run` and
+`test_seed_user.py::...::test_subprocess_does_not_print_password_after_seed`). **This step IS on
+that path** -- `auth_service.register_user:724` calls `account_service.create_account`, which posts
+the origination anchor through the walk step 3 rewrote -- so "unrelated" had to be measured. Timed
+against a `git worktree` at `main`, same database, same invocation:
+
+| test | this branch | `main` |
+|---|---|---|
+| `test_seed_user_does_not_log_email_on_first_run` | 1.37s | 1.35s |
+| `test_subprocess_does_not_print_password_after_seed` | 1.31s | 1.31s |
+
+**No cost delta, against a 20-second budget.** Two further facts rule out a slow runner: the red
+run's pytest was FASTER than the last green one on `main` (1080s against 1388s), and the re-run of
+the identical commit passed all 7,756. What remains is contention, and it is citable: `pytest.ini`'s
+own comment records that `-n 12` was tuned "on a 24-core host", and CI runs that same `-n 12` on an
+`ubuntu-latest` runner, so a test that spawns a fresh interpreter plus `create_app()` and then
+asserts a hard wall-clock ceiling is measuring the runner. **Recorded rather than dismissed** (rule
+4): the finding is the instrument, not this step, and it will fire again on some future PR.
 
 The clone is a fresh read-only `pg_dump` of production restored into a throwaway database on
 `shekel-dev-db` at `d7c1f4a9e603` (the deployed head), never written back. The ledger check is the
@@ -1945,9 +1991,9 @@ raises: `ProgrammingError: operator does not exist: integer = date`. **It fails 
 naming pair is a readability question and not a correctness one, and no code changed for it.
 
 **The test-integrity audit found THREE mutants that survived the whole suite as it then
-stood (7,726 tests; it is 7,728 now, and two of those two are these findings' controls)**, and
-each is now a test with its own control. They are recorded individually because two of them are
-this step's own doing:
+stood (7,726 tests; it is 7,728 now, and two of the step's four additions are these findings'
+controls)**, and each is now a test with its own control. They are recorded individually because
+two of them are this step's own doing:
 
 | mutant that survived | what it costs | closed by |
 |---|---|---|
