@@ -11,7 +11,7 @@ Section 13 for what was built, what the conversion cost, and what a neutral adve
 found in it.
 
 **Step 3 is COMPLETE and GREEN, committed as `d3e3d82a` on branch
-`fix/one-partition-implementation` (2026-08-01), and open as PR #76 to `main` -- the first time CI
+`fix/one-partition-implementation` (2026-08-01), carried by **PR #76** -- the first time CI
 has graded it, because CI runs only on pull requests and pushes to `main`, so no push to this
 branch could ever have graded it.  It did NOT ship the pylint checker the step specified.**  The
 developer ruled the fence must be structural rather than a detector, and an AST census then showed
@@ -1781,7 +1781,7 @@ A fresh prod-shape clone at `main`'s head, captured from a `git worktree` at `ma
 ## 14. Step 3 as BUILT: the fence is a type, because a checker could not see the site that mattered
 
 **COMPLETE and GREEN, 2026-08-01, commit `d3e3d82a` on branch `fix/one-partition-implementation`,
-open as PR #76 to `main`.** Step 3 specified a custom pylint checker. The developer ruled the
+carried by PR #76.** Step 3 specified a custom pylint checker. The developer ruled the
 checker out before it was written -- *"I want to make the fences structurally unnecessary"* -- and
 tracing what a checker could actually see showed the ruling was also the correct engineering call,
 for a reason the plan had not recorded.
