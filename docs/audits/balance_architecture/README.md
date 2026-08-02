@@ -109,10 +109,14 @@ in two spellings, which nothing had named -- are now the same loop over the same
 leaves move**, and the new posting walk reconciles the ledger the OLD walk wrote to `(0, 0)`
 changed with the trial balance at `$0.00`.
 
-**X-ae IS MERGED TO `main`** (2026-08-02; **PR #79**, merge `a778703f`; `main` == `dev` ==
-`a778703f`), **and it SHIPPED WIDER THAN IT WAS SCOPED.**  CI green on its first sight of it,
-including the `TZ=Pacific/Kiritimati` clock gate.  **NOT YET DEPLOYED** -- the ship carries no
-migration, so it is a pure image swap and a rollback is a pure digest revert. As ruled it closed **N-136** -- a reachable unhandled 500 at four `str.isdigit()` doors, one
+**X-ae IS IN PRODUCTION** (2026-08-02; **PR #79**, merge `a778703f`), **and it SHIPPED WIDER
+THAN IT WAS SCOPED.**  CI green on its first sight of it, including the `TZ=Pacific/Kiritimati`
+clock gate.  **Deployed 2026-08-02**: image `sha256:4e6adc8dd3da`, cosign-verified, container
+healthy in **15s** with **0 restarts** and no rollback -- verified from `docker inspect`, and
+the digest confirmed against the `a778703f` build run's own log rather than assumed from the
+`:latest` tag.  **The ship carried NO migration** (zero files under `migrations/` between
+`6f4b4cbf` and `a778703f`), so it was a pure image swap and a rollback is a pure digest
+revert -- the caveat about a rollback leaving old code on a new schema does not apply. As ruled it closed **N-136** -- a reachable unhandled 500 at four `str.isdigit()` doors, one
 of them the LOGIN path -- and every one of the four raises was REPRODUCED against a real request
 before anything was written. Then two neutral adversarial reviews refuted its central claim
 independently: it called itself *"the ONE answer to what row does this string name"* while two
