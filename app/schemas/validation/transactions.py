@@ -12,6 +12,7 @@ from marshmallow import (
 
 from app.schemas.validation._helpers import (
     BaseSchema,
+    RowId,
     _normalize_empty_inputs,
     _reject_envelope_on_income,
 )
@@ -44,9 +45,9 @@ class TransactionUpdateSchema(BaseSchema):
         places=2, as_string=True, allow_none=True,
         validate=validate.Range(min=0),
     )
-    status_id = fields.Integer()
-    pay_period_id = fields.Integer()
-    category_id = fields.Integer()
+    status_id = RowId()
+    pay_period_id = RowId()
+    category_id = RowId()
     notes = fields.String(allow_none=True, validate=validate.Length(max=500))
     due_date = fields.Date(allow_none=True)
     # Ad-hoc tracking / visibility flags.  Deliberately NO load_default:
@@ -60,7 +61,7 @@ class TransactionUpdateSchema(BaseSchema):
     is_envelope = fields.Boolean()
     companion_visible = fields.Boolean()
     paid_at = fields.DateTime(allow_none=True, dump_only=True)
-    version_id = fields.Integer(validate=validate.Range(min=1))
+    version_id = RowId(validate=validate.Range(min=1))
 
 
 class TransactionCreateSchema(BaseSchema):
@@ -75,11 +76,11 @@ class TransactionCreateSchema(BaseSchema):
         places=2, as_string=True, allow_none=True,
         validate=validate.Range(min=0),
     )
-    account_id = fields.Integer(required=True)
-    pay_period_id = fields.Integer(required=True)
-    scenario_id = fields.Integer(required=True)
-    category_id = fields.Integer(required=True)
-    transaction_type_id = fields.Integer(required=True)
+    account_id = RowId(required=True)
+    pay_period_id = RowId(required=True)
+    scenario_id = RowId(required=True)
+    category_id = RowId(required=True)
+    transaction_type_id = RowId(required=True)
     # No ``status_id``: a transaction is born Projected (the route assigns it
     # unconditionally).  The only path to a settled status is the status seam
     # (``status_seam.apply_status_change``), so a submitted status is dropped by
@@ -123,11 +124,11 @@ class InlineTransactionCreateSchema(BaseSchema):
         places=2, as_string=True, allow_none=True,
         validate=validate.Range(min=0),
     )
-    account_id = fields.Integer(required=True)
-    category_id = fields.Integer(required=True)
-    pay_period_id = fields.Integer(required=True)
-    transaction_type_id = fields.Integer(required=True)
-    scenario_id = fields.Integer(required=True)
+    account_id = RowId(required=True)
+    category_id = RowId(required=True)
+    pay_period_id = RowId(required=True)
+    transaction_type_id = RowId(required=True)
+    scenario_id = RowId(required=True)
     # No ``status_id``: born Projected (see TransactionCreateSchema).  A
     # submitted status is dropped by ``unknown=EXCLUDE``; the route assigns
     # Projected and the status seam owns every later transition.

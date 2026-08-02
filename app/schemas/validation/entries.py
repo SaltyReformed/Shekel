@@ -11,6 +11,7 @@ from marshmallow import (
 
 from app.schemas.validation._helpers import (
     BaseSchema,
+    RowId,
     _normalize_empty_inputs,
 )
 
@@ -75,4 +76,4 @@ class EntryUpdateSchema(BaseSchema):
     is_credit = fields.Boolean()
 
     # Optimistic-locking pin (commit C-18).
-    version_id = fields.Integer(validate=validate.Range(min=1))
+    version_id = RowId(validate=validate.Range(min=1))

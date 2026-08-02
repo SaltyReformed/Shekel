@@ -1702,6 +1702,107 @@ class TestTheReconcileRoute:
 
             assert self._entries_of(txn.id)[0].settled_on is None
 
+    def test_a_submitted_id_that_is_not_a_number_does_not_raise(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Finding N-136: this door used to 500 on a forged ``entry_ids``.
+
+        ``str.isdigit()`` is true for 888 characters and 128 of them make
+        ``int()`` raise, and ``app/error_handlers.py`` has no ``ValueError``
+        arm -- so a superscript two reached the user as an unhandled 500.
+        (The 500 HANDLER still renders ``errors/500.html`` with ``DEBUG``
+        off, so no traceback was shown; an earlier wording here said "and a
+        stack trace" and was wrong about the response, not the raise.)  The
+        submission is now answered: the value names no row, so it is
+        dropped, and the purchase it could not name is left outstanding.
+        """
+        with app.app_context():
+            past = display_today() - timedelta(days=1)
+            txn = self._make_grocery_txn_with_entries(
+                seed_user, seed_periods_today, [("106.86", past, False, None)],
+            )
+            self._true_up(auth_client, seed_user["account"].id, "4537.66")
+
+            response = auth_client.post(
+                f"/accounts/{seed_user['account'].id}/reconcile",
+                data={"entry_ids": ["\N{SUPERSCRIPT TWO}"]},
+            )
+
+            assert response.status_code == 200
+            assert self._entries_of(txn.id)[0].settled_on is None
+            # Still offered, so the panel tells the truth about what is left.
+            assert b"106.86" in response.data
+
+    def test_an_id_spelled_in_another_digit_script_reconciles_nothing(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """One row id has ONE spelling (plan step X-ae's ASCII ruling).
+
+        Measured before the fix: Eastern Arabic numerals pass ``isdigit()``
+        AND convert cleanly, so this exact submission returned 200 and really
+        stamped the entry.  The crash fix alone would have kept that -- an id
+        would have had ten spellings, only one of which any form of ours
+        emits.  It is the same purchase and the same real id, submitted in
+        the other script, and now it records nothing.
+        """
+        with app.app_context():
+            past = display_today() - timedelta(days=1)
+            txn = self._make_grocery_txn_with_entries(
+                seed_user, seed_periods_today, [("106.86", past, False, None)],
+            )
+            self._true_up(auth_client, seed_user["account"].id, "4537.66")
+            entry_id = self._entries_of(txn.id)[0].id
+
+            eastern_arabic = str(entry_id).translate(
+                str.maketrans("0123456789", "٠١٢٣٤"
+                                            "٥٦٧٨٩"),
+            )
+            # The premise: this really is the same id, and it really does
+            # satisfy the predicate the route used to guard with.
+            assert eastern_arabic.isdigit()
+            assert int(eastern_arabic) == entry_id
+
+            response = auth_client.post(
+                f"/accounts/{seed_user['account'].id}/reconcile",
+                data={"entry_ids": [eastern_arabic]},
+            )
+
+            assert response.status_code == 200
+            assert self._entries_of(txn.id)[0].settled_on is None
+
+    def test_one_unparseable_id_does_not_discard_the_valid_ones(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A junk value costs its own id, not the whole submission.
+
+        The set-operation posture the writer already takes toward an id that
+        is real but not the user's -- refusing the batch would punish the
+        user for a value their browser never sent.
+        """
+        with app.app_context():
+            past = display_today() - timedelta(days=1)
+            txn = self._make_grocery_txn_with_entries(
+                seed_user, seed_periods_today, [
+                    ("106.86", past, False, None),
+                    ("249.71", past, False, None),
+                ],
+            )
+            self._true_up(auth_client, seed_user["account"].id, "4537.66")
+            ticked, untouched = self._entries_of(txn.id)
+            ticked_id, untouched_id = ticked.id, untouched.id
+
+            response = auth_client.post(
+                f"/accounts/{seed_user['account'].id}/reconcile",
+                data={"entry_ids": [
+                    "\N{SUPERSCRIPT TWO}", str(ticked_id), "not-an-id",
+                ]},
+            )
+
+            assert response.status_code == 200
+            by_id = {e.id: e for e in self._entries_of(txn.id)}
+            assert by_id[ticked_id].settled_on == display_today()
+            assert by_id[untouched_id].settled_on is None
+
 
 # ── Account Type CRUD ─────────────────────────────────────────────
 

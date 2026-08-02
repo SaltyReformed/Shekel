@@ -11,6 +11,7 @@ from marshmallow import (
 
 from app.schemas.validation._helpers import (
     BaseSchema,
+    RowId,
     _normalize_empty_inputs,
     _normalize_percent_fields,
 )
@@ -57,4 +58,4 @@ class UserSettingsSchema(BaseSchema):
     anchor_staleness_days = fields.Integer(
         validate=validate.Range(min=1),
     )
-    default_grid_account_id = fields.Integer(allow_none=True)
+    default_grid_account_id = RowId(allow_none=True)

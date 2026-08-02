@@ -23,6 +23,7 @@ from app.schemas.validation import (
 )
 from app.services.account_resolver import resolve_grid_account
 from app.services.entry_service import build_entry_sums_dict
+from app.utils.digit_strings import parse_row_id
 from app.utils.error_fragments import designed_error
 
 logger = logging.getLogger(__name__)
@@ -104,7 +105,12 @@ def _resolve_shadow_context(xfer):
         request originated from a grid cell, or None if the request
         came from the transfer management page (no source_txn_id).
     """
-    source_txn_id = request.form.get("source_txn_id", type=int)
+    # The shared rule, not ``type=int`` (plan step X-ae): Werkzeug catches the
+    # ValueError so this never crashed, but the coercion is ``int()``, which
+    # read a shadow-transaction id spelled in any digit script, padded, or
+    # signed.  The only ``request.form`` site among the 43 ``type=int`` uses --
+    # the rest are query-string and are N-142's.
+    source_txn_id = parse_row_id(request.form.get("source_txn_id"))
     if source_txn_id is None:
         return None
 

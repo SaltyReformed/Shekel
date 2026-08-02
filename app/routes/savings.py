@@ -8,6 +8,7 @@ and deleting savings goals.
 
 import json
 import logging
+from collections.abc import Mapping
 from datetime import date
 
 from flask import Blueprint, abort, flash, redirect, render_template, request, url_for
@@ -15,6 +16,7 @@ from flask_login import current_user, login_required
 from sqlalchemy.exc import IntegrityError
 
 from app.utils.auth_helpers import get_or_404, require_owner
+from app.utils.digit_strings import parse_row_id
 from app import ref_cache
 from app.enums import GoalModeEnum
 from app.extensions import db
@@ -287,7 +289,7 @@ def _goal_form_context(goal=None):
     }
 
 
-def _clean_goal_form_data(form_data):
+def _clean_goal_form_data(form_data: Mapping[str, str]) -> dict[str, str]:
     """Strip stale hidden-field values from goal form submissions.
 
     When the user toggles between Fixed and Income-Relative mode, the
@@ -299,7 +301,13 @@ def _clean_goal_form_data(form_data):
     not reject the stale combination.
 
     Args:
-        form_data: The ImmutableMultiDict from request.form.
+        form_data: The ``ImmutableMultiDict`` from ``request.form``.  Values
+            must be the raw submitted STRINGS: the mode is resolved through
+            :func:`~app.utils.digit_strings.parse_row_id`, whose domain is
+            ``str | None``, so an already-typed payload would raise
+            ``AttributeError`` rather than being coerced.  Both call sites
+            pass ``request.form``; the annotation states the precondition the
+            previous ``int()`` did not need.
 
     Returns:
         dict with stale fields removed.
@@ -307,11 +315,13 @@ def _clean_goal_form_data(form_data):
     data = dict(form_data)
     fixed_id = ref_cache.goal_mode_id(GoalModeEnum.FIXED)
 
-    # Default to Fixed when omitted (backward compatibility).
-    mode_str = data.get("goal_mode_id", str(fixed_id))
-    try:
-        mode = int(mode_str)
-    except (ValueError, TypeError):
+    # Default to Fixed when omitted (backward compatibility).  The shared
+    # rule rather than a local ``int()`` (plan step X-ae): this never crashed
+    # -- it already attempted the parse -- but it read a mode id spelled in
+    # any digit script, which no ``<select>`` of ours emits.  A value that
+    # names no mode leaves the payload untouched so the schema reports it.
+    mode = parse_row_id(data.get("goal_mode_id", str(fixed_id)))
+    if mode is None:
         return data
 
     if mode == fixed_id:

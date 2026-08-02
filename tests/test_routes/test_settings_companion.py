@@ -934,6 +934,49 @@ class TestCompanionSectionRendering:
         assert resp.status_code == 200
         assert b"Create Companion Account" in resp.data
 
+    def test_edit_query_param_ignores_a_digit_int_cannot_convert(
+        self, auth_client, db, seed_user, seed_companion,
+    ):
+        """Finding N-136: this door 500'd, but only for an owner WITH companions.
+
+        The case ``edit=nonnumeric`` above never reached: ``str.isdigit()``
+        is true for 888 characters and 128 of them make ``int()`` raise, so
+        a superscript two passed the guard and raised out of the conversion.
+        Reachable only with at least one active companion, because the
+        ``int()`` sat inside the generator's predicate and an empty list
+        never evaluates it -- which is why ``seed_companion`` is the whole
+        point of this test and its sibling above does without.
+        """
+        resp = auth_client.get(
+            "/settings?section=companions&edit=\N{SUPERSCRIPT TWO}",
+        )
+        assert resp.status_code == 200
+        assert b"Create Companion Account" in resp.data
+        assert b"Edit Companion Account" not in resp.data
+
+    def test_edit_query_param_ignores_an_id_in_another_digit_script(
+        self, auth_client, db, seed_user, seed_companion,
+    ):
+        """One companion id has ONE spelling (X-ae's ASCII ruling).
+
+        Eastern Arabic numerals pass ``isdigit()`` and convert cleanly, so a
+        crash-only fix would have opened this companion's edit form from a
+        spelling no link of ours emits.
+        """
+        comp_id = seed_companion["user"].id
+        eastern_arabic = str(comp_id).translate(
+            str.maketrans("0123456789", "٠١٢٣٤"
+                                        "٥٦٧٨٩"),
+        )
+        assert int(eastern_arabic) == comp_id
+
+        resp = auth_client.get(
+            f"/settings?section=companions&edit={eastern_arabic}",
+        )
+        assert resp.status_code == 200
+        assert b"Create Companion Account" in resp.data
+        assert b"Edit Companion Account" not in resp.data
+
     def test_edit_query_param_ignores_foreign_companion(
         self, auth_client, db, seed_user, second_user,
     ):

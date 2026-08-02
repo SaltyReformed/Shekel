@@ -17,9 +17,10 @@ from app import ref_cache
 from app.enums import CalcMethodEnum
 from app.schemas.validation._helpers import (
     BaseSchema,
-    _normalize_empty_inputs,
-    _PERCENT_INPUT_RANGE,
+    RowId,
     _NON_NEGATIVE_MONETARY,
+    _PERCENT_INPUT_RANGE,
+    _normalize_empty_inputs,
 )
 from app.utils.dates import to_display_date
 
@@ -37,7 +38,7 @@ class SalaryProfileCreateSchema(BaseSchema):
         required=True, places=2, as_string=True,
         validate=validate.Range(min=0, min_inclusive=False),
     )
-    filing_status_id = fields.Integer(required=True)
+    filing_status_id = RowId(required=True)
     state_code = fields.String(
         required=True, validate=validate.Length(min=2, max=2)
     )
@@ -91,7 +92,7 @@ class SalaryProfileUpdateSchema(BaseSchema):
         places=2, as_string=True,
         validate=validate.Range(min=0, min_inclusive=False),
     )
-    filing_status_id = fields.Integer()
+    filing_status_id = RowId()
     state_code = fields.String(validate=validate.Length(min=2, max=2))
     pay_periods_per_year = fields.Integer(
         validate=validate.OneOf([12, 24, 26, 52])
@@ -120,7 +121,7 @@ class SalaryProfileUpdateSchema(BaseSchema):
     )
 
     # Optimistic-locking pin (commit C-18).
-    version_id = fields.Integer(validate=validate.Range(min=1))
+    version_id = RowId(validate=validate.Range(min=1))
 
 
 class RaiseCreateSchema(BaseSchema):
@@ -131,7 +132,7 @@ class RaiseCreateSchema(BaseSchema):
         """Drop empty inputs; map empties on nullable fields to None."""
         return _normalize_empty_inputs(self, data)
 
-    raise_type_id = fields.Integer(required=True)
+    raise_type_id = RowId(required=True)
     effective_month = fields.Integer(
         required=True, validate=validate.Range(min=1, max=12)
     )
@@ -202,7 +203,7 @@ class RaiseUpdateSchema(RaiseCreateSchema):
     plan.
     """
 
-    version_id = fields.Integer(validate=validate.Range(min=1))
+    version_id = RowId(validate=validate.Range(min=1))
 
 
 class DeductionCreateSchema(BaseSchema):
@@ -231,8 +232,8 @@ class DeductionCreateSchema(BaseSchema):
         return _normalize_empty_inputs(self, data)
 
     name = fields.String(required=True, validate=validate.Length(min=1, max=200))
-    deduction_timing_id = fields.Integer(required=True)
-    calc_method_id = fields.Integer(required=True)
+    deduction_timing_id = RowId(required=True)
+    calc_method_id = RowId(required=True)
     # F-012 / C-24: Added explicit positive Range to backstop the DB
     # CHECK (``amount > 0``).  Column is ``Numeric(12, 4)``; min
     # 0.0001 is the smallest representable positive value.  $1M cap
@@ -277,7 +278,7 @@ class DeductionCreateSchema(BaseSchema):
     inflation_effective_month = fields.Integer(
         validate=validate.Range(min=1, max=12), allow_none=True
     )
-    target_account_id = fields.Integer(allow_none=True)
+    target_account_id = RowId(allow_none=True)
 
     @validates_schema
     def validate_amount_against_calc_method(self, data, **kwargs):
@@ -330,7 +331,7 @@ class DeductionUpdateSchema(DeductionCreateSchema):
     plan.
     """
 
-    version_id = fields.Integer(validate=validate.Range(min=1))
+    version_id = RowId(validate=validate.Range(min=1))
 
 
 class TaxBracketSetSchema(BaseSchema):
@@ -348,7 +349,7 @@ class TaxBracketSetSchema(BaseSchema):
         """Drop empty inputs; map empties on nullable fields to None."""
         return _normalize_empty_inputs(self, data)
 
-    filing_status_id = fields.Integer(required=True)
+    filing_status_id = RowId(required=True)
     tax_year = fields.Integer(
         required=True, validate=validate.Range(min=2000, max=2100),
     )

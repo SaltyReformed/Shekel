@@ -35,8 +35,12 @@ from app.services import (
 )
 from app.services.anchor_service import AnchorTrueUpOutcome
 from app.services.scenario_resolver import get_baseline_scenario
-from app.utils.account_validation import _validate_collateral_link
+from app.utils.account_validation import (
+    INVALID_COLLATERAL_LINK,
+    _validate_collateral_link,
+)
 from app.utils.auth_helpers import get_or_404, require_owner
+from app.utils.digit_strings import parse_row_id
 
 logger = logging.getLogger(__name__)
 
@@ -452,8 +456,32 @@ def update_collateral(account_id):
     Writes the nullable ``collateral_account_id`` self-link on the loan
     account so a mortgage / HELOC can be grouped with the Property it is
     secured by and equity rendered.  The link is presentation only -- the
-    emergent net-worth math never reads it.  An empty or malformed
-    submission clears the link; a non-empty value is validated by
+    emergent net-worth math never reads it.
+
+    **Exactly ``""`` clears the link; anything else -- including the field
+    being ABSENT -- is refused** (plan step X-ae).  Those are different inputs
+    and this route used to answer them all the same way: ``""`` is the picker's
+    own blank option, a deliberate "nothing secures this loan", while any other
+    value, or no field at all, cannot come from the picker.  A browser
+    rendering this form always submits the ``<select>``, so an absent field is
+    a forged or truncated POST, not a choice.  Clearing on the second meant a
+    forged field silently destroyed a real link under a success flash -- and,
+    on 128 of the characters ``str.isdigit()`` accepts, raised into an
+    unhandled 500 before it got that far (finding N-136).  A value that names
+    no id now gets the same
+    :data:`~app.utils.account_validation.INVALID_COLLATERAL_LINK` answer as an
+    id naming no account, and nothing is written.
+
+    **The submission is NOT stripped, and that is the ruling rather than an
+    omission.**  A ``.strip()`` here re-opened the hole twice over: it maps
+    every Unicode space to ``""`` -- ``"\\xa0".strip()`` is ``""`` -- so a
+    forged non-breaking space took the CLEAR path under a success flash, the
+    exact behaviour the paragraph above says is closed; and it normalised a
+    value before applying the shared rule, so ``" 2 "`` linked here while the
+    reconcile and companion doors refused it, leaving four doors with three
+    behaviours.  Both were found by adversarial review of the first build.
+
+    Every value that DOES name an id is validated by
     :func:`app.utils.account_validation._validate_collateral_link`
     (same-owner Asset target, no self-link, source is an amortizing
     liability) before it is written.
@@ -462,11 +490,20 @@ def update_collateral(account_id):
     if account is None:
         abort(404)
 
-    # The picker submits an Asset account id or "" (clear).  A non-digit
-    # value can only come from a forged form; treat it as a clear rather
-    # than crashing -- the validator below is the authority on legality.
-    raw = (request.form.get("collateral_account_id") or "").strip()
-    collateral_account_id = int(raw) if raw.isdigit() else None
+    # The picker submits an Asset account id or "" (clear); the guard takes
+    # everything else, so the validator below sees only ``None`` or a real id.
+    # ``None`` (the field absent entirely) is NOT the blank option and does not
+    # clear: a browser rendering this form always submits the select, so an
+    # absent field is the same forged or truncated POST the guard refuses --
+    # defaulting it to "" put it back on the clear path, which an adversarial
+    # review caught destroying a real link under a success flash.
+    submitted = request.form.get("collateral_account_id")
+    collateral_account_id = None
+    if submitted != "":
+        collateral_account_id = parse_row_id(submitted)
+        if collateral_account_id is None:
+            flash(*INVALID_COLLATERAL_LINK)
+            return redirect(url_for("loan.dashboard", account_id=account_id))
 
     failure = _validate_collateral_link(
         collateral_account_id, account, current_user.id,

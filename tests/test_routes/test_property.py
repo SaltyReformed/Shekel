@@ -213,6 +213,170 @@ class TestCollateralLinkRoute:
             loan = db.session.get(Account, loan_id)
             assert loan.collateral_account_id is None
 
+    def test_a_value_that_names_no_id_is_refused_and_the_link_survives(
+        self, app, auth_client, db, seed_user, seed_periods_today,
+    ):
+        """Plan step X-ae: a malformed submission is not a clear.
+
+        Two things were wrong here at once.  A superscript two passes
+        ``str.isdigit()`` and makes ``int()`` raise, so this exact request
+        was an unhandled 500 (finding N-136); and the route's stated
+        fallback for a bad value -- clear the link -- meant a forged field
+        silently destroyed a real link under a "Secured-by link updated."
+        flash.  "" is the picker's own blank option and still clears; a
+        value the picker cannot emit now gets the same answer as an id
+        naming no account, and the loan keeps what it had.
+        """
+        with app.app_context():
+            prop = _make_property(db, seed_user, seed_periods_today)
+            loan = create_loan_account(seed_user, db.session, name="Mtg")
+            loan.collateral_account_id = prop.id
+            db.session.commit()
+            prop_id, loan_id = prop.id, loan.id
+
+        resp = auth_client.post(
+            f"/accounts/{loan_id}/loan/collateral",
+            data={"collateral_account_id": "\N{SUPERSCRIPT TWO}"},
+            follow_redirects=True,
+        )
+
+        assert resp.status_code == 200
+        assert b"Invalid linked account." in resp.data
+        assert b"Secured-by link updated." not in resp.data
+        with app.app_context():
+            loan = db.session.get(Account, loan_id)
+            assert loan.collateral_account_id == prop_id
+
+    def test_a_whitespace_only_value_does_not_clear_the_link(
+        self, app, auth_client, db, seed_user, seed_periods_today,
+    ):
+        """A forged space is not the picker's blank option.
+
+        Caught by adversarial review of the first build, which kept the
+        route's original ``.strip()``.  ``str.strip`` removes UNICODE
+        whitespace, so ``"\\xa0"``, ``"\\u3000"`` and ``" "`` all became
+        ``""`` and took the clear path -- destroying a real link under a
+        "Secured-by link updated." flash, which is verbatim the behaviour
+        this route's docstring says is closed.  The ``<select>`` emits
+        ``value=""`` and nothing else, so only ``""`` clears.
+        """
+        with app.app_context():
+            prop = _make_property(db, seed_user, seed_periods_today)
+            loan = create_loan_account(seed_user, db.session, name="Mtg")
+            loan.collateral_account_id = prop.id
+            db.session.commit()
+            prop_id, loan_id = prop.id, loan.id
+
+        for blank in (" ", " ", "　"):
+            # The premise: each of these would have looked empty after a strip.
+            assert blank.strip() == ""
+            resp = auth_client.post(
+                f"/accounts/{loan_id}/loan/collateral",
+                data={"collateral_account_id": blank},
+                follow_redirects=True,
+            )
+            assert resp.status_code == 200
+            assert b"Invalid linked account." in resp.data
+            with app.app_context():
+                loan = db.session.get(Account, loan_id)
+                assert loan.collateral_account_id == prop_id, (
+                    f"{blank!r} cleared the link"
+                )
+
+    def test_an_absent_field_does_not_clear_the_link(
+        self, app, auth_client, db, seed_user, seed_periods_today,
+    ):
+        """A POST with no ``collateral_account_id`` at all is not a clear.
+
+        The second adversarial review's finding, one input over from the
+        whitespace case: the route read the field with a ``""`` default, so
+        an ABSENT field took the same clear path and destroyed a real link
+        under a success flash.  The ``<select>`` is always submitted by a
+        browser rendering this form, so an absent field is the same forged
+        or truncated POST the guard refuses -- only a submitted ``""``, the
+        picker's own blank option, clears.
+        """
+        with app.app_context():
+            prop = _make_property(db, seed_user, seed_periods_today)
+            loan = create_loan_account(seed_user, db.session, name="Mtg")
+            loan.collateral_account_id = prop.id
+            db.session.commit()
+            prop_id, loan_id = prop.id, loan.id
+
+        resp = auth_client.post(
+            f"/accounts/{loan_id}/loan/collateral",
+            data={},
+            follow_redirects=True,
+        )
+
+        assert resp.status_code == 200
+        assert b"Invalid linked account." in resp.data
+        assert b"Secured-by link updated." not in resp.data
+        with app.app_context():
+            loan = db.session.get(Account, loan_id)
+            assert loan.collateral_account_id == prop_id
+
+    def test_a_padded_id_is_refused_like_every_other_door(
+        self, app, auth_client, db, seed_user, seed_periods_today,
+    ):
+        """Four doors, ONE rule -- which a pre-normalizing door defeats.
+
+        The first build stripped here and nowhere else, so ``" 2 "`` linked
+        at this door while the reconcile and companion doors refused it.
+        The shared rule is the deliverable of this step; a door that
+        normalizes before applying it is not sharing it.
+        """
+        with app.app_context():
+            prop = _make_property(db, seed_user, seed_periods_today)
+            loan = create_loan_account(seed_user, db.session, name="Mtg")
+            db.session.commit()
+            prop_id, loan_id = prop.id, loan.id
+
+        resp = auth_client.post(
+            f"/accounts/{loan_id}/loan/collateral",
+            data={"collateral_account_id": f"  {prop_id}  "},
+            follow_redirects=True,
+        )
+
+        assert resp.status_code == 200
+        assert b"Invalid linked account." in resp.data
+        with app.app_context():
+            loan = db.session.get(Account, loan_id)
+            assert loan.collateral_account_id is None
+
+    def test_an_id_spelled_in_another_digit_script_is_refused(
+        self, app, auth_client, db, seed_user, seed_periods_today,
+    ):
+        """One account id has ONE spelling (X-ae's ASCII ruling).
+
+        Eastern Arabic numerals pass ``isdigit()`` and convert cleanly, so a
+        crash-only fix would have accepted this as the property's real id.
+        The picker emits ``str(int)``; anything else names no id.
+        """
+        with app.app_context():
+            prop = _make_property(db, seed_user, seed_periods_today)
+            loan = create_loan_account(seed_user, db.session, name="Mtg")
+            db.session.commit()
+            prop_id, loan_id = prop.id, loan.id
+
+        eastern_arabic = str(prop_id).translate(
+            str.maketrans("0123456789", "٠١٢٣٤"
+                                        "٥٦٧٨٩"),
+        )
+        assert int(eastern_arabic) == prop_id
+
+        resp = auth_client.post(
+            f"/accounts/{loan_id}/loan/collateral",
+            data={"collateral_account_id": eastern_arabic},
+            follow_redirects=True,
+        )
+
+        assert resp.status_code == 200
+        assert b"Invalid linked account." in resp.data
+        with app.app_context():
+            loan = db.session.get(Account, loan_id)
+            assert loan.collateral_account_id is None
+
 
 class TestPropertyDeletion:
     """Deleting a Property clears the link (SET NULL) and its params row."""

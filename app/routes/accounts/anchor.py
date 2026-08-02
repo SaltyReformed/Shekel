@@ -45,6 +45,7 @@ from app.services.anchor_service import AnchorTrueUpOutcome
 from app.utils.account_validation import _anchor_schema
 from app.utils.auth_helpers import get_or_404, require_owner
 from app.utils.dates import display_today, to_display_tz
+from app.utils.digit_strings import parse_row_ids
 
 logger = logging.getLogger(__name__)
 
@@ -249,10 +250,13 @@ def reconcile_purchases(account_id):
     said it saved.  A separate transaction cannot be swallowed by another
     one's rollback.
 
-    Every submitted id is re-scoped in the service against the outstanding set
-    (owner, account, debit, projected parent, still unrecorded), so a forged id
-    matches nothing rather than raising -- the set-operation form of the
-    project's "404 for both not-found and not-yours" rule.
+    A submitted value that does not name a row is dropped by
+    :func:`~app.utils.digit_strings.parse_row_ids` before the service is
+    reached, and every id that survives is re-scoped there against the
+    outstanding set (owner, account, debit, projected parent, still
+    unrecorded), so a forged id matches nothing rather than raising -- the
+    set-operation form of the project's "404 for both not-found and
+    not-yours" rule.
 
     Returns the refreshed panel plus ``HX-Trigger: balanceChanged`` so every
     surface showing a projection recomputes.
@@ -279,7 +283,7 @@ def reconcile_purchases(account_id):
     entry_service.record_settled_days(
         current_user.id,
         account.id,
-        {int(raw) for raw in request.form.getlist("entry_ids") if raw.isdigit()},
+        parse_row_ids(request.form.getlist("entry_ids")),
         observed_on,
     )
     db.session.commit()

@@ -15,6 +15,7 @@ from app import ref_cache
 from app.enums import AcctCategoryEnum, CompoundingFrequencyEnum
 from app.schemas.validation._helpers import (
     BaseSchema,
+    RowId,
     _normalize_empty_inputs,
     _normalize_percent_fields,
 )
@@ -49,7 +50,7 @@ class AnchorUpdateSchema(BaseSchema):
     """
 
     anchor_balance = fields.Decimal(required=True, places=2, as_string=True)
-    version_id = fields.Integer(validate=validate.Range(min=1))
+    version_id = RowId(validate=validate.Range(min=1))
 
 
 class AccountCreateSchema(BaseSchema):
@@ -61,7 +62,7 @@ class AccountCreateSchema(BaseSchema):
         return _normalize_empty_inputs(self, data)
 
     name = fields.String(required=True, validate=validate.Length(min=1, max=100))
-    account_type_id = fields.Integer(required=True)
+    account_type_id = RowId(required=True)
     anchor_balance = fields.Decimal(places=2, as_string=True)
     # The civil day ``anchor_balance`` was TRUE (ruling R-DH, plan step 2).
     # Optional: blank means today, applied by ``account_service.create_account``
@@ -87,10 +88,10 @@ class AccountUpdateSchema(BaseSchema):
         return _normalize_empty_inputs(self, data)
 
     name = fields.String(validate=validate.Length(min=1, max=100))
-    account_type_id = fields.Integer()
+    account_type_id = RowId()
     is_active = fields.Boolean()
     anchor_balance = fields.Decimal(places=2, as_string=True)
-    version_id = fields.Integer(validate=validate.Range(min=1))
+    version_id = RowId(validate=validate.Range(min=1))
 
 
 class AccountTypeCreateSchema(BaseSchema):
@@ -102,7 +103,7 @@ class AccountTypeCreateSchema(BaseSchema):
     """
 
     name = fields.String(required=True, validate=validate.Length(min=1, max=30))
-    category_id = fields.Integer(required=True)
+    category_id = RowId(required=True)
     has_parameters = fields.Boolean(load_default=False)
     has_amortization = fields.Boolean(load_default=False)
     has_interest = fields.Boolean(load_default=False)
@@ -167,7 +168,7 @@ class AccountTypeUpdateSchema(BaseSchema):
     """
 
     name = fields.String(validate=validate.Length(min=1, max=30))
-    category_id = fields.Integer()
+    category_id = RowId()
     has_parameters = fields.Boolean()
     has_amortization = fields.Boolean()
     has_interest = fields.Boolean()
@@ -278,7 +279,7 @@ class InterestParamsCreateSchema(BaseSchema):
     )
     # #38: compounding frequency is now a ref-table FK id, not a free
     # string.  Required on create, mirroring the prior String field.
-    compounding_frequency_id = fields.Integer(required=True)
+    compounding_frequency_id = RowId(required=True)
 
     @validates_schema
     def validate_compounding_frequency(self, data, **kwargs):
@@ -316,7 +317,7 @@ class InterestParamsUpdateSchema(BaseSchema):
     # #38: ref-table FK id (see :class:`InterestParamsCreateSchema`).
     # Optional on update so a partial payload (e.g. apy only) need not
     # resubmit the frequency.
-    compounding_frequency_id = fields.Integer()
+    compounding_frequency_id = RowId()
 
     @validates_schema
     def validate_compounding_frequency(self, data, **kwargs):
