@@ -10,6 +10,7 @@ from marshmallow import (
 
 from app.schemas.validation._helpers import (
     BaseSchema,
+    RowId,
     _normalize_empty_inputs,
     _reject_envelope_on_income,
 )
@@ -45,9 +46,9 @@ class TemplateCreateSchema(BaseSchema):
         required=True, places=2, as_string=True,
         validate=validate.Range(min=0),
     )
-    category_id = fields.Integer(required=True)
-    transaction_type_id = fields.Integer(required=True)
-    account_id = fields.Integer(required=True)
+    category_id = RowId(required=True)
+    transaction_type_id = RowId(required=True)
+    account_id = RowId(required=True)
 
     # Tracking & visibility flags.
     is_envelope = fields.Boolean(load_default=False)
@@ -56,8 +57,12 @@ class TemplateCreateSchema(BaseSchema):
     # Recurrence rule fields (optional -- omit for one-time / manual).
     # The value is the integer primary key of a ref.recurrence_patterns row,
     # submitted as a string via HTML form data.  Route-level code validates
-    # existence via db.session.get().
-    recurrence_pattern = fields.Integer(validate=validate.Range(min=1))
+    # existence via db.session.get().  ``RowId`` rather than ``Integer``
+    # because it IS a row id despite the name (plan step X-ae): an
+    # adversarial review found it reading '١', ' 2 ', '+3', '007' and
+    # '1_0' as pattern ids, and the completeness gate could not see it
+    # while that gate matched on a ``_id`` SUFFIX.
+    recurrence_pattern = RowId(validate=validate.Range(min=1))
     interval_n = fields.Integer(validate=validate.Range(min=1))
     offset_periods = fields.Integer(validate=validate.Range(min=0))
     day_of_month = fields.Integer(validate=validate.Range(min=1, max=31))
@@ -65,7 +70,7 @@ class TemplateCreateSchema(BaseSchema):
         validate=validate.Range(min=1, max=31), allow_none=True,
     )
     month_of_year = fields.Integer(validate=validate.Range(min=1, max=12))
-    start_period_id = fields.Integer()
+    start_period_id = RowId()
     end_date = fields.Date(allow_none=True)
 
     @validates_schema
@@ -120,12 +125,12 @@ class TemplateUpdateSchema(TemplateCreateSchema):
     # Override -- all fields optional for update.
     name = fields.String(validate=validate.Length(min=1, max=200))
     default_amount = fields.Decimal(places=2, as_string=True, validate=validate.Range(min=0))
-    category_id = fields.Integer()
-    transaction_type_id = fields.Integer()
-    account_id = fields.Integer()
+    category_id = RowId()
+    transaction_type_id = RowId()
+    account_id = RowId()
 
     # Date from which regeneration takes effect.
     effective_from = fields.Date()
 
     # Optimistic-locking pin (commit C-18).
-    version_id = fields.Integer(validate=validate.Range(min=1))
+    version_id = RowId(validate=validate.Range(min=1))

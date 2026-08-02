@@ -425,6 +425,77 @@ class TestVerifyTotpCodeReplayPrevention:
             )
         assert config.last_totp_timestep is None
 
+    def test_non_ascii_digit_code_returns_invalid_without_raising(
+        self, frozen_time,
+    ):
+        """Finding N-136: the one malformed shape that RAISED instead.
+
+        The boundary collection above is every malformed code that already
+        returned INVALID.  This is the one that did not: ``str.isdigit()``
+        -- the guard ``_find_matching_step`` used -- is true for every
+        non-Latin digit script, so a six-character code of Eastern Arabic
+        numerals satisfied both the length and the digit test, reached
+        ``hmac.compare_digest``, and raised ``TypeError: comparing strings
+        with non-ASCII characters is not supported``.  On the login path,
+        with no handler for it.
+
+        Asserted per script rather than once, because the defect is a
+        PROPERTY of the whole predicate and any single script would let a
+        fix that special-cased one of them pass.  ``last_totp_timestep``
+        must also be untouched: a rejected code consumes no step.
+        """
+        secret = mfa_service.generate_totp_secret()
+        config = self._make_mfa_config(secret, last_step=None)
+
+        # Six characters, ``isdigit()`` true, in three different scripts.
+        non_ascii_codes = (
+            "١٢٣٤٥٦",       # Arabic-Indic
+            "১২৩৪৫৬",       # Bengali
+            "１２３４５６",   # Fullwidth
+        )
+        for code in non_ascii_codes:
+            assert len(code) == 6 and code.isdigit(), (
+                f"Test premise broken: {code!r} is not a 6-character "
+                f"isdigit() string, so it never reached the defect"
+            )
+            result = mfa_service.verify_totp_code(config, code)
+            assert result is mfa_service.TotpVerificationResult.INVALID, (
+                f"Expected INVALID for non-ASCII code {code!r}; "
+                f"got {result!r}"
+            )
+        assert config.last_totp_timestep is None
+
+    def test_the_users_real_code_in_another_script_is_still_refused(
+        self, frozen_time,
+    ):
+        """Even the CORRECT six digits, respelled, are not this user's code.
+
+        The sharper half of the case above: the digits below are the very
+        code the authenticator is showing right now, transliterated.  A fix
+        that merely stopped the crash by falling through to the comparison
+        would have to decide whether these match, and the answer is no --
+        the code is what the authenticator emitted, ASCII and all.
+        """
+        secret = mfa_service.generate_totp_secret()
+        config = self._make_mfa_config(secret, last_step=None)
+        real_code = pyotp.TOTP(secret).at(frozen_time)
+
+        respelled = real_code.translate(
+            str.maketrans("0123456789", "٠١٢٣٤"
+                                        "٥٦٧٨٩"),
+        )
+        assert int(respelled) == int(real_code)
+
+        assert mfa_service.verify_totp_code(config, respelled) is (
+            mfa_service.TotpVerificationResult.INVALID
+        )
+        assert config.last_totp_timestep is None
+        # ...and the ASCII spelling of the same code still authenticates,
+        # so the refusal above is about the spelling, not the secret.
+        assert mfa_service.verify_totp_code(config, real_code) is (
+            mfa_service.TotpVerificationResult.ACCEPTED
+        )
+
 
 class TestBackupCodes:
     """Tests for backup code generation, hashing, and verification.

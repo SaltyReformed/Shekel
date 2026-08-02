@@ -2,21 +2,24 @@
 
 The base schema (CSRF-stripping ``unknown = EXCLUDE`` policy), the
 shared range validators, the percent-to-fraction ``@pre_load`` helper
-(E-28 / HIGH-06), and the cross-schema envelope-on-income rule.  Every
-domain module in this package imports its base and helpers from here so
-the percent-conversion and monetary-range rules have a single home."""
+(E-28 / HIGH-06), the :class:`RowId` field, and the cross-schema
+envelope-on-income rule.  Every domain module in this package imports its
+base and helpers from here so the percent-conversion, monetary-range and
+submitted-id rules have a single home."""
 
 
 from decimal import Decimal, InvalidOperation
 
 from marshmallow import (
     Schema,
+    fields,
     validate,
     ValidationError,
     EXCLUDE,
 )
 
 from app import ref_cache
+from app.utils.digit_strings import MIN_ROW_ID, parse_row_id
 
 
 # ── Shared range validators (commit C-24) ─────────────────────────
@@ -138,6 +141,85 @@ def _normalize_percent_fields(data, field_names):
             # for narrow-catch parity.
             pass
     return data
+
+
+class RowId(fields.Integer):
+    """A submitted database row id, in its one canonical spelling.
+
+    The schema layer's share of "what does this submitted digit string
+    mean" (plan step X-ae, finding N-141), consuming the same
+    :func:`~app.utils.digit_strings.parse_row_id` as the form doors and the
+    URL converter.  Declared on every field in this package that names a ROW
+    -- 75 of them, which is the 73 called ``*_id`` PLUS the two
+    ``recurrence_pattern`` fields, whose name does not say so and which a
+    completeness gate matching on a ``_id`` suffix could not see.  An id means
+    the same thing whether it arrives in a path or a form body.
+
+    **What it refuses that ``fields.Integer`` accepts.**  Marshmallow's
+    ``Integer`` is crash-safe -- it catches the ``ValueError`` -- but it is
+    as lax as ``int()`` about what it will read, which was measured on this
+    project's own declarations::
+
+        fields.Integer().deserialize("١٢")    -> 12
+        fields.Integer().deserialize(" 12 ")  -> 12
+        fields.Integer().deserialize("+12")   -> 12
+        fields.Integer().deserialize("1_0")   -> 10
+        fields.Integer().deserialize("007")   ->  7
+        fields.Integer().deserialize("-5")    -> -5
+        fields.Integer().deserialize("0")     ->  0
+
+    Seven spellings of "the row I mean", two of which name no row at all.
+    Each is rejected here as a validation error the form reports, not as a
+    silent coercion.
+
+    **A non-string payload must still name a row EXACTLY.**  A JSON body or a
+    programmatic caller submits a number rather than a spelling of one, so
+    there is nothing to normalise -- but ``Integer`` would TRUNCATE it, and
+    ``1.9`` naming row 1 is the same defect as ``"007"`` naming row 7.  A
+    non-integral value is refused rather than rounded, and the
+    :data:`~app.utils.digit_strings.MIN_ROW_ID` floor applies on both paths.
+
+    **The strictness is on LOAD only, deliberately.**  It overrides
+    ``_deserialize`` rather than ``_format_num`` because marshmallow calls
+    ``_format_num`` from ``_serialize`` OUTSIDE the ``_validated``
+    try/except -- so a rule expressed there escapes as a raw ``ValueError``
+    when a schema dumps, which an adversarial review demonstrated on
+    ``dump(0)``, ``dump(-5)`` and ``dump("007")``.  Dumping is the
+    application rendering its OWN rows, not reading a submission, and it has
+    no submitted spelling to police.
+    """
+
+    default_error_messages = {"invalid": "Not a valid id."}
+
+    def _deserialize(self, value, attr, data, **kwargs):
+        """Return the row id *value* names.
+
+        Args:
+            value: The submitted value -- a ``str`` from a form or query, or
+                an already-typed number from a programmatic payload.
+            attr: The field name being loaded (marshmallow's contract).
+            data: The whole payload being loaded (marshmallow's contract).
+            **kwargs: Forwarded to :class:`marshmallow.fields.Integer`.
+
+        Returns:
+            The row id as an ``int``.
+
+        Raises:
+            ValidationError: *value* names no row -- a non-canonical
+                spelling, a non-integral number, or a value below
+                :data:`~app.utils.digit_strings.MIN_ROW_ID`.
+        """
+        if isinstance(value, str):
+            row_id = parse_row_id(value)
+            if row_id is None:
+                raise self.make_error("invalid", input=value)
+            return row_id
+        row_id = super()._deserialize(value, attr, data, **kwargs)
+        # ``Integer`` has already truncated at this point, so the round-trip
+        # is what detects that it did: ``1.9`` arrives here as ``1``.
+        if row_id != value or row_id < MIN_ROW_ID:
+            raise self.make_error("invalid", input=value)
+        return row_id
 
 
 class BaseSchema(Schema):

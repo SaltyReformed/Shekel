@@ -93,10 +93,14 @@ the tests written against its schema cannot revert separately without leaving a 
 **Step 3 IS MERGED TO `main` and it did NOT ship the checker this document specified**
 (commit `d3e3d82a`, 2026-08-01; **PR #76**, merge `6f4b4cbf`, 2026-08-02;
 `anchor_settle_partition.md` Section 14). The developer ruled the fence must be structural rather
-than a detector, and an AST census then found the checker would
-have been BLIND to `account_posting_service/_sync.py`'s `earliest <= latest` -- the one site with a
-history (finding N-133 / F4), because both its operands are bare locals. A fence that reports
-success while missing the site it exists for is worse than no fence. What shipped instead is
+than a detector. **An earlier version of this paragraph justified that with an AST census showing
+the checker would have been BLIND at `account_posting_service/_sync.py`'s bare-local
+`earliest <= latest` -- and step 3's own adversarial review REFUTED that, so 14.1 withdrew it**:
+adding those names to the vocabulary matches them, and resolving a `Name` to its `Assign` is one
+astroid hop. What survives is the ruling itself, which was never a claim about lint, plus 14.5's
+addition that a type and a checker fence COMPLEMENTARY holes rather than substituting for each
+other. The correction is kept visible because the withdrawn claim was cited again on 2026-08-02, in
+plan step X-ag's first draft. What shipped instead is
 `cash_ledger.ReconciledThrough`: a type carrying one day and one method, `covers`, with **no
 ordering defined against a civil day**, so a restatement of the rule is a `TypeError` rather than a
 lint finding. The read replay's stable SORT and the posting walk's `<=` LOOP -- the same algorithm
@@ -105,15 +109,41 @@ in two spellings, which nothing had named -- are now the same loop over the same
 leaves move**, and the new posting walk reconciles the ledger the OLD walk wrote to `(0, 0)`
 changed with the trial balance at `$0.00`.
 
-**NEXT, in order: X-ae, then X-d, then S2-b.**  The deploy that used to head this list is
-DONE (2026-08-02, `6f4b4cbf`), so nothing unshipped is riding under the next step -- which
-matters because X-d changes a WRITER and wants a rollback that isolates it.
+**X-ae IS BUILT AND GREEN, awaiting its PR** (2026-08-02), and it SHIPPED WIDER THAN IT WAS
+SCOPED. As ruled it closed **N-136** -- a reachable unhandled 500 at four `str.isdigit()` doors, one
+of them the LOGIN path -- and every one of the four raises was REPRODUCED against a real request
+before anything was written. Then two neutral adversarial reviews refuted its central claim
+independently: it called itself *"the ONE answer to what row does this string name"* while two
+larger surfaces were still lax, and the developer ruled both into the same step.
 
-**X-ae** is small and independent, and closes a reachable unhandled 500 at FOUR doors
-(**N-136**), one of them the LOGIN path. It rides in its own PR by the developer's 2026-08-01
-ruling, and **before X-y**, which opens `loan/params.py`.
+**What the reviews found is more serious than what the step was written for.** Werkzeug's `<int:>`
+converter has a `r"\d+"` regex compiled without `re.ASCII` and a bare `int()`, so across **123 path
+parameters** `/accounts/١/details` answered byte-identically to `/accounts/1/details`, and a long
+enough path segment raised `ValueError` inside `url_adapter.match()` -- ahead of the view, ahead of
+`@login_required`, ahead of any session. That is an **UNAUTHENTICATED unhandled 500** (**N-140**),
+worse than any of N-136's four doors, and reachable in production because `gunicorn.conf.py` raises
+`limit_request_line` to 8190. One converter registration closes all 123. Separately, `fields.Integer`
+read seven spellings of an id and **73 `*_id` declarations** used it (**N-141**); all 73 now use a
+`RowId` field consuming the same rule, and the suite passed 7,768 / 0 immediately after the
+conversion, so nothing depended on the laxness.
 
-Then **X-d**, PULLED FORWARD past nine steps because it is the
+**Four claims of mine were wrong and are recorded as corrections rather than quietly fixed**: the
+`int4`-overflow theory (measured false at all three doors), "attempt the parse" as sufficient
+(`entry_ids='١٠٦'` really stamped entry 106), ASCII as sufficient for one-spelling (`"007"` still
+named row 7 until the parse was made to round-trip), and the collateral door, which kept a `.strip()`
+and so still cleared a real link on a forged non-breaking space -- verbatim the behaviour the step
+had just added a docstring saying was closed. **N-139 was refuted TWICE and is reframed**: the
+method-name checker it proposed reports clean over a bare `try: int(raw)`, which is the exact form
+the original ruling specified and measurement rejected. The query-string surface is deliberately NOT
+here and is **N-142**'s, because those ~30 call sites are mixed row ids and non-ids (`offset=0` is
+meaningful) and need a per-site ruling.
+
+**NEXT, in order: X-d, then S2-b**, with **X-ag** (the gate N-139 needs, instrument undecided) and
+**X-ah** (N-142) unscheduled behind them. The deploy that used to head this list is DONE (2026-08-02,
+`6f4b4cbf`), so nothing unshipped is riding under the next step -- which matters because X-d changes
+a WRITER and wants a rollback that isolates it.
+
+**X-d** is PULLED FORWARD past nine steps because it is the
 structural resolver for the last duplication step 3 could not remove -- **two representations of
 the same events**, which is ruling R-H's own words (*"the posting writer consumes the SAME walk, so
 the projection and the posted ledger cannot drift by construction rather than by a test keeping two
@@ -2650,9 +2680,13 @@ preconditions cite entries in that file.
   fact under two keys" beside a redundant computation. Collapsing it changes what the page
   publishes, so it wants its own commit and its own render diff.
 
-- [ ] **X-ae** `fix(routes): a submitted digit string is parsed, not predicated` -- closes
-  **N-136**. **`str.isdigit()` is used as the guard for an operation it does not license, at FOUR
-  doors.** Of the 888 characters with `isdigit() == True`, **128 make `int()` raise** (measured with
+- [x] **X-ae** `fix(app): a submitted digit string is parsed, not predicated` -- closes
+  **N-136**, **N-140** and **N-141**, and opened **N-139** and **N-142**. **BUILT AND GREEN, not
+  yet PR'd** (see the as-built note at the end of this entry). **The step SHIPPED WIDER THAN IT
+  WAS SCOPED, on the developer's ruling of 2026-08-02**, because two adversarial reviews
+  independently proved its central claim false; the original four-door scope is recorded first
+  and what actually shipped follows it. **`str.isdigit()` is used as the guard for an operation
+  it does not license, at FOUR doors.** Of the 888 characters with `isdigit() == True`, **128 make `int()` raise** (measured with
   `unicodedata` 16.0.0; `'\N{SUPERSCRIPT TWO}'` is one), and `app/error_handlers.py` registers
   400 / 403 / 404 / 429 / 500 / `BaselineMissingError` and **no `ValueError` arm** -- so each site
   is a reachable unhandled 500 on forged input:
@@ -2690,6 +2724,141 @@ preconditions cite entries in that file.
   every site the raise precedes all DB **writes** (a SELECT does precede it -- `get_or_404`, or the
   companions query), the 500 handler rolls the session back, and the two POST routes' real
   authorization guard is the service-side re-scoping, which is unchanged.
+
+  **AS BUILT (2026-08-02), AND WIDER THAN RULED.** Every one of the four raises was reproduced
+  against a real request before anything was written -- including `/mfa/verify` on the LOGIN path,
+  which raised `TypeError: comparing strings with non-ASCII characters is not supported` out of a
+  real two-step login. The shared rule is `app/utils/digit_strings.py`: `is_ascii_digits`,
+  `parse_row_id`, `parse_row_ids`. **Pure, with no Flask import**, which is what lets `mfa_service`
+  consume the predicate without breaching the services-are-isolated-from-Flask boundary -- so the
+  fourth site's "own repair" and the three id parses share ONE definition after all, rather than the
+  four this entry expected.
+
+  **THE FOUR-DOOR SCOPE WAS WRONG, and two neutral adversarial reviews proved it independently.**
+  The step claimed "the ONE answer to what row does this string name" while two larger surfaces
+  were still lax, and the developer ruled on 2026-08-02 that both ship here rather than behind a
+  later step:
+
+  * **N-140, the URL converter, and it is the most serious thing this step touched.** Werkzeug's
+    `IntegerConverter.regex` is `r"\d+"` compiled WITHOUT `re.ASCII`, and its `to_python` is a bare
+    `int()`. Measured: `/accounts/١/details` returned output BYTE-IDENTICAL to `/accounts/1/details`
+    across **123 path parameters**; and a path segment past CPython's conversion limit raises
+    `ValueError` **inside `url_adapter.match()`** -- ahead of the view, ahead of `@login_required`,
+    ahead of any session -- so it is an **UNAUTHENTICATED** unhandled 500, worse than any of
+    N-136's four doors. Reachable in production: `gunicorn.conf.py` sets `limit_request_line = 8190`
+    and neither nginx config narrows the header buffer, so a ~4.4 kB request line arrives. Closed by
+    `app/url_converters.py`, ONE registration overriding the built-in `int` name, which is what
+    makes it one rule rather than 123 edits. A census supports the override: **all 123 parameters
+    are row ids**, none uses `signed` or `fixed_digits`.
+  * **N-141, the schemas.** `fields.Integer` is crash-safe but as lax as `int()`: measured on this
+    project's own declarations it reads `'١٢'`, `'１２'`, `' 12 '`, `'+12'`, `'1_0'`, `'007'` as
+    ids, and `'-5'` and `'0'` as ids that name no row. **73 `*_id` declarations** across 11 schema
+    modules now use `RowId` (`app/schemas/validation/_helpers.py`), which consumes the same
+    `parse_row_id`. The suite passed **7,768 / 0** immediately after the conversion, so no existing
+    test depended on any of the seven lax spellings.
+
+  Two smaller restatements went with them (the reviews' finding 9): `savings.py`'s goal-mode parse
+  and `_recurrence_form_helpers.py`'s conflict-decision key parse. Neither crashed -- both already
+  attempted the parse -- but both read `decision_١٠٦` as row 106.
+
+  **Four things this entry had wrong, all found by measurement or by review rather than by
+  re-reading.**
+
+  * **The int4-overflow theory was mine and it is FALSE.** Every `id` column is `db.Integer`
+    (Postgres `int4`), so a 40-digit id that parses cleanly looked like a second unhandled 500 the
+    ruled fix would not close. Measured at all three id doors: `200`, `302`, `302`. psycopg sends
+    the oversized value as `numeric` and Postgres compares `int4 = numeric` without complaint.
+  * **"Attempt the parse" was NOT sufficient.** `POST /accounts/<id>/reconcile` with
+    `entry_ids='١٠٦'` returned `200` and really stamped entry 106 as settled: Eastern Arabic
+    numerals pass `isdigit()` **and** convert cleanly. **Ruled 2026-08-02: one ASCII-digits rule,
+    defined once and shared.**
+  * **ASCII alone did not deliver "one spelling" either, and the first build shipped believing it
+    had.** `"007"`, `"0000007"` and a hundred leading zeros are all ASCII digits `int()` reads as
+    `7`. `parse_row_id` now requires the value to round-trip -- `str(row_id) == raw` -- which is the
+    literal statement of "the spelling a template would have emitted", and closes a `bytes`
+    argument slipping past the `str` type hint as a side effect.
+  * **The collateral door did not implement its own new ruling.** It kept a `.strip()`, and
+    `"\xa0".strip()` is `""` -- so a forged non-breaking space still took the CLEAR path under a
+    `Secured-by link updated.` flash, verbatim the behaviour this step added a docstring saying was
+    closed. It also meant `" 2 "` linked at that door while the other three refused it: four doors,
+    three behaviours, in the step whose deliverable is one rule. The strip is gone.
+
+  **The collateral door's semantic was re-ruled in the course of it (developer, 2026-08-02).**
+  Fixing the crash forced the question the crash was hiding: `update_collateral` read BOTH `""` and
+  a malformed value as "clear the link", so a forged field silently destroyed a real link under a
+  success flash. Exactly `""` is the picker's own blank option and still clears; anything else
+  naming no id is refused with the same `INVALID_COLLATERAL_LINK` answer as an id naming no
+  account, and nothing is written. That constant is now NAMED in `account_validation.py` because
+  the validator is no longer its only emitter.
+
+  **A SECOND pair of adversarial reviews then found five more defects in the widened build**, and
+  every one is fixed here rather than recorded for later:
+
+  * **An ABSENT `collateral_account_id` still cleared the link**, because the field was read with a
+    `""` default -- so the forged-POST case the step had just written four tests to refuse took the
+    clear path anyway, under a success flash. Only a SUBMITTED `""` clears now.
+  * **`RowId` broke `dump`**: marshmallow calls `_format_num` from `_serialize` OUTSIDE
+    `_validated`'s try/except, so the rule escaped as a raw `ValueError` on `dump(0)`. It overrides
+    `_deserialize` instead -- strictness belongs on the submission, not on the app rendering its
+    own rows.
+  * **`RowId` truncated a float**: `1.9` named row 1, which is `"007"` naming row 7 on the
+    non-string path, in the field whose deliverable is one spelling per id.
+  * **A THIRD lax surface, on the form door this step claims to own**:
+    `transfers/_helpers.py`'s `request.form.get("source_txn_id", type=int)` -- the only
+    `request.form` site among the 43 `type=int` uses, so N-142's "query-string" scope did not
+    cover it.
+  * **A FOURTH, inside the surface N-141 declared fully converted, and the gate could not see it**:
+    `recurrence_pattern` is a `ref.recurrence_patterns` primary key in two schemas, and the
+    completeness gate matched on a `_id` SUFFIX. **The gate is now an ALLOWLIST** -- 32 named
+    non-id integers (counts, years, months, indices) -- so a row id called anything at all fails
+    it, and a second arm fails on a stale allowlist entry.
+
+  **A THIRD review pass then found eight more, and every one is fixed here.** Three mattered:
+  the module docstring still claimed to own the QUERY answer while 42 `type=int` sites are openly
+  N-142's (**a false completeness claim, which is the exact defect class this step keeps being
+  caught on -- third time**); the converter's census excepted `version_id` as "a counter whose CHECK
+  is `> 0`", which is wrong -- the two `<int:version_id>` parameters resolve to
+  `escrow_component_versions.id`, an ordinary serial PK, so the census is STRONGER without the
+  exception, and that census is the whole justification for overriding a Flask built-in; and the
+  completeness gate was **blind to `fields.Int`**, marshmallow's documented alias for the same
+  class, which an AST over source sees as a different token. The gate now matches both spellings
+  and both assignment forms, controlled: a row id declared as `fields.Int` fails it.
+
+  **Verified.** **56 new test functions / 63 collected cases, 0 removed** (7,728 at `HEAD` ->
+  **7,790** in the working tree). The character-set assertions are EXHAUSTIVE over the codepoint
+  space (all 878 non-ASCII `isdigit()` characters, all 128 that make `int()` raise) and each asserts
+  a non-zero population FIRST so none can pass vacuously. **FIVE firing controls, every count
+  re-measured against the final code rather than carried from an earlier build** -- the first
+  version of this paragraph quoted 18 and 2, both from the build before the round-trip landed, and
+  a review caught them:
+
+  | control | fails |
+  |---|---|
+  | the full pre-fix rule (Unicode predicate + unguarded `int()`, no floor, no round-trip) | **79** suite-wide, **46** within this step's own tests |
+  | Werkzeug's lax `<int:>` converter restored | 4 |
+  | `register_url_converters` moved AFTER `_register_blueprints` | 5 |
+  | the retired collateral semantic (strip + clear on anything unparseable) | 5 |
+  | `RowId` gutted to a plain `Integer` | 11 |
+
+  Every planted file was restored byte-identically from a scratchpad copy, verified with
+  `sha256sum -c`. Suite **7,790 passed / 0 failed** under `America/New_York` and under CI's
+  `TZ=Pacific/Kiritimati`, each run ALONE (a first attempt collided with a concurrent run on the
+  shared per-worker test databases and both results were discarded); `pylint app/ scripts/`
+  10.00/10; plan gate 17 passed. **Zero migrations and no figure can move** -- no balance producer,
+  model or query is touched.
+
+  **A dependency risk this step introduced, RAISED and then CLOSED in the same step (N-143).**
+  `RowIdConverter` subclasses Werkzeug's `IntegerConverter`, and Werkzeug was **not pinned** --
+  which turned out not to be "floating inside Flask's range" at all: Flask declares
+  `werkzeug>=3.1.0` with **no upper bound**, and the Dockerfile installs with a plain
+  `pip install -r requirements.txt` (no lock file, no constraints file), so every image rebuild
+  re-resolved Werkzeug from PyPI and a 4.x release would have satisfied it silently. The exposure
+  also PREDATED this step: `routes/static_pass.py` has always imported `werkzeug.security.safe_join`
+  as its path-traversal guard, unpinned. **The developer ruled it pinned (2026-08-02)** --
+  `Werkzeug==3.1.6`, which is this file's own rule rather than an exception to it, every entry there
+  being a `==` pin of something the app imports directly. The pin is verified to BIND
+  (`ResolutionImpossible` against a conflicting constraint, not a silent re-resolve), and the
+  converter's import moved to the public `werkzeug.routing` namespace to narrow the surface.
 - [x] **X-af** `test(periods): the fixtures build their window on the USER's clock` -- closes the
   MERGE-GATE half of **N-137**; the app half is deliberately NOT here and is **N-138**'s.
   **SHIPPED TO `main` 2026-08-02, PR #77, merge `dbee3812`** (commit `209e8b6c`), sequenced ahead
@@ -2730,6 +2899,52 @@ preconditions cite entries in that file.
   Verified **7,724 passed / 0 failed under BOTH `TZ=Pacific/Kiritimati` and `America/New_York`**,
   measured inside the failing window on 2026-08-02, with **zero `app/` changes** -- so no figure can
   move and no production behaviour changes. `pylint app/ scripts/` 10.00/10; plan gate 17 passed.
+
+- [ ] **X-ag** `feat(pylint): lax digit acceptance is refused, not remembered` -- closes
+  **N-139**. X-ae converted every submitted-id surface it found -- four `isdigit()` doors, the URL
+  converter, 73 schema declarations, two local restatements -- and the AST now finds **exactly one**
+  digit-predicate call site in `app/` and `scripts/`, `digit_strings.py:91`, the implementation of
+  the replacement. Nothing stops the next one.
+
+  **What this step must NOT do is what its first two drafts specified**, and both were refuted
+  before it was written, which is why the instrument is an open question rather than a stated scope:
+
+  * Draft one argued a checker is right here *because step 3 proved one would be blind at a
+    bare-local site*. **That is the claim step 3's own adversarial review refuted and
+    `anchor_settle_partition.md` 14.1 withdrew** -- adding the names to the vocabulary matches them,
+    and resolving a `Name` to its `Assign` is one astroid hop, less exotic than `package_privacy.py`
+    already does.
+  * Draft two specified matching `isdigit` / `isdecimal` / `isnumeric` by METHOD NAME, and X-ae's
+    adversarial reviews measured that gate reporting CLEAN over the defect it exists for: a bare
+    `try: int(raw) / except ValueError` passes it and reintroduces the many-spellings defect --
+    **and that is precisely the form the 2026-08-01 ruling specified and measurement rejected**, so
+    the checker would have blessed the wrong fix. `re.fullmatch(r"\d+", "١٠٦")` matches for the
+    same reason, and Werkzeug's converter and `fields.Integer` -- the two largest surfaces X-ae
+    closed -- spell `isdigit` nowhere at all.
+
+  **The trace's first job is therefore to decide what the SIGNAL is.** The defect is Unicode-wide
+  digit acceptance, and it has at least four spellings (a digit predicate, a bare `int()` on a
+  submitted value, a `\d` regex without `re.ASCII`, a lax field or converter class). A gate that
+  catches one of the four while three stay open is the "reports success while missing its own site"
+  shape this arc has already ruled worse than none.
+
+  What is settled: a checker is the only AVAILABLE shape, because the receiver is `str` -- a builtin
+  nobody can give a narrower type -- so there is no `ReconciledThrough` to write and the developer's
+  *structural-over-detector* ruling has nothing to prefer. `anchor_settle_partition.md` 14.5 is the
+  governing precedent: a type and a checker fence COMPLEMENTARY holes. `digit_strings`, `RowId` and
+  `RowIdConverter` are the type-shaped half and fence only what routes through them.
+
+- [ ] **X-ah** `fix(routes): a query-string id is parsed like every other id` -- closes **N-142**.
+  The one submitted-id surface X-ae did not convert: 42 `request.args.get(..., type=int)`
+  call sites, where Werkzeug catches the `ValueError` (so no crash) but the coercion is `int()` (so
+  `'١٠٦'` is `106`, `' 2026 '` is `2026`, `'1_0'` is `10`).
+
+  **It needs a per-site ruling, which is why it is a step and not part of X-ae.** The path
+  parameters were all 123 row ids and the schema fields all 73 row ids, so each took one blanket
+  rule. These are MIXED: `account_id` and `period_id` are row ids, but `year`, `month`, `offset`,
+  `periods` and `show_all` are not, and `offset=0` / `show_all=0` are meaningful -- so a blanket
+  `parse_row_id`, whose floor is `MIN_ROW_ID`, would silently refuse them. The step owes a second
+  small rule in `digit_strings` for the non-id case: ASCII-strict, canonical, but admitting zero.
 
 - [ ] **X-i** `refactor(balance): one read pass, one derivation, one clock` -- closes **FU-3**,
   **N-14**, **N-40**, **N-56**, **N-72**'s second half, **N-89**, **N-91**, **N-92**, **N-93**
@@ -3300,7 +3515,7 @@ row, whose owner read `Section 5, Phase E2`; it is now `E2-0 / E2-n`, the phase'
 steps. Every other owner was already live, which is what the three hand-passes above bought and
 what nothing now has to buy again.
 
-**The ledger stands at 56 rows.** **X-f's build opened N-130 (the production defect), N-131 / N-132
+**The ledger stands at 57 rows.** **X-f's build opened N-130 (the production defect), N-131 / N-132
 (both CLOSED at the step), and its adversarial review then opened N-133 -- the one row in this arc
 that a MEASUREMENT contradicted a ruling on**: R-DH (a)'s opening amendment, made mid-build on a
 hypothetical and never re-scored, was 3.2x worse on the net plug than the rule the ruling's own table
@@ -3389,7 +3604,6 @@ done, and is what drifted.
 | N-133 (X-f adversarial review, 2026-07-31) | **CLOSED 2026-07-31 on `fix/n133-review-residue` -- ten of twelve items fixed, F3 obsolete, F11 the one still open.**  The OPENING amendment was never scored, and it was the only ruling in this arc that a measurement contradicted.  R-DH (a)'s EXCEPT clause was added mid-build on a hypothetical ("assert an opening of `$100`, record a `$100` transfer the same day") and the Section 3 table was not re-run against it.  Re-run: net plug **`-$2,997.48`** as shipped against **`-$940.06`** un-amended, gross `$17,282.84` against `$15,367.94`, worst single `$1,986.16` against `$1,853.92` -- on a method that reproduces the R0 / R2 / R3 rows to the cent.  Concretely, Checking's opening asserts `$2,746.58` on 2026-03-27 and FOUR settled rows carry that same civil day netting **`+$2,057.42`**, every one of them clicked 33 seconds to 1.6 hours AFTER the opening was typed, so the opening was read off a bank that already showed them; stacking them on top makes the walk read **`$4,804.00`** for a day the bank showed `$2,746.58`, and the next assertion books **`-$1,986.16`** instead of `+$71.26`.  **The amendment's motivating case has never occurred**: account 1 is the only account with ANY settled row on its opening's day, and there the amendment is wrong.  **And the case it protects is R-DH (a)'s own accepted residual pointed the other way** -- an opening's residual is bounded by the next assertion exactly as a true-up's is.  **Eleven more items** in `anchor_settle_partition.md` Section 8, of which four are structural: a FOURTH implementation of the partition untouched by the fix (`account_posting_service/_sync.py:304`, sound only because the display zone is WEST of UTC -- east of it, it silently UNDER-fires and strands a stale correction); the amendment is stated TWICE by hand, as a sort key and as a date boundary, so the two walks are held in step by convention; `dated_deltas`' tie-break was not moved with it and its docstring now claims a chronology it does not have; and the posting walk's monotonic source pointer assumes `observed_on` is non-decreasing in `created_at` order, which **step 2 breaks** the moment the column is user-supplied.  Plus: **ZERO net new tests** in `9c2c3130` (`def test_` counts identical in all 8 changed files, 7,675 collected at both commits), the two tests written for the amendment **cannot fail** (proven by reverting it), R-DH (c)'s two envelope invariants absent, and `resync_all_cash_postings` -- which rewrites the whole production ledger on every deploy -- untested.  **F2's blind tests were REPAIRED 2026-07-31**: the root cause was that `_origin_instant` is the ambient WALL CLOCK, so an hour offset genuinely can cross midnight and a smaller offset would have been flaky rather than blind -- the fix is a PINNED opening at 12:00 EDT plus an asserted same-civil-day precondition, the opening case parametrized BOTH directions, and `test_same_instant_settle_is_absorbed` renamed to `test_a_trueup_absorbs_a_settle_the_opening_rode_on_top_of`.  Negative-controlled: all three FAIL with the amendment reverted, where the opening test previously PASSED | **`$2,057.42`** on period 0's "Timing & true-ups" and on three days of March history; `$0.00` on the current period, which reads `-$19.95` under both variants because the walk resets at every later assertion.  The rest is `$0.00` today and latent: the zone-sign dependency cannot fire while the display zone is `America/New_York`, and the step-2 landmine cannot fire until step 2 | **RULED and APPLIED 2026-07-31: "Revert + date the opening now".**  The EXCEPT clause is deleted from R-DH (a) and from both walks; `account_anchor_history.observed_on` is a stored user-supplied `DATE` (migration `c4a19e7b2d80`, backfilled from the derivation it replaces so **0 of 15,682 seam figures moved**), the account-create form offers "Balance as of", and the anchor PERIOD is resolved FROM that day.  **F6 and F12 had to ship with it** -- the monotonic source pointer and the UTC-day dedupe index both assumed a DERIVED `observed_on`.  F4 closed (the self-heal skip compares days; `utc_day_start_instant` deleted as callerless), F5 closed by construction, F7 closed wider than scoped, F8 closed (counts CHANGED, one-way risk stated), F9 closed, F12 closed (and `AnchorPoint.as_of_date` deleted -- a UTC-day field with no production reader whose justification was that index).  **F2 closed**: `tests/test_services/test_anchor_settle_partition.py` holds R-DH (c)'s two envelope invariants, order-independence at projected-balance grain, and two `resync_all_cash_postings` tests, each negative-controlled by a distinct mutant.  Cost of the revert, re-measured: **30 failures on a 0-failure baseline and NOT ONE a financial re-ruling** -- the suite freezes today, so `seed_user`'s origination shared a civil day with its own settles and every "an account existed, then money moved" fixture had silently stopped saying so (N-132's shape one layer up).  **F11 was the last one open and it CLOSED 2026-08-01** -- measured on a clone, R-DH (d) STANDS AS RULED (Sections 10 and 11), and S1-c then shipped it as a re-ruling rather than as written (Section 12), so nothing here gates any longer; F3 is obsolete (PR #66).  **A SECOND adversarial review then ran against the residue itself (`anchor_settle_partition.md` Section 9) and found EIGHT more, four High -- all fixed.**  The largest was structural and two reviewers found it independently: `is_opening` was still derived in RECORDING order while every consumer read BUSINESS-DATE order, and it fired in this branch's own new test (a `$1,307.66` TRUE-UP posted tagged `account_opening`); fixed at the loader, which also deleted the two downstream re-sorts.  Also: both true-up writers picked the PERIOD on `date.today()` while dating the row `display_today()`; `observed_on` had NO lower bound (a year-1 date enumerates 740,560 accrual days per render and fabricates contribution history); the help text steered the user into the very case the ruling relies on the field to answer (measured: `$0.00` shown for an account holding `$500.00`); two captions dated the anchor from the keystroke; a SEVENTH UTC-day derivation F7 missed; the migration's two missing refusals; and **the fix RECREATED N-132's shape** -- `create_account_of_type`'s new day-before default made two existing tests stop testing the strictly-earlier arm they name.  Verified: standards 1, 2, 3, 5, 6 all PASS, `pylint app/ scripts/` 10.00/10 with zero messages, **7,687 passed / 0 failed**, 0 of 15,682 seam figures moved from the ruled reference | X-f |
 | N-134 (N-133 residue review, 2026-08-01) | **An anchor balance can move with NO history row, and the cash walk then replays a history that disagrees with it.**  `routes/accounts/crud.py`'s `update_account` writes `current_anchor_balance` and appends an `AccountAnchorHistory` row only `if current_period` -- when no period contains today the balance moves and the row does not.  That breaks E-19's "a matching `AccountAnchorHistory` row from the moment it exists": the fold replays the OLD assertion while the cache says something else, which is exactly the divergence `cash_ledger._facts.resolve_anchor` logs as `EVT_ANCHOR_CACHE_RECONCILED` -- and the history row wins, so the user's edit silently does not take.  Found while routing that inline block through `anchor_service.stage_anchor_true_up` (the two had already drifted: the stager takes a `notes` label and the route did not, and `observed_on` would have become a THIRD hand-written copy).  Behaviour preserved VERBATIM through that refactor rather than changed under an unrelated ruling | `$0.00` today: it needs a user whose pay-period schedule has no period covering today, which the rolling-window generator makes rare.  The cost when it fires is a silently-discarded balance edit, not a wrong arithmetic result | **OPEN.**  Two shapes to choose between: refuse the edit loudly (no period, no assertion), or fall back the way `account_service.resolve_anchor_period_id` does (earliest period) so the row is always written.  The second matches the create path and is probably right, but it changes an error path under a ruling that was not about it | X-f |
 | N-135 (step 3's three adversarial reviews, 2026-08-01) | **The partition's fence covers the derived boundary and NOT the two bare fact fields, so the line step 3 deleted still compiles.**  `cash_ledger.ReconciledThrough` defines no ordering against a civil day, so `settled_on <= boundary` raises `TypeError` -- but `CashAnchorFact.observed_on` and `CashSourceFact.settled_on` are still plain `date`s (they have to be: they key a day, sort a stream and date a journal entry), so `x <= fact.observed_on` -- verbatim the restatement step 3 removed from `account_posting_service._walk` -- is writable in any new module with nothing to flag it.  **Step 3's own claim that a lint checker "could not have worked" was WITHDRAWN on this**: a checker over the assertion-day vocabulary sees exactly this shape and the type does not, so the two fences are COMPLEMENTARY rather than substitutes.  The escape hatch is the same shape one level down -- `boundary.observed_day` unboxes in one token, and a reviewer confirmed the whole suite stays green when the converged self-heal site is unboxed back to a bare `<=` | `$0.00` today: every remaining read of both fields is a legitimate raw-date use (period bucketing x2, day-keying x3, the journal entry's `entry_date` column, the loader's sort key), and the seventh implementation the reviews DID find is converged.  The cost when it fires is a fifth answer to the question that cost production `$4,001.42` | **OPEN, OWNED, and RULED 2026-08-01: wrap both fields, at X-d.**  Ruled sequenced rather than done at step 3 on a measurement -- the wrap needs TWO distinct types (one shared type would still compare a settled day against an observed one), it unwraps at ~8 raw-date sites, and X-d DELETES one of the two consumers, so doing it there wraps a settled surface once instead of wrapping and re-cutting.  X-d's entry carries it as an explicit obligation | X-d |
-| N-136 (S1-c's adversarial review, 2026-08-01; re-measured and OWNED 2026-08-01 while pushing step 3, then WIDENED the same day by a second review) | **`str.isdigit()` is used as the guard for an operation it does not license, at FOUR doors, and each is a reachable unhandled 500.**  Reported first as a style item -- the reconcile POST parsing `entry_ids` inline rather than through a Marshmallow schema (`routes/accounts/anchor.py:282`) -- and recorded as *"no reachable crash"*.  **That was wrong, and two successive neutral reviews each widened it.**  Of the 888 characters with `isdigit() == True`, **128 make `int()` raise** (measured, `unicodedata` 16.0.0; the first draft of this row guessed "~600" and a review corrected it), and `app/error_handlers.py` registers 400/403/404/429/500/`BaselineMissingError` and **no `ValueError` arm**.  The sites: `accounts/anchor.py:282` and `loan/params.py:469` unconditionally -- the latter's own comment claiming it treats a bad value *"as a clear rather than crashing"*, the property it lacks; `settings.py:442` conditionally (the `int()` sits inside a generator predicate, so it never evaluates for a user with no active companions); and **`mfa_service.py:251` on the LOGIN path**, where a 6-character all-`isdigit()` code passes the shape check and reaches `hmac.compare_digest` at `:258`, which raises `TypeError` on non-ASCII.  The style half stands and is subsumed: three routes restating "turn a submitted string into an int id" is one question with three implementations, which is what this arc deletes.  **The row also records an OWNERSHIP defect**: 13.4 ruled it *"left for a ruling rather than folded into this step"* and named nobody, so nothing would have carried a ruling to it -- what ruling **R-AO** forbids (*an unowned row does not wait, it rots*), and the shape that produced four stale resolvers on 2026-07-27 | `$0.00` in money and no data written: at every site the raise precedes all DB **WRITES** (a SELECT does precede it -- `get_or_404`, or the companions query -- and the 500 handler rolls the session back), and at the two POST routes the real authorization guard is unchanged: every surviving id is re-scoped through `entry_service._outstanding_scope`, whose five clauses are `settled_on IS NULL`, `is_credit IS FALSE`, `purchased_on <= observed_on`, owner-and-account, and projected-and-not-soft-deleted, so a forged NUMERIC id matches nothing, and `record_settled_days` returns what actually changed rather than what was asked for.  The cost is an unhandled 500 and a stack trace on forged input, at four doors, one of them the login path | **OPEN, OWNED, and the fix is RULED (developer, 2026-08-01): ONE shared helper for the three int parses**, not a predicate swap.  **`isdecimal()` is NOT a sound substitute and the first draft of this ruling said it was**: `('1' * 4301).isdecimal()` is `True` and `int()` raises on CPython's 4,300-digit limit, so the only sound form is to attempt the parse.  The MFA site needs its own repair (ASCII decimal, not merely `isdigit()`).  Rides in its own PR after #76, and BEFORE X-y, which opens `loan/params.py` | X-ae |
 | N-131 / N-132 (X-f build, 2026-07-31) | **Two test-instrument findings the step produced, both in `anchor_settle_partition.md` Section 7.1.**  **N-131**: the cross-page locks were a month-end TIME BOMB, red on `main` at the unmodified shipping commit and firing ~12 days a year -- CLOSED by `fix/cross-page-month-end-clock` (`92879e86`), which warrants its own PR because it carries no application change and unblocks the merge gate.  **N-132**: fixtures separated their events by HOURS against a partition that now reads civil days, so they collapsed onto one day and stopped discriminating the case they named; and four fixtures built midnight-UTC instants to MEAN a civil day, which is the previous evening in Eastern | `$0.00` in production figures; the cost is a merge gate red 12 days a year and a set of controls that had quietly stopped controlling | **CLOSED** at the step (N-131 by the cherry-picked fix, N-132 by day-offset conversion with the reason recorded at each site) | X-f |
 | N-130 (production, 2026-07-31) | **The anchor/settle partition is decided by CLICK ORDER, and it cost `$4,001.42` on production.**  An ordinary bookkeeping session -- read the bank, enter the anchor, tick off what cleared -- rendered the grid's projected end balance at **-$4,021.37** against a hand-computed **-$19.95**, because `cash_ledger/_events.py:391-398` partitions assertions against settled rows on the INSTANT and three rows recorded in the nine seconds AFTER the anchor (`-$1,958.87`, `-$131.60`, `-$1,910.95`) were subtracted from a bank balance that already contained them.  Neither clock measures when money moved: `paid_at` is `db.func.now()` at the click (`status_seam.py:105`) and a cash anchor carries no date at all, only `created_at` -- while the LOAN anchor beside it has taken a user-supplied `anchor_date` since Commit 16.  **One question, FOUR implementations**: the read fold (instant, settle wins ties), the posting walk (`account_posting_service/_walk.py:434`, instant, assertion wins), the envelope entry reconcile (`entry_service.py:799`, DATE-granular, inclusive, and comparing against `today` rather than against the anchor at all) -- the last two running inside ONE `apply_anchor_true_up` call and disagreeing -- and, found 2026-07-31 by the adversarial review and untouched by the fix, the self-heal skip (`account_posting_service/_sync.py:304`, a civil date pushed back through midnight UTC and compared against a raw instant), which is sound only because the display zone is WEST of UTC (N-133).  A SECOND live instance: `TransactionEntry.is_cleared` is a stored flag written as a side effect of the anchor save, so entry-then-anchor sets it and anchor-then-entry does not (three such rows in production on 2026-07-31), and its manual override exists because the auto-rule is wrong.  Measured: **65 of 139** settled Checking rows (**47%**, `$19,602.13` gross) are within an hour of an assertion; **32 of 48** anchor-days carry rows recorded after that day's last anchor (`$22,357.52`); the historical smoking gun is 2026-04-01/02, where the same `$804.06` was entered twice and the engine booked a `+$1,910.95` true-up to undo its own double count.  **This is ruling R-N's cost estimate inverted**: R-N recorded "the reconciliation row's size, not its correctness", and it is the projected end balance | **`$4,001.42`** live on production 2026-07-31; `$40,554.34` gross plug over four months against **`$15,367.94`** under the rule that SHIPS, `-$6,998.90` net against `-$940.06`, over 53 true-ups.  **The `$14,286.82` this row first quoted was never reachable by any variant (N-133); the OPENING amendment, reverted by the F1 ruling, would have booked `-$2,997.48` net.**  The `$4,001.42` and the `-$4,021.37 -> -$19.95` are unaffected: both variants fix production identically | **RULED 2026-07-31 (R-DH); S1-a + S1-b SHIPPED TO PRODUCTION 2026-07-31 (PR #67, merge `fd0ddfab`).**  Verified against a fresh production clone: current period `-$19.95`, all nine past period ends land on an asserted balance, R-K's identity holds on 60 period pairs, the fold and the posted ledger agree on every date once the deploy hooks run, and of 15,682 captured seam figures only Checking and ONE loan column (`-$276.72`, the single payment whose visible day moves) move.  S1-c DEFERRED; the review's 12 open items are N-133.  Plan, trace, measurements, verification and the four steps: `anchor_settle_partition.md` | X-f (widened) |
 | N-123 (X-x trace) | **The pay-calendar WRITER refuses every payday from `today+1` to `today+13`, and leaves a permanent hole on every one after `today+14`.**  `auth_service.register_user:692` writes a bootstrap period covering `today..today+13`, because `accounts.current_anchor_period_id` is `NOT NULL` (migration `cfb15e782f86`) and the default Checking account needs one to point at.  `pay_period_service._reject_overlapping_batch` then refuses any batch starting on or before the latest existing `end_date`, so on the form that says "Enter your next (or first) payday" a payday of `today+1`, `+5` or `+13` is REFUSED, `today` and `today+14` are clean accepts, and `today+20` or `+27` is accepted leaving a 6-day or 13-day hole -- measured at the service tier, one fresh registration per case.  **`today+0` was added 2026-07-31 by X-x's design review, which found the step's original "13 of 14 refused" generalisation wrong**: `generate_pay_periods:117-124` removes already-existing starts from the batch before `_reject_overlapping_batch` sees it, so the bootstrap's own start date passes.  The same guard permits a hole on `regenerate_pay_periods`, which a user changing paydays reaches after `reset` has become unavailable to them (it refuses once any transaction has settled).  A hole is the state plan step X-x's readers now refuse to answer, so the writer is producing what the reader is defending against | `$0.00` on both databases today (zero holes, verified by a `lag(end_date)` scan) and `$3,228.55` the moment one exists -- that measurement is N-116's.  The onboarding cost is not a figure: thirteen of the fourteen paydays after today cannot be entered through the documented flow, and every payday beyond `today+14` buys a permanent hole | **OPEN**, opened 2026-07-31 by plan step X-x's trace, which reached it re-asking ruling R-DB's fork after the first answer was measured wrong.  Born with an owner (rule 6) | X-ad |
@@ -3397,6 +3611,8 @@ done, and is what drifted.
 | N-122 (X-z reviews) | **The asset-vs-liability rule has a SECOND home on the WRITE path, and plan step X-z's own docstring said it could not.**  `ledger_account_service.ledger_class_id_for_category:156` compares an account type's `category_id` against the cached LIABILITY id and answers Liability-class / Asset-class -- the same column, the same cached id and the same two-way question `account_category.is_liability_account` answers for every read surface.  `_ledger_class_id_for_account:178` applies it to a real account, `create_ledger_account_for_account` pairs the posting account with the class it returns, `:282` re-classes on a type change, and `account_validation:192-193` uses it to decide whether a type change flips an account's linked-ledger class.  The two agree by READING, which is finding N-118's condition exactly, surviving where the money is POSTED rather than displayed.  **Not fixable inside a refactor that proves itself byte-identical**: a re-class changes the class an account's postings are booked against, and `account_validation` exists to refuse that for an account that already carries them, so the trace has to answer what happens to those before the predicate is merged | `$0.00` today: `AcctCategoryEnum` has exactly four members and both spellings compare against the same id, so they cannot disagree.  A FIFTH category ruled a liability moves every cockpit surface together and leaves this one behind -- the account's postings book against an ASSET ledger account, the balance sheet reports the wrong side, and nothing raises | **OPEN**, opened 2026-07-30 by BOTH of X-z's adversarial reviews independently, each reaching it by walking the call graph rather than by grepping the predicate's spelling (Section 8).  Born with an owner (rule 6) | X-ab |
 | N-137 (CI on PR #76, 2026-08-02) | **"Which pay period is it now" is answered on TWO clocks, and it was a MERGE-GATE time bomb that blocked every PR including a hotfix.**  `pay_period_service.get_current_period` and `get_current_and_future_periods` default `as_of` to `date.today()` -- the PROCESS zone -- while `account_service.create_account` resolves an anchor's period from `display_today()`.  The two pick DIFFERENT periods whenever the process day and the user's civil day straddle a period boundary.  **This is ruling R2's defect one level up**: R2 fixed the two anchor CALL SITES by passing `as_of=display_today()` and left the DEFAULT, which **20 of the 24** `app/` call sites use.  A fourth site, `income_service.py:131`, passes the PROCESS day EXPLICITLY into the balance seam (`balance_at/_inputs.py`), where a slip at a raise boundary returns the PRE-raise gross the employer-match cap is computed from.  Invisible in production, and that is why it grew: the container pins `TZ: America/New_York`, so process == display there.  CI pins `TZ=Pacific/Kiritimati` to catch this class, and on 2026-08-02 it did -- 8 failures on PR #76, **reproduced identically on `main`**, so it was never that PR's defect.  The TEST side had the mirror of it: `conftest._today_relative_start_date` and 14 sites in `test_accounts.py` built pay periods on the process day, so a fixture promising "today falls in period 4" put the USER's today in period 3 whenever the process day was a Monday | `$0.00` -- no figure is wrong in production, where the two clocks are the same day by container config.  The cost was a merge gate that failed outside the **04:00-09:59 UTC** window (EDT; on EST it narrows to 05:00-09:59, so the gate is red MORE often for four months a year), on a repo whose `main` is branch-protected: a hotfix could not have been merged for most of 2026-08-02 | **The MERGE-GATE half is CLOSED -- X-af SHIPPED to `main` 2026-08-02 (PR #77, merge `dbee3812`): test-only, 7,724 green under both zones, zero `app/` changes.  The APP half is OPEN and is N-138's, deliberately, which is why this row is re-pointed at that decision rather than archived: the defect is half-fixed, and filing it as CLOSED would lose the half that is not.**  Moving the two defaults was BUILT, measured, and REVERTED: it converts three app sites from agreeing-but-wrong into actively disagreeing (`dashboard_pulse_service` renders `today_offset` 14 against `days_total` 13 where `main` gives 0, breaking that function's own stated invariant; plus a salary WRITE path and the cockpit's window).  A partial move is measurably worse than either endpoint, so the app-side clock ships as ONE piece | developer-decision (2026-08-02) |
 | N-138 (X-af's trace, 2026-08-02) | **The app has TWO "today"s, no enforced rule about which is which, and -- the part that decides the fix -- NO INSTRUMENT THAT CAN SEE THE DIFFERENCE.**  269 real `date.today()` / `datetime.today()` CALL expressions: **78 in `app/` across 39 files, 191 in `tests/` across 29** (AST, post-X-af; the METHOD is part of the finding, because raw `grep` gives 267-381 depending on whether docstring mentions count, and a first draft of this row quoted 375/109/266, which reproduced under no method at all).  `display_today()`'s own docstring claims to draw the line -- storage and the replay boundary stay UTC, presentation uses the user's zone -- but **that sentence is itself wrong**: `date.today()` is the PROCESS zone, which in production is `America/New_York` and in CI is UTC+14, never UTC.  R2 already recorded three sites making the identical category error.  **Neither clock gate can detect a split**: `tests/test_services/`'s autouse `freeze_today` patches `date.today()` and `datetime.now()` together, and `SHEKEL_FAKE_TODAY` travels to a tz-AWARE instant, which makes `time_machine` rewrite `os.environ["TZ"]` to the display zone -- so the weekly calendar sweep runs with both clocks equal by construction.  N-137 is the fourth instance of this class (N-133 / R2, `anchor_settle_partition.md` 12.10, R2's three false comments, now the pay-period question) and every one was found by a merge gate rather than by a test | `$0.00` today: production pins the zone, so every site agrees there.  The exposure is any process that is NOT pinned -- CI, a cron, a script, the migration host -- plus the merge-gate lottery, which recurs for any site still on the wrong clock | **OPEN, and it is a DECISION before it is work.**  **The first task is the INSTRUMENT, not the sweep**: a `SHEKEL_FAKE_INSTANT` that travels to a NAIVE UTC datetime preserves `TZ` and lets the sweep see a split, and `freeze_today` must stop moving both clocks in lockstep.  Until that exists, no sweep can be verified and X-af's own reviews could not certify completeness.  Then choose: (a) sweep `app/` to `display_today()` with a `shekel-process-clock` checker allowlisting `app/utils/dates.py` -- the step-3 "make the wrong spelling impossible" pattern, and the only shape that stops a fifth instance; (b) sweep only the civil-window sites; or (c) rule the container pin sufficient and accept CI as the detector.  **Named sites to start from, measured by X-af's reviews**: `pay_period_service`'s two defaults, `income_service.py:131`, `pay_period_admin` x3, `dashboard_pulse_service.py:329/613/654/792`, `routes/salary/_helpers.py:152`, `routes/salary/cockpit.py:257`, and `conftest.py:1369` whose docstring already promises an alignment it no longer has | developer-decision (2026-08-02) |
+| N-142 (X-ae's adversarial reviews, 2026-08-02) | **`request.args.get(..., type=int)` is the one submitted-id surface X-ae did NOT convert, and it is lax in the same way the three it did convert were.**  Werkzeug catches the `ValueError`, so there is no crash -- but the coercion is `int()`, so it is Unicode-wide: measured, `args.get('account_id', type=int)` returns `106` for `'١٠٦'`, `2026` for `' 2026 '`, and `10` for `'1_0'`.  **43 `type=int` call sites by AST**, of which 39 are `request.args`, 3 a `request_args` alias, and 1 was `request.form` -- that last one (`transfers/_helpers.py`'s `source_txn_id`) was NOT a query-string site at all and is fixed in X-ae; the 42 query-string sites remain.  **They were left out on a real distinction rather than overlooked**: unlike the path parameters (all 123 row ids) and the schema fields (all 73 row ids), these are MIXED -- `account_id` and `period_id` are row ids, while `year`, `month`, `offset`, `periods` and `show_all` are not, and a blanket `parse_row_id` would refuse `0` where `offset=0` and `show_all=0` are meaningful.  So each site needs a per-site judgement, which is a step | `$0.00` and no crash: every one of these is a read-path filter or a display window, every id among them is re-scoped by owner downstream, and a respelled id resolves to the SAME row the ASCII spelling would.  The cost is that one row id keeps many spellings on this surface after the step whose deliverable was one -- a correctness-of-record defect, not a money defect | **OPEN.**  Needs a per-site ruling: row-id params take `type=parse_row_id`, and the genuinely-non-id params (`year`, `month`, `offset`, `periods`, `show_all`) need a separate ASCII-strict int coercion that permits `0` -- which is a second small rule in `digit_strings`, not a reuse of `parse_row_id` | X-ah |
+| N-139 (X-ae's build 2026-08-02; REFRAMED the same day when two adversarial reviews refuted its first statement) | **Nothing prevents a submitted digit string being parsed laxly again, and a checker on the method NAME does not prevent it -- which is what the first version of this row proposed.**  X-ae removed every Unicode-wide digit predicate from `app/` and `scripts/` (AST: exactly ONE call site remains, `digit_strings.py:91`, the implementation of the replacement), converted the URL converter and 73 schema declarations, and the reviews then showed the proposed gate would still report clean over the very defect it was written for: **a future author writing a bare `try: int(raw) / except ValueError` passes a `isdigit`/`isdecimal`/`isnumeric` matcher and reintroduces the many-spellings defect** -- and this step's own record proves that form insufficient, because it is what the 2026-08-01 ruling specified and what measurement rejected.  `re.fullmatch(r"\\d+", "١٠٦")` matches for the same reason.  **The signal is not a method name; it is Unicode-wide digit ACCEPTANCE, and it has at least four spellings** | `$0.00` today and no reachable crash: every surface X-ae covers is fixed and measured.  The exposure is the NEXT id parse written, which on this arc's history is a matter of when rather than whether -- four `isdigit()` sites accumulated with nothing watching, and the reviews found two more surfaces this step's own census had missed | **OPEN, and the INSTRUMENT is undecided, which is why this is a step and not a line.**  A checker is the only available shape -- the receiver is `str`, a builtin nobody can give a narrower type, so there is no `ReconciledThrough` to write and the developer's *structural-over-detector* ruling has nothing to prefer; `anchor_settle_partition.md` 14.5 is the precedent (a type and a checker fence COMPLEMENTARY holes).  But X-ag's trace must first answer what the checker MATCHES, given that the method name is measurably the wrong signal.  **A second draft of this row argued that step 3 proved a checker would be blind at a bare-local site; that claim was REFUTED by step 3's own review and withdrawn in 14.1**, and restating it was the stale-citation class this arc keeps paying for | X-ag |
 
 ## 7. Verification standard (what "done" means for every step)
 

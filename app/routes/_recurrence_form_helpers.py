@@ -83,6 +83,7 @@ from app.routes._commit_helpers import StaleConflictContext
 from app.routes._redirect_target import RedirectTarget
 from app.services import pay_period_service
 from app.services.scenario_resolver import get_baseline_scenario
+from app.utils.digit_strings import parse_row_id
 
 
 # Stale-conflict flash templates.  The ``{noun}`` placeholder is
@@ -509,9 +510,11 @@ def parse_conflict_decisions(form) -> dict[int, str] | None:
         value = form.get(key)
         if value not in (_DECISION_KEEP, _DECISION_USE):
             continue
-        try:
-            row_id = int(key[len(_CONFLICT_DECISION_PREFIX):])
-        except ValueError:
+        # The shared rule rather than a fourth local ``int()`` (plan step
+        # X-ae): this one never crashed, but it read ``decision_١٠٦`` as row
+        # 106 -- a spelling the chooser's own template cannot emit.
+        row_id = parse_row_id(key[len(_CONFLICT_DECISION_PREFIX):])
+        if row_id is None:
             continue
         decisions[row_id] = value
     return decisions

@@ -14,6 +14,7 @@ from marshmallow import (
 
 from app.schemas.validation._helpers import (
     BaseSchema,
+    RowId,
     _normalize_empty_inputs,
     _normalize_percent_fields,
 )
@@ -279,7 +280,7 @@ class EscrowLineMergeSchema(BaseSchema):
     every date -- to the escrow calculator's merge planner.
     """
 
-    source_line_id = fields.Integer(
+    source_line_id = RowId(
         required=True, validate=validate.Range(min=1),
     )
 
@@ -350,7 +351,7 @@ class LoanPaymentTransferSchema(BaseSchema):
         """Map an empty ``extra_principal`` field to its 0.00 default."""
         return _normalize_empty_inputs(self, data)
 
-    source_account_id = fields.Integer(required=True, validate=validate.Range(min=1))
+    source_account_id = RowId(required=True, validate=validate.Range(min=1))
     amount = fields.Decimal(
         places=2, as_string=True,
         validate=validate.Range(min=0, min_inclusive=False),

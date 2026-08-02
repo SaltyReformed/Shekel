@@ -16,6 +16,7 @@ from app import ref_cache
 from app.enums import EmployerContributionTypeEnum
 from app.schemas.validation._helpers import (
     BaseSchema,
+    RowId,
     _normalize_empty_inputs,
     _normalize_percent_fields,
 )
@@ -43,7 +44,7 @@ class InvestmentContributionTransferSchema(BaseSchema):
     If provided, must be positive.
     """
 
-    source_account_id = fields.Integer(
+    source_account_id = RowId(
         required=True, validate=validate.Range(min=1),
     )
     amount = fields.Decimal(
@@ -105,7 +106,7 @@ class InvestmentParamsCreateSchema(BaseSchema):
     # a free string.  Omitted (no row yet, or a JSON caller that leaves
     # it off) defaults to NONE in ``default_employer_contribution_type``
     # below -- the faithful successor to the prior ``load_default="none"``.
-    employer_contribution_type_id = fields.Integer(
+    employer_contribution_type_id = RowId(
         load_default=None, allow_none=True,
     )
     employer_flat_percentage = fields.Decimal(
@@ -190,7 +191,7 @@ class InvestmentParamsUpdateSchema(BaseSchema):
     # #38: ref-table FK id (see :class:`InvestmentParamsCreateSchema`).
     # No default on update -- a partial payload that omits it leaves the
     # stored type unchanged.
-    employer_contribution_type_id = fields.Integer()
+    employer_contribution_type_id = RowId()
     employer_flat_percentage = fields.Decimal(
         places=4, as_string=True, allow_none=True,
         validate=validate.Range(min=0, max=1),
