@@ -28,9 +28,10 @@ import pytest
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
 from app.services.cash_ledger import (
+    ReconciledThrough,
     cash_anchor_facts,
     dated_deltas,
-    latest_observed_day,
+    reconciled_through,
     settled_cash_facts,
     walk_cash_ledger,
 )
@@ -72,9 +73,16 @@ def _restamp_opening(account, at):
     return restamp_opening_assertion(db.session, account, at)
 
 
-def _assert_balance(account, period, balance, at):
-    """Append one balance ASSERTION (true-up) at a pinned instant (shared)."""
-    return append_balance_assertion(db.session, account, period, balance, at)
+def _assert_balance(account, period, balance, at, recorded_at=None):
+    """Append one balance ASSERTION (true-up) at a pinned instant (shared).
+
+    *recorded_at* separates the two clocks: *at* supplies the BUSINESS day,
+    *recorded_at* the moment it was typed.  They are equal unless a test is
+    exercising a back-dated assertion.
+    """
+    return append_balance_assertion(
+        db.session, account, period, balance, at, recorded_at=recorded_at,
+    )
 
 
 def _corrections(account, scenario):
@@ -248,7 +256,7 @@ class TestTheClosingBalancePartition:
         """The boundary is ``<=``, matching the account posting walk.
 
         A source dated the assertion's own civil day is subsumed by its reset
-        -- the same ``sources[i][0] <= fact.observed_on`` boundary
+        -- the same ``fact.reconciled_through.covers(sources[i][0])`` boundary
         ``account_posting_service.walk_account_ledger`` applies, so the read fold
         and the posted ledger partition one boundary rather than two.
         """
@@ -917,13 +925,16 @@ class TestDatedDeltasReconstructTheWalk:
     def test_two_assertions_at_one_instant_keep_the_loaders_order(
         self, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """The stable re-sort is load-bearing, so it gets a test.
+        """The LOADER's ordering is load-bearing, so it gets a test.
 
-        ``CashAnchorFact`` carries no ``id``, so once loaded a same-instant pair
-        can only be ordered by the stability of the sort in
-        ``merge_anchor_and_cash_events``.  Two assertions at the identical
-        instant must replay in insertion order -- $700.00 then $800.00 -- so the
-        LAST one wins and the walk ends on $800.00, not $700.00.
+        ``CashAnchorFact`` carries no ``id``, so once loaded a same-instant
+        pair can only be ordered by what SQL already decided:
+        ``ORDER BY observed_on, created_at, id`` in ``cash_anchor_facts``.
+        Nothing downstream re-sorts -- the walk advances a monotonic pointer
+        over this list -- so if that ``ORDER BY`` changed, nothing else would
+        put the pair back.  Two assertions at the identical instant must
+        replay in insertion order -- $700.00 then $800.00 -- so the LAST one
+        wins and the walk ends on $800.00, not $700.00.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         period = seed_periods[0]
@@ -971,16 +982,16 @@ class TestDatedDeltasReconstructTheWalk:
 
 
 class TestTheTwoStatementsOfTheLatestAssertedDay:
-    """``latest_observed_day`` (SQL) == ``CashLedgerWalk.latest_observed_on``.
+    """``reconciled_through`` (SQL) == ``CashLedgerWalk.reconciled_through``.
 
     The arc's central question -- *is this movement already inside the balance
-    the user declared?* -- compares against ONE day, and that day has two
+    the user declared?* -- is asked of ONE boundary, and that boundary has two
     statements on purpose (plan step S1-c, 12.9):
 
-    * :attr:`~app.services.cash_ledger.CashLedgerWalk.latest_observed_on` reads
+    * :attr:`~app.services.cash_ledger.CashLedgerWalk.reconciled_through` reads
       the last element of a list the walk already holds, so the seam's cash fold
       pays no query for a day it is standing on; and
-    * :func:`~app.services.cash_ledger.latest_observed_day` is one indexed
+    * :func:`~app.services.cash_ledger.reconciled_through` is one indexed
       ``MAX`` for the callers that hold no walk -- the posting self-heal's skip
       predicate, the entry list's reconciled indicator, and the reconcile panel,
       none of which should walk an account to render one row.
@@ -1022,8 +1033,10 @@ class TestTheTwoStatementsOfTheLatestAssertedDay:
 
         walk = walk_cash_ledger(account.id, scenario.id)
 
-        assert walk.latest_observed_on == date(2026, 3, 20)
-        assert latest_observed_day(account.id) == date(2026, 3, 20)
+        assert walk.reconciled_through == ReconciledThrough(date(2026, 3, 20))
+        assert reconciled_through(account.id) == ReconciledThrough(
+            date(2026, 3, 20),
+        )
 
     def test_they_agree_when_the_business_day_defies_the_recording_order(
         self, app, db, seed_user, seed_periods,
@@ -1050,17 +1063,25 @@ class TestTheTwoStatementsOfTheLatestAssertedDay:
             account, seed_periods[0], Decimal("1400.00"),
             _instant(2026, 3, 20, 9, 0, 0),
         )
-        # Recorded SECOND, for an EARLIER business day -- the back-fill.
+        # Recorded SECOND, for an EARLIER business day -- the back-fill.  The
+        # two clocks MUST be given separately here: the fixture built both from
+        # one instant until an adversarial review proved that made this test
+        # blind (the recording order and the business order agreed row for row,
+        # so a loader ordering by ``created_at`` answered the same thing and
+        # the test could not fail).
         _assert_balance(
             account, seed_periods[0], Decimal("1200.00"),
             _instant(2026, 2, 15, 9, 0, 0),
+            recorded_at=_instant(2026, 4, 1, 9, 0, 0),
         )
         db.session.commit()
 
         walk = walk_cash_ledger(account.id, scenario.id)
 
-        assert walk.latest_observed_on == date(2026, 3, 20)
-        assert latest_observed_day(account.id) == date(2026, 3, 20)
+        assert walk.reconciled_through == ReconciledThrough(date(2026, 3, 20))
+        assert reconciled_through(account.id) == ReconciledThrough(
+            date(2026, 3, 20),
+        )
 
     def test_they_agree_that_an_unasserted_account_has_no_day(
         self, app, db, seed_user, seed_periods,
@@ -1068,9 +1089,9 @@ class TestTheTwoStatementsOfTheLatestAssertedDay:
         """Both answer ``None``, which reconciles nothing.
 
         The honest answer for an account with no declared balance to be inside
-        of, and the arm ``is_inside_assertion`` is total over.  A statement that
-        raised, or returned a sentinel date, would make every caller carry a
-        precondition -- and one of them would forget.
+        of, and the arm ``ReconciledThrough.covers`` is total over.  A statement
+        that raised, or returned a sentinel date, would make every caller carry
+        a precondition -- and one of them would forget.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         db.session.query(AccountAnchorHistory).filter_by(
@@ -1080,5 +1101,127 @@ class TestTheTwoStatementsOfTheLatestAssertedDay:
 
         walk = walk_cash_ledger(account.id, scenario.id)
 
-        assert walk.latest_observed_on is None
-        assert latest_observed_day(account.id) is None
+        assert walk.reconciled_through == ReconciledThrough(None)
+        assert reconciled_through(account.id) == ReconciledThrough(None)
+        assert not walk.reconciled_through.covers(date(2026, 3, 20))
+
+    def test_the_sql_form_answers_for_ONE_account(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """A second account's later assertion does not become this one's.
+
+        ``reconciled_through`` is a ``MAX`` and the account scope is the only
+        thing making it an ACCOUNT's boundary rather than the database's.  An
+        adversarial review deleted that ``.filter`` and the whole 7,726-test
+        suite stayed green, because every fixture in this class holds exactly
+        one asserted account -- the shape a scoping clause is invisible to.
+
+        What it would cost is not abstract.  The three consumers are the entry
+        list's reconciled indicator, the posting self-heal's skip, and the
+        reconcile panel -- and the panel uses this day as an SQL bound AND
+        STAMPS it onto every ticked purchase as its posting day.  Unscoped, a
+        savings account trued up today would reconcile a checking envelope's
+        purchases against a balance checking never declared, emptying the
+        reservation and writing the wrong ``settled_on`` to the row.
+
+        Hand-computed: Checking asserts for 2026-03-01, Savings for 2026-09-09
+        five months later.  Checking's boundary is 2026-03-01, and it does NOT
+        cover a purchase posted 2026-09-09.
+        """
+        account, scenario = seed_user["account"], seed_user["scenario"]
+        _restamp_opening(account, _instant(2026, 1, 1))
+        _assert_balance(
+            account, seed_periods[0], Decimal("1000.00"),
+            _instant(2026, 3, 1, 9, 0, 0),
+        )
+        other = create_savings_account(
+            seed_user, db.session, "Other", Decimal("5000.00"),
+        )
+        _assert_balance(
+            other, seed_periods[0], Decimal("5000.00"),
+            _instant(2026, 9, 9, 9, 0, 0),
+        )
+        db.session.commit()
+
+        boundary = reconciled_through(account.id)
+
+        assert boundary == ReconciledThrough(date(2026, 3, 1))
+        assert not boundary.covers(date(2026, 9, 9))
+        # The walk's in-memory twin is scoped by its own account_id argument,
+        # so the two must still agree -- which is what makes the SQL form's
+        # scope checkable against something rather than against itself.
+        assert walk_cash_ledger(account.id, scenario.id).reconciled_through == (
+            boundary
+        )
+        assert reconciled_through(other.id) == ReconciledThrough(
+            date(2026, 9, 9),
+        )
+
+
+class TestTheSourceOrderIsLoadBearing:
+    """The walk absorbs by DAY, so its sources must arrive in day order.
+
+    ``settled_cash_facts`` sorts ``(settled_on, transaction_id)`` and the two
+    replays then advance a MONOTONIC pointer over that list.  Nothing re-sorts
+    downstream: the read side used to, inside the deleted
+    ``merge_anchor_and_cash_events``, and the one-partition step removed it on
+    ruling N-133 / R1's "one ordering, stated where the rows are read".
+
+    **That made the loader's sort load-bearing for the first time, and an
+    adversarial review proved nothing tested it**: dropping ``settled_on``
+    from the sort key left all 7,726 tests green.  It is not inert.  A
+    monotonic pointer over a list that is not non-decreasing in its day STOPS
+    at the first out-of-order row and never absorbs the rest, so a movement
+    the declared balance already contains is subtracted from the projection a
+    second time -- which is the ``-$4,001.42`` production defect this whole
+    document exists about, reached by a different route.
+
+    The discriminating shape is an id order that DISAGREES with the day order,
+    which is ordinary: a purchase entered late carries a higher id and an
+    earlier ``paid_at``.
+    """
+
+    def test_a_later_id_on_an_earlier_day_is_still_absorbed(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """A source recorded second, for an earlier day, is inside the assertion.
+
+        Hand-computed.  Opening $1,000.00 on 01-01.  Two settled expenses on
+        one account: $50.00 whose cash moved 02-20 (recorded FIRST, lower id)
+        and $100.00 whose cash moved 02-10 (recorded SECOND, higher id).  An
+        assertion closes 02-15, so it absorbs the 02-10 row and NOT the 02-20
+        one:
+
+            balance_before = 1000.00 - 100.00 = 900.00
+
+        Sorted by id instead of by day, the pointer meets the 02-20 row first,
+        ``covers`` answers False, absorption halts, and the assertion books
+        ``$1,000.00`` -- carrying the $100.00 that was already inside the
+        declared balance forward to be subtracted again.
+        """
+        account, scenario = seed_user["account"], seed_user["scenario"]
+        _restamp_opening(account, _instant(2026, 1, 1))
+        create_settled_cash_transaction(
+            seed_user, db.session, seed_periods[0], Decimal("50.00"),
+            paid_at=_instant(2026, 2, 20, 9, 0, 0), name="recorded first",
+        )
+        create_settled_cash_transaction(
+            seed_user, db.session, seed_periods[0], Decimal("100.00"),
+            paid_at=_instant(2026, 2, 10, 9, 0, 0), name="recorded second",
+        )
+        asserted_at = _instant(2026, 2, 15, 9, 0, 0)
+        _assert_balance(
+            account, seed_periods[0], Decimal("2000.00"), asserted_at,
+        )
+        db.session.commit()
+
+        before, _delta = _corrections(account, scenario)[asserted_at]
+
+        # The MONEY first, so a regression reads as a wrong balance rather than
+        # as a changed sort -- the ordering below is the mechanism, not the
+        # property.
+        assert before == Decimal("900.00")
+        # The facts themselves arrive in DAY order, id breaking a same-day tie.
+        assert [fact.settled_on for fact in settled_cash_facts(
+            account.id, scenario.id,
+        )] == [date(2026, 2, 10), date(2026, 2, 20)]

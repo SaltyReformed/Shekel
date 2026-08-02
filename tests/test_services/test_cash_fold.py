@@ -1295,7 +1295,7 @@ class TestTheDriftOracleWalksFiftyTwoPeriods:
     BOTH tests: the assertion no longer resetting the walked total
     (``cash_ledger._walk``); the planned tier never merging into the running
     steps; the closing-balance partition re-keyed onto the INSTANT
-    (``cash_ledger._events.merge_anchor_and_cash_events``) -- the control that
+    (``cash_ledger.ReconciledThrough.covers``) -- the control that
     ran the other way until ruling R-DH (a), and still fires, because period 13
     is built to separate the two rules; ruling R-G's clamp
     deleted; its floor off by one (``not_before = as_of``); the map sampling

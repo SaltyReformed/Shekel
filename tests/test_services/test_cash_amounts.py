@@ -65,6 +65,7 @@ from pathlib import Path
 
 from app.services.cash_ledger._amounts import (
     ProjectedBasis,
+    ReconciledThrough,
     _entry_aware_amount,
     _expense_amount,
     income_amount,
@@ -78,7 +79,12 @@ from tests._test_helpers import add_entry, add_txn, create_envelope_txn
 # collapsing them onto one date would hide which comparison the rule makes.
 _PURCHASED_ON = date(2026, 1, 20)
 _POSTED_ON = date(2026, 1, 21)
-_ASSERTED_THROUGH = date(2026, 1, 22)
+_STATEMENT_DAY = date(2026, 1, 22)
+# The BOUNDARY that day establishes.  It is a type and not a date so that
+# `settled_on <= reconciled_through` cannot be written anywhere but inside
+# `ReconciledThrough.covers` -- see that class for what the fifth spelling
+# of this rule cost production.
+_ASSERTED_THROUGH = ReconciledThrough(_STATEMENT_DAY)
 _POSTED_AFTER_THE_STATEMENT = date(2026, 1, 23)
 
 
@@ -322,9 +328,9 @@ class TestTheRecordedPostingDay:
     true-up over "every entry dated on or before the SERVER's today", so which
     bucket a purchase fell in was decided by the order two buttons were
     pressed.  The bucket is now
-    ``cash_ledger.is_inside_assertion(entry.settled_on, reconciled_through)``,
-    evaluated at read time -- the same predicate, in the same units, the read
-    fold and the posting walk apply to a settled transaction.
+    ``reconciled_through.covers(entry.settled_on)``, evaluated at read time --
+    the same rule, in the same units, the read replay and the posting walk
+    apply to a settled transaction.
 
     Three of the cases below could not be WRITTEN against a flag, and they are
     the ones that matter: an unobserved purchase (NULL), a purchase the bank
@@ -499,7 +505,7 @@ class TestTheRecordedPostingDay:
         with app.app_context():
             txn = _envelope(
                 db.session, seed_user, seed_periods[1], "500.00",
-                [("200.00", False, _ASSERTED_THROUGH)],
+                [("200.00", False, _STATEMENT_DAY)],
             )
 
             assert _entry_aware_amount(txn, _ASSERTED_THROUGH) == Decimal("300.00")
@@ -507,18 +513,18 @@ class TestTheRecordedPostingDay:
     def test_an_account_that_has_never_asserted_reconciles_nothing(
         self, app, db, seed_user, seed_periods,
     ):
-        """``reconciled_through=None`` puts every purchase on the floor.
+        """A boundary that declares nothing puts every purchase on the floor.
 
         A ``$200.00`` purchase the bank was seen to take on 01-21, priced on a
-        ``reconciled_through`` of ``None`` -- the value the producer derives
-        for an account that has never asserted a balance
-        (``cash_ledger.latest_observed_day`` returns ``None``).  There is
-        nothing for the purchase to be inside of, so it is outstanding and the
-        reservation stays at max(500 - 0 - 0, 200) = 500.
+        boundary whose ``observed_day`` is ``None`` -- what
+        ``cash_ledger.reconciled_through`` returns for an account that has
+        never asserted a balance.  There is nothing for the purchase to be
+        inside of, so it is outstanding and the reservation stays at
+        max(500 - 0 - 0, 200) = 500.
 
-        ``is_inside_assertion`` is TOTAL in both arguments for exactly this
-        reason -- both absences mean "not inside" -- so no caller has to
-        remember a precondition.  A rule that treated a missing assertion as
+        ``ReconciledThrough.covers`` is TOTAL in both the argument and the
+        boundary for exactly this reason -- both absences mean "not inside" --
+        so no caller has to remember a precondition.  A rule that treated a missing assertion as
         "everything is reconciled" would empty every envelope on an account the
         user had never trued up.
         """
@@ -528,7 +534,9 @@ class TestTheRecordedPostingDay:
                 [("200.00", False, _POSTED_ON)],
             )
 
-            assert _entry_aware_amount(txn, None) == Decimal("500.00")
+            assert _entry_aware_amount(
+                txn, ReconciledThrough(None),
+            ) == Decimal("500.00")
 
 
 class TestTheEntriesRelationshipIsNotASeam:

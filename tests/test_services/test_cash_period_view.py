@@ -187,7 +187,7 @@ class TestTheSubtotalsCountEveryAttributedRow:
         # honestly rather than zeroed to make the call compile.
         basis = cash_ledger.ProjectedBasis(
             amount_overrides={},
-            reconciled_through=cash_ledger.latest_observed_day(account.id),
+            reconciled_through=cash_ledger.reconciled_through(account.id),
         )
         _, unpaid_only_expense = cash_ledger.sum_projected([
             row for row in cash_ledger.planned_cash_rows(

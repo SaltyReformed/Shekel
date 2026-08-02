@@ -966,8 +966,8 @@ class TestTheDerivedReconciledIndicator:
     :class:`TestTheSettledOnEditPath` below grades.
 
     So the entry row now shows a DERIVED answer:
-    ``cash_ledger.is_inside_assertion(entry.settled_on, reconciled_through)``,
-    computed per render from the account's latest asserted day.  These tests
+    ``reconciled_through.covers(entry.settled_on)``, computed per render from
+    the account's own coverage boundary.  These tests
     drive the real ``GET`` list route and read the rendered row.
     """
 

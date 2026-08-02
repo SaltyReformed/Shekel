@@ -125,6 +125,7 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
+from app.services.cash_ledger import ReconciledThrough
 from app.services.interest_projection import accrued_interest
 from app.utils.money import round_money
 
@@ -431,12 +432,13 @@ def _modelled_return(
     return None
 
 
-def _latest_assertion_day(
+def _latest_assertion_boundary(
     account: Account, walk: "_cash_fold.CashLedgerWalk",
-) -> date:
-    """Return the civil day of *account*'s LATEST balance assertion.
+) -> ReconciledThrough:
+    """Return the coverage boundary *account*'s LATEST assertion establishes.
 
-    The day ruling R-L's window opens on, read off the WALK the fold was already
+    The boundary ruling R-L's window opens on and ruling R-Z's contribution
+    feed asks its coverage question of, read off the WALK the fold was already
     built from rather than through a second
     :func:`~app.services.cash_ledger.resolve_anchor` query.  The two are the same
     row by construction -- the walk's facts are loaded ``(observed_on,
@@ -460,8 +462,10 @@ def _latest_assertion_day(
         walk: Its :class:`~app.services.cash_ledger.CashLedgerWalk`.
 
     Returns:
-        The assertion's ``observed_on`` -- the civil day, in the user's
-        timezone, that it is the closing balance for (ruling R-DH).
+        The account's :class:`~app.services.cash_ledger.ReconciledThrough`.
+        Its ``observed_day`` is never ``None`` here -- the refusal above is
+        what guarantees that -- so the accrual window can take it as a raw
+        civil day while the contribution feed asks it ``covers``.
 
     Raises:
         RuntimeError: When the account carries no assertion at all.
@@ -475,7 +479,7 @@ def _latest_assertion_day(
             "investigate any code path that constructed the Account row "
             "without routing through the canonical factory."
         )
-    return walk.anchor_corrections[-1].observed_on
+    return walk.reconciled_through
 
 
 def _resolve(
@@ -653,15 +657,23 @@ def resolve(
     if accrual is None:
         return _resolve(cash, [], None)
 
+    # ONE resolution of "the account's latest assertion", read two ways on
+    # purpose: the contribution feed asks it the COVERAGE question (ruling
+    # R-DH's rule, one implementation), and the accrual window takes its raw
+    # day because tiling a calendar is a different question with its own
+    # inclusive boundary (ruling R-Z).  They were one bare date until the
+    # one-partition step, which is how the contribution feed came to hold a
+    # second statement of the coverage rule.
+    reconciled_through = _latest_assertion_boundary(account, cash.walk)
     window = _AccrualWindow(
         rule=accrual,
-        start=_latest_assertion_day(account, cash.walk),
+        start=reconciled_through.observed_day,
         end=horizon_end,
     )
     return _resolve(
         cash,
         _asset_contributions.contribution_events(
-            account, cash.scenario_id, inputs, window.start,
+            account, cash.scenario_id, inputs, reconciled_through,
         ),
         window,
     )

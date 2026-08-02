@@ -159,7 +159,11 @@ def reconcile_context(account: Account, panel_id: str) -> dict:
         The template context.  ``outstanding`` is empty (and the partial says
         so) for an account with nothing to reconcile or no assertion at all.
     """
-    observed_on = cash_ledger.latest_observed_day(account.id)
+    # The raw DAY, and both uses below are why the boundary offers it: an SQL
+    # bound on the offer set, and a rendered caption.  Neither asks whether a
+    # movement is inside the balance -- that question has one implementation
+    # (``ReconciledThrough.covers``) and neither of these is a second one.
+    observed_on = cash_ledger.reconciled_through(account.id).observed_day
     outstanding = (
         []
         if observed_on is None
@@ -257,7 +261,11 @@ def reconcile_purchases(account_id):
     if account is None:
         return "Account not found", 404
 
-    observed_on = cash_ledger.latest_observed_day(account.id)
+    # The raw DAY: it bounds the offer set in SQL and is STAMPED onto every
+    # ticked purchase as its posting day, neither of which is the "is this
+    # inside the balance" question (that has one implementation, and this
+    # writes the fact that implementation later reads).
+    observed_on = cash_ledger.reconciled_through(account.id).observed_day
     if observed_on is None:
         # No balance has ever been asserted for this account, so there is
         # nothing for a purchase to be inside of.  Unreachable through the UI

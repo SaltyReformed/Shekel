@@ -64,8 +64,8 @@ in, frozen dataclasses out; no Flask symbol, no writes.  All money is
 
 from ._amounts import (
     ProjectedBasis,
+    ReconciledThrough,
     income_amount,
-    is_inside_assertion,
     live_amount_overrides,
     settled_cash_leg,
 )
@@ -73,14 +73,13 @@ from ._events import (
     CashAnchorFact,
     CashSourceFact,
     cash_anchor_facts,
-    merge_anchor_and_cash_events,
     settled_cash_facts,
     settled_civil_day,
 )
 from ._facts import (
     AnchorPoint,
-    latest_observed_day,
     planned_cash_rows,
+    reconciled_through,
     resolve_anchor,
 )
 from ._flows import sum_projected
@@ -98,14 +97,13 @@ __all__ = [
     "CashLedgerWalk",
     "CashSourceFact",
     "ProjectedBasis",
+    "ReconciledThrough",
     "cash_anchor_facts",
     "dated_deltas",
     "income_amount",
-    "is_inside_assertion",
-    "latest_observed_day",
     "live_amount_overrides",
-    "merge_anchor_and_cash_events",
     "planned_cash_rows",
+    "reconciled_through",
     "resolve_anchor",
     "settled_cash_facts",
     "settled_cash_leg",

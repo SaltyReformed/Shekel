@@ -22,8 +22,10 @@ developer's real bookkeeping session on 2026-07-31.
 """
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal
+
+import pytest
 
 from app.extensions import db as _db
 from app.models.journal_entry import JournalEntry, Posting
@@ -61,6 +63,11 @@ _OTHER_BILLS = Decimal("827.61")
 _PURCHASE = Decimal("150.27")
 _ANCHOR_AFTER = _ANCHOR - _PURCHASE          # 1157.39
 _PROJECTED_END = Decimal("-19.95")
+
+# A fixed civil day for the fence tests below.  They compare no figure and
+# touch no database, so the suite's frozen clock is irrelevant to them and a
+# literal is clearer than a derived date.
+_A_STATEMENT_DAY = date(2026, 1, 22)
 
 
 def _current_period(user_id):
@@ -102,6 +109,113 @@ def _projected_end_balance(account, user_id, period):
         account, BalanceContext.build(user_id), periods,
     )
     return view.columns[period.id].balance
+
+
+class TestTheRuleCannotBeAskedAnyOtherWay:
+    """The partition's fence is STRUCTURAL, and this is what pins it.
+
+    Ruling R-DH's question -- *is this movement already inside the balance the
+    user declared?* -- had FOUR implementations when
+    ``anchor_settle_partition.md`` was written, in three different units, and
+    one of them cost production ``$4,001.42``.  The plan's answer was a pylint
+    checker that would flag a fifth.  A checker cannot see through
+    ``earliest <= latest``, which is the exact site finding N-133 / F4 was
+    about, so it would have fenced every site except the one with the history.
+
+    :class:`~app.services.cash_ledger.ReconciledThrough` fences it by
+    construction instead: it defines no ordering against a civil day, so the
+    wrong spelling does not run at all.
+
+    **What reopens it was MEASURED, not assumed, and the first guess was
+    wrong.**  ``@dataclass(order=True)`` does NOT reopen it -- the generated
+    dunders compare the same class only and return ``NotImplemented`` against
+    a ``date``, so every spelling below still raises.  What reopens it is a
+    HAND-WRITTEN ``__le__`` / ``__ge__`` that unwraps the other operand, or
+    the type being reverted to a bare ``date``.  Either restores every
+    comparison below silently, with the whole suite still green.  These tests
+    are what makes that loud, and they are negative-controlled against the
+    hand-written dunder rather than against the keyword that looked like the
+    threat.
+
+    They assert on the LANGUAGE, not on a figure, and that is deliberate: the
+    figures are pinned by the classes below, and none of them can tell a
+    correct rule from a second correct rule written twice.
+    """
+
+    #: Every ordering shape a fifth answer could be spelled in.  ``==`` is
+    #: deliberately absent: the dataclass defines it, it is not the coverage
+    #: question, and two boundaries comparing equal is what the twin-statement
+    #: test in ``test_cash_walk.py`` asserts on.
+    _ORDERINGS = (
+        # "is this movement inside the balance", both operand orders
+        ("day <= boundary", lambda day, boundary: day <= boundary),
+        ("day < boundary", lambda day, boundary: day < boundary),
+        ("boundary >= day", lambda day, boundary: boundary >= day),
+        ("boundary > day", lambda day, boundary: boundary > day),
+        # The SAME question asked the other way round -- "is the assertion at
+        # or before this movement".  These four were MISSING from the first
+        # draft, and an adversarial review proved the gap by planting a
+        # ``__le__``-ONLY mutant: Python's reflection meant all four above
+        # still raised, while these two answered.  A control that pins one
+        # direction of a symmetric operator pins half a rule.
+        ("boundary <= day", lambda day, boundary: boundary <= day),
+        ("boundary < day", lambda day, boundary: boundary < day),
+        ("day >= boundary", lambda day, boundary: day >= boundary),
+        ("day > boundary", lambda day, boundary: day > boundary),
+        # Every builtin that reaches ordering through the same dunders.
+        ("sorted", lambda day, boundary: sorted([boundary, day])),
+        ("max", lambda day, boundary: max(day, boundary)),
+        ("min", lambda day, boundary: min(day, boundary)),
+    )
+
+    def test_no_ordering_against_a_civil_day_is_defined(self):
+        """Every spelling of the rule except ``covers`` raises ``TypeError``.
+
+        Each is a way somebody could answer the arc's question a fifth time,
+        in BOTH operand orders because ``__le__`` and ``__ge__`` are reached
+        by reflection and a one-sided mutant leaves the other side working.
+        None of them runs.
+        """
+        boundary = cash_ledger.ReconciledThrough(_A_STATEMENT_DAY)
+        day = _A_STATEMENT_DAY - timedelta(days=1)
+
+        # Collected rather than asserted per iteration, so a failure NAMES the
+        # spelling that started working instead of stopping at the first.
+        answered = []
+        for name, spelling in self._ORDERINGS:
+            try:
+                spelling(day, boundary)
+            except TypeError:
+                continue
+            answered.append(name)
+
+        assert not answered, (
+            f"ReconciledThrough answered an ordering comparison: {answered}.  "
+            f"That is a second implementation of ruling R-DH's partition, "
+            f"reachable without calling covers() -- the shape that cost "
+            f"production $4,001.42.  Look for a hand-written __le__ / __ge__, "
+            f"or the type reverted to a bare date; note that order=True alone "
+            f"does NOT do this."
+        )
+
+    def test_covers_is_the_spelling_that_does_work(self):
+        """The one implementation answers all four arms, and is TOTAL.
+
+        A rule with a precondition is a rule a caller forgets, so both
+        absences answer False rather than raising: an unobserved posting day
+        is outstanding (ruling R-DH (d) as restated at S1-c -- the engine never
+        guesses one), and an account that has declared no balance has nothing
+        for a movement to be inside of.
+        """
+        boundary = cash_ledger.ReconciledThrough(_A_STATEMENT_DAY)
+
+        assert boundary.covers(_A_STATEMENT_DAY - timedelta(days=1)) is True
+        assert boundary.covers(_A_STATEMENT_DAY) is True
+        assert boundary.covers(_A_STATEMENT_DAY + timedelta(days=1)) is False
+        assert boundary.covers(None) is False
+        assert cash_ledger.ReconciledThrough(None).covers(
+            _A_STATEMENT_DAY,
+        ) is False
 
 
 class TestRecordingAPurchaseDoesNotMoveTheProjection:
@@ -155,7 +269,7 @@ class TestRecordingAPurchaseDoesNotMoveTheProjection:
         callers assert on: a reconcile that silently matched nothing would make
         every figure below hold for the wrong reason.
         """
-        observed_on = cash_ledger.latest_observed_day(account.id)
+        observed_on = cash_ledger.reconciled_through(account.id).observed_day
         recorded = entry_service.record_settled_days(
             seed_user["user"].id, account.id,
             {entry.id for entry in envelope.entries}, observed_on,

@@ -2269,8 +2269,8 @@ class TestTheMarkPurchaseSettledHelperGuardsItsPrecondition:
     ):
         """No assertion at all means there is nothing to be inside of.
 
-        ``is_inside_assertion`` is total in both arguments and answers False
-        for a missing assertion, so a fixture that skipped this check would
+        ``ReconciledThrough.covers`` is total in both the argument and the
+        boundary and answers False for a missing assertion, so a fixture that skipped this check would
         build a purchase the projection reads as outstanding while the test
         asserted the settled figure -- failing later, in the balance, with no
         indication that the ACCOUNT was the problem.
