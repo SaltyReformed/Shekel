@@ -3097,7 +3097,7 @@ class TestCheckingDetail:
         with app.app_context():
             periods = pay_period_service.generate_pay_periods(
                 user_id=seed_user["user"].id,
-                start_date=date.today(),
+                start_date=display_today(),
                 num_periods=10,
             )
             acct = self._create_checking_account(seed_user, periods)
@@ -3123,7 +3123,7 @@ class TestCheckingDetail:
 
             periods = pay_period_service.generate_pay_periods(
                 user_id=seed_user["user"].id,
-                start_date=date.today(),
+                start_date=display_today(),
                 num_periods=27,
             )
             acct = self._create_checking_account(seed_user, periods)
@@ -3189,7 +3189,7 @@ class TestCheckingDetail:
 
             periods = pay_period_service.generate_pay_periods(
                 user_id=seed_user["user"].id,
-                start_date=date.today(),
+                start_date=display_today(),
                 num_periods=27,
             )
             acct = self._create_checking_account(seed_user, periods)
@@ -3275,7 +3275,7 @@ class TestCheckingDetail:
         with app.app_context():
             periods = pay_period_service.generate_pay_periods(
                 user_id=seed_user["user"].id,
-                start_date=date.today(),
+                start_date=display_today(),
                 num_periods=27,
             )
             acct = self._create_checking_account(seed_user, periods)
@@ -3294,7 +3294,7 @@ class TestCheckingDetail:
         with app.app_context():
             periods = pay_period_service.generate_pay_periods(
                 user_id=seed_user["user"].id,
-                start_date=date.today(),
+                start_date=display_today(),
                 num_periods=10,
             )
             acct = self._create_checking_account(seed_user, periods)
@@ -3323,7 +3323,7 @@ class TestCheckingDetail:
 
             periods = pay_period_service.generate_pay_periods(
                 user_id=seed_user["user"].id,
-                start_date=date.today(),
+                start_date=display_today(),
                 num_periods=10,
             )
             acct = self._create_checking_account(seed_user, periods)
@@ -3377,7 +3377,7 @@ class TestCheckingDetail:
         with app.app_context():
             periods = pay_period_service.generate_pay_periods(
                 user_id=seed_user["user"].id,
-                start_date=date.today(),
+                start_date=display_today(),
                 num_periods=10,
             )
             acct = self._create_checking_account(seed_user, periods)
@@ -3782,7 +3782,7 @@ class TestCheckingDetailCanonicalProducer:
         with app.app_context():
             periods = pay_period_service.generate_pay_periods(
                 user_id=seed_user["user"].id,
-                start_date=date.today(),
+                start_date=display_today(),
                 num_periods=10,
             )
 
@@ -3922,7 +3922,7 @@ class TestCheckingDashboardLink:
         with app.app_context():
             periods = pay_period_service.generate_pay_periods(
                 user_id=seed_user["user"].id,
-                start_date=date.today(),
+                start_date=display_today(),
                 num_periods=10,
             )
             # Set anchor on the seed_user account so the dashboard
@@ -3952,7 +3952,7 @@ class TestCheckingDashboardLink:
         with app.app_context():
             periods = pay_period_service.generate_pay_periods(
                 user_id=seed_user["user"].id,
-                start_date=date.today(),
+                start_date=display_today(),
                 num_periods=10,
             )
 
@@ -4050,7 +4050,7 @@ class TestCashDetailContext:
         """
         periods = pay_period_service.generate_pay_periods(
             user_id=seed_user["user"].id,
-            start_date=date.today(),
+            start_date=display_today(),
             num_periods=num_periods,
         )
         checking_type = db.session.query(AccountType).filter_by(
@@ -4227,7 +4227,7 @@ class TestCashDetailContext:
         with app.app_context():
             periods = pay_period_service.generate_pay_periods(
                 user_id=seed_user["user"].id,
-                start_date=date.today(),
+                start_date=display_today(),
                 num_periods=30,
             )
             hysa_type = db.session.query(AccountType).filter_by(name="HYSA").one()
@@ -4271,7 +4271,7 @@ class TestCashDetailContext:
         with app.app_context():
             periods = pay_period_service.generate_pay_periods(
                 user_id=seed_user["user"].id,
-                start_date=date.today(),
+                start_date=display_today(),
                 num_periods=33,
             )
             hysa_type = db.session.query(AccountType).filter_by(name="HYSA").one()
@@ -5453,7 +5453,7 @@ class TestCashDetailClickToEditHero:
         with app.app_context():
             periods = pay_period_service.generate_pay_periods(
                 user_id=seed_user["user"].id,
-                start_date=date.today(),
+                start_date=display_today(),
                 num_periods=10,
             )
             checking_type = db.session.query(AccountType).filter_by(

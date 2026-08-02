@@ -576,7 +576,7 @@ import pytest
 
 from app import create_app
 from app.extensions import db as _db
-from app.utils.dates import DISPLAY_TIMEZONE
+from app.utils.dates import DISPLAY_TIMEZONE, display_today
 from app.models.user import User, UserSettings
 # ``Account`` is intentionally not imported here: every test fixture
 # constructs accounts via ``app.services.account_service.create_account``,
@@ -1270,7 +1270,7 @@ def _today_relative_start_date():
     ``pay_period_service.get_current_period`` always returns a real
     period regardless of the wall-clock date.
     """
-    today = date.today()
+    today = display_today()
     return today - timedelta(days=today.weekday() + 4 * 14)
 
 
