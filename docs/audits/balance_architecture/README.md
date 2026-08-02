@@ -35,16 +35,17 @@ residue shipped the F1 ruling (the OPENING exception deleted from both walks), s
 F6, F7, F8, F9, F12 -- plus the eight items its own second adversarial review found
 (`anchor_settle_partition.md` Section 9).
 
-> **PRODUCTION IS BEHIND `main` BY ONE APP CHANGE, and it is an undeployed image rather
-> than a defect.** Prod runs S1-c (PR #75, `51e07e74`) and carries migration
-> `d7c1f4a9e603`, confirmed against a fresh clone 2026-08-01. `main` is now `6f4b4cbf`
-> and adds **X-af** (PR #77, test-only) and **step 3** (PR #76, 14 `app/` files -- the
-> `ReconciledThrough` fence). **No migration separates the two**, so a deploy is a pure
-> image swap and a rollback is a pure digest revert; the old-code-on-new-schema caveat
-> does not apply. Step 3 was measured to move **0 of 16,536 seam leaves**, so the gap is
-> real code and no rendered figure. Merging builds and cosign-signs an image;
-> **`shekel-deploy` is a separate manual run**, so this line states which merge prod
-> carries rather than the word "current", which rots at every merge.
+> **PRODUCTION RUNS `6f4b4cbf`, deployed 2026-08-02.**  Step 3 (PR #76, the
+> `ReconciledThrough` fence) and X-af (PR #77) are both live: image
+> `sha256:4ec10f50018d`, built by `docker-publish` from that merge, container healthy with
+> **0 restarts** and no rollback.  Migration head is unchanged at `d7c1f4a9e603` -- **the
+> ship carried NO migration**, so it was a pure image swap and a rollback would be a pure
+> digest revert.  Step 3 was measured to move **0 of 16,536 seam leaves**, so no rendered
+> figure should have changed and that is what a post-deploy check looks for.
+>
+> *State the merge prod carries, never the word "current": merging builds and signs an
+> image but `shekel-deploy` is a separate manual run, so "current" is false from the next
+> merge until that is run.*
 
 **The test suite grew two clock gates on 2026-08-01** and they matter to this arc specifically,
 because three of the five defects behind them were fixture-clock bugs this arc's own work created
@@ -104,14 +105,11 @@ in two spellings, which nothing had named -- are now the same loop over the same
 leaves move**, and the new posting walk reconciles the ledger the OLD walk wrote to `(0, 0)`
 changed with the trial balance at `$0.00`.
 
-**NEXT, in order: DEPLOY, then X-ae, then X-d, then S2-b.**
+**NEXT, in order: X-ae, then X-d, then S2-b.**  The deploy that used to head this list is
+DONE (2026-08-02, `6f4b4cbf`), so nothing unshipped is riding under the next step -- which
+matters because X-d changes a WRITER and wants a rollback that isolates it.
 
-**Deploy first**, because two merges are now sitting undeployed and the next step changes a
-WRITER: shipping X-d on top of an unverified prod image would put two unshipped changes in one
-rollback. It is a pure image swap -- no migration separates prod from `main` -- and step 3 moved
-0 of 16,536 seam leaves, so the deploy should move no figure and that is the thing to verify.
-
-Then **X-ae**, small and independent, closing a reachable unhandled 500 at FOUR doors
+**X-ae** is small and independent, and closes a reachable unhandled 500 at FOUR doors
 (**N-136**), one of them the LOGIN path. It rides in its own PR by the developer's 2026-08-01
 ruling, and **before X-y**, which opens `loan/params.py`.
 
