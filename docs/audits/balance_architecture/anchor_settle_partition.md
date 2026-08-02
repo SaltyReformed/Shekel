@@ -10,7 +10,9 @@ derived from an OBSERVED posting day rather than from a guess.  See Section 12 f
 Section 13 for what was built, what the conversion cost, and what a neutral adversarial review
 found in it.
 
-**Step 3 is COMPLETE and GREEN on branch `fix/one-partition-implementation` (2026-08-01), and it
+**Step 3 is COMPLETE and GREEN, committed as `d3e3d82a` on branch
+`fix/one-partition-implementation` (2026-08-01).  It is NOT pushed and has NO PR: the branch sits
+one commit ahead of `origin/dev`, awaiting the developer's own read of the diff.  It
 did NOT ship the pylint checker the step specified.**  The developer ruled the fence must be
 structural rather than a detector, and an AST census then showed the checker would have been blind
 to `account_posting_service/_sync.py`'s `earliest <= latest` -- the one site with a history.  What
@@ -445,7 +447,8 @@ Today's are -$427.22 and -$160.05 respectively, summed into one unreadable -$4,5
   `CashSourceFact.settled_on` and `CashAnchorFact.observed_on` become real fields, resolved once at
   construction (display-tz civil day of a genuine instant; the NULL-`paid_at` civil-date fallback
   passes through unconverted). `merge_anchor_and_cash_events` partitions on `(civil day, sources
-  before assertions)`. `dated_deltas` keys off the same fields rather than re-deriving.
+  before assertions)` -- **that function is DELETED at step 3 (Section 14), which moved the same
+  partition into each walk's own absorb loop over `ReconciledThrough.covers`**. `dated_deltas` keys off the same fields rather than re-deriving.
 - **S1-b DONE** (`9c2c3130`) `fix(posting): the posted ledger partitions on the same day as the fold`
   `account_posting_service/_walk.py:434` and the journal-entry dating move to the same rule, so the
   write side and the read side stay one statement. Shipped as a deploy hook
@@ -1526,6 +1529,15 @@ A fresh `pg_dump` of production (2026-08-01, read-only) restored into dev and up
 
 ### 12.9 Structural work this step forced, and why it belongs
 
+> **NAMES SUPERSEDED BY STEP 3 (Section 14), 2026-08-01.** Three of the names below no longer
+> exist: `cash_ledger.is_inside_assertion` is now the method
+> `cash_ledger.ReconciledThrough.covers`, `cash_ledger.latest_observed_day` is
+> `cash_ledger.reconciled_through`, and `CashLedgerWalk.latest_observed_on` is
+> `CashLedgerWalk.reconciled_through` -- all three now returning the boundary TYPE rather than a
+> bare `date`. `merge_anchor_and_cash_events` is DELETED. **The RULINGS below are unchanged**; only
+> the spellings moved. Sections 12 and 13 are kept as the as-built record of S1-c and are not
+> rewritten, so grep the code, not this section, for a live symbol.
+
 - **`balance_at._cash_fold` split.** Adding R-DH (f)'s second field pushed it past the 1,000-line
   ceiling. The period-view half moved whole to **`balance_at._cash_periods`**: assembling a running
   total and regrouping it into columns are two jobs sharing exactly one input
@@ -1666,6 +1678,11 @@ re-introduced.
 
 ### 13.3 The five tests this step OWED, and where they landed
 
+> **NAMES SUPERSEDED BY STEP 3 (Section 14)** -- see the note at 12.9. The tests below all still
+> exist and still pin what they say; the accessors they name were renamed onto the boundary type,
+> and item 5's pair is now `reconciled_through` (SQL) == `CashLedgerWalk.reconciled_through`.
+> Step 3's own reviews then found that item 5's fixture could not fail as written, and armed it.
+
 Section 10.6 named three things that had to ship with S1-c; these are their controls.
 
 1. **The invariant table in 12.6, all three rows**, at PROJECTED-BALANCE grain --
@@ -1740,7 +1757,8 @@ A fresh prod-shape clone at `main`'s head, captured from a `git worktree` at `ma
 
 ## 14. Step 3 as BUILT: the fence is a type, because a checker could not see the site that mattered
 
-**COMPLETE and GREEN, 2026-08-01, branch `fix/one-partition-implementation`.** Step 3 specified a
+**COMPLETE and GREEN, 2026-08-01, commit `d3e3d82a` on branch `fix/one-partition-implementation`
+(unpushed, no PR).** Step 3 specified a
 custom pylint checker. The developer ruled the checker out before it was written -- *"I want to make
 the fences structurally unnecessary"* -- and tracing what a checker could actually see showed the
 ruling was also the correct engineering call, for a reason the plan had not recorded.
@@ -1926,7 +1944,8 @@ full budget, the projection reading low in the plausible direction. Run against 
 raises: `ProgrammingError: operator does not exist: integer = date`. **It fails LOUD**, so the
 naming pair is a readability question and not a correctness one, and no code changed for it.
 
-**The test-integrity audit found THREE mutants that survived the whole 7,726-test suite**, and
+**The test-integrity audit found THREE mutants that survived the whole suite as it then
+stood (7,726 tests; it is 7,728 now, and two of those two are these findings' controls)**, and
 each is now a test with its own control. They are recorded individually because two of them are
 this step's own doing:
 
