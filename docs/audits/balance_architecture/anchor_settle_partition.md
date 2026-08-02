@@ -10,15 +10,23 @@ derived from an OBSERVED posting day rather than from a guess.  See Section 12 f
 Section 13 for what was built, what the conversion cost, and what a neutral adversarial review
 found in it.
 
-**Step 3 is COMPLETE and GREEN, committed as `d3e3d82a` on branch
-`fix/one-partition-implementation` (2026-08-01), carried by **PR #76** -- the first time CI
-has graded it, because CI runs only on pull requests and pushes to `main`, so no push to this
-branch could ever have graded it.  It did NOT ship the pylint checker the step specified.**  The
-developer ruled the fence must be structural rather than a detector, and an AST census then showed
-the checker would have been blind to `account_posting_service/_sync.py`'s `earliest <= latest` --
-the one site with a history.  What shipped is `cash_ledger.ReconciledThrough`, a type with no
-ordering against a civil day, so a restatement of the rule is a `TypeError` rather than a lint
-finding.  **Section 14** carries the census, the fenced shapes, the converged sites and the
+**Step 3 is IN PRODUCTION** -- committed as `d3e3d82a` on
+`fix/one-partition-implementation` (2026-08-01), merged 2026-08-02 at PR #76 (`6f4b4cbf`), which
+is the first time CI graded it: CI runs only on pull requests and pushes to `main`, so no push to
+that branch could ever have graded it.  **Deployed 2026-08-02** (image `sha256:4ec10f50018d`,
+container healthy with 0 restarts); this line read "NOT YET DEPLOYED" until then, and the ship
+carried **no migration**, so it was a pure image swap and a rollback would be a pure digest revert.
+**It did NOT ship the pylint checker
+the step specified.**  The developer ruled the fence must be structural rather than a
+detector.  **This paragraph used to justify that by saying an AST census showed the checker would
+have been BLIND at `account_posting_service/_sync.py`'s bare-local `earliest <= latest` -- and
+Section 14.1 of this same document WITHDREW that claim after step 3's own adversarial review
+refuted it** (adding those names to the vocabulary matches them; resolving a `Name` to its `Assign`
+is one astroid hop).  The header outlived the withdrawal by a day and was corrected on 2026-08-02,
+after plan step X-ae cited the withdrawn version a second time.  What survives is the RULING, which
+was never a claim about lint, plus 14.5's addition that a type and a checker fence COMPLEMENTARY
+holes.  What shipped is `cash_ledger.ReconciledThrough`, a type with no ordering against a civil
+day, so a restatement of the rule is a `TypeError` rather than a lint finding.  **Section 14** carries the census, the fenced shapes, the converged sites and the
 negative controls.  Measured on a production clone: **0 of 16,536 seam leaves move**, and the
 anchor backfill re-derives the ledger the OLD walk wrote without writing anything.
 
@@ -1781,7 +1789,8 @@ A fresh prod-shape clone at `main`'s head, captured from a `git worktree` at `ma
 ## 14. Step 3 as BUILT: the fence is a type, because a checker could not see the site that mattered
 
 **COMPLETE and GREEN, 2026-08-01, commit `d3e3d82a` on branch `fix/one-partition-implementation`,
-carried by PR #76.** Step 3 specified a custom pylint checker. The developer ruled the
+merged to `main` at PR #76 (`6f4b4cbf`).** Step 3 specified a custom pylint checker.
+The developer ruled the
 checker out before it was written -- *"I want to make the fences structurally unnecessary"* -- and
 tracing what a checker could actually see showed the ruling was also the correct engineering call,
 for a reason the plan had not recorded.
@@ -1906,7 +1915,7 @@ and this one already had, silently, for the whole time it carried F4's timezone-
 | `tests/` Decimal gate, cross-tree `duplicate-code`, checker package, checker unit tests | **clean; 146 passed** |
 | whole-seam clone diff, 9 accounts / 427 grid cells / 5,978 daily points | **0 of 16,536 leaves moved; no key added or removed** -- re-run after the reviews, including the modelled contribution feed's convergence |
 | the posted ledger, reconciled by the NEW walk against the ledger the OLD walk wrote | **`backfill_all_account_anchor_postings` reconciled 7 accounts and wrote NOTHING: 317 journal entries / 641 postings before and after, trial balance `$0.00`** |
-| CI on PR #76 | **PASS on the second attempt -- 7,756 passed / 0 failed** (7,728 plus the 28 `docker` tests a local run deselects).  The FIRST attempt was RED and the diagnosis is below |
+| CI on PR #76 | **PASS -- 7,756 passed / 0 failed** on the run that merged (`30759813495`, after X-af landed), and on an earlier attempt (7,728 plus the 28 `docker` tests a local run deselects).  The FIRST attempt was RED and the diagnosis is below |
 
 **CI's first attempt failed, and it was NOT this step -- measured rather than assumed.** Run
 `30730598715` came back `2 failed, 7754 passed`, both
