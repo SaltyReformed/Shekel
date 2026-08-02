@@ -10,17 +10,23 @@ derived from an OBSERVED posting day rather than from a guess.  See Section 12 f
 Section 13 for what was built, what the conversion cost, and what a neutral adversarial review
 found in it.
 
-**Step 3 is MERGED TO `main`** -- committed as `d3e3d82a` on
+**Step 3 is IN PRODUCTION** -- committed as `d3e3d82a` on
 `fix/one-partition-implementation` (2026-08-01), merged 2026-08-02 at PR #76 (`6f4b4cbf`), which
 is the first time CI graded it: CI runs only on pull requests and pushes to `main`, so no push to
-that branch could ever have graded it.  It is **NOT YET DEPLOYED**, and no migration separates
-prod from `main`, so shipping it is a pure image swap.  **It did NOT ship the pylint checker
+that branch could ever have graded it.  **Deployed 2026-08-02** (image `sha256:4ec10f50018d`,
+container healthy with 0 restarts); this line read "NOT YET DEPLOYED" until then, and the ship
+carried **no migration**, so it was a pure image swap and a rollback would be a pure digest revert.
+**It did NOT ship the pylint checker
 the step specified.**  The developer ruled the fence must be structural rather than a
-detector, and an AST census then showed
-the checker would have been blind to `account_posting_service/_sync.py`'s `earliest <= latest` --
-the one site with a history.  What shipped is `cash_ledger.ReconciledThrough`, a type with no
-ordering against a civil day, so a restatement of the rule is a `TypeError` rather than a lint
-finding.  **Section 14** carries the census, the fenced shapes, the converged sites and the
+detector.  **This paragraph used to justify that by saying an AST census showed the checker would
+have been BLIND at `account_posting_service/_sync.py`'s bare-local `earliest <= latest` -- and
+Section 14.1 of this same document WITHDREW that claim after step 3's own adversarial review
+refuted it** (adding those names to the vocabulary matches them; resolving a `Name` to its `Assign`
+is one astroid hop).  The header outlived the withdrawal by a day and was corrected on 2026-08-02,
+after plan step X-ae cited the withdrawn version a second time.  What survives is the RULING, which
+was never a claim about lint, plus 14.5's addition that a type and a checker fence COMPLEMENTARY
+holes.  What shipped is `cash_ledger.ReconciledThrough`, a type with no ordering against a civil
+day, so a restatement of the rule is a `TypeError` rather than a lint finding.  **Section 14** carries the census, the fenced shapes, the converged sites and the
 negative controls.  Measured on a production clone: **0 of 16,536 seam leaves move**, and the
 anchor backfill re-derives the ledger the OLD walk wrote without writing anything.
 
