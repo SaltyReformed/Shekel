@@ -35,13 +35,16 @@ residue shipped the F1 ruling (the OPENING exception deleted from both walks), s
 F6, F7, F8, F9, F12 -- plus the eight items its own second adversarial review found
 (`anchor_settle_partition.md` Section 9).
 
-> **PRODUCTION IS ONE MERGE BEHIND `main`, and that is a deploy that has not been run rather
-> than a defect.** Prod carries S1-c (PR #75, `51e07e74`, migration `d7c1f4a9e603`,
-> confirmed against a fresh clone 2026-08-01). `main` is now `dbee3812` (PR #77, X-af),
-> which is **test-only with zero `app/` changes**, so the running image is functionally
-> current and no figure differs. Merging builds and cosign-signs an image; **`shekel-deploy`
-> is a separate manual run**, so this line goes stale
-> at every merge until that is run -- state the merge, not "current".
+> **PRODUCTION IS BEHIND `main` BY ONE APP CHANGE, and it is an undeployed image rather
+> than a defect.** Prod runs S1-c (PR #75, `51e07e74`) and carries migration
+> `d7c1f4a9e603`, confirmed against a fresh clone 2026-08-01. `main` is now `6f4b4cbf`
+> and adds **X-af** (PR #77, test-only) and **step 3** (PR #76, 14 `app/` files -- the
+> `ReconciledThrough` fence). **No migration separates the two**, so a deploy is a pure
+> image swap and a rollback is a pure digest revert; the old-code-on-new-schema caveat
+> does not apply. Step 3 was measured to move **0 of 16,536 seam leaves**, so the gap is
+> real code and no rendered figure. Merging builds and cosign-signs an image;
+> **`shekel-deploy` is a separate manual run**, so this line states which merge prod
+> carries rather than the word "current", which rots at every merge.
 
 **The test suite grew two clock gates on 2026-08-01** and they matter to this arc specifically,
 because three of the five defects behind them were fixture-clock bugs this arc's own work created
@@ -86,9 +89,8 @@ conversion, the five tests Section 13.2 owed, and the three holes a neutral adve
 found in it are all recorded in Section 13. **The whole step is ONE commit** -- the migration and
 the tests written against its schema cannot revert separately without leaving a tree that fails.
 
-**Step 3 IS BUILT and it did NOT ship the checker this document specified** (2026-08-01, commit
-`d3e3d82a` on branch `fix/one-partition-implementation`, **PR #76** (open at
-the time of writing; the arc's status is the PR's, not this sentence's);
+**Step 3 IS MERGED TO `main` and it did NOT ship the checker this document specified**
+(commit `d3e3d82a`, 2026-08-01; **PR #76**, merge `6f4b4cbf`, 2026-08-02;
 `anchor_settle_partition.md` Section 14). The developer ruled the fence must be structural rather
 than a detector, and an AST census then found the checker would
 have been BLIND to `account_posting_service/_sync.py`'s `earliest <= latest` -- the one site with a
@@ -102,14 +104,18 @@ in two spellings, which nothing had named -- are now the same loop over the same
 leaves move**, and the new posting walk reconciles the ledger the OLD walk wrote to `(0, 0)`
 changed with the trial balance at `$0.00`.
 
-**NEXT, in order:** merge **PR #76**, whose `lint-and-test` check is **GREEN -- 7,756 passed / 0
-failed** (opened 2026-08-01; CI had never seen this branch, because CI runs only on pull requests
-and pushes to `main`). Its FIRST attempt was red on two `scripts/seed_user.py` subprocess timeouts;
-that is the runner and not this step, measured at 1.37s against `main`'s 1.35s on a 20-second
-budget, and recorded with the diagnosis at `anchor_settle_partition.md` 14.4. Then
-**X-ae**, which is small and independent and closes a reachable unhandled 500 (**N-136**): it rides
-in its own PR by the developer's 2026-08-01 ruling, because it touches two route files no balance
-step opens. Then **X-d**, PULLED FORWARD past nine steps because it is the
+**NEXT, in order: DEPLOY, then X-ae, then X-d, then S2-b.**
+
+**Deploy first**, because two merges are now sitting undeployed and the next step changes a
+WRITER: shipping X-d on top of an unverified prod image would put two unshipped changes in one
+rollback. It is a pure image swap -- no migration separates prod from `main` -- and step 3 moved
+0 of 16,536 seam leaves, so the deploy should move no figure and that is the thing to verify.
+
+Then **X-ae**, small and independent, closing a reachable unhandled 500 at FOUR doors
+(**N-136**), one of them the LOGIN path. It rides in its own PR by the developer's 2026-08-01
+ruling, and **before X-y**, which opens `loan/params.py`.
+
+Then **X-d**, PULLED FORWARD past nine steps because it is the
 structural resolver for the last duplication step 3 could not remove -- **two representations of
 the same events**, which is ruling R-H's own words (*"the posting writer consumes the SAME walk, so
 the projection and the posted ledger cannot drift by construction rather than by a test keeping two
