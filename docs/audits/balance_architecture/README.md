@@ -170,9 +170,15 @@ ledger entry dated `2026-07-26` to three -- the original, a reversal, and a fres
 `2026-08-02`. **Editing the notes on a paid transfer moves its money forward to today**, by however
 long ago it really settled.
 
-**NEXT, in order: X-aj (the one status seam -- it answers N-145 and closes N-146), then X-d (IN
-PROGRESS, uncommitted -- see its entry for the as-built state and the resume list), then X-ak, then
-X-ai, then S2-b**, with **X-ag** (the gate N-139 needs, instrument undecided) and **X-ah** (N-142)
+**X-aj1 IS BUILT AND COMMITTED on branch `feat/one-status-seam`** (5 commits: `99794cf7` rulings,
+`1688f508` extraction, `63514efc` seam merge, `1e75d0ce` refusal, `d3c68cd5` as-built corrections).
+**Not yet PR'd or merged.** Verified standalone: 7,798 passed / 0 failed, again under CI's
+`TZ=Pacific/Kiritimati`; `pylint app/` and `scripts/` 10.00/10; the real-data baseline
+byte-identical over 9 accounts, 427 grid cells and 5,978 daily points, with that diff shown to catch
+a planted one-cent move among 10,539 figures; and three mutants planted, all three killed.
+
+**NEXT, in order: PR `feat/one-status-seam`, then X-d (PARKED at `49948f64`, see its entry for the
+resume list), then X-aj2, then X-ak, then X-ai, then S2-b**, with **X-ag** (the gate N-139 needs, instrument undecided) and **X-ah** (N-142)
 unscheduled behind them, and the new **Phase G** (N-147, the two remaining allowlist-bearing fences)
 after E2.  **X-ai is scheduled rather than
 remembered, by ruling R-DM**: it moves X-d's checked-projection assert to the COMMIT boundary, which
@@ -3461,13 +3467,25 @@ preconditions cite entries in that file.
   inconsistency. Ship-gated on a prod-data sweep for walk-invisible legacy rows, exactly as E1a
   was; any found row is an F1-class human decision, never a silent exclusion.
 
-  > **IN PROGRESS, UNCOMMITTED, and PAUSED on finding N-145** (2026-08-02). The branch
-  > `fix/xd-checked-projection` exists and is at `dev`'s head with **ZERO commits on it**:
-  > everything below -- the rulings in this document AND every code change -- is in the WORKING
-  > TREE, unstaged, `app/services/account_posting_service/_walk.py` staged as deleted. Rulings
-  > **R-DI**, **R-DJ**, **R-DK**, **R-DL** and **R-DM** are taken and recorded here. Resume by
-  > ruling N-145's seam, then finishing the test conversion. The arc's commit order still applies
-  > when it resumes: a `docs(balance):` rulings commit, then the code, then the tick.
+  > **IN PROGRESS and PARKED** (2026-08-02). **N-145 is ANSWERED** -- ruling **R-DN**, and plan step
+  > **X-aj1** shipped it on branch `feat/one-status-seam`, taking `transfer_service.py` to **987 of
+  > 1000**, so R-DM's cash half now fits (13 lines of headroom against its ~9; the module is still a
+  > four-verb file, finding **N-152**).
+  >
+  > **The work is COMMITTED, as one throwaway WIP commit `49948f64` on
+  > `fix/xd-checked-projection`** -- `wip(cash): X-d checked projection -- PARKED, NOT FOR MERGE`.
+  > It was uncommitted in the working tree until 2026-08-02 and was parked so it stops depending on
+  > one; this follows the arc's own precedent (`wip/x-x-held`). **Nothing in it is for merge as-is**,
+  > and it was committed `--no-verify` because the suite is deliberately RED there (53 failures,
+  > classified below). To unpark: `git reset --soft HEAD~1`.
+  >
+  > **`fix/xd-checked-projection` branches off `dev` at `73158c27` and therefore does NOT contain
+  > X-aj1.** Resume by merging or rebasing onto whatever carries `feat/one-status-seam` first --
+  > otherwise `transfer_service.py` is back at 999 lines and R-DM's cash half does not fit. The two
+  > steps' file sets are disjoint (verified), so that merge is conflict-free except in this document.
+  > Rulings **R-DI**, **R-DJ**, **R-DK**, **R-DL** and **R-DM** are taken and recorded here. The
+  > arc's commit order still applies when it resumes: a `docs(balance):` rulings commit, then the
+  > code, then the tick.
   >
   > **Built and measured GREEN:**
   >
