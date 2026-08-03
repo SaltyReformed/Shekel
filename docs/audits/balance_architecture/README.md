@@ -316,7 +316,12 @@ becomes a RECONCILIATION rather than a reset -- so the steps that served the OLD
 against it rather than run first.
 
 **NEXT, in order: X-f1, X-f2, X-f3 (the cutover -- MOVES MONEY, own PR), X-f4, X-f5, then X-f6**
-(bank import, the ruled follow-on).  **X-ai-s (the migration) is HELD pending X-f3**: it buys
+(bank import, the ruled follow-on).  **X-f1 is IN FLIGHT and PARKED RED on branch
+`feat/xf1-settle-day`** (`1ca63972` docs, `70ba87f6` build; 102 tests fail; not pushed).  Its
+step entry in Section 5 carries a **"X-f1b as PARKED: everything needed to resume COLD"** block --
+what is proven, what is only assumed, the environment, the three test locations (one of which this
+step missed and went RED), and the remaining work in order.  Read that block before touching the
+branch; its first item is the ship gate, not cleanup.  **X-ai-s (the migration) is HELD pending X-f3**: it buys
 per-ASSERTION attribution for the correction family X-f3 deletes, and running it first would ship a
 migration and a backfill for something about to be removed.  **X-ai-r is DONE** (`c518d2e4` /
 `8281e82c`, PR #81) and its LOAN half survives untouched.  After X-f: **X-ai-a, X-ai-b, X-ai-c,
@@ -4708,6 +4713,119 @@ preconditions cite entries in that file.
     archiving a payment from re-dating its money (**N-146**'s class, and why **N-177** constrains
     this step even though its status has zero rows).  `to_display_civil_date` and both its wrappers
     are deleted once callerless.
+  ---
+
+  #### X-f1b as PARKED: everything needed to resume COLD
+
+  **PARKED RED on branch `feat/xf1-settle-day`, 2026-08-03, NOT FOR MERGE.**  Two commits on top
+  of `fac90200`: **`1ca63972`** (the rulings, the N-177 / N-178 findings, and the review findings
+  N-179..N-183 -- docs only, green) and **`70ba87f6`** (the build -- **RED at 102 tests**).  Not
+  pushed.  The parked-RED convention is X-d's (`feat/xd-checked-projection`); the head commit
+  message states the RED status in its own subject line, as X-d's does.
+
+  **What is PROVEN, and what is only ASSUMED.**  Do not re-derive the first list; do not trust the
+  second without measuring.
+
+  | proven, on a production clone | how |
+  |---|---|
+  | the settled-iff-dated invariant holds EXACTLY | 156 settled all dated, 843 non-settled all NULL |
+  | no BALANCE moves | `verify_balance_baseline.py` byte-identical: 9 accounts, 427 grid cells, 5,978 daily points |
+  | that harness is not blind | positive control: one settle day moved 30 days -> 16-line diff |
+  | the migration runs forward | `flask db upgrade` on the clone, both post-backfill gates pass |
+  | the downgrade refuses | raises, migration head unchanged |
+  | its recovery SQL WORKS | exercised in a rolled-back transaction, 156/156 round-trip to the same civil day across 5 months |
+  | the N-178 fix is a firing control | RED without it (7.00 days), GREEN with it |
+  | `pylint app/` + `scripts/` | 10.00/10 with the full `--fail-on` set |
+  | the checker meta-suite | 146 passed |
+  | the plan gate | 17 passed |
+
+  **ASSUMED and NOT measured:** that the 102 remaining failures are all conversion residue rather
+  than real defects.  The test-integrity review sampled them and agreed, but sampled is not
+  exhaustive -- and this document's own Section 7 says an oracle is never sampled.  **Re-measure
+  before believing it.**
+
+  **The session scratchpad is GONE.**  Everything in it -- the baselines, the AST census scripts,
+  the suite output files, the reviewers' brief -- was keyed to a session directory that no longer
+  exists.  Nothing below depends on it; every command re-creates what it needs.
+
+  **Environment.**  The measurement clone is **`shekel_xf1`** on the dev Postgres
+  (`127.0.0.1:5432`), restored 2026-08-03 from production and **already upgraded to
+  `a3f7c8e21b64`**.  If it is gone, re-make it by the procedure in `archive/`'s clone notes:
+  `docker exec shekel-prod-db sh -c 'PGPASSWORD="$(cat /run/secrets/postgres_password)" pg_dump -U
+  "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner --no-privileges'` into a fresh database, then
+  `DATABASE_URL=...shekel_xf1 flask db upgrade`.  A HOST probe must use `127.0.0.1` (not
+  `localhost`, which resolves to `::1` first) and `render_as_string(hide_password=False)`.
+
+  **Baselines** are re-captured, not recovered:
+  `DATABASE_URL=postgresql://.../shekel_xf1 python tests/manual/verify_balance_baseline.py OUT.json`
+  -- once on the branch and once from a `git worktree` at `fac90200`, then `diff`.  **Use a
+  worktree, never `git checkout`**, which reverts the tree and discards the work.
+
+  **The test template must be rebuilt** whenever the migration changes:
+  `TEST_ADMIN_DATABASE_URL=postgresql://<user>:<pw>@127.0.0.1:5433/postgres
+  TEST_DATABASE_URL=postgresql://<user>:<pw>@127.0.0.1:5433/shekel_test
+  python scripts/build_test_template.py`.
+
+  **THE GATE THIS STEP MISSED, and it went RED.**  There are **three** test locations, not two:
+  `./scripts/test.sh` (the suite), `pytest tools/plan_gate/` (this document's ledger), and
+  **`pytest tools/pylint/tests/`** (the custom checkers' own meta-suite).  The third caught a
+  deleted name left in `balance_seam.py`'s ruling set -- exactly what its
+  `test_classification_sets_match_the_real_fenced_modules` is written to catch -- after
+  `pylint app/` had reported 10.00/10.  **Run all three.**
+
+  **The remaining work, in order.  The first item is the one that decides whether this step is
+  honest.**
+
+  1. **N-182 -- restore the two rules the conversion left untested.**  This is not cleanup; it is
+     the step's ship gate.  (a) The display-timezone settle rule has ZERO pins: **swapping
+     `display_today()` for `date.today()` in `status_seam.py` currently ships a GREEN suite.**  A new
+     pin must freeze the clock at an EVENING-EASTERN instant -- `freeze_today` defaults to NOON UTC,
+     which is the same civil day in both zones, so no existing clock-freezing test in the suite can
+     tell the two rules apart.  (b) The three transaction-side "a re-settle must not re-date the
+     money" pins can no longer fail, because both calls now yield the same `display_today()`.  **The
+     discriminating pattern is already in this branch**, applied to the transfer side only:
+     `tests/test_routes/test_transfers.py::test_re_marking_a_settled_transfer_does_not_re_date_it`
+     back-dates THROUGH the service first, so the ledger follows, and only then replays.  Mirror it
+     at `test_grid.py`'s `TestPaidAtLifecycle` and `test_status_seam.py`'s re-settle test.
+  2. **N-179's remaining half -- 16 test sites still pass a `datetime`.**  The seam refuses them
+     now, so they fail loudly rather than storing a UTC-truncated day.  Find them with an AST pass
+     for `settled_on=` / `.settled_on =` whose value resolves to a datetime expression, **resolving
+     LOCAL VARIABLES** -- the audit that missed them only checked direct expressions, which is why
+     eight sites stayed green.  The mirror hazard is equally real: five ASSERTION instants were
+     converted to plain dates, and a `date` written to a `timestamptz` becomes midnight UTC, i.e.
+     the previous Eastern evening.
+  3. **Re-derive the anchor-reconciliation ORACLE in DAYS.  Do not rename it.**
+     `tests/test_integration/test_posting_ledger_account_anchor_reconciliation.py` is the
+     independent second opinion for the anchor partition and is written in INSTANTS end to end
+     (`_as_utc`, `_period_start_instant`, `_source_attribution_instant`, and the `<=` / `>`
+     comparisons they feed).  The engine now partitions on a stored civil DAY.  A rename leaves it
+     restating the OLD rule against the NEW engine, which is worse than leaving it broken -- and its
+     `_period_start_instant` fallback arm corresponds to a fallback that no longer exists, because
+     `settled_day` refuses.
+  4. **Decide what happens to the 22 historical-migration tests.**
+     `tests/test_models/test_posting_cash_backfill.py` and `test_posting_ledger_backfill.py` drive
+     the historical migrations' RAW SQL, which reads `t.paid_at` (`7d63529e4300:279`,
+     `db239773c2fd:168`).  No fixture rename can fix them; either delete them or gate them on the
+     pre-drop schema.  Note one has its assertion left pinned to the OPPOSITE rule
+     (`test_posting_cash_backfill.py:440` asserts the UTC day against an input moved to the display
+     day -- unsatisfiable by construction), so it must be re-derived, not just re-run.
+  5. **Then the remaining conversion residue** -- roughly 70 `UndatedSettleError` failures are
+     fixtures constructing settled rows directly instead of through the seam.  Mechanical.  Also
+     drop the four unused `display_today` imports the script added and the ~11 now-dead
+     `settle_instant_on` imports, and rename the ~30 test classes and docstrings that still say
+     `paid_at`.  Note `tests/` is out of `pylint` scope (`.pre-commit-config.yaml`), so nothing
+     catches this residue automatically.
+  6. **N-183 before X-f1c**, then X-f1c, then X-f1d.
+
+  **Two traps that will bite a reader who skips the findings.**  A `datetime` in `settled_on` is
+  now a `TypeError` at the seam but is still SILENTLY truncated by PostgreSQL if written by any
+  other path -- which is why N-183's unfenced `update_transfer` write matters more than its `$0.00`
+  cost suggests.  And `tests/_test_helpers.py`'s settle factories still accept an explicit
+  `settled_on=None`, which builds the broken row on purpose (N-182's sibling); four call sites do
+  it, and the docstring says so now rather than claiming the state is unreachable.
+
+  ---
+
   * [ ] **X-f1c** the two edit doors (R-ED, R-EE): `settled_on` on the full-edit form, out of
     `_LOCKED_EDIT_FIELDS` and INTO `_POSTING_RELEVANT_FIELDS`; and the true-up form's statement date,
     with the anchor period derived from it.
