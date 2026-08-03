@@ -35,14 +35,18 @@ residue shipped the F1 ruling (the OPENING exception deleted from both walks), s
 F6, F7, F8, F9, F12 -- plus the eight items its own second adversarial review found
 (`anchor_settle_partition.md` Section 9).
 
-> **PRODUCTION RUNS `a778703f`, deployed 2026-08-02, and `main` is ONE MERGE AHEAD of
-> it.**  Re-measured 2026-08-03 from the container itself, not from a paragraph:
-> `docker inspect shekel-prod-app` reports image `sha256:4e6adc8dd3da` carrying
-> `org.opencontainers.image.revision = a778703f`, started 2026-08-02T23:28Z with **0
-> restarts**.  So step 3 (PR #76), X-af (PR #77) AND X-ae (PR #79) are all live.  **X-aj1
-> (PR #80, merge `dde107f6`, merged 2026-08-03T11:18Z) is MERGED and NOT DEPLOYED** -- its
-> `docker-publish` run succeeded, so the image is built and signed and waiting on a
-> `shekel-deploy` run.  Migration head is unchanged at `d7c1f4a9e603` on every one of them --
+> **PRODUCTION RUNS `dde107f6` and `main` == `dde107f6`, so PROD IS CURRENT WITH `main`.**
+> Re-measured 2026-08-03 (afternoon) from the container itself, not from a paragraph:
+> `docker inspect shekel-prod-app` reports image `sha256:5cd2c22d13fc` carrying
+> `org.opencontainers.image.revision = dde107f6`, started **2026-08-03T14:41Z**, **0
+> restarts**, `health=healthy`.  So step 3 (PR #76), X-af (PR #77), X-ae (PR #79) AND X-aj1
+> (PR #80) are all live.  **PR #81 (X-ai-r) is OPEN, not merged and not deployed**; it
+> carries 7 commits, `polyglot-lint` SUCCESS and `lint-and-test` still running.  **X-ai-r
+> changes production DATA with no migration** -- the deploy hook runs
+> `backfill_all_account_anchor_postings_after_migration` unconditionally, adding exactly
+> +2 entries / +4 postings -- so its post-deploy check is a ledger census, not a figure
+> diff.  Migration head is unchanged at `d7c1f4a9e603` on every one of these --
+
 > **none of these ships carried a migration**, so each was a pure image swap and a rollback
 > is a pure digest revert.  Step 3 was measured to move **0 of 16,536 seam leaves**, so no
 > rendered figure should have changed and that is what a post-deploy check looks for.
