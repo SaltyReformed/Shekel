@@ -9,12 +9,21 @@ the same things underneath them, and this package owns the cash copies:
 ===================  ==============================  ==========================
 question             here                            loan analog
 ===================  ==============================  ==========================
+which day is it?     :mod:`._days`                   (the cash question alone)
 what is stored?      :mod:`._facts`                  ``loan_loaders``
 what happened, when? :mod:`._events`                 ``loan_ledger._events``
 what was it worth?   :mod:`._amounts`                ``loan_ledger._split``
 in what order?       :mod:`._walk`                   ``loan_ledger._walk``
 what do they sum to? :mod:`._flows`                  (a peer reduction)
 ===================  ==============================  ==========================
+
+:mod:`._days` is the package FLOOR and has no loan twin, because the question it
+answers is the cash side's alone: a loan payment is dated by its own due date and
+its anchors carry an explicit ``anchor_date``, while a cash movement and a
+balance assertion are two DIFFERENT kinds of civil day that the engine must
+compare -- and comparing them by hand is what cost production ``$4,001.42``
+(ruling R-DH).  Since plan step X-d they are two TYPES with no ordering between
+them (ruling R-DJ, closing finding N-135), so that comparison cannot be written.
 
 Nothing here answers "what is the balance at T".  That is the
 :mod:`app.services.balance_at` seam's question, and the arrow runs ONE way: the
@@ -64,11 +73,11 @@ in, frozen dataclasses out; no Flask symbol, no writes.  All money is
 
 from ._amounts import (
     ProjectedBasis,
-    ReconciledThrough,
     income_amount,
     live_amount_overrides,
     settled_cash_leg,
 )
+from ._days import MovedOn, ObservedOn, ReconciledThrough
 from ._events import (
     CashAnchorFact,
     CashSourceFact,
@@ -96,6 +105,8 @@ __all__ = [
     "CashAnchorFact",
     "CashLedgerWalk",
     "CashSourceFact",
+    "MovedOn",
+    "ObservedOn",
     "ProjectedBasis",
     "ReconciledThrough",
     "cash_anchor_facts",

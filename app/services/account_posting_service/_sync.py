@@ -43,9 +43,9 @@ commits -- the caller owns the transaction boundary.
 
 import logging
 from collections.abc import Iterable
+from datetime import date
+from decimal import Decimal
 
-from app import ref_cache
-from app.enums import PostingSourceEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.journal_entry import JournalEntry, Posting
@@ -54,14 +54,20 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
-from app.services.cash_ledger import reconciled_through
+from app.services._posting_reconcile import assert_ledger_projects_facts
+from app.services.cash_ledger import (
+    CashLedgerWalk,
+    dated_deltas,
+    walk_cash_ledger,
+)
 from app.services.posting_reads import _ledger_account_for
 from app.services.scenario_resolver import get_baseline_scenario
 
 from ._anchors import reconcile_account_anchor_corrections
-from ._walk import walk_account_ledger
 
 logger = logging.getLogger(__name__)
+
+_ZERO_MONEY = Decimal("0.00")
 
 
 def _load_non_amortizing_account(account_id: int) -> Account | None:
@@ -92,11 +98,19 @@ def _load_non_amortizing_account(account_id: int) -> Account | None:
 def sync_account_anchor_postings(account_id: int, scenario_id: int) -> None:
     """Reconcile one non-loan account's anchor corrections in one scenario.
 
-    The per-scenario chokepoint: walks the account's anchor assertions
-    against the scenario's posted sources
-    (:func:`._walk.walk_account_ledger`) and reconciles the resulting
-    opening / true-up corrections to the ledger
-    (:func:`._anchors.reconcile_account_anchor_corrections`).
+    The per-scenario chokepoint: walks the account's SOURCE rows and assertions
+    once (:func:`app.services.cash_ledger.walk_cash_ledger`), reconciles the
+    resulting opening / true-up corrections to the ledger
+    (:func:`._anchors.reconcile_account_anchor_corrections`), then verifies that
+    the ledger it just wrote still equals the fold of those facts
+    (:func:`_assert_checked_projection`).
+
+    **The walk is the READ fold's, since plan step X-d.**  This package walked
+    the POSTED copy of the account's events until then, which made the
+    corrections a function of the ledger they are written into and left two
+    representations of one event set.  One walk, both consumers -- ruling R-H --
+    and the assert below is what turns a stale posting from a second opinion
+    into a detectable, repairable cache inconsistency (E1a's shape, for cash).
 
     Idempotent and self-healing: a re-run at the same state writes nothing.
     Touches ONLY the account's own linked and anchor-equity ledgers.  A
@@ -107,11 +121,107 @@ def sync_account_anchor_postings(account_id: int, scenario_id: int) -> None:
     Args:
         account_id: The non-loan account whose corrections to reconcile.
         scenario_id: The budget scenario to reconcile within.
+
+    Raises:
+        PostingError: When the reconciled ledger does not equal the fold of the
+            account's facts (:func:`_assert_checked_projection`).
     """
     if _load_non_amortizing_account(account_id) is None:
         return
+    walk = walk_cash_ledger(account_id, scenario_id)
+    # ONE linked-ledger resolution per sync, shared by the reconcile and the
+    # assert -- the same shape ``loan_posting_service.sync_loan_postings`` uses,
+    # and for the same reason (each resolving its own is a redundant query).
+    linked_ledger_id = _ledger_account_for(account_id).id
     reconcile_account_anchor_corrections(
-        account_id, scenario_id, walk_account_ledger(account_id, scenario_id),
+        account_id, scenario_id, walk.anchor_corrections,
+    )
+    _assert_checked_projection(
+        account_id, scenario_id, walk, linked_ledger_id,
+    )
+
+
+def _assert_checked_projection(
+    account_id: int,
+    scenario_id: int,
+    walk: CashLedgerWalk,
+    linked_ledger_id: int,
+) -> None:
+    """Assert the posted linked ledger equals the fold of the account's facts.
+
+    **The X-d invariant, and E1a's for cash: ``sum(postings) == fold(ACTUAL
+    events)``, checked at WRITE time -- per date, not just in total.**  The
+    walk's events, re-keyed by the day each counts from
+    (:func:`app.services.cash_ledger.dated_deltas` -- the ONE statement of that
+    clock, shared with the balance seam's fold), must match the linked ledger's
+    per-``entry_date`` nets exactly.  Anything else means the posted ledger has
+    stopped being a faithful projection of the account's source rows, and every
+    reader of the general ledger -- the statements, the reconciliation oracles
+    -- is looking at a lie.  Raising HERE, inside the write transaction, turns
+    that lie into a rollback at the write that caused it instead of a silent
+    divergence found months later.
+
+    **The sign is the walk's own, NOT its negative, and that is the difference
+    from the loan side.**  A loan walk tracks OWED against a credit-normal
+    liability ledger, so its assert negates; a cash walk's running balance IS
+    the linked ledger's balance in one convention, for assets and liabilities
+    alike (:func:`app.services.cash_ledger.dated_deltas` states this and names
+    the trap: a sign flip still BALANCES every entry, so the trial balance
+    closes and only the balance sheet is upside down).  Measured on the
+    dev-runtime clone before this assert was written: it holds over 79 dated
+    nets across 7 accounts, and the negated form fails all 7.
+
+    The comparison is per DATE because a right amount at a wrong date is still
+    a wrong ledger: the fold counts each event from its own civil day, so a
+    stale-dated posting moves balances on every day between the two.  The
+    reconciles this runs behind are date-keyed for exactly that reason (finding
+    N-13), so a legitimate edit converges BEFORE this check reads the ledger
+    back and can never trip it.
+
+    The two known ways to fail it, named so the error is actionable:
+
+    * a reconcile defect (a target computed or dated wrong) -- fix the
+      reconcile, never this check;
+    * **a posting the walk cannot model.**  A source-row walk cannot see a
+      posting whose source row was hard-deleted (``ON DELETE SET NULL``), and
+      ruling R-DI ceded the residue reader that used to absorb one silently.
+      Such a row is an F1-class DATA item for a human: the reverse-before-delete
+      discipline nets it to zero at every delete door in the app (traced at
+      R-DI), and the ship sweep found none, so one appearing here means a door
+      was added that does not reverse first.
+
+    Skipped for an account with no assertion history (an empty walk) -- the
+    reconcile above posted nothing and there is no fact stream to check against.
+
+    Args:
+        account_id: The account whose projection to verify (names it in the
+            failure message).
+        scenario_id: The budget scenario the reconcile ran in.
+        walk: The SAME walk the reconcile just posted from -- one walk, then the
+            check, never a second walk that could differ.
+        linked_ledger_id: The account's LINKED ledger account id, resolved once
+            by :func:`sync_account_anchor_postings`.
+
+    Raises:
+        PostingError: When any date's posted net differs from the fold's delta
+            -- the projection is broken and the write must not commit.
+    """
+    if not walk.anchor_corrections:
+        return
+    expected: dict[date, Decimal] = {}
+    for day, delta in dated_deltas(walk):
+        # Posting space is the walk's OWN sign for cash, not its negative --
+        # see the shared assert's docstring for why the loan side differs and
+        # why the sign stays with each caller.
+        expected[day] = expected.get(day, _ZERO_MONEY) + delta
+    assert_ledger_projects_facts(
+        f"Account {account_id}",
+        expected,
+        linked_ledger_id,
+        scenario_id,
+        "Either a reconcile defect (fix the reconcile) or a posting the "
+        "account's source rows cannot explain -- a hard-delete residue row, "
+        "which is an F1-class data item for a human (ruling R-DI).",
     )
 
 
@@ -204,67 +314,37 @@ def self_heal_anchor_corrections(
     ``reverse_postings_before_delete`` routes through) call this after
     emitting source delta entries.
 
-    **What it decides is whether the reconcile can be SKIPPED, and that is
-    the honest way round.**  :func:`sync_account_anchor_postings` is
-    idempotent and reconciles to target, so running it after every emission
-    is always correct and only ever costs a walk; everything below is the
-    proof that a particular walk would write nothing.  Stating it as a skip
-    rather than as a fire is not a style choice -- a fire-predicate that
-    misses a case silently leaves the ledger wrong, which is exactly what
-    happened while this function tested only the first of the two conditions
-    below (see the second one).
+    **It carried a SKIP predicate until plan step X-d, and ruling R-DK deleted
+    it.**  Two conditions decided whether a walk could be avoided: whether the
+    change rode on top of every assertion (so no correction could move), and
+    whether the scenario already carried its corrections at all.  Three things
+    ruled it out:
 
-    A walk writes nothing when BOTH hold:
+    * **Its own contract conceded it was optional.**  ``sync_account_anchor_postings``
+      is idempotent and reconciles to target, so running it after every
+      emission is always correct and only ever costs a walk; the predicate was
+      never more than a proof that a particular walk would write nothing.
+    * **It was a cost guard that SPELLS the money rule**, and this arc has paid
+      for that shape once: finding N-133 / F4's silent timezone-sign dependency
+      lived in this exact predicate for its whole life, and the second of its
+      two conditions had to be ADDED after the first was found insufficient --
+      a fire-predicate that misses a case leaves the ledger wrong in silence.
+    * **The checked-projection assert now lives behind this call**, and a skip
+      here is a skip of the CHECK as well as of the write.  The one case the
+      predicate skipped -- a settle dated after the last assertion -- is the
+      commonest write there is, so the fence would have reported clean over
+      precisely the change it was least able to see.
 
-    1. **The change rides on top of every assertion.**  A source change
-       attributed at-or-before an account's latest anchor assertion moves
-       that anchor's walked ``ledger_before``, so its posted correction is
-       stale until re-derived; a change attributed after every assertion
-       adds to the ledger without moving any correction.  The test asks the
-       account's own boundary
-       (:meth:`app.services.cash_ledger.ReconciledThrough.covers`) about the
-       earliest emitted ``entry_date`` -- the SAME rule both walks apply to a
-       source, called rather than re-spelled, so a cost guard cannot come to
-       disagree with the money rule it is a guard for (finding N-133 / F4; see
-       :func:`app.services.cash_ledger.reconciled_through` for the
-       timezone-sign bug the third form carried).  A settle-side entry is
-       dated at the source's CURRENT
-       attribution civil date, and a reversal entry inherits the latest date
-       it reverses (the R2 rule) -- the OLD attribution's civil date -- so
-       both sides of every lifecycle delta are covered, including the revert
-       of an early-settled future-period source whose CURRENT attribution
-       (its period start) sits after the anchor while the reversed effect
-       preceded it.  Testing ``<=`` rather than ``<`` over-fires for a
-       same-day change, where the resync is an idempotent no-op walk -- the
-       safe direction, since this is a SKIP predicate.
-    2. **The corrections are already POSTED in this scenario.**  "Riding on
-       top" says a posted correction does not MOVE; it says nothing about
-       one that was never written.  A scenario becomes live for an account
-       the moment an entry first lands on its linked ledger there, and the
-       account-global sync
-       (:func:`sync_account_anchor_postings_all_scenarios`) only visits
-       scenarios that were ALREADY live -- so without this arm the very
-       emission that makes a scenario live is the one that skips minting its
-       opening, and the account's ledger in that scenario reads its activity
-       alone.  Worked: a $1,000.00 account opened in January, a fresh
-       scenario, one $70.00 expense settled in March -> that scenario's
-       linked ledger summed to ``-$70.00`` instead of ``$930.00``, and the
-       trial balance closed only because the missing opening and its equity
-       twin were both absent.  Latent rather than live today: production
-       creates baseline scenarios ONLY (``auth_service`` at registration,
-       ``baseline_service`` at recovery), and the baseline always has its
-       corrections from account-create time -- so this cannot fire until a
-       scenario-clone / what-if feature ships, which is precisely when it
-       would have shipped wrong.
+    Measured 2026-08-02 on the real Checking account (55 assertions, 139 settled
+    rows): the skip cost ``0.73 ms``, and the sync it skipped now costs
+    ``11.13 ms`` over 12 SQL statements -- against ``70.87 ms`` over 110 before
+    ruling R-DL hoisted the reconcile's N+1, which is what made the predicate
+    look load-bearing.
 
-    The two are ordered cheapest-first and short-circuit: the common settle
-    (dated after the anchor, in a scenario that already carries its
-    corrections) pays one indexed EXISTS and no walk.
-
-    An account with no anchor history never fires; an amortizing loan
-    passes the checks (loans carry anchor history rows too) and is then
-    structurally skipped by :func:`sync_account_anchor_postings`.
-    Flushes but does not commit (the caller owns the transaction).
+    An account with no anchor history walks to an empty correction list and
+    reconciles nothing; an amortizing loan is structurally skipped by
+    :func:`sync_account_anchor_postings`.  Flushes but does not commit (the
+    caller owns the transaction).
 
     Args:
         account_ids: The real accounts the emitted deltas' LINKED legs can
@@ -275,79 +355,16 @@ def self_heal_anchor_corrections(
             moved).
         delta_entries: The just-emitted delta
             :class:`~app.models.journal_entry.JournalEntry` list (empty ->
-            no-op).
+            no-op, so a sync that reconciled nothing pays nothing).
+
+    Raises:
+        PostingError: When the reconciled ledger does not equal the fold of an
+            account's facts (:func:`_assert_checked_projection`).
     """
     if not delta_entries:
         return
-    earliest = min(entry.entry_date for entry in delta_entries)
     for account_id in sorted(set(account_ids)):
-        # ONE statement of "the account's coverage boundary", shared with the
-        # entry reservation and the reconcile panel (plan step S1-c), and asked
-        # through the rule's ONE implementation rather than re-spelled as a
-        # ``<=`` here.  This module had its own copy of both; a second copy of
-        # this question is what carried a silent timezone-sign dependency until
-        # finding N-133 / F4, and it is the site a lint-based fence could never
-        # have seen, because both of its operands were bare locals.
-        boundary = reconciled_through(account_id)
-        if boundary.observed_day is None:
-            continue
-        if boundary.covers(earliest) or not _has_posted_anchor_correction(
-            account_id, scenario_id,
-        ):
-            sync_account_anchor_postings(account_id, scenario_id)
-
-
-def _has_posted_anchor_correction(account_id: int, scenario_id: int) -> bool:
-    """Return whether one account carries a posted anchor correction in a scenario.
-
-    The second half of :func:`self_heal_anchor_corrections`' skip
-    precondition: an EXISTS over the account-correction journal entries
-    (``account_opening`` / ``account_trueup``) touching the account's LINKED
-    ledger in *scenario_id*.  The linked ledger is per-account and every
-    anchor correction carries a linked leg, so that join scopes the question
-    exactly -- the same scoping :func:`posted_correction_legs` uses to read
-    the amounts, asked here as a cheaper existence question because the
-    caller only needs to know whether the scenario has been opened at all.
-
-    **A ``$0`` opening legitimately posts NOTHING**, so this reads ``False``
-    for such an account forever and its settles each pay a walk that writes
-    nothing.  That is the correct trade: the alternative is a predicate that
-    distinguishes "no correction because none is due" from "no correction
-    because the scenario is new", and the only thing that knows the
-    difference is the walk itself.
-
-    Args:
-        account_id: The non-loan account to test.
-        scenario_id: The budget scenario to scope to.
-
-    Returns:
-        ``True`` when at least one anchor correction is posted for the
-        account in that scenario; ``False`` when the account has no linked
-        ledger at all (nothing can be posted yet) or none is posted.
-    """
-    linked = _ledger_account_for(account_id)
-    if linked is None:
-        return False
-    correction_sources = [
-        ref_cache.posting_source_id(source)
-        for source in (
-            PostingSourceEnum.ACCOUNT_OPENING,
-            PostingSourceEnum.ACCOUNT_TRUEUP,
-        )
-    ]
-    entry_ids = (
-        db.session.query(Posting.journal_entry_id)
-        .filter(Posting.ledger_account_id == linked.id)
-    )
-    return db.session.query(
-        db.session.query(JournalEntry.id)
-        .filter(
-            JournalEntry.scenario_id == scenario_id,
-            JournalEntry.source_kind_id.in_(correction_sources),
-            JournalEntry.id.in_(entry_ids),
-        )
-        .exists()
-    ).scalar()
+        sync_account_anchor_postings(account_id, scenario_id)
 
 
 def _non_loan_accounts_id_query():

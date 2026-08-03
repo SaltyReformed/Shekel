@@ -10,18 +10,25 @@ follow.  Three concerns live here:
   raise;
 * :func:`_ledger_account_for` -- the chart-of-accounts pairing lookup the
   writer's target builders and the readers share;
+* :func:`linked_ledger_nets_by_date` -- the POSTED side of the
+  checked-projection assert, shared by BOTH posting packages (plan steps E1a
+  and X-d) so the ledger is graded through one query rather than two;
 * the reconciliation readers (:func:`account_posting_total`,
   :func:`settled_transfer_effect`, :func:`settled_transaction_effect`) -- the
   oracle-facing sums the integration oracles pit against each other.
 
-``posting_service`` re-exports all five names, so every existing consumer
-(the oracles, the loan posting package) keeps reading them off the writer
-module -- the ledger's one public surface.
+``posting_service`` re-exports the oracle-facing three plus
+:class:`PostingError` and :func:`_ledger_account_for`, so every existing
+consumer (the oracles, the loan posting package) keeps reading them off the
+writer module -- the ledger's one public surface.  The assert's reader is
+imported from HERE by the two syncs that grade a ledger, because it is a
+writer-internal check rather than part of that public surface.
 
 **Flask-isolated** and read-only: plain data in, plain values out; never
 imports ``request`` / ``session``; performs no writes.
 """
 
+from datetime import date
 from decimal import Decimal
 
 from sqlalchemy import case
@@ -90,6 +97,52 @@ def _ledger_account_for(account_id: int) -> LedgerAccount:
             f"by the account-create hook or the Step-2 backfill)."
         )
     return ledger
+
+
+def linked_ledger_nets_by_date(
+    linked_ledger_id: int, scenario_id: int,
+) -> list[tuple[date, Decimal]]:
+    """Return ``(entry_date, net)`` per date on one LINKED ledger, ascending.
+
+    Each journal entry's ``entry_date`` -- the day the event it records
+    happened, step C2's one clock -- with that date's net movement on the
+    ledger.  The POSTED side of the checked-projection assert, and the ONE
+    definition of it: the loan sync compares it against
+    ``loan_ledger.dated_deltas`` (plan step E1a) and the account-anchor sync
+    against ``cash_ledger.dated_deltas`` (plan step X-d).
+
+    **It lives HERE and not in either posting package, and that is the point.**
+    Both asserts ask the identical question of the identical table, scoped the
+    identical way; two copies of a query whose whole job is to grade a ledger is
+    the "two implementations held in step by convention" shape this arc exists
+    to delete.  It sits beside :func:`_ledger_account_for` for the same reason
+    that lookup does -- the chart-of-accounts read both writers share.
+
+    **Zero-net dates are returned, not dropped.**  A date whose reversal pair
+    nets to zero is CLEAN, and both callers filter it out symmetrically with
+    their own expected side; filtering here would decide half of one caller's
+    comparison inside a shared reader.
+
+    Args:
+        linked_ledger_id: The account's or loan's LINKED ledger account id.
+        scenario_id: The budget scenario to scope to (postings are
+            scenario-scoped).
+
+    Returns:
+        ``[(entry_date, net), ...]`` ascending by date; empty when the ledger
+        carries no postings in the scenario.
+    """
+    return (
+        db.session.query(JournalEntry.entry_date, db.func.sum(Posting.amount))
+        .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
+        .filter(
+            Posting.ledger_account_id == linked_ledger_id,
+            JournalEntry.scenario_id == scenario_id,
+        )
+        .group_by(JournalEntry.entry_date)
+        .order_by(JournalEntry.entry_date)
+        .all()
+    )
 
 
 def account_posting_total(account_id: int, scenario_id: int) -> Decimal:

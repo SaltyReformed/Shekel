@@ -69,7 +69,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from ._amounts import ReconciledThrough
+from ._days import ObservedOn, ReconciledThrough
 from ._events import (
     CashAnchorFact,
     CashSourceFact,
@@ -109,7 +109,7 @@ class CashAnchorCorrection:
     balance_before: Decimal
 
     @property
-    def observed_on(self) -> date:
+    def observed_on(self) -> ObservedOn:
         """Return the civil day this correction is the closing balance FOR.
 
         The assertion twin of :attr:`~._events.CashSourceFact.settled_on`, and
@@ -122,7 +122,12 @@ class CashAnchorCorrection:
         that conversion was a second statement of a rule the fact now owns.
 
         Returns:
-            The civil day of the assertion this correction books.
+            The :class:`~app.services.cash_ledger.ObservedOn` of the assertion
+            this correction books -- the assertion KIND of day (ruling R-DJ), so
+            a consumer cannot compare it against an event's day by hand.  Read
+            ``.civil_day`` where a bare ``date`` is genuinely needed: the day a
+            correction's journal entry is stamped with, and the period-bucketing
+            lookup in ``balance_at._cash_periods``.
         """
         return self.anchor.observed_on
 
@@ -390,9 +395,10 @@ def dated_deltas(walk: CashLedgerWalk) -> list[tuple[date, Decimal]]:
     # orders were opposite for an opening, and the Returns docstring below
     # asserted a chronology this list did not have.
     tagged: list[tuple[date, int, Decimal]] = [
-        (fact.settled_on, 0, fact.delta) for fact in walk.source_facts
+        (fact.settled_on.civil_day, 0, fact.delta)
+        for fact in walk.source_facts
     ] + [
-        (correction.observed_on, 1, correction.delta)
+        (correction.observed_on.civil_day, 1, correction.delta)
         for correction in walk.anchor_corrections
     ]
     tagged.sort(key=lambda step: (step[0], step[1]))

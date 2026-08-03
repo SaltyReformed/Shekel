@@ -32,9 +32,11 @@ from app.models.ref import Status
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import loan_loaders
-from app.services._posting_reconcile import account_owner_id
+from app.services._posting_reconcile import (
+    account_owner_id,
+    assert_ledger_projects_facts,
+)
 from app.services.posting_service import (
-    PostingError,
     _ledger_account_for,
     sync_transfer_postings,
 )
@@ -50,7 +52,7 @@ from app.services.loan_ledger import (
 )
 
 from ._anchors import reconcile_loan_anchor_corrections
-from ._linked_ledger import _transfer_nets_by_date, _visible_nets
+from ._linked_ledger import _transfer_nets_by_date
 from ._payments import reconcile_loan_payment_splits
 
 _ZERO_MONEY = Decimal("0.00")
@@ -300,36 +302,14 @@ def _assert_checked_projection(
         # Posting space: the linked ledger stores the NEGATED owed delta
         # (debit-positive convention; owed = -(sum of postings)).
         expected[visible_on] = expected.get(visible_on, _ZERO_MONEY) - delta
-    expected = {
-        visible_on: net for visible_on, net in expected.items() if net != 0
-    }
-    posted = {
-        entry_date: net
-        for entry_date, net in _visible_nets(linked_ledger_id, scenario_id)
-        if net != 0
-    }
-    if expected == posted:
-        return
-    mismatches = sorted(
-        (
-            on_date,
-            expected.get(on_date, _ZERO_MONEY),
-            posted.get(on_date, _ZERO_MONEY),
-        )
-        for on_date in set(expected) | set(posted)
-        if expected.get(on_date, _ZERO_MONEY) != posted.get(on_date, _ZERO_MONEY)
-    )
-    detail = "; ".join(
-        f"{on_date.isoformat()}: walk {want} vs posted {got}"
-        for on_date, want, got in mismatches
-    )
-    raise PostingError(
-        f"Loan account {loan_account_id} scenario {scenario_id}: the posted "
-        f"linked ledger diverges from the fold of the loan's events at "
-        f"{len(mismatches)} date(s) [{detail}].  Either a reconcile defect "
-        f"(fix the reconcile) or a posting the walk cannot model (an N-11 "
-        f"class row -- an F1-class data item for a human).  Refusing to "
-        f"commit a ledger that no longer projects the loan's facts."
+    assert_ledger_projects_facts(
+        f"Loan account {loan_account_id}",
+        expected,
+        linked_ledger_id,
+        scenario_id,
+        "Either a reconcile defect (fix the reconcile) or a posting the walk "
+        "cannot model (an N-11 class row -- an F1-class data item for a "
+        "human).",
     )
 
 

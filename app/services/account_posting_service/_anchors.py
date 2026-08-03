@@ -8,13 +8,25 @@ assertion plus the settled facts recorded after that assertion moment.  This
 is the shipped loan genesis pattern generalized to every non-loan account
 (Build-Order Step 5); after it, the trial balance closes app-wide.
 
-Every anchor the account carries posts one balanced correction (:mod:`._walk`
-computes its ``ledger_before``)::
+Every anchor the account carries posts one balanced correction, whose size is
+the walk's own
+:attr:`~app.services.cash_ledger.CashAnchorCorrection.delta`
+(``anchor_balance - balance_before``)::
 
-    linked ledger         (anchor_balance - ledger_before)   [opening | trueup]
-    anchor-equity ledger  (ledger_before - anchor_balance)   [opening | trueup]
+    linked ledger         (anchor_balance - balance_before)  [opening | trueup]
+    anchor-equity ledger  (balance_before - anchor_balance)  [opening | trueup]
                           -----------------------------------
                           0
+
+**The walk is ``cash_ledger``'s, since plan step X-d (ruling R-H).**  This
+package had its own, folding the POSTED copy of the account's events; that made
+the corrections a function of the ledger they are then written into -- a copy
+grading itself -- and left two representations of one event set to be held in
+step.  The writer now consumes
+:func:`app.services.cash_ledger.walk_cash_ledger`, the same walk the read fold
+folds, so the projection and the posted ledger cannot drift by construction
+rather than by a test.  What GRADES the result is the checked-projection assert
+in :mod:`._sync`.
 
 The delta is ledger-native sign -- it holds for Asset AND Liability non-loan
 accounts with no class branch, exactly like the engine.  A zero delta books
@@ -44,6 +56,7 @@ never commits -- the caller owns the transaction.
 from app import ref_cache
 from app.enums import PostingKindEnum, PostingSourceEnum
 from app.extensions import db
+from app.models.account import Account
 from app.models.journal_entry import JournalEntry, Posting
 from app.services import ledger_account_service
 from app.services._posting_reconcile import (
@@ -55,10 +68,66 @@ from app.services._posting_reconcile import (
     merge_target_legs,
     posted_correction_legs,
 )
-from app.services.cash_ledger import CashAnchorFact
+from app.services.account_projection import (
+    AccountProjectionKind,
+    classify_account,
+)
+from app.services.cash_ledger import CashAnchorCorrection, CashAnchorFact
 from app.services.posting_reads import _ledger_account_for
 
-from ._walk import AccountAnchorCorrection
+
+class _AnchorEquityLedger:
+    """One account's anchor-equity ledger id, resolved AT MOST once per sync.
+
+    **Ruling R-DL.**  The equity account and the linked account were each
+    resolved INSIDE the per-correction loop, so an account with 53 non-zero
+    corrections issued 106 SELECTs for the same two rows -- measured 2026-08-02
+    on the real Checking account at ``64.5 ms`` of a ``66.3 ms`` reconcile that
+    writes nothing.  Every true-up, every account create and the deploy-wide
+    backfill paid it, and it is what made plan step X-d's "never skip the
+    self-heal" (ruling R-DK) look unaffordable at ``70.9 ms`` a settle.
+
+    **It stays LAZY, and that is not an optimization -- it is behaviour.**
+    :func:`app.services.ledger_account_service.get_or_create_anchor_equity_account`
+    MINTS the row on first use, and a fresh ``$0`` account whose every
+    correction books nothing must mint no ``anchor_equity`` row at all (it
+    stays hard-deletable, which :func:`_account_anchor_correction_target`
+    documents).  So the id is resolved on the first NON-ZERO correction and
+    reused from there, rather than resolved up front with the loop's other
+    invariants.
+    """
+
+    def __init__(self, account_id: int, owner_id: int) -> None:
+        """Record the account and owner; resolve nothing yet.
+
+        Args:
+            account_id: The non-loan account whose corrections are being
+                reconciled.
+            owner_id: That account's owner (the equity account's owner).
+        """
+        self._account_id = account_id
+        self._owner_id = owner_id
+        self._ledger_id: int | None = None
+
+    def ledger_id(self) -> int:
+        """Return the anchor-equity ledger account id, minting it on first call.
+
+        Returns:
+            The ``budget.ledger_accounts.id`` of this account's anchor-equity
+            account.
+
+        Raises:
+            ValueError: If the resolver rejects the account (not owned by the
+                owner, or an amortizing loan -- both broken invariants by this
+                point, the reconcile having already classified the kind).
+        """
+        if self._ledger_id is None:
+            self._ledger_id = (
+                ledger_account_service.get_or_create_anchor_equity_account(
+                    self._owner_id, self._account_id,
+                ).id
+            )
+        return self._ledger_id
 
 
 def _account_correction_kinds(
@@ -73,8 +142,11 @@ def _account_correction_kinds(
     pair the loan corrections use (REUSED by design -- the journal SOURCE
     distinguishes account from loan corrections).  Keyed off the fact's
     ``is_opening`` flag, which :func:`app.services.cash_ledger.cash_anchor_facts`
-    derives from the
-    ``(created_at, id)`` order.
+    sets on the FIRST row of its ``(observed_on, created_at, id)`` load -- the
+    BUSINESS-date order, not the recording order.  The two agreed for free until
+    plan step 2 made ``observed_on`` user-supplied, and getting it wrong posted a
+    ``$1,307.66`` true-up to the ledger tagged as the account's OPENING (finding
+    N-133 / R1).
 
     Args:
         fact: The :class:`~app.services.cash_ledger.CashAnchorFact` whose
@@ -91,56 +163,66 @@ def _account_correction_kinds(
 
 
 def _account_anchor_correction_target(
-    correction: AccountAnchorCorrection, owner_id: int,
+    correction: CashAnchorCorrection,
+    linked_ledger_id: int,
+    equity: _AnchorEquityLedger,
 ) -> LegMap:
     """Build the two-leg target for one anchor correction, or empty when it books nothing.
 
-    The linked leg is ``anchor_balance - ledger_before`` (tagged ``opening``
-    or ``trueup``); the anchor-equity leg is its negative, so the two sum to
-    zero and the linked ledger's implied balance moves from ``ledger_before``
-    to the asserted value.  A correction whose ``ledger_before`` already
-    equals the anchor balance books NOTHING -- an empty target, so no zero
-    leg is written and no anchor-equity account is minted for it.
+    The linked leg is the correction's own
+    :attr:`~app.services.cash_ledger.CashAnchorCorrection.delta`
+    (``anchor_balance - balance_before``, tagged ``opening`` or ``trueup``);
+    the anchor-equity leg is its negative, so the two sum to zero and the
+    linked ledger's implied balance moves from ``balance_before`` to the
+    asserted value.  A correction whose walk already landed on the asserted
+    balance books NOTHING -- an empty target, so no zero leg is written and no
+    anchor-equity account is minted for it, and the account stays
+    hard-deletable.
 
-    The per-account anchor-equity account is resolved lazily (created on
-    first use) only when the correction is non-zero, via
-    :func:`app.services.ledger_account_service.get_or_create_anchor_equity_account`
-    -- whose non-loan guard is also the structural guarantee this package
-    never books onto a loan's chart.
+    **The delta is READ off the correction rather than recomputed** (plan step
+    X-d).  ``CashAnchorCorrection.delta`` is the same subtraction, stated once
+    on the record three other readers already take it from (the re-key, the
+    fold's R-I seed, the period view's assertion component); recomputing it
+    here made this writer a fourth statement of it.
+
+    Both ledger ids arrive resolved (ruling R-DL): the linked one from the
+    caller, which needs it anyway to read the posted side back, and the equity
+    one through :class:`_AnchorEquityLedger`, which mints it at most once per
+    sync AND only when a correction actually books.  They were each resolved
+    per correction, which is how 53 corrections issued 106 SELECTs for two rows.
 
     Args:
-        correction: The anchor correction from :func:`._walk.walk_account_ledger`.
-        owner_id: The account owner's user id (for the anchor-equity account).
+        correction: One :class:`~app.services.cash_ledger.CashAnchorCorrection`
+            from :func:`app.services.cash_ledger.walk_cash_ledger`.
+        linked_ledger_id: The account's LINKED ledger account id.
+        equity: The account's lazy anchor-equity ledger resolver.
 
     Returns:
         ``{ledger_account_id: (amount, posting_kind_id)}`` (the two balanced
         legs, or empty when the correction books nothing).
 
     Raises:
-        PostingError: If the account has no linked ledger account (a broken
-            chart-of-accounts pairing).
         ValueError: If the anchor-equity resolver rejects the account (not
-            owned by *owner_id*, or an amortizing loan -- both broken
-            invariants at this point, the walk having already classified).
+            owned by the owner, or an amortizing loan -- both broken
+            invariants at this point, the reconcile having already classified).
     """
-    fact = correction.anchor
-    delta = fact.anchor_balance - correction.ledger_before
+    delta = correction.delta
     if delta == 0:
         return {}
-    _source_enum, posting_kind_enum = _account_correction_kinds(fact)
-    posting_kind_id = ref_cache.posting_kind_id(posting_kind_enum)
-    linked = _ledger_account_for(fact.account_id)
-    equity = ledger_account_service.get_or_create_anchor_equity_account(
-        owner_id, fact.account_id,
+    _source_enum, posting_kind_enum = _account_correction_kinds(
+        correction.anchor,
     )
+    posting_kind_id = ref_cache.posting_kind_id(posting_kind_enum)
     return {
-        linked.id: (delta, posting_kind_id),
-        equity.id: (-delta, posting_kind_id),
+        linked_ledger_id: (delta, posting_kind_id),
+        equity.ledger_id(): (-delta, posting_kind_id),
     }
 
 
 def _account_anchor_correction_targets(
-    corrections: list[AccountAnchorCorrection], owner_id: int,
+    corrections: list[CashAnchorCorrection],
+    linked_ledger_id: int,
+    equity: _AnchorEquityLedger,
 ) -> tuple[dict[CorrectionKey, LegMap], dict[CorrectionKey, int]]:
     """Merge an account's corrections into per-(source, date) targets + periods.
 
@@ -160,8 +242,9 @@ def _account_anchor_correction_targets(
 
     Args:
         corrections: The account's corrections from
-            :func:`._walk.walk_account_ledger`, chronological.
-        owner_id: The account owner's user id.
+            :func:`app.services.cash_ledger.walk_cash_ledger`, chronological.
+        linked_ledger_id: The account's LINKED ledger account id.
+        equity: The account's lazy anchor-equity ledger resolver.
 
     Returns:
         ``(targets, periods)`` --
@@ -181,13 +264,19 @@ def _account_anchor_correction_targets(
             # ``_utc_civil_date(asserted_at)``, a second statement of a rule
             # ``cash_anchor_facts`` already resolves -- and one that put a
             # late-evening Eastern true-up on the next day's entry.
+            # ``.civil_day`` is the named unwrap of the assertion's
+            # ``ObservedOn`` (ruling R-DJ): ``journal_entries.entry_date`` is a
+            # plain ``DATE`` column, which is a legitimate raw-date use and is
+            # visible as one here.
             ref_cache.posting_source_id(source_enum),
-            correction.anchor.observed_on,
+            correction.anchor.observed_on.civil_day,
         )
         periods[key] = correction.anchor.pay_period_id
         merge_target_legs(
             targets.setdefault(key, {}),
-            _account_anchor_correction_target(correction, owner_id),
+            _account_anchor_correction_target(
+                correction, linked_ledger_id, equity,
+            ),
         )
     return targets, periods
 
@@ -237,48 +326,71 @@ def _posted_only_key_period_id(
 def reconcile_account_anchor_corrections(
     account_id: int,
     scenario_id: int,
-    corrections: list[AccountAnchorCorrection],
+    corrections: list[CashAnchorCorrection],
 ) -> None:
     """Reconcile an account's opening + true-up corrections to a PRE-WALKED list.
 
     The reconcile half of the account anchor sync, taking the corrections
-    already produced by :func:`._walk.walk_account_ledger` (the
+    already produced by :func:`app.services.cash_ledger.walk_cash_ledger` (the
     :mod:`._sync` entry points drive both halves).  Builds the
     per-``(source kind, date)`` target legs
     (:func:`_account_anchor_correction_targets`), reads back what is posted
     (:func:`app.services._posting_reconcile.posted_correction_legs`, scoped
     to the account's linked ledger), and emits ONE balanced delta per key
     that differs -- posting a new opening / true-up, adjusting a correction
-    whose ``ledger_before`` moved (a pre-assertion source changed), or
+    whose ``balance_before`` moved (a pre-assertion source changed), or
     reversing one a matching balance retired.
+
+    **It REFUSES an amortizing loan, and that refusal moved here at plan step
+    X-d.**  It lived on the deleted postings walk, which this package no longer
+    has: the walk it now consumes is ``cash_ledger``'s, which is deliberately
+    kind-blind (a running-balance replay is a property of the rows, not of the
+    account's kind, and the cash-flow seam view consults no kind either).  Which
+    correction FAMILY a loan's anchors book into is a WRITE concern, so the
+    guard belongs on the writer -- exactly where ``cash_ledger._walk``'s own
+    module docstring said it would land.  Booking here as well as through
+    :mod:`app.services.loan_posting_service` would double-book a loan's balance
+    across two families on two charts.
 
     Idempotent and self-healing: a re-run at the same state writes nothing
     (every delta is zero).  Touches ONLY the account's own linked and
-    anchor-equity ledgers.  An empty *corrections* list (a missing or
-    history-less account) or an owner that cannot be resolved is a no-op.
+    anchor-equity ledgers.  An empty *corrections* list (a history-less
+    account) or an owner that cannot be resolved is a no-op.
     Flushes but does not commit (the caller owns the transaction).
 
     Args:
         account_id: The non-loan account whose corrections to reconcile.
         scenario_id: The budget scenario to reconcile within.
         corrections: The account's corrections from
-            :func:`._walk.walk_account_ledger`.
+            :func:`app.services.cash_ledger.walk_cash_ledger`.
 
     Raises:
+        ValueError: If *account_id* is an amortizing loan (loans book their
+            anchor corrections through the loan posting package, never here),
+            or if the anchor-equity resolver rejects the account (see
+            :func:`_account_anchor_correction_target`).
         PostingError: If the account has no linked ledger account (a broken
             chart-of-accounts pairing).
-        ValueError: If the anchor-equity resolver rejects the account (see
-            :func:`_account_anchor_correction_target`).
     """
     if not corrections:
         return
+    account = db.session.query(Account).filter_by(id=account_id).first()
+    if account is not None and (
+        classify_account(account) is AccountProjectionKind.AMORTIZING
+    ):
+        raise ValueError(
+            f"cannot reconcile account anchor corrections: account "
+            f"id={account_id} is an amortizing loan (loans book their anchor "
+            f"corrections through the loan posting package, never the account "
+            f"correction family)"
+        )
     owner_id = account_owner_id(account_id)
     if owner_id is None:
         return
-    targets, target_periods = _account_anchor_correction_targets(
-        corrections, owner_id,
-    )
     linked = _ledger_account_for(account_id)
+    targets, target_periods = _account_anchor_correction_targets(
+        corrections, linked.id, _AnchorEquityLedger(account_id, owner_id),
+    )
     posted = posted_correction_legs(
         linked.id,
         scenario_id,

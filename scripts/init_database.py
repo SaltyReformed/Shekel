@@ -77,7 +77,7 @@ from app.posting_infrastructure import (
 from app.services import (
     account_posting_service,
     loan_posting_service,
-    posting_service,
+    posting_resync,
 )
 # pylint: enable=wrong-import-position
 
@@ -208,7 +208,7 @@ def resync_all_cash_postings_after_migration():
     restatement of the dating rule -- one statement of "which civil day did this
     settle on" is the property the whole balance arc exists to hold, so it drives
     the go-forward sync instead
-    (:func:`app.services.posting_service.resync_all_cash_postings`).
+    (:func:`app.services.posting_resync.resync_all_cash_postings`).
 
     **It runs FIRST of the three, and the order is the dependency direction.**
     The anchor walk computes each correction's ``ledger_before`` from the source
@@ -230,7 +230,7 @@ def resync_all_cash_postings_after_migration():
     # FIRST, so it is the one that opens ref_cache for the sequence.
     db.session.rollback()
     ref_cache.init(db.session)
-    transactions, transfers = posting_service.resync_all_cash_postings()
+    transactions, transfers = posting_resync.resync_all_cash_postings()
     db.session.commit()
     # CHANGED, not walked (finding N-133 / F8).  A steady-state deploy prints
     # zeroes; a non-zero line is the operator's only evidence that a one-time

@@ -55,7 +55,7 @@ from app.utils.log_events import (
     log_event,
 )
 
-from ._amounts import ReconciledThrough
+from ._days import ReconciledThrough
 
 
 logger = logging.getLogger(__name__)

@@ -6,18 +6,23 @@ E1a checks in :mod:`._sync` are built on:
 * :func:`_has_opening_posting` -- the "is this loan configured in this scenario"
   sentinel a posting read guards on before it trusts a ``$0.00`` (an
   unconfigured loan answers ``None``, not a misleading zero).
-* :func:`_visible_nets` -- the one grouped ``(entry_date, net)`` load that is the
-  posted side of the checked-projection assert (plan step E1a).
 * :func:`_transfer_nets_by_date` -- the per-``(transfer, entry_date)`` nets the
   sync's lineage staleness probe compares against each settled payment's
   expected settle date and cash (step E1a).
 
-Kept in one module so the consumers share a single definition of each rather
-than re-issuing the query (the two grouped loads share one query core,
-:func:`_linked_posting_nets`); scoped throughout to a loan's LINKED ledger (its
-resolved per-loan liability account,
-:func:`app.services.posting_service._ledger_account_for`) and the budget
-scenario.
+**The checked-projection assert's posted side left this module at plan step
+X-d.**  It was ``_visible_nets`` here, and the cash anchor sync's assert needed
+the identical query over the identical table -- so it became
+:func:`app.services.posting_reads.linked_ledger_nets_by_date`, beside the
+chart-of-accounts lookup both posting packages already share, rather than a
+second copy of the query whose whole job is to GRADE a ledger.  The private
+query core the two loads here used to share went with it: with one grouped load
+left in this module, a builder taking group columns and filter lists was
+indirection around a single call site.
+
+Scoped throughout to a loan's LINKED ledger (its resolved per-loan liability
+account, :func:`app.services.posting_service._ledger_account_for`) and the
+budget scenario.
 
 Reads only -- no writes, no commit.
 """
@@ -71,69 +76,6 @@ def _has_opening_posting(linked_ledger_id: int, scenario_id: int) -> bool:
     ).scalar()
 
 
-def _linked_posting_nets(
-    group_columns: list, linked_ledger_id: int, scenario_id: int, filters: list,
-):
-    """Build the grouped SUM(amount) query over one linked ledger's postings.
-
-    The ONE query core behind both grouped loads here
-    (:func:`_visible_nets` / :func:`_transfer_nets_by_date`): postings on the
-    loan's linked ledger in the scenario, summed per the caller's group key.
-    Shared so the two cannot drift on the join or the scoping filters.
-
-    Args:
-        group_columns: The group-key columns, prepended to the SELECT and
-            GROUP BY (the summed amount is appended after them).
-        linked_ledger_id: The loan's linked ledger account id.
-        scenario_id: The budget scenario to scope to.
-        filters: Extra filter expressions (empty for all sources).
-
-    Returns:
-        A SQLAlchemy ``Query``, NOT executed.  Each row unpacks as
-        ``(*group_columns, net)``.
-    """
-    return (
-        db.session.query(
-            *group_columns,
-            db.func.sum(Posting.amount),
-        )
-        .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
-        .filter(
-            Posting.ledger_account_id == linked_ledger_id,
-            JournalEntry.scenario_id == scenario_id,
-            *filters,
-        )
-        .group_by(*group_columns)
-    )
-
-
-def _visible_nets(
-    linked_ledger_id: int, scenario_id: int,
-) -> list[tuple[date, Decimal]]:
-    """Return ``(entry_date, net)`` per date, ascending -- the one grouped load.
-
-    Each posting's ``entry_date`` (the day the event it records happened -- step
-    C2's one clock) with that date's net movement on the loan's linked ledger.
-    The checked-projection assert (plan step E1a) compares it against the walk's
-    dated deltas after every sync -- the ONE consumer since plan step E1e deleted
-    the per-period balance reader that also prefix-summed it.
-
-    Args:
-        linked_ledger_id: The loan's linked ledger account id.
-        scenario_id: The budget scenario to scope to.
-
-    Returns:
-        ``[(entry_date, net), ...]`` ascending by date.
-    """
-    return (
-        _linked_posting_nets(
-            [JournalEntry.entry_date], linked_ledger_id, scenario_id, [],
-        )
-        .order_by(JournalEntry.entry_date)
-        .all()
-    )
-
-
 def _transfer_nets_by_date(
     linked_ledger_id: int, scenario_id: int,
 ) -> dict[int, dict[date, Decimal]]:
@@ -165,16 +107,23 @@ def _transfer_nets_by_date(
         ``{transfer_id: {entry_date: non-zero net}}``; a fully-clean reverted
         transfer does not appear (all its dates net zero).
     """
-    rows = _linked_posting_nets(
-        [JournalEntry.transfer_id, JournalEntry.entry_date],
-        linked_ledger_id,
-        scenario_id,
-        [
+    rows = (
+        db.session.query(
+            JournalEntry.transfer_id,
+            JournalEntry.entry_date,
+            db.func.sum(Posting.amount),
+        )
+        .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
+        .filter(
+            Posting.ledger_account_id == linked_ledger_id,
+            JournalEntry.scenario_id == scenario_id,
             JournalEntry.source_kind_id
             == ref_cache.posting_source_id(PostingSourceEnum.TRANSFER),
             JournalEntry.transfer_id.isnot(None),
-        ],
-    ).all()
+        )
+        .group_by(JournalEntry.transfer_id, JournalEntry.entry_date)
+        .all()
+    )
     posted: dict[int, dict[date, Decimal]] = {}
     for transfer_id, entry_date, net in rows:
         if net != 0:

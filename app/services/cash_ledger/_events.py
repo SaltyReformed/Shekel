@@ -92,7 +92,8 @@ from app.models.transaction import Transaction
 from app.utils.balance_predicates import settled_status_ids
 from app.utils.dates import to_display_civil_date, utc_instant
 
-from ._amounts import ReconciledThrough, settled_cash_leg
+from ._amounts import settled_cash_leg
+from ._days import MovedOn, ObservedOn, ReconciledThrough
 from ._facts import _unwindowed_contributing_rows
 
 
@@ -175,10 +176,15 @@ class CashAnchorFact:
         pay_period_id: The history row's pay period (NOT NULL) -- the period a
             correction derived from this assertion is attributed to.
         observed_on: The civil day this balance was TRUE (ruling R-DH) -- the
-            business date the whole partition turns on.  A source whose
-            :attr:`CashSourceFact.settled_on` is at or before it is already
-            INSIDE the asserted balance, because an assertion is the CLOSING
-            balance for its day.  **Read from the stored
+            business date the whole partition turns on, as an
+            :class:`~app.services.cash_ledger.ObservedOn` rather than a bare
+            ``date`` (ruling R-DJ, closing finding N-135: a bare field is a
+            field ``x <= fact.observed_on`` still compiles against).  A source
+            whose :attr:`CashSourceFact.settled_on` is at or before it is
+            already INSIDE the asserted balance, because an assertion is the
+            CLOSING balance for its day -- and asking that by hand is now a
+            ``TypeError``, because the two days are different types with no
+            ordering between them.  **Read from the stored
             ``account_anchor_history.observed_on``, not derived** (plan step 2,
             the opening half): the user supplies it when creating an account,
             and a true-up defaults it to today in the display timezone.  It was
@@ -210,7 +216,7 @@ class CashAnchorFact:
     account_id: int
     anchor_balance: Decimal
     pay_period_id: int
-    observed_on: date
+    observed_on: ObservedOn
     asserted_at: datetime
     is_opening: bool
 
@@ -231,7 +237,7 @@ class CashAnchorFact:
             The :class:`~app.services.cash_ledger.ReconciledThrough` for this
             assertion's own civil day.
         """
-        return ReconciledThrough(self.observed_on)
+        return ReconciledThrough(self.observed_on.civil_day)
 
 
 @dataclass(frozen=True)
@@ -304,7 +310,13 @@ class CashSourceFact:
         settled_on: The civil day this row's cash MOVED
             (:func:`settled_civil_day`) -- the one date the assertion partition
             compares against, the fold samples on, and the period index buckets
-            by.  Derived here from ``paid_at``'s display-timezone day, falling
+            by, as a :class:`~app.services.cash_ledger.MovedOn` rather than a
+            bare ``date`` (ruling R-DJ, closing finding N-135).  It carries no
+            ordering against an assertion's
+            :class:`~app.services.cash_ledger.ObservedOn`, so the partition can
+            only be asked through
+            :meth:`~app.services.cash_ledger.ReconciledThrough.covers`.
+            Derived here from ``paid_at``'s display-timezone day, falling
             back to the pay period's ``start_date`` unconverted; plan step 2 of
             ``anchor_settle_partition.md`` replaces the derivation with a stored
             ``transactions.settled_on`` the user supplies, at which point the
@@ -329,7 +341,7 @@ class CashSourceFact:
     transaction_id: int
     pay_period_id: int
     is_income: bool
-    settled_on: date
+    settled_on: MovedOn
     delta: Decimal
 
 
@@ -398,7 +410,7 @@ def cash_anchor_facts(account_id: int) -> list[CashAnchorFact]:
             # ``to_display_date(created_at)`` until the column existed, and the
             # backfill is that derivation verbatim -- so the switch moved no
             # figure and every row keeps the day the engine already gave it.
-            observed_on=row.observed_on,
+            observed_on=ObservedOn(row.observed_on),
             asserted_at=utc_instant(row.created_at),
             is_opening=(index == 0),
         )
@@ -472,9 +484,9 @@ def settled_cash_facts(
             transaction_id=txn.id,
             pay_period_id=txn.pay_period_id,
             is_income=txn.is_income,
-            settled_on=settled_civil_day(
+            settled_on=MovedOn(settled_civil_day(
                 txn.paid_at, txn.pay_period.start_date,
-            ),
+            )),
             delta=settled_cash_leg(txn),
         )
         for txn in rows
