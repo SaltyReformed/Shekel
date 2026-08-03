@@ -193,7 +193,11 @@ undecided), **X-ah** (N-142) and **X-al** (N-154, the blind `duplicate-code` sup
 behind them, and the new **Phase G** (N-147, the two remaining allowlist-bearing fences) after E2.  **X-ai is scheduled rather than
 remembered, by ruling R-DM**: it moves X-d's checked-projection assert to the COMMIT boundary, which
 is the only moment definitionally at the end of an operation and the only placement that also grades
-a write path with no posting-sync tail.  It carries **N-144**. The deploy that used to head this list is DONE (2026-08-02,
+a write path with no posting-sync tail.  It carries **N-144**, **N-153**, **N-157**, **N-158** and
+**N-160**.  **It covers BOTH ledgers, ruled 2026-08-03**: the loan sync is the design the cash side
+should learn from (its reconcile scope equals its assert scope) AND a confirmed carrier of N-155
+through a different door (its repair loop calls the CHECKED cash wrapper per transfer), so a fix
+that lands on cash alone would leave the defect live and the two graders on two shapes.  The deploy that used to head this list is DONE (2026-08-02,
 `6f4b4cbf`), so nothing unshipped is riding under the next step -- which matters because X-d changes
 a WRITER and wants a rollback that isolates it.
 
@@ -3560,7 +3564,13 @@ preconditions cite entries in that file.
   >    caller), **N-159** (transfer retirement is two halves a caller must pair).
   > 4. The citation sweep this step's own record over-claimed: four `ledger_before`
   >    references survive in `app/` against a "13 stale citations repaired"
-  >    claim, and `test_cash_walk.py:270` still names the deleted walk.
+  >    claim, and `test_cash_walk.py:270` still names the deleted walk.  **Add
+  >    one more, found 2026-08-03 by the X-ai loan trace:** `posting_resync.py:47`
+  >    cites `loan_posting_service._sync._resync_stale_transfers`, a name that
+  >    exists nowhere in the repo or in its history (`git log -S` returns
+  >    nothing); the function is `_reconcile_lineage_transfer_entries`.  Same
+  >    class as the `_sync_postings_after_update` repair the parking commit made,
+  >    in the module that commit did not re-read.
 
   **PULLED FORWARD 2026-08-01, past X-ad / X-x / X-y / X-i / X-j / X-k / X-l / X-m / X-n, by the
   developer's ruling that the partition's fence be structural rather than a detector**
@@ -3611,7 +3621,9 @@ preconditions cite entries in that file.
   ordering an obligation four or more callers must remember, which is the shape R-DM itself rejected
   when it declined "an explicit re-derive at each of the five retire sites".  **The contrast that
   points at the answer is already in the tree**: the LOAN sync reconciles everything and asserts
-  ONCE at the end, and has none of this.  The step also inherits **N-153**, **N-157** and **N-158**,
+  ONCE at the end, and its own assert has no batch window -- though the loan sync is NOT clean of
+  N-155 as a whole, which the loan-side scope below states exactly.  The step also inherits
+  **N-153**, **N-157**, **N-158** and **N-160**,
   which are all questions about where the assert runs and what it is handed. X-d places the assert at
   the end of each posting sync, which is the end of every operation the app performs TODAY; X-ai
   moves it to the only moment that is definitionally the end of an operation -- the commit -- so the
@@ -3623,18 +3635,101 @@ preconditions cite entries in that file.
   convention weaker than a predicate. A commit-boundary hook is the only form that also grades a
   write path with NO posting-sync tail at all, which is the class X-d cannot see.
 
+  **THE ROOT CAUSE IS NOT "WHERE THE ASSERT RUNS", IT IS WHAT THE GRADER OWNS -- traced 2026-08-03,
+  and this is the sentence the step should be designed from.** The loan sync's immunity is not that
+  it asserts LAST; it is that **its reconcile scope equals its assert scope.**
+  `sync_loan_postings` (`loan_posting_service/_sync.py:95-149`) walks the loan's WHOLE fact stream
+  and reconciles every leg that lands on the ledger it then grades -- the payment splits (all of
+  them, `reconcile_loan_payment_splits`), the anchor corrections (all of them), AND the OTHER
+  writer's cash entries, through `_reconcile_lineage_transfer_entries` (`:152-236`). So by the time
+  `_assert_checked_projection` (`:239`) reads the ledger back, nothing on it is outside what this
+  call just brought to target. The cash side is the opposite shape: `_reconcile_transaction_postings`
+  reconciles ONE ROW (`posting_service.py:786`, keyed `JournalEntry.transaction_id == txn.id`) and
+  `reconcile_account_anchor_corrections` reconciles only the CORRECTION legs -- then the assert
+  grades the whole linked ledger, **including the source legs neither of them has authority to
+  write**. A grader whose scope exceeds its reconcile's scope must fail on any half-posted batch,
+  which is exactly what N-155 measured. The commit boundary fixes it because the commit is after all
+  N rows are posted; a whole-account reconcile at the sync tail would fix it too. Both are on the
+  table, and the step must rule between them rather than assume the hook.
+
+  **THE LOAN SIDE IS IN THIS STEP'S SCOPE, ruled 2026-08-03**, and not as a courtesy sweep: the loan
+  package is BOTH the design the cash side should learn from AND a confirmed carrier of the same
+  defect through a different door. Five items, each traced:
+
+  * **N-155 (d) is CONFIRMED, not plausible, and the trigger is named.** The loan sync's repair loop
+    calls the CHECKED cash wrapper -- `sync_transfer_postings` at `_sync.py:233` -- once per stale
+    transfer. That wrapper's self-heal grades the funding account, and the cash walk sees transfer
+    shadows like any other settled row (no `transfer_id` filter:
+    `balance_predicates.balance_contributing_clause`, and `cash_ledger/_events.py:13` states it
+    outright). So with TWO stale-dated transfers drawn on one checking account, iteration 1 re-dates
+    transfer A and then grades Checking while transfer B is still at its old date: the walk expects B
+    at its settled day, the ledger holds it at the stale one, `PostingError`. **The loop is defeated
+    by the assert in exactly the state the loop exists to repair** -- the same shape as N-155 (c), and
+    the residue is real (E1a measured `+$2,410.95` at 2026-07-02 against a reversal dated 2026-06-18
+    on the production Mortgage). **The claim "the loan side does not have this defect" is therefore
+    too broad and is narrowed here: the loan's OWN assert has no batch window; the loan SYNC inherits
+    the cash one because it is a caller of the cash writer.**
+  * **The grader must dispatch by account kind, and no such dispatch exists today.** The cash grader
+    structurally refuses loans -- `_load_non_amortizing_account` returns `None` for an amortizing
+    account (`account_posting_service/_sync.py:79-101`, applied at `:135-137`, ahead of the walk) --
+    which is load-bearing, not incidental: a loan payment's cash leg lands on the LOAN's linked
+    ledger at `transfer_service.py:348` and its split correction only at `:349`, so a grader that ran
+    between them would refuse a correct operation. An account-generic commit hook must route each touched
+    account to the right walk (loan -> `walk_loan_ledger`, non-loan -> `walk_cash_ledger`) or
+    reproduce that skip deliberately.
+  * **"Which accounts did this commit touch" is materially harder for loans.** A cash account's fact
+    stream is two tables that both carry `account_id` (`transactions`, `AccountAnchorHistory`). A
+    loan's is five loaded by `walk_loan_ledger` (`loan_ledger/_walk.py:217-242`): `LoanParams`,
+    `LoanAnchorEvent`, `RateHistory`, escrow lines and their versions, plus the settled income
+    shadows -- and `EscrowComponentVersion` carries only `line_id` (`models/escrow_line.py:138`), so
+    a `session.dirty` inspection reaches the account only through a join. This is a real argument for
+    the sync-populated registry over session inspection, and it belongs in the fork.
+  * **The deploy hook's three separate commits become load-bearing.** `init_database.py:352-354`
+    runs the cash resync, then the loan backfill, then the anchor backfill, **each committing its
+    own transaction** (`:238`, `:290`, `:333`). The cash resync re-dates a loan payment's cash entry
+    while that payment's split correction still carries the old date; the loan backfill heals it in
+    the NEXT transaction. An assert-only commit hook covering loans would refuse that first commit --
+    and this is not hypothetical: the one production re-date R-DH (b) produced was a **mortgage**
+    payment (`posting_resync.py:56-59`). So the step must either merge the three hooks into one
+    transaction or make the hook reconcile-then-assert. **Either way the hooks' ORDER stops being the
+    protection**, which is the same correction the parking commit already made to that docstring for
+    the cash half.
+  * **Two loan write surfaces reconcile without grading at all** -- `sync_loan_payment_postings` and
+    `sync_loan_anchor_corrections`, both exported (`loan_posting_service/__init__.py:94,103`), no
+    `app/` caller, test-only today. Recorded as **N-160**; a commit-boundary grader closes them for
+    free, a sync-tail redesign must decide them explicitly.
+
   **What it must decide, named now so the step starts from a trace rather than a guess:** which
   accounts a commit touched (a session-level registry the syncs populate, versus inspecting
-  `session.dirty` / `new` / `deleted`); whether `before_commit` is the right SQLAlchemy hook given
-  that writing inside it needs an explicit flush; and how a raised `PostingError` interacts with
-  `anchor_service.apply_anchor_true_up`, which deliberately wraps its own `commit()` in a `try`
-  catching `StaleDataError` and `IntegrityError`. It also carries **N-144**: with the assert at the
-  commit boundary, `settled=` can stop being a caller-supplied opinion about a row that knows its own
-  status, which is what makes the disagreement R-DM ordered around UNREPRESENTABLE rather than merely
-  well-sequenced.
+  `session.dirty` / `new` / `deleted` -- see the loan fact-model argument above); whether
+  `before_commit` is the right SQLAlchemy hook given that writing inside it needs an explicit flush;
+  whether the hook ASSERTS only or RECONCILES-then-asserts (the deploy-hook item above is the case
+  that separates them); and how a raised `PostingError` interacts with the three places that wrap a
+  commit or a sync in a narrow `try` -- `anchor_service.apply_anchor_true_up` catches
+  `StaleDataError` / `IntegrityError` around its own `commit()` (`anchor_service.py:349-381`),
+  `_append_loan_anchor_and_sync` commits at `anchor_service.py:449` behind
+  `sync_all_scenarios_or_duplicate`, which catches `IntegrityError` and ROLLS BACK
+  (`loan_posting_service/_sync.py:388-396`), and `routes/transactions/carry_forward.py:135-137`
+  catches only `NotFoundError` / `ValidationError`, which is what makes N-155 (a) a 500 rather than a
+  message.
+  A `PostingError` is a `ShekelError` and passes through all three; that is the correct disposition,
+  but it moves where four routes' failures originate and the step owns saying so.
 
-  Sequenced after X-d because it replaces X-d's placement rather than adding to it, and because
-  X-d must be shipped and verified before its assert is moved.
+  It also carries **N-144**: with the assert at the commit boundary, `settled=` can stop being a
+  caller-supplied opinion about a row that knows its own status, which is what makes the disagreement
+  R-DM ordered around UNREPRESENTABLE rather than merely well-sequenced. **N-157 and N-158 land on
+  BOTH packages or neither**: the ordering rule N-157 wants stated belongs on
+  `sync_account_anchor_postings` AND on `sync_loan_postings` (10 call sites through 5 public entry
+  points funnel into the loan one -- `params.py:129` / `:181`, `escrow_rates.py:148` / `:383`,
+  `anchor_service.py:439`, `_transfer_loan_posting.py:282` / `:342`, `pay_period_admin.py:540`,
+  `baseline_service.py:78`, `init_database.py:289` -- counted 2026-08-03, the mirror of N-157's nine
+  through five on the cash side), and N-158's `posting_deltas(walk)` accessor is only a fix if it
+  lands on `cash_ledger` and `loan_ledger` together, since the sign convention it names is what
+  differs between them.
+
+  **Sequenced BEFORE X-d, which is parked behind it** (developer ruling 2026-08-03, reversing this
+  entry's original order). The placement decision changes what X-d's writer swap lands on, so
+  shipping X-d first would ship a known 500 and then move it.
 - [ ] **X-e** (old **X4**) `refactor(accounts): current_anchor_balance is a reconciled cache or it
   is nothing` -- today `cash_ledger.resolve_anchor` detects the divergence from the history table
   and only LOGS it (`EVT_ANCHOR_CACHE_RECONCILED`), never repairs it. Decide the column's fate once
@@ -3934,7 +4029,7 @@ row, whose owner read `Section 5, Phase E2`; it is now `E2-0 / E2-n`, the phase'
 steps. Every other owner was already live, which is what the three hand-passes above bought and
 what nothing now has to buy again.
 
-**The ledger stands at 73 rows.** **X-f's build opened N-130 (the production defect), N-131 / N-132
+**The ledger stands at 74 rows.** **X-f's build opened N-130 (the production defect), N-131 / N-132
 (both CLOSED at the step), and its adversarial review then opened N-133 -- the one row in this arc
 that a MEASUREMENT contradicted a ruling on**: R-DH (a)'s opening amendment, made mid-build on a
 hypothetical and never re-scored, was 3.2x worse on the net plug than the rule the ruling's own table
@@ -4042,11 +4137,12 @@ done, and is what drifted.
 | N-152 (X-aj1 as-built, 2026-08-02) | **`transfer_service.py` lands at 987 of its 1000-line ceiling, so the size gate is answered for X-d and NOT solved.**  X-aj1 was ruled explicitly not to be a line-count step, and it is not -- but the as-built headroom is **13 lines** against X-d's ~9, and the next change after that hits the gate again.  **The root is that the module is still four lifecycle verbs in one file**: `create_transfer` (~200 lines), `update_transfer` (~140), `delete_transfer` (~100) and `restore_transfer` (~170), plus the shadow constructor.  Three private siblings already exist (`_transfer_validation`, `_transfer_ownership`, `_transfer_loan_posting`) and `_transfer_validation`'s own docstring records that it was "extracted from `transfer_service` so that module stays under the 1000-line module limit" -- so X-aj1's extraction is the FOURTH shave, which is the measurement that shaving is the pattern rather than the fix | `$0.00` -- a size gate, not a money defect, and the same class N-145 was.  The cost is that every future step touching a transfer mutation pays a shave first, and a shave under pressure is how X-aj1's own extraction came to be built before it was ruled | **OPEN.**  The structural answer traced at X-aj1 and not taken there (it would have been a fourth mechanism in one step): make `transfer_service` a PACKAGE, one private leaf per verb, mirroring the 12 service packages this codebase already has and the three this arc built.  Two properties were verified while tracing: the W9907 allowlist keeps working with ZERO edit, because `_module_in_allowlist` matches "exactly, or as a package prefix, so a module later split into a package keeps its submodules inside the set"; and it TIGHTENS W9910, since `app.services._transfer_*` is today importable by every service module while `app.services.transfer_service._x` would not be.  Sequenced after X-ak, which may change what a shadow stores and therefore what the verbs do | X-ak |
 | N-153 (X-d resume trace, 2026-08-03) | **`transfer_service._reconcile_postings_after_update` re-syncs both endpoints' anchors after a settled `paid_at` edit, and ruling R-DK dissolved the reason it gives for existing.**  Its docstring justifies the six lines as insurance against *"the delta-keyed self-heal"* missing a future COMBINED edit -- and the self-heal was delta-keyed because of the SKIP predicate X-d deletes.  What remains is a plain gate on "were any entries emitted", and the only case that gate skips is one where the ledger did not change, so no correction can have staled.  Traced 2026-08-03: `update_transfer` mirrors `paid_at` to BOTH shadows (`transfer_service.py:660-661`), so a moved civil day always moves the date-keyed reconcile's key and always emits; a `paid_at` edit within one civil day moves nothing on either side | `$0.00` and no wrong figure -- both calls are idempotent and land on the same state.  The cost is a second statement of the rule X-d exists to state once, in a module at 997 of its 1000-line ceiling, where six redundant lines are half the remaining headroom | **OPEN.**  Deliberately NOT taken at X-d (ruling R-DT): reversing a documented deliberate decision is its own change and does not belong bundled into a writer swap.  Sequenced at **X-ai**, which moves the checked-projection assert to the commit boundary and therefore re-decides where every re-derive runs -- deciding this before it would decide half a design | X-ai |
 | N-154 (X-d build, 2026-08-03, found by MEASURING a disable rather than reading it) | **`useless-suppression` does not report a stale `duplicate-code` disable, so a `# pylint: disable=duplicate-code` that suppresses nothing survives every gate this repo runs.**  `.pylintrc` enables `useless-suppression` precisely so a disable that silences nothing is itself a finding.  Measured both directions on 2026-08-03: `_attribution.py`'s `duplicate-code` disable was held against a query in `account_posting_service._walk`, which X-d DELETES -- removing the two pragma lines leaves `pylint app/` at 10.00/10, and planting them back leaves it at 10.00/10 too, with no `I0021`.  The gate is blind in the one direction that matters | `$0.00`: a stale suppression writes no wrong figure.  The cost is that a `duplicate-code` disable is a permanent claim nothing can invalidate -- and this arc's own Section 8 rules a label weaker than a predicate.  **FIFTEEN more live `duplicate-code` disables exist in `app/` and not one has been re-measured** -- counted by AST-free grep 2026-08-03 across `models/` (4), `routes/` (5) and `services/` (6).  The first draft of this row said "two", which was a guess; recomputing it is what this arc's Section 8 rule about quoting numbers exists for | **OPEN.**  The instrument is undecided and that is why it is a step: `useless-suppression`'s blindness is upstream behaviour (R0801 is a close-time checker, so its suppression accounting is not per-line), so the fix is a gate of this repo's own -- most likely a pre-commit arm that strips each `duplicate-code` disable in turn and fails if the tree stays clean without it | X-al |
-| N-155 (X-d's two adversarial reviews, 2026-08-03; the correctness lens found it and it was reproduced twice independently) | **The checked-projection assert grades a HALF-FINISHED operation in every batch loop, not only in the delete window ruling R-DM ordered around.**  The assert compares an account's WHOLE linked ledger against its WHOLE source-row walk, and it rides on the PER-ROW write path -- the self-heal at each sync's tail.  So any operation that settles N rows of one account and then posts them one at a time refuses at the FIRST one, because rows 2..N are settled and not yet posted.  **The loan side does not have this defect and the contrast is the fix**: `sync_loan_postings` reconciles everything and asserts ONCE at the end | **Three CONFIRMED production defects and one plausible.**  (a) `carry_forward_service/_execute.py:236` settles every envelope inside its `no_autoflush` block and posts them in a loop afterwards, so carrying forward TWO partly-spent envelopes on one account raises `PostingError: ... [walk -50.00 vs posted -30.00]` -- and `routes/transactions/carry_forward.py` catches only `NotFoundError` / `ValidationError`, so it is an UNHANDLED 500 and the whole carry-forward is lost.  Reproduced by the review and again independently.  Every carry-forward test used exactly ONE envelope, which is the case that cannot see it.  (b) `entry_service`'s three entry mutations retire the payback through `retire_transaction` -- which re-derives UNCONDITIONALLY -- before the parent's `actual_amount` is recomputed, so removing the last credit entry from a settled envelope 500s the same way.  (c) `posting_resync.resync_all_cash_postings` walks settled rows through the CHECKED sync, so the deploy hook whose whole job is repairing a multi-row stale-date state can repair only the first row per account before aborting the container under `set -eEuo pipefail`.  (d) plausible, same shape: `loan_posting_service._sync`'s stale-transfer repair loop.  Nothing is divergent on production today (verified read-only across all 9 accounts), so the cost is `$0.00` until the code ships | **OPEN, and it PARKS X-d** (developer ruling 2026-08-03: the placement is its own design step, not a patch at each loop -- batching at the four known sites would make the ordering an obligation four-plus callers must remember, which is the shape R-DM itself rejected).  **X-ai is WIDENED to own the whole placement question**, not only the commit-boundary hook | X-ai |
+| N-155 (X-d's two adversarial reviews, 2026-08-03; the correctness lens found it and it was reproduced twice independently) | **The checked-projection assert grades a HALF-FINISHED operation in every batch loop, not only in the delete window ruling R-DM ordered around.**  The assert compares an account's WHOLE linked ledger against its WHOLE source-row walk, and it rides on the PER-ROW write path -- the self-heal at each sync's tail.  So any operation that settles N rows of one account and then posts them one at a time refuses at the FIRST one, because rows 2..N are settled and not yet posted.  **The contrast that points at the fix is the LOAN sync, and the reason is sharper than "it asserts last" (traced 2026-08-03): its RECONCILE scope equals its ASSERT scope.**  `sync_loan_postings` brings every leg on the ledger it grades to target first -- all payment splits, all anchor corrections, and the other writer's cash entries through `_reconcile_lineage_transfer_entries` -- while the cash side reconciles ONE ROW (`posting_service.py:774`) plus the correction legs, then grades source legs neither reconcile may write.  A grader whose scope exceeds its reconcile's scope MUST fail on a half-posted batch | **Three CONFIRMED production defects and one plausible.**  (a) `carry_forward_service/_execute.py:236` settles every envelope inside its `no_autoflush` block and posts them in a loop afterwards, so carrying forward TWO partly-spent envelopes on one account raises `PostingError: ... [walk -50.00 vs posted -30.00]` -- and `routes/transactions/carry_forward.py` catches only `NotFoundError` / `ValidationError`, so it is an UNHANDLED 500 and the whole carry-forward is lost.  Reproduced by the review and again independently.  Every carry-forward test used exactly ONE envelope, which is the case that cannot see it.  (b) `entry_service`'s three entry mutations retire the payback through `retire_transaction` -- which re-derives UNCONDITIONALLY -- before the parent's `actual_amount` is recomputed, so removing the last credit entry from a settled envelope 500s the same way.  (c) `posting_resync.resync_all_cash_postings` walks settled rows through the CHECKED sync, so the deploy hook whose whole job is repairing a multi-row stale-date state can repair only the first row per account before aborting the container under `set -eEuo pipefail`.  **(d) CONFIRMED 2026-08-03, upgraded from "plausible", with the trigger named**: `loan_posting_service._sync:233`'s stale-transfer repair loop calls the CHECKED cash wrapper per transfer, so TWO stale-dated transfers drawn on one checking account make iteration 1 grade that account while transfer B is still stale-dated -- the walk expects B at its settled day, the ledger holds the old one (the cash walk sees transfer shadows like any other settled row: `balance_predicates.balance_contributing_clause`, `cash_ledger/_events.py:13`).  **The loop is defeated by the assert in exactly the state the loop exists to repair**, and that residue is real (E1a measured `+$2,410.95` at 2026-07-02 against a reversal dated 2026-06-18 on the production Mortgage).  So the loan's OWN assert has no batch window, but the loan SYNC inherits this defect as a CALLER of the cash writer -- the row's earlier "the loan side does not have this defect" was too broad and is narrowed here.  Nothing is divergent on production today (verified read-only across all 9 accounts), so the cost is `$0.00` until the code ships | **OPEN, and it PARKS X-d** (developer ruling 2026-08-03: the placement is its own design step, not a patch at each loop -- batching at the four known sites would make the ordering an obligation four-plus callers must remember, which is the shape R-DM itself rejected).  **X-ai is WIDENED to own the whole placement question**, not only the commit-boundary hook | X-ai |
 | N-156 (X-d's adversarial design review, 2026-08-03) | **The 1000-line ceiling has now split a SECOND module, and that split was recorded in a step's as-built rather than as a finding.**  `posting_service` crossed the gate at X-d, so the deploy sweep was evicted to a new PUBLIC flat module `posting_resync.py`; the module is left at 988/1000, TIGHTER than the 13 lines that made N-152 a finding for `transfer_service`.  **The stated forcing constraints do not survive the option that was not considered**: `posting_resync.py:14-16` names the established pattern -- both other posting packages keep their deploy-wide sweep in a `_sync` module beside the per-mutation writers -- and then departs from it.  Make `posting_service` a PACKAGE and W9910 is satisfied (the outside importer names the package) and the import-cycle objection dissolves | `$0.00`: a public module writes no wrong figure.  The cost is the pattern N-152 itself names -- every future step touching a posting writer pays a shave first -- now running in two modules instead of one | **OPEN.**  Same class and same answer as N-152, so it is owned beside it: make the over-ceiling module a package rather than shaving it again | X-ak |
 | N-157 (X-d's adversarial design review, 2026-08-03) | **`resync_anchor_postings` is a NAME, not a chokepoint, and its docstring claims otherwise.**  It says it is *"the ONE name for 'an operation has finished; re-derive what it touched', and every caller that owns the end of an operation calls it here.  Three do."*  Counted: **five** entry points reach `_assert_checked_projection` -- `sync_account_anchor_postings` (direct, x2 from `transfer_service`), `sync_account_anchor_postings_all_scenarios` (x4), `resync_user_account_anchor_postings` (x2), `backfill_all_account_anchor_postings` (x1) and the named one -- so the ordering rule governs **9 call sites through 5 doors** and is stated in one docstring that 7 of them never touch.  `sync_account_anchor_postings`, the function that actually CONTAINS the assert, states no ordering rule at all | `$0.00` today.  The cost is that a future delete or revert path calling any of the other four doors mid-retirement raises in production with nothing in its docstring warning it -- and that whoever fixes N-155 must find five doors, not three | **OPEN.**  The rule belongs on `sync_account_anchor_postings`, and the claim on `resync_anchor_postings` must shrink to what is true.  Sequenced at X-ai because that step re-decides where the assert runs and therefore what the doors are | X-ai |
 | N-158 (X-d's adversarial design review, 2026-08-03) | **The shared checked-projection assert leaves its SIGN convention as an unnamed operator inside each caller's loop.**  `account_posting_service/_sync.py` folds `+ delta` and `loan_posting_service/_sync.py` folds `- delta` over the same four-line shape; `_posting_reconcile.py` justifies it as *"folding the sign in here would need a flag, and a flag is exactly the thing a caller can get wrong."*  An unnamed `-` inside a caller's loop is STRICTLY WEAKER than a flag: it is in no signature, no type checks it, and it does not appear as an argument in review | `$0.00` today, and the docstring names the cost if it is ever wrong: *"a sign flip still BALANCES every entry, so the trial balance closes and only the balance sheet is upside down"* -- which X-d measured again, a one-cent correction mutation growing the ledger by 71 entries with the trial balance still reading `$0.00`.  The one measurement pinning the cash sign (negating it fails all 7 pairs) was a hand-run probe, not a test | **OPEN.**  The option not considered: give each package a `posting_deltas(walk)` accessor stating the convention beside the ledger whose normal balance defines it, and let the shared assert take an iterable -- the sign becomes a property of the package and the loop is written once.  Sequenced at X-ai, which owns the assert | X-ai |
 | N-159 (X-d's adversarial design review, 2026-08-03) | **Transfer retirement stays TWO halves a caller must remember to pair, which is the obligation `retire_transaction` was built to make structural.**  `delete_transfer` calls `reverse_transfer_postings_before_delete` and, ~70 lines and a soft/hard branch later, `account_posting_service.resync_anchor_postings`.  Ruling R-DN refuses the symmetric `posting_service.retire_transfer` because *"Transfer Invariant 4 reserves every shadow mutation to the transfer service"* -- while `retire_transaction` mutates a `Transaction`'s `is_deleted` from OUTSIDE `transaction_service`, so the two halves of one problem are justified on principles that contradict each other.  Section 8's own lesson applies verbatim: *"when two sides of ONE problem have different SHAPES, the loose side is where the next hole is"* | `$0.00` today: `delete_transfer` is the single transfer-delete path and it pairs them correctly.  The cost is that the pairing is a convention in one function rather than a structure, on the half of the problem that carries the CRITICAL transfer invariants | **OPEN.**  Needs a ruling on which principle wins, which is a transfer question rather than a posting one, so it is owned where the transfer structure is decided | X-ak |
+| N-160 (X-ai's loan-side trace, 2026-08-03) | **Two exported loan writers reconcile the ledger without ever grading it.**  `sync_loan_payment_postings` and `sync_loan_anchor_corrections` are public (`loan_posting_service/__init__.py:94,103`, both in `__all__`) and each reconciles ONE HALF of a loan's genesis ledger with no checked-projection assert -- the assert lives only in the unified `sync_loan_postings`.  Censused 2026-08-03 across `app/` and `scripts/`: **zero production callers**; the only callers are the split-value unit tests, which is what the payment one's docstring already says it survives for.  The step-E1a claim that "every one of those doors then runs the step-E1a assert" (`loan_posting_service/__init__.py:81-83`) is therefore true of the WIRED doors and not of the module's public surface | `$0.00` today, and it cannot fire from `app/` at all -- an unwired writer posts nothing.  The cost is that the ledger's public write surface is wider than the graded one, so a future caller reaching for the half it needs gets an ungraded write and nothing says so | **OPEN.**  A commit-boundary grader closes both for free (they would be graded by the commit, not by the door); a sync-tail redesign must decide them explicitly -- grade them, make them private, or delete them and let the tests drive the unified sync | X-ai |
 | N-139 (X-ae's build 2026-08-02; REFRAMED the same day when two adversarial reviews refuted its first statement) | **Nothing prevents a submitted digit string being parsed laxly again, and a checker on the method NAME does not prevent it -- which is what the first version of this row proposed.**  X-ae removed every Unicode-wide digit predicate from `app/` and `scripts/` (AST: exactly ONE call site remains, `digit_strings.py:91`, the implementation of the replacement), converted the URL converter and 73 schema declarations, and the reviews then showed the proposed gate would still report clean over the very defect it was written for: **a future author writing a bare `try: int(raw) / except ValueError` passes a `isdigit`/`isdecimal`/`isnumeric` matcher and reintroduces the many-spellings defect** -- and this step's own record proves that form insufficient, because it is what the 2026-08-01 ruling specified and what measurement rejected.  `re.fullmatch(r"\\d+", "١٠٦")` matches for the same reason.  **The signal is not a method name; it is Unicode-wide digit ACCEPTANCE, and it has at least four spellings** | `$0.00` today and no reachable crash: every surface X-ae covers is fixed and measured.  The exposure is the NEXT id parse written, which on this arc's history is a matter of when rather than whether -- four `isdigit()` sites accumulated with nothing watching, and the reviews found two more surfaces this step's own census had missed | **OPEN, and the INSTRUMENT is undecided, which is why this is a step and not a line.**  A checker is the only available shape -- the receiver is `str`, a builtin nobody can give a narrower type, so there is no `ReconciledThrough` to write and the developer's *structural-over-detector* ruling has nothing to prefer; `anchor_settle_partition.md` 14.5 is the precedent (a type and a checker fence COMPLEMENTARY holes).  But X-ag's trace must first answer what the checker MATCHES, given that the method name is measurably the wrong signal.  **A second draft of this row argued that step 3 proved a checker would be blind at a bare-local site; that claim was REFUTED by step 3's own review and withdrawn in 14.1**, and restating it was the stale-citation class this arc keeps paying for | X-ag |
 
 ## 7. Verification standard (what "done" means for every step)
