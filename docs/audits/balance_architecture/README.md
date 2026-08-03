@@ -181,7 +181,8 @@ a planted one-cent move among 10,539 figures; and three mutants planted, all thr
 their first sight of it, mergeable, no conflicts).  It carries the five X-aj1 commits plus the two
 docs-only commits that were sitting on `dev`.
 
-**X-d IS BUILT AND GREEN on `feat/xd-checked-projection`, off that PR's branch** -- 7,796 passed / 0
+**X-d IS BUILT AND GREEN on `feat/xd-checked-projection`, off that PR's branch** (three commits:
+`fb8efb9f` rulings, `15773163` code, and this tick) -- 7,796 passed / 0
 failed, `pylint app/ scripts/` 10.00/10, plan gate 17.  Its entry below carries the as-built record.
 It is NOT ticked, because this document ticks a box when a step SHIPS, not when it is green.
 
@@ -3501,6 +3502,125 @@ preconditions cite entries in that file.
   (`sum(postings) == fold(ACTUAL events)`) makes a stale posting a detectable, repairable cache
   inconsistency. Ship-gated on a prod-data sweep for walk-invisible legacy rows, exactly as E1a
   was; any found row is an F1-class human decision, never a silent exclusion.
+
+  > **BUILT AND GREEN, 2026-08-03, on branch `feat/xd-checked-projection` (off
+  > `feat/one-status-seam`, which is PR #80) -- `fb8efb9f` rulings, `15773163` code, this tick.** Rulings **R-DI**, **R-DJ**, **R-DK**, **R-DL**,
+  > **R-DM** and **R-DT**. Suite **7,799 passed / 0 failed under `America/New_York` AND under CI's
+  > `TZ=Pacific/Kiritimati`**, each run alone; `pylint app/ scripts/` 10.00/10 with every custom
+  > checker as `--fail-on`; the checker package 10.00/10 and its 146 unit tests green; the plan gate
+  > 17 passed. The parked WIP commit `49948f64` was replayed onto the seam branch conflict-free --
+  > the two steps' file sets are disjoint, as recorded -- and `fix/xd-checked-projection` is left
+  > pointing at it as history.
+  >
+  > **A count in this entry was wrong once and the correction is the point.** The first draft said
+  > 7,796, which was a real measurement of a tree that did not yet carry the three controls; the two
+  > clocks then reported 7,796 and 7,799 and the difference looked like clock-dependent COLLECTION.
+  > Measured rather than theorised: `--collect-only` reports 7,799 of 7,827 selected under BOTH
+  > zones, on this tree, and 7,798 under both on the base -- so nothing collects by the clock and the
+  > gap was one stale number. Section 8's "recompute before quoting" earning its place again.
+  >
+  > **Verified on real data, both sides, each with its own negative control:**
+  >
+  > * **the READ side is byte-identical** on the dev-runtime production clone (migration head
+  >   `d7c1f4a9e603`, 318 journal entries) -- 9 accounts, 427 grid cells, 5,978 daily points, diffed
+  >   against the same harness run from a worktree at the base commit. **The diff was then shown to
+  >   FIRE**: a planted one-cent move on each account's last dated step changed 12,336 lines;
+  > * **the WRITE side writes NOTHING**, which the read harness cannot see. Driving the three
+  >   deploy-time reconciles over a `pg_dump` copy of that database: `resync_all_cash_postings`
+  >   changed **0 transactions / 0 transfers**, the anchor backfill ran all **7** non-loan accounts
+  >   and the loan backfill both loans, and the census was **318 entries / 643 postings / trial
+  >   balance `$0.00` before AND after**. The checked-projection assert therefore PASSED on all seven
+  >   accounts against a ledger the DELETED walk wrote -- which is the whole claim of the step.
+  >   **That probe was shown to FIRE too**: a one-cent mutation of `CashAnchorCorrection.delta` took
+  >   the census to **389 entries / 785 postings** on a fresh copy. **It still read a `$0.00` trial
+  >   balance**, which is exactly why the census counts ENTRIES: every balanced entry closes the
+  >   trial balance, so a balanced-but-wrong ledger is invisible to it.
+  >
+  > **What the writer swap deleted:** `account_posting_service/_walk.py` WHOLE (the postings-sourced
+  > walk, its three source loaders, `_linked_net_rows` and `AccountAnchorCorrection`). The writer
+  > consumes `cash_ledger.walk_cash_ledger`, so the projection and the posted ledger cannot drift by
+  > construction rather than by a test keeping two implementations in step (ruling R-H, at last).
+  > Verified on the dev-runtime clone before the pause: the swapped sync ran on all 7 non-loan
+  > accounts, its assert passed, and it WROTE NOTHING -- 318 journal entries / 643 postings / trial
+  > balance `$0.00` before and after; and before the swap the two walks produced identical
+  > corrections over 75 corrections / 7 (account, scenario) pairs, 0 mismatched.
+  >
+  > **What else shipped in it:**
+  >
+  > * the checked-projection assert extracted to `_posting_reconcile.assert_ledger_projects_facts`
+  >   and SHARED with the loan sync -- `duplicate-code` had reported the two copies, which is the
+  >   gate doing its job. The sign stays with each caller (cash un-negated, loans negated); a probe
+  >   negating the cash side failed all 7 pairs, which is that claim's first measurement rather than
+  >   a restatement of its docstring;
+  > * **R-DJ's two day types** -- `MovedOn` / `ObservedOn` in the new `cash_ledger/_days.py` package
+  >   FLOOR, with `ReconciledThrough` moved beside them and `covers` narrowed to the event kind.
+  >   **Finding N-135 is CLOSED**; two new controls pin it;
+  > * **R-DK** -- the self-heal SKIP predicate and `_has_posted_anchor_correction` deleted. The test
+  >   that PINNED the skip is INVERTED rather than deleted, and says so in its own docstring;
+  > * **R-DL's N+1** -- the anchor reconcile went from `70.87 ms` over 110 SQL statements to
+  >   `11.13 ms` over 12 on the real Checking account (55 assertions, 139 settled rows);
+  > * **R-DM in full** -- both syncs split into a non-asserting reconcile CORE plus the checked
+  >   wrapper; `posting_service.retire_transaction(txn, *, hard)` added AND WIRED, collapsing the
+  >   four transaction-delete sites (`routes/transactions/mutations.py`, `credit_workflow.py` x2,
+  >   `entry_credit_workflow.py`) that each spelled reverse-then-delete by hand and none of which had
+  >   a step 3; `delete_transfer` reverses through `reverse_transfer_postings_before_delete` and
+  >   re-derives BOTH endpoints once the rows are final;
+  > * **R-DT's extraction** -- `account_posting_service.resync_anchor_postings`, the ONE name for
+  >   "an operation has finished; re-derive what it touched", consumed by all three callers.
+  >   `transfer_service.py` lands at **997** of 1000;
+  > * `posting_service` crossed the 1000-line gate, so the deploy sweep moved to the PUBLIC sibling
+  >   `posting_resync.py` -- public because its one caller `scripts/init_database.py` sits outside
+  >   `app.services` and W9910 refuses it a private module, and because a re-export from
+  >   `posting_service` would close an import cycle.
+  >
+  > **The three controls this step owed are written, and each was shown to FIRE against its own
+  > defect** (`TestTheControlsPlanStepXdOwes`): the R-DL hoist restored inside the loop takes the
+  > chart lookups from 8 to 20 and fails the COUNT assertion (not a stopwatch); the assert stubbed
+  > to a no-op fails both the planted-residue control and the ordering one; and `retire_transaction`
+  > re-ordered to re-derive BEFORE the removal fails with the assert's own message. The
+  > planted-residue control plants the REAL defect -- a settled, posted row deleted without the
+  > reverse-before-delete discipline -- which is exactly the class ruling R-DI ceded the residue
+  > reader for.
+  >
+  > **The test conversion weakened nothing, and the 55 red tests classified exactly as the parked
+  > commit recorded.** 26 were the assert firing inside the delete / revert / restore window (closed
+  > by the R-DM wiring), 10 named the deleted walk, 16 were the day-type conversion, 2 the moved
+  > `resync_all_cash_postings`, 1 the R-DK skip pin. Of the 10, **four were DELETED with the
+  > surviving test named for each** and six re-pointed; the class is renamed
+  > `TestTheWalkThePostingWriterConsumes` and its docstring carries the four names. **One deletion is
+  > a real behaviour change and is recorded as one**: the old walk RAISED on an amortizing loan and
+  > the surviving one does not, so the guard keeping the two correction families disjoint now sits at
+  > `_sync._load_non_amortizing_account` -- a quiet no-op, deliberately, because the chokepoints
+  > legitimately iterate every account a user owns.
+  >
+  > **What the failures turned out to BE is worth more than the count.** Every one of the 26 was a
+  > fixture reaching a state production cannot produce -- a row reconciled to an empty target while
+  > still reading SETTLED, or a settled row the ledger had never seen. All seven production callers
+  > pass `txn.status.is_settled`; none of them can build either state. Two shared helpers
+  > (`revert_settled_transaction` / `revert_settled_transfer`) now spell a revert the way the app
+  > does, replacing four hand-written versions. **One asserted figure moved as a result and is
+  > restated rather than quietly edited**: `test_revert_recategorize_resettle_posts_new_zeroes_old`
+  > read `$1,000.00` for Checking because `add_txn` left `paid_at` NULL and the period-start fallback
+  > dated the expense BEFORE the opening assertion; settled through the seam it carries a real
+  > instant, rides on top, and the account reads `$900.00`. The two assertions the test is ABOUT are
+  > untouched.
+  >
+  > **13 stale citations were repaired across `app/`** -- every docstring naming the deleted walk,
+  > two describing the predicate R-DK removes, and one that named the wrong function outright
+  > (`reverse_postings_before_delete` said it reconciled "via `sync_transaction_postings`" while
+  > calling the core). A checker unit test naming `account_posting_service._walk` as a "real
+  > submodule" was re-pointed at `._anchors`, because a fixture naming a module that no longer exists
+  > passes while proving nothing.
+  >
+  > **It also deleted `_attribution.py`'s `duplicate-code` disable, and measuring that opened
+  > N-154**: `useless-suppression` does NOT report a stale `duplicate-code` disable. Verified both
+  > ways -- removing the pragma leaves `pylint app/` at 10.00/10, planting it back leaves it at
+  > 10.00/10 with no `I0021`. Fifteen more such disables live in `app/` and none has been
+  > re-measured; step **X-al** owns them.
+  >
+  > **Still owed before the PR:** the production-clone baseline
+  > (`tests/manual/verify_balance_baseline.py` against a FRESH clone -- `shekel_f3_final`,
+  > `shekel_prodclone` and `shekel_prodbase` are all stale) and the `TZ=Pacific/Kiritimati` run.
 
   **PULLED FORWARD 2026-08-01, past X-ad / X-x / X-y / X-i / X-j / X-k / X-l / X-m / X-n, by the
   developer's ruling that the partition's fence be structural rather than a detector**
