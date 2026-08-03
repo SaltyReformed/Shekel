@@ -3641,6 +3641,19 @@ preconditions cite entries in that file.
     writer states, via a no-op `before_commit` listener that only records the `(account, scenario)`
     pairs it would grade. Grep cannot answer the second honestly, and X-d is the precedent for what
     guessing costs: it found N-155 from a red suite.
+
+    **Two things about HOW, verified 2026-08-03 so the step does not open by hunting.** (1) **The
+    cost half is measured with a scratch probe, not against shipped code** -- a whole-account cash
+    re-derive does not exist yet, because building it IS X-ai-a. The probe drives
+    `cash_ledger.walk_cash_ledger` plus the existing per-source reconcile over the account's settled
+    rows; both are on `dev` today. (2) **The measurement style and its control already exist and
+    should be copied, not reinvented**: R-DL's hoist is pinned by asserting the SQL STATEMENT COUNT
+    rather than elapsed time (`TestTheControlsPlanStepXdOwes`,
+    `tests/test_services/test_account_posting_service.py` on `feat/xd-checked-projection` at
+    `2b11aaed`), which is what makes the number survive a slow CI box. **The substrate is ready**:
+    the dev-runtime database is at the repo's migration head `d7c1f4a9e603` and reads **318 journal
+    entries / 643 postings / 9 accounts / trial balance `$0.00`** -- the same census X-d's as-built
+    record measured, so it is that prod-shaped clone and needs no re-clone before the first number.
   * **X-ai-a `THE ONE VERB, cash.`** Cash gets what the loan side already has: a single owner that
     re-derives an account's WHOLE projection from `walk_cash_ledger` -- every source fact's entry
     reconciled to target, then every anchor correction, then the assert. Ownership stops being split
