@@ -316,12 +316,18 @@ becomes a RECONCILIATION rather than a reset -- so the steps that served the OLD
 against it rather than run first.
 
 **NEXT, in order: X-f1, X-f2, X-f3 (the cutover -- MOVES MONEY, own PR), X-f4, X-f5, then X-f6**
-(bank import, the ruled follow-on).  **X-f1b is GREEN on branch `feat/xf1-settle-day`** -- the
-suite is 7,784 / 0 under both timezones, all three test locations run, and the real-data baseline is
-byte-identical with a firing positive control.  Its step entry in Section 5 carries the **"X-f1b as
+(bank import, the ruled follow-on).  **X-f1b is GREEN and COMMITTED on branch
+`feat/xf1-settle-day`** (`51679384`, four commits on `fac90200`) -- **not pushed, not PR'd**.  The
+suite is 7,786 / 0 under both timezones, all three test locations run, and the real-data baseline is
+byte-identical with a firing positive control.  **The head-but-two commit's subject still reads
+`[WIP -- RED, NOT FOR MERGE]`; that is true of that commit and of nothing since.**  Its step entry in Section 5 carries the **"X-f1b as
 BUILT"** record: what the 102 parked failures actually were, the three findings it closed, the four
 things its second pair of reviews found (one of them a defect the step itself introduced), and what
-the 22 deleted migration tests really cost.  **X-f1c and X-f1d remain.**  **X-ai-s (the migration) is HELD pending X-f3**: it buys
+the 22 deleted migration tests really cost.  **X-f1c and X-f1d remain, and X-f1 does not SHIP without
+them**: ruling N-175 binds the `anchor_settle_partition.md` archive move to this step so the
+superseded plan and the plan that supersedes it land together, which is Section 9 rule 1 (one live
+planning document).  X-f1b alone would also leave finding **N-181**'s eight fabricated timeliness
+days in production with no door to correct them -- X-f1c IS that door.  **X-ai-s (the migration) is HELD pending X-f3**: it buys
 per-ASSERTION attribution for the correction family X-f3 deletes, and running it first would ship a
 migration and a backfill for something about to be removed.  **X-ai-r is DONE** (`c518d2e4` /
 `8281e82c`, PR #81) and its LOAN half survives untouched.  After X-f: **X-ai-a, X-ai-b, X-ai-c,
