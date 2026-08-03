@@ -633,7 +633,7 @@ class TestDaysUntilDue:
 class TestDaysPaidBeforeDue:
     """Tests for Transaction.days_paid_before_due computed property."""
 
-    def _make_txn(self, seed_user, seed_periods, due_date_val, paid_at_val):
+    def _make_txn(self, seed_user, seed_periods, due_date_val, settled_on_val):
         """Helper: create a transaction with given due_date and paid_at."""
         status = db.session.query(Status).filter_by(name="Paid").one()
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
@@ -647,7 +647,7 @@ class TestDaysPaidBeforeDue:
             transaction_type_id=expense_type.id,
             estimated_amount=Decimal("100.00"),
             due_date=due_date_val,
-            paid_at=paid_at_val,
+            settled_on=settled_on_val,
         )
         db.session.add(txn)
         db.session.flush()
@@ -675,7 +675,7 @@ class TestDaysPaidBeforeDue:
             txn = self._make_txn(
                 seed_user, seed_periods,
                 due_date_val=date(2026, 3, 15),
-                paid_at_val=None,
+                settled_on_val=None,
             )
             assert txn.days_paid_before_due is None
 

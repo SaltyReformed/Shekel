@@ -115,7 +115,7 @@ class TestTheBoundaryIsInclusive:
             create_settled_transfer(
                 seed_user, db.session, checking, acct, seed_periods[5],
                 amount=Decimal("1200.00"),
-                paid_at=settle_instant_on(date(2026, 3, 18)),
+                settled_on=date(2026, 3, 18),
             )
             db.session.commit()
 
@@ -424,7 +424,7 @@ class TestTheMoneyItProtects:
             xfer = create_settled_transfer(
                 seed_user, db.session, checking, acct, seed_periods[8],
                 amount=Decimal("1200.00"),
-                paid_at=settle_instant_on(date(2026, 3, 10)),
+                settled_on=date(2026, 3, 10),
             )
             db.session.commit()
             # Plant the pre-origination installment underneath the guard, which

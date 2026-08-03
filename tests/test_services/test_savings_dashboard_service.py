@@ -1147,7 +1147,7 @@ class TestPaidOffReadsTheLedgerNotTheReplay:
             create_settled_transfer(
                 seed_user, db.session, seed_user["account"], acct,
                 seed_periods_today[4], amount=Decimal("1100.00"),
-                paid_at=settle_instant_on(seed_periods_today[4].start_date),
+                settled_on=seed_periods_today[4].start_date,
             )
             db.session.commit()
 

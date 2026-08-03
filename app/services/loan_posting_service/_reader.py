@@ -28,7 +28,7 @@ delete whole.
 **The one clock still governs what these reads see** (step C2): each posting
 counts from its ``entry_date``, the day the event it records happened.  The
 writer stamps that day honestly -- a payment's cash and split legs carry its
-SETTLED date (:func:`app.services.posting_service._civil_settle_date`), an
+SETTLED date (:func:`app.utils.balance_predicates.settled_day`), an
 anchor correction carries the ``anchor_date`` it asserts
 (:func:`app.services._posting_reconcile.emit_anchor_correction_entry`) -- which
 is the same cut the fold applies from source

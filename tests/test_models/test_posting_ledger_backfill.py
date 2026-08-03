@@ -254,7 +254,7 @@ class TestBackfillEntryDate:
             transfer = create_settled_transfer(
                 seed_user, _db.session, seed_user["account"], savings,
                 seed_user["bootstrap_period"], amount=Decimal("100.00"),
-                paid_at=datetime(2026, 5, 10, 14, 30, tzinfo=timezone.utc),
+                settled_on=date(2026, 5, 10),
             )
             _db.session.commit()
             clear_postings_for_transfer(transfer.id)
@@ -275,7 +275,7 @@ class TestBackfillEntryDate:
             period = seed_user["bootstrap_period"]
             transfer = create_settled_transfer(
                 seed_user, _db.session, seed_user["account"], savings,
-                period, amount=Decimal("100.00"), paid_at=None,
+                period, amount=Decimal("100.00"), settled_on=None,
             )
             _db.session.commit()
             clear_postings_for_transfer(transfer.id)

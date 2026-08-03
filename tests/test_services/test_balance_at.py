@@ -82,6 +82,7 @@ from app.services.balance_at._resolution import (
     configured_loan,
     resolved_loan,
 )
+from app.utils.dates import display_today
 from tests._test_helpers import (
     add_txn,
     create_account_of_type,
@@ -196,9 +197,7 @@ def _paid_then_trued_loan(seed_user, db_session, periods):
         create_settled_transfer(
             seed_user, db_session, seed_user["account"], loan,
             periods[idx], amount=Decimal("2000.00"),
-            paid_at=datetime(
-                paid.year, paid.month, paid.day, 12, 0, tzinfo=timezone.utc,
-            ),
+            settled_on=paid,
         )
     db_session.commit()
     insert_trueup_event(
@@ -2406,13 +2405,14 @@ class TestASettledRowMovesEveryCashAnswerTogether:
             create_settled_cash_transaction(
                 seed_user, db.session, periods[4], Decimal("250.00"),
                 name="settled after the anchor",
-                # The instant is PASSED, not left to the status seam: it stamps
-                # ``paid_at`` from the DATABASE clock, which ``freeze_today``
-                # (Python-level) does not patch -- so an unpinned settle lands
-                # months after the frozen read and outside every seeded period.
-                paid_at=settle_instant_on(
-                    periods[4].start_date + timedelta(days=1),
-                ),
+                # The DAY is PASSED, not left to the status seam: this test
+                # needs the settle on a specific day (one after the anchor's
+                # period start), not on today.  It used to be passed for a
+                # stronger reason -- the seam stamped ``paid_at`` from the
+                # DATABASE clock, which ``freeze_today`` cannot patch -- and
+                # that reason died with plan step X-f1 (ruling R-EC): the seam
+                # stamps ``display_today()``, a Python read the freeze governs.
+                settled_on=periods[4].start_date + timedelta(days=1),
             )
             db.session.commit()
 
@@ -2452,9 +2452,7 @@ class TestASettledRowMovesEveryCashAnswerTogether:
                 seed_user, db.session, periods[4], Decimal("2000.00"),
                 account=hysa, name="settled after the anchor",
                 # Pinned for the reason the sibling test above documents.
-                paid_at=settle_instant_on(
-                    periods[4].start_date + timedelta(days=1),
-                ),
+                settled_on=periods[4].start_date + timedelta(days=1),
             )
             db.session.commit()
 
@@ -3599,7 +3597,7 @@ class TestTheRemainderIsWhatTheRowsCannotExplain:
             account = seed_user["account"]
             create_settled_cash_transaction(
                 seed_user, db.session, periods[1], Decimal("300.00"),
-                paid_at=settle_instant_on(periods[3].start_date),
+                settled_on=periods[3].start_date,
                 name="paid two columns late",
             )
             db.session.commit()
@@ -4299,7 +4297,7 @@ class TestLoanNotYetOriginated:
             create_settled_transfer(
                 seed_user, db.session, checking, acct, periods[8],
                 amount=Decimal("1200.00"),
-                paid_at=settle_instant_on(date(2026, 3, 10)),
+                settled_on=date(2026, 3, 10),
             )
             db.session.commit()
 
@@ -4669,7 +4667,7 @@ class TestBrokenLoanFailsLoud:
             create_settled_transfer(
                 seed_user, db.session, seed_user["account"], acct,
                 periods[1], amount=Decimal("241200.00"),
-                paid_at=settle_instant_on(date(2024, 10, 1)),
+                settled_on=date(2024, 10, 1),
             )
             db.session.commit()
             # Re-break the cache: settling re-synced the loan's postings.

@@ -6,28 +6,29 @@ ledger does or the two would diverge (step B2's parallel run is an EQUALITY).
 That day is the day the event HAPPENED, and it is already the day the posting
 carries in ``journal_entries.entry_date``:
 
-* a **PAYMENT** is visible from its **settled date** -- the DISPLAY-timezone civil
-  date of its ``paid_at``, falling back to its pay period's ``start_date`` when
-  ``paid_at`` is NULL (an anomalous / legacy row).  This is the SAME
-  :func:`app.utils.dates.to_display_civil_date` derivation the posting writer
+* a **PAYMENT** is visible from its **settled date** -- the shadow's STORED
+  ``transactions.settled_on``, read through the SAME
+  :func:`app.utils.balance_predicates.settled_day` accessor the posting writer
   stamps the payment's ``entry_date`` with
-  (:func:`app.services.posting_service._civil_settle_date`) and the cash walk dates
-  its own settles with (:func:`app.services.cash_ledger.settled_civil_day`), and
-  the SAME date the checking outflow moves on, so the loan and checking move
-  together (ruling R-A; the period-start fallback is the developer ruling of
-  2026-07-17).
+  (:func:`app.services.posting_service._transaction_entry_date`) and the cash
+  walk dates its own settles with, and the SAME date the checking outflow moves
+  on, so the loan and checking move together (ruling R-A).
+
+  **There is no derivation and no fallback left here, and that is plan step
+  X-f1** (ruling R-EC).  It WAS the display-timezone civil date of the shadow's
+  ``paid_at``, falling back to its pay period's ``start_date`` when the instant
+  was NULL (the developer ruling of 2026-07-17); the day is a stored fact now,
+  and a settled shadow carrying none is REFUSED rather than dated by a fallback.
 
   **The zone moved from UTC to ``America/New_York`` at ruling R-DH (b)**
-  (2026-07-31, ``docs/audits/balance_architecture/anchor_settle_partition.md``),
-  together with the cash half, because a split zone is what pulls a transfer's two
-  legs onto different days: a payment recorded at 20:38 Eastern is 00:38 the NEXT
-  day in UTC, so the checking outflow moved on the user's Monday while the loan
-  principal fell on Tuesday.  Storage is unchanged (every instant is still stored
-  UTC); only the civil day derived from it moved.  Measured on production
-  2026-07-31: of 9 settled payment shadows exactly ONE is affected -- a
-  ``$1,910.95`` mortgage payment stamped 2026-07-02 00:38:53 UTC, which is the
-  evening of 2026-07-01 Eastern and the last day of that pay period; two more
-  carry a NULL ``paid_at`` and cannot move at all.
+  (2026-07-31), together with the cash half, because a split zone is what pulls a
+  transfer's two legs onto different days: a payment recorded at 20:38 Eastern is
+  00:38 the NEXT day in UTC, so the checking outflow moved on the user's Monday
+  while the loan principal fell on Tuesday.  That ruling is what the stored
+  column now records directly.  Measured on production 2026-07-31, when the day
+  was still derived: of 9 settled payment shadows exactly ONE was affected -- a
+  ``$1,910.95`` mortgage payment stamped 2026-07-02 00:38:53 UTC, the evening of
+  2026-07-01 Eastern and the last day of that pay period.
 * an **ANCHOR** is visible from its **own civil date** (``anchor_date``) -- the one
   date it ever asserts, and the ``entry_date`` the anchor correction is posted at
   (:func:`app.services._posting_reconcile.emit_anchor_correction_entry`).
@@ -71,7 +72,7 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
-from app.utils.dates import to_display_civil_date
+from app.utils.balance_predicates import settled_day
 
 
 def owner_pay_periods(account_id: int) -> list[PayPeriod]:
@@ -218,15 +219,20 @@ def anchor_visible_on(anchor_date: date) -> date:
 def payment_visible_on(shadow: Transaction) -> date:
     """Return the date a settled payment's principal becomes visible to a read.
 
-    Its **settled date** (step C2, ruling R-A; the zone is ruling R-DH (b)): the
-    DISPLAY-timezone civil date of the shadow's ``paid_at``, falling back to its
-    pay period's ``start_date`` when ``paid_at`` is NULL.  This is the SAME
-    :func:`app.utils.dates.to_display_civil_date` derivation the posting writer
-    stamps the payment's ``entry_date`` with
-    (:func:`app.services.posting_service._civil_settle_date`), so the day the fold
-    counts this payment and the day the sum-of-postings reader counts it cannot
-    drift; and it is the day the checking outflow moves, so the loan and checking
-    move together.
+    Its **settled date** (step C2, ruling R-A): the shadow's STORED
+    ``settled_on``, read through the shared
+    :func:`app.utils.balance_predicates.settled_day`.  That is the same accessor
+    the posting writer stamps the payment's ``entry_date`` through
+    (:func:`app.services.posting_service._transaction_entry_date`), so the day
+    the fold counts this payment and the day the sum-of-postings reader counts
+    it cannot drift; and it is the day the checking outflow moves, so the loan
+    and checking move together.
+
+    **It DERIVED that day from ``paid_at`` until plan step X-f1** (ruling R-EC)
+    -- a display-timezone conversion of the click instant with the pay period's
+    ``start_date`` as a NULL fallback.  The column stores the day now, so this
+    reads a fact; a settled shadow carrying none is refused rather than dated by
+    a fallback.
 
     **The split MATH is untouched by the zone, and that is what bounds this
     rule's blast radius to one day of VISIBILITY.**  The interest / principal /
@@ -246,4 +252,4 @@ def payment_visible_on(shadow: Transaction) -> date:
     Returns:
         The date from which a balance read counts this payment's principal.
     """
-    return to_display_civil_date(shadow.paid_at, shadow.pay_period.start_date)
+    return settled_day(shadow.id, shadow.settled_on)

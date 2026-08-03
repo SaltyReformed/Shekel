@@ -89,6 +89,7 @@ from app.services.posting_service import (
     PostingError,
     _PostingLeg,
 )
+from app.utils.dates import display_today
 from tests._test_helpers import (
     add_txn,
     create_account_of_type,
@@ -400,7 +401,7 @@ class TestSyncSettleEntryDate:
             transfer = create_settled_transfer(
                 seed_user, _db.session, seed_user["account"], savings,
                 seed_user["bootstrap_period"], amount=Decimal("100.00"),
-                paid_at=datetime(2026, 5, 10, 2, 0, tzinfo=timezone.utc),
+                settled_on=date(2026, 5, 9),
             )
             _db.session.commit()
             # Commit-5 wiring: the settle auto-posted; read the entry back.
@@ -421,7 +422,7 @@ class TestSyncSettleEntryDate:
             period = seed_user["bootstrap_period"]
             transfer = create_settled_transfer(
                 seed_user, _db.session, seed_user["account"], savings,
-                period, amount=Decimal("100.00"), paid_at=None,
+                period, amount=Decimal("100.00"), settled_on=None,
             )
             _db.session.commit()
             # Commit-5 wiring: the settle auto-posted; read the entry back.
@@ -588,7 +589,7 @@ class TestSyncReversal:
             transfer_service.update_transfer(
                 transfer.id, user_id,
                 status_id=ref_cache.status_id(StatusEnum.DONE),
-                paid_at=_db.func.now(),
+                settled_on=display_today(),
             )
             posting_service.sync_transfer_postings(transfer, settled=True)
             _db.session.commit()
@@ -1417,7 +1418,7 @@ class TestTransactionEntryDate:
                 _db.session, seed_user, period, "Groceries", "50.00",
                 status_enum=StatusEnum.DONE, category_key="Groceries",
             )
-            txn.paid_at = datetime(2026, 5, 10, 2, 0, tzinfo=timezone.utc)
+            txn.settled_on = date(2026, 5, 9)
             _db.session.commit()
 
             [entry] = posting_service.sync_transaction_postings(
@@ -1517,8 +1518,8 @@ class TestSettledTransactionEffect:
             # anchor and absorb the effects into the opening instead).
             # Server-side now(): the directory conftest freezes the PYTHON
             # clock to 2026-03-20, which would also predate the anchor.
-            expense.paid_at = _db.func.now()
-            income.paid_at = _db.func.now()
+            expense.settled_on = display_today()
+            income.settled_on = display_today()
             _db.session.commit()
             posting_service.sync_transaction_postings(expense, settled=True)
             posting_service.sync_transaction_postings(income, settled=True)
@@ -1638,7 +1639,7 @@ class TestPeriodAttribution:
                 _db.session, seed_user, period, "Groceries", "100.00",
                 status_enum=StatusEnum.DONE, category_key="Groceries",
             )
-            txn.paid_at = datetime(2026, 1, 5, 12, 0, tzinfo=timezone.utc)
+            txn.settled_on = date(2026, 1, 5)
             _db.session.commit()
             cash_ledger = _ledger_id(seed_user["account"])
 
@@ -1652,7 +1653,7 @@ class TestPeriodAttribution:
             # The revert-and-move PATCH, as _apply_regular_update applies it:
             # the new period and the cleared paid_at land BEFORE the reconcile.
             txn.pay_period_id = moved_to.id
-            txn.paid_at = None
+            txn.settled_on = None
             _db.session.flush()
             [reversal] = posting_service.sync_transaction_postings(
                 txn, settled=False,

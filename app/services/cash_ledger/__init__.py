@@ -74,7 +74,6 @@ from ._events import (
     CashSourceFact,
     cash_anchor_facts,
     settled_cash_facts,
-    settled_civil_day,
 )
 from ._facts import (
     AnchorPoint,
@@ -107,7 +106,6 @@ __all__ = [
     "resolve_anchor",
     "settled_cash_facts",
     "settled_cash_leg",
-    "settled_civil_day",
     "sum_projected",
     "walk_cash_ledger",
 ]

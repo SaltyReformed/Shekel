@@ -796,12 +796,12 @@ class TestPropertyEquityChartProducer:
             create_settled_transfer(
                 seed_user, db.session, seed_user["account"], loan,
                 seed_periods[1], amount=Decimal("1500.00"),
-                paid_at=settle_instant_on(seed_periods[1].start_date),
+                settled_on=seed_periods[1].start_date,
             )
             create_settled_transfer(
                 seed_user, db.session, seed_user["account"], loan,
                 seed_periods[3], amount=Decimal("1500.00"),
-                paid_at=settle_instant_on(seed_periods[3].start_date),
+                settled_on=seed_periods[3].start_date,
             )
             db.session.commit()
 

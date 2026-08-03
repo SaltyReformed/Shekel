@@ -157,7 +157,7 @@ def _settle_one_payment(seed_user, loan_account, period, auth_client):
     """
     create_settled_transfer(
         seed_user, db.session, seed_user["account"], loan_account, period,
-        amount=FIXED_PI, paid_at=settle_instant_on(period.start_date),
+        amount=FIXED_PI, settled_on=period.start_date,
     )
     db.session.expire_all()
 

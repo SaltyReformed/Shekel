@@ -727,7 +727,7 @@ class TestBalanceSheetTab:
             create_settled_cash_transaction(
                 seed_user, db.session, seed_periods[0], Decimal("500.00"),
                 is_income=True, name="Paycheck",
-                paid_at=datetime(2026, 2, 15, 12, tzinfo=timezone.utc),
+                settled_on=date(2026, 2, 15),
             )
             db.session.commit()
 
@@ -1458,9 +1458,7 @@ class TestCalendarFlowStrip:
             create_settled_cash_transaction(
                 seed_user, db.session, seed_periods[0], Decimal("600.00"),
                 name="Trough Expense",
-                paid_at=datetime.combine(
-                    date(2026, 1, 5), time(12, 0), tzinfo=timezone.utc,
-                ),
+                settled_on=date(2026, 1, 5),
             )
             db.session.commit()
 
@@ -1510,9 +1508,7 @@ class TestCalendarFlowStrip:
             create_settled_cash_transaction(
                 seed_user, db.session, seed_periods[0], Decimal("1600.00"),
                 name="Overdraft Expense",
-                paid_at=datetime.combine(
-                    date(2026, 1, 5), time(12, 0), tzinfo=timezone.utc,
-                ),
+                settled_on=date(2026, 1, 5),
             )
             db.session.commit()
 

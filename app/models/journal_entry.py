@@ -167,13 +167,14 @@ class JournalEntry(UserScopedMixin, CreatedAtMixin, db.Model):
     # pylint: enable=duplicate-code
     # Civil date of the confirmed event, in the USER's timezone (ruling
     # R-DH (b)).  Not derivable from ``pay_period_id`` (a period spans 14
-    # days), so it is stored, not computed.  A source entry takes the day its
-    # ``paid_at`` falls on, falling back UNCONVERTED to the period start when a
-    # historical settled row has none; an anchor correction takes the
-    # assertion's stored ``observed_on``.  It was the UTC civil day until
-    # 2026-07-31 -- the Commit-3 backfill's
-    # ``COALESCE((paid_at AT TIME ZONE 'UTC')::date, start_date)`` -- which put
-    # a late-evening Eastern event on the next day's entry.
+    # days), so it is stored, not computed.  A source entry takes the source
+    # row's stored ``transactions.settled_on``; an anchor correction takes the
+    # assertion's stored ``observed_on``.  BOTH are now stored facts read
+    # through one accessor rather than days derived from an instant -- the
+    # source side became one at plan step X-f1 (ruling R-EC), the anchor side
+    # at step 2.  It was the UTC civil day until 2026-07-31 (the Commit-3
+    # backfill's ``COALESCE((paid_at AT TIME ZONE 'UTC')::date, start_date)``),
+    # which put a late-evening Eastern event on the next day's entry.
     entry_date = db.Column(db.Date, nullable=False)
     # The KIND of source event (ref.posting_sources).  RESTRICT: the seeded
     # rows are non-removable application invariants -- a successful delete

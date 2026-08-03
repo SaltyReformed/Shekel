@@ -54,12 +54,12 @@ from app.models.transaction import Transaction
 from app.services import ledger_account_service
 from app.services.posting_service import (
     _MAX_DESCRIPTION_LENGTH,
-    _civil_settle_date,
     _ledger_account_for,
     emit_keyed_delta_entries,
 )
 
 from app.services._posting_reconcile import delta_legs, summed_posting_legs
+from app.utils.balance_predicates import settled_day
 
 from app.services.loan_ledger import (
     LoanPaymentSplit,
@@ -253,7 +253,7 @@ def _reconcile_loan_payment(
     2026-07-02 review's R2 attribution rule, per-date since plan step E1a): a
     reverted-and-moved payment's stale correction reverses into its ORIGINAL
     period, never the shadow's new one, so the net-zero pair cannot straddle
-    periods.  The date key is what closes finding N-13: a settled ``paid_at``
+    periods.  The date key is what closes finding N-13: a settled ``settled_on``
     edit moves the shadow's settle date, the old-dated correction becomes a
     posted key with no target (reversed at its own date), the new date posts
     fresh -- converging in ONE pass, so a repeat sync writes nothing and the
@@ -278,7 +278,7 @@ def _reconcile_loan_payment(
     if target:
         targets[(
             shadow.pay_period_id,
-            _civil_settle_date(shadow.paid_at, shadow.pay_period),
+            settled_day(shadow.id, shadow.settled_on),
         )] = target
     posted = _posted_loan_payment_legs(shadow.id)
     legs_by_key = {

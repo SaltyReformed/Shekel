@@ -149,11 +149,11 @@ class TestTheSubtotalsCountEveryAttributedRow:
         restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[2], Decimal("500.00"),
-            is_income=True, paid_at=_instant(2026, 2, 3), name="paycheck",
+            is_income=True, settled_on=date(2026, 2, 3), name="paycheck",
         )
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[2], Decimal("200.00"),
-            paid_at=_instant(2026, 2, 5), name="rent",
+            settled_on=date(2026, 2, 5), name="rent",
         )
         add_txn(db.session, seed_user, seed_periods[2], "bill", "75.00")
         db.session.commit()
@@ -217,7 +217,7 @@ class TestTheSubtotalsCountEveryAttributedRow:
         restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
         txn = create_settled_cash_transaction(
             seed_user, db.session, seed_periods[2], Decimal("200.00"),
-            paid_at=_instant(2026, 2, 5), name="Groceries",
+            settled_on=date(2026, 2, 5), name="Groceries",
         )
         for amount, is_credit in (
             (Decimal("120.00"), False), (Decimal("80.00"), True),
@@ -264,7 +264,7 @@ class TestTheSubtotalsCountEveryAttributedRow:
         txn = create_settled_cash_transaction(
             seed_user, db.session, seed_periods[2], Decimal("80.00"),
             actual_amount=Decimal("50.00"),
-            paid_at=_instant(2026, 2, 5), name="Groceries",
+            settled_on=date(2026, 2, 5), name="Groceries",
         )
         db.session.add(TransactionEntry(
             transaction_id=txn.id,
@@ -367,7 +367,7 @@ class TestTheRemainderHoldsWhatTheSubtotalsCannot:
         restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[3], Decimal("300.00"),
-            paid_at=_instant(2026, 3, 20), name="late rent",
+            settled_on=date(2026, 3, 20), name="late rent",
         )
         db.session.commit()
 
@@ -451,7 +451,7 @@ class TestTheRemainderHoldsWhatTheSubtotalsCannot:
         restamp_opening_assertion(db.session, account, _instant(2026, 1, 5))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[0], Decimal("400.00"),
-            paid_at=_instant(2026, 1, 3), name="pre-opening spend",
+            settled_on=date(2026, 1, 3), name="pre-opening spend",
         )
         db.session.commit()
 
@@ -537,15 +537,15 @@ class TestTheIdentityHoldsOnEveryPeriod:
         restamp_opening_assertion(db.session, account, _instant(2026, 1, 5))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[0], Decimal("400.00"),
-            paid_at=_instant(2026, 1, 3), name="pre-opening spend",
+            settled_on=date(2026, 1, 3), name="pre-opening spend",
         )
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[2], Decimal("1800.00"),
-            is_income=True, paid_at=_instant(2026, 2, 3), name="paycheck",
+            is_income=True, settled_on=date(2026, 2, 3), name="paycheck",
         )
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[3], Decimal("300.00"),
-            paid_at=_instant(2026, 3, 20), name="late rent",
+            settled_on=date(2026, 3, 20), name="late rent",
         )
         append_balance_assertion(
             db.session, account, seed_periods[4], Decimal("1500.00"),
@@ -671,7 +671,7 @@ class TestTheIdentityHoldsOnEveryPeriod:
         restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[0], Decimal("250.00"),
-            paid_at=_instant(2026, 1, 20), name="settled next period",
+            settled_on=date(2026, 1, 20), name="settled next period",
         )
         db.session.commit()
 
@@ -743,7 +743,7 @@ class TestTheIdentityHoldsOnEveryPeriod:
         restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[0], Decimal("180.00"),
-            paid_at=_instant(2026, 2, 5), name="budgeted two columns back",
+            settled_on=date(2026, 2, 5), name="budgeted two columns back",
         )
         db.session.commit()
 

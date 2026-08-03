@@ -40,7 +40,7 @@ implementation fails rather than a comment asserting it:
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
-from app.utils.dates import DISPLAY_TIMEZONE
+from app.utils.dates import display_today, DISPLAY_TIMEZONE
 from app.enums import StatusEnum
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
@@ -81,7 +81,7 @@ def _instant(year, month, day, hour=0, minute=0, second=0):
 
     **It read them as UTC until ruling R-DH (b)** (2026-07-31), and the default
     ``hour=0`` then meant midnight UTC -- 7pm or 8pm the PREVIOUS Eastern day.
-    So a fixture writing ``_instant(2026, 1, 15)`` to mean "this settled on the
+    So a fixture writing ``date(2026, 1, 15)`` to mean "this settled on the
     15th" pinned an event the fold correctly places on the 14th, and five tests
     in this class asserted figures for a day their own setup had not built.
     Reading the arguments as Eastern makes the helper mean what every call site
@@ -136,10 +136,10 @@ class TestTheOpeningMovesIntoTheSeed:
         and the zero-seeded prefix (-$500.00, the leaf's own partial sum).
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        _opened_at(account, _instant(2026, 2, 1))
+        _opened_at(account, date(2026, 2, 1))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[0], Decimal("500.00"),
-            paid_at=_instant(2026, 1, 15), name="pre-opening",
+            settled_on=date(2026, 1, 15), name="pre-opening",
         )
         db.session.commit()
 
@@ -183,7 +183,7 @@ class TestTheOpeningMovesIntoTheSeed:
             create_settled_cash_transaction(
                 seed_user, db.session, seed_periods[7], amount,
                 account=account, is_income=is_income,
-                paid_at=_instant(2026, 4, day), name=f"apr-{day}",
+                settled_on=date(2026, 4, day), name=f"apr-{day}",
             )
         db.session.commit()
 
@@ -219,7 +219,7 @@ class TestTheOpeningMovesIntoTheSeed:
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[6], Decimal("500.00"),
             account=account, is_income=True,
-            paid_at=_instant(2026, 3, 27), name="deposit",
+            settled_on=date(2026, 3, 27), name="deposit",
         )
         db.session.commit()
 
@@ -252,18 +252,18 @@ class TestTheOpeningMovesIntoTheSeed:
         EXCEPT the first, where it answers -$500.00.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        _opened_at(account, _instant(2026, 2, 1))
+        _opened_at(account, date(2026, 2, 1))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[0], Decimal("500.00"),
-            paid_at=_instant(2026, 1, 15), name="pre-opening",
+            settled_on=date(2026, 1, 15), name="pre-opening",
         )
         append_balance_assertion(
             db.session, account, seed_periods[3], Decimal("2000.00"),
-            _instant(2026, 3, 1),
+            date(2026, 3, 1),
         )
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[6], Decimal("250.00"),
-            paid_at=_instant(2026, 4, 1), name="post",
+            settled_on=date(2026, 4, 1), name="post",
         )
         db.session.commit()
 
@@ -360,7 +360,7 @@ class TestSettledMoneyRidesOnTheAssertionItFollowed:
         create_settled_transfer(
             seed_user, db.session, money_market, seed_user["account"],
             seed_periods[6], amount=Decimal("2000.00"),
-            paid_at=_instant(2026, 4, 1, 19, 47, 44),
+            settled_on=date(2026, 4, 1),
         )
         db.session.commit()
 
@@ -391,7 +391,7 @@ class TestSettledMoneyRidesOnTheAssertionItFollowed:
         _opened_at(account, _instant(2026, 1, 1))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[4], Decimal("50.00"),
-            paid_at=_instant(2026, 3, 1, 12, 0, 0), name="earlier",
+            settled_on=date(2026, 3, 1), name="earlier",
         )
         append_balance_assertion(
             db.session, account, seed_periods[4], Decimal("2932.41"),
@@ -425,7 +425,7 @@ class TestSettledMoneyRidesOnTheAssertionItFollowed:
         _opened_at(account, _instant(2026, 1, 1))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[4], Decimal("40.00"),
-            paid_at=_instant(2026, 3, 1, 9, 0, 0), name="before",
+            settled_on=date(2026, 3, 1), name="before",
         )
         append_balance_assertion(
             db.session, account, seed_periods[4], Decimal("2932.41"),
@@ -433,7 +433,7 @@ class TestSettledMoneyRidesOnTheAssertionItFollowed:
         )
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[4], Decimal("60.00"),
-            paid_at=_instant(2026, 3, 1, 20, 0, 0), name="after",
+            settled_on=date(2026, 3, 1), name="after",
         )
         db.session.commit()
 
@@ -465,15 +465,15 @@ class TestEveryAssertionIsReplayed:
         _opened_at(account, _instant(2026, 1, 1))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[2], Decimal("200.00"),
-            paid_at=_instant(2026, 2, 1), name="feb spend",
+            settled_on=date(2026, 2, 1), name="feb spend",
         )
         append_balance_assertion(
             db.session, account, seed_periods[4], Decimal("900.00"),
-            _instant(2026, 3, 1),
+            date(2026, 3, 1),
         )
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[6], Decimal("300.00"),
-            paid_at=_instant(2026, 4, 1), name="apr spend",
+            settled_on=date(2026, 4, 1), name="apr spend",
         )
         append_balance_assertion(
             db.session, account, seed_periods[8], Decimal("500.00"),
@@ -531,7 +531,7 @@ class TestThePlannedTier:
         )
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[6], Decimal("108.15"),
-            paid_at=_instant(2026, 4, 2, 13, 7, 11), name="settled late",
+            settled_on=date(2026, 4, 2), name="settled late",
         )
         add_txn(
             db.session, seed_user, seed_periods[6], "overdue bill", "50.00",
@@ -851,10 +851,10 @@ class TestTotality:
         the day before.  Hand-computed and identical across all three.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        _opened_at(account, _instant(2026, 2, 1))
+        _opened_at(account, date(2026, 2, 1))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[0], Decimal("500.00"),
-            paid_at=_instant(2026, 1, 15), name="pre-opening",
+            settled_on=date(2026, 1, 15), name="pre-opening",
         )
         db.session.commit()
 
@@ -937,7 +937,7 @@ class TestTotality:
         _opened_at(card, _instant(2026, 1, 1))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[4], Decimal("75.00"),
-            account=card, paid_at=_instant(2026, 3, 1), name="charge",
+            account=card, settled_on=date(2026, 3, 1), name="charge",
         )
         db.session.commit()
 
@@ -1135,11 +1135,11 @@ def _build_drift_shape(db_session, seed_user, periods):
         income_at, expense_at = _drift_settle_instants(period, index)
         create_settled_cash_transaction(
             seed_user, db_session, period, _DRIFT_INCOME, is_income=True,
-            name=f"paycheck p{index}", paid_at=income_at,
+            name=f"paycheck p{index}", settled_on=income_at,
         )
         create_settled_cash_transaction(
             seed_user, db_session, period, _DRIFT_EXPENSE,
-            name=f"rent p{index}", paid_at=expense_at,
+            name=f"rent p{index}", settled_on=expense_at,
             actual_amount=(
                 _DRIFT_ACTUAL_EXPENSE if index == _DRIFT_ACTUAL_INDEX else None
             ),

@@ -677,7 +677,7 @@ class TestUpdateTransfer:
             )
             assert len(shadows) == 2
             for s in shadows:
-                assert s.paid_at is not None, (
+                assert s.settled_on is not None, (
                     f"Shadow {s.id} has NULL paid_at after settle "
                     f"without explicit kwarg; defense-in-depth failed."
                 )
@@ -688,7 +688,7 @@ class TestUpdateTransfer:
         """F-048 / C-22: explicit paid_at takes precedence over the default.
 
         The defense-in-depth must never overwrite an explicit caller
-        value -- including ``paid_at=None``, which the
+        value -- including ``settled_on=None``, which the
         ``transactions.update_transaction`` shadow path passes when
         reverting from a settled status to Projected.
         """
@@ -700,11 +700,11 @@ class TestUpdateTransfer:
                 db.session.query(Status).filter_by(name="Projected").one()
             )
 
-            # Step 1: settle with explicit paid_at=None.  The default
+            # Step 1: settle with explicit settled_on=None.  The default
             # would have set now(); the explicit None must win.
             transfer_service.update_transfer(
                 xfer.id, td["user"].id,
-                status_id=done_status.id, paid_at=None,
+                status_id=done_status.id, settled_on=None,
             )
             db.session.flush()
             shadows = (
@@ -713,8 +713,8 @@ class TestUpdateTransfer:
                 .all()
             )
             for s in shadows:
-                assert s.paid_at is None, (
-                    "Explicit paid_at=None was overwritten by "
+                assert s.settled_on is None, (
+                    "Explicit settled_on=None was overwritten by "
                     "defense-in-depth default."
                 )
 
@@ -755,7 +755,7 @@ class TestUpdateTransfer:
                 .all()
             )
             for s in shadows:
-                assert s.paid_at is not None
+                assert s.settled_on is not None
 
             # Revert to Projected with no explicit paid_at.
             transfer_service.update_transfer(
@@ -768,7 +768,7 @@ class TestUpdateTransfer:
                 .all()
             )
             for s in shadows:
-                assert s.paid_at is None, (
+                assert s.settled_on is None, (
                     f"Shadow {s.id} retained stale paid_at after "
                     f"revert to Projected; the F-048 invariant is "
                     f"violated."
@@ -1195,9 +1195,9 @@ class TestRestoreTransfer:
             xfer = _create_basic_transfer(td)
             xfer_id = xfer.id
             paid_id = ref_cache.status_id(StatusEnum.DONE)
-            real_settle = datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc)
+            real_settle = date(2026, 3, 20)
             transfer_service.update_transfer(
-                xfer_id, td["user"].id, status_id=paid_id, paid_at=real_settle,
+                xfer_id, td["user"].id, status_id=paid_id, settled_on=real_settle,
             )
             transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
             db.session.flush()
@@ -1209,16 +1209,16 @@ class TestRestoreTransfer:
                 .filter_by(transfer_id=xfer_id).order_by(Transaction.id).all()
             )
             drifted.status_id = ref_cache.status_id(StatusEnum.PROJECTED)
-            drifted.paid_at = None
+            drifted.settled_on = None
             db.session.flush()
-            assert sibling.paid_at == real_settle
+            assert sibling.settled_on == real_settle
 
             transfer_service.restore_transfer(xfer_id, td["user"].id)
             db.session.flush()
             db.session.refresh(drifted)
 
-            assert drifted.paid_at == real_settle, (
-                f"the repair invented a settle day: {drifted.paid_at} "
+            assert drifted.settled_on == real_settle, (
+                f"the repair invented a settle day: {drifted.settled_on} "
                 f"instead of the sibling's {real_settle}"
             )
 
@@ -1246,7 +1246,7 @@ class TestRestoreTransfer:
                 .filter_by(transfer_id=xfer_id).order_by(Transaction.id).first()
             )
             drifted.status_id = ref_cache.status_id(StatusEnum.DONE)
-            drifted.paid_at = datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc)
+            drifted.settled_on = date(2026, 3, 20)
             db.session.flush()
 
             transfer_service.restore_transfer(xfer_id, td["user"].id)
@@ -1254,8 +1254,8 @@ class TestRestoreTransfer:
             db.session.refresh(drifted)
 
             assert drifted.status_id == xfer.status_id
-            assert drifted.paid_at is None, (
-                f"a Projected shadow kept a payment time: {drifted.paid_at}"
+            assert drifted.settled_on is None, (
+                f"a Projected shadow kept a payment time: {drifted.settled_on}"
             )
 
     def test_unrepairable_status_drift_is_refused(
@@ -1799,7 +1799,7 @@ class TestDueDateAndPaidAtShadows:
 
             now = datetime.now(timezone.utc)
             transfer_service.update_transfer(
-                xfer.id, td["user"].id, paid_at=now
+                xfer.id, td["user"].id, settled_on=now
             )
             db.session.flush()
 
@@ -1810,7 +1810,7 @@ class TestDueDateAndPaidAtShadows:
             )
             assert len(shadows) == 2
             for s in shadows:
-                assert s.paid_at is not None
+                assert s.settled_on is not None
 
     def test_paid_at_transfer_shadow_revert(self, app, db, transfer_data):
         """Setting paid_at then reverting to None clears paid_at on both shadows."""
@@ -1824,7 +1824,7 @@ class TestDueDateAndPaidAtShadows:
             # Set paid_at.
             now = datetime.now(timezone.utc)
             transfer_service.update_transfer(
-                xfer.id, td["user"].id, paid_at=now
+                xfer.id, td["user"].id, settled_on=now
             )
             db.session.flush()
 
@@ -1835,11 +1835,11 @@ class TestDueDateAndPaidAtShadows:
                 .all()
             )
             for s in shadows:
-                assert s.paid_at is not None
+                assert s.settled_on is not None
 
             # Revert to None.
             transfer_service.update_transfer(
-                xfer.id, td["user"].id, paid_at=None
+                xfer.id, td["user"].id, settled_on=None
             )
             db.session.flush()
 
@@ -1849,17 +1849,17 @@ class TestDueDateAndPaidAtShadows:
                 .all()
             )
             for s in shadows:
-                assert s.paid_at is None
+                assert s.settled_on is None
 
     def test_shadow_paid_at_null_propagation(self, app, db, transfer_data):
-        """update_transfer with paid_at=None sets both shadows to None."""
+        """update_transfer with settled_on=None sets both shadows to None."""
         with app.app_context():
             td = transfer_data
             xfer = _create_basic_transfer(td)
             db.session.flush()
 
             transfer_service.update_transfer(
-                xfer.id, td["user"].id, paid_at=None
+                xfer.id, td["user"].id, settled_on=None
             )
             db.session.flush()
 
@@ -1870,7 +1870,7 @@ class TestDueDateAndPaidAtShadows:
             )
             assert len(shadows) == 2
             for s in shadows:
-                assert s.paid_at is None
+                assert s.settled_on is None
 
 
 class TestTheStatusMirrorIsAtomic:

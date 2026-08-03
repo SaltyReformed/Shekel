@@ -128,9 +128,7 @@ def _settle(seed_user, loan, period, cash=Decimal("1000.00"), settled_on=None):
     return create_settled_transfer(
         seed_user, _db.session, seed_user["account"], loan, period,
         amount=cash,
-        paid_at=settle_instant_on(
-            period.start_date if settled_on is None else settled_on,
-        ),
+        settled_on=period.start_date if settled_on is None else settled_on,
     )
 
 
@@ -594,7 +592,7 @@ class TestConfirmedViewRowEconomics:
             reverted = create_settled_transfer(
                 seed_user, db.session, seed_user["account"], loan,
                 seed_periods[2], amount=Decimal("1000.00"),
-                paid_at=datetime(2026, 2, 20, 12, 0, tzinfo=timezone.utc),
+                settled_on=date(2026, 2, 20),
             )
             db.session.commit()
             transfer_service.update_transfer(
@@ -1119,7 +1117,7 @@ class TestRawLoanTransactionIsInvisibleToTheWalk:
             create_settled_cash_transaction(
                 seed_user, db.session, seed_periods[_P1], Decimal("300.00"),
                 account=loan, name="Typed On Loan",
-                paid_at=settle_instant_on(seed_periods[_P1].start_date),
+                settled_on=seed_periods[_P1].start_date,
             )
             db.session.commit()
 

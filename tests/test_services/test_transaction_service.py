@@ -145,7 +145,7 @@ class TestSettleFromEntriesExpense:
             # 150 + 250 = 400
             assert txn.actual_amount == Decimal("400.00")
             assert txn.status_id == ref_cache.status_id(StatusEnum.DONE)
-            assert txn.paid_at is not None
+            assert txn.settled_on is not None
 
     def test_expense_includes_credit_entries(
         self, app, db, seed_user, seed_periods,
@@ -205,7 +205,7 @@ class TestSettleFromEntriesExpense:
             assert txn.actual_amount == Decimal("0.00")
             assert txn.estimated_amount == Decimal("100.00")
             assert txn.status_id == ref_cache.status_id(StatusEnum.DONE)
-            assert txn.paid_at is not None
+            assert txn.settled_on is not None
 
     def test_expense_overspend_records_full_actual(
         self, app, db, seed_user, seed_periods,
@@ -283,7 +283,7 @@ class TestSettleFromEntriesIncome:
             # 1000 + 1500 = 2500
             assert txn.actual_amount == Decimal("2500.00")
             assert txn.status_id == ref_cache.status_id(StatusEnum.RECEIVED)
-            assert txn.paid_at is not None
+            assert txn.settled_on is not None
 
 
 # ── paid_at Handling ─────────────────────────────────────────────────
@@ -293,7 +293,7 @@ class TestSettleFromEntriesPaidAt:
     """The helper accepts an explicit paid_at and falls back to db.func.now()."""
 
     def test_default_paid_at_is_set(self, app, db, seed_user, seed_periods):
-        """Calling without paid_at sets txn.paid_at to a real timestamp.
+        """Calling without paid_at sets txn.settled_on to a real timestamp.
 
         The default uses ``db.func.now()`` which becomes a SQL ``NOW()``
         evaluated at flush time; after commit the column holds a
@@ -312,7 +312,7 @@ class TestSettleFromEntriesPaidAt:
             db.session.commit()
 
             db.session.refresh(txn)
-            assert isinstance(txn.paid_at, datetime)
+            assert isinstance(txn.settled_on, datetime)
 
     def test_explicit_paid_at_is_preserved(
         self, app, db, seed_user, seed_periods,
@@ -333,12 +333,12 @@ class TestSettleFromEntriesPaidAt:
             db.session.flush()
 
             explicit = datetime(2026, 3, 15, 12, 0, 0, tzinfo=timezone.utc)
-            transaction_service.settle_from_entries(txn, paid_at=explicit)
+            transaction_service.settle_from_entries(txn, settled_on=explicit)
             db.session.commit()
 
             db.session.refresh(txn)
             # PostgreSQL stores TIMESTAMP WITH TIME ZONE -- compare in UTC.
-            assert txn.paid_at == explicit
+            assert txn.settled_on == explicit
 
 
 # ── Precondition Tests ───────────────────────────────────────────────

@@ -66,11 +66,11 @@ def _make_split_loan(seed_user, db_session, *, escrow_annual=None, name="Split L
     )
 
 
-def _settle(seed_user, db_session, loan, period, cash, *, paid_at):
+def _settle(seed_user, db_session, loan, period, cash, *, settled_on):
     """Settle one Checking -> loan payment (auto-posts its ledger split)."""
     return create_settled_transfer(
         seed_user, db_session, seed_user["account"], loan, period,
-        amount=cash, paid_at=paid_at,
+        amount=cash, settled_on=settled_on,
     )
 
 
@@ -97,7 +97,7 @@ class TestConfirmedLoanPaymentHistory:
             loan = _make_split_loan(seed_user, db.session)
             _settle(
                 seed_user, db.session, loan, seed_periods[_P1],
-                Decimal("1000.00"), paid_at=_paid_on(2026, 6, 1),
+                Decimal("1000.00"), settled_on=date(2026, 6, 1),
             )
             db.session.commit()
 
@@ -125,7 +125,7 @@ class TestConfirmedLoanPaymentHistory:
             for period in (seed_periods[_P1], seed_periods[_P2], seed_periods[_P3]):
                 _settle(
                     seed_user, db.session, loan, period, Decimal("1000.00"),
-                    paid_at=_paid_on(2026, 6, 1),
+                    settled_on=date(2026, 6, 1),
                 )
             db.session.commit()
 
@@ -153,7 +153,7 @@ class TestConfirmedLoanPaymentHistory:
             )
             _settle(
                 seed_user, db.session, loan, seed_periods[_P1],
-                Decimal("1100.00"), paid_at=_paid_on(2026, 6, 1),
+                Decimal("1100.00"), settled_on=date(2026, 6, 1),
             )
             db.session.commit()
 
@@ -175,7 +175,7 @@ class TestConfirmedLoanPaymentHistory:
             loan = _make_split_loan(seed_user, db.session)
             _settle(
                 seed_user, db.session, loan, seed_periods[_P1],
-                Decimal("1500.00"), paid_at=_paid_on(2026, 6, 1),
+                Decimal("1500.00"), settled_on=date(2026, 6, 1),
             )
             db.session.commit()
 
@@ -205,7 +205,7 @@ class TestConfirmedLoanPaymentHistory:
             for period in (seed_periods[_P1], seed_periods[_P2]):
                 _settle(
                     seed_user, db.session, loan, period, Decimal("1000.00"),
-                    paid_at=_paid_on(2026, 6, 1),
+                    settled_on=date(2026, 6, 1),
                 )
             db.session.commit()
 
@@ -235,7 +235,7 @@ class TestConfirmedLoanPaymentHistory:
             settled = date(2026, 6, 1)
             _settle(
                 seed_user, db.session, loan, seed_periods[_P3],
-                Decimal("1000.00"), paid_at=_paid_on(2026, 6, 1),
+                Decimal("1000.00"), settled_on=date(2026, 6, 1),
             )
             db.session.commit()
 
@@ -256,7 +256,7 @@ class TestConfirmedLoanPaymentHistory:
             loan = _make_split_loan(seed_user, db.session)
             xfer = _settle(
                 seed_user, db.session, loan, seed_periods[_P1],
-                Decimal("1000.00"), paid_at=_paid_on(2026, 6, 1),
+                Decimal("1000.00"), settled_on=date(2026, 6, 1),
             )
             db.session.commit()
             # Revert to Projected through the same chokepoint the route uses.
@@ -392,7 +392,7 @@ class TestLoanBalanceAnchorHistory:
             for period in (seed_periods[_P1], seed_periods[_P2]):
                 _settle(
                     seed_user, db.session, loan, period, Decimal("1000.00"),
-                    paid_at=_paid_on(2026, 6, 1),
+                    settled_on=date(2026, 6, 1),
                 )
             db.session.commit()
 

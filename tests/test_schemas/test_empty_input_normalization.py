@@ -70,7 +70,7 @@ class TestEmptyInputNormalization:
     def test_dump_only_nullable_field_stays_dropped(self):
         """A dump_only field keeps the drop behavior even when nullable.
 
-        ``TransactionUpdateSchema.paid_at`` is ``allow_none`` but
+        ``TransactionUpdateSchema.settled_on`` is ``allow_none`` but
         ``dump_only``: it can never load a value, so mapping its empty
         submit to ``None`` would only hand the loader a key it
         discards.  The pre-change shape (key absent) is preserved.

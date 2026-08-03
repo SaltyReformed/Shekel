@@ -510,7 +510,7 @@ class TestTheProjectionIgnoresTheOrderOfABookkeepingSession:
                 create_settled_cash_transaction(
                     seed_user, _db.session, period, amount,
                     account=anchor_first, name=f"A cleared {index}",
-                    paid_at=noon + timedelta(hours=1 + index),
+                    settled_on=noon + timedelta(hours=1 + index),
                 )
 
             # ORDER B: the same two payments are ticked BEFORE the anchor.
@@ -518,7 +518,7 @@ class TestTheProjectionIgnoresTheOrderOfABookkeepingSession:
                 create_settled_cash_transaction(
                     seed_user, _db.session, period, amount,
                     account=settles_first, name=f"B cleared {index}",
-                    paid_at=noon - timedelta(hours=2 - index),
+                    settled_on=noon - timedelta(hours=2 - index),
                 )
             override_anchor(
                 _db.session, settles_first, period, _ANCHOR,
@@ -638,11 +638,10 @@ class TestTheDeployResyncIsSafeToRunOnEveryDeploy:
             # test.  The journal entry itself is append-only and is not touched.
             _db.session.execute(
                 _db.text(
-                    "UPDATE budget.transactions SET paid_at = :at "
+                    "UPDATE budget.transactions SET settled_on = :day "
                     "WHERE id = :id"
                 ),
-                {"at": settle_instant_on(posted_day - timedelta(days=1)),
-                 "id": txn.id},
+                {"day": posted_day - timedelta(days=1), "id": txn.id},
             )
             _db.session.commit()
             correct_day = posted_day - timedelta(days=1)

@@ -491,29 +491,29 @@ class TestRichFixtureStatements:
                 seed_user, db.session, seed_user["bootstrap_period"],
                 Decimal("3000.00"), account=checking, is_income=True,
                 category=seed_user["categories"]["Salary"],
-                paid_at=_noon(_Y, 3, 10),
+                settled_on=date(_Y, 3, 10),
             )
             create_settled_cash_transaction(
                 seed_user, db.session, seed_user["bootstrap_period"],
                 Decimal("400.00"), account=checking,
                 category=seed_user["categories"]["Groceries"],
-                paid_at=_noon(_Y, 3, 15),
+                settled_on=date(_Y, 3, 15),
             )
             create_settled_cash_transaction(
                 seed_user, db.session, seed_user["bootstrap_period"],
                 Decimal("50.00"), account=checking, category=None,
-                paid_at=_noon(_Y, 3, 20),
+                settled_on=date(_Y, 3, 20),
             )
             create_settled_cash_transaction(
                 seed_user, db.session, seed_user["bootstrap_period"],
                 Decimal("120.00"), account=card,
                 category=seed_user["categories"]["Groceries"],
-                paid_at=_noon(_Y, 3, 16),
+                settled_on=date(_Y, 3, 16),
             )
             create_settled_transfer(
                 seed_user, db.session, checking, savings,
                 seed_user["bootstrap_period"], amount=Decimal("150.00"),
-                paid_at=_noon(_Y, 4, 1),
+                settled_on=date(_Y, 4, 1),
             )
             db.session.commit()
 
@@ -639,11 +639,11 @@ class TestLoanInterestEscrowInStatements:
                 seed_user, db.session, pay_period, Decimal("2000.00"),
                 account=checking, is_income=True,
                 category=seed_user["categories"]["Salary"],
-                paid_at=_noon(_Y, 2, 5),
+                settled_on=date(_Y, 2, 5),
             )
             create_settled_transfer(
                 seed_user, db.session, checking, loan, pay_period,
-                amount=Decimal("1000.00"), paid_at=_noon(_Y, 2, 10),
+                amount=Decimal("1000.00"), settled_on=date(_Y, 2, 10),
             )
             db.session.commit()
 
@@ -745,14 +745,14 @@ class TestAccountingIdentityAtMultipleAsOf:
                 seed_user, db.session, seed_user["bootstrap_period"],
                 Decimal("200.00"), account=savings,
                 category=seed_user["categories"]["Groceries"],
-                paid_at=_noon(_Y, 6, 5),
+                settled_on=date(_Y, 6, 5),
             )
             _true_up_at(savings, "350.00", _noon(_Y, 6, 10))
             create_settled_cash_transaction(
                 seed_user, db.session, seed_user["bootstrap_period"],
                 Decimal("100.00"), account=savings,
                 category=seed_user["categories"]["Groceries"],
-                paid_at=_noon(_Y, 6, 15),
+                settled_on=date(_Y, 6, 15),
             )
             db.session.commit()
 
@@ -829,13 +829,13 @@ class TestArticulation:
                 seed_user, db.session, seed_user["bootstrap_period"],
                 Decimal("800.00"), account=checking, is_income=True,
                 category=seed_user["categories"]["Salary"],
-                paid_at=_noon(_Y, 5, 1),
+                settled_on=date(_Y, 5, 1),
             )
             create_settled_cash_transaction(
                 seed_user, db.session, seed_user["bootstrap_period"],
                 Decimal("300.00"), account=checking,
                 category=seed_user["categories"]["Groceries"],
-                paid_at=_noon(_Y, 5, 2),
+                settled_on=date(_Y, 5, 2),
             )
             _true_up_at(checking, "1600.00", _noon(_Y, 5, 3))
             db.session.commit()
@@ -899,13 +899,13 @@ class TestPeriodVsCalendarAgreement:
                 seed_user, db.session, period, Decimal("500.00"),
                 account=seed_user["account"], is_income=True,
                 category=seed_user["categories"]["Salary"],
-                paid_at=_noon(_Y, 3, 5),
+                settled_on=date(_Y, 3, 5),
             )
             create_settled_cash_transaction(
                 seed_user, db.session, period, Decimal("200.00"),
                 account=seed_user["account"],
                 category=seed_user["categories"]["Groceries"],
-                paid_at=_noon(_Y, 3, 10),
+                settled_on=date(_Y, 3, 10),
             )
             db.session.commit()
 
@@ -960,7 +960,7 @@ class TestRevertAndResidueDropped:
                 seed_user, db.session, seed_user["bootstrap_period"],
                 Decimal("400.00"), account=seed_user["account"],
                 category=seed_user["categories"]["Groceries"],
-                paid_at=_noon(_Y, 7, 1),
+                settled_on=date(_Y, 7, 1),
             )
             db.session.commit()
             # Sanity: it was present before the revert.
@@ -1052,7 +1052,7 @@ class TestRevertAndResidueDropped:
             seed_user, db.session, seed_user["bootstrap_period"],
             Decimal("0.01"), account=account,
             category=seed_user["categories"][category_key],
-            paid_at=_noon(_Y, 1, 1),
+            settled_on=date(_Y, 1, 1),
         )
         db.session.flush()
         ledger_id = (
@@ -1134,7 +1134,7 @@ class TestAttributionEdgeCases:
                 seed_user, db.session, seed_user["bootstrap_period"],
                 Decimal("500.00"), account=seed_user["account"],
                 category=seed_user["categories"]["Groceries"],
-                paid_at=datetime(2099, 1, 1, 1, 5, tzinfo=timezone.utc),
+                settled_on=date(2098, 12, 31),
             )
             db.session.commit()
 
@@ -1179,7 +1179,7 @@ class TestAttributionEdgeCases:
                 seed_user, db.session, period, Decimal("150.00"),
                 account=seed_user["account"],
                 category=seed_user["categories"]["Groceries"],
-                paid_at=None,
+                settled_on=None,
             )
             db.session.commit()
 
@@ -1226,7 +1226,7 @@ class TestAttributionEdgeCases:
                 seed_user, db.session, future_period, Decimal("250.00"),
                 account=seed_user["account"],
                 category=seed_user["categories"]["Groceries"],
-                paid_at=_noon(2099, 11, 20),
+                settled_on=date(2099, 11, 20),
             )
             db.session.commit()
 
@@ -1276,7 +1276,7 @@ class TestDisplayLabels:
                 seed_user, db.session, seed_user["bootstrap_period"],
                 Decimal("100.00"), account=checking,
                 category=seed_user["categories"]["Groceries"],
-                paid_at=_noon(_Y, 3, 15),
+                settled_on=date(_Y, 3, 15),
             )
             db.session.commit()
 
@@ -1321,7 +1321,7 @@ class TestDisplayLabels:
                 seed_user, db.session, seed_user["bootstrap_period"],
                 Decimal("100.00"), account=seed_user["account"],
                 category=seed_user["categories"]["Groceries"],
-                paid_at=_noon(_Y, 3, 15),
+                settled_on=date(_Y, 3, 15),
             )
             db.session.commit()
             groceries = db.session.get(
@@ -1368,7 +1368,7 @@ class TestScenarioAndOwnerIsolation:
                 seed_user, db.session, seed_user["bootstrap_period"],
                 Decimal("70.00"), account=seed_user["account"], scenario=whatif,
                 category=seed_user["categories"]["Groceries"],
-                paid_at=_noon(_Y, 9, 1),
+                settled_on=date(_Y, 9, 1),
             )
             db.session.commit()
 
@@ -1401,14 +1401,14 @@ class TestScenarioAndOwnerIsolation:
                 seed_user, db.session, seed_user["bootstrap_period"],
                 Decimal("60.00"), account=seed_user["account"],
                 category=seed_user["categories"]["Groceries"],
-                paid_at=_noon(_Y, 10, 1),
+                settled_on=date(_Y, 10, 1),
             )
             create_settled_cash_transaction(
                 seed_second_user, db.session,
                 seed_second_user["bootstrap_period"], Decimal("80.00"),
                 account=seed_second_user["account"],
                 category=seed_second_user["categories"]["Groceries"],
-                paid_at=_noon(_Y, 10, 2),
+                settled_on=date(_Y, 10, 2),
             )
             db.session.commit()
 

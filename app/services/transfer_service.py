@@ -26,7 +26,7 @@ Architecture:
 
 import logging
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date
 from decimal import Decimal, InvalidOperation
 
 from app.extensions import db
@@ -62,6 +62,7 @@ from app.services._transfer_validation import (
 from app.services import status_seam
 from app.services.state_machine import verify_transition
 from app.utils.balance_predicates import settled_status_ids
+from app.utils.dates import display_today
 from app.utils.log_events import (
     BUSINESS,
     EVT_TRANSFER_CREATED,
@@ -98,10 +99,10 @@ logger = logging.getLogger(__name__)
 # writes nothing, so listing it costs one idempotent no-op round-trip.
 #
 # The remaining kwargs (``category_id`` / ``name`` / ``notes`` / ``is_override``)
-# move none of these, so they raise no reconcile.  ``paid_at`` is deliberately NOT
-# here: it moves no leg AMOUNT, and an unsettled transfer has no postings to
+# move none of these, so they raise no reconcile.  ``settled_on`` is deliberately
+# NOT here: it moves no leg AMOUNT, and an unsettled transfer has no postings to
 # re-date, so the set stays the cheap always-on pre-filter.  A SETTLED
-# ``paid_at`` edit IS posting-relevant since step E1a -- it moves the day every
+# ``settled_on`` edit IS posting-relevant since step E1a -- it moves the day every
 # posting counts from (the ``entry_date``, step C2's one clock) -- and
 # ``_run_posting_reconciles`` runs the full reconcile for that case explicitly
 # (the per-(period, date) reconcile re-dates the entries, finding N-13) plus the
@@ -200,14 +201,14 @@ class TransferSpec:  # pylint: disable=too-many-instance-attributes
             account names.
         due_date: Optional due date stored on the transfer and mirrored
             to both shadow transactions.
-        paid_at: Optional settle instant for a transfer created ALREADY
+        settled_on: Optional settle DAY for a transfer created ALREADY
             settled (plan step E1a): mirrored to both shadows exactly as
-            the update path's explicit ``paid_at`` is, with the same
-            default -- a born-settled transfer without one settled NOW
-            (the F-048 / C-22 rule).  Meaningless for an unsettled
-            status, so :func:`create_transfer` rejects that combination
-            loudly rather than recording a payment time for a payment
-            that has not happened.
+            the update path's explicit ``settled_on`` is, with the same
+            default -- a born-settled transfer without one settled TODAY
+            (the F-048 / C-22 rule, on the user's clock).  Meaningless for
+            an unsettled status, so :func:`create_transfer` rejects that
+            combination loudly rather than recording a settle day for a
+            payment that has not happened.
     """
 
     user_id: int
@@ -222,7 +223,7 @@ class TransferSpec:  # pylint: disable=too-many-instance-attributes
     transfer_template_id: int | None = None
     name: str | None = None
     due_date: date | None = None
-    paid_at: datetime | None = None
+    settled_on: date | None = None
 
 
 def create_transfer(spec: TransferSpec) -> Transfer:
@@ -277,11 +278,11 @@ def create_transfer(spec: TransferSpec) -> Transfer:
     _get_owned_category(spec.category_id, spec.user_id)
     _get_owned_transfer_template(spec.transfer_template_id, spec.user_id)
     created_status = db.session.get(Status, spec.status_id)
-    if spec.paid_at is not None and not (
+    if spec.settled_on is not None and not (
         created_status is not None and created_status.is_settled
     ):
         raise ValidationError(
-            "paid_at is the settle instant of a transfer created already "
+            "settled_on is the settle day of a transfer created already "
             "settled; a transfer created with an unsettled status has not "
             "been paid, so it cannot carry one."
         )
@@ -329,21 +330,24 @@ def create_transfer(spec: TransferSpec) -> Transfer:
     db.session.flush()
 
     # ── Born-settled coherence (plan step E1a) ─────────────────────
-    # A transfer BORN settled used to book NO cash entry and carry no
-    # ``paid_at`` -- a settled effect the ledger never saw, which the
+    # A transfer BORN settled used to book NO cash entry and carry no settle
+    # day -- a settled effect the ledger never saw, which the
     # checked-projection assert refuses the moment the loan syncs.  So the
-    # create chokepoint applies update_transfer's two settle rules: ``paid_at``
-    # is the caller's explicit instant or now() (the F-048 / C-22 defense --
-    # a transfer created settled settled at creation), and the posting
-    # reconcile runs (the cash entry + the loan genesis reconcile).
-    # ``created_status`` was loaded in the validation block, which also
-    # rejects a ``paid_at`` on an unsettled create before any row exists.
+    # create chokepoint applies update_transfer's two settle rules:
+    # ``settled_on`` is the caller's explicit day or the user's today (the
+    # F-048 / C-22 defense -- a transfer created settled settled at creation),
+    # and the posting reconcile runs (the cash entry + the loan genesis
+    # reconcile).  ``created_status`` was loaded in the validation block, which
+    # also rejects a ``settled_on`` on an unsettled create before any row
+    # exists.  ``display_today()`` rather than the server's day: this value IS
+    # the ``entry_date`` the postings below are filed under (step C2's one
+    # clock), and that day is the user's (ruling R-DH (b)).
     if created_status is not None and created_status.is_settled:
-        settled_ts = (
-            spec.paid_at if spec.paid_at is not None else db.func.now()
+        settled_day = (
+            spec.settled_on if spec.settled_on is not None else display_today()
         )
-        expense_shadow.paid_at = settled_ts
-        income_shadow.paid_at = settled_ts
+        expense_shadow.settled_on = settled_day
+        income_shadow.settled_on = settled_day
         db.session.flush()
         posting_service.sync_transfer_postings(xfer, settled=True)
         _sync_loan_postings_if_loan(xfer)
@@ -409,29 +413,31 @@ def _apply_status_to_all_three(
     for row in rows:
         verify_transition(row, new_status_id)
 
-    # ONE settle instant for the PAIR (Transfer Invariant 3), resolved before
+    # ONE settle DAY for the PAIR (Transfer Invariant 3), resolved before
     # either shadow is written.  The seam's per-row rule is "preserve an
-    # existing instant, else stamp now()", which is right for a lone
-    # transaction and WRONG for a pair: two shadows whose timestamps already
-    # differ would each keep their own, and a pair where only one carries an
-    # instant would have the other stamped with today.  Both outcomes break the
-    # equality ``posting_service._entry_date`` depends on -- it reads the INCOME
-    # shadow's ``paid_at`` and its docstring records that "the two are always
-    # equal because the transfer service mirrors paid_at to both shadows".
-    # Preferring an EXISTING instant over ``now()`` is what stops a repair from
+    # existing day, else stamp today", which is right for a lone transaction and
+    # WRONG for a pair: two shadows whose days already differ would each keep
+    # their own, and a pair where only one carries a day would have the other
+    # stamped with today.  Both outcomes break the equality
+    # ``posting_service._entry_date`` depends on -- it reads the INCOME shadow's
+    # ``settled_on`` and its docstring records that the two are always equal
+    # because the transfer service mirrors the day to both shadows.
+    # Preferring an EXISTING day over today is what stops a repair from
     # inventing a settle day: the sibling already knows when the money moved,
     # and that day is the ``entry_date`` the postings are filed under.
     settled = new_status_id in settled_status_ids()
-    pair_instant = None
+    pair_day = None
     if settled:
-        pair_instant = (
-            expense_shadow.paid_at or income_shadow.paid_at or db.func.now()
+        pair_day = (
+            expense_shadow.settled_on
+            or income_shadow.settled_on
+            or display_today()
         )
     for shadow in (expense_shadow, income_shadow):
         status_seam.apply_status_change(
-            shadow, new_status_id, paid_at=pair_instant,
+            shadow, new_status_id, settled_on=pair_day,
         )
-    # The parent carries no ``paid_at`` column, so it takes no instant.
+    # The parent carries no ``settled_on`` column, so it takes no day.
     status_seam.apply_status_change(xfer, new_status_id)
 
 
@@ -488,29 +494,29 @@ def _reconcile_postings_after_update(xfer: Transfer, updates: dict[str, object])
       a settle / revert / amount / actual / period edit of a loan payment
       re-reconciles that loan's confirmed-payment splits (coupled on the running
       balance) and its opening / true-up anchor corrections.
-    * **Full reconcile on a settled ``paid_at`` edit too (E1a / N-13)**: a
-      ``paid_at`` change moves the day every posting counts from (its
+    * **Full reconcile on a settled ``settled_on`` edit too (E1a / N-13)**: a
+      ``settled_on`` change moves the day every posting counts from (its
       ``entry_date``, step C2's one clock) without changing any leg amount, so
       the per-period reconcile used to write nothing and the entries kept
       their stale dates.  The reconcile is per-(period, DATE) now: the
       old-dated entries reverse at their own date, the effect re-posts at the
       new settle date, and the loan sync's checked-projection assert verifies
       the result -- so the fold and the ledger cannot disagree about WHEN.
-    * **Step-5 account-anchor resync on a settled ``paid_at`` edit (F1)**:
+    * **Step-5 account-anchor resync on a settled ``settled_on`` edit (F1)**:
       resync the two endpoint accounts' anchor corrections so a settled
-      ``paid_at`` move cannot strand a stale anchor correction (their
+      ``settled_on`` move cannot strand a stale anchor correction (their
       reconcile is anchor-walk-derived, not delta-keyed off this transfer).
       Only for a SETTLED transfer (a projected one posts nothing); a no-op for
       a loan endpoint (the account walk skips amortizing accounts).
       ``pay_period_id`` needs no such branch -- it is in
       ``_POSTING_RELEVANT_FIELDS``, so a period move reconciles R2-correctly
       and self-heals via the cash reconcile above.  Fires on ANY settled
-      ``paid_at`` edit, not only a pure one: on the common settle path (status
-      + ``paid_at`` together) the reconcile's tail self-heal already covers
+      ``settled_on`` edit, not only a pure one: on the common settle path (status
+      + ``settled_on`` together) the reconcile's tail self-heal already covers
       both endpoints, so these two idempotent walks are redundant there -- an
       accepted, safe cost.  It is deliberately NOT narrowed to
       ``not needs_reconcile``, because a future COMBINED edit (e.g. ``amount``
-      + ``paid_at``) could move the attribution in a way the delta-keyed
+      + ``settled_on``) could move the attribution in a way the delta-keyed
       self-heal does not cover; an always-correct resync is the point of this
       seam.
 
@@ -519,21 +525,21 @@ def _reconcile_postings_after_update(xfer: Transfer, updates: dict[str, object])
         updates: The ``update_transfer`` kwargs that were applied.
     """
     needs_reconcile = bool(_POSTING_RELEVANT_FIELDS & updates.keys())
-    paid_at_edited = "paid_at" in updates
-    if not (needs_reconcile or paid_at_edited):
+    settled_on_edited = "settled_on" in updates
+    if not (needs_reconcile or settled_on_edited):
         return
     current_status = db.session.get(Status, xfer.status_id)
-    # A settled ``paid_at`` edit moves the day the event counts from (step
+    # A settled ``settled_on`` edit moves the day the event counts from (step
     # C2's one clock), which since step E1a IS a posting-relevant change: the
     # per-(period, date) reconcile reverses the stale-dated entry and re-posts
     # at the new settle date (finding N-13), and the loan sync's
     # checked-projection assert then verifies the ledger against the walk.
-    if needs_reconcile or (paid_at_edited and current_status.is_settled):
+    if needs_reconcile or (settled_on_edited and current_status.is_settled):
         posting_service.sync_transfer_postings(
             xfer, settled=current_status.is_settled,
         )
         _sync_loan_postings_if_loan(xfer)
-    if paid_at_edited and current_status.is_settled:
+    if settled_on_edited and current_status.is_settled:
         account_posting_service.sync_account_anchor_postings(
             xfer.from_account_id, xfer.scenario_id,
         )
@@ -560,7 +566,7 @@ def update_transfer(transfer_id, user_id, **kwargs):
                           column).
         due_date       -- Due date for the transfer and both shadows
                           (Date or None).
-        paid_at        -- Payment timestamp for both shadows
+        settled_on     -- The civil day the money moved, for both shadows
                           (DateTime or None).
         is_override    -- Override flag (transfer and both shadows).
 
@@ -599,9 +605,9 @@ def update_transfer(transfer_id, user_id, **kwargs):
     # ── status_id ──────────────────────────────────────────────────
     # All three transitions verified before any propagation, then applied
     # through the ONE status seam, which owns the F-048 defense-in-depth
-    # ``paid_at`` synchronization and the ``status`` expire; see
+    # ``settled_on`` synchronization and the ``status`` expire; see
     # :func:`_apply_status_to_all_three` for the full audit rationale.  An
-    # explicit ``paid_at`` in this same call is applied by its own branch
+    # explicit ``settled_on`` in this same call is applied by its own branch
     # below and wins over whatever the seam derived here.
     if "status_id" in kwargs:
         _apply_status_to_all_three(
@@ -654,11 +660,15 @@ def update_transfer(transfer_id, user_id, **kwargs):
         expense_shadow.due_date = new_due
         income_shadow.due_date = new_due
 
-    # ── paid_at ───────────────────────────────────────────────────
-    if "paid_at" in kwargs:
-        new_paid_at = kwargs["paid_at"]
-        expense_shadow.paid_at = new_paid_at
-        income_shadow.paid_at = new_paid_at
+    # ── settled_on ────────────────────────────────────────────────
+    # The ONE caller that legitimately supplies a day is the user CORRECTING
+    # it (ruling R-ED).  Both mark-done routes used to pass one and did not
+    # mean it: their value overrode the seam's preserve rule and re-dated a
+    # replayed settle (finding N-178, plan step X-f1b0).
+    if "settled_on" in kwargs:
+        new_settled_on = kwargs["settled_on"]
+        expense_shadow.settled_on = new_settled_on
+        income_shadow.settled_on = new_settled_on
 
     # ── is_override ────────────────────────────────────────────────
     if "is_override" in kwargs:
@@ -799,16 +809,16 @@ def restore_transfer(transfer_id, user_id):
     ``Transfer`` parent has no canonical column for it, so there is no value
     to re-sync against.
 
-    **``paid_at`` IS now maintained, and it is not the parent that supplies
+    **``settled_on`` IS now maintained, and it is not the parent that supplies
     it** (plan step X-aj1).  Repairing a status through the one seam brings
-    the seam's timestamp rule with it, so a shadow repaired INTO a settled
-    status must carry an instant and one repaired out of it must not.  The
-    instant comes from the SIBLING shadow -- Transfer Invariant 3 says the
-    pair is equal, and the sibling already records when the money moved.
-    Taking it from there rather than from ``now()`` is what stops a repair
-    from inventing a settle day: since plan step E1a that civil day is the
-    ``entry_date`` the re-posted entry below is filed under, so a fabricated
-    instant would move money on what is supposed to be a repair.
+    the seam's dating rule with it, so a shadow repaired INTO a settled
+    status must carry a day and one repaired out of it must not.  The day
+    comes from the SIBLING shadow -- Transfer Invariant 3 says the pair is
+    equal, and the sibling already records when the money moved.  Taking it
+    from there rather than from today is what stops a repair from inventing a
+    settle day: since plan step E1a that civil day is the ``entry_date`` the
+    re-posted entry below is filed under, so a fabricated day would move money
+    on what is supposed to be a repair.
 
     Idempotent: calling on an already-active transfer is a no-op.
 

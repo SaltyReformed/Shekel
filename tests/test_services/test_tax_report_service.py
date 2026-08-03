@@ -700,7 +700,7 @@ class TestScheduleAMortgageInterest:
         create_settled_transfer(
             seed_user, db.session, seed_user["account"], loan,
             periods[1], amount=Decimal("1000.00"),
-            paid_at=datetime(2025, 12, 20, 12, 0, tzinfo=timezone.utc),
+            settled_on=date(2025, 12, 20),
         )
         db.session.commit()
 

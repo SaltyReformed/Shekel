@@ -221,7 +221,7 @@ def _correction_net_in_period(account_id, scenario_id, source_enum, period_id):
     )
 
 
-def _settle_expense(seed_user, account, amount, paid_at):
+def _settle_expense(seed_user, account, amount, settled_on):
     """Settle an expense on *account* at a pinned ``paid_at``; return it.
 
     ``paid_at`` may be an instant or None (the period-start fallback under
@@ -234,7 +234,7 @@ def _settle_expense(seed_user, account, amount, paid_at):
     """
     return create_settled_cash_transaction(
         seed_user, _db.session, seed_user["bootstrap_period"],
-        Decimal(str(amount)), account=account, paid_at=paid_at,
+        Decimal(str(amount)), account=account, settled_on=settled_on,
     )
 
 
@@ -294,7 +294,7 @@ class TestWalkAccountLedger:
             account = _make_account(seed_user, "500.00")
             origin = _origin_day(account)
             _settle_expense(
-                seed_user, account, "200.00", settle_instant_on(origin - timedelta(days=1)),
+                seed_user, account, "200.00", origin - timedelta(days=1),
             )
             _db.session.commit()
 
@@ -361,7 +361,7 @@ class TestWalkAccountLedger:
             # events.  Without it this grades a different partition entirely,
             # which is the defect being repaired here.
             assert to_display_date(pinned) == _PINNED_OPENING_DAY, label
-            assert to_display_date(settle.paid_at) == _PINNED_OPENING_DAY, label
+            assert to_display_date(settle.settled_on) == _PINNED_OPENING_DAY, label
 
             corrections = account_posting_service.walk_account_ledger(
                 account.id, seed_user["scenario"].id,
@@ -409,12 +409,12 @@ class TestWalkAccountLedger:
             create_settled_transfer(
                 seed_user, _db.session, seed_user["account"], account,
                 seed_user["bootstrap_period"], amount=Decimal("50.00"),
-                paid_at=settle_instant_on(origin - timedelta(days=1)),
+                settled_on=origin - timedelta(days=1),
             )
             create_settled_transfer(
                 seed_user, _db.session, seed_user["account"], account,
                 seed_user["bootstrap_period"], amount=Decimal("150.00"),
-                paid_at=settle_instant_on(origin + timedelta(days=1)), name="Post-anchor",
+                settled_on=origin + timedelta(days=1), name="Post-anchor",
             )
             _db.session.commit()
 
@@ -450,7 +450,7 @@ class TestWalkAccountLedger:
             account = _make_account(seed_user, "500.00")
             origin = _origin_day(account)
             _settle_expense(
-                seed_user, account, "200.00", settle_instant_on(origin + timedelta(days=1)),
+                seed_user, account, "200.00", origin + timedelta(days=1),
             )
             _add_assertion(
                 account, "350.00", settle_instant_on(origin + timedelta(days=2)),
@@ -514,7 +514,7 @@ class TestWalkAccountLedger:
             # the two figures below a statement about the RULE rather than
             # about their dates.
             assert to_display_date(pinned) == _PINNED_OPENING_DAY
-            assert to_display_date(settle.paid_at) == _PINNED_OPENING_DAY
+            assert to_display_date(settle.settled_on) == _PINNED_OPENING_DAY
             assert to_display_date(
                 pinned + 3 * _ONE_HOUR,
             ) == _PINNED_OPENING_DAY
@@ -541,7 +541,7 @@ class TestWalkAccountLedger:
             account = _make_account(seed_user, "500.00")
             origin = _origin_day(account)
             txn = _settle_expense(
-                seed_user, account, "200.00", settle_instant_on(origin + timedelta(days=1)),
+                seed_user, account, "200.00", origin + timedelta(days=1),
             )
             posting_service.sync_transaction_postings(txn, settled=False)
             _add_assertion(account, "480.00", settle_instant_on(origin + timedelta(days=2)))
@@ -703,7 +703,7 @@ class TestSyncAccountAnchorPostings:
             account = _make_account(seed_user, "500.00")
             origin = _origin_day(account)
             _settle_expense(
-                seed_user, account, "200.00", settle_instant_on(origin + timedelta(days=1)),
+                seed_user, account, "200.00", origin + timedelta(days=1),
             )
             _add_assertion(account, "350.00", settle_instant_on(origin + timedelta(days=2)))
             _settle_expense(
@@ -755,7 +755,7 @@ class TestSyncAccountAnchorPostings:
             account = _make_account(seed_user, "500.00")
             origin = _origin_day(account)
             txn = _settle_expense(
-                seed_user, account, "200.00", settle_instant_on(origin + timedelta(days=1)),
+                seed_user, account, "200.00", origin + timedelta(days=1),
             )
             _add_assertion(account, "350.00", settle_instant_on(origin + timedelta(days=2)))
             _settle_expense(
@@ -820,7 +820,7 @@ class TestSyncAccountAnchorPostings:
             account = _make_account(seed_user, "500.00")
             origin = _origin_day(account)
             txn = _settle_expense(
-                seed_user, account, "200.00", settle_instant_on(origin + timedelta(days=1)),
+                seed_user, account, "200.00", origin + timedelta(days=1),
             )
             trueup_row = _add_assertion(
                 account, "350.00", settle_instant_on(origin + timedelta(days=2)),
@@ -833,7 +833,7 @@ class TestSyncAccountAnchorPostings:
             posting_service.sync_transaction_postings(txn, settled=False)
             _settle_expense(
                 seed_user, account, "150.00",
-                settle_instant_on(origin + timedelta(days=1)),
+                origin + timedelta(days=1),
             )
             account_posting_service.sync_account_anchor_postings(
                 account.id, scenario_id,
@@ -878,7 +878,7 @@ class TestSyncAccountAnchorPostings:
             account = _make_account(seed_user, "500.00")
             origin = _origin_day(account)
             _settle_expense(
-                seed_user, account, "200.00", settle_instant_on(origin + timedelta(days=1)),
+                seed_user, account, "200.00", origin + timedelta(days=1),
             )
             trueup_row = _add_assertion(
                 account, "350.00", settle_instant_on(origin + timedelta(days=2)),
@@ -1235,7 +1235,7 @@ class TestSyncEntryPoints:
                 seed_user, _db.session, seed_user["bootstrap_period"],
                 Decimal("40.00"), account=account, scenario=what_if,
             )
-            txn.paid_at = settle_instant_on(origin + timedelta(days=1))
+            txn.settled_on = origin + timedelta(days=1)
             _db.session.commit()
 
             account_posting_service.sync_account_anchor_postings_all_scenarios(

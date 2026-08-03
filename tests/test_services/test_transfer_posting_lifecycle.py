@@ -46,6 +46,7 @@ from app.extensions import db as _db
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.transfer import Transfer
 from app.services import posting_service, transfer_service
+from app.utils.dates import display_today
 from tests._test_helpers import (
     create_account_of_type,
     linked_ledger_account,
@@ -114,7 +115,7 @@ def _settle(transfer, user_id, **extra):
     transfer_service.update_transfer(
         transfer.id, user_id,
         status_id=ref_cache.status_id(StatusEnum.DONE),
-        paid_at=_db.func.now(),
+        settled_on=display_today(),
         **extra,
     )
 

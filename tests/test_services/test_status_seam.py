@@ -58,7 +58,7 @@ class TestApplyStatusChangePaidAt:
             txn = _make_txn(
                 seed_user, seed_periods[0], status=StatusEnum.PROJECTED,
             )
-            assert txn.paid_at is None
+            assert txn.settled_on is None
 
             status_seam.apply_status_change(
                 txn, ref_cache.status_id(StatusEnum.DONE),
@@ -67,7 +67,7 @@ class TestApplyStatusChangePaidAt:
 
             db.session.refresh(txn)
             assert txn.status_id == ref_cache.status_id(StatusEnum.DONE)
-            assert isinstance(txn.paid_at, datetime)
+            assert isinstance(txn.settled_on, datetime)
 
     def test_explicit_paid_at_written_verbatim(
         self, app, db, seed_user, seed_periods,
@@ -80,12 +80,12 @@ class TestApplyStatusChangePaidAt:
             explicit = datetime(2026, 3, 15, 12, 0, 0, tzinfo=timezone.utc)
 
             status_seam.apply_status_change(
-                txn, ref_cache.status_id(StatusEnum.DONE), paid_at=explicit,
+                txn, ref_cache.status_id(StatusEnum.DONE), settled_on=explicit,
             )
             db.session.commit()
 
             db.session.refresh(txn)
-            assert txn.paid_at == explicit
+            assert txn.settled_on == explicit
 
     def test_re_settle_preserves_existing_paid_at(
         self, app, db, seed_user, seed_periods,
@@ -105,7 +105,7 @@ class TestApplyStatusChangePaidAt:
             status_seam.apply_status_change(txn, done_id)
             db.session.commit()
             db.session.refresh(txn)
-            first_paid_at = txn.paid_at
+            first_paid_at = txn.settled_on
             assert first_paid_at is not None
 
             # Re-settle (identity transition, allowed).
@@ -113,7 +113,7 @@ class TestApplyStatusChangePaidAt:
             db.session.commit()
             db.session.refresh(txn)
             # Unchanged -- the seam left the existing stamp untouched.
-            assert txn.paid_at == first_paid_at
+            assert txn.settled_on == first_paid_at
 
     def test_leave_settled_clears_paid_at(
         self, app, db, seed_user, seed_periods,
@@ -128,7 +128,7 @@ class TestApplyStatusChangePaidAt:
             )
             db.session.commit()
             db.session.refresh(txn)
-            assert txn.paid_at is not None
+            assert txn.settled_on is not None
 
             status_seam.apply_status_change(
                 txn, ref_cache.status_id(StatusEnum.PROJECTED),
@@ -136,7 +136,7 @@ class TestApplyStatusChangePaidAt:
             db.session.commit()
             db.session.refresh(txn)
             assert txn.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
-            assert txn.paid_at is None
+            assert txn.settled_on is None
 
     def test_enter_non_settled_leaves_paid_at_none(
         self, app, db, seed_user, seed_periods,
@@ -152,7 +152,7 @@ class TestApplyStatusChangePaidAt:
             db.session.commit()
             db.session.refresh(txn)
             assert txn.status_id == ref_cache.status_id(StatusEnum.CANCELLED)
-            assert txn.paid_at is None
+            assert txn.settled_on is None
 
 
 class TestApplyStatusChangeTransition:
@@ -224,4 +224,4 @@ class TestApplyStatusChangeTransition:
             db.session.expire_all()
             reloaded = db.session.get(Transaction, txn_id)
             assert reloaded.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
-            assert reloaded.paid_at is None
+            assert reloaded.settled_on is None

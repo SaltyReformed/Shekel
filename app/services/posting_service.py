@@ -57,7 +57,7 @@ backfill and the oracle.
 """
 
 import logging
-from datetime import date, datetime
+from datetime import date
 from decimal import Decimal
 
 from sqlalchemy.orm import joinedload, selectinload
@@ -70,7 +70,6 @@ from app.enums import (
 )
 from app.extensions import db
 from app.models.journal_entry import JournalEntry, Posting
-from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import ledger_account_service, posting_reads
@@ -81,8 +80,7 @@ from app.services._posting_write import (
     _PostingLeg,
     emit_keyed_delta_entries,
 )
-from app.utils.balance_predicates import settled_status_ids
-from app.utils.dates import to_display_civil_date
+from app.utils.balance_predicates import settled_day, settled_status_ids
 
 logger = logging.getLogger(__name__)
 
@@ -102,47 +100,6 @@ settled_transaction_effect = posting_reads.settled_transaction_effect
 
 
 # ── Private helpers ────────────────────────────────────────────────
-
-
-def _civil_settle_date(paid_at: datetime | None, pay_period: PayPeriod) -> date:
-    """Return the civil date of a settle ``paid_at``, or the period start.
-
-    The shared tail of the transfer and transaction entry-date helpers
-    (:func:`_entry_date`, :func:`_transaction_entry_date`): a recorded
-    ``paid_at`` maps to its DISPLAY-timezone civil date; a NULL ``paid_at`` (a
-    historical settle recorded before the ``paid_at`` sync, or a reverted row
-    whose timestamp was cleared) falls back to the pay period's ``start_date``,
-    UNCONVERTED -- that fallback is already a civil date and routing it through a
-    zone would shift it a day.  ``journal_entries.entry_date`` is NOT NULL, so the
-    fallback is load-bearing.
-
-    Delegates to :func:`app.utils.dates.to_display_civil_date` -- the ONE
-    derivation the loan fold's payment-visibility rule
-    (:func:`app.services.loan_ledger._visible.payment_visible_on`) and the cash
-    walk's settle dating (:func:`app.services.cash_ledger.settled_civil_day`) also
-    call, so the STORED ``entry_date`` this writes and the day either fold counts
-    a settle on cannot drift (balance step C2).
-
-    **The zone is ruling R-DH (b)** (2026-07-31,
-    ``docs/audits/balance_architecture/anchor_settle_partition.md``).  It was the
-    UTC civil date, mirroring the historical backfill's
-    ``COALESCE((paid_at AT TIME ZONE 'UTC')::date, start_date)``.  Storage is
-    unchanged -- every instant is still stored UTC -- but the DAY an entry is
-    filed under is now the user's, because it is compared against and bucketed by
-    plain ``DATE`` columns that mean the user's civil days
-    (``pay_periods.start_date`` / ``end_date``).  The three writers moved together
-    with the two folds; moving any one alone is what would put a transfer's two
-    legs on different days.
-
-    Args:
-        paid_at: The settle instant read back from the source row, or None.
-        pay_period: The source row's pay period (supplies ``start_date``).
-
-    Returns:
-        The display-timezone civil settle date, or the pay period's
-        ``start_date``.
-    """
-    return to_display_civil_date(paid_at, pay_period.start_date)
 
 
 def _posted_by_period(source_filter) -> "dict[tuple[int, date], dict[int, Decimal]]":
@@ -219,7 +176,7 @@ def _reconcile_periods(
     balanced and an entry lives in exactly one (period, date) -- so each key's
     legs form one balanced entry (never a single leg).
 
-    A stale-DATED posting (finding N-13: a settled ``paid_at`` edit moves the
+    A stale-DATED posting (finding N-13: a settled ``settled_on`` edit moves the
     event's day but no amount) therefore reconciles as two keys: its old date
     reverses to zero and the target's date posts fresh -- converging in ONE
     pass, so a repeat sync writes nothing.
@@ -299,44 +256,57 @@ def _settle_effective(xfer: Transfer) -> Decimal:
 def _entry_date(xfer: Transfer) -> date:
     """Return the civil date to stamp on a transfer's journal entry.
 
-    The DISPLAY-timezone civil date of the transfer's ``paid_at`` (which lives
-    on the shadows -- the ``Transfer`` model has none), falling back to the pay
-    period's ``start_date`` when ``paid_at`` is NULL (a historical settle
-    recorded before the ``paid_at`` sync, or a reverted transfer whose
-    ``paid_at`` was cleared).  ``entry_date`` is NOT NULL, so the fallback is
-    load-bearing.  It mirrored the Commit-3 backfill's
-    ``COALESCE((paid_at AT TIME ZONE 'UTC')::date, start_date)`` until ruling
-    R-DH (b) moved the stored day to the user's zone; the derivation is
-    :func:`_civil_settle_date`, shared with the transaction path and both
-    balance folds.
+    The transfer's INCOME shadow's stored ``settled_on`` (the ``Transfer`` model
+    has no such column of its own), read through the shared
+    :func:`app.utils.balance_predicates.settled_day` -- the ONE accessor for
+    "which civil day did this cash move", which the read fold, the posting walk
+    and the confirmed-statement reader all ask the same question through, so the
+    STORED ``entry_date`` this writes and the day any fold counts the settle on
+    cannot drift (balance step C2).
 
-    The query auto-flushes before reading, so a ``paid_at`` the caller set to
-    a server-side ``db.func.now()`` (the ``mark_done`` path) is materialised
-    and read back as a concrete timestamp rather than an unresolved SQL
-    expression.
+    **It DERIVED the day from ``paid_at`` until plan step X-f1** (ruling R-EC):
+    a display-timezone conversion of the click instant, falling back to the pay
+    period's ``start_date`` when the instant was NULL.  Both are gone -- the day
+    is a stored fact, and a settled shadow carrying none is refused rather than
+    dated by a fallback, because ``entry_date`` is NOT NULL and a fabricated
+    value here would file real money on a day nothing recorded.
+
+    **The query survives the conversion, and its reason narrowed.**  It used to
+    exist partly to force a server-side ``db.func.now()`` to materialise; a
+    stored ``date`` is never an unresolved SQL expression, so what remains is
+    the real reason -- this reads a DIFFERENT row from the one it is given.  Its
+    transaction twin dropped its query entirely for exactly that difference.
 
     Args:
         xfer: The transfer being posted.
 
     Returns:
-        The display-timezone civil settle date, or the pay period's
-        ``start_date`` when no ``paid_at`` is recorded.
+        The civil day the transfer's cash moved.
+
+    Raises:
+        PostingError: When no active income shadow resolves (Transfer
+            Invariant 1 broken).
+        UndatedSettleError: When that shadow carries no ``settled_on``
+            (propagated from :func:`~app.utils.balance_predicates.settled_day`).
     """
-    # Read the to-account (income) shadow's paid_at.  The Commit-3 backfill
-    # reads the from-account (expense) shadow's paid_at instead; the two are
-    # always equal because the transfer service mirrors paid_at to both
-    # shadows (Transfer Invariant 3), so the entry date is identical either
-    # way.
-    paid_at = (
-        db.session.query(Transaction.paid_at)
+    # Read the to-account (income) shadow.  The from-account (expense) shadow
+    # carries the same day -- the transfer service mirrors it onto both
+    # (Transfer Invariant 3) -- so the entry date is identical either way.
+    shadow = (
+        db.session.query(Transaction.id, Transaction.settled_on)
         .filter(
             Transaction.transfer_id == xfer.id,
             Transaction.account_id == xfer.to_account_id,
             Transaction.is_deleted.is_(False),
         )
-        .scalar()
+        .first()
     )
-    return _civil_settle_date(paid_at, xfer.pay_period)
+    if shadow is None:
+        raise PostingError(
+            f"Transfer {xfer.id} has no active income shadow, so the day its "
+            "money moved cannot be resolved; Transfer Invariant 1 is broken."
+        )
+    return settled_day(shadow.id, shadow.settled_on)
 
 
 def _transfer_description(xfer: Transfer) -> str:
@@ -364,31 +334,31 @@ def _transfer_description(xfer: Transfer) -> str:
 def _transaction_entry_date(txn: Transaction) -> date:
     """Return the civil date to stamp on a transaction's journal entry.
 
-    The DISPLAY-timezone civil date of the transaction's ``paid_at`` (ruling
-    R-DH (b)), falling back to the pay period's ``start_date`` when ``paid_at``
-    is NULL (a historical settle, or a reverted transaction whose ``paid_at``
-    was cleared).  The transaction analog of :func:`_entry_date`, sharing
-    :func:`_civil_settle_date`.
+    The row's stored ``settled_on``, read through the shared
+    :func:`app.utils.balance_predicates.settled_day`.  The transaction analog of
+    :func:`_entry_date`, and now a plain attribute read: it DERIVED the day from
+    ``paid_at`` until plan step X-f1 (ruling R-EC), with the pay period's
+    ``start_date`` as a NULL fallback.
 
-    ``paid_at`` is read back via a query (not off the ORM attribute) so a value
-    the caller set to a server-side ``db.func.now()`` (the ``mark_done`` path)
-    is auto-flushed and materialised to a concrete timestamp rather than read
-    as an unresolved SQL expression -- the same reason :func:`_entry_date`
-    queries the shadow's ``paid_at``.
+    **It also issued a query, and that query is gone.**  ``paid_at`` was read
+    back off the database rather than off the ORM attribute for one stated
+    reason -- so a value the caller had set to a server-side ``db.func.now()``
+    would autoflush and materialise instead of being read as an unresolved SQL
+    expression.  The seam assigns a plain Python ``date`` now, so there is
+    nothing to materialise and nothing to re-read.  :func:`_entry_date` keeps
+    its query because it reads a DIFFERENT row -- the transfer's income shadow.
 
     Args:
         txn: The transaction being posted (must be flushed, ``txn.id`` set).
 
     Returns:
-        The display-timezone civil settle date, or the pay period's
-        ``start_date`` when no ``paid_at`` is recorded.
+        The civil day the transaction's cash moved.
+
+    Raises:
+        UndatedSettleError: When the row carries no ``settled_on``
+            (propagated from :func:`~app.utils.balance_predicates.settled_day`).
     """
-    paid_at = (
-        db.session.query(Transaction.paid_at)
-        .filter(Transaction.id == txn.id)
-        .scalar()
-    )
-    return _civil_settle_date(paid_at, txn.pay_period)
+    return settled_day(txn.id, txn.settled_on)
 
 
 def _settled_target(txn: Transaction, owner_id: int) -> dict[int, Decimal]:
@@ -512,7 +482,7 @@ def sync_transfer_postings(
     step E1a): a revert-and-move PATCH therefore reverses into the ORIGINAL
     period, so the net-zero pair never straddles periods and a later period
     truncate cannot strand half of it.  The per-date key also makes a settled
-    ``paid_at`` edit reconcile (finding N-13): the entry at the old settle
+    ``settled_on`` edit reconcile (finding N-13): the entry at the old settle
     date reverses and the effect re-posts at the new one, converging in one
     pass.  Idempotency rests on this delta math plus the transfer's
     ``version_id`` optimistic lock (a concurrent double mark-done collides on
@@ -774,7 +744,7 @@ def resync_all_cash_postings() -> tuple[int, int]:
 
     **What it is FOR, and why it is a permanent hook rather than a one-off**
     (ruling R-DH (b), ``docs/audits/balance_architecture/anchor_settle_partition.md``).
-    ``journal_entries.entry_date`` is derived by :func:`_civil_settle_date`,
+    ``journal_entries.entry_date`` is derived by :func:`_transaction_entry_date`,
     which moved from the UTC civil day to the user's on 2026-07-31.  Every entry
     written before that carries the old day, so the STORED ledger and the two
     folds that now read the new one disagree for any settle recorded between

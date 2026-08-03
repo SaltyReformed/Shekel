@@ -65,13 +65,15 @@ pay period (a ``$1,910.95`` mortgage payment twice), and two Eastern evenings ha
 ONE bookkeeping session split across two UTC days -- the shape that would defeat
 the partition above.  Storage is unchanged; every instant is still stored UTC.
 
-**A row with no ``paid_at`` keeps its civil date UNCONVERTED, and that is
-load-bearing rather than defensive.**  Its fallback is the pay period's
-``start_date`` -- already a civil date, never an instant -- so converting it
-would move it to the previous day.  Four of the real Checking account's settled
-rows carry the shape, and 3 of the 4 would cross a pay-period boundary.
-:func:`settled_civil_day` therefore falls back to the date itself rather than
-manufacturing an instant to convert.
+**Nothing here DERIVES a day any more, and that is plan step X-f1** (ruling
+R-EC).  A settled row stores the civil day its money moved in
+``transactions.settled_on``, so this module reads a fact where it used to
+convert ``paid_at``'s instant into the display timezone and fall back to the pay
+period's ``start_date`` when the instant was NULL.  That fallback was a guess --
+8 live settled rows relied on it -- and it is gone with the derivation: a settled
+row with no recorded day is REFUSED by
+:func:`app.utils.balance_predicates.settled_day` rather than dated by this
+module's opinion.
 
 Services-boundary discipline (``CLAUDE.md`` Architecture / B6-01).  Plain data
 in, frozen dataclasses out; no Flask symbol, no writes.  All money is
@@ -89,57 +91,11 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
 from app.models.transaction import Transaction
-from app.utils.balance_predicates import settled_status_ids
-from app.utils.dates import to_display_civil_date, utc_instant
+from app.utils.balance_predicates import settled_day, settled_status_ids
+from app.utils.dates import utc_instant
 
 from ._amounts import ReconciledThrough, settled_cash_leg
 from ._facts import _unwindowed_contributing_rows
-
-
-def settled_civil_day(paid_at: datetime | None, period_start: date) -> date:
-    """Return the civil day a settled source's cash counts from.
-
-    The ONE statement of "which day did this cash move", shared by every consumer
-    that partitions source facts against an assertion: this leaf's walk
-    (:func:`app.services.cash_ledger.walk_cash_ledger`), the fold that samples it
-    (:mod:`app.services.balance_at._cash_fold`), and the account posting walk
-    (:mod:`app.services.account_posting_service`), which reaches the same rule
-    from the postings side until plan step X-d retires it onto this one.  A
-    second copy of the rule is precisely how the projection and the posted ledger
-    would drift about which settles an assertion already covers -- the divergence
-    Phase X exists to close, so the rule is not written twice.
-
-    **It is the DISPLAY-timezone day** (ruling R-DH (b)).  This day is compared
-    against, and bucketed into, plain ``DATE`` columns that mean the user's civil
-    days (``pay_periods.start_date`` / ``end_date``); deriving it in UTC compares
-    two different calendars.  Measured on production 2026-07-31: 22 of 139
-    settled Checking rows land on a different day under UTC and 5 of those in a
-    different pay period, including a ``$1,910.95`` mortgage payment on both
-    2026-04-22 and 2026-07-01.
-
-    **A ``None`` ``paid_at`` returns *period_start* UNCONVERTED**, and that is
-    the half a naive implementation gets wrong.  The fallback is already a civil
-    date -- it was never an instant -- so converting it (or manufacturing
-    midnight-UTC to convert) shifts it a day earlier and can move the row into
-    the previous pay period.  Measured: 4 of the real Checking account's settled
-    rows carry no ``paid_at``, and 3 of the 4 would cross a period boundary.
-    Delegating to :func:`app.utils.dates.to_display_civil_date` is what keeps the
-    two arms honest, because that helper applies the fallback WITHOUT converting
-    it.
-
-    This function replaced ``attribution_instant`` at ruling R-DH; see the module
-    docstring for what the instant partition cost on production.
-
-    Args:
-        paid_at: The source row's settle instant, or ``None``.  Naive values are
-            assumed UTC (the storage convention).
-        period_start: The source's pay-period ``start_date`` -- the civil day to
-            fall back to when ``paid_at`` is ``None``.
-
-    Returns:
-        The civil day the source's cash counts from.
-    """
-    return to_display_civil_date(paid_at, period_start)
 
 
 @dataclass(frozen=True)
@@ -322,14 +278,19 @@ class CashSourceFact:
             ``transaction_type_id``), so a budget-clock reduction can split the
             income and expense legs by type rather than by the sign of
             :attr:`delta`.
-        settled_on: The civil day this row's cash MOVED
-            (:func:`settled_civil_day`) -- the one date the assertion partition
-            compares against, the fold samples on, and the period index buckets
-            by.  Derived here from ``paid_at``'s display-timezone day, falling
-            back to the pay period's ``start_date`` unconverted; plan step 2 of
-            ``anchor_settle_partition.md`` replaces the derivation with a stored
-            ``transactions.settled_on`` the user supplies, at which point the
-            partition compares two real-world dates and stops guessing.
+        settled_on: The civil day this row's cash MOVED -- the one date the
+            assertion partition compares against, the fold samples on, and the
+            period index buckets by.  **Read from the stored
+            ``transactions.settled_on``, not derived** (plan step X-f1, ruling
+            R-EC), through the shared
+            :func:`app.utils.balance_predicates.settled_day` so a settled row
+            missing one fails loudly here rather than being dated by a fallback.
+            It was ``paid_at``'s display-timezone day with the pay period's
+            ``start_date`` as a NULL fallback until the column existed, and the
+            migration backfilled exactly that derivation -- so the switch moved
+            no figure and every row keeps the day the engine already gave it.
+            The partition now compares two real-world dates and guesses at
+            neither.
         delta: The signed confirmed cash effect
             (:func:`app.services.cash_ledger.settled_cash_leg`): positive for
             income, negative for an expense, and ``0.00`` for a row whose entries
@@ -493,9 +454,7 @@ def settled_cash_facts(
             transaction_id=txn.id,
             pay_period_id=txn.pay_period_id,
             is_income=txn.is_income,
-            settled_on=settled_civil_day(
-                txn.paid_at, txn.pay_period.start_date,
-            ),
+            settled_on=settled_day(txn.id, txn.settled_on),
             delta=settled_cash_leg(txn),
         )
         for txn in rows

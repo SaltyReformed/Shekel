@@ -21,10 +21,14 @@ born-Projected rule refuses, so its entry survives until plan step X-aj2 replace
 the write door.  What the merge did remove is the duplicate ATTRIBUTE writes --
 and three defects the duplicate had and this one did not:
 
-* it stamped ``paid_at = now()`` UNCONDITIONALLY on entering a settled status
-  rather than preserving an existing instant, so an identity re-submit of an
+* it stamped the settle instant UNCONDITIONALLY on entering a settled status
+  rather than preserving an existing one, so an identity re-submit of an
   unchanged status re-dated a settled transfer -- and since plan step E1a that
-  day IS the posted ``entry_date``, so it moved the money (finding **N-146**);
+  day IS the posted ``entry_date``, so it moved the money (finding **N-146**).
+  **The seam alone did not close that class**: plan step X-f1b0 found both
+  mark-done routes passing an explicit instant that overrode this seam's
+  preservation, re-dating a replayed settle by however long ago it happened
+  (finding **N-178**), and removed both;
 * it never expired the ``status`` relationship, though both models declare it
   ``lazy="joined"`` -- latent rather than live, since every route commits before
   rendering, but true by accident rather than by construction;
@@ -45,7 +49,7 @@ Architecture:
     commit -- the caller owns the session boundary.
 """
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional, Union
 
 from app.extensions import db
@@ -53,10 +57,11 @@ from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services.state_machine import verify_transition
 from app.utils.balance_predicates import settled_status_ids
+from app.utils.dates import display_today
 
-#: The rows this seam accepts.  ``Transfer`` carries no ``paid_at`` column --
-#: a transfer's settle instant lives on its two shadow ``Transaction`` rows --
-#: so the timestamp half of the mechanics is skipped for one of the two.  The
+#: The rows this seam accepts.  ``Transfer`` carries no ``settled_on`` column --
+#: a transfer's settle day lives on its two shadow ``Transaction`` rows --
+#: so the dating half of the mechanics is skipped for one of the two.  The
 #: branch is on the MODEL, never on ``hasattr``: a probe would silently skip the
 #: maintenance for any future row that merely spelled the column differently,
 #: and this arc has already paid for a ``hasattr``-shaped test -- plan step
@@ -70,7 +75,7 @@ def apply_status_change(
     row: StatusBearingRow,
     new_status_id: int,
     *,
-    paid_at: Optional[datetime] = None,
+    settled_on: Optional[date] = None,
 ) -> None:
     """Apply a status transition -- the single status seam, for either row type.
 
@@ -89,10 +94,10 @@ def apply_status_change(
          on an illegal move (e.g. Settled -> Projected), which the route layer
          surfaces as a 400.
       2. assign ``status_id``.
-      3. maintain ``paid_at`` (see the *paid_at* arg) -- **transactions only**,
-         because ``Transfer`` has no such column: a transfer's settle instant
-         lives on its two shadow rows, and the transfer service applies this
-         seam to those shadows, so a transfer settle still records its instant.
+      3. maintain ``settled_on`` (see the *settled_on* arg) -- **transactions
+         only**, because ``Transfer`` has no such column: a transfer's settle
+         day lives on its two shadow rows, and the transfer service applies
+         this seam to those shadows, so a transfer settle still records its day.
       4. ``db.session.expire(row, ["status"])`` so a pre-commit reader (a cell
          render, a test assertion) sees the new ``Status`` row, not the stale
          ``lazy="joined"`` one -- the exact trap ``mark_as_credit`` documented
@@ -114,25 +119,43 @@ def apply_status_change(
             ``status_id`` is read as the current state for the transition check
             and its CLASS selects the workflow.
         new_status_id: The ``ref.statuses.id`` to move to.
-        paid_at: Payment-timestamp policy, read only for a ``Transaction``.
-            ``None`` (the default) DERIVES the timestamp from *new_status_id*:
-            stamp ``db.func.now()`` on entering a settled status (Paid /
-            Received / Settled) that has none yet, **preserve an existing one on
-            an idempotent re-settle**, and clear it on entering a non-settled
+        settled_on: Settle-day policy, read only for a ``Transaction``.
+            ``None`` (the default) DERIVES the day from *new_status_id*: stamp
+            ``display_today()`` on entering a settled status (Paid / Received /
+            Settled) that has none yet, **preserve an existing one on an
+            idempotent re-settle**, and clear it on entering a non-settled
             status (so a reverted / cancelled / credited row drops its stale
-            payment time).  A non-``None`` ``datetime`` is written verbatim
-            (carry-forward back-dating, and the transfer ``mark_done`` route's
-            explicit instant).
+            settle day).  A non-``None`` ``date`` is written verbatim, and its
+            ONE legitimate meaning is "the user typed this day" -- the transfer
+            edit door, and the transfer service's pair resolution.
+
+            **The day is the USER's, not the server's** (ruling R-DH (b)).
+            ``display_today()`` reads the display timezone, where
+            ``date.today()`` would read the process's UTC day and file an
+            8pm-Eastern settle under tomorrow.  This is also why the seam no
+            longer assigns ``db.func.now()``: that reached PostgreSQL's clock,
+            one of the four database-clock reaches finding N-65 had to build
+            ``_freeze_db_clock`` to contain, and a Python ``date`` is a value
+            the suite's own clock freeze already governs.
 
             **The preserving rule is load-bearing and is finding N-146's fix.**
-            The transfer service's deleted seam re-stamped ``now()`` on every
-            entry into a settled status including an identity re-submit, and
-            since plan step E1a a settle's civil day IS the ``entry_date`` its
-            postings are filed under -- so editing the notes on a paid transfer
-            moved its money to today.  A caller that genuinely means "clear the
-            instant while settled" assigns ``paid_at`` itself afterwards, which
-            is what ``update_transfer``'s explicit-``paid_at`` branch does; the
-            seam needs no separate sentinel for a case with no caller.
+            The transfer service's deleted seam re-stamped every entry into a
+            settled status including an identity re-submit, and since plan step
+            E1a a settle's civil day IS the ``entry_date`` its postings are
+            filed under -- so editing the notes on a paid transfer moved its
+            money to today.  **Finding N-178 then showed the seam alone is not
+            enough**: both mark-done routes passed an explicit instant, which
+            overrode this rule, and a replayed POST re-dated a settled transfer
+            by however long ago it really settled.  Neither route passes one
+            now, so the preserve rule is the only rule.
+
+            **``Paid -> Settled`` is a RE-ENTRY, not a first entry**, and that
+            is why preservation matters beyond the edit forms: archiving a
+            payment must not move its money to the day it was archived.  That
+            transition has zero production rows today (finding N-177, which
+            proposes deleting the status), and the rule is pinned by a test
+            regardless, because a status with no rows is not a status with no
+            transitions.
 
     Raises:
         ValidationError: If the transition is illegal for *row*'s workflow
@@ -140,21 +163,44 @@ def apply_status_change(
         TypeError: If *row* is not a status-bearing model (propagated from the
             state machine -- a programming error at the call site).
     """
+    # A ``datetime`` is REFUSED rather than accepted and truncated, and this is
+    # not defensive programming -- it is finding N-179, measured.  ``datetime``
+    # subclasses ``date``, so the annotation catches nothing and PostgreSQL
+    # coerces the value into the ``DATE`` column on the SESSION clock, which is
+    # UTC: an instant at 2026-03-04 04:30 UTC (2026-03-03 23:30 Eastern) stores
+    # as 2026-03-04, one day later than the user's civil day.  That is exactly
+    # the UTC-vs-display split ruling R-DH (b) exists to delete, reintroduced
+    # one layer down and SILENTLY -- a converted suite left 16 sites passing an
+    # instant here and 8 of them stayed green, one of them writing a journal
+    # entry whose DATE column held ``2026-03-20T13:00:00+00:00``.  The check is
+    # ordered before ``verify_transition`` so a bad value cannot mutate the row
+    # even on a legal transition.
+    if isinstance(settled_on, datetime):
+        raise TypeError(
+            f"settled_on must be a date, got datetime {settled_on!r}.  A "
+            "settle records the CIVIL DAY its money moved, and an instant "
+            "handed here is truncated by PostgreSQL on the session clock "
+            "(UTC), so an evening-Eastern settle would be filed on the "
+            "following day.  Pass the user's civil day -- display_today(), or "
+            "the day the bank showed."
+        )
+
     verify_transition(row, new_status_id)
     row.status_id = new_status_id
 
-    # paid_at maintenance.  An explicit timestamp wins; otherwise derive from
-    # the new status: clear when leaving the settled band, stamp now() on the
-    # first entry into it, and leave an existing stamp untouched on a re-settle
-    # (so editing a Paid row -- which re-submits its unchanged status_id -- never
-    # churns the original payment time).  Skipped whole for a Transfer, which
-    # has no such column; its shadows carry the instant and get their own call.
+    # settled_on maintenance.  An explicit day wins; otherwise derive from the
+    # new status: clear when leaving the settled band, stamp the user's today on
+    # the first entry into it, and leave an existing day untouched on a
+    # re-settle (so editing a Paid row -- which re-submits its unchanged
+    # status_id -- never churns the day its money moved).  Skipped whole for a
+    # Transfer, which has no such column; its shadows carry the day and get
+    # their own call.
     if isinstance(row, Transaction):
-        if paid_at is not None:
-            row.paid_at = paid_at
+        if settled_on is not None:
+            row.settled_on = settled_on
         elif new_status_id not in settled_status_ids():
-            row.paid_at = None
-        elif row.paid_at is None:
-            row.paid_at = db.func.now()
+            row.settled_on = None
+        elif row.settled_on is None:
+            row.settled_on = display_today()
 
     db.session.expire(row, ["status"])

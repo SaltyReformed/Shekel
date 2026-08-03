@@ -261,7 +261,7 @@ def _assert_checked_projection(
     (step C2's one clock), so a stale-dated posting moves balances on every
     day between the two dates.  The reconciles this runs behind are
     date-aware for exactly that reason (finding N-13), so a legitimate edit
-    -- a settled ``paid_at`` move, a params change, a true-up -- converges
+    -- a settled ``settled_on`` move, a params change, a true-up -- converges
     BEFORE this check reads the ledger back and can never trip it.
 
     The two known ways to fail it, named so the error is actionable:

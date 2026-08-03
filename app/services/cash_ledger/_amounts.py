@@ -162,11 +162,12 @@ class ReconciledThrough:
         ``None`` day there would silently short the ledger where the bare
         ``<=`` it replaced would have raised.  It cannot arise:
         :attr:`~app.services.cash_ledger.CashSourceFact.settled_on` is typed
-        non-optional and derives from ``to_display_civil_date(paid_at,
-        period.start_date)`` over a NOT NULL ``pay_periods.start_date``, and
-        the posting walk's three source loaders resolve NOT NULL dates the
-        same way.  Stated because a fail-open substitution in a money path is
-        not something a reader should have to re-derive.
+        non-optional and is the STORED ``transactions.settled_on``, read
+        through :func:`app.utils.balance_predicates.settled_day`, which REFUSES
+        a missing day rather than returning one; the posting walk's source
+        loaders resolve their days through the same accessor.  Stated because a
+        fail-open substitution in a money path is not something a reader should
+        have to re-derive.
 
         Args:
             event_day: The civil day the money moved -- a settled row's or a

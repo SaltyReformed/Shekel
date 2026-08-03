@@ -100,18 +100,18 @@ class TestIncomeStatementCalendarWindow:
                 seed_user, db.session, period, Decimal("2000.00"),
                 account=checking, is_income=True,
                 category=seed_user["categories"]["Salary"],
-                paid_at=datetime(2026, 3, 10, 12, tzinfo=timezone.utc),
+                settled_on=date(2026, 3, 10),
             )
             create_settled_cash_transaction(
                 seed_user, db.session, period, Decimal("300.00"),
                 account=checking,
                 category=seed_user["categories"]["Groceries"],
-                paid_at=datetime(2026, 3, 15, 12, tzinfo=timezone.utc),
+                settled_on=date(2026, 3, 15),
             )
             create_settled_cash_transaction(
                 seed_user, db.session, period, Decimal("50.00"),
                 account=checking, category=None,
-                paid_at=datetime(2026, 3, 20, 12, tzinfo=timezone.utc),
+                settled_on=date(2026, 3, 20),
             )
             db.session.commit()
 
@@ -155,12 +155,12 @@ class TestIncomeStatementCalendarWindow:
                 seed_user, db.session, period, Decimal("300.00"),
                 account=checking,
                 category=seed_user["categories"]["Groceries"],
-                paid_at=datetime(2026, 3, 15, 12, tzinfo=timezone.utc),
+                settled_on=date(2026, 3, 15),
             )
             create_settled_cash_transaction(
                 seed_user, db.session, period, Decimal("800.00"),
                 account=checking, category=seed_user["categories"]["Rent"],
-                paid_at=datetime(2026, 4, 15, 12, tzinfo=timezone.utc),
+                settled_on=date(2026, 4, 15),
             )
             db.session.commit()
 
@@ -255,7 +255,7 @@ class TestDisplayTimezoneAttribution:
                 seed_user, db.session, seed_user["bootstrap_period"],
                 Decimal("500.00"), account=seed_user["account"],
                 category=seed_user["categories"]["Groceries"],
-                paid_at=datetime(2027, 1, 1, 1, 5, tzinfo=timezone.utc),
+                settled_on=date(2026, 12, 31),
             )
             db.session.commit()
 
@@ -354,7 +354,7 @@ class TestTransfersNeverInIncomeStatement:
             create_settled_transfer(
                 seed_user, db.session, checking, savings,
                 seed_user["bootstrap_period"], amount=Decimal("150.00"),
-                paid_at=_RIDES_ON_TOP,
+                settled_on=_RIDES_ON_TOP,
             )
             db.session.commit()
 
@@ -508,7 +508,7 @@ class TestBalanceSheetPosition:
                 seed_user, db.session, seed_user["bootstrap_period"],
                 Decimal("100.00"), account=seed_user["account"],
                 category=seed_user["categories"]["Groceries"],
-                paid_at=_RIDES_ON_TOP,
+                settled_on=_RIDES_ON_TOP,
             )
             db.session.commit()
 
@@ -580,7 +580,7 @@ class TestDisplayLabels:
                 seed_user, db.session, seed_user["bootstrap_period"],
                 Decimal("100.00"), account=seed_user["account"],
                 category=seed_user["categories"]["Groceries"],
-                paid_at=datetime(2026, 3, 15, 12, tzinfo=timezone.utc),
+                settled_on=date(2026, 3, 15),
             )
             db.session.commit()
 
@@ -610,7 +610,7 @@ class TestDisplayLabels:
                 seed_user, db.session, seed_user["bootstrap_period"],
                 Decimal("100.00"), account=seed_user["account"],
                 category=seed_user["categories"]["Groceries"],
-                paid_at=datetime(2026, 3, 15, 12, tzinfo=timezone.utc),
+                settled_on=date(2026, 3, 15),
             )
             db.session.commit()
 

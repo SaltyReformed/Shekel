@@ -371,19 +371,22 @@ def mark_done(xfer_id):
 
     done_id = ref_cache.status_id(StatusEnum.DONE)
     try:
-        # ``paid_at`` parity with ``transactions.mark_done``: settling
-        # a transfer must record *when* it was settled.  Without this
-        # kwarg the shadow transactions reach Paid with NULL
-        # ``paid_at``, breaking ``Transaction.days_paid_before_due``
-        # analytics, the dashboard's "paid on time" indicator, and any
-        # downstream report that joins on the timestamp.  The transfer
-        # service mirrors the same default (see ``update_transfer``)
-        # so any future caller that forgets the kwarg still produces
-        # a well-formed settled transfer.  Audit reference: F-048 /
-        # commit C-22 of the 2026-04-15 security remediation plan.
+        # NO explicit ``paid_at``, and its absence is finding N-178's fix.
+        # The instant is still recorded -- ``transfer_service`` resolves ONE
+        # instant for the pair and hands it to the status seam, which stamps
+        # ``now()`` on the first entry into a settled status (F-048 / C-22's
+        # requirement, now met by the seam rather than by this call site).
+        # Passing one HERE defeated that: ``update_transfer``'s explicit-
+        # explicit-day branch writes both shadows verbatim AFTER the seam has
+        # preserved, and ``done -> done`` is a legal transition this route does
+        # not gate -- so a replayed or stale-page POST on an already-settled
+        # transfer re-stamped today, and since plan step E1a that day IS the
+        # posted ``entry_date``.  Measured: a transfer settled 7 days earlier
+        # moved 7.00 days, the ledger gaining a reversal at its real settle day
+        # and a fresh posting at today.  That is finding N-146 through a second
+        # door; the seam's preserve rule closes both once nothing overrides it.
         transfer_service.update_transfer(
-            xfer.id, current_user.id,
-            status_id=done_id, paid_at=db.func.now(),
+            xfer.id, current_user.id, status_id=done_id,
         )
         db.session.commit()
     except StaleDataError:

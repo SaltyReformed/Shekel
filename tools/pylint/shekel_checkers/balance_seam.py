@@ -351,7 +351,6 @@ _FENCED_MODULE_RULINGS = {
         "cash_anchor_facts",
         "delta",
         "observed_on",
-        "settled_civil_day",
         "settled_cash_facts",
         # ``_walk`` (plan step X-a) -- the running-balance REPLAY and the
         # visible-day re-key of its events.  Ruled NON-producers on exactly the

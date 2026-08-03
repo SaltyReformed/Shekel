@@ -1862,7 +1862,7 @@ def cross_page_loan_off_schedule_ctx(db, seed_user):
     create_settled_transfer(
         seed_user, db.session, seed_user["account"], loan, payment_period,
         amount=Decimal("5000.00"),
-        paid_at=settle_instant_on(payment_period.start_date),
+        settled_on=payment_period.start_date,
     )
     db.session.commit()
 

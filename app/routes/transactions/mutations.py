@@ -136,7 +136,7 @@ def _apply_shadow_update(txn, txn_id, data):
     (design doc invariants 3-5).  Maps the submitted transaction fields
     onto :func:`transfer_service.update_transfer` kwargs, commits, and
     renders the refreshed cell.  Reverting to a non-settled status nulls
-    ``paid_at`` so a re-opened shadow stops showing a paid timestamp.
+    ``settled_on`` so a re-opened shadow stops showing a settle day.
 
     Args:
         txn: The shadow Transaction being edited.
@@ -162,11 +162,14 @@ def _apply_shadow_update(txn, txn_id, data):
     if "actual_amount" in data:
         svc_kwargs["actual_amount"] = data["actual_amount"]
     if "status_id" in data:
+        # No ``settled_on`` companion: the seam CLEARS the day on entering a
+        # non-settled status, so the explicit ``None`` this used to add was a
+        # second statement of the seam's own rule (finding N-178's other half).
+        # Dropping it changes no reconcile -- ``status_id`` is already in
+        # ``transfer_service._POSTING_RELEVANT_FIELDS``, and the anchor-resync
+        # arm it also gated requires the NEW status to be settled, which a
+        # revert's never is.
         svc_kwargs["status_id"] = data["status_id"]
-        # Null paid_at when reverting to a non-settled status.
-        new_status = db.session.get(Status, data["status_id"])
-        if new_status and not new_status.is_settled:
-            svc_kwargs["paid_at"] = None
     if "notes" in data:
         svc_kwargs["notes"] = data["notes"]
     if "category_id" in data:
@@ -212,7 +215,7 @@ def _resolve_status_change(txn, data):
     and blocks the Credit status on purchase-tracking transactions (credit is
     per-entry, scope doc 5.2).  Doing it here gives the precise 400 precedence
     (an illegal transition reports before a finalised-field lock or an FK error)
-    and leaves the row untouched on rejection.  ``paid_at`` is NOT decided here:
+    and leaves the row untouched on rejection.  ``settled_on`` is NOT decided here:
     the status seam (:func:`status_seam.apply_status_change`, invoked
     once the field is applied) owns the stamp/clear and re-runs this same
     verification as the single source of truth -- this early call exists purely
@@ -329,7 +332,7 @@ def _apply_regular_update(txn, txn_id, data):
 
     # Apply non-status updates (regular transactions only).  ``status_id`` is
     # excluded here and routed through the status seam below: a bare setattr
-    # would assign the column but skip the transition check, the paid_at
+    # would assign the column but skip the transition check, the settled_on
     # stamp/clear, and the status-relationship expire that the seam owns.
     for field, value in data.items():
         if field == "status_id":
@@ -337,11 +340,11 @@ def _apply_regular_update(txn, txn_id, data):
         setattr(txn, field, value)
 
     # Apply the status change through the single seam (verify + status_id +
-    # paid_at + expire).  ``_resolve_status_change`` already pre-verified this
+    # settled_on + expire).  ``_resolve_status_change`` already pre-verified this
     # exact transition for error precedence, so the seam's re-verification never
-    # raises here; the seam owns paid_at -- stamping now() on a settle and
+    # raises here; the seam owns settled_on -- stamping today on a settle and
     # clearing it on a revert to a non-settled status -- which replaces the old
-    # bespoke revert-paid_at handling.
+    # bespoke revert-settled_on handling.
     if "status_id" in data:
         status_seam.apply_status_change(txn, data["status_id"])
 
@@ -589,9 +592,12 @@ def _mark_done_shadow(txn, txn_id, actual_amount, target):
     # Use 'done' for the transfer service -- it sets the same status on
     # both shadows.  The 'done'/'received' distinction is a display
     # convention for regular transactions.
+    # NO explicit ``paid_at``: finding N-178's fix, rationale at the matching
+    # comment in ``routes/transfers/mutations.py:mark_done``.  The seam stamps
+    # the instant on first entry and preserves it after; passing one here
+    # overrode that and re-dated a replayed settle.
     svc_kwargs = {
         "status_id": ref_cache.status_id(StatusEnum.DONE),
-        "paid_at": db.func.now(),
     }
 
     # Capture-on-settle (escrow redesign, Option A): when the operator settles
@@ -676,7 +682,7 @@ def _mark_done_regular(txn, txn_id, status_id, actual_amount, target):
     # ``transaction_service.settle_from_entries`` so the manual mark-done
     # path and the carry-forward envelope branch (Phase 4) share a single
     # source of truth for "settle a tracked row at sum(entries)."  The
-    # helper writes ``status_id``, ``paid_at``, and ``actual_amount``
+    # helper writes ``status_id``, ``settled_on``, and ``actual_amount``
     # together; the route does not need to set them itself in this branch.
     if txn.tracks_purchases and txn.entries:
         try:
@@ -685,7 +691,7 @@ def _mark_done_regular(txn, txn_id, status_id, actual_amount, target):
             return _error_transaction_response(txn_id, str(exc), target)
     else:
         # Manual settle: route the status flip through the single status seam
-        # (state-machine check + status_id + paid_at stamp + status expire).  The
+        # (state-machine check + status_id + settled_on stamp + status expire).  The
         # envelope branch above reaches the same seam via
         # ``settle_from_entries``.  Only Projected (or the identity edge from
         # Paid/Received) can transition into Paid/Received; an illegal move
@@ -957,11 +963,11 @@ def cancel_transaction(txn_id):
     # --- End guard ---
 
     # Route the cancel through the single status seam (state-machine check +
-    # status_id + paid_at).  Cancelled is reachable only from Projected (or the
+    # status_id + settled_on).  Cancelled is reachable only from Projected (or the
     # Cancelled identity edge for idempotent re-submits); a direct done ->
     # cancelled or settled -> cancelled would erase the paid/archived audit
     # trail and raises ValidationError -> 400.  Cancelled is non-settled, so the
-    # seam leaves paid_at clear.  Audit reference: F-047 / F-161 follow-up to
+    # seam leaves settled_on clear.  Audit reference: F-047 / F-161 follow-up to
     # commit C-21.
     try:
         status_seam.apply_status_change(txn, cancelled_id)

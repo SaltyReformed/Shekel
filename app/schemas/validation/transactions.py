@@ -60,7 +60,6 @@ class TransactionUpdateSchema(BaseSchema):
     # the controls are present.
     is_envelope = fields.Boolean()
     companion_visible = fields.Boolean()
-    paid_at = fields.DateTime(allow_none=True, dump_only=True)
     version_id = RowId(validate=validate.Range(min=1))
 
 
@@ -85,7 +84,7 @@ class TransactionCreateSchema(BaseSchema):
     # unconditionally).  The only path to a settled status is the status seam
     # (``status_seam.apply_status_change``), so a submitted status is dropped by
     # ``unknown=EXCLUDE`` rather than minting a born-settled row that
-    # would have a NULL ``paid_at``, bypass ``verify_transition``, and post
+    # would have no settle day, bypass ``verify_transition``, and post
     # nothing to the ledger.  Record an already-paid item by creating it
     # Projected, then marking it done.
     notes = fields.String(allow_none=True, validate=validate.Length(max=500))

@@ -454,7 +454,7 @@ class TestBackfillEntryDate:
             )
             # add_txn leaves paid_at NULL; set it here.  The W9907 seam checker
             # bans only post-hoc ``status_id`` assignment, not ``paid_at``.
-            txn.paid_at = datetime(2026, 5, 10, 2, 0, tzinfo=timezone.utc)
+            txn.settled_on = date(2026, 5, 9)
             _db.session.commit()
             _run_backfill()
             assert _entry_for_transaction(txn.id).entry_date == date(2026, 5, 10)

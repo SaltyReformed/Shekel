@@ -96,44 +96,6 @@ def display_today() -> date:
     return to_display_tz(datetime.now(timezone.utc)).date()
 
 
-def to_display_civil_date(paid_at: datetime | None, fallback: date) -> date:
-    """Return the display-timezone civil date of a settle instant, or ``fallback``.
-
-    The ONE derivation of "which civil day did this cash move on", and every
-    consumer now shares it: ``posting_service._civil_settle_date`` (the STORED
-    ``journal_entries.entry_date``), ``cash_ledger.settled_civil_day`` (the
-    balance walk's partition), ``loan_ledger._visible.payment_visible_on``, and
-    the confirmed-statement reader's attribution.  ``_civil_settle_date`` was
-    the exception -- it stayed UTC because it fed a stored column -- until
-    ruling R-DH (b) moved the stored day to the user's too, on the grounds that
-    it is compared against and bucketed by plain ``DATE`` columns that mean the
-    user's civil days.  Per the L9 decision (2026-07-03): a settle clicked
-    8:05pm Eastern on Dec 31 attributes to Dec 31, not to the Jan 1 it becomes
-    in UTC.  Storage is unchanged -- every instant is still stored UTC and the
-    conversion happens only when a DAY is derived from one.
-
-    Mirrors ``_civil_settle_date``'s NULL handling: a source whose
-    ``paid_at`` was never recorded (a historical settle predating the
-    ``paid_at`` sync) or was cleared by a revert falls back to the given
-    date -- callers pass the source's pay period ``start_date``, the same
-    fallback the entry dating used.
-
-    Args:
-        paid_at: The settle instant read back from the source row, or
-            ``None``.  Naive values are assumed UTC (the storage
-            convention), matching :func:`to_display_tz`.
-        fallback: The civil date to return when ``paid_at`` is ``None``
-            (the source's pay period ``start_date``).
-
-    Returns:
-        The display-timezone calendar date of ``paid_at``, or ``fallback``.
-    """
-    display_date = to_display_date(paid_at)
-    if display_date is None:
-        return fallback
-    return display_date
-
-
 def utc_instant(instant: datetime) -> datetime:
     """Return *instant* as an aware-UTC ``datetime``.
 

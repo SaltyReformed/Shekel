@@ -477,7 +477,7 @@ class TestAnAssertionAlwaysWins:
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[1], Decimal("5000.00"),
             account=account, is_income=True,
-            paid_at=_instant(2026, 1, 20), name="contribution",
+            settled_on=date(2026, 1, 20), name="contribution",
         )
         db.session.commit()
         ctx = _ctx(seed_user)
@@ -896,7 +896,7 @@ class TestTheContributionTier:
         create_settled_transfer(
             seed_user, db.session, seed_user["account"], account,
             seed_periods[1], amount=Decimal("500.00"),
-            paid_at=_instant(2026, 1, 20),
+            settled_on=date(2026, 1, 20),
         )
         db.session.commit()
         ctx = _ctx(seed_user)
@@ -941,7 +941,7 @@ class TestTheContributionTier:
         create_settled_transfer(
             seed_user, db.session, seed_user["account"], account,
             seed_periods[1], amount=Decimal("300.00"),
-            paid_at=_instant(2026, 1, 20),
+            settled_on=date(2026, 1, 20),
         )
         db.session.commit()
         ctx = _ctx(seed_user)
@@ -1128,7 +1128,7 @@ class TestThePerPeriodIdentity:
         create_settled_transfer(
             seed_user, db.session, seed_user["account"], account,
             seed_periods[2], amount=Decimal("750.00"),
-            paid_at=_instant(2026, 1, 20),
+            settled_on=date(2026, 1, 20),
         )
         db.session.commit()
         ctx = _ctx(seed_user, as_of=date(2026, 3, 1))

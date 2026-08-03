@@ -144,11 +144,11 @@ def _settle_payment(seed_user, loan, period, cash, actual=None, settled_on=None)
     ``settled_on`` (a civil date) pins the payment's ``paid_at``, so a test
     reading a PAST balance can place the payment on a known day -- balance step
     C2 keys a payment's visibility on its SETTLED date.  Left ``None`` it keeps
-    the fixture's realistic ``db.func.now()`` default.
+    the fixture's realistic "settled today" default.
     """
     kwargs = {"amount": cash, "actual_amount": actual}
     if settled_on is not None:
-        kwargs["paid_at"] = settle_instant_on(settled_on)
+        kwargs["settled_on"] = settled_on
     xfer = create_settled_transfer(
         seed_user, _db.session, seed_user["account"], loan, period, **kwargs,
     )
@@ -801,7 +801,7 @@ class TestTrackingStartOpening:
             create_settled_transfer(
                 seed_user, db.session, seed_user["account"], loan,
                 seed_periods[_P1], amount=Decimal("1000.00"),
-                paid_at=datetime(2026, 2, 1, 12, 0, tzinfo=timezone.utc),
+                settled_on=date(2026, 2, 1),
             )
             db.session.commit()
 
@@ -2745,7 +2745,7 @@ class TestCheckedProjection:
             # checked-projection assert; a raise here IS the N-13 regression.
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
-                paid_at=settle_instant_on(date(2026, 2, 5)),
+                settled_on=date(2026, 2, 5),
             )
             db.session.commit()
 
@@ -2786,7 +2786,7 @@ class TestCheckedProjection:
 
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
-                paid_at=settle_instant_on(date(2026, 1, 20)),
+                settled_on=date(2026, 1, 20),
             )
             db.session.commit()
 

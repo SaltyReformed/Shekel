@@ -68,11 +68,11 @@ def _split_loan(seed_user, *, escrow_annual=None):
     )
 
 
-def _settle(seed_user, loan, period, cash, *, paid_at):
+def _settle(seed_user, loan, period, cash, *, settled_on):
     """Settle one Checking -> loan payment (auto-posts its ledger split)."""
     return create_settled_transfer(
         seed_user, db.session, seed_user["account"], loan, period,
-        amount=cash, paid_at=paid_at,
+        amount=cash, settled_on=settled_on,
     )
 
 
@@ -102,7 +102,7 @@ class TestPaidInYearChips:
             loan = _split_loan(seed_user)
             _settle(
                 seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
-                paid_at=_paid_on(2026, 3, 15),
+                settled_on=date(2026, 3, 15),
             )
             db.session.commit()
             ctx = BalanceContext.build(seed_user["user"].id)
@@ -136,7 +136,7 @@ class TestPaidInYearChips:
             for period in (seed_periods[_P1], seed_periods[_P2], seed_periods[_P3]):
                 _settle(
                     seed_user, loan, period, Decimal("1000.00"),
-                    paid_at=_paid_on(2026, 6, 1),
+                    settled_on=date(2026, 6, 1),
                 )
             db.session.commit()
             ctx = BalanceContext.build(seed_user["user"].id)
@@ -158,7 +158,7 @@ class TestPaidInYearChips:
             loan = _split_loan(seed_user)
             _settle(
                 seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
-                paid_at=_paid_on(2026, 6, 1),
+                settled_on=date(2026, 6, 1),
             )
             db.session.commit()
             ctx = BalanceContext.build(seed_user["user"].id)
@@ -180,7 +180,7 @@ class TestPaidInYearChips:
             loan = _split_loan(seed_user)
             _settle(
                 seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
-                paid_at=_paid_on(2025, 12, 20),
+                settled_on=date(2025, 12, 20),
             )
             db.session.commit()
             ctx = BalanceContext.build(seed_user["user"].id)
@@ -209,7 +209,7 @@ class TestPaidInYearChips:
             loan = _split_loan(seed_user)
             _settle(
                 seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
-                paid_at=datetime(2026, 1, 1, 1, 5, tzinfo=timezone.utc),
+                settled_on=date(2025, 12, 31),
             )
             db.session.commit()
             ctx = BalanceContext.build(seed_user["user"].id)
@@ -233,7 +233,7 @@ class TestPaidInYearChips:
             loan = _split_loan(seed_user)
             _settle(
                 seed_user, loan, seed_periods[_P1], Decimal("1500.00"),
-                paid_at=_paid_on(2026, 6, 1),
+                settled_on=date(2026, 6, 1),
             )
             db.session.commit()
             ctx = BalanceContext.build(seed_user["user"].id)
@@ -259,7 +259,7 @@ class TestPaidInYearChips:
             loan = _split_loan(seed_user, escrow_annual=Decimal("1200.00"))
             _settle(
                 seed_user, loan, seed_periods[_P1], Decimal("1100.00"),
-                paid_at=_paid_on(2026, 6, 1),
+                settled_on=date(2026, 6, 1),
             )
             db.session.commit()
             ctx = BalanceContext.build(seed_user["user"].id)
@@ -284,7 +284,7 @@ class TestPaidInYearChips:
             loan = _split_loan(seed_user)
             xfer = _settle(
                 seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
-                paid_at=_paid_on(2026, 3, 15),
+                settled_on=date(2026, 3, 15),
             )
             db.session.commit()
             ctx_before = BalanceContext.build(seed_user["user"].id)
@@ -327,12 +327,12 @@ class TestPaidInYearChips:
             for period in (seed_periods[_P1], seed_periods[_P2]):
                 _settle(
                     seed_user, loan, period, Decimal("1000.00"),
-                    paid_at=_paid_on(2026, 6, 1),
+                    settled_on=date(2026, 6, 1),
                 )
             create_settled_transfer(
                 seed_user, db.session, seed_user["account"], loan,
                 seed_periods[_P1], amount=Decimal("1000.00"),
-                paid_at=_paid_on(2026, 6, 1), scenario=whatif,
+                settled_on=date(2026, 6, 1), scenario=whatif,
             )
             db.session.commit()
 
@@ -364,7 +364,7 @@ class TestPaidInYearChips:
             loan = _split_loan(seed_user)
             _settle(
                 seed_user, loan, seed_periods[_P1], Decimal("1000.00"),
-                paid_at=_paid_on(2026, 3, 15),
+                settled_on=date(2026, 3, 15),
             )
             db.session.commit()
 

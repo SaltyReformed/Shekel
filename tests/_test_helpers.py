@@ -502,12 +502,9 @@ def _rewrite_db_clock_calls(
     """Answer every rendered clock call with the frozen instant.
 
     The second of finding N-65's two mechanisms, and it is one rule covering
-    what would otherwise be three.  A clock call reaches the database three
-    ways, and only one of them is a column default:
+    what would otherwise be several.  A clock call reaches the database more
+    than one way, and only some of them are column defaults:
 
-    * ``status_seam.apply_status_change`` ASSIGNS ``db.func.now()`` to
-      ``Transaction.paid_at`` so PostgreSQL evaluates it server-side -- the
-      column has no default at all, so no schema derivation can see it;
     * a modified row's ``onupdate=NOW()`` columns render ``updated_at=now()``
       into the UPDATE;
     * a BULK update (``carry_forward_service``'s ``query.update(...)``) renders
@@ -602,14 +599,22 @@ def _freeze_db_clock(monkeypatch, target_date):
 
     The structural half of finding N-65 (balance plan step X-h).  Freezing
     ``date.today()`` alone leaves PostgreSQL's clock untouched, and the
-    database answers it in four places: 61 columns take their INSERT value from
-    a ``NOW()`` server default, one from a ``CURRENT_DATE`` text default, 23 of
-    them re-stamp on UPDATE, and ``status_seam`` assigns ``db.func.now()`` to
-    ``Transaction.paid_at`` outright.  So a fixture that settled a row "now"
+    database answers it in several places: 61 columns take their INSERT value
+    from a ``NOW()`` server default, one from a ``CURRENT_DATE`` text default,
+    and 23 of them re-stamp on UPDATE.  So a fixture that settled a row "now"
     stamped it months outside the pay periods the test seeded, and the balance
     fold -- which dates every event -- replayed it outside the window entirely.
     Nothing noticed while the shipping producers read the LATEST anchor row and
     ignored its date; the fold made the instant load-bearing.
+
+    **One of the FOUR reaches this was written for is gone, closed
+    structurally rather than contained** (plan step X-f1, ruling R-EC).
+    ``status_seam`` assigned ``db.func.now()`` to ``Transaction.settled_on``
+    outright -- the one reach that was not a schema derivation, so nothing but
+    this rewriter could see it.  The seam stamps ``display_today()`` into a
+    ``DATE`` column now, which is a Python value the ``date.today()`` freeze
+    already governs.  The rewriter stays for the other reaches, which are
+    schema-level and not going anywhere.
 
     Two mechanisms cover it, and each covers what the other structurally
     cannot: :func:`_stamp_omitted_db_defaults` for a default that never appears
@@ -1409,8 +1414,8 @@ def create_account_of_type(
     **The opening defaults to the day BEFORE today, and that default is the
     point** (ruling R-DH (a), finding N-133 / F1).  An assertion is the CLOSING
     balance for its civil day, so a settle dated that same day is INSIDE it --
-    and the ordinary settle idiom in these suites is ``paid_at =
-    db.func.now()``, which under a frozen clock is TODAY.  An account opened
+    and the ordinary settle idiom in these suites is the seam's own
+    ``settled_on = display_today()``, which under a frozen clock is TODAY.  An account opened
     "today" therefore swallows every settle the test then records, and the
     fixture stops exercising the thing it names.  Opening the account
     yesterday is the production shape (an account exists before money moves in
@@ -2166,25 +2171,24 @@ def clear_postings_for_transaction(transaction_id):
     db.session.commit()
 
 
-_UNSET_PAID_AT = object()
+_UNSET_SETTLED_ON = object()
 
 
 def settle_instant_on(day):
     """Return a deterministic event instant on a given civil date (noon UTC).
 
-    A test-side helper for pinning a fixture's ``paid_at`` to a specific day
-    without a wall-clock read -- pass it to :func:`create_settled_transfer` /
-    :func:`create_settled_cash_transaction` when a test must place a settled
-    payment on a known date (balance step C2 keys a payment's visibility on its
-    SETTLED date, so a loan test reading a PAST balance settles at the day it
-    wants the payment visible from -- typically its pay-period ``start_date``).
-    Noon UTC is the same civil day in the display zone (Eastern), so the tax-year
-    (display-tz) attribution lands on that day too.
+    A test-side helper for pinning an ASSERTION's recording instant to a
+    specific day without a wall-clock read -- :func:`restamp_opening_assertion`,
+    which :func:`create_hysa_account` uses to pin an account's opening.  Noon
+    UTC is the same civil day in the display zone (Eastern), so a day pinned
+    this way reads back as that day.
 
-    It serves an ASSERTION instant too (:func:`restamp_opening_assertion`, which
-    :func:`create_hysa_account` uses to pin an account's opening): a settle and
-    an assertion are both events the balance layer dates by their UTC civil day,
-    so "a deterministic instant on this day" is one primitive, not two.
+    **It no longer serves a SETTLE, and that is plan step X-f1** (ruling R-EC).
+    A settled transaction stores its civil day in ``transactions.settled_on``,
+    so :func:`create_settled_transfer` and
+    :func:`create_settled_cash_transaction` take the DAY directly and a caller
+    that used to wrap it here passes it plain.  What remains is the assertion
+    side, where ``created_at`` is genuinely an instant.
 
     Args:
         day: The civil :class:`datetime.date` to place the event on.
@@ -2361,7 +2365,7 @@ def create_transfer(
 def create_settled_transfer(
     seed_user, db_session, from_account, to_account, period,
     amount=Decimal("100.00"), actual_amount=None,
-    paid_at=_UNSET_PAID_AT, name=None, scenario=None,
+    settled_on=_UNSET_SETTLED_ON, name=None, scenario=None,
 ):
     """Create an ad-hoc transfer and settle it (Paid), returning the parent.
 
@@ -2392,13 +2396,21 @@ def create_settled_transfer(
             to both shadows (so their ``effective_amount`` becomes this, not
             ``amount``).  Defaults to ``None`` (effective == estimated ==
             amount).
-        paid_at: The settle timestamp written to both shadows.  Defaults to
-            ``db.func.now()`` (the realistic ``mark_done`` value).  A loan test
-            reading a PAST balance must pin this to the day it wants the payment
-            visible from -- balance step C2 keys visibility on the SETTLED date --
-            via :func:`settle_instant_on` (typically the period ``start_date``);
-            pass ``None`` to settle with a NULL ``paid_at`` (the historical state
-            the period-start fallback covers).
+        settled_on: The civil DAY written to both shadows.  Defaults to the
+            user's today (what the seam derives, and the realistic ``mark_done``
+            value).  A loan test reading a PAST balance must pin this to the day
+            it wants the payment visible from -- balance step C2 keys visibility
+            on the SETTLED date -- typically the period's ``start_date``.  It
+            took an INSTANT until plan step X-f1 and callers wrapped their day in
+            ``settle_instant_on``; the column stores the day now, so the day is
+            passed directly.  **Passing ``None`` EXPLICITLY still writes NULL
+            onto a settled row, which is the broken invariant
+            ``balance_predicates.settled_day`` refuses** -- the sentinel is
+            ``_UNSET_SETTLED_ON``, not ``None``, so this helper can still build a
+            row no reader can date.  An earlier draft of this docstring claimed
+            that state was "no longer constructible"; a neutral review found four
+            call sites doing exactly it (finding N-182).  Until those are
+            converted, ``None`` here means "build the broken row on purpose".
         name: Optional transfer display name.
         scenario: The :class:`~app.models.scenario.Scenario` to place the
             transfer (and both shadows) in.  Defaults to ``None``, which uses
@@ -2421,9 +2433,8 @@ def create_settled_transfer(
         amount=amount, name=name, scenario=scenario,
     )
     update_kwargs = {"status_id": ref_cache.status_id(StatusEnum.DONE)}
-    update_kwargs["paid_at"] = (
-        db.func.now() if paid_at is _UNSET_PAID_AT else paid_at
-    )
+    if settled_on is not _UNSET_SETTLED_ON:
+        update_kwargs["settled_on"] = settled_on
     if actual_amount is not None:
         update_kwargs["actual_amount"] = actual_amount
     transfer_service.update_transfer(
@@ -2436,7 +2447,7 @@ def create_settled_cash_transaction(
     seed_user, db_session, period, amount,
     *, account=None, scenario=None, is_income=False,
     category=None, actual_amount=None, name="Cash Txn",
-    paid_at=_UNSET_PAID_AT,
+    settled_on=_UNSET_SETTLED_ON,
 ):
     """Create an ordinary (non-transfer) transaction and settle it go-forward.
 
@@ -2447,7 +2458,7 @@ def create_settled_cash_transaction(
     (``posting_service.sync_transaction_postings``) -- in the same order the
     mark-done route applies them (seam, then the optional manual ``actual_amount``,
     then the reconcile as the last step).  So the returned transaction is genuinely
-    settled (``status.is_settled``, ``paid_at`` stamped) AND its confirmed cash
+    settled (``status.is_settled``, ``settled_on`` stamped) AND its confirmed cash
     effect is posted to the double-entry ledger, exactly as production produces it
     when a user marks a transaction Paid / Received.
 
@@ -2482,15 +2493,15 @@ def create_settled_cash_transaction(
             the estimate, or ``None`` (effective == estimated == amount).
         name: The transaction display name (becomes the journal entry
             description).
-        paid_at: The settle instant.  Defaults to the seam-derived
-            ``db.func.now()`` (the realistic ``mark_done`` value); pass an
-            explicit instant (see :func:`settle_instant_on`) to pin the
-            attribution moment for a past-balance read, or ``None`` to settle with
-            a NULL ``paid_at`` (the historical period-start fallback state).
-            Pinned BEFORE the ledger emission -- mirroring
-            :func:`create_settled_transfer`'s ``paid_at`` -- so the posted
-            ``entry_date`` and the Step-5 walk's attribution instant agree,
-            exactly as production produces them.
+        settled_on: The settle DAY.  Defaults to the seam-derived
+            ``display_today()`` (the realistic ``mark_done`` value); pass an
+            explicit ``date`` to pin the attribution day for a past-balance
+            read.  Pinned BEFORE the ledger emission -- mirroring
+            :func:`create_settled_transfer`'s ``settled_on`` -- so the posted
+            ``entry_date`` and the Step-5 walk's attribution day agree, exactly
+            as production produces them.  There is no "settle with no day"
+            option: that state is the broken invariant
+            ``balance_predicates.settled_day`` refuses.
 
     Returns:
         The settled (Paid / Received) :class:`~app.models.transaction.Transaction`,
@@ -2522,14 +2533,14 @@ def create_settled_cash_transaction(
     db_session.flush()
 
     # Settle through the real go-forward path: the seam flips the status and
-    # stamps paid_at, the optional manual actual is applied AFTER (as the route
+    # stamps settled_on, the optional manual actual is applied AFTER (as the route
     # does), and the builder reconciles the ledger to the confirmed effect last.
     settled_status = StatusEnum.RECEIVED if is_income else StatusEnum.DONE
     status_seam.apply_status_change(
         txn, ref_cache.status_id(settled_status),
     )
-    if paid_at is not _UNSET_PAID_AT:
-        txn.paid_at = paid_at
+    if settled_on is not _UNSET_SETTLED_ON:
+        txn.settled_on = settled_on
     if actual_amount is not None:
         txn.actual_amount = actual_amount
     posting_service.sync_transaction_postings(txn, settled=True)

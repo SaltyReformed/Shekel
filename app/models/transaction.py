@@ -12,7 +12,6 @@ from decimal import Decimal
 from app.extensions import db
 from app import ref_cache
 from app.enums import TxnTypeEnum
-from app.utils.dates import to_display_date
 from app.models.mixins import (
     OptimisticLockMixin,
     SoftDeleteOverridableMixin,
@@ -29,6 +28,44 @@ class Transaction(
     db.Model,
 ):
     """A single income or expense entry within a pay period.
+
+    **A transaction carries TWO clocks, and the second one is not decoration.**
+    ``pay_period_id`` (with ``due_date``) is the BUDGET clock -- which column
+    the user planned this in -- and :attr:`settled_on` is the CASH clock, the
+    civil day the money actually moved.  They are the same period for most rows
+    and different for 21 of the 156 settled rows on the 2026-08-03 production
+    clone, and that difference IS the grid's timing row: a row settled outside
+    its own pay period moves the balance in one column while its income /
+    expense subtotal sits in another.  The same split is stated on
+    ``TransactionEntry`` (``purchased_on`` beside its own ``settled_on``), on
+    ``cash_ledger.CashSourceFact``, and on a loan payment (``due_date`` beside
+    its pay period).
+
+    **``settled_on`` REPLACED a ``paid_at`` instant at plan step X-f1** (ruling
+    R-EC, migration ``a3f7c8e21b64``).  That column stored ``db.func.now()`` at
+    the moment the user clicked, and eleven read sites across eight modules
+    converted it to a display-timezone civil day to get the fact they wanted --
+    while nothing read the instant itself and nothing ordered two of them.  On
+    real data 65.2% of settled Checking rows shared a click-minute with another
+    row, so its precision described a bookkeeping session rather than money.
+    Storing the day directly leaves one clock, converted once at the write door.
+
+    **The settled-iff-dated invariant is structural, not a constraint.**  A
+    CHECK cannot express it: the predicate is ``ref.statuses.is_settled`` and a
+    constraint cannot join, while hardcoding the settled ids would be a magic
+    number that breaks when a status is added or removed.  Instead
+    ``status_seam.apply_status_change`` is the ONE door that writes
+    ``status_id``, and it writes ``settled_on`` in the same call.  A reader that
+    finds a settled row with no day must FAIL LOUD rather than fall back --
+    dropping such a row from a fold is silent money loss.
+
+    **``settled_on`` has no bounds, and that is deliberate.**  A settle
+    legitimately falls outside its budget period on EITHER side (measured on the
+    2026-08-03 production clone: 11 of 156 settled rows before their period's
+    start, 10 after its end), so neither bound exists; a "not in
+    the future" rule is not expressible in a CHECK (it is not immutable) and
+    lives at the write door instead, exactly as ruling R-M's purchase-date guard
+    does for an entry.
 
     Optimistic locking: ``version_id`` is the SQLAlchemy
     ``version_id_col`` for the row.  Every ORM-emitted UPDATE or
@@ -190,7 +227,13 @@ class Transaction(
     )
     notes = db.Column(db.Text)
     due_date = db.Column(db.Date, nullable=True)
-    paid_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    # The CASH clock.  Nullable, and the NULL is the invariant rather than a
+    # gap: a row carries a settle day if and only if it is in a settled status
+    # (Paid / Received / Settled).  Both halves are written by ONE statement --
+    # ``status_seam.apply_status_change``, the single door that assigns
+    # ``status_id`` -- so they cannot diverge.  See the class docstring for why
+    # this is not a CHECK constraint and why it has no bounds.
+    settled_on = db.Column(db.Date)
     # is_envelope and companion_visible are provided by
     # TrackingVisibilityMixin.  On an ad-hoc (template_id IS NULL) row
     # they carry the row's own setting; on a template-generated row they
@@ -311,15 +354,37 @@ class Transaction(
         """Days between due date and payment, or None.
 
         Positive means paid early, negative means paid late, zero means
-        paid on the due date.  Returns None when either field is missing.
-        ``paid_at`` is converted to the user's DISPLAY timezone before it is
-        truncated to a day (the app-wide "store UTC, display Eastern" rule),
-        so an 8:05pm-Eastern settle on the due date counts as ON TIME, not a
-        day late by UTC drift.  ``due_date`` is already a civil date.
+        paid on the due date.  Returns None when either field is missing --
+        which for :attr:`settled_on` means the row is not settled, so its
+        timeliness is not yet a question.
+
+        **Both operands are civil dates, and no timezone enters this.**  It
+        subtracted ``to_display_date(paid_at)`` until plan step X-f1: an instant
+        converted to a day and subtracted from a ``DATE`` column, which was one
+        of the eleven statements of the same "which civil day did this settle
+        on" derivation the seam now makes once at the write door.  The
+        arithmetic is now exact rather than zone-dependent.
+
+        **The behaviour is unchanged for every row that recorded an instant, and
+        CHANGED for eight rows that did not** (finding **N-181**, found by a
+        neutral review).  This gate used to be "was a settle instant recorded";
+        it is now "is the row settled", because the migration backfilled a day
+        onto every settled row -- including 8 legacy transfer shadows whose
+        ``paid_at`` was NULL and which took their pay period's ``start_date``.
+        Those 8 were EXCLUDED from
+        ``spending_analysis.payment_timeliness_from_txns`` and are now included,
+        dated by a day nothing observed: measured on production, the four
+        expense legs report 8 days early, on time, on time and 1 day late.  The
+        balance was always computed from that same fallback day, so no balance
+        moves; what moved is a timeliness metric that used the NULL as its
+        "unknown" signal.  Narrowing the backfill instead was REJECTED -- it
+        would leave 8 settled rows undated, which the balance walk now refuses,
+        trading a soft metric for a 500 on the grid.  The resolution is plan step
+        X-f1c's edit door, which lets those 8 legacy days be corrected.
         """
-        if self.due_date is None or self.paid_at is None:
+        if self.due_date is None or self.settled_on is None:
             return None
-        return (self.due_date - to_display_date(self.paid_at)).days
+        return (self.due_date - self.settled_on).days
 
     def __repr__(self):
         return f"<Transaction '{self.name}' ${self.estimated_amount} ({self.id})>"

@@ -276,7 +276,7 @@ def test_an_early_settled_payment_is_not_re_synthesized_as_estimated(
     transfer = create_settled_transfer(
         seed_user, db.session, seed_user["account"], account,
         seed_periods[9], amount=Decimal("2100.00"),
-        paid_at=settle_instant_on(date(2026, 5, 20)),
+        settled_on=date(2026, 5, 20),
     )
     shadow = loan_income_shadow(db.session, transfer.id, account.id)
     shadow.due_date = date(2026, 6, 1)

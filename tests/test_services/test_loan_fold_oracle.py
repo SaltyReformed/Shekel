@@ -101,7 +101,7 @@ def _settle(seed_user, db, loan, period, amount=Decimal("1000.00")):
     """
     return create_settled_transfer(
         seed_user, db.session, seed_user["account"], loan, period,
-        amount=amount, paid_at=settle_instant_on(period.start_date),
+        amount=amount, settled_on=period.start_date,
     )
 
 
@@ -500,7 +500,7 @@ class TestRawLoanTransactionIsTheOnlyDivergence:
             create_settled_cash_transaction(
                 seed_user, db.session, seed_periods[1], Decimal("300.00"),
                 account=loan, name="Typed On Loan",
-                paid_at=settle_instant_on(seed_periods[1].start_date),
+                settled_on=seed_periods[1].start_date,
             )
             db.session.commit()
 

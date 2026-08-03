@@ -28,6 +28,7 @@ from app.services import (
 )
 from app.utils.error_fragments import DESIGNED_FRAGMENT_HEADER
 from app.services.balance_at import BalanceContext
+from app.utils.dates import display_today
 
 from tests._test_helpers import (
     append_balance_assertion,
@@ -5322,25 +5323,25 @@ class TestPaidAtLifecycle:
         """POST /transactions/<id>/mark-done sets paid_at timestamp for expenses."""
         with app.app_context():
             txn = self._create_test_txn(seed_user, seed_periods_today)
-            assert txn.paid_at is None
+            assert txn.settled_on is None
 
             response = auth_client.post(f"/transactions/{txn.id}/mark-done")
             assert response.status_code == 200
 
             db.session.refresh(txn)
-            assert txn.paid_at is not None
+            assert txn.settled_on is not None
 
     def test_paid_at_set_on_mark_received(self, app, auth_client, seed_user, seed_periods_today):
         """POST /transactions/<id>/mark-done sets paid_at timestamp for income."""
         with app.app_context():
             txn = self._create_income_txn(seed_user, seed_periods_today)
-            assert txn.paid_at is None
+            assert txn.settled_on is None
 
             response = auth_client.post(f"/transactions/{txn.id}/mark-done")
             assert response.status_code == 200
 
             db.session.refresh(txn)
-            assert txn.paid_at is not None
+            assert txn.settled_on is not None
 
     def test_paid_at_nulled_on_status_revert(self, app, auth_client, seed_user, seed_periods_today):
         """PATCH /transactions/<id> with status_id reverted to projected nulls paid_at."""
@@ -5353,7 +5354,7 @@ class TestPaidAtLifecycle:
             # Mark done to set paid_at.
             auth_client.post(f"/transactions/{txn.id}/mark-done")
             db.session.refresh(txn)
-            assert txn.paid_at is not None
+            assert txn.settled_on is not None
 
             # Revert to projected via PATCH.
             projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
@@ -5364,7 +5365,7 @@ class TestPaidAtLifecycle:
             assert response.status_code == 200
 
             db.session.refresh(txn)
-            assert txn.paid_at is None
+            assert txn.settled_on is None
 
     def test_paid_at_re_mark_sets_new_timestamp(self, app, auth_client, seed_user, seed_periods_today):
         """Mark done, revert to projected, mark done again -- paid_at is set both times."""
@@ -5377,7 +5378,7 @@ class TestPaidAtLifecycle:
             # First mark done.
             auth_client.post(f"/transactions/{txn.id}/mark-done")
             db.session.refresh(txn)
-            first_paid_at = txn.paid_at
+            first_paid_at = txn.settled_on
             assert first_paid_at is not None
 
             # Revert to projected.
@@ -5387,12 +5388,12 @@ class TestPaidAtLifecycle:
                 data={"status_id": str(projected_id)},
             )
             db.session.refresh(txn)
-            assert txn.paid_at is None
+            assert txn.settled_on is None
 
             # Mark done again.
             auth_client.post(f"/transactions/{txn.id}/mark-done")
             db.session.refresh(txn)
-            second_paid_at = txn.paid_at
+            second_paid_at = txn.settled_on
             assert second_paid_at is not None
             assert second_paid_at >= first_paid_at
 
@@ -5402,13 +5403,13 @@ class TestPaidAtLifecycle:
         """POST /transactions/<id>/cancel does not set paid_at."""
         with app.app_context():
             txn = self._create_test_txn(seed_user, seed_periods_today)
-            assert txn.paid_at is None
+            assert txn.settled_on is None
 
             response = auth_client.post(f"/transactions/{txn.id}/cancel")
             assert response.status_code == 200
 
             db.session.refresh(txn)
-            assert txn.paid_at is None
+            assert txn.settled_on is None
 
     def test_paid_at_preserved_on_non_status_update(
         self, app, auth_client, seed_user, seed_periods_today
@@ -5428,7 +5429,7 @@ class TestPaidAtLifecycle:
             # Mark done to set paid_at.
             auth_client.post(f"/transactions/{txn.id}/mark-done")
             db.session.refresh(txn)
-            original_paid_at = txn.paid_at
+            original_paid_at = txn.settled_on
             assert original_paid_at is not None
 
             # Edit a non-status, non-locked field -- no status change.
@@ -5440,7 +5441,7 @@ class TestPaidAtLifecycle:
 
             db.session.refresh(txn)
             assert txn.notes == "Reconciled against statement"
-            assert txn.paid_at is not None
+            assert txn.settled_on is not None
 
     def test_mark_done_idempotent_preserves_paid_at(
         self, app, auth_client, seed_user, seed_periods_today
@@ -5461,14 +5462,14 @@ class TestPaidAtLifecycle:
             resp1 = auth_client.post(f"/transactions/{txn.id}/mark-done")
             assert resp1.status_code == 200
             db.session.refresh(txn)
-            first_paid_at = txn.paid_at
+            first_paid_at = txn.settled_on
             assert first_paid_at is not None
 
             # Second mark done (idempotent Paid -> Paid).
             resp2 = auth_client.post(f"/transactions/{txn.id}/mark-done")
             assert resp2.status_code == 200
             db.session.refresh(txn)
-            second_paid_at = txn.paid_at
+            second_paid_at = txn.settled_on
             assert second_paid_at is not None
             # Preserved, not churned -- exactly the original timestamp.
             assert second_paid_at == first_paid_at
@@ -5489,7 +5490,7 @@ class TestPaidAtLifecycle:
             from app.enums import StatusEnum
 
             txn = self._create_test_txn(seed_user, seed_periods_today)
-            assert txn.paid_at is None
+            assert txn.settled_on is None
 
             done_id = ref_cache.status_id(StatusEnum.DONE)
             response = auth_client.patch(
@@ -5500,7 +5501,7 @@ class TestPaidAtLifecycle:
 
             db.session.refresh(txn)
             assert txn.status_id == done_id
-            assert txn.paid_at is not None
+            assert txn.settled_on is not None
 
 
 class TestBornProjected:
@@ -5542,7 +5543,7 @@ class TestBornProjected:
                 name="Crafted Settled"
             ).one()
             assert txn.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
-            assert txn.paid_at is None
+            assert txn.settled_on is None
 
     def test_inline_create_with_settled_status_yields_projected(
         self, app, auth_client, seed_user, seed_periods_today

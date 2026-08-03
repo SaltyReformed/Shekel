@@ -422,7 +422,7 @@ class TestCarryForwardStatusRecheck:
                 "the F-049 status precondition is not effective."
             )
             assert loser.status.name == "Paid"
-            assert loser.paid_at is not None
+            assert loser.settled_on is not None
 
             # Race-winner moved normally.
             assert winner.pay_period_id == seed_periods[1].id
@@ -2568,7 +2568,7 @@ class TestCarryForwardEnvelopeIncomeFalse:
             # actual_amount must NOT have been set: discrete branch
             # never calls settle_from_entries.
             assert source.actual_amount is None
-            assert source.paid_at is None
+            assert source.settled_on is None
 
             # No new rows generated in target -- the source itself is
             # the row in target now.

@@ -315,9 +315,7 @@ def _settle(
     return create_settled_transfer(
         user, _db.session, user["account"], loan, period,
         amount=amount, scenario=scenario,
-        paid_at=settle_instant_on(
-            period.start_date if settled_on is None else settled_on,
-        ),
+        settled_on=period.start_date if settled_on is None else settled_on,
     )
 
 
@@ -2332,11 +2330,11 @@ class TestReaderParallelRunAgainstResolver:
             # (2026-01-22 .. 2026-02-04, due 02-01) is a distinct January month.
             create_settled_transfer(
                 ctx, db.session, checking, loan, periods[0], amount=scheduled_pi,
-                paid_at=settle_instant_on(periods[0].start_date),
+                settled_on=periods[0].start_date,
             )
             create_settled_transfer(
                 ctx, db.session, checking, loan, periods[2], amount=scheduled_pi,
-                paid_at=settle_instant_on(periods[2].start_date),
+                settled_on=periods[2].start_date,
             )
             db.session.commit()
 

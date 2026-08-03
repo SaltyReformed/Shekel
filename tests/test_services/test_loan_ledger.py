@@ -75,7 +75,7 @@ def _settle(seed_user, db, loan, period, amount):
     """
     return create_settled_transfer(
         seed_user, db.session, seed_user["account"], loan, period,
-        amount=amount, paid_at=settle_instant_on(period.start_date),
+        amount=amount, settled_on=period.start_date,
     )
 
 
@@ -503,7 +503,7 @@ class TestFoldCountsAnEventOnTheDayItHappened:
             create_settled_transfer(
                 seed_user, db.session, seed_user["account"], loan,
                 seed_periods[1], amount=Decimal("1000.00"),
-                paid_at=settle_instant_on(settled),
+                settled_on=settled,
             )
             db.session.commit()
             # The installment this payment satisfies is 2026-02-01 (the split key).

@@ -879,7 +879,7 @@ class TestTransferInstance:
             settled_at = datetime.now(timezone.utc) - timedelta(days=7)
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
-                status_id=done_id, paid_at=settled_at,
+                status_id=done_id, settled_on=settled_at,
             )
             db.session.commit()
 
@@ -887,7 +887,7 @@ class TestTransferInstance:
                 """Return the shadows' settle instants and the posted days."""
                 db.session.expire_all()
                 paid = sorted(
-                    s.paid_at for s in db.session.query(Transaction)
+                    s.settled_on for s in db.session.query(Transaction)
                     .filter_by(transfer_id=xfer.id).all()
                 )
                 dated = sorted(
@@ -1607,10 +1607,90 @@ class TestAdHoc:
             assert len(shadows) == 2
             for shadow in shadows:
                 assert shadow.status.name == "Paid"
-                assert shadow.paid_at is not None, (
+                assert shadow.settled_on is not None, (
                     f"Shadow {shadow.id} has NULL paid_at after mark-done; "
                     f"the F-048 parity gap is back."
                 )
+
+    def test_re_marking_a_settled_transfer_does_not_re_date_it(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """A replayed mark-done leaves a settled transfer's money where it is.
+
+        Finding **N-178**, reproduced before it was fixed: ``done -> done`` is a
+        legal transition and neither mark-done route gates on status, so a stale
+        page, a second tab or a replayed POST re-submits the settle.  The route
+        used to pass ``settled_on=db.func.now()`` explicitly, and
+        ``update_transfer``'s explicit-``paid_at`` branch writes both shadows
+        VERBATIM after the status seam has already preserved the existing
+        instant -- so the re-submit moved the money to today.  Since plan step
+        E1a a settle's civil day IS the posted ``entry_date``, which is why this
+        asserts the LEDGER and not only the column: measured at the defective
+        commit, a transfer settled 7 days earlier gained a reversal at its real
+        settle day plus a fresh posting at today.
+
+        This is finding N-146 through a second door.  N-146's fix was in the
+        seam; nothing stopped a caller overriding the seam, and that is what
+        both mark-done routes did.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
+
+            assert auth_client.post(
+                f"/transfers/instance/{xfer.id}/mark-done"
+            ).status_code == 200
+
+            # Back-date THROUGH the service, so the posted ledger follows the
+            # column.  Setting the attribute directly would leave the ledger at
+            # today and the assertion below could pass on a stale ledger rather
+            # than on a preserved one -- the control has to start from the state
+            # a genuinely week-old settle is really in.
+            settled_a_week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id, settled_on=settled_a_week_ago,
+            )
+            db.session.commit()
+
+            def _ledger_days():
+                return sorted(
+                    entry.entry_date
+                    for entry in db.session.query(JournalEntry)
+                    .filter(JournalEntry.transfer_id == xfer.id)
+                    .all()
+                )
+
+            days_before = _ledger_days()
+            shadow_instants_before = {
+                shadow.id: shadow.settled_on
+                for shadow in db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id, is_deleted=False)
+                .all()
+            }
+            assert shadow_instants_before, "fixture produced no shadows"
+
+            # The replay.
+            assert auth_client.post(
+                f"/transfers/instance/{xfer.id}/mark-done"
+            ).status_code == 200
+
+            db.session.expire_all()
+            for shadow in (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id, is_deleted=False)
+                .all()
+            ):
+                moved = (
+                    shadow.settled_on - shadow_instants_before[shadow.id]
+                ).total_seconds()
+                assert moved == 0, (
+                    f"Shadow {shadow.id} was re-dated by {moved / 86400:.2f} "
+                    f"days by a replayed mark-done (N-178)."
+                )
+            assert _ledger_days() == days_before, (
+                "The replayed mark-done moved the posted ledger: "
+                f"{days_before} -> {_ledger_days()} (N-178)."
+            )
 
 
 # ── Helpers for Negative-Path Tests ───────────────────────────────

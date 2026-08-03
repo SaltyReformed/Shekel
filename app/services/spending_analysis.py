@@ -307,12 +307,13 @@ def signed_pct(numerator: Decimal, base: Decimal) -> Decimal | None:
 def payment_timeliness_from_txns(txns: list[Transaction]) -> dict | None:
     """Compute on-time / late / average-days metrics over settled expenses.
 
-    Examines the subset of *txns* that carry both ``paid_at`` and
-    ``due_date`` (the only rows whose timing is knowable).  A bill paid on
-    or before its due date (``days_paid_before_due >= 0``) is on time; the
-    average is signed (positive = paid early on average).  Routes through
-    ``Transaction.days_paid_before_due`` so the display-timezone paid-date
-    rule (F3) lives in one place.
+    Examines the subset of *txns* that carry both ``settled_on`` and
+    ``due_date`` (the only rows whose timing is knowable -- an unsettled row
+    has no settle day by construction).  A bill paid on or before its due date
+    (``days_paid_before_due >= 0``) is on time; the average is signed
+    (positive = paid early on average).  Routes through
+    ``Transaction.days_paid_before_due``, which since plan step X-f1 subtracts
+    two civil dates rather than converting an instant (ruling R-EC).
 
     The caller supplies transactions already attributed to the reporting
     window (the year-end section pre-filters by attribution year; the
@@ -325,11 +326,11 @@ def payment_timeliness_from_txns(txns: list[Transaction]) -> dict | None:
     Returns:
         A dict with ``total_bills_paid``, ``paid_on_time``, ``paid_late``,
         and ``avg_days_before_due`` (a 2-dp ``Decimal``), or ``None`` when
-        no transaction has both ``paid_at`` and ``due_date``.
+        no transaction has both ``settled_on`` and ``due_date``.
     """
     applicable = [
         txn for txn in txns
-        if txn.paid_at is not None and txn.due_date is not None
+        if txn.settled_on is not None and txn.due_date is not None
     ]
     if not applicable:
         return None

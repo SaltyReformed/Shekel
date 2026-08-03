@@ -194,7 +194,7 @@ def resync_all_cash_postings_after_migration():
     Ruling **R-DH (b)** (2026-07-31,
     ``docs/audits/balance_architecture/anchor_settle_partition.md``).  A journal
     entry's ``entry_date`` is derived by
-    ``posting_service._civil_settle_date``, which moved from the UTC civil day
+    ``balance_predicates.settled_day``, which moved from the UTC civil day
     to the USER's on that date, together with both folds that read it.  Every
     entry written before then carries the old day, so the STORED ledger and the
     readers disagree for any settle recorded between midnight UTC and the user's

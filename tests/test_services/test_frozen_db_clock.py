@@ -5,7 +5,7 @@
 FOUR places: 61 columns take their INSERT value from a ``NOW()`` server
 default, one (``transaction_entries.entry_date``) from a raw-text
 ``CURRENT_DATE`` default, 23 of them re-stamp on UPDATE, and ``status_seam``
-assigns ``db.func.now()`` to ``Transaction.paid_at`` outright.  So a fixture that
+assigns ``db.func.now()`` to ``Transaction.settled_on`` outright.  So a fixture that
 settled a row "now" stamped it at the real wall clock -- months outside the
 periods the test seeded -- and the balance fold, which dates every event,
 replayed it outside the window entirely.  Nothing noticed while the shipping
@@ -140,9 +140,9 @@ class TestTheDatabaseClockIsTheTestClock:
             db.session.commit()
 
             db.session.expire(txn)
-            assert txn.paid_at is not None
-            assert txn.paid_at.date() == FROZEN_DATE, (
-                f"paid_at is {txn.paid_at!r}, not the frozen {FROZEN_DATE!r}"
+            assert txn.settled_on is not None
+            assert txn.settled_on.date() == FROZEN_DATE, (
+                f"paid_at is {txn.settled_on!r}, not the frozen {FROZEN_DATE!r}"
             )
 
     def test_an_onupdate_column_is_frozen_on_a_row_update(

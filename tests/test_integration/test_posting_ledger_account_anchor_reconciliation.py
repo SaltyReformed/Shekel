@@ -259,8 +259,8 @@ def _source_attribution_instant(txn) -> datetime:
     reading each shadow's own ``paid_at`` here is the same instant computed
     independently of the "income shadow" concept.
     """
-    if txn.paid_at is not None:
-        return _as_utc(txn.paid_at)
+    if txn.settled_on is not None:
+        return _as_utc(txn.settled_on)
     return _period_start_instant(txn.pay_period.start_date)
 
 
@@ -506,7 +506,7 @@ def _true_up_at(account, balance, created_at) -> None:
     )
 
 
-def _settle_expense(seed_user, account, amount, paid_at):
+def _settle_expense(seed_user, account, amount, settled_on):
     """Settle an expense on *account* at a pinned ``paid_at``; return it.
 
     ``paid_at`` may be an instant or ``None`` (the period-start fallback under
@@ -516,7 +516,7 @@ def _settle_expense(seed_user, account, amount, paid_at):
     """
     return create_settled_cash_transaction(
         seed_user, _db.session, seed_user["bootstrap_period"],
-        Decimal(str(amount)), account=account, paid_at=paid_at,
+        Decimal(str(amount)), account=account, settled_on=settled_on,
     )
 
 
@@ -1135,7 +1135,7 @@ class TestScenarioAndOwnerIsolation:
             create_settled_cash_transaction(
                 seed_user, db.session, seed_user["bootstrap_period"],
                 Decimal("70.00"), account=checking, scenario=whatif,
-                paid_at=datetime(2026, 3, 3, 12, tzinfo=timezone.utc),
+                settled_on=date(2026, 3, 3),
             )
             db.session.commit()
 
@@ -1191,7 +1191,7 @@ class TestScenarioAndOwnerIsolation:
             create_settled_cash_transaction(
                 seed_user, db.session, seed_user["bootstrap_period"],
                 Decimal("40.00"), account=checking,
-                paid_at=datetime(2026, 3, 3, 12, tzinfo=timezone.utc),
+                settled_on=date(2026, 3, 3),
             )
             db.session.commit()
 
@@ -1204,7 +1204,7 @@ class TestScenarioAndOwnerIsolation:
             create_settled_cash_transaction(
                 seed_user, db.session, seed_user["bootstrap_period"],
                 Decimal("25.00"), account=checking,
-                paid_at=datetime(2025, 12, 1, 12, tzinfo=timezone.utc),
+                settled_on=date(2025, 12, 1),
             )
             db.session.commit()
             assert (checking.id, scenario_id) in calls
@@ -1646,7 +1646,7 @@ class TestSettledTransferAttributionMutation:
             # Move paid_at BEFORE both origination anchors (server-now 2026).
             transfer_service.update_transfer(
                 transfer.id, user_id,
-                paid_at=datetime(2024, 1, 5, 12, tzinfo=timezone.utc),
+                settled_on=date(2024, 1, 5),
             )
             db.session.commit()
 

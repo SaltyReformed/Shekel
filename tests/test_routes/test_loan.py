@@ -29,7 +29,7 @@ from app.services.balance_at._resolution import (
     contractual_schedule_from_origination,
 )
 from app.services.transfer_service import TransferSpec, create_transfer
-from app.utils.dates import add_months
+from app.utils.dates import display_today, add_months
 from app.services import (
     account_service,
     balance_at,
@@ -232,7 +232,7 @@ class TestLoanDashboard:
         create_settled_transfer(
             seed_user, db.session, checking, acct, seed_periods[0],
             amount=Decimal("10000.00"),
-            paid_at=settle_instant_on(seed_periods[0].start_date),
+            settled_on=seed_periods[0].start_date,
         )
         db.session.commit()
         # The BROKEN state, built on purpose: only the postings are removed; the
@@ -1051,7 +1051,7 @@ class TestEscrow:
         create_settled_transfer(
             seed_user, db.session, seed_user["account"], acct,
             seed_periods[0], amount=Decimal("2000.00"),
-            paid_at=settle_instant_on(seed_periods[0].start_date),
+            settled_on=seed_periods[0].start_date,
         )
         db.session.commit()
         backfill_all_loan_postings()
@@ -1909,7 +1909,7 @@ class TestEscrowPostingSync:
         scenario_id = seed_user["scenario"].id
         xfer = create_settled_transfer(
             seed_user, db.session, seed_user["account"], loan, seed_periods[1],
-            amount=Decimal("1000.00"), paid_at=settle_instant_on(date(2026, 1, 20)),
+            amount=Decimal("1000.00"), settled_on=date(2026, 1, 20),
         )
         db.session.commit()
         linked_id = linked_ledger_account(db.session, loan.id).id
@@ -1969,7 +1969,7 @@ class TestEscrowPostingSync:
         scenario_id = seed_user["scenario"].id
         create_settled_transfer(
             seed_user, db.session, seed_user["account"], loan, seed_periods[1],
-            amount=Decimal("1000.00"), paid_at=settle_instant_on(date(2026, 1, 20)),
+            amount=Decimal("1000.00"), settled_on=date(2026, 1, 20),
         )
         db.session.commit()
         linked_id = linked_ledger_account(db.session, loan.id).id
@@ -3187,7 +3187,7 @@ def _create_transfer_to_loan(seed_user, loan_account, period, amount,
             amount=amount,
             status_id=status_id,
             category_id=seed_user["categories"]["Rent"].id,
-            paid_at=settle_instant_on(period.start_date) if settled else None,
+            settled_on=period.start_date if settled else None,
         ),
     )
 
@@ -7548,7 +7548,7 @@ class TestLoanDetailMeasuredSurfaces:
         create_settled_transfer(
             seed_user, db.session, seed_user["account"], loan,
             seed_periods[3], amount=Decimal("1000.00"),
-            paid_at=datetime(2026, 3, 15, 12, 0, tzinfo=timezone.utc),
+            settled_on=date(2026, 3, 15),
         )
         db.session.commit()
 
@@ -7614,7 +7614,7 @@ class TestLoanDetailMeasuredSurfaces:
         create_settled_transfer(
             seed_user, db.session, seed_user["account"], loan,
             seed_periods[3], amount=Decimal("1000.00"),
-            paid_at=datetime(2026, 3, 15, 12, 0, tzinfo=timezone.utc),
+            settled_on=date(2026, 3, 15),
         )
         db.session.commit()
 

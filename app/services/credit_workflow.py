@@ -337,7 +337,7 @@ def mark_as_credit(transaction_id, user_id):
     # relationship so downstream code (test assertions, the post-flush cell
     # render) observes ``Credit`` rather than the stale ``Projected`` row
     # SQLAlchemy leaves cached when only the FK column is rewritten.  Credit is
-    # a non-settled status, so the seam also leaves ``paid_at`` clear.
+    # a non-settled status, so the seam also leaves ``settled_on`` clear.
     status_seam.apply_status_change(txn, credit_id)
 
     # Find or create the CC Payback category for this user.
@@ -446,7 +446,7 @@ def unmark_credit(transaction_id, user_id):
     # The seam runs the same state-machine verification (defense-in-depth,
     # redundant with the bespoke ``is_credit`` guard above except when a future
     # StatusEnum addition makes that guard incomplete) before assigning
-    # ``status_id``; Projected is non-settled, so it also clears ``paid_at``.
+    # ``status_id``; Projected is non-settled, so it also clears ``settled_on``.
     status_seam.apply_status_change(txn, projected_id)
 
     # Delete the live payback + write the audit event.  Shared with the
