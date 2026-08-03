@@ -3373,3 +3373,67 @@ class TestPreviewCarryForwardParityWithMutating:
             )
             assert target.estimated_amount == predicted_after
 
+
+
+class TestTwoSpentEnvelopesCarryForwardTogether:
+    """The ordinary shape: more than one partly-spent envelope, one account.
+
+    **This is X-d's first adversarial correctness review, finding N-155.**  The
+    suite graded carry-forward with exactly ONE envelope, and one is the case
+    that cannot see the defect: ``carry_forward_unpaid`` settles every envelope
+    source inside its ``no_autoflush`` block and only then posts them in a loop
+    (``carry_forward_service/_execute.py:236-239``), so after the FIRST is
+    posted the others are settled rows the ledger has not seen -- and plan step
+    X-d's checked-projection assert grades the whole account.
+    """
+
+    def test_two_spent_envelopes_carry_forward_without_refusing(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Two spent envelopes on ONE account carry forward in one call.
+
+        Hand-computed: a $100.00 Food envelope with a $30.00 purchase (leftover
+        $70.00) and an $80.00 Fuel envelope with a $20.00 purchase (leftover
+        $60.00), both in period 0 on Checking.  Both roll, and the ledger ends
+        projecting the account's own rows -- ``-30.00`` and ``-20.00`` of
+        settled cash against a $1,000.00 opening, so the account totals
+        ``$950.00``.
+
+        The route catches only ``NotFoundError`` and ``ValidationError``
+        (``routes/transactions/carry_forward.py``), so a ``PostingError`` here
+        is an unhandled 500 and the whole carry-forward is lost.
+
+        **THIS TEST FAILS ON THIS BRANCH, DELIBERATELY.**  It is the regression
+        control for finding N-155 and it is what plan step X-ai has to make
+        pass.  It is committed RED rather than skipped or xfailed: an xfail
+        would let the defect ship the moment someone reads the marker as noise,
+        and this is a 500 on an ordinary user action.
+        """
+        with app.app_context():
+            food = _create_envelope_template(seed_user, name="Food")
+            fuel = _create_envelope_template(
+                seed_user, name="Fuel", default_amount="80.00",
+            )
+            source_food = _create_envelope_txn(
+                seed_user, seed_periods[0], food,
+            )
+            source_fuel = _create_envelope_txn(
+                seed_user, seed_periods[0], fuel, estimated_amount="80.00",
+            )
+            _create_envelope_txn(seed_user, seed_periods[1], food)
+            _create_envelope_txn(
+                seed_user, seed_periods[1], fuel, estimated_amount="80.00",
+            )
+            _add_entry(source_food, seed_user, "30.00")
+            _add_entry(source_fuel, seed_user, "20.00")
+            db.session.commit()
+
+            carry_forward_service.carry_forward_unpaid(
+                seed_periods[0].id, seed_periods[1].id,
+                seed_user["user"].id, seed_user["scenario"].id,
+            )
+            db.session.commit()
+
+            assert posting_service.account_posting_total(
+                seed_user["account"].id, seed_user["scenario"].id,
+            ) == Decimal("950.00")

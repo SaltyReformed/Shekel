@@ -2533,7 +2533,7 @@ def revert_settled_transfer(db_session, xfer):
     door every transfer mutation goes through -- ``transfer_service
     .update_transfer(status_id=Projected)`` -- which flips the parent and both
     shadows through the status seam and then reconciles the ledger with the
-    row's own status (``_sync_postings_after_update``).
+    row's own status (``_reconcile_postings_after_update``).
 
     Same reason as the transaction twin (plan step X-d, ruling R-DM, finding
     N-144): a bare ``sync_transfer_postings(xfer, settled=False)`` on a transfer

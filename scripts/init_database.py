@@ -210,13 +210,17 @@ def resync_all_cash_postings_after_migration():
     the go-forward sync instead
     (:func:`app.services.posting_resync.resync_all_cash_postings`).
 
-    **It runs FIRST of the three, and the order is the dependency direction.**
-    The anchor walk computes each correction's ``ledger_before`` from the source
-    postings on the account's linked ledger, so the sources are brought to target
-    before the corrections that sit on top of them are reconciled.  (The anchor
-    walk reads posting AMOUNTS grouped by source rather than their dates, so this
-    ordering is defence rather than a live coupling -- stated so a later reader
-    does not reorder it on the assumption that it is arbitrary.)
+    **It runs FIRST of the three, and since plan step X-d the order is a HARD
+    dependency rather than defence.**  The anchor walk computes each
+    correction's ``balance_before`` from the account's SOURCE ROWS, and the
+    account-anchor sync ends on the checked-projection assert, which compares
+    the whole linked ledger against the whole walk.  Run the anchor backfill
+    before this hook and any account still carrying a stale-dated entry fails
+    that assert and aborts the container.  (This paragraph said the opposite
+    until 2026-08-03 -- "the anchor walk reads posting AMOUNTS grouped by source
+    rather than their dates, so this ordering is defence rather than a live
+    coupling" -- which was true of the POSTINGS-sourced walk X-d deleted.  A
+    reader who reordered these on that sentence would have broken the deploy.)
 
     Runs only on the existing-database path (a fresh database has no settled
     sources).  Idempotent and self-healing via reconcile-to-target, so it is safe
