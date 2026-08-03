@@ -16,13 +16,15 @@ oracle).
 Extracted from ``transfer_service`` so that module stays under the 1000-line
 module limit as the Build-Order Step 2-4 posting-ledger wiring lands -- the
 same split that moved the ownership loaders into ``_transfer_ownership`` and
-the loan-posting glue into ``_transfer_loan_posting``.  These three helpers
-are a cohesive, transfer-service-private cluster (single responsibility:
-validate inputs and load-and-verify the rows a mutation operates on) with no
-dependency on the rest of the service, and they write no ``status_id`` and
-construct no ``Transaction`` -- so they stay clear of the W9907 status fence
-that keeps the status-mirroring appliers in the parent module, and they compute
-no balance.
+the loan-posting glue into ``_transfer_loan_posting``.  :func:`assert_restorable`
+joined them at plan step X-aj1 (ruling **R-DR**), bringing ``restore_transfer``'s
+four preconditions to the module whose single responsibility they already were.
+
+These FOUR helpers are a cohesive, transfer-service-private cluster (single
+responsibility: validate inputs and load-and-verify the rows a mutation operates
+on).  They write no ``status_id`` and construct no ``Transaction`` -- so they stay
+clear of the W9907 status fence that keeps the status-mirroring appliers in the
+parent module -- and they compute no balance.
 Flask-isolated like the parent service: plain data in, ORM objects out, no
 ``request`` / ``session`` imports.
 """
@@ -31,11 +33,17 @@ import logging
 from decimal import Decimal, InvalidOperation
 
 from app.extensions import db
+from app.models.account import Account
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app import ref_cache
 from app.enums import TxnTypeEnum
 from app.exceptions import NotFoundError, ValidationError
+from app.utils.log_events import (
+    BUSINESS,
+    EVT_TRANSFER_RESTORE_REFUSED_ARCHIVED_ACCOUNT,
+    log_event,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -169,3 +177,88 @@ def _get_shadow_transactions(transfer_id):
         )
 
     return expense_shadow, income_shadow
+
+
+def assert_restorable(xfer, shadows, user_id):
+    """Refuse a restore whose preconditions do not hold, before anything moves.
+
+    The four checks ``restore_transfer`` runs before it un-deletes a thing.
+    Extracted here at plan step X-aj1 (ruling **R-DR**) because they are
+    precondition checks on the rows a mutation operates on, which is this
+    module's single responsibility, and because gathering them made the caller's
+    own defect visible: it used to set ``is_deleted = False`` FIRST and then
+    hand-restore the flag on each failing branch -- a rollback written out three
+    times, with three chances for the next branch to forget it.  Validating
+    before mutating makes that class of miss structurally impossible, and the
+    three hand-rollbacks are deleted rather than extended to a fourth.
+
+    The checks, in order, each refusing rather than repairing:
+
+    1. **Shadow count.** Exactly two, or the pair is corrupt (Invariant 1).
+    2. **Type pairing.** One expense and one income, or the pair is corrupt.
+    3. **Archived endpoints (F-164).** The account FK is RESTRICT, so the rows
+       cannot be hard-deleted while the transfer references them; the only way
+       an endpoint goes away semantically is ``is_active = False``.  Restoring
+       onto one would resurrect entries against an account the user has
+       withdrawn from active projections, producing balance drift they have no
+       UI affordance to investigate.
+
+    Args:
+        xfer: The soft-deleted :class:`~app.models.transfer.Transfer` being
+            restored.  NOT mutated here.
+        shadows: Every :class:`~app.models.transaction.Transaction` linked to
+            it, loaded without an ``is_deleted`` filter.
+        user_id: The owner, for the archived-endpoint refusal's structured log.
+
+    Raises:
+        ValidationError: On any of the four, with a message naming what a human
+            has to fix.
+    """
+    transfer_id = xfer.id
+    if len(shadows) != 2:
+        logger.error(
+            "Cannot restore transfer %d: expected 2 shadow transactions, "
+            "found %d.  Shadow IDs: %s.  Data integrity issue.",
+            transfer_id, len(shadows), [s.id for s in shadows],
+        )
+        raise ValidationError(
+            f"Transfer {transfer_id} has {len(shadows)} shadow "
+            f"transactions (expected 2).  Cannot restore -- data "
+            f"integrity issue requiring manual intervention."
+        )
+
+    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
+    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
+    type_ids = {s.transaction_type_id for s in shadows}
+    if type_ids != {expense_type_id, income_type_id}:
+        logger.error(
+            "Cannot restore transfer %d: shadow type pairing is invalid.  "
+            "Expected one expense and one income, found type_ids=%s.",
+            transfer_id, type_ids,
+        )
+        raise ValidationError(
+            f"Transfer {transfer_id} shadows do not have the expected "
+            f"expense/income type pairing.  Cannot restore -- data "
+            f"integrity issue requiring manual intervention."
+        )
+
+    from_account = db.session.get(Account, xfer.from_account_id)
+    to_account = db.session.get(Account, xfer.to_account_id)
+    from_active = bool(from_account is not None and from_account.is_active)
+    to_active = bool(to_account is not None and to_account.is_active)
+    if not (from_active and to_active):
+        log_event(
+            logger, logging.WARNING,
+            EVT_TRANSFER_RESTORE_REFUSED_ARCHIVED_ACCOUNT, BUSINESS,
+            "Refused to restore transfer with archived account",
+            user_id=user_id,
+            transfer_id=transfer_id,
+            from_account_id=xfer.from_account_id,
+            to_account_id=xfer.to_account_id,
+            from_account_active=from_active,
+            to_account_active=to_active,
+        )
+        raise ValidationError(
+            "Cannot restore transfer: source or destination account "
+            "is archived.  Reactivate the account before restoring."
+        )

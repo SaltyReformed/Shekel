@@ -30,7 +30,6 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 
 from app.extensions import db
-from app.models.account import Account
 from app.models.ref import Status
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
@@ -58,13 +57,13 @@ from app.services._transfer_validation import (
     _get_shadow_transactions,
     _get_transfer_or_raise,
     _validate_positive_amount,
+    assert_restorable,
 )
 from app.services.state_machine import verify_transition
 from app.utils.log_events import (
     BUSINESS,
     EVT_TRANSFER_CREATED,
     EVT_TRANSFER_HARD_DELETED,
-    EVT_TRANSFER_RESTORE_REFUSED_ARCHIVED_ACCOUNT,
     EVT_TRANSFER_RESTORED,
     EVT_TRANSFER_SOFT_DELETED,
     EVT_TRANSFER_UPDATED,
@@ -815,8 +814,6 @@ def restore_transfer(transfer_id, user_id):
         )
         return xfer
 
-    xfer.is_deleted = False
-
     # Load ALL shadows without filtering by is_deleted -- they are
     # soft-deleted and that is exactly what we are undoing.  Same
     # query pattern as delete_transfer(soft=True).
@@ -826,73 +823,15 @@ def restore_transfer(transfer_id, user_id):
         .all()
     )
 
-    # ── Validate shadow count ───────────────────────────────────────
-    if len(shadows) != 2:
-        logger.error(
-            "Cannot restore transfer %d: expected 2 shadow transactions, "
-            "found %d.  Shadow IDs: %s.  Data integrity issue.",
-            transfer_id, len(shadows), [s.id for s in shadows],
-        )
-        # Roll back the is_deleted change on the transfer since we
-        # cannot restore it in a consistent state.
-        xfer.is_deleted = True
-        raise ValidationError(
-            f"Transfer {transfer_id} has {len(shadows)} shadow "
-            f"transactions (expected 2).  Cannot restore -- data "
-            f"integrity issue requiring manual intervention."
-        )
+    # ── Refuse before anything moves (X-aj1, ruling R-DR) ───────────
+    # Shadow count, type pairing and archived endpoints (F-164), run BEFORE the
+    # un-delete.  That ordering is the point: this function used to flip
+    # ``is_deleted`` first and hand-restore it on each failing branch, so the
+    # rollback was written out three times with three chances for the next
+    # branch to forget it.  Validating before mutating deletes all three.
+    assert_restorable(xfer, shadows, user_id)
 
-    # ── Validate shadow type pairing ────────────────────────────────
-    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-    type_ids = {s.transaction_type_id for s in shadows}
-    if type_ids != {expense_type_id, income_type_id}:
-        logger.error(
-            "Cannot restore transfer %d: shadow type pairing is invalid.  "
-            "Expected one expense and one income, found type_ids=%s.",
-            transfer_id, type_ids,
-        )
-        xfer.is_deleted = True
-        raise ValidationError(
-            f"Transfer {transfer_id} shadows do not have the expected "
-            f"expense/income type pairing.  Cannot restore -- data "
-            f"integrity issue requiring manual intervention."
-        )
-
-    # ── Refuse restore onto archived accounts (F-164) ───────────────
-    # Account FK is RESTRICT (see ``models/transfer.py``) so the rows
-    # cannot be hard-deleted while the transfer references them; the
-    # only way they go away semantically is via ``is_active = False``.
-    # Reactivating a transfer pointed at an archived account would
-    # silently resurrect entries against an account the user has
-    # withdrawn from active projections, producing balance drift the
-    # user has no UI affordance to investigate.  Hard-fail instead and
-    # require the user to reactivate the account first.
-    from_account = db.session.get(Account, xfer.from_account_id)
-    to_account = db.session.get(Account, xfer.to_account_id)
-    from_active = bool(from_account is not None and from_account.is_active)
-    to_active = bool(to_account is not None and to_account.is_active)
-    if not (from_active and to_active):
-        log_event(
-            logger, logging.WARNING,
-            EVT_TRANSFER_RESTORE_REFUSED_ARCHIVED_ACCOUNT, BUSINESS,
-            "Refused to restore transfer with archived account",
-            user_id=user_id,
-            transfer_id=transfer_id,
-            from_account_id=xfer.from_account_id,
-            to_account_id=xfer.to_account_id,
-            from_account_active=from_active,
-            to_account_active=to_active,
-        )
-        # Roll back the is_deleted flip applied at the top of the
-        # function so the transfer stays soft-deleted on the caller's
-        # rollback path.  Matches the rollback pattern used in the
-        # shadow-count and shadow-type validation branches above.
-        xfer.is_deleted = True
-        raise ValidationError(
-            "Cannot restore transfer: source or destination account "
-            "is archived.  Reactivate the account before restoring."
-        )
+    xfer.is_deleted = False
 
     # ── Restore shadows and verify invariants ───────────────────────
     for shadow in shadows:
