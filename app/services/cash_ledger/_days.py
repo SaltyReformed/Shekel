@@ -133,6 +133,32 @@ class ObservedOn:
 
     civil_day: date
 
+    @classmethod
+    def recorded(cls, civil_day: date | None) -> "ObservedOn | None":
+        """Promote a possibly-absent assertion day, or ``None`` when there is none.
+
+        The assertion twin of :meth:`MovedOn.recorded`, and the door
+        :class:`ReconciledThrough` is built through.  Its one caller is the SQL
+        form of the boundary (``cash_ledger.reconciled_through``, a
+        ``MAX(observed_on)`` that is NULL for an account which has never
+        declared a balance), and the nullability is that account's, not a
+        column's.
+
+        It exists because the BOUNDARY was the unfenced operand until X-d's
+        first adversarial review (finding N-155): ``ObservedOn`` was a type no
+        signature required, so ``ReconciledThrough`` took a bare ``date`` and a
+        settled day could be handed to it -- the exact confusion the two types
+        were split to prevent, one level up from where the split was made.
+
+        Args:
+            civil_day: The stored assertion day, or ``None`` when the account
+                has never had a balance declared.
+
+        Returns:
+            The wrapped day, or ``None``.
+        """
+        return None if civil_day is None else cls(civil_day)
+
 
 @dataclass(frozen=True)
 class ReconciledThrough:
@@ -212,17 +238,23 @@ class ReconciledThrough:
     side, and saying so is the honest form of it.
 
     Attributes:
-        observed_day: The civil day the account's latest balance assertion is
-            the closing balance for (``AccountAnchorHistory.observed_on``), or
-            ``None`` when no balance has ever been declared for it.  It is a
-            bare ``date`` deliberately -- this attribute IS the escape hatch,
-            and the two callers that read it (the reconcile panel's SQL offer
-            bound and the day it stamps onto a ticked purchase) both need a
-            plain day.  To ask whether a movement is inside the balance, call
-            :meth:`covers`.
+        observed_day: The assertion day this boundary is built on -- an
+            :class:`ObservedOn`, or ``None`` when no balance has ever been
+            declared for the account.  **It was a bare ``date`` until X-d's
+            first adversarial review measured what that cost** (finding
+            N-155): ``ObservedOn`` existed but no signature anywhere required
+            one, so ``ReconciledThrough(some_settled_day)`` compiled and the
+            operand that DECIDES the money was the one still unfenced.  R-DJ's
+            stated property -- *asking it correctly and asking it wrongly
+            stopped being the same keystroke* -- held for the argument and not
+            for the boundary.  The two callers that genuinely need a plain day
+            (the reconcile panel's SQL offer bound, and the day it stamps onto
+            a ticked purchase) read ``.observed_day.civil_day`` and say so at
+            the call site.  To ask whether a movement is inside the balance,
+            call :meth:`covers`.
     """
 
-    observed_day: date | None
+    observed_day: ObservedOn | None
 
     def covers(self, moved_on: MovedOn | None) -> bool:
         """Return whether an event dated *moved_on* is inside this balance.
@@ -269,4 +301,8 @@ class ReconciledThrough:
         """
         if moved_on is None or self.observed_day is None:
             return False
-        return moved_on.civil_day <= self.observed_day
+        # The two kinds are unboxed HERE, in the one implementation of the
+        # rule, and nowhere else.  That is the whole shape of the fence: the
+        # comparison exists once, between two days that arrived through named
+        # doors, instead of anywhere two `date`s meet.
+        return moved_on.civil_day <= self.observed_day.civil_day

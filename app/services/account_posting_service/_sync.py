@@ -132,15 +132,19 @@ def sync_account_anchor_postings(account_id: int, scenario_id: int) -> None:
         PostingError: When the reconciled ledger does not equal the fold of the
             account's facts (:func:`_assert_checked_projection`).
     """
-    if _load_non_amortizing_account(account_id) is None:
+    account = _load_non_amortizing_account(account_id)
+    if account is None:
         return
     walk = walk_cash_ledger(account_id, scenario_id)
-    # ONE linked-ledger resolution per sync, shared by the reconcile and the
-    # assert -- the same shape ``loan_posting_service.sync_loan_postings`` uses,
-    # and for the same reason (each resolving its own is a redundant query).
+    # ONE linked-ledger resolution per sync, HANDED to the reconcile and to the
+    # assert.  It was a claim rather than a fact until X-d's first adversarial
+    # review measured it (finding N-155): the reconcile took an ``account_id``
+    # and resolved its own, so a comment here asserted "once" over a call that
+    # resolved twice -- and re-queried the account row and its owner besides.
+    # Passing the resolved values is what makes the sentence true.
     linked_ledger_id = _ledger_account_for(account_id).id
     reconcile_account_anchor_corrections(
-        account_id, scenario_id, walk.anchor_corrections,
+        account, scenario_id, walk.anchor_corrections, linked_ledger_id,
     )
     _assert_checked_projection(
         account_id, scenario_id, walk, linked_ledger_id,

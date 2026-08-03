@@ -55,7 +55,7 @@ from app.utils.log_events import (
     log_event,
 )
 
-from ._days import ReconciledThrough
+from ._days import ObservedOn, ReconciledThrough
 
 
 logger = logging.getLogger(__name__)
@@ -281,9 +281,11 @@ def reconciled_through(account_id: int) -> ReconciledThrough:
         the honest answer when no balance has ever been declared.
     """
     return ReconciledThrough(
-        db.session.query(db.func.max(AccountAnchorHistory.observed_on))
-        .filter(AccountAnchorHistory.account_id == account_id)
-        .scalar()
+        ObservedOn.recorded(
+            db.session.query(db.func.max(AccountAnchorHistory.observed_on))
+            .filter(AccountAnchorHistory.account_id == account_id)
+            .scalar()
+        )
     )
 
 

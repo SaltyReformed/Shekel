@@ -59,7 +59,10 @@ from app.services.balance_at import (
 )
 from app.services.balance_at._asset_contributions import ContributionInputs
 from app.services.balance_at._context import BalanceContext
-from app.services.cash_ledger import ReconciledThrough
+from app.services.cash_ledger import (
+    ObservedOn,
+    ReconciledThrough,
+)
 from app.services.projection_inputs import (
     load_active_deductions_for_accounts,
     load_investment_params_for_accounts,
@@ -993,7 +996,7 @@ class TestTheContributionWalksLimit:  # pylint: disable=protected-access
         )
         events = _asset_contributions._dated_events(
             plan, self._periods(date(2026, 1, 2), 4),
-            ReconciledThrough(date(2026, 1, 1)),
+            ReconciledThrough(ObservedOn(date(2026, 1, 1))),
         )
         assert [amount for _day, amount in events] == [
             Decimal("500.00"), Decimal("500.00"), Decimal("200.00"),
@@ -1018,7 +1021,7 @@ class TestTheContributionWalksLimit:  # pylint: disable=protected-access
             recorded_by_period={periods[0].id: Decimal("900.00")},
         )
         events = _asset_contributions._dated_events(
-            plan, periods, ReconciledThrough(date(2026, 1, 1)),
+            plan, periods, ReconciledThrough(ObservedOn(date(2026, 1, 1))),
         )
         assert [amount for _day, amount in events] == [Decimal("300.00")]
 
@@ -1037,7 +1040,7 @@ class TestTheContributionWalksLimit:  # pylint: disable=protected-access
                 recorded_by_period={},
             ),
             self._periods(date(2026, 12, 4), 4),
-            ReconciledThrough(date(2026, 12, 3)),
+            ReconciledThrough(ObservedOn(date(2026, 12, 3))),
         )
         assert [(day.isoformat(), amount) for day, amount in events] == [
             ("2026-12-04", Decimal("500.00")),

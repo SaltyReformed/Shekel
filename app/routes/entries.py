@@ -172,7 +172,10 @@ def _render_entry_list(
         # The DAY, for the tooltip that names it.  Which entries the boundary
         # reconciles is decided above, in Python; the template renders the
         # answer and never re-derives it.
-        reconciled_through=boundary.observed_day,
+        reconciled_through=(
+            None if boundary.observed_day is None
+            else boundary.observed_day.civil_day
+        ),
         conflict=conflict,
         error=error,
         entry_list_host=host,

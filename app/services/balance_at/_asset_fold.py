@@ -667,7 +667,7 @@ def resolve(
     reconciled_through = _latest_assertion_boundary(account, cash.walk)
     window = _AccrualWindow(
         rule=accrual,
-        start=reconciled_through.observed_day,
+        start=reconciled_through.observed_day.civil_day,
         end=horizon_end,
     )
     return _resolve(

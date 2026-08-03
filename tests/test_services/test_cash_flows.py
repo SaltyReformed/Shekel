@@ -46,6 +46,7 @@ from decimal import Decimal
 from app.enums import StatusEnum
 from app.models.transaction import Transaction
 from app.services.cash_ledger import (
+    ObservedOn,
     ProjectedBasis,
     ReconciledThrough,
     sum_projected,
@@ -69,7 +70,7 @@ _ZERO = Decimal("0.00")
 # subject -- which rows are counted, and on which leg -- separate from
 # ``test_cash_amounts.py``'s -- what one row is worth.
 _UNRECONCILED = ProjectedBasis(
-    amount_overrides={}, reconciled_through=ReconciledThrough(date(2026, 1, 1)),
+    amount_overrides={}, reconciled_through=ReconciledThrough(ObservedOn(date(2026, 1, 1))),
 )
 
 
@@ -274,7 +275,7 @@ class TestTheTwoLegs:
             db.session.commit()
             basis = ProjectedBasis(
                 amount_overrides={},
-                reconciled_through=ReconciledThrough(date(2026, 1, 31)),
+                reconciled_through=ReconciledThrough(ObservedOn(date(2026, 1, 31))),
             )
 
             assert sum_projected([txn], basis) == (_ZERO, Decimal("50.00"))

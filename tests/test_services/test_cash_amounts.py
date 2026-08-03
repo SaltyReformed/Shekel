@@ -70,6 +70,7 @@ from app.services.cash_ledger._amounts import (
     _expense_amount,
     income_amount,
 )
+from app.services.cash_ledger._days import ObservedOn
 from tests._test_helpers import add_entry, add_txn, create_envelope_txn
 
 
@@ -84,7 +85,7 @@ _STATEMENT_DAY = date(2026, 1, 22)
 # `settled_on <= reconciled_through` cannot be written anywhere but inside
 # `ReconciledThrough.covers` -- see that class for what the fifth spelling
 # of this rule cost production.
-_ASSERTED_THROUGH = ReconciledThrough(_STATEMENT_DAY)
+_ASSERTED_THROUGH = ReconciledThrough(ObservedOn(_STATEMENT_DAY))
 _POSTED_AFTER_THE_STATEMENT = date(2026, 1, 23)
 
 

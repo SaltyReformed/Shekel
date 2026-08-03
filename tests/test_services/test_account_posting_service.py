@@ -1329,6 +1329,22 @@ class TestTheControlsPlanStepXdOwes:
                 f"{len(many_lookups)} for 8.  Ruling R-DL hoisted them out of "
                 f"the per-correction loop; something put one back."
             )
+            # **The ABSOLUTE count, and not only the non-scaling** (finding
+            # N-155).  X-d's first adversarial review measured the sync
+            # resolving the LINKED ledger twice -- once in ``_sync`` and again
+            # inside the reconcile -- while a comment in ``_sync`` asserted it
+            # resolved once.  A non-scaling assertion cannot see a constant
+            # extra resolution, so the comment was the only thing claiming the
+            # property and it was wrong.  Two is the whole budget: the linked
+            # ledger (handed to the reconcile AND the assert) and the
+            # anchor-equity ledger, minted lazily on the first non-zero
+            # correction.
+            assert len(few_lookups) == 2, (
+                f"one sync issued {len(few_lookups)} chart-of-accounts "
+                f"lookups; the budget is 2 (linked once, anchor-equity once).  "
+                f"A caller re-resolving what the entry point already resolved "
+                f"is what N-155 was."
+            )
 
     def test_a_posting_the_source_rows_cannot_explain_refuses_the_write(
         self, app, db, seed_user,

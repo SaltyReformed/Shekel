@@ -62,18 +62,12 @@ from app.services import ledger_account_service
 from app.services._posting_reconcile import (
     CorrectionKey,
     LegMap,
-    account_owner_id,
     delta_legs,
     emit_anchor_correction_entry,
     merge_target_legs,
     posted_correction_legs,
 )
-from app.services.account_projection import (
-    AccountProjectionKind,
-    classify_account,
-)
 from app.services.cash_ledger import CashAnchorCorrection, CashAnchorFact
-from app.services.posting_reads import _ledger_account_for
 
 
 class _AnchorEquityLedger:
@@ -324,9 +318,10 @@ def _posted_only_key_period_id(
 
 
 def reconcile_account_anchor_corrections(
-    account_id: int,
+    account: Account,
     scenario_id: int,
     corrections: list[CashAnchorCorrection],
+    linked_ledger_id: int,
 ) -> None:
     """Reconcile an account's opening + true-up corrections to a PRE-WALKED list.
 
@@ -341,58 +336,59 @@ def reconcile_account_anchor_corrections(
     whose ``balance_before`` moved (a pre-assertion source changed), or
     reversing one a matching balance retired.
 
-    **It REFUSES an amortizing loan, and that refusal moved here at plan step
-    X-d.**  It lived on the deleted postings walk, which this package no longer
-    has: the walk it now consumes is ``cash_ledger``'s, which is deliberately
-    kind-blind (a running-balance replay is a property of the rows, not of the
-    account's kind, and the cash-flow seam view consults no kind either).  Which
-    correction FAMILY a loan's anchors book into is a WRITE concern, so the
-    guard belongs on the writer -- exactly where ``cash_ledger._walk``'s own
-    module docstring said it would land.  Booking here as well as through
-    :mod:`app.services.loan_posting_service` would double-book a loan's balance
-    across two families on two charts.
+    **It takes the account ROW and its resolved linked ledger, and that is what
+    makes "one resolution per sync" true rather than merely claimed** (X-d's
+    first adversarial review, finding N-155).  It used to take an ``account_id``
+    and re-resolve everything the entry point had already resolved: a second
+    ``Account`` query, a second ``_ledger_account_for``, and a third query for
+    the owner that the loaded row already carries.  Measured with a counting
+    proxy, one sync resolved the linked ledger TWICE while a comment two frames
+    up asserted it resolved once.
+
+    **The amortizing-loan screen is the ENTRY POINT's**
+    (:func:`._sync._load_non_amortizing_account`), which is where it is tested.
+    A duplicate raise lived here between the parked build and that review; it
+    was unreachable -- this function's only caller screens first -- and untested,
+    which is a claim nothing verifies.  What stays is two live statements of the
+    rule, both reachable and both pinned: the entry-point screen (a quiet no-op,
+    because the lifecycle chokepoints legitimately iterate every account a user
+    owns) and
+    :func:`app.services.ledger_account_service.get_or_create_anchor_equity_account`'s
+    refusal at the minting door.  Booking a loan here as well as through
+    :mod:`app.services.loan_posting_service` would double-book its balance
+    across two families on two charts, which is why the rule is worth two
+    statements and not worth three.
 
     Idempotent and self-healing: a re-run at the same state writes nothing
     (every delta is zero).  Touches ONLY the account's own linked and
-    anchor-equity ledgers.  An empty *corrections* list (a history-less
-    account) or an owner that cannot be resolved is a no-op.
-    Flushes but does not commit (the caller owns the transaction).
+    anchor-equity ledgers.  An empty *corrections* list (a history-less account)
+    is a no-op.  Flushes but does not commit (the caller owns the transaction).
 
     Args:
-        account_id: The non-loan account whose corrections to reconcile.
+        account: The non-loan :class:`~app.models.account.Account` whose
+            corrections to reconcile, ALREADY loaded and kind-screened by the
+            caller.  Its ``user_id`` is the owner every correction is booked
+            for, so no owner lookup happens here.
         scenario_id: The budget scenario to reconcile within.
         corrections: The account's corrections from
             :func:`app.services.cash_ledger.walk_cash_ledger`.
+        linked_ledger_id: The account's LINKED ledger account id, resolved ONCE
+            by the caller and shared with the checked-projection assert.
 
     Raises:
-        ValueError: If *account_id* is an amortizing loan (loans book their
-            anchor corrections through the loan posting package, never here),
-            or if the anchor-equity resolver rejects the account (see
+        ValueError: If the anchor-equity resolver rejects the account (see
             :func:`_account_anchor_correction_target`).
-        PostingError: If the account has no linked ledger account (a broken
-            chart-of-accounts pairing).
     """
     if not corrections:
         return
-    account = db.session.query(Account).filter_by(id=account_id).first()
-    if account is not None and (
-        classify_account(account) is AccountProjectionKind.AMORTIZING
-    ):
-        raise ValueError(
-            f"cannot reconcile account anchor corrections: account "
-            f"id={account_id} is an amortizing loan (loans book their anchor "
-            f"corrections through the loan posting package, never the account "
-            f"correction family)"
-        )
-    owner_id = account_owner_id(account_id)
-    if owner_id is None:
-        return
-    linked = _ledger_account_for(account_id)
+    owner_id = account.user_id
     targets, target_periods = _account_anchor_correction_targets(
-        corrections, linked.id, _AnchorEquityLedger(account_id, owner_id),
+        corrections,
+        linked_ledger_id,
+        _AnchorEquityLedger(account.id, owner_id),
     )
     posted = posted_correction_legs(
-        linked.id,
+        linked_ledger_id,
         scenario_id,
         [
             ref_cache.posting_source_id(PostingSourceEnum.ACCOUNT_OPENING),
@@ -408,7 +404,7 @@ def reconcile_account_anchor_corrections(
         pay_period_id = target_periods.get(key)
         if pay_period_id is None:
             pay_period_id = _posted_only_key_period_id(
-                linked.id, scenario_id, key,
+                linked_ledger_id, scenario_id, key,
             )
         emit_anchor_correction_entry(
             owner_id, scenario_id, key, pay_period_id, legs,

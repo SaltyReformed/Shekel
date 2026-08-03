@@ -238,7 +238,7 @@ class CashAnchorFact:
             The :class:`~app.services.cash_ledger.ReconciledThrough` for this
             assertion's own civil day.
         """
-        return ReconciledThrough(self.observed_on.civil_day)
+        return ReconciledThrough(self.observed_on)
 
 
 @dataclass(frozen=True)

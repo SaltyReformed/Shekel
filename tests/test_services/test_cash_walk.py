@@ -28,6 +28,7 @@ import pytest
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
 from app.services.cash_ledger import (
+    ObservedOn,
     MovedOn,
     ReconciledThrough,
     cash_anchor_facts,
@@ -1045,9 +1046,9 @@ class TestTheTwoStatementsOfTheLatestAssertedDay:
 
         walk = walk_cash_ledger(account.id, scenario.id)
 
-        assert walk.reconciled_through == ReconciledThrough(date(2026, 3, 20))
+        assert walk.reconciled_through == ReconciledThrough(ObservedOn(date(2026, 3, 20)))
         assert reconciled_through(account.id) == ReconciledThrough(
-            date(2026, 3, 20),
+            ObservedOn(date(2026, 3, 20)),
         )
 
     def test_they_agree_when_the_business_day_defies_the_recording_order(
@@ -1090,9 +1091,9 @@ class TestTheTwoStatementsOfTheLatestAssertedDay:
 
         walk = walk_cash_ledger(account.id, scenario.id)
 
-        assert walk.reconciled_through == ReconciledThrough(date(2026, 3, 20))
+        assert walk.reconciled_through == ReconciledThrough(ObservedOn(date(2026, 3, 20)))
         assert reconciled_through(account.id) == ReconciledThrough(
-            date(2026, 3, 20),
+            ObservedOn(date(2026, 3, 20)),
         )
 
     def test_they_agree_that_an_unasserted_account_has_no_day(
@@ -1157,7 +1158,7 @@ class TestTheTwoStatementsOfTheLatestAssertedDay:
 
         boundary = reconciled_through(account.id)
 
-        assert boundary == ReconciledThrough(date(2026, 3, 1))
+        assert boundary == ReconciledThrough(ObservedOn(date(2026, 3, 1)))
         assert not boundary.covers(MovedOn(date(2026, 9, 9)))
         # The walk's in-memory twin is scoped by its own account_id argument,
         # so the two must still agree -- which is what makes the SQL form's
@@ -1166,7 +1167,7 @@ class TestTheTwoStatementsOfTheLatestAssertedDay:
             boundary
         )
         assert reconciled_through(other.id) == ReconciledThrough(
-            date(2026, 9, 9),
+            ObservedOn(date(2026, 9, 9)),
         )
 
 

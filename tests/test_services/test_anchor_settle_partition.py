@@ -177,7 +177,7 @@ class TestTheRuleCannotBeAskedAnyOtherWay:
         by reflection and a one-sided mutant leaves the other side working.
         None of them runs.
         """
-        boundary = cash_ledger.ReconciledThrough(_A_STATEMENT_DAY)
+        boundary = cash_ledger.ReconciledThrough(cash_ledger.ObservedOn(_A_STATEMENT_DAY))
         day = _A_STATEMENT_DAY - timedelta(days=1)
 
         # Collected rather than asserted per iteration, so a failure NAMES the
@@ -213,7 +213,7 @@ class TestTheRuleCannotBeAskedAnyOtherWay:
         event has a day it counts from -- and stops being total over bare
         ``date``, which is the only thing it was ever loose about.
         """
-        boundary = cash_ledger.ReconciledThrough(_A_STATEMENT_DAY)
+        boundary = cash_ledger.ReconciledThrough(cash_ledger.ObservedOn(_A_STATEMENT_DAY))
         moved = cash_ledger.MovedOn
 
         assert boundary.covers(
@@ -239,7 +239,7 @@ class TestTheRuleCannotBeAskedAnyOtherWay:
         the whole property: a bare day that ANSWERED would be the fifth
         implementation of the question that cost production $4,001.42.
         """
-        boundary = cash_ledger.ReconciledThrough(_A_STATEMENT_DAY)
+        boundary = cash_ledger.ReconciledThrough(cash_ledger.ObservedOn(_A_STATEMENT_DAY))
 
         with pytest.raises(AttributeError):
             boundary.covers(_A_STATEMENT_DAY)
@@ -339,7 +339,9 @@ class TestRecordingAPurchaseDoesNotMoveTheProjection:
         callers assert on: a reconcile that silently matched nothing would make
         every figure below hold for the wrong reason.
         """
-        observed_on = cash_ledger.reconciled_through(account.id).observed_day
+        observed_on = cash_ledger.reconciled_through(
+        account.id,
+    ).observed_day.civil_day
         recorded = entry_service.record_settled_days(
             seed_user["user"].id, account.id,
             {entry.id for entry in envelope.entries}, observed_on,

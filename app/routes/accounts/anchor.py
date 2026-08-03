@@ -164,7 +164,8 @@ def reconcile_context(account: Account, panel_id: str) -> dict:
     # bound on the offer set, and a rendered caption.  Neither asks whether a
     # movement is inside the balance -- that question has one implementation
     # (``ReconciledThrough.covers``) and neither of these is a second one.
-    observed_on = cash_ledger.reconciled_through(account.id).observed_day
+    boundary = cash_ledger.reconciled_through(account.id).observed_day
+    observed_on = None if boundary is None else boundary.civil_day
     outstanding = (
         []
         if observed_on is None
@@ -269,7 +270,8 @@ def reconcile_purchases(account_id):
     # ticked purchase as its posting day, neither of which is the "is this
     # inside the balance" question (that has one implementation, and this
     # writes the fact that implementation later reads).
-    observed_on = cash_ledger.reconciled_through(account.id).observed_day
+    boundary = cash_ledger.reconciled_through(account.id).observed_day
+    observed_on = None if boundary is None else boundary.civil_day
     if observed_on is None:
         # No balance has ever been asserted for this account, so there is
         # nothing for a purchase to be inside of.  Unreachable through the UI

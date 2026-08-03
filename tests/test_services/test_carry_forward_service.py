@@ -3372,3 +3372,4 @@ class TestPreviewCarryForwardParityWithMutating:
                 ).one()
             )
             assert target.estimated_amount == predicted_after
+

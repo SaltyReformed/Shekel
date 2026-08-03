@@ -2840,7 +2840,10 @@ def mark_purchase_settled(db_session, account, entry, settled_on=None):
     # (plan step X-d, ruling R-DJ): this helper is about to WRITE the day, so it
     # is known to exist -- the nullable door is for reading the stored column.
     boundary = reconciled_through(account.id)
-    observed_on = boundary.observed_day
+    observed_on = (
+        None if boundary.observed_day is None
+        else boundary.observed_day.civil_day
+    )
     assert observed_on is not None, (
         f"account id={account.id} has asserted no balance, so no purchase can "
         f"be inside one; give it an assertion before settling entry "

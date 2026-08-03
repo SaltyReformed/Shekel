@@ -387,7 +387,9 @@ def _add_envelope_expense_with_settled_entries_ret(
     db_session.add(txn)
     db_session.flush()
 
-    observed_on = cash_ledger.reconciled_through(account.id).observed_day
+    observed_on = cash_ledger.reconciled_through(
+        account.id,
+    ).observed_day.civil_day
     for amt in settled_amounts:
         entry = TransactionEntry(
             transaction_id=txn.id,
