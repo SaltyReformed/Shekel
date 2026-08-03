@@ -28,6 +28,7 @@ import pytest
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
 from app.services.cash_ledger import (
+    MovedOn,
     ReconciledThrough,
     cash_anchor_facts,
     dated_deltas,
@@ -126,6 +127,15 @@ def _replay_terminal_balance(account, scenario):
     The comparison is ``>`` on the civil DAY, not on an instant: a source
     sharing the assertion's day is inside the closing balance, so only a
     strictly later day rides on top.
+
+    **Both days are unboxed deliberately, and this oracle deliberately does NOT
+    call ``ReconciledThrough.covers``** (plan step X-d, ruling R-DJ).  Since the
+    two fields became distinct TYPES a hand-written ``fact.settled_on >
+    last.observed_on`` raises ``TypeError``, which is the fence doing its job --
+    but the fix here is to unbox at the call site rather than to route through
+    the production rule, because an oracle that computes the expected balance
+    with the code under test cannot catch that code changing its mind.  Reaching
+    for ``.civil_day`` is the visible act the type exists to require.
     """
     walk = walk_cash_ledger(account.id, scenario.id)
     if not walk.anchor_corrections:
@@ -134,7 +144,7 @@ def _replay_terminal_balance(account, scenario):
     return last.anchor_balance + sum(
         (
             fact.delta for fact in walk.source_facts
-            if fact.settled_on > last.observed_on
+            if fact.settled_on.civil_day > last.observed_on.civil_day
         ),
         Decimal("0.00"),
     )
@@ -314,9 +324,11 @@ class TestTheClosingBalancePartition:
             for fact in settled_cash_facts(account.id, scenario.id)
         }
         # One civil day for the assertion and both settles -- which is exactly
-        # the information the rule acts on.
-        assert facts[earlier.id].settled_on == date(2026, 7, 24)
-        assert facts[later.id].settled_on == date(2026, 7, 24)
+        # the information the rule acts on.  Compared as ``MovedOn`` rather than
+        # unboxed, so reverting the field to a bare ``date`` fails here too
+        # (plan step X-d, ruling R-DJ).
+        assert facts[earlier.id].settled_on == MovedOn(date(2026, 7, 24))
+        assert facts[later.id].settled_on == MovedOn(date(2026, 7, 24))
         assert to_display_date(asserted_at) == date(2026, 7, 24)
 
         before, _delta = _corrections(account, scenario)[asserted_at]
@@ -581,7 +593,7 @@ class TestAttributionIsOneKey:
         db.session.commit()
 
         fact, = settled_cash_facts(account.id, scenario.id)
-        assert fact.settled_on == period.start_date
+        assert fact.settled_on == MovedOn(period.start_date)
 
     def test_the_settled_day_is_the_users_day_not_the_utc_day(
         self, db, seed_user, seed_periods,
@@ -617,7 +629,7 @@ class TestAttributionIsOneKey:
         assert txn.paid_at.astimezone(timezone.utc).date() == date(2026, 3, 4)
 
         fact, = settled_cash_facts(account.id, scenario.id)
-        assert fact.settled_on == date(2026, 3, 3)
+        assert fact.settled_on == MovedOn(date(2026, 3, 3))
 
 
 class TestTheWalkSeesOnlyItsOwnRows:
@@ -1103,7 +1115,7 @@ class TestTheTwoStatementsOfTheLatestAssertedDay:
 
         assert walk.reconciled_through == ReconciledThrough(None)
         assert reconciled_through(account.id) == ReconciledThrough(None)
-        assert not walk.reconciled_through.covers(date(2026, 3, 20))
+        assert not walk.reconciled_through.covers(MovedOn(date(2026, 3, 20)))
 
     def test_the_sql_form_answers_for_ONE_account(
         self, app, db, seed_user, seed_periods,
@@ -1146,7 +1158,7 @@ class TestTheTwoStatementsOfTheLatestAssertedDay:
         boundary = reconciled_through(account.id)
 
         assert boundary == ReconciledThrough(date(2026, 3, 1))
-        assert not boundary.covers(date(2026, 9, 9))
+        assert not boundary.covers(MovedOn(date(2026, 9, 9)))
         # The walk's in-memory twin is scoped by its own account_id argument,
         # so the two must still agree -- which is what makes the SQL form's
         # scope checkable against something rather than against itself.
@@ -1224,4 +1236,4 @@ class TestTheSourceOrderIsLoadBearing:
         # The facts themselves arrive in DAY order, id breaking a same-day tie.
         assert [fact.settled_on for fact in settled_cash_facts(
             account.id, scenario.id,
-        )] == [date(2026, 2, 10), date(2026, 2, 20)]
+        )] == [MovedOn(date(2026, 2, 10)), MovedOn(date(2026, 2, 20))]

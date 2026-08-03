@@ -420,7 +420,7 @@ def _cash_sums(
     """
     moved = spans.zeroed()
     for fact in walk.source_facts:
-        period_id = spans.containing(fact.settled_on)
+        period_id = spans.containing(fact.settled_on.civil_day)
         if period_id is not None:
             moved[period_id] += fact.delta
     for day, net in day_nets.items():
@@ -458,7 +458,7 @@ def _assertion_sums(
     """
     asserted = spans.zeroed()
     for correction in walk.anchor_corrections[1:]:
-        period_id = spans.containing(correction.observed_on)
+        period_id = spans.containing(correction.observed_on.civil_day)
         if period_id is not None:
             asserted[period_id] += correction.delta
     return asserted

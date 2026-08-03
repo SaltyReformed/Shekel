@@ -536,23 +536,19 @@ def delete_transaction(txn_id):
         # reverses its own postings first (Step 3 reverse-before-delete).
         credit_workflow.delete_payback_on_source_delete(txn, current_user.id)
 
-        # Posting ledger reconcile (Build-Order Step 3): reverse THIS row's own
-        # postings before it leaves the table, so a settled, posted row's
-        # double-entry nets to zero while journal_entries.transaction_id still
-        # links it (the FK SET-NULLs on the hard delete, leaving the net-zero
-        # pair as history; reversing afterward would strand the original legs).
-        # Idempotent no-op for a Projected (never-posted) row.  Inside the
-        # StaleDataError net with the payback teardown and the delete: these
-        # reconcile flushes autoflush version-pinned rows, so a concurrent
-        # commit surfaces as a 409 conflict cell, not a 500.
-        posting_service.reverse_postings_before_delete(txn)
-
-        if txn.template_id:
-            # Template-linked: soft-delete so the recurrence engine knows.
-            txn.is_deleted = True
-        else:
-            # Ad-hoc: hard delete.
-            db.session.delete(txn)
+        # Posting ledger retirement (Build-Order Step 3; plan step X-d, ruling
+        # R-DM): reverse THIS row's own postings, remove it, then re-derive its
+        # account's anchor corrections -- one chokepoint, because the order is
+        # forced by the schema and step three used to be nobody's.  A
+        # template-linked row soft-deletes so the recurrence engine still sees
+        # it; an ad-hoc one is removed outright.  Idempotent no-op for a
+        # Projected (never-posted) row.  Inside the StaleDataError net with the
+        # payback teardown: the retirement's flushes autoflush version-pinned
+        # rows, so a concurrent commit surfaces as a 409 conflict cell, not a
+        # 500.
+        posting_service.retire_transaction(
+            txn, hard=txn.template_id is None,
+        )
 
         db.session.commit()
     except StaleDataError:

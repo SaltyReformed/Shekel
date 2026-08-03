@@ -378,7 +378,7 @@ def _actual_steps(
         return _ZERO_MONEY, steps
 
     opening = walk.anchor_corrections[0]
-    steps.append((opening.observed_on, -opening.delta))
+    steps.append((opening.observed_on.civil_day, -opening.delta))
     return opening.delta, steps
 
 

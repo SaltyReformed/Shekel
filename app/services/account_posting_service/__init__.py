@@ -20,15 +20,28 @@ cheat" made visible as an explicit equity adjustment.
 
 Mirrors :mod:`app.services.loan_posting_service` (split by concern):
 
-* :mod:`._walk` -- the pure DAY-granular walk: replay the account's
-  :class:`~app.models.account.AccountAnchorHistory` rows against the source
-  facts read back from its linked ledger, producing one
-  :class:`AccountAnchorCorrection` per assertion.
 * :mod:`._anchors` -- the opening + true-up reconcile: per-(source kind,
   civil date) targets, posted-leg read-back, one balanced delta per key
   that differs.
-* :mod:`._sync` -- the entry points: per-scenario, all-scenarios (baseline
-  UNION scenarios with postings on the linked ledger), and per-user.
+* :mod:`._sync` -- the entry points (per-scenario, all-scenarios, per-user,
+  the deploy backfill, the several-accounts re-derive and the effect-time
+  self-heal that gates it) and the CHECKED-PROJECTION assert every one of them
+  ends on.
+
+**This package had a THIRD module, and plan step X-d deleted it.**  ``_walk``
+replayed the account's :class:`~app.models.account.AccountAnchorHistory` rows
+against source facts read back from its LINKED LEDGER -- the posted copy of the
+account's events -- so the corrections were computed from the ledger they were
+then written into, and the app carried two representations of one event set: the
+transaction rows the balance seam folds, and the postings this walk folded.
+Ruling R-H had already ruled that only ONE walk closes that, and plan step 3 made
+the two absorb loops textually identical precisely so this step would be a
+DELETION.  The writer now consumes
+:func:`app.services.cash_ledger.walk_cash_ledger`, and
+``_sync._assert_checked_projection`` grades the result: ``sum(postings) ==
+fold(ACTUAL events)``, per date, after every reconcile, so a stale posting is a
+detectable, repairable cache inconsistency instead of a second opinion (E1a's
+shape, for cash).
 
 ## Shared infrastructure and isolation
 
@@ -60,23 +73,19 @@ go-forward one.
 from ._anchors import reconcile_account_anchor_corrections
 from ._sync import (
     backfill_all_account_anchor_postings,
+    resync_anchor_postings,
     resync_user_account_anchor_postings,
     self_heal_anchor_corrections,
     sync_account_anchor_postings,
     sync_account_anchor_postings_all_scenarios,
 )
-from ._walk import (
-    AccountAnchorCorrection,
-    walk_account_ledger,
-)
 
 __all__ = [
-    "AccountAnchorCorrection",
     "backfill_all_account_anchor_postings",
     "reconcile_account_anchor_corrections",
+    "resync_anchor_postings",
     "resync_user_account_anchor_postings",
     "self_heal_anchor_corrections",
     "sync_account_anchor_postings",
     "sync_account_anchor_postings_all_scenarios",
-    "walk_account_ledger",
 ]

@@ -104,6 +104,7 @@ from tests._test_helpers import (
     load_migration_module,
     observed_day_of,
     restamp_opening_assertion,
+    revert_settled_transaction,
 )
 
 
@@ -848,9 +849,13 @@ class TestRevertAfterTrueupSelfHeals:
             db.session.commit()
             _assert_account_anchors_reconcile(scenario_id)
 
-            # Revert the pre-true-up spend via the real posting primitive; the
-            # tail self-heal re-bases the true-up in the same transaction.
-            posting_service.sync_transaction_postings(spend, settled=False)
+            # Revert the pre-true-up spend through the real production path
+            # (the status seam back to Projected, THEN the reconcile with the
+            # row's own status); the tail self-heal re-bases the true-up in the
+            # same transaction.  Since plan step X-d a reconcile-to-empty on a
+            # row still reading settled is refused by the checked-projection
+            # assert -- a state no production path produces (ruling R-DM).
+            revert_settled_transaction(db.session, spend)
             db.session.commit()
 
             assert posting_service.account_posting_total(
@@ -1149,22 +1154,30 @@ class TestScenarioAndOwnerIsolation:
             _assert_account_anchors_reconcile(whatif.id)
             _assert_account_anchors_reconcile(seed_user["scenario"].id)
 
-    def test_a_settle_that_rides_on_top_does_not_rewalk_an_opened_ledger(
+    def test_every_settle_rewalks_the_account_whatever_its_date(
         self, app, db, seed_user, monkeypatch,
     ):
-        """The skip survives: an ordinary settle re-derives nothing.
+        """There is NO skip: on-top and pre-assertion settles both re-derive.
 
-        The non-vacuity twin of the test above.  The fix widened the
-        self-heal's fire condition, so this pins that it did not widen it to
-        "always": a settle in a scenario that already carries its corrections,
-        dated after every assertion, must not walk the account at all.
+        **This test was inverted at plan step X-d, on ruling R-DK, and the
+        inversion is the point.**  It used to pin the self-heal's SKIP
+        predicate -- a settle dated after every assertion could move no
+        correction, so the walk was avoided.  Three things ruled that out and
+        the ruling names them: the predicate's own docstring conceded it was
+        optional; it was a cost guard that SPELLS the money rule, the exact
+        shape finding N-133 / F4's silent timezone-sign dependency lived in for
+        its whole life; and X-d put the checked-projection assert BEHIND this
+        call, so a skipped walk is a skipped CHECK -- over the commonest write
+        there is, which is ticking off a bill dated after the last balance
+        reading.
 
-        **It counts the CALL, not the effect, and it has to.**  The reconcile
-        is idempotent -- running it here writes nothing either way -- so an
-        assertion about entries cannot tell a skipped walk from a performed
-        one, and a test that claimed to pin the skip while asserting entry
-        counts would pass with the skip deleted.  The spy delegates, so the
-        ledger still reconciles and the sibling assertions below are real.
+        It still counts the CALL rather than the effect, for the same reason it
+        always did: the reconcile is idempotent, so an assertion about entries
+        cannot tell a performed walk from a skipped one.  What changed is the
+        expected count, from zero to one per settle.
+
+        The cost of removing the skip was measured rather than assumed (ruling
+        R-DK): ``0.73 ms`` saved, against an ``11.13 ms`` / 12-statement sync.
         """
         # pylint: disable=import-outside-toplevel
         from app.services.account_posting_service import _sync
@@ -1176,8 +1189,6 @@ class TestScenarioAndOwnerIsolation:
             db.session.commit()
             scenario_id = seed_user["scenario"].id
 
-            # First settle: the scenario is already open (the baseline carries
-            # its corrections from account-create time), so this must skip.
             real = _sync.sync_account_anchor_postings
             calls: list[tuple[int, int]] = []
 
@@ -1188,6 +1199,9 @@ class TestScenarioAndOwnerIsolation:
             monkeypatch.setattr(
                 _sync, "sync_account_anchor_postings", _spy,
             )
+            # An ON-TOP settle: dated after every assertion, in a scenario that
+            # already carries its corrections -- the case the old predicate
+            # skipped, and the one the assert is least able to see if it does.
             create_settled_cash_transaction(
                 seed_user, db.session, seed_user["bootstrap_period"],
                 Decimal("40.00"), account=checking,
@@ -1195,23 +1209,23 @@ class TestScenarioAndOwnerIsolation:
             )
             db.session.commit()
 
-            assert calls == [], (
-                "an on-top settle in an already-opened scenario walked the "
-                f"account anyway: {calls}"
+            assert calls == [(checking.id, scenario_id)], (
+                "an on-top settle did not re-derive the account's anchors; "
+                f"ruling R-DK deleted the skip predicate.  Calls: {calls}"
             )
-            # ...and a settle dated BEFORE the assertion still fires, so the
-            # staleness arm is not what was disabled.
+            # ...and a settle dated BEFORE the assertion fires as it always did.
             create_settled_cash_transaction(
                 seed_user, db.session, seed_user["bootstrap_period"],
                 Decimal("25.00"), account=checking,
                 paid_at=datetime(2025, 12, 1, 12, tzinfo=timezone.utc),
             )
             db.session.commit()
-            assert (checking.id, scenario_id) in calls
+            assert calls == [(checking.id, scenario_id)] * 2
 
             # The opening ABSORBS the pre-assertion settle (nothing rides on
             # top of it) while the on-top one reduces the balance:
-            # 1000 - 40 = $960.00.
+            # 1000 - 40 = $960.00.  Unchanged by the ruling: deleting a skip
+            # over an idempotent reconcile moves no figure.
             assert posting_service.account_posting_total(
                 checking.id, scenario_id,
             ) == Decimal("960.00")

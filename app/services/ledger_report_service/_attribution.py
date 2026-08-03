@@ -31,24 +31,27 @@ back to the source's pay period ``start_date`` when ``paid_at`` is NULL:
   balance closed.
 
 The ``transfer_id IS NULL`` guard on the transaction bucket makes the three
-buckets a PARTITION of the live ledger identical to the write-side walk's
-(:func:`app.services.account_posting_service._walk._transaction_source_days`):
-a hypothetical dual-linked entry classifies as transfer-linked, never both.
+buckets a PARTITION of the live ledger: a hypothetical dual-linked entry
+classifies as transfer-linked, never both.  It was written to match the
+write-side walk's own three-bucket partition over the postings; plan step X-d
+deleted that walk (the writer reads the SOURCE rows now), so this reader is the
+only place the posted ledger is still bucketed by source kind, and the partition
+is load-bearing here alone.
 
-**One civil date, shared, since ruling R-DH.**  This reader and the write-side
-walk both attribute a source to :func:`app.utils.dates.to_display_civil_date`
-of its ``paid_at`` -- the same day, from the same helper.  They were
-deliberately different until 2026-07-31: the walk partitioned by UTC INSTANT
-against each anchor's ``created_at`` while this side used the display-timezone
-civil date for calendar windows, and the paragraph here justified an
-independent restatement of the attribution rule on exactly that difference.
-The difference is gone (the instant partition cost production ``$4,001.42``),
-so what survives is a weaker and narrower reason: this package restates the
-write side's LOADERS rather than importing a write-package internal, keeping
-the reader decoupled from the writer the way the reconciliation oracles rely
-on.  **That is a stance about package boundaries, not about the rule** -- the
-DAY itself is one helper call on both sides, and plan step 3's one-predicate
-sweep is where the two loaders stop being two.
+**One civil date, and since plan step X-d there is no second loader to keep in
+step with.**  This reader attributes a source to
+:func:`app.utils.dates.to_display_civil_date` of its ``paid_at``.  The posting
+WRITER used to hold a mirror of these loaders over the POSTED copy of the same
+events, and the two were deliberately different until 2026-07-31 -- that walk
+partitioned by UTC INSTANT against each anchor's ``created_at`` while this side
+used the display-timezone civil day, and this paragraph justified an
+independent restatement on exactly that difference.  Ruling R-DH removed the
+difference (the instant partition cost production ``$4,001.42``), plan step 3
+converged the predicate, and X-d deleted the mirror outright: the writer reads
+the SOURCE rows through :func:`app.services.cash_ledger.walk_cash_ledger` now.
+So the loaders below are no longer a restatement of anything -- they are the
+only place the POSTED ledger is bucketed and dated by source, which is a read
+concern this package owns alone.
 
 **Flask-isolated** and read-only: plain ids in, plain data out; no writes.
 """
@@ -507,10 +510,20 @@ def _transfer_attribution_dates(transfer_ids: set[int]) -> dict[int, date]:
 
     One batched load of the INCOME shadow (the ``to_account`` side, non-deleted)
     per transfer -- its ``(paid_at, pay_period.start_date)`` -- mapped to
-    :func:`app.utils.dates.to_display_civil_date`.  Mirrors the write-side walk's
-    transfer loader: a settled transfer has exactly its two shadows (Transfer
-    Invariant 1), so a missing or duplicate income shadow is a broken invariant
-    that fails loudly rather than dating the transfer off an arbitrary shadow.
+    :func:`app.utils.dates.to_display_civil_date`.  A settled transfer has
+    exactly its two shadows (Transfer Invariant 1), so a missing or duplicate
+    income shadow is a broken invariant that fails loudly rather than dating the
+    transfer off an arbitrary shadow.
+
+    **It carried a ``duplicate-code`` disable until plan step X-d, and the
+    disable is DELETED rather than re-justified.**  The query it was held apart
+    from was the write-side walk's own transfer loader; X-d deleted that walk,
+    so there is no second copy left and the suppression suppressed nothing.
+    That is measured, not assumed -- removing the two pragma lines leaves
+    ``pylint app/`` at 10.00/10 -- and it had to be measured, because pylint's
+    ``useless-suppression`` does NOT report a stale ``duplicate-code`` disable
+    (verified by planting one back and re-running: still 10.00/10, no I0021).
+    A disable this gate cannot invalidate is one a reader has to check by hand.
 
     Args:
         transfer_ids: The transfer ids whose income-shadow dates to resolve.
@@ -522,22 +535,6 @@ def _transfer_attribution_dates(transfer_ids: set[int]) -> dict[int, date]:
         PostingError: If any transfer resolves more than one active income
             shadow, or none.
     """
-    # Pylint: ``duplicate-code`` -- the income-shadow query mirrors the
-    # write-side walk's loader
-    # (``account_posting_service._walk._transfer_source_days``) by
-    # construction: the reader RESTATES the walk's transfer attribution rather
-    # than importing a write-package internal, keeping this read package
-    # decoupled from the write package (the same independent-restatement stance
-    # the reconciliation oracles rely on).  Both sides now derive the SAME
-    # display-timezone civil day from the shadow (ruling R-DH deleted the
-    # walk's instant partition), so what is restated here is the LOADER, not
-    # the rule.  **Plan step 3 SHIPPED and deliberately did not resolve this**:
-    # it converged the partition RULE, and extracting a third shared home for
-    # these loaders would be scaffolding for a caller plan step X-d deletes --
-    # X-d retires the write-side walk onto the read walk, taking its twin of
-    # this query with it.  X-d owns it.  One-sided disable so the walk stays
-    # un-disabled.
-    # pylint: disable=duplicate-code
     rows = (
         db.session.query(
             Transaction.transfer_id, Transaction.paid_at, PayPeriod.start_date,
@@ -556,7 +553,6 @@ def _transfer_attribution_dates(transfer_ids: set[int]) -> dict[int, date]:
         )
         .all()
     )
-    # pylint: enable=duplicate-code
     dates = {
         transfer_id: to_display_civil_date(paid_at, start_date)
         for transfer_id, paid_at, start_date in rows

@@ -728,13 +728,21 @@ class TestDowngradeReversible:
         """
         with app.app_context():
             period = seed_user["bootstrap_period"]
-            txn = add_txn(
-                _db.session, seed_user, period, "Groceries", "50.00",
-                status_enum=StatusEnum.DONE, category_key="Groceries",
-            )
+            # The transfer is settled FIRST, while every settled row on the
+            # account is posted.  The unposted Paid expense below is the
+            # pre-backfill state this migration exists for, and since plan step
+            # X-d the checked-projection assert refuses the next write on an
+            # account carrying one -- correctly, because the ledger does not yet
+            # project that row.  Creating the transfer after it would trip that
+            # assert on a state the backfill has not run on yet, which is not
+            # what this test is about.
             transfer = create_settled_transfer(
                 seed_user, _db.session, seed_user["account"], savings, period,
                 amount=Decimal("100.00"),
+            )
+            txn = add_txn(
+                _db.session, seed_user, period, "Groceries", "50.00",
+                status_enum=StatusEnum.DONE, category_key="Groceries",
             )
             _db.session.commit()
             _run_backfill()

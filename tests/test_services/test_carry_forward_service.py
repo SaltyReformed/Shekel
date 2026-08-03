@@ -38,6 +38,7 @@ from app.models.transfer_template import TransferTemplate
 from app.services import (
     account_service,
     carry_forward_service,
+    posting_service,
     recurrence_engine,
     transfer_recurrence,
     transfer_service,
@@ -1801,6 +1802,15 @@ class TestCarryForwardEnvelopeSettledTarget:
             )
             target.actual_amount = Decimal("100.00")
             _add_entry(source, seed_user, "40.00")
+            db.session.flush()
+            # The Paid target's ledger effect, posted the way a real settle
+            # posts it.  A settled row the ledger has never seen makes the
+            # account's posted ledger stop projecting its own rows, and since
+            # plan step X-d the next write on that account -- the carry-forward
+            # below -- refuses rather than committing a broken projection.
+            posting_service.sync_transaction_postings(
+                target, settled=target.status.is_settled,
+            )
             db.session.commit()
 
             source_id = source.id

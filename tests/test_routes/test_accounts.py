@@ -35,6 +35,8 @@ from app.services import (
     account_service,
     cash_ledger,
     pay_period_service,
+    posting_service,
+    status_seam,
 )
 from app.services.auth_service import hash_password
 
@@ -1459,8 +1461,16 @@ class TestTheReconcileRoute:
                     ("100.00", past, False, None),
                 ],
             )
+            # Settled through the production pair -- the status seam, then the
+            # ledger reconcile -- rather than by assigning ``status_id``.  A
+            # settled row the ledger has never seen makes the account's posted
+            # ledger stop projecting its own rows, and since plan step X-d the
+            # next write on that account (the true-up below) refuses.
             paid = db.session.query(Status).filter_by(name="Paid").one()
-            txn.status_id = paid.id
+            status_seam.apply_status_change(txn, paid.id)
+            posting_service.sync_transaction_postings(
+                txn, settled=txn.status.is_settled,
+            )
             db.session.commit()
             self._true_up(auth_client, seed_user["account"].id, "5000.00")
             entry_id = self._entries_of(txn.id)[0].id

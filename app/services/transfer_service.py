@@ -716,16 +716,21 @@ def delete_transfer(transfer_id, user_id, soft=False):
     # never-settled or already-reversed transfer (the account-delete and
     # recurrence-regeneration paths only ever reach those: Guard 4 in
     # ``accounts/crud.py`` archives any account with settled history).
-    posting_service.sync_transfer_postings(xfer, settled=False)
+    # It is the reconcile CORE, not the checked sync (ruling R-DM): the
+    # anchor re-derive at the end of this function is where the
+    # checked-projection assert runs, and running it HERE would grade the
+    # window in which the shadows still read settled and the ledger reads zero.
+    posting_service.reverse_transfer_postings_before_delete(xfer)
 
     # ── Loan-payment split reversal (Build-Order Step 4) ───────────
     # Reverse this payment's split correction while the income shadow id still
     # exists -- load-bearing for a hard delete, whose CASCADE SET-NULLs the
-    # correction's ``transaction_id`` link.  Capture the loan coordinates now,
-    # before the row can be deleted, so the downstream payments (whose running
-    # balance the deletion changes) can be re-split afterwards.  A no-op for a
-    # non-loan transfer.
+    # correction's ``transaction_id`` link.  Capture the loan coordinates and
+    # both cash endpoints now, before the row can be deleted, so the downstream
+    # payments (whose running balance the deletion changes) can be re-split and
+    # the anchors re-derived afterwards.  A no-op for a non-loan transfer.
     is_loan_payment = _reverse_loan_payment_before_delete(xfer)
+    endpoint_ids = (xfer.from_account_id, xfer.to_account_id)
     loan_account_id = xfer.to_account_id
     scenario_id = xfer.scenario_id
 
@@ -778,6 +783,11 @@ def delete_transfer(transfer_id, user_id, soft=False):
         result = None
 
     # ── Downstream re-reconcile (posting ledger) ───────────────────
+    # Now that the rows are FINAL, re-derive both endpoints' anchor corrections
+    # -- the other half of the retirement the reversal above deliberately left
+    # undone, and where the checked-projection assert runs (ruling R-DM; that
+    # function's docstring owns the WHEN).
+    account_posting_service.resync_anchor_postings(endpoint_ids, scenario_id)
     # After the payment is gone, re-reconcile the loan's genesis ledger: the
     # LATER payments whose running balance the deletion changed AND any true-up
     # whose owed_before it moved.  Idempotent and self-healing; skipped entirely

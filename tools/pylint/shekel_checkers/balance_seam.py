@@ -367,6 +367,19 @@ _FENCED_MODULE_RULINGS = {
         # into corrections at plan step X-d.
         "dated_deltas",
         "walk_cash_ledger",
+        # ``_days`` (plan step X-d, ruling R-DJ, closing finding N-135) -- the
+        # civil-day VOCABULARY the partition is stated in.  ``recorded`` is a
+        # public classmethod on ``MovedOn``, so W9909 sees it (a public method
+        # of a public class, the surface W9910 is structurally blind to): it
+        # promotes a STORED nullable column -- ``TransactionEntry.settled_on``,
+        # NULL until the user has seen the purchase on a statement -- into the
+        # day type, and returns ``None`` when nothing was recorded.  A
+        # constructor for a date is not a balance-at-T by any reading: it reads
+        # no account, no scenario and no row, and the only thing it can produce
+        # is the day it was handed.  Its sibling ``covers`` (ruled above) is
+        # where the day is USED; this is the door the day comes in through, and
+        # the two are ruled separately because they are separate surfaces.
+        "recorded",
     })),
     # The account-KIND classifier -- why it is scoped is recorded once, at
     # :data:`_KIND_CLASSIFIER_MODULES`.  Its ``find_period_containing_date``

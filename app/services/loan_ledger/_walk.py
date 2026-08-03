@@ -29,9 +29,8 @@ than a second opinion about them.
 every one of them, whatever their date.  Its output is therefore a function of
 the loan's data ALONE -- which is what makes it re-derivable -- and deciding
 which facts have HAPPENED as of a date belongs to a reader (the seam's fold).  The
-cash ledger's walk
-(:func:`app.services.account_posting_service.walk_account_ledger`) has taken no
-as-of since Step 3; the loan half caught up at step A3 (``4e46a0a8``).
+cash ledger's walk (:func:`app.services.cash_ledger.walk_cash_ledger`) has taken
+no as-of since Step 3; the loan half caught up at step A3 (``4e46a0a8``).
 
 Reads the loan's rows; no writes, no commit.
 """

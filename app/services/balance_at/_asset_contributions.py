@@ -31,7 +31,7 @@ from app.models.account import Account
 from app.models.investment_params import InvestmentParams
 from app.models.pay_period import PayPeriod
 from app.services import growth_engine, pay_period_service
-from app.services.cash_ledger import ReconciledThrough
+from app.services.cash_ledger import MovedOn, ReconciledThrough
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
@@ -326,7 +326,11 @@ def _dated_events(
 
         recorded = plan.recorded_by_period.get(period.id, _ZERO)
         ytd += recorded
-        if reconciled_through.covers(period.start_date):
+        # The payday this feed emits the contribution ON (see the ``events``
+        # append below), stated as the EVENT kind of day so the boundary can
+        # only be asked the one legal way (ruling R-DJ).  ``start_date`` is NOT
+        # NULL, so this is the plain constructor rather than ``recorded``.
+        if reconciled_through.covers(MovedOn(period.start_date)):
             continue
 
         employee = growth_engine.cap_contribution_at_limit(

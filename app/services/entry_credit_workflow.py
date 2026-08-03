@@ -155,14 +155,15 @@ def sync_entry_payback(
         for entry in txn.entries:
             if entry.credit_payback_id == existing_payback.id:
                 entry.credit_payback_id = None
-        # Reverse the payback's own ledger postings before deleting it
-        # (Build-Order Step 3 reverse-before-delete): an entry-level payback that
-        # was settled -- and therefore posted -- before its source's credit
-        # entries were all removed must not leave its double-entry legs stranded.
+        # Retire the payback through the one chokepoint (Build-Order Step 3;
+        # plan step X-d, ruling R-DM): reverse its own ledger postings, remove
+        # the row, then re-derive its account's anchor corrections.  An
+        # entry-level payback that was settled -- and therefore posted -- before
+        # its source's credit entries were all removed must not leave its
+        # double-entry legs stranded, nor a stale anchor correction behind them.
+        # Hard, because the payback factory never template-links one.
         # Idempotent no-op for a still-Projected payback.
-        posting_service.reverse_postings_before_delete(existing_payback)
-        db.session.delete(existing_payback)
-        db.session.flush()
+        posting_service.retire_transaction(existing_payback, hard=True)
         log_event(
             logger, logging.INFO, EVT_ENTRY_PAYBACK_DELETED, BUSINESS,
             "Entry-level payback deleted (no credit entries remain)",

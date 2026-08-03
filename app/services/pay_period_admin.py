@@ -317,8 +317,8 @@ def truncate_pay_periods(user_id, keep_through_index, confirm_discard=False):
         # (outside the ORM, where the balanced-journal trigger never fires on
         # DELETE); that is safe only for a period whose postings net to zero
         # per account (a self-cancelling original + reversal pair).  Whoever
-        # relaxes these locks MUST first reverse the postings
-        # (posting_service.reverse_postings_before_delete / the loan sync).
+        # relaxes these locks MUST first retire those rows through the one
+        # chokepoint (posting_service.retire_transaction / the loan sync).
         raise PayPeriodLocked(blocking)
 
     period_ids = [p.id for p in to_delete]
@@ -499,8 +499,8 @@ def reset_pay_periods(user_id, new_start_date, num_periods, cadence_days):
     # at the DB tier (outside the ORM, where the balanced-journal trigger never
     # fires on DELETE).  Because any settled row blocks the reset entirely, no
     # SETTLED-transaction posting is ever wiped.  Whoever relaxes this gate MUST
-    # first reverse those transactions' postings
-    # (posting_service.reverse_postings_before_delete).
+    # first retire those transactions through the one chokepoint
+    # (posting_service.retire_transaction).
     #
     # The gate does NOT protect a LOAN's genesis postings: a loan's opening /
     # true-up entries exist without any settled transaction (a payment-less

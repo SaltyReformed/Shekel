@@ -2482,6 +2482,91 @@ def create_settled_cash_transaction(
     return txn
 
 
+def revert_settled_transaction(db_session, txn):
+    """Revert a settled transaction to Projected the way production does.
+
+    The inverse of :func:`create_settled_cash_transaction`, through the same two
+    go-forward primitives in the same order the PATCH route applies them
+    (``routes/transactions/mutations.py``): the status seam flips the row to
+    Projected, and ONLY THEN does the reconcile run -- with the row's own
+    status, never a literal.
+
+    **The order is the point, and plan step X-d is what made it load-bearing**
+    (ruling R-DM, finding N-144).  Four fixtures used to spell a revert as a
+    bare ``sync_transaction_postings(txn, settled=False)`` on a row still
+    reading SETTLED.  That reverses the postings while the source row still says
+    the money moved, which is a state no production path can produce -- every
+    one of the seven production callers passes ``txn.status.is_settled`` -- and
+    X-d's checked-projection assert now refuses it, correctly, because the
+    ledger would no longer project the account's rows.  A fixture that reaches
+    a state the app cannot reach grades nothing.
+
+    Flushes through the reconcile; the caller commits.
+
+    Args:
+        db_session: The test ``db.session``.
+        txn: The settled :class:`~app.models.transaction.Transaction` to revert.
+
+    Returns:
+        The reverted transaction, Projected, with its postings netted to zero.
+    """
+    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app import ref_cache
+    from app.enums import StatusEnum
+    from app.services import posting_service, status_seam
+
+    status_seam.apply_status_change(
+        txn, ref_cache.status_id(StatusEnum.PROJECTED),
+    )
+    db_session.flush()
+    posting_service.sync_transaction_postings(
+        txn, settled=txn.status.is_settled,
+    )
+    return txn
+
+
+def revert_settled_transfer(db_session, xfer):
+    """Revert a settled transfer to Projected the way production does.
+
+    The transfer twin of :func:`revert_settled_transaction`, through the one
+    door every transfer mutation goes through -- ``transfer_service
+    .update_transfer(status_id=Projected)`` -- which flips the parent and both
+    shadows through the status seam and then reconciles the ledger with the
+    row's own status (``_sync_postings_after_update``).
+
+    Same reason as the transaction twin (plan step X-d, ruling R-DM, finding
+    N-144): a bare ``sync_transfer_postings(xfer, settled=False)`` on a transfer
+    whose shadows still read SETTLED reverses the postings while the source rows
+    still say the money moved.  X-d's checked-projection assert refuses that
+    state, correctly -- no production path produces it.  **Flipping the status
+    first does not change what the reconcile does**: the ``settled=False`` target
+    is empty either way, and the row's status is read only by the assert.  So a
+    test converted onto this helper grades the identical posting behaviour.
+
+    Flushes through the service; the caller commits.
+
+    Args:
+        db_session: The test ``db.session``.
+        xfer: The settled :class:`~app.models.transfer.Transfer` to revert.
+
+    Returns:
+        The reverted transfer, Projected, with its postings netted to zero.
+    """
+    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app import ref_cache
+    from app.enums import StatusEnum
+    from app.services import transfer_service
+
+    reverted = transfer_service.update_transfer(
+        xfer.id, xfer.user_id,
+        status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+    )
+    db_session.flush()
+    return reverted
+
+
 def set_default_grid_account(db_session, user_id, account_id):
     """Point a user's default grid account at *account_id* (re-queried, flushed).
 
@@ -2744,14 +2829,16 @@ def mark_purchase_settled(db_session, account, entry, settled_on=None):
     """
     # pylint: disable=import-outside-toplevel  -- same circular-dep
     # avoidance as the loan helpers above.
-    from app.services.cash_ledger import reconciled_through
+    from app.services.cash_ledger import MovedOn, reconciled_through
     from app.utils.dates import display_today
 
     settled_on = settled_on or entry.purchased_on
     # The guard asks the PRODUCTION rule, not a lookalike: if this helper
     # spelled the comparison itself it could come to disagree with the
     # reservation it exists to set up, which is the whole shape plan step X-f
-    # is about.
+    # is about.  The day goes in through ``MovedOn`` and not ``MovedOn.recorded``
+    # (plan step X-d, ruling R-DJ): this helper is about to WRITE the day, so it
+    # is known to exist -- the nullable door is for reading the stored column.
     boundary = reconciled_through(account.id)
     observed_on = boundary.observed_day
     assert observed_on is not None, (
@@ -2759,7 +2846,7 @@ def mark_purchase_settled(db_session, account, entry, settled_on=None):
         f"be inside one; give it an assertion before settling entry "
         f"id={entry.id}"
     )
-    assert boundary.covers(settled_on), (
+    assert boundary.covers(MovedOn(settled_on)), (
         f"entry id={entry.id} settled {settled_on} is AFTER account "
         f"id={account.id}'s latest asserted day {observed_on}, so the "
         f"projection reads it as outstanding.  Move the account's assertion to "

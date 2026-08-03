@@ -1853,13 +1853,17 @@ class TestShekelLedgerModelFenceChecker(CheckerTestCase):
         """A submodule of an allowlisted PACKAGE stays inside the fence (prefix match).
 
         The loan / account posting packages and the report package are
-        allowlisted by prefix, so their real submodules (``_walk`` / ``_reader``
-        / ``_attribution``) that legitimately query the ledger must remain
-        exempt -- the package-prefix arm of :func:`_module_in_allowlist`.
+        allowlisted by prefix, so their real submodules (``_reader`` /
+        ``_anchors`` / ``_attribution``) that legitimately query the ledger must
+        remain exempt -- the package-prefix arm of :func:`_module_in_allowlist`.
+        Each name here is a LIVE module: the account posting package's entry was
+        ``_walk`` until plan step X-d deleted that module, and a fixture naming a
+        module that no longer exists would still pass while proving nothing about
+        the tree it claims to be about.
         """
         for module_name in (
             "app.services.loan_posting_service._reader",
-            "app.services.account_posting_service._walk",
+            "app.services.account_posting_service._anchors",
             "app.services.ledger_report_service._attribution",
         ):
             node = self._importfrom_node(

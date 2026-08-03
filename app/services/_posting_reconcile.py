@@ -20,6 +20,9 @@ finding) and both agree exactly:
 * :func:`emit_anchor_correction_entry` -- the one definition of what a
   sourceless anchor-correction journal entry looks like (both concrete FKs
   NULL, dated at the anchor's civil date, described from its source kind).
+* :func:`assert_ledger_projects_facts` -- the CHECKED-PROJECTION assert
+  ``sum(postings) == fold(ACTUAL events)``, per date, that both syncs end on
+  (plan steps E1a and X-d).
 
 Flask-isolated and commit-free like its consumers: plain data in, ORM
 objects or plain values out; flushes only through the shared balanced-write
@@ -35,7 +38,7 @@ from app.enums import PostingSourceEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.journal_entry import JournalEntry, Posting
-from app.services.posting_reads import PostingError
+from app.services.posting_reads import PostingError, linked_ledger_nets_by_date
 from app.services._posting_write import (
     _MAX_DESCRIPTION_LENGTH,
     _PostingLeg,
@@ -318,3 +321,87 @@ def emit_anchor_correction_entry(
         source_kind_id, entry_date, entry.id,
     )
     return entry
+
+
+def assert_ledger_projects_facts(
+    subject: str,
+    expected: dict[date, Decimal],
+    linked_ledger_id: int,
+    scenario_id: int,
+    causes: str,
+) -> None:
+    """Assert a linked ledger equals the fold of the facts it projects.
+
+    **The checked-projection invariant, ``sum(postings) == fold(ACTUAL
+    events)``, checked at WRITE time -- per date, not just in total.**  Shared
+    by both correction-posting syncs: the loan sync since plan step E1a and the
+    account-anchor sync since plan step X-d.  Each builds *expected* from its
+    own walk's ``dated_deltas`` in its own sign convention and hands it here;
+    everything after that -- dropping clean zero-net dates, reading the posted
+    side through the one shared query
+    (:func:`app.services.posting_reads.linked_ledger_nets_by_date`), diffing per
+    date and composing the refusal -- is identical, and was two copies until
+    X-d.  ``duplicate-code`` reported them, which is the gate doing its job: the
+    two things that GRADE the general ledger must not be two implementations.
+
+    **The sign lives with the CALLER, deliberately, and it is the one thing the
+    two do not share.**  A loan walk tracks OWED against a credit-normal
+    liability ledger, so its expected side is the NEGATED owed delta; a cash
+    walk's running balance IS the linked ledger's balance in one convention,
+    for assets and liabilities alike, so its expected side is un-negated
+    (:func:`app.services.cash_ledger.dated_deltas` states this and names the
+    trap: a sign flip still BALANCES every entry, so the trial balance closes
+    and only the balance sheet is upside down).  Folding the sign in here would
+    need a flag, and a flag is exactly the thing a caller can set wrong.
+
+    Raising HERE, inside the write transaction, turns a broken projection into a
+    rollback at the write that caused it instead of a silent divergence found
+    months later -- and every reader of the general ledger (the statements, the
+    reconciliation oracles) is spared a ledger that no longer says what the
+    facts say.
+
+    Args:
+        subject: What is being graded, for the message -- e.g.
+            ``"Loan account 8"`` or ``"Account 1"``.
+        expected: ``{civil day: net}`` the facts imply on the linked ledger, in
+            POSTING space.  Zero-net days are dropped here rather than by the
+            caller, symmetrically with the posted side, so a day whose reversal
+            pair nets out reads CLEAN on both sides.
+        linked_ledger_id: The linked ledger account being graded.
+        scenario_id: The budget scenario the reconcile ran in.
+        causes: The caller's one-sentence "what this means and what to do",
+            appended to the refusal so the error is actionable rather than
+            merely alarming.
+
+    Raises:
+        PostingError: When any date's posted net differs from the folded delta.
+    """
+    want = {day: net for day, net in expected.items() if net != 0}
+    got = {
+        entry_date: net
+        for entry_date, net in linked_ledger_nets_by_date(
+            linked_ledger_id, scenario_id,
+        )
+        if net != 0
+    }
+    if want == got:
+        return
+    mismatches = sorted(
+        (
+            on_date,
+            want.get(on_date, _ZERO_MONEY),
+            got.get(on_date, _ZERO_MONEY),
+        )
+        for on_date in set(want) | set(got)
+        if want.get(on_date, _ZERO_MONEY) != got.get(on_date, _ZERO_MONEY)
+    )
+    detail = "; ".join(
+        f"{on_date.isoformat()}: walk {folded} vs posted {posted}"
+        for on_date, folded, posted in mismatches
+    )
+    raise PostingError(
+        f"{subject} scenario {scenario_id}: the posted linked ledger diverges "
+        f"from the fold of its facts at {len(mismatches)} date(s) [{detail}].  "
+        f"{causes}  Refusing to commit a ledger that no longer projects the "
+        f"facts it is a projection of."
+    )

@@ -83,7 +83,12 @@ from app.extensions import db as _db
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.services import ledger_account_service, posting_service, transfer_service
+from app.services import (
+    ledger_account_service,
+    posting_service,
+    status_seam,
+    transfer_service,
+)
 from app.services._posting_write import _emit_balanced_entry
 from app.services.posting_service import (
     PostingError,
@@ -93,8 +98,11 @@ from tests._test_helpers import (
     add_txn,
     create_account_of_type,
     create_envelope_txn,
+    create_settled_cash_transaction,
     create_settled_transfer,
     linked_ledger_account,
+    revert_settled_transaction,
+    revert_settled_transfer,
 )
 
 
@@ -536,10 +544,15 @@ class TestSyncReversal:
             transfer.amount = Decimal("999.00")
             _db.session.flush()
 
-            [reversal] = posting_service.sync_transfer_postings(
-                transfer, settled=False,
-            )
+            # The RECONCILE core, not the checked sync (plan step X-d, ruling
+            # R-DM).  The property under test belongs to the reconcile -- what
+            # the reversal legs are -- and this fixture deliberately holds a row
+            # whose stored amount disagrees with its postings, which the checked
+            # sync's projection assert refuses on sight.  Isolating the reconcile
+            # is what lets the poke above stay in the test.
+            posting_service.reverse_transfer_postings_before_delete(transfer)
             _db.session.commit()
+            reversal = _entries_for_transfer(transfer.id)[-1]
 
             legs = _legs_by_ledger(reversal.id)
             assert legs[savings_ledger] == Decimal("-100.00")
@@ -1164,9 +1177,12 @@ class TestTransactionReversal:
             posting_service.sync_transaction_postings(txn, settled=True)
             _db.session.commit()
 
-            [reversal] = posting_service.sync_transaction_postings(
-                txn, settled=False,
-            )
+            # The production revert: the seam flips the row to Projected, THEN
+            # the reconcile runs with the row's own status (plan step X-d,
+            # ruling R-DM).  Reconciling to an empty target while the row still
+            # reads settled is a state no production path produces, and the
+            # checked-projection assert refuses it.
+            revert_settled_transaction(_db.session, txn)
             _db.session.commit()
 
             assert _ledger_total(groceries_ledger) == Decimal("0.00")
@@ -1190,11 +1206,23 @@ class TestTransactionReversal:
           3. Re-settle (``settled=True``, category now B): cash -100 / +100 B.
 
         Final books: category A nets to **zero**, category B carries the
-        +100.00 expense, and Checking's total sits on its $1000.00 anchor
-        (the NULL-``paid_at`` -100 is pre-assertion-absorbed: the self-heal
-        re-based the opening to +1100).  Reading the posted side from the
-        ledger -- never from ``txn.category_id`` -- is what makes the
-        per-category books correct.
+        +100.00 expense, and Checking's total is ``1000.00 - 100.00 = 900.00``
+        -- its $1,000.00 anchor with the re-settled expense riding on top.
+        Reading the posted side from the ledger -- never from
+        ``txn.category_id`` -- is what makes the per-category books correct.
+
+        **The Checking figure moved from $1,000.00 to $900.00 at plan step X-d,
+        and the fixture is why, not the engine.**  This test used to revert by
+        reconciling a still-settled row to an empty target -- a state no
+        production path produces, which X-d's checked-projection assert refuses
+        (ruling R-DM) -- so it now flips the status through the seam instead.
+        The seam stamps a real ``paid_at`` on the re-settle, where ``add_txn``
+        left it NULL and the period-start fallback dated the expense at
+        2024-01-05, BEFORE the account's opening assertion, so it was absorbed
+        into the opening and the ledger read the bare anchor.  Dated on a real
+        settle day it rides on top, which is what an expense settled after the
+        last balance reading does.  The two assertions this test is ABOUT --
+        A at zero, B at +100.00 -- are unchanged.
         """
         with app.app_context():
             period = seed_user["bootstrap_period"]
@@ -1211,13 +1239,24 @@ class TestTransactionReversal:
             posting_service.sync_transaction_postings(txn, settled=True)
             _db.session.commit()
 
-            # 2. Recategorize to B, then reconcile the revert (settled=False).
+            # 2. Recategorize to B, then revert -- in the PATCH handler's own
+            # order, which applies the status flip and the field edits before
+            # the single reconcile at the end (``mutations.py``).  The
+            # recategorization lands BEFORE the reconcile deliberately: that is
+            # what makes the reversal read the ledger rather than the row.
             txn.category_id = seed_user["categories"]["Rent"].id
-            posting_service.sync_transaction_postings(txn, settled=False)
+            revert_settled_transaction(_db.session, txn)
             _db.session.commit()
 
-            # 3. Re-settle with the new category.
-            posting_service.sync_transaction_postings(txn, settled=True)
+            # 3. Re-settle with the new category, through the same seam (which
+            # re-stamps ``paid_at``, so the re-settle dates from today rather
+            # than inheriting the reverted row's cleared instant).
+            status_seam.apply_status_change(
+                txn, ref_cache.status_id(StatusEnum.DONE),
+            )
+            posting_service.sync_transaction_postings(
+                txn, settled=txn.status.is_settled,
+            )
             _db.session.commit()
 
             b_ledger = _resolve_category_ledger(
@@ -1225,9 +1264,11 @@ class TestTransactionReversal:
             ).id
             assert _ledger_total(a_ledger) == Decimal("0.00")
             assert _ledger_total(b_ledger) == Decimal("100.00")
+            # 1000.00 anchor - 100.00 re-settled expense (dated post-assertion
+            # by the seam's own instant, so it rides on top).
             assert posting_service.account_posting_total(
                 seed_user["account"].id, _scenario_id(seed_user),
-            ) == Decimal("1000.00")
+            ) == Decimal("900.00")
             # settle + revert + re-settle = three append-only entries.
             assert len(_entries_for_transaction(txn.id)) == 3
 
@@ -1503,25 +1544,26 @@ class TestSettledTransactionEffect:
         """
         with app.app_context():
             period = seed_user["bootstrap_period"]
-            expense = add_txn(
-                _db.session, seed_user, period, "Groceries", "50.00",
-                status_enum=StatusEnum.DONE, category_key="Groceries",
+            # Each row is settled AND posted before the next exists, which is
+            # the production shape: a settle stamps the status and reconciles
+            # the ledger in ONE operation.  The fixture used to create both
+            # rows Paid and post them afterwards, which leaves the account
+            # carrying a settled row the ledger has never seen -- and plan step
+            # X-d's checked-projection assert refuses the NEXT write on that
+            # account, correctly, because the ledger no longer projects the
+            # account's own rows.  ``paid_at`` is stamped post-assertion by the
+            # helper's server-side ``now()``; the directory conftest freezes the
+            # PYTHON clock to 2026-03-20, which would predate the anchor.
+            expense = create_settled_cash_transaction(
+                seed_user, _db.session, period, Decimal("50.00"),
+                category=seed_user["categories"]["Groceries"],
+                name="Groceries",
             )
-            income = add_txn(
-                _db.session, seed_user, period, "Salary", "2000.00",
-                status_enum=StatusEnum.RECEIVED, is_income=True,
-                category_key="Salary",
+            income = create_settled_cash_transaction(
+                seed_user, _db.session, period, Decimal("2000.00"),
+                is_income=True, category=seed_user["categories"]["Salary"],
+                name="Salary",
             )
-            # Stamp both settles post-assertion (add_txn leaves paid_at
-            # NULL, whose period-start fallback would predate the fixture
-            # anchor and absorb the effects into the opening instead).
-            # Server-side now(): the directory conftest freezes the PYTHON
-            # clock to 2026-03-20, which would also predate the anchor.
-            expense.paid_at = _db.func.now()
-            income.paid_at = _db.func.now()
-            _db.session.commit()
-            posting_service.sync_transaction_postings(expense, settled=True)
-            posting_service.sync_transaction_postings(income, settled=True)
             _db.session.commit()
 
             scenario_id = _scenario_id(seed_user)
@@ -1650,12 +1692,19 @@ class TestPeriodAttribution:
             assert settle_entry.entry_date == date(2026, 1, 5)
 
             # The revert-and-move PATCH, as _apply_regular_update applies it:
-            # the new period and the cleared paid_at land BEFORE the reconcile.
+            # the status flip through the SEAM (which clears ``paid_at`` on
+            # leaving a settled status) and the new period both land BEFORE the
+            # single reconcile at the end.  The seam is not optional here since
+            # plan step X-d: reconciling to an empty target while the row still
+            # reads settled is a state no production path produces, and the
+            # checked-projection assert refuses it (ruling R-DM).
+            status_seam.apply_status_change(
+                txn, ref_cache.status_id(StatusEnum.PROJECTED),
+            )
             txn.pay_period_id = moved_to.id
-            txn.paid_at = None
             _db.session.flush()
             [reversal] = posting_service.sync_transaction_postings(
-                txn, settled=False,
+                txn, settled=txn.status.is_settled,
             )
             _db.session.commit()
 
@@ -1672,10 +1721,18 @@ class TestPeriodAttribution:
             assert per_period[period.id][cash_ledger] == Decimal("0.00")
             assert moved_to.id not in per_period
 
-            # A later re-settle posts into the NEW period alone (paid_at is
-            # cleared, so the entry dates at F's start -- the settle fallback).
+            # A later re-settle posts into the NEW period alone.  The seam
+            # stamps a fresh ``paid_at``; it is cleared again immediately after,
+            # because the property under test is the NULL-``paid_at`` settle
+            # fallback (the entry dates at F's start), which is the shape the
+            # legacy rows finding N-42 measured still carry.
+            status_seam.apply_status_change(
+                txn, ref_cache.status_id(StatusEnum.DONE),
+            )
+            txn.paid_at = None
+            _db.session.flush()
             [resettle] = posting_service.sync_transaction_postings(
-                txn, settled=True,
+                txn, settled=txn.status.is_settled,
             )
             _db.session.commit()
             assert resettle.pay_period_id == moved_to.id
@@ -1708,10 +1765,16 @@ class TestPeriodAttribution:
 
             transfer.pay_period_id = moved_to.id
             _db.session.flush()
-            [reversal] = posting_service.sync_transfer_postings(
-                transfer, settled=False,
-            )
+            # The reconcile CORE, for the same reason as
+            # ``test_reverse_negates_posted_amount_not_transfer_amount``: the
+            # parent's period is poked directly here while the shadows still
+            # read settled in the ORIGINAL period, and the checked sync's
+            # projection assert refuses that disagreement (plan step X-d,
+            # ruling R-DM).  The R2 attribution rule under test is the
+            # reconcile's.
+            posting_service.reverse_transfer_postings_before_delete(transfer)
             _db.session.commit()
+            reversal = _entries_for_transfer(transfer.id)[-1]
 
             assert reversal.pay_period_id == period.id
             legs = _legs_by_ledger(reversal.id)

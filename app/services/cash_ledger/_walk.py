@@ -17,15 +17,16 @@ lives in the balance seam, not here.  A consumer holding a walk therefore cannot
 reach a balance from a public leaf name, which is why the walk needs no call
 fence (plan step D-fold's ruling, restated for cash).
 
-**Two consumers, one walk** (ruling R-H).  The seam's read pass folds it into a
-balance at a date; at plan step X-d the posting writer projects it into the
-balanced corrections it reconciles onto the general ledger, replacing the
-postings-sourced :func:`app.services.account_posting_service.walk_account_ledger`.
-Today those are two independent statements of what happened to an account -- one
-period-granular over transaction rows, one instant-granular over the postings it
-is correcting -- and their disagreement IS the defect Phase X exists to close
-(findings cash D1-D4).  One walk closes it by construction rather than by a test
-holding two implementations in step.
+**Two consumers, one walk** (ruling R-H, delivered at plan step X-d).  The
+seam's read pass folds it into a balance at a date; the posting writer
+(:mod:`app.services.account_posting_service`) projects it into the balanced
+corrections it reconciles onto the general ledger.  Those were two independent
+statements of what happened to an account -- one period-granular over
+transaction rows, one instant-granular over the postings it was correcting --
+and their disagreement WAS the defect Phase X exists to close (findings cash
+D1-D4).  The postings-sourced twin is deleted rather than unwired, so one walk
+closes it by construction rather than by a test holding two implementations in
+step.
 
 **Takes no as-of, and reads no clock.**  Its output is a function of the
 account's data ALONE, which is what makes it re-derivable; deciding which facts
@@ -69,7 +70,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from ._amounts import ReconciledThrough
+from ._days import ObservedOn, ReconciledThrough
 from ._events import (
     CashAnchorFact,
     CashSourceFact,
@@ -93,9 +94,9 @@ class CashAnchorCorrection:
 
     On the write side (plan step X-d) each of these becomes a balanced journal
     entry, the opening tagged ``account_opening`` and every later one
-    ``account_trueup``, exactly as
-    :class:`app.services.account_posting_service.AccountAnchorCorrection` is
-    today.
+    ``account_trueup`` -- the role the posting package's own
+    ``AccountAnchorCorrection`` filled until that step deleted it and its walk
+    together.
 
     Attributes:
         anchor: The :class:`~._events.CashAnchorFact` this correction books for.
@@ -109,7 +110,7 @@ class CashAnchorCorrection:
     balance_before: Decimal
 
     @property
-    def observed_on(self) -> date:
+    def observed_on(self) -> ObservedOn:
         """Return the civil day this correction is the closing balance FOR.
 
         The assertion twin of :attr:`~._events.CashSourceFact.settled_on`, and
@@ -122,7 +123,12 @@ class CashAnchorCorrection:
         that conversion was a second statement of a rule the fact now owns.
 
         Returns:
-            The civil day of the assertion this correction books.
+            The :class:`~app.services.cash_ledger.ObservedOn` of the assertion
+            this correction books -- the assertion KIND of day (ruling R-DJ), so
+            a consumer cannot compare it against an event's day by hand.  Read
+            ``.civil_day`` where a bare ``date`` is genuinely needed: the day a
+            correction's journal entry is stamped with, and the period-bucketing
+            lookup in ``balance_at._cash_periods``.
         """
         return self.anchor.observed_on
 
@@ -258,9 +264,9 @@ def walk_cash_ledger(account_id: int, scenario_id: int) -> CashLedgerWalk:
         scenario_id: The budget scenario whose settled rows to walk against.
             Assertions are per-ACCOUNT (``AccountAnchorHistory`` carries no
             scenario), so the same assertions walk in every scenario against that
-            scenario's own rows -- the same split
-            :func:`app.services.account_posting_service.walk_account_ledger`
-            documents.
+            scenario's own rows -- which is why
+            :func:`app.services.account_posting_service.sync_account_anchor_postings_all_scenarios`
+            loops this walk over every scenario an account's ledger is live in.
 
     Returns:
         A :class:`CashLedgerWalk` (source facts + assertion corrections, both
@@ -281,12 +287,10 @@ def walk_cash_ledger(account_id: int, scenario_id: int) -> CashLedgerWalk:
     for anchor in anchors:
         # Absorb every source this assertion RECONCILES -- one implementation
         # of that rule (``ReconciledThrough.covers``) rather than a placement
-        # convention.  This loop is deliberately the same shape as the posted
-        # ledger's in
-        # :func:`app.services.account_posting_service.walk_account_ledger`,
-        # which walks the SAME assertions against the SAME rule over the
-        # POSTED copy of these events; plan step X-d deletes that copy and
-        # this becomes the only walk.
+        # convention.  The posting writer had a second loop of this exact shape
+        # over the POSTED copy of these events; plan step 3 made the two
+        # textually identical so plan step X-d could DELETE one, and this is
+        # now the only walk.
         while absorbed < len(sources) and anchor.reconciled_through.covers(
             sources[absorbed].settled_on,
         ):
@@ -390,9 +394,10 @@ def dated_deltas(walk: CashLedgerWalk) -> list[tuple[date, Decimal]]:
     # orders were opposite for an opening, and the Returns docstring below
     # asserted a chronology this list did not have.
     tagged: list[tuple[date, int, Decimal]] = [
-        (fact.settled_on, 0, fact.delta) for fact in walk.source_facts
+        (fact.settled_on.civil_day, 0, fact.delta)
+        for fact in walk.source_facts
     ] + [
-        (correction.observed_on, 1, correction.delta)
+        (correction.observed_on.civil_day, 1, correction.delta)
         for correction in walk.anchor_corrections
     ]
     tagged.sort(key=lambda step: (step[0], step[1]))

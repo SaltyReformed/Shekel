@@ -247,9 +247,9 @@ def partition_regeneration_rows(existing_rows: list) -> tuple[list, list, list]:
         # ``recurrence_engine.resolve_conflicts`` (which restores / re-amounts
         # the overridden / deleted conflict ids) ever touches a row with ledger
         # postings -- both operate only on the mutable (Projected) rows that
-        # fall through below.  Whoever relaxes this skip MUST reverse a settled
-        # row's postings before deleting it and re-sync after a mutation (see
-        # posting_service.reverse_postings_before_delete /
+        # fall through below.  Whoever relaxes this skip MUST retire a settled
+        # row through the one chokepoint rather than deleting it, and re-sync
+        # after a mutation (see posting_service.retire_transaction /
         # sync_transaction_postings), or the double-entry ledger desyncs.
         if row.status and row.status.is_immutable:
             continue

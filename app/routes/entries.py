@@ -150,7 +150,8 @@ def _render_entry_list(
     # manual toggle this replaced could set either one against the other.
     boundary = cash_ledger.reconciled_through(txn.account_id)
     reconciled_ids = {
-        e.id for e in entries if boundary.covers(e.settled_on)
+        e.id for e in entries
+        if boundary.covers(cash_ledger.MovedOn.recorded(e.settled_on))
     }
     return render_template(
         "grid/_transaction_entries.html",

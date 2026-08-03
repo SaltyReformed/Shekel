@@ -39,6 +39,8 @@ from app.enums import (
     PostingKindEnum,
     PostingSourceEnum,
 )
+from sqlalchemy import event
+
 from app.extensions import db as _db
 from app.models.account import AccountAnchorHistory
 from app.models.journal_entry import JournalEntry, Posting
@@ -50,6 +52,7 @@ from app.services import (
     account_posting_service,
     account_service,
     anchor_service,
+    cash_ledger,
     posting_service,
 )
 from app.services.anchor_service import AnchorTrueUpOutcome
@@ -63,6 +66,7 @@ from tests._test_helpers import (
     ledger_net,
     observed_day_of,
     restamp_opening_assertion,
+    revert_settled_transaction,
     settle_instant_on,
 )
 
@@ -119,10 +123,12 @@ def _origin_day(account):
     ``create_account_of_type`` began opening its accounts the day BEFORE today,
     so a fixture offsetting from ``created_at`` by one day landed on the
     opening's OWN day and silently graded the opposite case.  Measured on two
-    tests here: ``test_a_settle_on_an_earlier_day_is_inside_the_opening`` and
-    ``test_transfer_attribution_uses_income_shadow_day`` both stopped
-    testing the strictly-earlier arm their docstrings name.  Offsetting from
-    the day the rule reads makes the fixture say what it means.
+    tests here, one of which survives: ``test_transfer_attribution_uses_income_
+    shadow_day``, and ``test_a_settle_on_an_earlier_day_is_inside_the_opening``
+    which plan step X-d deleted in favour of ``test_cash_walk.py``'s
+    ``TestPreOpeningSources``.  Both had stopped testing the strictly-earlier
+    arm their docstrings name.  Offsetting from the day the rule reads makes
+    the fixture say what it means.
     """
     row = (
         _db.session.query(AccountAnchorHistory)
@@ -221,12 +227,12 @@ def _settle_expense(seed_user, account, amount, paid_at):
 
 
 # ---------------------------------------------------------------------------
-# walk_account_ledger -- the civil-day partition (the core)
+# The walk the posting writer consumes -- the civil-day partition (the core)
 # ---------------------------------------------------------------------------
 
 
-class TestWalkAccountLedger:
-    """The pure walk partitions sources by CIVIL DAY and resets at assertions.
+class TestTheWalkThePostingWriterConsumes:
+    """The walk partitions sources by CIVIL DAY and resets at assertions.
 
     The day is the user's (``America/New_York``) and an assertion is the
     closing balance for it -- EVERY assertion, opening and true-up alike --
@@ -236,55 +242,40 @@ class TestWalkAccountLedger:
     OPENING then carried an exception for one day, until finding N-133 / F1
     scored it against four months of that same account and found it the
     second-worst correction in the history.
+
+    **The subject changed at plan step X-d and the class is named for it.**
+    These cases graded ``account_posting_service.walk_account_ledger``, a
+    SECOND walk over the POSTED copy of the same events; ruling R-H ruled one
+    walk for both consumers and X-d deleted that module, so the writer consumes
+    :func:`app.services.cash_ledger.walk_cash_ledger` -- the read fold's own.
+    They stay HERE rather than moving into ``test_cash_walk.py`` because what
+    they now grade is that walk AS THE WRITER'S INPUT: every ``balance_before``
+    below is booked to the general ledger as an anchor correction by the
+    reconcile in the class beneath this one.
+
+    **Four cases went with the deletion rather than being converted, each
+    because ``test_cash_walk.py`` already pins the same property on the
+    surviving walk, at the same or a stronger grain.**  Named so a reader can
+    check the claim instead of trusting it:
+
+    * ``test_opening_only_walk`` -> ``TestDegenerateShapes
+      .test_an_opening_with_no_prior_activity_corrects_from_zero``;
+    * ``test_a_settle_on_an_earlier_day_is_inside_the_opening`` ->
+      ``TestPreOpeningSources
+      .test_it_is_absorbed_into_the_opening_and_the_total_is_right``, which
+      asserts the correction's delta and the walk's total as well as
+      ``balance_before``;
+    * ``test_null_paid_at_falls_back_to_period_start`` -> ``TestAttributionIsOneKey
+      .test_a_null_paid_at_falls_back_to_the_period_start``;
+    * ``test_walk_refuses_amortizing_loan`` -> :meth:`TestSyncEntryPoints
+      .test_loan_account_is_a_noop_everywhere`.  **That one is a real change of
+      behaviour and not a re-point**: the deleted walk RAISED on a loan, and the
+      surviving walk does not, so the guard keeping the two correction families
+      disjoint now sits one layer up at
+      ``_sync._load_non_amortizing_account`` -- deliberately a quiet no-op
+      there, because the lifecycle chokepoints legitimately iterate every
+      account a user owns.
     """
-
-    def test_opening_only_walk(self, app, db, seed_user):
-        """A fresh account walks to one opening correction from zero.
-
-        Savings anchored $500.00 with no settled activity: one correction,
-        the opening, with ledger_before 0.00 (so its delta is the full
-        anchor, 500.00).
-        """
-        with app.app_context():
-            account = _make_account(seed_user, "500.00")
-            corrections = account_posting_service.walk_account_ledger(
-                account.id, seed_user["scenario"].id,
-            )
-            assert len(corrections) == 1
-            assert corrections[0].anchor.is_opening is True
-            assert corrections[0].anchor.anchor_balance == Decimal("500.00")
-            assert corrections[0].ledger_before == Decimal("0.00")
-
-    def test_a_settle_on_an_earlier_day_is_inside_the_opening(
-        self, app, db, seed_user,
-    ):
-        """A settle dated an EARLIER DAY than the opening is in ledger_before.
-
-        Savings anchored $500.00; a $200.00 expense settled the day BEFORE the
-        origination assertion: the source is absorbed, so the opening's
-        ledger_before is -200.00 (and its delta 500 - (-200) = +700.00 -- the
-        anchor already reflected that spend).
-
-        **The boundary is a DAY, inclusive, for every assertion kind** (ruling
-        R-DH (a)).  This case is the strictly-earlier one, which no variant of
-        the rule has ever disputed; the opening's OWN day is the case
-        :meth:`test_a_settle_on_the_openings_own_day_is_absorbed_either_order`
-        pins.  The fixture moved from "one hour before" to "one day before"
-        because an hour is not a unit this partition has any more.
-        """
-        with app.app_context():
-            account = _make_account(seed_user, "500.00")
-            origin = _origin_day(account)
-            _settle_expense(
-                seed_user, account, "200.00", settle_instant_on(origin - timedelta(days=1)),
-            )
-            _db.session.commit()
-
-            corrections = account_posting_service.walk_account_ledger(
-                account.id, seed_user["scenario"].id,
-            )
-            assert len(corrections) == 1
-            assert corrections[0].ledger_before == Decimal("-200.00")
 
     @pytest.mark.parametrize(
         "offset, label",
@@ -315,13 +306,16 @@ class TestWalkAccountLedger:
 
         **Both directions, because the rule is about the DAY and not the order**
         (F2, finding N-133).  Under the CURRENT walk the two parameters feed
-        byte-identical inputs -- ``_source_net_days`` aggregates a day's sources
-        to one ``(day, net)`` pair before the partition runs, so the settle's
-        time of day is gone by then -- and the pair is therefore regression
-        insurance rather than two live cases: it is what fails first if an
-        instant partition is ever reintroduced, at the assertion where R-DH's
-        residual is largest.  Saying that plainly beats implying a
-        discrimination the code cannot currently make.
+        byte-identical inputs -- ``CashSourceFact.settled_on`` is the instant's
+        civil DAY, so the settle's time of day is gone before the partition
+        runs -- and the pair is therefore regression insurance rather than two
+        live cases: it is what fails first if an instant partition is ever
+        reintroduced, at the assertion where R-DH's residual is largest.
+        Saying that plainly beats implying a discrimination the code cannot
+        currently make.  (The reason is restated because it MOVED at plan step
+        X-d: the deleted walk collapsed a day's sources in its own
+        ``_source_net_days`` aggregation, and the surviving one keeps each row
+        separate and carries the day on the fact.)
 
         **This test could not fail before 2026-07-31.**  It passed
         ``origin + timedelta(days=1)`` while claiming "an hour after -- the same
@@ -345,31 +339,11 @@ class TestWalkAccountLedger:
             assert to_display_date(pinned) == _PINNED_OPENING_DAY, label
             assert to_display_date(settle.paid_at) == _PINNED_OPENING_DAY, label
 
-            corrections = account_posting_service.walk_account_ledger(
+            corrections = cash_ledger.walk_cash_ledger(
                 account.id, seed_user["scenario"].id,
-            )
+            ).anchor_corrections
             assert len(corrections) == 1
-            assert corrections[0].ledger_before == Decimal("-200.00"), label
-
-    def test_null_paid_at_falls_back_to_period_start(
-        self, app, db, seed_user,
-    ):
-        """A NULL-paid_at settle is attributed at its period start (absorbed).
-
-        The $200.00 expense sits in the 2024 bootstrap period with paid_at
-        NULL; its fallback instant (2024-01-05 midnight UTC) precedes the
-        origination assertion (test-run time, 2026+), so it is absorbed:
-        ledger_before -200.00.
-        """
-        with app.app_context():
-            account = _make_account(seed_user, "500.00")
-            _settle_expense(seed_user, account, "200.00", None)
-            _db.session.commit()
-
-            corrections = account_posting_service.walk_account_ledger(
-                account.id, seed_user["scenario"].id,
-            )
-            assert corrections[0].ledger_before == Decimal("-200.00")
+            assert corrections[0].balance_before == Decimal("-200.00"), label
 
     def test_transfer_attribution_uses_income_shadow_day(
         self, app, db, seed_user,
@@ -400,11 +374,11 @@ class TestWalkAccountLedger:
             )
             _db.session.commit()
 
-            corrections = account_posting_service.walk_account_ledger(
+            corrections = cash_ledger.walk_cash_ledger(
                 account.id, seed_user["scenario"].id,
-            )
+            ).anchor_corrections
             assert len(corrections) == 1
-            assert corrections[0].ledger_before == Decimal("50.00")
+            assert corrections[0].balance_before == Decimal("50.00")
 
     def test_trueup_day_partition(self, app, db, seed_user):
         """The CRITICAL-1 case: a true-up absorbs only settles up to its own day.
@@ -442,14 +416,14 @@ class TestWalkAccountLedger:
             )
             _db.session.commit()
 
-            corrections = account_posting_service.walk_account_ledger(
+            corrections = cash_ledger.walk_cash_ledger(
                 account.id, seed_user["scenario"].id,
-            )
+            ).anchor_corrections
             assert len(corrections) == 2
             assert corrections[0].anchor.is_opening is True
-            assert corrections[0].ledger_before == Decimal("0.00")
+            assert corrections[0].balance_before == Decimal("0.00")
             assert corrections[1].anchor.is_opening is False
-            assert corrections[1].ledger_before == Decimal("300.00")
+            assert corrections[1].balance_before == Decimal("300.00")
 
     def test_two_assertions_on_one_day_both_absorb_it_in_recording_order(
         self, app, db, seed_user,
@@ -501,23 +475,32 @@ class TestWalkAccountLedger:
                 pinned + 3 * _ONE_HOUR,
             ) == _PINNED_OPENING_DAY
 
-            corrections = account_posting_service.walk_account_ledger(
+            corrections = cash_ledger.walk_cash_ledger(
                 account.id, seed_user["scenario"].id,
-            )
+            ).anchor_corrections
             assert corrections[0].anchor.is_opening is True
-            assert corrections[0].ledger_before == Decimal("-75.00")
+            assert corrections[0].balance_before == Decimal("-75.00")
             assert corrections[1].anchor.is_opening is False
-            assert corrections[1].ledger_before == Decimal("500.00")
+            assert corrections[1].balance_before == Decimal("500.00")
 
     def test_reverted_source_drops_out(self, app, db, seed_user):
         """A reverted settle nets to zero in the ledger and leaves the walk.
 
-        The $200.00 expense (paid T+1h) is reversed (the revert path's
-        ``settled=False`` reconcile); a true-up at T+2h asserting $480.00
-        (distinct from the $500.00 origination -- the F-103 same-day
+        The $200.00 expense (paid T+1d) is reverted through the production path
+        -- the status seam back to Projected, THEN the reconcile with the row's
+        own status (``revert_settled_transaction``); a true-up at T+2d asserting
+        $480.00 (distinct from the $500.00 origination -- the F-103 same-day
         same-balance unique index would reject a literal duplicate) then
-        sees ledger_before 500.00 -- the reverted source contributes
+        sees balance_before 500.00 -- the reverted source contributes
         nothing, whatever its paid_at said.
+
+        **The fixture used to spell the revert as a bare
+        ``sync_transaction_postings(txn, settled=False)`` on a row still reading
+        SETTLED, and plan step X-d's assert refused it** -- correctly, because
+        that is a state no production path produces (all seven callers pass
+        ``txn.status.is_settled``) and the ledger would not project the account's
+        own rows.  The property under test is unchanged; what changed is that
+        the fixture now reaches it the way the app does.
         """
         with app.app_context():
             account = _make_account(seed_user, "500.00")
@@ -525,37 +508,29 @@ class TestWalkAccountLedger:
             txn = _settle_expense(
                 seed_user, account, "200.00", settle_instant_on(origin + timedelta(days=1)),
             )
-            posting_service.sync_transaction_postings(txn, settled=False)
+            revert_settled_transaction(_db.session, txn)
             _add_assertion(account, "480.00", settle_instant_on(origin + timedelta(days=2)))
             _db.session.commit()
 
-            corrections = account_posting_service.walk_account_ledger(
+            corrections = cash_ledger.walk_cash_ledger(
                 account.id, seed_user["scenario"].id,
-            )
-            assert corrections[1].ledger_before == Decimal("500.00")
-
-    def test_walk_refuses_amortizing_loan(self, app, db, seed_user):
-        """Walking a loan is a caller bug and fails loudly.
-
-        Loans book their anchor corrections through the loan posting
-        package; the walk raising here (not just the equity resolver at
-        mint time) is what keeps the two correction families structurally
-        disjoint.
-        """
-        with app.app_context():
-            loan = create_loan_account(seed_user, _db.session)
-            _db.session.commit()
-            with pytest.raises(ValueError, match="amortizing loan"):
-                account_posting_service.walk_account_ledger(
-                    loan.id, seed_user["scenario"].id,
-                )
+            ).anchor_corrections
+            assert corrections[1].balance_before == Decimal("500.00")
 
     def test_missing_account_returns_empty(self, app, db, seed_user):
-        """A nonexistent account id walks to no corrections."""
+        """A nonexistent account id walks to no corrections.
+
+        Honestly empty rather than a raise: a caller that must distinguish "no
+        account" asks the account row.  The posting entry point does exactly
+        that (``_sync._load_non_amortizing_account``), which is why the walk
+        does not have to.
+        """
         with app.app_context():
-            assert account_posting_service.walk_account_ledger(
+            walk = cash_ledger.walk_cash_ledger(
                 10**9, seed_user["scenario"].id,
-            ) == []
+            )
+            assert walk.anchor_corrections == []
+            assert walk.source_facts == []
 
 
 # ---------------------------------------------------------------------------
@@ -748,7 +723,7 @@ class TestSyncAccountAnchorPostings:
             )
             _db.session.commit()
 
-            posting_service.sync_transaction_postings(txn, settled=False)
+            revert_settled_transaction(_db.session, txn)
             account_posting_service.sync_account_anchor_postings(
                 account.id, scenario_id,
             )
@@ -812,7 +787,7 @@ class TestSyncAccountAnchorPostings:
             )
             _db.session.commit()
 
-            posting_service.sync_transaction_postings(txn, settled=False)
+            revert_settled_transaction(_db.session, txn)
             _settle_expense(
                 seed_user, account, "150.00",
                 settle_instant_on(origin + timedelta(days=1)),
@@ -1172,7 +1147,7 @@ class TestSyncEntryPoints:
             assert len(trueups) == 1
             assert _entry_legs(trueups[0].id)[linked.id][0] == Decimal("50.00")
 
-            posting_service.sync_transaction_postings(txn, settled=False)
+            revert_settled_transaction(_db.session, txn)
             _db.session.commit()
 
             assert posting_service.account_posting_total(
@@ -1249,3 +1224,239 @@ class TestSyncEntryPoints:
             assert posting_service.account_posting_total(
                 account2.id, baseline2.id,
             ) == Decimal("100.00")
+
+
+# ---------------------------------------------------------------------------
+# The controls plan step X-d owes -- each shown to FAIL against its defect
+# ---------------------------------------------------------------------------
+
+
+class TestTheControlsPlanStepXdOwes:
+    """Three properties X-d creates, each with the defect it is meant to catch.
+
+    A control that cannot fail is the shape this arc has paid for repeatedly
+    (plan Section 8), so each of these carries its own negative arm rather than
+    asserting only the healthy state:
+
+    * ruling **R-DL**'s hoist is pinned by the SQL statement COUNT and not by a
+      stopwatch, so a re-introduced N+1 fails a test rather than a timing;
+    * the checked-projection assert is pinned against a PLANTED divergence of
+      exactly the class ruling **R-DI** ceded the residue reader for;
+    * ruling **R-DM**'s ordering is pinned by running the same retirement in the
+      WRONG order and showing that it refuses.
+    """
+
+    @staticmethod
+    def _ledger_lookup_statements(fn):
+        """Run *fn*, returning the SQL statements that read ``ledger_accounts``.
+
+        The chart-of-accounts lookups are what ruling R-DL hoisted out of the
+        per-correction loop, so they are the statements this control counts.
+        Every other statement the sync issues (the anchor rows, the source rows,
+        the posted legs, the inserts) is deliberately NOT counted: their number
+        legitimately depends on the data, and folding them in would make the
+        assertion a total that drifts for honest reasons.
+        """
+        statements: list[str] = []
+
+        def _capture(_conn, _cursor, statement, *_args, **_kwargs):
+            if "ledger_accounts" in statement:
+                statements.append(statement)
+
+        event.listen(_db.engine, "before_cursor_execute", _capture)
+        try:
+            fn()
+        finally:
+            event.remove(_db.engine, "before_cursor_execute", _capture)
+        return statements
+
+    def _account_with_trueups(self, seed_user, count, name):
+        """Build an account whose walk carries *count* NON-ZERO true-ups.
+
+        Each true-up asserts a different balance a day after the last, so none
+        of them is a zero-delta correction that would book nothing -- the loop
+        R-DL's hoist is about only runs for corrections that post.  *name* is
+        explicit because ``budget.accounts`` is unique on ``(user_id, name)``
+        and this control needs two accounts at once.
+        """
+        account = _make_account(seed_user, "500.00", name=name)
+        origin = _origin_day(account)
+        for index in range(count):
+            _add_assertion(
+                account,
+                str(Decimal("500.00") + Decimal(index + 1) * Decimal("10.00")),
+                settle_instant_on(origin + timedelta(days=index + 1)),
+            )
+        _db.session.commit()
+        return account
+
+    def test_the_reconcile_resolves_its_ledgers_once_not_once_per_correction(
+        self, app, db, seed_user,
+    ):
+        """R-DL: the chart lookups do not scale with the correction count.
+
+        Measured on production 2026-08-02 before the hoist: 53 non-zero
+        corrections issued **106** SELECTs resolving the SAME two ledger
+        accounts of the SAME account -- ``64.5 ms`` of a ``66.3 ms`` reconcile
+        that writes nothing.  Every anchor true-up, every account create and the
+        deploy-wide backfill paid it.
+
+        **The assertion is the COUNT and not the elapsed time** (ruling R-DL),
+        because a stopwatch assertion is a flake on a loaded machine and passes
+        on a fast one.  Two accounts differing only in how many corrections they
+        carry must issue the SAME number of chart lookups; under the N+1 the
+        second issues four times the first, so the equality below is what fails.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            few = self._account_with_trueups(seed_user, 2, "Few Trueups")
+            many = self._account_with_trueups(seed_user, 8, "Many Trueups")
+
+            few_lookups = self._ledger_lookup_statements(
+                lambda: account_posting_service.sync_account_anchor_postings(
+                    few.id, scenario_id,
+                ),
+            )
+            many_lookups = self._ledger_lookup_statements(
+                lambda: account_posting_service.sync_account_anchor_postings(
+                    many.id, scenario_id,
+                ),
+            )
+
+            assert len(few_lookups) == len(many_lookups), (
+                f"the chart-of-accounts lookups scale with the correction "
+                f"count: {len(few_lookups)} for 2 true-ups against "
+                f"{len(many_lookups)} for 8.  Ruling R-DL hoisted them out of "
+                f"the per-correction loop; something put one back."
+            )
+
+    def test_a_posting_the_source_rows_cannot_explain_refuses_the_write(
+        self, app, db, seed_user,
+    ):
+        """The checked-projection assert catches a planted hard-delete residue.
+
+        **This is the exact class ruling R-DI ceded the residue reader for.**
+        The old postings-sourced walk had a ``_residue_source_days`` arm that
+        silently absorbed postings whose ``transaction_id`` had been SET-NULLed
+        by a hard delete; X-d's walk reads SOURCE rows, so it cannot see one by
+        construction, and what replaces the arm is this refusal.
+
+        The plant is the real defect rather than a lookalike: a settled, posted
+        transaction deleted WITHOUT the reverse-before-delete discipline, which
+        is what every delete door in the app would do if one were added that
+        skipped ``retire_transaction``.  Its legs stay on the ledger with a NULL
+        link, so the ledger holds an effect the account's rows cannot explain.
+
+        The negative arm is the same fixture retired PROPERLY: it must sync
+        clean, or this test would pass for the wrong reason.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            control = _make_account(seed_user, "500.00", name="Retired Clean")
+            origin = _origin_day(control)
+            clean_txn = _settle_expense(
+                seed_user, control, "60.00",
+                settle_instant_on(origin + timedelta(days=1)),
+            )
+            _db.session.commit()
+            posting_service.retire_transaction(clean_txn, hard=True)
+            _db.session.commit()
+            account_posting_service.sync_account_anchor_postings(
+                control.id, scenario_id,
+            )
+
+            planted = _make_account(seed_user, "500.00", name="Planted")
+            planted_origin = _origin_day(planted)
+            orphan = _settle_expense(
+                seed_user, planted, "60.00",
+                settle_instant_on(planted_origin + timedelta(days=1)),
+            )
+            _db.session.commit()
+            # The defect: the row goes without its postings being reversed, so
+            # the FK SET-NULLs and the legs strand on the ledger.
+            _db.session.delete(orphan)
+            _db.session.flush()
+
+            with pytest.raises(
+                posting_service.PostingError, match="diverges from the fold",
+            ):
+                account_posting_service.sync_account_anchor_postings(
+                    planted.id, scenario_id,
+                )
+
+    def test_the_anchor_re_derive_runs_after_the_row_is_final(
+        self, app, db, seed_user,
+    ):
+        """R-DM: retiring a row re-derives its anchors LAST, and the order shows.
+
+        A $200.00 expense dated the day BEFORE the opening assertion is absorbed
+        into it, so the opening's correction is ``500 - (-200) = 700.00``.
+        Retire the row and the correction must fall back to ``500.00``: the
+        source is gone, so there is nothing left for the opening to absorb.
+
+        **The figure discriminates the ORDER, which is why it is asserted rather
+        than the account total** -- a re-derive run before the removal leaves the
+        correction at 700.00 while the reversal has already zeroed the source, so
+        the ledger would read $700.00 for an account whose only fact is a
+        $500.00 assertion.
+
+        The negative arm spells the wrong order out and shows it REFUSES: with
+        the row still present and still reading settled, the reversal has zeroed
+        the ledger and the checked-projection assert grades a half-finished
+        operation.  That refusal is what makes the ordering structural rather
+        than a convention ``retire_transaction`` happens to follow.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            account = _make_account(seed_user, "500.00", name="Right Order")
+            origin = _origin_day(account)
+            txn = _settle_expense(
+                seed_user, account, "200.00",
+                settle_instant_on(origin - timedelta(days=1)),
+            )
+            _db.session.commit()
+            linked = _ledger_of_kind(account.id, LedgerAccountKindEnum.LINKED)
+
+            def _opening_net():
+                """Net the opening key's linked legs across its delta entries.
+
+                The reconcile is append-only per (source kind, date) key, so a
+                re-derived opening is the original entry PLUS a balancing delta
+                rather than an edit -- the sum is the correction's live value.
+                """
+                return sum(
+                    (
+                        _entry_legs(entry.id)[linked.id][0]
+                        for entry in _correction_entries(
+                            account.id, scenario_id,
+                            PostingSourceEnum.ACCOUNT_OPENING,
+                        )
+                    ),
+                    Decimal("0.00"),
+                )
+
+            assert _opening_net() == Decimal("700.00")
+
+            posting_service.retire_transaction(txn, hard=True)
+            _db.session.commit()
+
+            assert _opening_net() == Decimal("500.00")
+            assert posting_service.account_posting_total(
+                account.id, scenario_id,
+            ) == Decimal("500.00")
+
+            # The negative arm: the same three steps in the WRONG order.
+            other = _make_account(seed_user, "500.00", name="Wrong Order")
+            other_origin = _origin_day(other)
+            doomed = _settle_expense(
+                seed_user, other, "200.00",
+                settle_instant_on(other_origin - timedelta(days=1)),
+            )
+            _db.session.commit()
+            posting_service.reverse_postings_before_delete(doomed)
+            with pytest.raises(
+                posting_service.PostingError, match="diverges from the fold",
+            ):
+                account_posting_service.sync_account_anchor_postings(
+                    other.id, scenario_id,
+                )

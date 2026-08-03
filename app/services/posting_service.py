@@ -60,8 +60,6 @@ import logging
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy.orm import joinedload, selectinload
-
 from app import ref_cache
 from app.enums import (
     LedgerAccountClassEnum,
@@ -81,7 +79,6 @@ from app.services._posting_write import (
     _PostingLeg,
     emit_keyed_delta_entries,
 )
-from app.utils.balance_predicates import settled_status_ids
 from app.utils.dates import to_display_civil_date
 
 logger = logging.getLogger(__name__)
@@ -442,16 +439,29 @@ def _self_heal_account_anchor_corrections(
 ) -> None:
     """Re-derive anchor corrections the just-emitted source deltas staled.
 
-    The Build-Order Step 5 effect-time self-heal, shared by the tails of
-    :func:`sync_transfer_postings` and :func:`sync_transaction_postings`
-    (which every settle / revert / delete path routes through, including
-    :func:`reverse_postings_before_delete`): when the emitted deltas touch a
-    non-loan account whose latest anchor assertion sits at-or-after the
-    earliest emitted ``entry_date``, that account's opening / true-up
-    corrections are reconciled again in the same transaction -- see
+    The Build-Order Step 5 effect-time self-heal, shared by the tails of the
+    two CHECKED syncs, :func:`sync_transfer_postings` and
+    :func:`sync_transaction_postings`: when either emits a source delta on a
+    non-loan account, that account's opening / true-up corrections are
+    reconciled again in the same transaction, because a source whose posted
+    effect changed at-or-before the account's latest assertion moved that
+    assertion's walked ``ledger_before``.  A no-op when nothing was emitted, so
+    the hot idempotent-resync paths pay nothing.
+
+    **It ran behind a SKIP predicate until plan step X-d, and ruling R-DK
+    deleted it**: whether a particular walk would write nothing is not a
+    question a cost guard should answer in a money path, and the
+    checked-projection assert now rides behind this call, so a skip here was a
+    skip of the CHECK too.
     :func:`app.services.account_posting_service.self_heal_anchor_corrections`
-    for the predicate's correctness argument.  A no-op when nothing was
-    emitted, so the hot idempotent-resync paths pay nothing.
+    carries the full argument.
+
+    **The retirement paths do NOT route through here, and that is ruling
+    R-DM.**  :func:`reverse_postings_before_delete` and
+    :func:`reverse_transfer_postings_before_delete` call the reconcile CORE
+    instead, because between the reversal and the removal the rows and the
+    ledger deliberately disagree; :func:`retire_transaction` and
+    ``transfer_service.delete_transfer`` re-derive once the rows are final.
 
     Args:
         account_ids: The real accounts the deltas' LINKED legs can touch
@@ -476,10 +486,17 @@ def _self_heal_account_anchor_corrections(
 # ── Public API ─────────────────────────────────────────────────────
 
 
-def sync_transfer_postings(
+def _reconcile_transfer_postings(
     xfer: Transfer, *, settled: bool
 ) -> list[JournalEntry]:
     """Reconcile a transfer's posted ledger effect to its target, idempotently.
+
+    **The reconcile CORE: the ledger effect and nothing else.**  It emits the
+    balanced deltas and stops -- no account-anchor re-derive on either endpoint,
+    and therefore no checked-projection assert.  Its two callers are
+    :func:`sync_transfer_postings`, the go-forward entry point that adds both,
+    and :func:`reverse_transfer_postings_before_delete`, which runs while the
+    shadows deliberately do not yet agree with the ledger (ruling R-DM).
 
     Ensures the NET amount posted for *xfer* equals the target -- the
     transfer's settled effective amount in its CURRENT pay period when
@@ -579,20 +596,105 @@ def sync_transfer_postings(
             description=_transfer_description(xfer),
         )
 
-    entries = emit_keyed_delta_entries(
+    return emit_keyed_delta_entries(
         legs_by_key, _build_transfer_entry,
         f"transfer {xfer.id} (settled={settled})",
     )
+
+
+def sync_transfer_postings(
+    xfer: Transfer, *, settled: bool
+) -> list[JournalEntry]:
+    """Reconcile a transfer's postings, then re-derive both accounts' anchors.
+
+    The go-forward entry point every transfer lifecycle path calls:
+    :func:`_reconcile_transfer_postings` for the ledger effect, then the
+    account-anchor re-derive on BOTH endpoints
+    (:func:`_self_heal_account_anchor_corrections`), which also runs plan step
+    X-d's checked-projection assert.
+
+    **The two are split for the same reason the transaction pair is** (ruling
+    R-DM): the assert reads the shadow ROWS, and a delete must reverse the
+    postings while those rows still exist and still read settled, so asserting
+    there would grade a half-finished operation.
+    :func:`reverse_transfer_postings_before_delete` is the reversal half, and
+    ``transfer_service.delete_transfer`` re-derives the anchors once the rows
+    are final -- beside the loan resync already sitting at its end.
+
+    Args:
+        xfer: The transfer to reconcile.  See
+            :func:`_reconcile_transfer_postings`.
+        settled: Whether the transfer's confirmed effect should be posted.
+            **Every production caller passes the row's OWN status**, verified
+            across all five call sites at plan step X-d; the retire path is the
+            one place the two differ, and it goes through the reversal above.
+            Finding N-144 owns removing the parameter.
+
+    Returns:
+        The new delta entries, or ``[]`` when the ledger is already at target.
+
+    Raises:
+        PostingError: From the reconcile (a missing ledger pairing, or an
+            absent income shadow when *settled*), or from the
+            checked-projection assert on either endpoint.
+    """
+    entries = _reconcile_transfer_postings(xfer, settled=settled)
     _self_heal_account_anchor_corrections(
         (xfer.from_account_id, xfer.to_account_id), xfer.scenario_id, entries,
     )
     return entries
 
 
-def sync_transaction_postings(
+def reverse_transfer_postings_before_delete(xfer: Transfer) -> None:
+    """Reverse a transfer's ledger postings before its rows are retired.
+
+    The transfer twin of :func:`reverse_postings_before_delete`, and the
+    delete-side reconcile ``transfer_service.delete_transfer`` runs FIRST,
+    while ``xfer.id`` and both shadows still exist: it brings the transfer's net
+    posted effect to zero, emitting a balanced reversal for whatever the ledger
+    holds.  Running it before the retirement is load-bearing for a HARD delete
+    (``journal_entries.transfer_id`` is ``ON DELETE SET NULL``, so afterwards
+    the link is severed and the original legs would strand) and for the SOFT one
+    (the shadow queries the reversal reads filter ``is_deleted``).
+
+    **There is no transfer twin of :func:`retire_transaction`, and that is
+    ruling R-DN rather than an omission.**  A ``posting_service.retire_transfer``
+    would have to soft-delete both shadows, and ``CLAUDE.md`` Transfer Invariant
+    4 reserves every shadow mutation to the transfer service.  So the retirement
+    is two named halves -- this one, then
+    :func:`app.services.account_posting_service.resync_anchor_postings` on both
+    endpoints -- and ``delete_transfer`` is the single path that calls both.
+
+    **It reconciles WITHOUT re-deriving either account's anchors, and that is
+    ruling R-DM.**  Between this call and the retirement the shadows still read
+    settled while the ledger reads zero -- a deliberate window, not a defect --
+    and the checked-projection assert that rides on the anchor re-derive would
+    grade it.  ``delete_transfer`` owns that re-derive and runs it once the rows
+    are final.
+
+    Idempotent no-op for a never-settled or already-reversed transfer.  Flushes
+    but does not commit (the caller owns the transaction).
+
+    Args:
+        xfer: The transfer about to be soft- or hard-deleted.  Must still be
+            flushed with both shadows present, so the reversal links by
+            ``transfer_id`` and reads the posted legs back.
+    """
+    _reconcile_transfer_postings(xfer, settled=False)
+
+
+def _reconcile_transaction_postings(
     txn: Transaction, *, settled: bool
 ) -> list[JournalEntry]:
     """Reconcile a transaction's posted ledger effect to its target, idempotently.
+
+    **The reconcile CORE: the ledger effect and nothing else.**  It emits the
+    balanced deltas and stops -- no account-anchor re-derive, and therefore no
+    checked-projection assert.  Its two callers are
+    :func:`sync_transaction_postings`, the go-forward entry point that adds
+    both, and :func:`reverse_postings_before_delete`, which runs while the row
+    deliberately does not yet agree with the ledger (ruling R-DM; see the
+    wrapper's docstring for why that window exists and why it is not asserted).
 
     The ordinary-transaction analog of :func:`sync_transfer_postings`: ensures
     the NET amount posted for *txn* equals its target -- the settled
@@ -713,14 +815,129 @@ def sync_transaction_postings(
             description=txn.name[:_MAX_DESCRIPTION_LENGTH],
         )
 
-    entries = emit_keyed_delta_entries(
+    return emit_keyed_delta_entries(
         legs_by_key, _build_transaction_entry,
         f"transaction {txn.id} (settled={settled})",
     )
+
+
+def sync_transaction_postings(
+    txn: Transaction, *, settled: bool
+) -> list[JournalEntry]:
+    """Reconcile a transaction's postings, then re-derive its account's anchors.
+
+    The go-forward entry point every ordinary-transaction lifecycle path calls:
+    :func:`_reconcile_transaction_postings` for the ledger effect, then the
+    account-anchor re-derive (:func:`_self_heal_account_anchor_corrections`),
+    which ALSO runs the checked-projection assert (plan step X-d).
+
+    **The two are split because the assert reads the transaction ROW, and one
+    caller legitimately runs the reconcile while the row does not yet agree
+    with it** (ruling R-DM).  A delete must reverse the postings while
+    ``txn.id`` still exists -- the FK is ``ON DELETE SET NULL`` -- so between
+    that reversal and the removal, the row still reads settled while the ledger
+    reads zero.  Asserting there grades a half-finished operation.  So the
+    reversal calls the reconcile CORE and :func:`retire_transaction` re-derives
+    the anchors once the row is final, which is the same split
+    ``loan_posting_service`` already ships (``_reconcile_loan_payment`` for the
+    reverse-before-delete, ``sync_loan_postings`` for the checked one).  No
+    boolean selects between them: they are two names.
+
+    Args:
+        txn: The transaction to reconcile.  See
+            :func:`_reconcile_transaction_postings`.
+        settled: Whether the transaction's confirmed effect should be posted.
+            **Every production caller passes the row's OWN status**
+            (``txn.status.is_settled``), verified across all seven call sites at
+            plan step X-d; the retire path is the one place the two differ, and
+            it goes through :func:`reverse_postings_before_delete` instead.
+            Finding N-144 owns removing the parameter.
+
+    Returns:
+        The new delta entries, or ``[]`` when the ledger is already at target.
+
+    Raises:
+        PostingError: From the reconcile (a missing ledger pairing), or from
+            the checked-projection assert when the reconciled ledger no longer
+            equals the fold of the account's facts.
+    """
+    entries = _reconcile_transaction_postings(txn, settled=settled)
     _self_heal_account_anchor_corrections(
         (txn.account_id,), txn.scenario_id, entries,
     )
     return entries
+
+
+def retire_transaction(txn: Transaction, *, hard: bool) -> None:
+    """Reverse a transaction's postings, remove the row, re-derive the anchors.
+
+    **The ONE transaction-retirement chokepoint (ruling R-DM).**  Retiring a
+    posted row is three steps that must happen in one order, and the order is
+    forced by the schema rather than chosen:
+
+    1. **reverse the postings**, while ``txn.id`` still exists --
+       ``journal_entries.transaction_id`` is ``ON DELETE SET NULL``, so once the
+       row is gone the link is severed and the original legs would be stranded
+       with no offsetting reversal;
+    2. **remove the row**, hard (ad-hoc) or soft (template-linked, so the
+       recurrence engine still sees it);
+    3. **re-derive the account's anchor corrections**, now that the row is
+       final, which is also where the checked-projection assert runs.
+
+    **Step 3 is what this function exists for.**  Steps 1 and 2 were written out
+    at each of the four delete sites, and step 3 did not exist: the anchor
+    re-derive rode inside step 1, where the row still reads settled and the
+    ledger already reads zero, so plan step X-d's assert graded a half-finished
+    operation.  Leaving the three steps to each caller would make step 3 an
+    obligation five places have to remember, and a forgotten one leaves a stale
+    anchor correction that nothing detects until the next sync -- an unowned
+    obligation in the general ledger.  One function makes the ordering
+    structural.
+
+    It lives HERE and not in ``transaction_service``, and that is forced:
+    ``transaction_service`` imports ``entry_service``, so ``credit_workflow``
+    -- one of this function's callers -- could not import from it without
+    closing the ``transaction_service <- entry_service <- entry_credit_workflow
+    <- credit_workflow`` cycle.  Same constraint that put
+    :mod:`app.services.status_seam` below its callers, recorded in that module's
+    docstring.
+
+    Idempotent for a never-settled row (a Projected transaction has no postings,
+    so the reversal writes nothing) and for an already-soft-deleted one.
+    Flushes but does not commit -- the caller owns the transaction, and the
+    whole retirement is meant to land in ONE of them.
+
+    Args:
+        txn: The transaction to retire.  Must be flushed (``txn.id`` set) so the
+            reversal links by ``transaction_id`` and reads its posted legs back.
+        hard: ``True`` to remove the row outright (an ad-hoc transaction),
+            ``False`` to soft-delete it (a template-linked row, which the
+            recurrence engine must keep seeing as deliberately removed).
+
+    Raises:
+        PostingError: From the reversal (a missing ledger pairing), or from the
+            checked-projection assert when the account's ledger no longer equals
+            the fold of its facts once the row is gone.
+    """
+    # Captured BEFORE the removal: a hard-deleted row cannot be asked for its
+    # account or scenario afterwards, and both are immutable on the row anyway.
+    account_id = txn.account_id
+    scenario_id = txn.scenario_id
+    reverse_postings_before_delete(txn)
+    if hard:
+        db.session.delete(txn)
+    else:
+        txn.is_deleted = True
+    db.session.flush()
+    # Pylint: ``import-outside-toplevel`` -- reverse dependency, the same one
+    # ``_self_heal_account_anchor_corrections`` documents: the account posting
+    # package imports this module's balanced-write path.
+    # pylint: disable-next=import-outside-toplevel
+    from app.services import account_posting_service
+
+    account_posting_service.resync_anchor_postings(
+        (account_id,), scenario_id,
+    )
 
 
 def reverse_postings_before_delete(txn: Transaction) -> None:
@@ -728,9 +945,11 @@ def reverse_postings_before_delete(txn: Transaction) -> None:
 
     The delete-side reconcile every transaction-delete path runs FIRST, while
     ``txn.id`` still exists: it brings the transaction's net posted effect to
-    zero by reconciling to an empty (``settled=False``) target via
-    :func:`sync_transaction_postings`, emitting a balanced reversal entry for
-    whatever the ledger currently holds.  Running it before the delete is
+    zero by reconciling to an empty (``settled=False``) target through the
+    reconcile CORE, :func:`_reconcile_transaction_postings`, emitting a
+    balanced reversal entry for whatever the ledger currently holds.  It is the
+    core and NOT :func:`sync_transaction_postings` deliberately, for the reason
+    the last paragraph gives.  Running it before the delete is
     load-bearing for a HARD delete: ``journal_entries.transaction_id`` is
     ``ON DELETE SET NULL``, so once the row is gone the link is severed and the
     original legs would be stranded on their ledger accounts with no offsetting
@@ -738,140 +957,32 @@ def reverse_postings_before_delete(txn: Transaction) -> None:
     original entry and its reversal as an immutable net-zero pair (their
     ``transaction_id`` SET-NULLs together on the delete), so every ledger
     account still nets correctly.  The transaction analog of
-    ``transfer_service.delete_transfer``'s ``sync_transfer_postings(xfer,
-    settled=False)`` reverse-before-delete.
+    :func:`reverse_transfer_postings_before_delete`, which
+    ``transfer_service.delete_transfer`` runs in the same position.
 
     Idempotent no-op for a never-settled or already-reversed transaction (a
-    Projected row has no postings).  Shared by the delete route
-    (``delete_transaction``) and the three payback-delete paths
+    Projected row has no postings).  Its ONE caller is
+    :func:`retire_transaction`, the chokepoint the four delete sites route
+    through since plan step X-d -- the delete route (``delete_transaction``)
+    and the three payback-delete paths
     (``credit_workflow.delete_payback_on_credit_revert`` /
     ``delete_payback_on_source_delete`` / ``entry_credit_workflow
-    .sync_entry_payback``'s DELETE branch) so no delete path can strand a
-    posting.  Flushes but does not commit (the caller owns the transaction).
+    .sync_entry_payback``'s DELETE branch), each of which used to call this
+    directly and then delete by hand.  Flushes but does not commit (the caller
+    owns the transaction).
+
+    **It reconciles WITHOUT re-deriving the account's anchors, and that is
+    ruling R-DM.**  It runs in the one window where the row and the ledger
+    deliberately disagree -- the postings are at zero while the row still reads
+    settled -- so the checked-projection assert that rides on the anchor
+    re-derive would grade a half-finished operation.  :func:`retire_transaction`
+    owns that re-derive and runs it once the row is final.  Calling this
+    directly is therefore only correct as part of a retirement; every other
+    lifecycle path wants :func:`sync_transaction_postings`.
 
     Args:
         txn: The transaction about to be deleted (soft or hard).  Must still be
             flushed (``txn.id`` set) so the reversal entry can link by
             ``transaction_id`` and read the already-posted legs back.
     """
-    sync_transaction_postings(txn, settled=False)
-
-
-def resync_all_cash_postings() -> tuple[int, int]:
-    """Re-reconcile every settled cash source's postings (deploy resync).
-
-    The transaction / transfer twin of
-    :func:`app.services.loan_posting_service.backfill_all_loan_postings` and
-    :func:`app.services.account_posting_service.backfill_all_account_anchor_postings`,
-    and the third of the three deploy-time reconciles that between them cover
-    every journal entry the app writes.  It exists because those two do NOT
-    reach an ordinary transaction or a NON-loan transfer: the loan package's
-    staleness detector is scoped to one loan's linked ledger
-    (``loan_posting_service._sync._resync_stale_transfers``) and the anchor
-    backfill reconciles only the corrections, so a checking-to-savings transfer
-    and every ordinary settled row were maintained per-mutation and by nothing
-    else.
-
-    **What it is FOR, and why it is a permanent hook rather than a one-off**
-    (ruling R-DH (b), ``docs/audits/balance_architecture/anchor_settle_partition.md``).
-    ``journal_entries.entry_date`` is derived by :func:`_civil_settle_date`,
-    which moved from the UTC civil day to the user's on 2026-07-31.  Every entry
-    written before that carries the old day, so the STORED ledger and the two
-    folds that now read the new one disagree for any settle recorded between
-    midnight UTC and the user's midnight -- on production, one ``$1,910.95``
-    mortgage payment stamped 2026-07-02 00:38:53 UTC that belongs to the evening
-    of 2026-07-01.  This walks every settled source back through the SAME
-    go-forward sync, so a re-dated entry is identical to a freshly posted one by
-    construction; there is no second implementation of the rule and no SQL
-    restatement of it, which is the property this whole arc exists to hold.
-
-    It stays wired on every deploy rather than being deleted after one run, for
-    the same reason its two siblings are: reconcile-to-target makes it a no-op
-    at target, so it costs one pass and converts any future drift -- a rule
-    change, a hand-edited row, a half-applied migration -- into a self-heal
-    instead of a silent divergence.
-
-    Idempotent and self-healing.  A settled row already at target posts nothing;
-    a row whose target DATE moved gets its old-date legs reversed and its new
-    -date legs posted in one balanced pair by
-    :func:`sync_transaction_postings` / :func:`sync_transfer_postings`, which
-    reconcile over the ``(period, entry_date)`` keys already in the ledger
-    unioned with the target (plan step E1a's per-date attribution) -- so a
-    moved date is an ordinary reconcile, not a special case this function has to
-    know about.
-
-    Loan payment transfers are re-synced here too and that is deliberate
-    duplication of effort, not of RULE: the loan package would reach the same
-    ones through its own detector, and both paths call this module's
-    :func:`sync_transfer_postings`, so whichever runs first leaves the other at
-    target.
-
-    Flushes but does NOT commit -- the caller owns the transaction boundary
-    (``scripts.init_database.resync_all_cash_postings_after_migration``, which
-    initialises ``ref_cache`` first because the migration host does not).
-
-    **The counts are sources CHANGED, not sources walked** (finding N-133 / F8).
-    A hook that rewrites the whole production ledger on every deploy and reports
-    the same number whether it moved every date or nothing at all tells the
-    operator only that it ran.  Both sync functions return the journal entries
-    they emitted -- empty when already at target -- so "changed" is observable
-    without a second query, and a healthy deploy logs ``0, 0``.  The FIRST
-    deploy after a dating rule moves is the one that logs a non-zero count, and
-    that line is the only evidence the one-time re-date happened.
-
-    **The re-date is ONE-WAY, and that is a stated risk rather than a
-    discovered one.**  ``entrypoint.sh`` runs ``set -eEuo pipefail`` and calls
-    ``scripts/init_database.py``, so a failure here aborts the container and the
-    auto-rollback fires before anything commits.  But if the healthcheck fails
-    AFTER this commits, the rolled-back image reads a display-dated ledger with
-    the previous image's UTC rules, and only the entries whose two days differ
-    are affected (on production at the cutover: one payment, one day).  Rolling
-    back ACROSS a dating change therefore needs this hook re-run under the old
-    image, not just a container swap.
-
-    Returns:
-        ``(transactions_changed, transfers_changed)`` -- how many settled
-        sources this pass actually re-posted, for the deploy log.
-    """
-    settled_ids = settled_status_ids()
-    transactions = (
-        db.session.query(Transaction)
-        .options(
-            selectinload(Transaction.entries),
-            # ``pay_period`` is a plain lazy relationship, and BOTH
-            # ``_transaction_entry_date`` (its ``start_date`` fallback) and
-            # ``_settled_target`` (``pay_period.user_id``) dereference it once
-            # per row -- 122 extra SELECTs on production's settled set with the
-            # eager ``entries`` load right beside it doing the same job for the
-            # other relationship (finding N-133 / F9).
-            joinedload(Transaction.pay_period),
-        )
-        .filter(
-            Transaction.is_deleted.is_(False),
-            Transaction.transfer_id.is_(None),
-            Transaction.status_id.in_(settled_ids),
-        )
-        .order_by(Transaction.id)
-        .all()
-    )
-    transactions_changed = sum(
-        1 for txn in transactions
-        if sync_transaction_postings(txn, settled=True)
-    )
-
-    transfers = (
-        db.session.query(Transfer)
-        .options(joinedload(Transfer.pay_period))
-        .filter(
-            Transfer.is_deleted.is_(False),
-            Transfer.status_id.in_(settled_ids),
-        )
-        .order_by(Transfer.id)
-        .all()
-    )
-    transfers_changed = sum(
-        1 for xfer in transfers
-        if sync_transfer_postings(xfer, settled=True)
-    )
-
-    return transactions_changed, transfers_changed
+    _reconcile_transaction_postings(txn, settled=False)

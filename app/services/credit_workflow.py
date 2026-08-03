@@ -164,13 +164,15 @@ def delete_payback_on_credit_revert(txn: Transaction, user_id: int) -> None:
     deleted_payback_id = None
     if payback:
         deleted_payback_id = payback.id
-        # Reverse the payback's own ledger postings before it is deleted
-        # (Build-Order Step 3 reverse-before-delete): a payback that was settled
-        # -- and therefore posted -- before its source's Credit status is
-        # reverted must not leave its double-entry legs stranded on the ledger.
-        # Idempotent no-op for the usual still-Projected payback.
-        posting_service.reverse_postings_before_delete(payback)
-        db.session.delete(payback)
+        # Retire the payback through the one chokepoint (Build-Order Step 3;
+        # plan step X-d, ruling R-DM): reverse its own ledger postings, remove
+        # the row, then re-derive its account's anchor corrections.  A payback
+        # that was settled -- and therefore posted -- before its source's Credit
+        # status is reverted must not leave its double-entry legs stranded on
+        # the ledger, and must not leave a stale anchor correction behind it
+        # either.  Hard, because an auto-generated payback is never
+        # template-linked.  Idempotent no-op for the usual still-Projected one.
+        posting_service.retire_transaction(payback, hard=True)
 
     log_event(
         logger, logging.INFO, EVT_CREDIT_UNMARKED, BUSINESS,
@@ -229,13 +231,14 @@ def delete_payback_on_source_delete(txn: Transaction, user_id: int) -> None:
     # can be marked Credit); its own live payback dies with it under
     # the same invariant.
     delete_payback_on_source_delete(payback, user_id)
-    # Reverse the payback's own ledger postings before deleting it (Build-Order
-    # Step 3 reverse-before-delete).  The recursion above runs FIRST, so each
-    # deeper level of the chain reverses-then-deletes before this one does --
-    # every ledger account is net-zero before the row's transaction_id link
-    # SET-NULLs on the delete.  Idempotent no-op for a still-Projected payback.
-    posting_service.reverse_postings_before_delete(payback)
-    db.session.delete(payback)
+    # Retire the payback through the one chokepoint (Build-Order Step 3; plan
+    # step X-d, ruling R-DM): reverse, remove, re-derive the anchors.  The
+    # recursion above runs FIRST, so each deeper level of the chain is fully
+    # retired before this one is -- every ledger account is net-zero before the
+    # row's transaction_id link SET-NULLs on the delete, and each level's anchor
+    # re-derive sees a settled state.  Hard, because an auto-generated payback
+    # is never template-linked.  Idempotent no-op for a still-Projected payback.
+    posting_service.retire_transaction(payback, hard=True)
 
     log_event(
         logger, logging.INFO, EVT_PAYBACK_DELETED_WITH_SOURCE, BUSINESS,

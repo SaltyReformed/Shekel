@@ -85,6 +85,7 @@ from tests._test_helpers import (
     create_settled_transfer,
     linked_ledger_account,
     observed_day_of,
+    revert_settled_transaction,
 )
 
 # A far-future as-of that folds every posted source into the balance sheet,
@@ -948,7 +949,8 @@ class TestRevertAndResidueDropped:
         """Settling then reverting a $400 expense removes it from both statements.
 
         A $400.00 Groceries expense settled in 2099 posts, then is reverted via
-        the real ``sync_transaction_postings(settled=False)`` path -- the source
+        the real production path (the status seam back to Projected, then the
+        reconcile with the row's own status) -- the source
         nets to zero, so ``_grouped_source_nets`` drops it whole.  The income
         statement shows no Groceries line and the balance sheet's Checking is
         back on its $1000.00 opening, tie-out green.
@@ -969,7 +971,7 @@ class TestRevertAndResidueDropped:
             )
             assert before.expense.total == Decimal("400.00")
 
-            posting_service.sync_transaction_postings(txn, settled=False)
+            revert_settled_transaction(db.session, txn)
             db.session.commit()
 
             after = ledger_report_service.compute_income_statement(
@@ -1067,8 +1069,11 @@ class TestRevertAndResidueDropped:
             )
             .scalar()
         )
-        # Revert the seeding settle so only the residue remains.
-        posting_service.sync_transaction_postings(txn, settled=False)
+        # Revert the seeding settle so only the residue remains -- through the
+        # production path (seam to Projected, THEN the reconcile with the row's
+        # own status).  Since plan step X-d the checked-projection assert
+        # refuses a reconcile-to-empty on a row that still reads settled.
+        revert_settled_transaction(db.session, txn)
         db.session.flush()
         assert ledger_id is not None
         return ledger_id

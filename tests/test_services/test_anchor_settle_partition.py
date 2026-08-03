@@ -35,6 +35,7 @@ from app.services import (
     cash_ledger,
     entry_service,
     pay_period_service,
+    posting_resync,
     posting_service,
 )
 from app.services.balance_at import BalanceContext
@@ -206,16 +207,85 @@ class TestTheRuleCannotBeAskedAnyOtherWay:
         is outstanding (ruling R-DH (d) as restated at S1-c -- the engine never
         guesses one), and an account that has declared no balance has nothing
         for a movement to be inside of.
+
+        The argument is a :class:`~app.services.cash_ledger.MovedOn` since plan
+        step X-d (ruling R-DJ): the rule stays total over the CONCEPT -- every
+        event has a day it counts from -- and stops being total over bare
+        ``date``, which is the only thing it was ever loose about.
+        """
+        boundary = cash_ledger.ReconciledThrough(_A_STATEMENT_DAY)
+        moved = cash_ledger.MovedOn
+
+        assert boundary.covers(
+            moved(_A_STATEMENT_DAY - timedelta(days=1)),
+        ) is True
+        assert boundary.covers(moved(_A_STATEMENT_DAY)) is True
+        assert boundary.covers(
+            moved(_A_STATEMENT_DAY + timedelta(days=1)),
+        ) is False
+        assert boundary.covers(None) is False
+        assert cash_ledger.ReconciledThrough(None).covers(
+            moved(_A_STATEMENT_DAY),
+        ) is False
+
+    def test_a_bare_day_cannot_reach_the_rule_at_all(self):
+        """Handing ``covers`` a raw ``date`` FAILS instead of answering (R-DJ).
+
+        Finding N-135's residue: plan step 3 fenced this boundary but left the
+        two fact FIELDS as plain ``date``s, so ``x <= fact.observed_on`` still
+        compiled.  Plan step X-d wrapped them, and the last hole -- a caller
+        constructing its own day and passing it here -- closes because the rule
+        no longer accepts one.  The failure is loud rather than silent, which is
+        the whole property: a bare day that ANSWERED would be the fifth
+        implementation of the question that cost production $4,001.42.
         """
         boundary = cash_ledger.ReconciledThrough(_A_STATEMENT_DAY)
 
-        assert boundary.covers(_A_STATEMENT_DAY - timedelta(days=1)) is True
-        assert boundary.covers(_A_STATEMENT_DAY) is True
-        assert boundary.covers(_A_STATEMENT_DAY + timedelta(days=1)) is False
-        assert boundary.covers(None) is False
-        assert cash_ledger.ReconciledThrough(None).covers(
-            _A_STATEMENT_DAY,
-        ) is False
+        with pytest.raises(AttributeError):
+            boundary.covers(_A_STATEMENT_DAY)
+
+    def test_the_two_kinds_of_day_carry_no_ordering_against_each_other(self):
+        """A moved day and an observed day cannot be compared by hand (R-DJ).
+
+        This is why finding N-135 ruled TWO types rather than one: a single
+        ``CivilDay`` wrapper would stop a bare ``date`` sneaking in and would
+        STILL let a settled day be compared against an observed one, which is
+        the comparison -- not the operand type -- that the whole arc is about.
+        Both operand orders, because ``__le__`` and ``__ge__`` are reached by
+        reflection and a one-sided hole leaves the other side working.
+
+        Ordering WITHIN a kind stays legal and is relied on (the loaders sort
+        their streams), so this asserts the cross-kind case only.
+        """
+        moved = cash_ledger.MovedOn(_A_STATEMENT_DAY)
+        observed = cash_ledger.ObservedOn(_A_STATEMENT_DAY)
+
+        answered = []
+        for name, spelling in self._ORDERINGS:
+            try:
+                spelling(moved, observed)
+            except TypeError:
+                continue
+            answered.append(name)
+
+        assert not answered, (
+            f"MovedOn answered an ordering comparison against ObservedOn: "
+            f"{answered}.  That is the partition asked by hand between the two "
+            f"kinds of day, which is exactly what finding N-135 ruled two "
+            f"distinct types to prevent.  Look for a hand-written __le__ / "
+            f"__ge__, or for the two records collapsing into one type."
+        )
+
+        # Within a kind, ordering is DEFINED and load-bearing -- the fact
+        # loaders sort their streams on it.  Asserted here so a future author
+        # who deletes ``order=True`` to strengthen the fence above breaks a
+        # test rather than the walk's absorb pointer.
+        assert cash_ledger.MovedOn(_A_STATEMENT_DAY) < moved.__class__(
+            _A_STATEMENT_DAY + timedelta(days=1),
+        )
+        assert cash_ledger.ObservedOn(_A_STATEMENT_DAY) < observed.__class__(
+            _A_STATEMENT_DAY + timedelta(days=1),
+        )
 
 
 class TestRecordingAPurchaseDoesNotMoveTheProjection:
@@ -549,7 +619,7 @@ class TestTheProjectionIgnoresTheOrderOfABookkeepingSession:
 
 
 class TestTheDeployResyncIsSafeToRunOnEveryDeploy:
-    """``posting_service.resync_all_cash_postings`` -- the untested deploy hook.
+    """``posting_resync.resync_all_cash_postings`` -- the untested deploy hook.
 
     It re-posts every settled transaction and transfer in the database on every
     deploy, and finding N-133 / F8 measured what its absence costs: on a
@@ -589,9 +659,9 @@ class TestTheDeployResyncIsSafeToRunOnEveryDeploy:
                 account.id, scenario_id,
             )
 
-            first = posting_service.resync_all_cash_postings()
+            first = posting_resync.resync_all_cash_postings()
             _db.session.commit()
-            second = posting_service.resync_all_cash_postings()
+            second = posting_resync.resync_all_cash_postings()
             _db.session.commit()
 
             assert first == (0, 0)
@@ -648,7 +718,7 @@ class TestTheDeployResyncIsSafeToRunOnEveryDeploy:
             correct_day = posted_day - timedelta(days=1)
 
             changed_txns, changed_xfers = (
-                posting_service.resync_all_cash_postings()
+                posting_resync.resync_all_cash_postings()
             )
             _db.session.commit()
 
