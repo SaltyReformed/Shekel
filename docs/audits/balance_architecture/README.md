@@ -295,15 +295,27 @@ the OPPOSITE case on a later clock (now derived from `display_today()`).  New fi
 app into TWO day-to-period rules that disagree for a day past the schedule (writer index 0, ledger
 index 60 on the clone's calendar), unreachable on today's data and owned by X-ak with N-168.
 
-**NEXT, in order: commit X-ai-r, then X-ai-s
-(the migration), X-ai-a, X-ai-b, X-ai-c, X-ai-g, then re-land the REST of X-d (its walk swap has
-moved into X-ai-a), then X-aj2, then X-ak, then S2-b**, with **X-ag** (the gate N-139 needs,
-instrument undecided), **X-ah** (N-142) and **X-al** (N-154) unscheduled behind them, and **Phase G
-now INSIDE E2**.  **X-ai carries N-144, N-153, N-155, N-157, N-158, N-160, N-161, N-162, N-163,
-N-164, N-165, N-166, N-167 and N-169**; **N-168** is X-ak's.  Ruling **R-DU** set the direction (one
-verb, one trigger, both ledgers); **R-DV..R-DZ** set the shape (the event owns the entry, the
-identity invariants go to the DB tier where they can, and the no-migration half ships first);
-**R-EA** corrects where an anchor correction's PERIOD comes from.
+**THE ORDER CHANGED 2026-08-03 on ruling R-EB, and this paragraph is the orientation to trust.**
+The anchor half is redesigned from scratch -- the ledger becomes sum-of-postings and an assertion
+becomes a RECONCILIATION rather than a reset -- so the steps that served the OLD model are re-ranked
+against it rather than run first.
+
+**NEXT, in order: X-f1, X-f2, X-f3 (the cutover -- MOVES MONEY, own PR), X-f4, X-f5, then X-f6**
+(bank import, the ruled follow-on).  **X-ai-s (the migration) is HELD pending X-f3**: it buys
+per-ASSERTION attribution for the correction family X-f3 deletes, and running it first would ship a
+migration and a backfill for something about to be removed.  **X-ai-r is DONE** (`c518d2e4` /
+`8281e82c`, PR #81) and its LOAN half survives untouched.  After X-f: **X-ai-a, X-ai-b, X-ai-c,
+X-ai-g** (re-scoped -- the cash half shrinks to the source-posting verb once anchor corrections stop
+existing), then **re-land the REST of X-d**, then **X-aj2**, **X-ak**, with **X-ag** (the gate N-139
+needs, instrument undecided), **X-ah** (N-142) and **X-al** (N-154) unscheduled behind them, and
+**Phase G now INSIDE E2**.  **S2-b is absorbed into X-f1** and is no longer a separate step.
+
+**X-ai carries N-144, N-153, N-155, N-157, N-158, N-160, N-162, N-163, N-164, N-165, N-166 and
+N-167**; **N-168** and **N-170** are X-ak's; **N-161** and **N-169** are now expected to close AT
+X-f4, which deletes the module they are properties of.  **X-f carries N-171..N-176.**  Ruling
+**R-DU** set the posting direction (one verb, one trigger, both ledgers); **R-DV..R-DZ** set its
+shape; **R-EA** corrects where an anchor correction's PERIOD comes from; **R-EB** rules the anchor
+model itself -- Option 4 (sum-of-postings + reconciliation), then Option 6 (bank import).
 
 > **X-ai-s inherits a premise this step FALSIFIED.**  Its backfill rule (below) attributes 129
 > legacy entries to "the LAST history row of its merged key", justified by *"`_account_anchor_correction_targets`
@@ -1706,6 +1718,141 @@ their own premise once measured, and a fifth fork (**R-W**) did not exist until 
 | **R-T** (answered 2026-07-26) | **ACCRUAL events are DAILY, resolved in ONE sequential pass, and `sample_cumulative` is NOT changed.**  Between two events the balance is constant, so the whole horizon's accrual deltas resolve in one pass over the sorted step list and merge into it; the shipped sampler -- shared with the LOAN fold -- is untouched.  A daily step means a sampled date never lands inside an unresolved span, so the answer is exact at every date and can never become a function of which OTHER dates were asked for (the shape rulings R-G / R-H kept out of the leaf).  **Measured, both halves, and each scoped to what was actually run.**  COST: a synthetic bench of the resolving pass plus `sample_cumulative` over **900 steps and 840 dates** takes **0.70 ms**, against **0.20 ms** for the same sampler over today's 60-step shape -- **+0.5 ms** per account per full-horizon read, where the real `fold_cash_balances` over the 840-day horizon already costs **2.7-13.8 ms** per account (load included) and one `/savings` + `/investment` pair costs ~500 ms (N-72).  BENEFIT: not the total.  For INTEREST, measured against the SHIPPED `_interest._layer_interest`, a day-by-day replay of the same `calculate_interest` rule differs by **`$0.14`** over 840 days on the HYSA and **`$1.73`** on the Money Market (the daily replay is the higher of the two in both cases).  For the three INVESTMENTS the comparison is grain-only -- the same `period_return_rate` at two grains with contributions held out of both, since their contribution feeds are empty -- and it differs by at most **`$0.05`**.  What the grain actually costs is WHEN the money lands.  N-71 re-verified at period 30: the scalar returns the IDENTICAL value on the period's first and last day (Empower `$38,617.11` against `$328.50` of growth in that period, Money Market `$9,090.81` / `$261.24`, Roth `$29,843.76` / `$114.07`).  Rejected: segment-per-compounding-interval-plus-event (exact and cheaper -- 2 to 60 segments per account today instead of 840 -- but a date INSIDE a segment needs a partial-accrual read that is not booked as a step, which is one more rule for a `$0.5 ms` saving), and keeping the pay-period grain (N-71 stays open forever and "balance at a DATE" stays a lie for three of five kinds). | X-g |
 | **R-U** (answered 2026-07-26) | **The replay owns the SEED and the history; the forward WHAT-IF keeps `growth_engine`.**  The chart is not a balance-at-T surface: `investment_dashboard_service` projects over SYNTHETIC periods (`growth_engine.generate_projection_periods`, a slider-driven horizon clamped to 40 years, `:721`) and re-projects the whole series for the what-if overlay with `contributions=None` (`:972`); `retirement_projection.py:593` does the same under a `return_rate_override` and a per-period `salary_basis`; `savings_dashboard_service/_horizon.py:413` runs a 30-year band.  A fold over STORED facts cannot answer a hypothetical, and cannot answer a date past the user's pay-period horizon at all.  So what changes is the SEED: `investment_seed_map` (`:249`, and `retirement_projection.py:492`) becomes the replay with ACCRUAL filtered out -- the FILTER Section 3.2 names -- and the surfaces keep their engine.  **The de-dup subtraction goes with it**: both seeds today subtract `current_period_transfer_contribution` (`investment_dashboard_service.py:318`, `retirement_projection.py:580`) because the seed includes recorded contributions the engine then re-applies for the current period.  Under R-R's partition the seed is read at the day BEFORE the projection window opens, so the overlap does not exist and deep-quality-hunt #9 / #14's compensator deletes rather than being ported.  Precedent, and it points the same way: plan step C5 made the property equity chart's DEBT line read `positions()` (finding B-2, `$299,701.35` wrong on 8 of 13 shapes) while its forward what-if kept projecting. | X-g |
 | **R-W** (N-76; answered 2026-07-26) | **The grid renders the MODELED balance, with a "Growth" row that is the accrual producer's own answer -- ruling R-K's identity then holds for all FIVE kinds.**  A fork the plan did not have: the trace measured that the grid and `/savings` already answer ONE modeled account two ways.  `_grid.grid_balance_view` layers an accrual for INTEREST only (the gate is `_grid.py:435`, `accrual_params(account) is None` on its CASH arm since X-g3a `320a4641`, which both MOVED it and INVERTED it; this row's earlier citations `:271-277` and `:345-362` / `:346` drifted at X-g2b and X-g3a respectively and are corrected here per Section 7.6), so an INVESTMENT or APPRECIATING account's grid balance is its kind-blind cash-flow balance while `balance_map` returns the modeled one.  Measured at the last projected period on `shekel_f3_final`: Empower 401(k) grid `$31,070.06` vs `/savings` `$48,712.19` (**`$17,642.13`**), Roth `$5,916.95`, Trad IRA `$2,526.68`; on `shekel` the Property is `$21,675.99` apart.  The grid's interest column is `None` for every one of them, so nothing on screen explains the gap -- and both surfaces are reachable for these kinds (`account_resolver.is_cash_flow_account:41` admits every non-amortizing kind).  INTEREST accounts are byte-identical on both surfaces, which is the proof the unification WORKS: the Interest row already is the general shape.  Under one replay a typed grid row IS an event in the same stream, so the objection `_grid.py` records today ("a typed grid row would not move their modeled balance") stops being true and the identity becomes a property of the construction for every kind.  **Corrected 2026-07-27, after X-g2b measured it:** the identity is `net + reconciliation + accrual + CONTRIBUTION`, not `+ accrual` alone -- a modelled asset has two modelled tiers, and on the real Empower 401(k) the contribution is the larger of them (`$9,624.27` against `$8,152.58` over the horizon).  X-g3's entry carries what that opens.  Rejected: keeping the cash-flow basis with a caption (leaves `$17,642.13` of visible contradiction, the shape ruling R-K refused to ship for the cash subtotals -- and Section 8: a label is weaker than a predicate, which is already not a safety), and refusing modeled kinds on cash-flow surfaces the way ruling D4 refuses a loan (removes the contradiction by removing screens the developer uses; a loan is refused because its balance is not a transaction sum, while a modeled asset's IS one plus a rate -- the same shape an HYSA already renders correctly). | X-g |
+
+### Answered (developer ruling, 2026-08-03: R-EB -- the anchor half, designed from scratch)
+
+**RULED: Option 4, followed by Option 6.**  *"I want to do Option 4 the ledger is sum-of-postings,
+the assertion is a reconciliation followed by Option 6 bank import."*  The design below ships as
+**X-f1**..**X-f5**, and **X-f6** (bank import) is ruled as the sequenced follow-on rather than an
+alternative -- it consumes X-f1..X-f5's machinery and cannot substitute for it.  The ruling was taken
+after being shown the full six-option space with worked figures on the developer's own data, against
+their standing instruction: *"research and investigate whether there is a better way of handling my
+anchor balances and true-ups"*, *"I want to make the fences structurally unnecessary"*, and
+*"correctness takes priority"*.
+
+Three developer statements are recorded as INPUTS the design consumes: the figure they budget
+against is the **projected end balance** ("balance after everything I have budgeted has been
+accounted for"), not any headline balance; they are *"good with clearing the historical Equity
+balance if it makes my finances more accurate"*; and they *"will tick items at reconciliation time"*
+-- which their current workflow already is (*"update the checking anchor balance and mark which
+expenses are already accounted for in that balance"*).
+
+**Measured read-only against the production database, 2026-08-03.**  Checking (account 1),
+2026-03-27..2026-08-03: 129 days, 55 assertions on 51 distinct days, one every 2.3 days.
+
+| | |
+|---|---|
+| assertion days booking a NON-ZERO correction to Equity | **49 of 51 (96%)** |
+| gross through `anchor_equity` (ledger account 30, 97 legs) | **$15,754.24** |
+| of which the OPENING, which is legitimate | $689.16 |
+| of which TRUE-UP PLUG | **$15,065.08** |
+| net | **-$805.94** (opening +$689.16, true-ups **-$1,495.10**) |
+| average gap at an assertion | **$321.52** |
+| worst single gap | **$1,853.92** (2026-06-02) |
+
+The mechanics are sound -- the trial balance closes at **$0.00** over all 643 postings, and five
+orphaned correction days self-healed to zero through `_posted_only_key_period_id` (finding N-176).
+**Gross is 10x net and the lag-1 autocorrelation of the correction series is -0.33**, with 22 of 42
+consecutive non-zero pairs reversing sign: the plug is TIMING, not missing money.  Its generator is
+measured too -- **65.2% of settled Checking rows share a click-minute with another row** (largest
+batch 6), so for two thirds of the account the settle date is a bookkeeping-session artifact.
+
+**The design.**  Four parts, each replacing one mechanism:
+
+* **(a) The cash ledger is sum-of-postings.**  `balance(T) = opening equity + SUM(postings <= T)`.
+  No assertion reset.  This is what the LOAN side already does in production: Mortgage and Van Loan
+  each carry exactly ONE anchor and no recurring plug.
+* **(b) `AccountAnchorHistory` becomes a STATEMENT RECORD.**  It stores what the bank showed and on
+  what day, and books nothing.  Exactly one anchor per account books an opening equity entry.
+* **(c) A true-up becomes a RECONCILIATION.**  The app shows the outstanding set and the difference;
+  ticking stamps the STATEMENT date, not `now()`.  `_outstanding_scope` (`entry_service.py:819`) is
+  already this primitive and needs its transaction twin.
+* **(d) The residual after ticking is a REAL posting to a REAL account, never Equity** --
+  Uncategorized Expense / Income, a chart mechanism that already exists
+  (`ledger_account_service.py:101-103`, kind `fallback`, zero rows today) and is recategorizable.
+
+**Why it improves the one figure the developer actually budgets against.**  R-DH (c) states the
+invariant protecting the projected end balance, and its own note records that invariant as
+**"NOT YET TRUE, and NOT YET TESTED"** -- today it holds only if the anchor is trued up by the same
+amount AND the reconciliation derivation fires in the right order.  Under (a) it is arithmetic:
+
+```
+book = 1307.66            projected_end = 1307.66 - 500.00 - 827.61 = -19.95
+record $150.27            book = 1157.39,  envelope remaining = 349.73
+                          projected_end = 1157.39 - 349.73 - 827.61 = -19.95   UNCHANGED
+```
+
+`book` lands on **$1,157.39**, which is exactly the figure R-DH (c) says the user would have to true
+up to by hand.  The ledger reaches it unaided; the second manual step stops being necessary rather
+than being made reliable.
+
+**The option space, and what the ruling rejected.**  *(1) status quo* -- rejected: $15,065.08 gross
+invisible on the income statement, every fence permanent.  *(2) status quo plus better dates* --
+**this was the plan as it stood (S2-b / X-f as scoped)**, and it is rejected AS AN ENDPOINT rather
+than as work: it fixes the self-cancelling CHURN and does nothing for the untracked RESIDUE, because
+money never recorded has no date to correct.  It survives as **X-f1**.  *(3) reclassify only* --
+rejected as an option and kept as a STEP: correct only after (2), since reclassifying churn would put
+$15,065 of phantom spend in the report.  It survives inside **X-f3**.  *(4) this design* --
+**RULED**.  *(5) two ledgers with a clearing account* -- rejected outright, a third instance of root
+cause 1 (two representations of one thing).  *(6) bank import (OFX/CSV/Plaid)* -- **RULED as the
+follow-on**, and it REQUIRES (4) rather than replacing it: an import yields bank-dated facts that
+must be matched against budgeted rows, and the unmatched residue still needs classification.  Options
+1-3 are not on the path to it; (4) is.
+
+**Accounting ground, checked against four independent systems.**  Standard bank reconciliation gives
+timing differences NO journal entry (they adjust the BANK side of a worksheet); only unrecorded
+book-side items get entries, into their REAL accounts.  Beancount's `pad` is the closest analogue of
+today's design and its own documentation says to use it *"with caution, as it can hide larger
+problems. Explicit adjustments are generally safer."*  QuickBooks documents Opening Balance Equity as
+temporary, a persistent balance being a known symptom of unresolved reconciliation discrepancies.
+GnuCash carries reconciliation status per SPLIT and requires the Difference to reach $0.00, forcing a
+balance being an explicit button.  hledger keeps cleared/pending/unmarked as a FILTER over one
+journal.  Unanimous: the plug is exceptional, explicit and visible, never the mechanism by which
+normal balances are maintained.
+
+**Why this is NOT `anchor_settle_partition.md` Section 11's rejected design.**  All four of that
+section's killers are artifacts of KEEPING the reset, which (a) removes.  *Breaks one-granularity*:
+there is no partition, and clearedness affects the reconciliation REPORT only.  *Reproduces
+-$4,001.42*: nothing rides on top of anything, a recorded row being in the book balance from the
+moment it is recorded.  *No correct implementation for transfers*: clearedness becomes a property of
+a POSTING LEG, so each leg clears against its own account's statement -- GnuCash's model, and
+strictly more correct since a transfer can clear on two days at two banks.  *Same-day duplicate index
+discards the reconciliation*: that index dedupes assertions-used-as-resets, and the reconcile write is
+already its own transaction (`routes/accounts/anchor.py:246-250`).
+
+**What it deletes**: the reset in both walks (`cash_ledger/_walk.py:300`,
+`account_posting_service/_walk.py:491`); `ReconciledThrough` and its **78 references across 14
+files**; the anchor/settle partition rule and R-DH (a)'s accepted residual in both directions;
+`account_posting_service/_anchors.py`; the R-I seed compensator (`_cash_fold.py:372-382`); X-e's
+question, `Account.current_anchor_*` ceasing to be any balance path's input.  **It also deletes the
+module N-161 is about, and both findings X-ai-r opened** (N-169's dead `CashAnchorFact.pay_period_id`
+and N-170's two disagreeing day-to-period derivations) -- both are properties of the correction
+family existing at all.
+
+**Honest costs, stated so the ruling is not taken on a partial picture.**  The developer would see
+roughly **$370/month of Uncategorized Expense** until recording tightens; that is the $1,495.10 net,
+and it is money currently invisible.  **Between reconciliations the app stays optimistic by exactly
+the unrecorded spend, which is UNCHANGED from today** -- on 2026-08-02 the app showed $1,307.66
+against a bank near $752.62, and it would show the same; what changes is that the gap becomes an
+itemized list rather than a silent absorption.  X-f3 MOVES MONEY and wants its own PR.  **The
+inference that could be wrong**: that the records are mis-dated rather than materially incomplete.
+The evidence is gross/net = 10x and the negative autocorrelation, from four months of one account.
+
+**Sequencing consequence, RULED.**  **X-ai-s is a migration buying per-ASSERTION attribution for the
+correction family this design deletes, so it is HELD pending X-f3** rather than run ahead of it.
+X-ai-r shipped regardless and correctly (no migration, closes a live rule violation, and its LOAN
+half survives X-f3 untouched -- loans keep their one opening correction).  **X-d is NOT superseded**:
+its writer swap (`account_posting_service/_walk.py` deleted whole, the writer consuming
+`cash_ledger.walk_cash_ledger` -- ruling R-H delivered), R-DJ's two day types, R-DK's skip deletion,
+R-DL's N+1 hoist and R-DM's `retire_transaction` chokepoint all survive; only its `_anchors.py`
+rewrite is discarded, and X-f3 makes its remaining scope smaller.  N-155's assert placement is still
+X-ai's to answer and is unaffected by this ruling.
+
+**Document disposition, RULED.**  `anchor_settle_partition.md` becomes the THIRD as-built record in
+`archive/`: its steps 1-4 and S1-c have all SHIPPED and only S2-b is unshipped, which folds into
+X-f1.  That restores Section 9 rule 1 (one live planning document) rather than working around it.
+**The move ships WITH X-f1** (finding N-175) so the archive and the plan that supersedes it land
+together rather than leaving a window where neither document is authoritative.
 
 ## 5. The steps
 
@@ -4305,7 +4452,62 @@ preconditions cite entries in that file.
   a design. It may still be declined; it may not be left unasked.
 - [ ] **X-f** `feat(transactions): the app records when money moved` -- **RE-SCOPED AND PULLED
   FORWARD 2026-07-31 by ruling R-DH (finding N-130); it is no longer sequenced after X-d and it is no
-  longer a shrink-the-row follow-up.**  A live production defect proved this root is a correctness
+  longer a shrink-the-row follow-up.**
+
+  > **REDESIGNED FROM SCRATCH AND DECOMPOSED 2026-08-03 on ruling R-EB (Section 4): Option 4, then
+  > Option 6.**  The paragraph below is the scope R-EB SUPERSEDES, kept because its measured headroom
+  > still stands and because the reason it was superseded is itself the finding -- it fixes the CHURN
+  > half of the defect and not the RESIDUE half, since money that was never recorded has no date to
+  > correct.  The leaves carry **N-171**..**N-176**.  **X-f3 MOVES MONEY and takes its own PR with no
+  > backlog**, per this document's own rule for X-f.
+
+* [ ] **X-f1** `feat(transactions): a settle carries the day the money moved` -- absorbs **S2-b**.
+  `transactions.settled_on` beside the entry column S1-c shipped, plus the true-up form's own
+  statement-date field, closing the last surface where one column does two jobs (R-DH (e) vs R-M).
+  **Ships the `anchor_settle_partition.md` archive move with it** (N-175), so the superseded plan and
+  the plan that supersedes it land together.  Closes **N-173**, **N-175**.
+
+* [ ] **X-f2** `feat(accounts): the true-up is a reconciliation` -- the outstanding set covers
+  TRANSACTIONS as well as entries (`_outstanding_scope`'s transaction twin, `entry_service.py:819`),
+  ticking stamps the STATEMENT date rather than `now()`, and the form shows the difference before it
+  is saved -- R-DH (f)'s second half, ruled 2026-07-31 and still unbuilt.  **No figure moves**: this
+  records facts and changes no producer.  The developer's existing workflow already IS this loop
+  (*"mark which expenses are already accounted for in that balance"*); only the recording changes.
+
+* [ ] **X-f3** `feat(cash): the ledger is sum-of-postings and the residual is classified` -- **THE
+  CUTOVER.  MOVES MONEY.  OWN PR, NO BACKLOG.**  The assertion stops resetting the ledger
+  (`cash_ledger/_walk.py:300`), `balance(T)` becomes `opening equity + SUM(postings <= T)`, and the
+  reconciliation residual posts to Uncategorized Expense / Income
+  (`ledger_account_service.py:101-103`, kind `fallback`) instead of to `anchor_equity`.  **The reset
+  deletion and the classification cannot ship apart** -- removing the reset without a classification
+  path lets book and bank diverge permanently.  Ship-gated on the R-DH (c) invariant becoming a TEST
+  that passes without a true-up, in both orders.  Closes **N-171**, **N-172**, **N-174**.
+
+* [ ] **X-f4** `refactor(cash): delete what the cutover orphans` -- `ReconciledThrough` and its **78
+  references across 14 files**, `account_posting_service/_anchors.py`, the correction machinery, the
+  R-I seed compensator (`_cash_fold.py:372-382`).  Byte-identical by construction; the baseline
+  harness is the gate.  **State the deletion of `_posted_only_key_period_id`'s defensive branch
+  explicitly** -- it has fired in production (N-176) -- rather than letting it go unnoticed.  Closes
+  **N-176**, and takes **N-161**, **N-169** and **N-170** with it by deleting the family they are
+  properties of.
+
+* [ ] **X-f5** `fix(ledger): the opening equity account holds only the opening` -- one balanced
+  entry: debit Uncategorized Expense **$1,495.10**, credit Checking Anchor Equity **$1,495.10**,
+  leaving exactly the **-$689.16** opening credit.  Verified to the cent against ledger account 30's
+  97 posted legs.  Developer approved 2026-08-03 (*"I'm good with clearing the historical Equity
+  balance if it makes my finances more accurate"*).  This is QuickBooks' documented Opening Balance
+  Equity procedure and it makes the four-month income statement honest.
+
+* [ ] **X-f6** `feat(import): the bank says when money moved` -- **RULED as the follow-on, not an
+  alternative (R-EB).**  A bank import (OFX / CSV / Plaid) is the terminal state named in
+  `anchor_settle_partition.md` 12.11: the only thing that removes the date guess without asking the
+  user anything.  **It CONSUMES X-f1..X-f5 rather than replacing them** -- an import yields
+  bank-dated facts that must be MATCHED against budgeted rows, and the unmatched residue still needs
+  classification, which is exactly X-f2's outstanding set and X-f3's residual path fed automatically
+  instead of by hand.  **Its first act is a trace, not code** (the E2-0 shape): which import surface,
+  what matching rule, and what a match does to `settled_on`.  Opens after X-f5 ships.
+
+  A live production defect proved this root is a correctness
   defect in the PROJECTED END BALANCE, not noise: `-$4,021.37` rendered against a true `-$19.95`
   because two data-entry clocks are partitioned at second granularity.  The plan of record for this
   step is now **`anchor_settle_partition.md`**, which owns the trace, the measurements, R-DH's six
@@ -4607,7 +4809,8 @@ row, whose owner read `Section 5, Phase E2`; it is now `E2-0 / E2-n`, the phase'
 steps. Every other owner was already live, which is what the three hand-passes above bought and
 what nothing now has to buy again.
 
-**The ledger stands at 84 rows.** **X-f's build opened N-130 (the production defect), N-131 / N-132
+**The ledger stands at 90 rows**, the last six (**N-171**..**N-176**) being the from-scratch anchor
+investigation's, owned by the **X-f1** / **X-f3** / **X-f4** leaves ruling **R-EB** created. **X-f's build opened N-130 (the production defect), N-131 / N-132
 (both CLOSED at the step), and its adversarial review then opened N-133 -- the one row in this arc
 that a MEASUREMENT contradicted a ruling on**: R-DH (a)'s opening amendment, made mid-build on a
 hypothetical and never re-scored, was 3.2x worse on the net plug than the rule the ruling's own table
@@ -4731,6 +4934,12 @@ done, and is what drifted.
 | N-168 (X-ai's design review, 2026-08-03; the constraint a ruling proposed cannot exist as proposed) | **An anchor history row can be filed against a pay period that does not contain its own `observed_on`, BY DESIGN, and the invariant is not expressible as a CHECK.**  Ruling R-DX proposed it as a database CHECK; PostgreSQL refuses (`ERROR: cannot use subquery in check constraint` -- the predicate needs `pay_periods.start_date` / `end_date`), so it can only be a trigger.  **And live code produces the violation deliberately**: `account_service.resolve_anchor_period_id` (`:54-95`) rule 2 falls back to the user's EARLIEST period when none contains the date, and `_reject_undatable_observation`'s own docstring names the outcome verbatim -- "`resolve_anchor_period_id` silently falls back to the EARLIEST period, which files the row against a period its own `observed_on` falls outside".  A user whose periods are all in the future can legitimately assert today and land outside every one.  **Row 45's cause is therefore TRACED, and an earlier draft called it untraced**: it is the Commit-3 origination backfill (its own `notes` say so), which mirrors that same rule-2 fallback, while `observed_on` was added later and backfilled from `created_at` -- two migrations, two rules, one row | **`$0.00`, and row 45 is INERT.**  Account 8 is the Van Loan: `_load_non_amortizing_account` returns `None` for an amortizing account, so that history row produces no journal entry at all, and its `anchor_balance` is `$0.00`.  Row 50 (Checking) is the only one that reaches a correction, and X-ai-r fixes what it costs without touching the row.  The cost of the class is that a legitimate future-periods user files assertions outside their own periods and the grid's `spans.containing` buckets them nowhere.  **RE-SCORED at X-ai-r (ruling R-EA):** the LEDGER no longer inherits the error -- a correction is filed by the period containing its own day, so a mis-filed row costs a stale column on the row and nothing downstream.  What the class now costs instead is the CASCADE coupling R-EA cedes: a period wipe can dispose a mis-filed assertion while its correction lives in another period, where the two used to fall together.  That is bounded by the same 2 rows, and the resync every wipe path already runs re-derives what survives | **OPEN, and DELIBERATELY NOT bundled into X-ai-s** (a draft of that step demanded an F1-class human decision on both rows, one of which is inert).  The constraint is a TRIGGER paired with a fix to `resolve_anchor_period_id` rule 2, and ruling which of the two is the defect -- the fallback or the absence of a period -- is a data-model question that outlives the posting redesign | X-ak |
 | N-169 (X-ai-r's adversarial design review, 2026-08-03) | **A chronology primitive both ledgers now depend on lives in the LOAN package, and the cash fact it replaced is now read by nothing.**  Ruling R-EA points BOTH anchor reconciles at `loan_ledger.resolve_anchor_pay_period` for "which period does this correction book in".  Nothing about that question is loan-specific -- it is `find_period_containing_date` plus a fallback -- and that helper's own docstring records it having ALREADY moved once for exactly this reason ("it moved from `account_projection` at plan step D1b: its only two callers are this module and the balance seam, so a kind CLASSIFIER was holding a chronology primitive").  It now has a third and fourth caller, one of them the CASH posting package, so the cohesion argument that moved it applies again.  **The other half: `CashAnchorFact.pay_period_id` has ZERO consumers in `app/`** (measured by grep across `app/` and `scripts/`; the three surviving `fact.pay_period_id` hits in `balance_at/_cash_periods.py` are `CashSourceFact`, a transaction's BUDGETED period, a different dataclass).  A field nothing reads is where the next writer re-introduces N-161 by mistaking a cache for a fact | **`$0.00`, and it moves no figure.**  Both are structural: the import is legal and fenced-clean (`resolve_anchor_pay_period` is an allowlisted non-producer in the balance-seam checker), and the dead field is documented in place rather than deleted.  The cost is that a future reader looking for the cash side's period rule finds it in a module named for loans, and that an unread column on a fact type still looks authoritative | **OPEN, owned by X-ai-s**, which is the step that decides what IDENTITY an assertion has on the ledger and therefore the only step that can rule whether `CashAnchorFact.pay_period_id` is deleted or becomes the FK's backfill input.  The primitive's HOME is decided there too: if the FK lands, both reconciles key on the event and the question is whether a shared chronology module is still earning its move | X-ai |
 | N-170 (X-ai-r's third adversarial design review, 2026-08-03; **a divergence the step ITSELF introduced, recorded rather than argued away**) | **The app now carries TWO day-to-period derivations that disagree, and X-ai-r is what split them.**  The WRITE side resolves an assertion's period with `account_service.resolve_anchor_period_id` (`:99-116`): the period CONTAINING the day, else the user's EARLIEST.  The LEDGER now resolves a correction's period with `loan_ledger.resolve_anchor_pay_period` (`_visible.py:191-192`): containing, else the LATEST period ENDING BEFORE the day, else the earliest.  They agree for a day inside the schedule and for a day before it; they diverge maximally for a day AFTER it.  **Measured on the production clone's own 61-period calendar (2026-03-26 .. 2028-07-26) for a day in 2029: the writer answers period index 0, the ledger answers index 60.**  Reachable without a clock bug: a user whose rolling window has lapsed (every period in the past) asserts a balance today -- `get_current_period` returns None, so the ROW is filed against the earliest period while its CORRECTION is filed against the latest.  Before X-ai-r the cash ledger COPIED the row's period, so the two agreed by construction; deriving is what made them two rules.  The same split reaches `pay_period_admin._reanchor_accounts` after a reset whose new schedule does not straddle today | **`$0.00`, and NOT reachable on today's production data**: the clone's schedule runs to 2028-07-26, so no assertion falls after it, and the re-derive on the prod clone moved 0 of 12,636 rendered figures.  The cost when it fires is that a row and its correction name different periods, which is the CASCADE decoupling ruling R-EA already cedes (N-168): a period wipe can dispose the assertion while the correction survives elsewhere.  Nothing RENDERS the divergence -- the grid's assertion row is built from the WALK, and the income statement's pay-period arm filters to Income/Expense classes which a correction's Asset+Equity legs never enter | **OPEN, owned by X-ak**, the step that already owns N-168 -- the two are one question ("is the fallback the defect, or the absence of a period?"), and answering it once fixes both.  The candidate resolution is to give BOTH sides one resolver, which means ruling on the fallback rather than the caller: the ledger's `latest ending before` is the more defensible answer for a day past the schedule, and `resolve_anchor_period_id`'s `earliest` is a Commit-3 backfill rule that outlived its migration | X-ak |
+| N-171 (the from-scratch anchor investigation, 2026-08-03; measured read-only on the PRODUCTION database, not a clone) | **The true-up residual is booked to EQUITY, so real economic activity is structurally invisible on the income statement.**  `_anchors.py` books the correction's counter-leg to the per-account `anchor_equity` ledger, which is Equity class; `ledger_report_service/_income_statement.py:166` filters `class_id IN (Income, Expense)`.  On Checking over 129 days that is **$15,065.08 gross / -$1,495.10 net** that no spending report can see -- against **$22,735.97** of everything the statement DOES call expense, so the hidden gross is **66%** of the visible total.  Every source consulted (standard bank reconciliation, Beancount `pad`, QuickBooks Opening Balance Equity, GnuCash, hledger) treats an equity plug as exceptional and explicit; here it is automatic, silent, and fired on **49 of 51** assertion days | **-$1,495.10 of unclassified spending over four months, and $15,065.08 of gross churn through an account with no economic meaning.**  Net worth is unaffected (the plug balances), so this is an income-statement and classification defect, not a balance defect.  The trial balance still closes at `$0.00` over all 643 postings | **OPEN.**  Resolved by R-EB (d) -- the residual posts to Uncategorized Expense / Income -- and only correctly AFTER the date work, because reclassifying timing churn would put $15,065 of phantom spend in the report | X-f3 |
+| N-172 (same investigation) | **The book-vs-bank gap at an assertion IS the rendered balance error immediately before it, and it is not small.**  The correction the engine plugs equals `asserted - what the recorded facts produced`, which is exactly what the app WOULD have shown had the user not asserted.  Measured per assertion day on Checking: **average $321.52, worst $1,853.92**, non-zero on 96% of days.  Gross is **10x** net and the series' lag-1 autocorrelation is **-0.33** with 22 of 42 consecutive non-zero pairs reversing sign, which is the signature of TIMING rather than missing money -- confirming the arc's existing "the amounts are right, the DATES are guesses" record and putting a number on it | **$321.52 typical, $1,853.92 worst**, on the account the developer budgets from | **OPEN.**  The churn half is X-f1/X-f2's; the residue half is X-f3's.  Recorded separately from N-171 because the two halves have different fixes and neither alone closes the row | X-f3 |
+| N-173 (same investigation) | **For two thirds of the settled Checking rows the settle date is a bookkeeping-session artifact, not a fact about money.**  `paid_at` is `db.func.now()` at the click, and **88 of 135 settled rows (65.2%) share a click-minute with at least one other row** (80 distinct click-minutes, largest batch 6).  This is the GENERATOR of N-172's churn, and it is why `transactions.settled_on` (S2-b) is the first step rather than a follow-up | **65.2% of the account**, and it is the input every partition rule in this arc was built to compensate for | **OPEN**, owned by **X-f1**, which is the step that gives a settle its own posting day | X-f1 |
+| N-174 (same investigation, on the developer's own correction of the question put to them) | **The PROJECTED END BALANCE -- the figure the developer actually budgets against -- inherits the whole gap, and the invariant protecting it is unbuilt.**  The developer stated it plainly: *"I work off the projected end balance as my way of knowing if I can afford a purchase or if I need to move expenses to a different pay period."*  R-DH (c) states the invariant for exactly that figure and its own note records it as **"NOT YET TRUE, and NOT YET TESTED"** -- `grep` finds those sentences only in this document, and record-then-anchor clears an entry while anchor-then-record does not.  Under R-EB (a) the invariant is algebraic rather than a rule two tests hold in step: recording a $150.27 purchase takes book to $1,157.39 and the envelope remainder to $349.73, and `1157.39 - 349.73 - 827.61 = -19.95` unchanged -- landing on the very figure R-DH (c) says the user must true up to BY HAND | **the affordability decision itself**, which is the highest-stakes read in the app for this user | **OPEN.**  This is the finding that ranks R-EB above the current scope: better dates shrink the noise, but only removing the reset makes the invariant unbreakable.  **X-f3's ship gate is this invariant passing as a TEST without a true-up, in both orders** | X-f3 |
+| N-175 (same investigation, a PROCESS finding) | **`anchor_settle_partition.md` is a second live planning document for this arc, which Section 9 rule 1 prohibits.**  Its steps 1, 2, 3 and 4 and S1-c have ALL shipped; the only unshipped work in it is **S2-b**.  Rule 1 says new standalone plans for this arc are prohibited and rule 5 says a completed half is archived WHOLE rather than trimmed piecemeal, so the disposition is an archive move, not a deletion or a trim | **`$0.00`**, and the cost is orientation: the developer stated *"I have spent so much time and effort on this that I'm losing track of everything"*, and two live plan documents for one root is part of why | **OPEN.**  Archive it as the THIRD as-built record alongside the loan and cash arc records, carrying S2-b forward.  **RULED 2026-08-03 (R-EB): the archive move ships WITH X-f1**, so the superseded plan and the plan that supersedes it land together rather than leaving a window where neither is authoritative | X-f1 |
+| N-176 (same investigation; a POSITIVE CONTROL, recorded because it is the only production exercise of the path) | **Five posted correction days on Checking carry no surviving anchor history row, and all five self-healed to `$0.00`.**  Entry dates 2026-04-29, 2026-05-06, 2026-05-15, 2026-06-16 and 2026-07-07 appear in the posted corrections but not in `account_anchor_history` (55 rows on 51 distinct days; the posted side carries 56 days).  Each nets to exactly zero, which means `_posted_only_key_period_id`'s defensive branch -- the one its own docstring calls unreachable through the linear lifecycle -- has in fact run in production and reversed correctly | **`$0.00`**, by construction and by measurement | **OPEN as a RECORD, not a defect.**  It matters to R-EB because X-f4 deletes that branch with the rest of the correction machinery, and deleting a path that has demonstrably fired in production should be a stated deletion rather than an unnoticed one | X-f4 |
 | N-139 (X-ae's build 2026-08-02; REFRAMED the same day when two adversarial reviews refuted its first statement) | **Nothing prevents a submitted digit string being parsed laxly again, and a checker on the method NAME does not prevent it -- which is what the first version of this row proposed.**  X-ae removed every Unicode-wide digit predicate from `app/` and `scripts/` (AST: exactly ONE call site remains, `digit_strings.py:91`, the implementation of the replacement), converted the URL converter and 73 schema declarations, and the reviews then showed the proposed gate would still report clean over the very defect it was written for: **a future author writing a bare `try: int(raw) / except ValueError` passes a `isdigit`/`isdecimal`/`isnumeric` matcher and reintroduces the many-spellings defect** -- and this step's own record proves that form insufficient, because it is what the 2026-08-01 ruling specified and what measurement rejected.  `re.fullmatch(r"\\d+", "١٠٦")` matches for the same reason.  **The signal is not a method name; it is Unicode-wide digit ACCEPTANCE, and it has at least four spellings** | `$0.00` today and no reachable crash: every surface X-ae covers is fixed and measured.  The exposure is the NEXT id parse written, which on this arc's history is a matter of when rather than whether -- four `isdigit()` sites accumulated with nothing watching, and the reviews found two more surfaces this step's own census had missed | **OPEN, and the INSTRUMENT is undecided, which is why this is a step and not a line.**  A checker is the only available shape -- the receiver is `str`, a builtin nobody can give a narrower type, so there is no `ReconciledThrough` to write and the developer's *structural-over-detector* ruling has nothing to prefer; `anchor_settle_partition.md` 14.5 is the precedent (a type and a checker fence COMPLEMENTARY holes).  But X-ag's trace must first answer what the checker MATCHES, given that the method name is measurably the wrong signal.  **A second draft of this row argued that step 3 proved a checker would be blind at a bare-local site; that claim was REFUTED by step 3's own review and withdrawn in 14.1**, and restating it was the stale-citation class this arc keeps paying for | X-ag |
 
 ## 7. Verification standard (what "done" means for every step)
