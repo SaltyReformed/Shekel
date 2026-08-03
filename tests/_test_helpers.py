@@ -1713,6 +1713,60 @@ def ledger_net(db_session, ledger_account_id, scenario_id):
     )
 
 
+def correction_net_in_period(
+    db_session, ledger_account_id, scenario_id, source_enum, period_id,
+):
+    """Return one source kind's posted net on a ledger account in ONE pay period.
+
+    The per-PERIOD reading of the ledger the R2 attribution rule is about (plan
+    step X-ai-r): a reversal must net the period whose postings it corrects back
+    to what the surviving facts say, rather than leaving that period overstated
+    and filing the correction against a different one.  ``ledger_net`` is the
+    scalar-total counterpart and ``linked_net_by_date`` the per-DATE one; this is
+    the third axis, and it is the one an anchor correction is attributed on.
+
+    Scoped the way the reconcile scopes itself -- one source kind, one ledger
+    account, one scenario -- so the figure asserted here is the figure the
+    reconcile reasons about.  Shared by the cash and loan anchor suites, whose
+    only real difference is where an assertion's period comes from.
+
+    Args:
+        db_session: The test ``db.session``.
+        ledger_account_id: The ledger account whose legs to sum (the account's
+            LINKED ledger, for an anchor correction).
+        scenario_id: The scenario to scope to.
+        source_enum: The :class:`~app.enums.PostingSourceEnum` member naming the
+            correction kind (``ACCOUNT_TRUEUP``, ``LOAN_TRUEUP``, ...).
+        period_id: The pay period to scope to.
+
+    Returns:
+        The signed net as a ``Decimal`` (``Decimal("0.00")`` when the period
+        holds no leg of that kind -- which is what a fully reversed period reads
+        as, and the assertion most of these tests make).
+    """
+    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app import ref_cache
+    from app.extensions import db
+    from app.models.journal_entry import JournalEntry, Posting
+
+    return (
+        db_session.query(
+            db.func.coalesce(db.func.sum(Posting.amount), Decimal("0.00"))
+        )
+        .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
+        .filter(
+            Posting.ledger_account_id == ledger_account_id,
+            JournalEntry.scenario_id == scenario_id,
+            JournalEntry.pay_period_id == period_id,
+            JournalEntry.source_kind_id == ref_cache.posting_source_id(
+                source_enum,
+            ),
+        )
+        .scalar()
+    )
+
+
 def linked_net_by_date(db_session, ledger_account_id, scenario_id):
     """Return a ledger account's posted net keyed by journal-entry ``entry_date``.
 

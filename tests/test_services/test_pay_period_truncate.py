@@ -17,7 +17,7 @@ is deleted (Discipline 4).  See
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -43,6 +43,11 @@ from app.services import (
     transfer_service,
 )
 from app.services.pay_period_admin import PeriodLockReason
+# The APP's civil day, never ``date.today()`` -- these fixtures build periods
+# that must CONTAIN the day the account factory stamps on its origination
+# assertion, and that day is the display-timezone one (CI runs a zone where
+# the two differ, deliberately).
+from app.utils.dates import display_today
 from scripts.integrity_check import (
     check_balance_anomalies,
     check_referential_integrity,
@@ -351,27 +356,98 @@ class TestTruncateHardLocks:
         """A NON-zero anchor's opening correction hard-locks its period.
 
         The Step-5 accepted behavior change (plan Section 3.5): a $500.00
-        savings anchored to a to-delete period posts its opening correction
-        there, so the period's per-ledger nets are non-zero and the
-        double-entry gate reports LEDGER_POSTINGS (it precedes
-        ACCOUNT_ANCHOR).  Nothing is deleted.
+        savings whose opening correction lands in a to-delete period makes
+        that period's per-ledger nets non-zero, so the double-entry gate
+        reports LEDGER_POSTINGS (it precedes ACCOUNT_ANCHOR).  Nothing is
+        deleted.
+
+        **The schedule is generated AROUND today deliberately** (plan step
+        X-ai-r).  A correction books in the period CONTAINING the day the
+        balance was observed (ruling R-DH), and the factory defaults that day
+        to today -- so the period that receives the correction is the one
+        holding today, and this fixture puts a to-delete period there.  It
+        used to force ``anchor_period_id`` onto a FUTURE period and rely on
+        the writer copying that stored id, which is the attribution X-ai-r
+        removed; the split case moved to the test below.
         """
         with app.app_context():
-            periods = _future_periods(db.session, seed_user, count=6)
             user_id = seed_user["user"].id
+            # Periods straddling today, so the account's observed day (today)
+            # falls INSIDE one of them -- production's shape, where a row's
+            # period and its observed day are two statements of one fact.
+            periods = _future_periods(
+                db.session, seed_user, count=6,
+                start=display_today() - timedelta(days=28),
+            )
+            anchored = next(
+                period for period in periods
+                if period.start_date <= display_today() <= period.end_date
+            )
             create_savings_account(
                 seed_user, db.session, "Savings", Decimal("500.00"),
-                anchor_period_id=periods[2].id,  # index 3
+                anchor_period_id=anchored.id,
             )
             db.session.commit()
             before = _count_periods(db.session, user_id)
 
             with pytest.raises(PayPeriodLocked) as excinfo:
                 pay_period_admin.truncate_pay_periods(
+                    user_id, keep_through_index=anchored.period_index - 1,
+                )
+            assert excinfo.value.blocking.get(anchored.id) == (
+                PeriodLockReason.LEDGER_POSTINGS
+            )
+            assert _count_periods(db.session, user_id) == before
+
+    def test_anchor_period_holding_no_correction_blocks_as_account_anchor(
+        self, app, db, seed_user,
+    ):
+        """A period that merely NAMES an account's anchor locks as the anchor.
+
+        The day/period split, and what plan step X-ai-r changed about it.  An
+        account is forced onto a FUTURE pay period while its balance is
+        observed TODAY -- legal through ``AccountSpec`` (the explicit id
+        wins), and unreachable through every production path, which derives
+        the period from the day (``account_service.resolve_anchor_period_id``).
+        The $500.00 opening correction books in the period containing the
+        OBSERVED day, so the forced period holds no posting at all and is
+        refused as the ACCOUNT_ANCHOR it is.
+
+        It reported LEDGER_POSTINGS until X-ai-r, because the writer copied
+        the row's stored ``pay_period_id`` and filed $500.00 of correction
+        into a period the balance was never asserted for.  **The protection
+        did not weaken**: the truncate is still refused and nothing is
+        deleted -- the reason moved with the postings.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            # Derived from the app's own day, NOT from a hard-coded start:
+            # the case needs a period that does NOT contain the observed day,
+            # and ``_future_periods``' default start is only "future" while
+            # the directory clock freeze happens to precede it.  A draft of
+            # this test asserted that precondition over the hard-coded start
+            # and so graded the OPPOSITE case (the period contains today ->
+            # LEDGER_POSTINGS) on any clock past it.
+            periods = _future_periods(
+                db.session, seed_user, count=6,
+                start=display_today() + timedelta(days=1),
+            )
+            create_savings_account(
+                seed_user, db.session, "Savings", Decimal("500.00"),
+                anchor_period_id=periods[2].id,
+            )
+            db.session.commit()
+            before = _count_periods(db.session, user_id)
+            # The precondition: the observed day (today) is NOT inside the
+            # period the account was forced onto -- true by construction now.
+            assert periods[2].start_date > display_today()
+
+            with pytest.raises(PayPeriodLocked) as excinfo:
+                pay_period_admin.truncate_pay_periods(
                     user_id, keep_through_index=periods[1].period_index,
                 )
             assert excinfo.value.blocking.get(periods[2].id) == (
-                PeriodLockReason.LEDGER_POSTINGS
+                PeriodLockReason.ACCOUNT_ANCHOR
             )
             assert _count_periods(db.session, user_id) == before
 

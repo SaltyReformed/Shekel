@@ -21,42 +21,113 @@ accounts with no class branch, exactly like the engine.  A zero delta books
 nothing (a fresh $0 account mints no entries and no ``anchor_equity`` row,
 staying hard-deletable).
 
-**Reconciled to target, keyed by (source kind, entry date).**  An anchor
-correction has no concrete source FK to key on, so the reconcile keys each
-anchor's entry by its ``source_kind_id`` (``account_opening`` vs.
-``account_trueup``) and its ``entry_date`` -- the fact's own
+**Reconciled to target, keyed by (source kind, pay period, entry date).**  An
+anchor correction has no concrete source FK to key on, so the reconcile keys
+each anchor's entry by its ``source_kind_id`` (``account_opening`` vs.
+``account_trueup``), the pay period CONTAINING the assertion's day, and its
+``entry_date`` -- the fact's own
 :attr:`~app.services.cash_ledger.CashAnchorFact.observed_on`, the civil day the
 assertion is the CLOSING BALANCE for (ruling R-DH).  It was
 ``_utc_civil_date(asserted_at)`` until 2026-07-31: a second statement of a rule
 the fact already resolves, and one that dated a late-evening Eastern true-up
 into the next day, putting the correction on a different day from the settles it
-corrects.  Two same-day same-kind
-anchors merge to one target landing on the later value, mirroring the F-103
-unique-index semantics and the loan merge behavior.  A pre-true-up source
-whose net later changes moves the walk's ``ledger_before``; re-running the
-sync re-derives the target and posts the balancing delta, so a stale
-correction self-heals.  The entry's ``pay_period_id`` is the history row's
-own period (R2: the period of what it corrects) -- no period resolution can
-fail, because that FK is NOT NULL by referential integrity.  Flushes but
-never commits -- the caller owns the transaction.
+corrects.  Two anchors merge to one target, landing on the later value, only
+when they share ALL THREE key parts.  A pre-true-up source whose net later
+changes moves the walk's ``ledger_before``; re-running the sync re-derives the
+target and posts the balancing delta, so a stale correction self-heals.
+Flushes but never commits -- the caller owns the transaction.
+
+**The period is DERIVED FROM THE DAY, and it is the SAME derivation the loan
+twin makes** (plan step X-ai-r; ruling R-DH, stated at
+:func:`app.services.account_service.resolve_anchor_period_id`: *"The period is
+DERIVED from the day, not chosen beside it ... an assertion's period and the
+civil day it was true are two statements of one fact, and the moment they can
+be set independently they can disagree"*).  Both halves of the LEDGER now file
+an anchor correction through
+:func:`app.services.loan_ledger.resolve_anchor_pay_period` against the entry's
+own date, so "which period does an anchor correction book in" has ONE answer
+for cash and loan alike.
+
+**Two limits on that sentence, both stated because a draft of this docstring
+over-claimed them away** (finding **N-170**).  (1) It is one answer across the
+two LEDGER halves, NOT across the app: the WRITE-side resolver
+``account_service.resolve_anchor_period_id`` falls back to the user's EARLIEST
+period when no period contains the day, while this one falls back to the LATEST
+period ending before it.  They agree for a day inside the schedule and for a
+day before it, and diverge for a day AFTER it -- measured on a production-shaped
+calendar of 61 periods, index 0 against index 60.  (2) An entry's
+``pay_period_id`` and its ``entry_date`` are therefore NOT "two columns that
+cannot drift": whenever no period contains the day, the entry is filed in a
+period its own date falls outside, by construction and deliberately -- the
+alternative is a correction with no period at all, and ``pay_period_id`` is NOT
+NULL.  What the derivation buys is that the drift is a function of the CALENDAR
+rather than of which clock a writer happened to read, and that it self-heals the
+moment the containing period exists.
+
+**What that replaced, and the two ways it was wrong** (finding N-161).  The
+key was ``(source kind, entry date)`` with the period carried alongside it in
+a parallel map, written last-fact-wins from ``account_anchor_history``'s stored
+``pay_period_id`` -- the source row's CURRENT period, verbatim what R2 forbids
+(:mod:`app.services.posting_service`: a correction "carries the PAY PERIOD of
+the postings it reverses ... never the source row's current period").  Measured
+on production data: two assertions observed 2026-06-03 whose stored periods are
+5 and 6 had posted as ``+$3,054.36`` in period 5 and ``-$2,854.36`` in period
+6 -- one key could not tell them apart, so the second reconciled as a delta
+against the first's whole posted amount, and its reversal of period-5 postings
+was filed into period 6.
+
+**Reading the STORED period was the second defect, and a first build of this
+step kept it.**  ``account_anchor_history.pay_period_id`` is not an independent
+fact: it is a CACHE of this same derivation, written by
+``resolve_anchor_period_id`` from the same day, and the row that made this
+visible was filed by a broken clock (created 21:28 Eastern on period 5's last
+day, stored against period 6 -- exactly the case
+``routes/accounts/crud.py``'s own comment was written to prevent: *"the grid
+buckets the correction by ``observed_on`` and the ledger stamps it with
+``pay_period_id``, so the two surfaces disagree by the whole correction"*).
+Projecting that cache would have made the posted ledger disagree with the grid's
+"Book vs bank" row by the whole correction, permanently.  Measured on a
+production clone across 61 periods: deriving from the day agrees with
+:func:`app.services.balance_at.grid_balance_view` on EVERY period; reading the
+stored column disagrees on two.  **The comparison is over TRUE-UPS, and saying
+so is load-bearing**: ``_assertion_sums`` folds ``anchor_corrections[1:]``,
+excluding the OPENING because ruling R-I moves it into the fold's seed, while
+the ledger keeps an ``account_opening`` entry in a period -- so an unscoped
+comparison could not have agreed on 61 and a draft of this docstring implied
+one had.  The agreement is pinned by
+``TestLedgerAgreesWithTheGridOnAssertionPeriods`` rather than left as a
+measurement in prose (finding N-169's other half).  A mis-filed row is a defect
+in the ROW (finding N-168), repaired at its source -- and until it is, the
+ledger states the day's truth rather than inheriting the row's error.
+
+Two same-day assertions always share a containing period, so they still merge
+into one entry; separating THOSE needs an identity the ledger does not carry
+yet (plan step X-ai-s).
 """
 
 from app import ref_cache
 from app.enums import PostingKindEnum, PostingSourceEnum
-from app.extensions import db
-from app.models.journal_entry import JournalEntry, Posting
+from app.models.pay_period import PayPeriod
 from app.services import ledger_account_service
 from app.services._posting_reconcile import (
     CorrectionKey,
     LegMap,
     account_owner_id,
-    delta_legs,
-    emit_anchor_correction_entry,
+    emit_correction_deltas,
     merge_target_legs,
     posted_correction_legs,
 )
 from app.services.cash_ledger import CashAnchorFact
-from app.services.posting_reads import _ledger_account_for
+# The chronology primitive both ledgers file an anchor correction through.  It
+# is named in ``loan_ledger`` because the loan half needed it first; nothing
+# about "which period contains this day" is loan-specific, and this package
+# consuming it is what makes the cash and loan halves ONE rule rather than two
+# that agree (finding N-169 records that its home is now worth revisiting).
+from app.services.loan_ledger import (
+    owner_pay_periods,
+    resolve_anchor_pay_period,
+)
+from app.services.posting_reads import PostingError, _ledger_account_for
 
 from ._walk import AccountAnchorCorrection
 
@@ -140,98 +211,65 @@ def _account_anchor_correction_target(
 
 
 def _account_anchor_correction_targets(
-    corrections: list[AccountAnchorCorrection], owner_id: int,
-) -> tuple[dict[CorrectionKey, LegMap], dict[CorrectionKey, int]]:
-    """Merge an account's corrections into per-(source, date) targets + periods.
+    corrections: list[AccountAnchorCorrection],
+    owner_id: int,
+    periods: list[PayPeriod],
+) -> dict[CorrectionKey, LegMap]:
+    """Merge an account's corrections into per-(source, period, date) targets.
 
-    Groups every correction by its ``(source_kind_id, civil entry_date)``
-    key and sums the legs within each group
+    Groups every correction by its ``(source_kind_id, pay_period_id, civil
+    entry_date)`` key and sums the legs within each group
     (:func:`app.services._posting_reconcile.merge_target_legs`), so two
-    same-day same-kind anchors net to a single balanced target that lands
-    the ledger on the LATER value -- exactly the combined jump they express
-    (each correction's delta already accounts for the prior one).  A
+    anchors sharing all three key parts net to a single balanced target that
+    lands the ledger on the LATER value -- exactly the combined jump they
+    express (each correction's delta already accounts for the prior one).  A
     correction that books nothing still creates its key with an empty leg
     map, so an entry it previously posted (now matching) is reversed to
     zero by the reconcile.
 
-    Alongside the leg targets, records each key's entry ``pay_period_id`` --
-    the history row's own period, the LATEST fact's row winning a merged key
-    (the corrections arrive chronological, so the last write is the latest).
+    **Both key parts that identify WHEN come off the same fact**: the entry's
+    date IS the assertion's ``observed_on``, and its period is the one
+    CONTAINING that day (:func:`app.services.loan_ledger.resolve_anchor_pay_period`,
+    the derivation the loan twin makes and the rule ruling R-DH states).  The
+    stored ``account_anchor_history.pay_period_id`` is deliberately NOT read
+    here -- it is a cache of this same derivation, and a row whose clock split
+    it from its own day would otherwise put the ledger permanently at odds
+    with the grid.  See the module docstring for the production measurement.
 
     Args:
         corrections: The account's corrections from
             :func:`._walk.walk_account_ledger`, chronological.
         owner_id: The account owner's user id.
+        periods: The owner's pay periods ascending, non-empty (the caller
+            raises when the account has corrections to post and the owner has
+            none, so :func:`resolve_anchor_pay_period` always resolves).
 
     Returns:
-        ``(targets, periods)`` --
-        ``{(source_kind_id, entry_date): {ledger_account_id: (amount,
-        kind_id)}}`` and ``{(source_kind_id, entry_date): pay_period_id}``.
+        ``{(source_kind_id, pay_period_id, entry_date): {ledger_account_id:
+        (amount, kind_id)}}``.
     """
     targets: dict[CorrectionKey, LegMap] = {}
-    periods: dict[CorrectionKey, int] = {}
     for correction in corrections:
         source_enum, _posting_kind = _account_correction_kinds(
             correction.anchor,
         )
+        # The correction's journal entry is dated the day the assertion is the
+        # CLOSING BALANCE for, read off the fact rather than re-derived from
+        # its recording instant (ruling R-DH).  It was
+        # ``_utc_civil_date(asserted_at)``, a second statement of a rule
+        # ``cash_anchor_facts`` already resolves -- and one that put a
+        # late-evening Eastern true-up on the next day's entry.
+        observed_on = correction.anchor.observed_on
         key = (
-            # The correction's journal entry is dated the day the assertion is
-            # the CLOSING BALANCE for, read off the fact rather than re-derived
-            # from its recording instant (ruling R-DH).  It was
-            # ``_utc_civil_date(asserted_at)``, a second statement of a rule
-            # ``cash_anchor_facts`` already resolves -- and one that put a
-            # late-evening Eastern true-up on the next day's entry.
             ref_cache.posting_source_id(source_enum),
-            correction.anchor.observed_on,
+            resolve_anchor_pay_period(periods, observed_on).id,
+            observed_on,
         )
-        periods[key] = correction.anchor.pay_period_id
         merge_target_legs(
             targets.setdefault(key, {}),
             _account_anchor_correction_target(correction, owner_id),
         )
-    return targets, periods
-
-
-def _posted_only_key_period_id(
-    linked_ledger_id: int, scenario_id: int, key: CorrectionKey,
-) -> int:
-    """Return the period of the posted correction a target-less key reverses.
-
-    A key present in the posted ledger but absent from the walked targets
-    has no history row to take a period from (its anchor rows are gone --
-    unreachable through the linear lifecycle, since a history row and its
-    correction entry share a pay period and CASCADE together, but the
-    reconcile's union loop is defensive).  The R2-faithful period for its
-    reversal is the period of the postings it reverses, read back from the
-    LATEST posted correction entry for the key.
-
-    Args:
-        linked_ledger_id: The account's LINKED ledger account id (scopes
-            the key to this account's corrections).
-        scenario_id: The budget scenario to scope to.
-        key: The ``(source_kind_id, entry_date)`` being reversed.  The
-            caller guarantees at least one posted entry matches (the key
-            came from the posted map), so the lookup cannot miss.
-
-    Returns:
-        The latest posted correction entry's ``pay_period_id``.
-    """
-    entry_ids = (
-        db.session.query(Posting.journal_entry_id)
-        .filter(Posting.ledger_account_id == linked_ledger_id)
-    )
-    return (
-        db.session.query(JournalEntry.pay_period_id)
-        .filter(
-            JournalEntry.scenario_id == scenario_id,
-            JournalEntry.source_kind_id == key[0],
-            JournalEntry.entry_date == key[1],
-            JournalEntry.id.in_(entry_ids),
-        )
-        .order_by(JournalEntry.id.desc())
-        .limit(1)
-        .scalar()
-    )
+    return targets
 
 
 def reconcile_account_anchor_corrections(
@@ -244,13 +282,15 @@ def reconcile_account_anchor_corrections(
     The reconcile half of the account anchor sync, taking the corrections
     already produced by :func:`._walk.walk_account_ledger` (the
     :mod:`._sync` entry points drive both halves).  Builds the
-    per-``(source kind, date)`` target legs
+    per-``(source kind, pay period, date)`` target legs
     (:func:`_account_anchor_correction_targets`), reads back what is posted
     (:func:`app.services._posting_reconcile.posted_correction_legs`, scoped
     to the account's linked ledger), and emits ONE balanced delta per key
-    that differs -- posting a new opening / true-up, adjusting a correction
-    whose ``ledger_before`` moved (a pre-assertion source changed), or
-    reversing one a matching balance retired.
+    that differs
+    (:func:`app.services._posting_reconcile.emit_correction_deltas`, the loop
+    shared with the loan twin) -- posting a new opening / true-up, adjusting
+    a correction whose ``ledger_before`` moved (a pre-assertion source
+    changed), or reversing one a matching balance retired.
 
     Idempotent and self-healing: a re-run at the same state writes nothing
     (every delta is zero).  Touches ONLY the account's own linked and
@@ -266,7 +306,8 @@ def reconcile_account_anchor_corrections(
 
     Raises:
         PostingError: If the account has no linked ledger account (a broken
-            chart-of-accounts pairing).
+            chart-of-accounts pairing), or has corrections to post while its
+            owner has no pay periods (see below).
         ValueError: If the anchor-equity resolver rejects the account (see
             :func:`_account_anchor_correction_target`).
     """
@@ -275,29 +316,36 @@ def reconcile_account_anchor_corrections(
     owner_id = account_owner_id(account_id)
     if owner_id is None:
         return
-    targets, target_periods = _account_anchor_correction_targets(
-        corrections, owner_id,
-    )
-    linked = _ledger_account_for(account_id)
-    posted = posted_correction_legs(
-        linked.id,
-        scenario_id,
-        [
-            ref_cache.posting_source_id(PostingSourceEnum.ACCOUNT_OPENING),
-            ref_cache.posting_source_id(PostingSourceEnum.ACCOUNT_TRUEUP),
-        ],
-    )
-    for key in sorted(set(targets) | set(posted)):
-        legs = delta_legs(targets.get(key, {}), posted.get(key, {}))
-        if not legs:
-            continue
-        # .get, then the lazy fallback: the posted-only lookup is a query
-        # and must not run for the (normal) keys a history row covers.
-        pay_period_id = target_periods.get(key)
-        if pay_period_id is None:
-            pay_period_id = _posted_only_key_period_id(
-                linked.id, scenario_id, key,
-            )
-        emit_anchor_correction_entry(
-            owner_id, scenario_id, key, pay_period_id, legs,
+    # The owner's whole calendar, loaded ONCE for the target keys -- the same
+    # load and the same resolver the loan twin uses, so the two halves cannot
+    # come to file an anchor correction under different periods.
+    #
+    # Unreachable given referential integrity (an assertion carries a NOT NULL
+    # ``pay_period_id`` pointing at one of THESE periods, so a correction
+    # implies at least one exists), and stated as a loud failure rather than
+    # trusted: this reconcile now DERIVES the period instead of copying the
+    # row's, so the one state that could silently mis-file every correction is
+    # an empty calendar.
+    periods = owner_pay_periods(account_id)
+    if not periods:
+        raise PostingError(
+            f"Account {account_id} has anchor corrections to post but owner "
+            f"{owner_id} has no pay periods; a correction's NOT NULL "
+            f"pay_period_id cannot be resolved."
         )
+    linked = _ledger_account_for(account_id)
+    emit_correction_deltas(
+        owner_id,
+        scenario_id,
+        target=_account_anchor_correction_targets(
+            corrections, owner_id, periods,
+        ),
+        posted=posted_correction_legs(
+            linked.id,
+            scenario_id,
+            [
+                ref_cache.posting_source_id(PostingSourceEnum.ACCOUNT_OPENING),
+                ref_cache.posting_source_id(PostingSourceEnum.ACCOUNT_TRUEUP),
+            ],
+        ),
+    )
