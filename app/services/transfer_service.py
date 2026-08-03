@@ -30,7 +30,6 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 
 from app.extensions import db
-from app.models.account import Account
 from app.models.ref import Status
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
@@ -58,13 +57,15 @@ from app.services._transfer_validation import (
     _get_shadow_transactions,
     _get_transfer_or_raise,
     _validate_positive_amount,
+    assert_restorable,
 )
+from app.services import status_seam
 from app.services.state_machine import verify_transition
+from app.utils.balance_predicates import settled_status_ids
 from app.utils.log_events import (
     BUSINESS,
     EVT_TRANSFER_CREATED,
     EVT_TRANSFER_HARD_DELETED,
-    EVT_TRANSFER_RESTORE_REFUSED_ARCHIVED_ACCOUNT,
     EVT_TRANSFER_RESTORED,
     EVT_TRANSFER_SOFT_DELETED,
     EVT_TRANSFER_UPDATED,
@@ -366,62 +367,72 @@ def create_transfer(spec: TransferSpec) -> Transfer:
     return xfer
 
 
-def _apply_status_change(
+def _apply_status_to_all_three(
     xfer: Transfer,
     expense_shadow: Transaction,
     income_shadow: Transaction,
-    updates: dict[str, object],
+    new_status_id: int,
 ) -> None:
-    """Apply a ``status_id`` update to the transfer and both shadows.
+    """Move a transfer and both shadows to one status, through the ONE seam.
 
-    Verify the transition BEFORE any propagation so an illegal request
-    (for example settled -> projected) leaves both the parent transfer
-    and the two shadow transactions untouched.  The state machine raises
-    ``ValidationError`` -- the route layer surfaces it as a 400.  Audit
-    reference: F-047 / commit C-21 of the 2026-04-15 security
-    remediation plan.
+    Replaces this module's own copy of the status seam (plan step X-aj1,
+    ruling **R-DN**); see :func:`app.services.status_seam.apply_status_change`
+    for the mechanics and for the three defects the duplicate carried.
 
-    Defense-in-depth ``paid_at`` synchronization (F-048 / C-22): the
-    route layer (``transfers.mark_done``, ``transactions.mark_done``
-    shadow path) is expected to pass an explicit ``paid_at`` whenever it
-    sets a settled status, but a future caller that forgets is still
-    forced into a coherent state here.  Two cases:
+    **Verified in FULL before anything is assigned.**  That preserves the
+    atomicity the deleted version promised -- an illegal request leaves the
+    transfer AND both shadows untouched (F-047 / commit C-21) -- and it is
+    what makes ruling **R-DO** safe here: a shadow whose status has drifted
+    somewhere the parent's status is not legally reachable from now REFUSES,
+    so assigning as we went would strand the transfer ahead of its shadows.
+    The seam re-verifies as it writes and stays the enforcement point; this
+    pass is for atomicity, mirroring how the transaction PATCH handler's
+    ``_resolve_status_change`` pre-check relates to the same seam.
 
-    * Transitioning to a settled status (``is_settled = TRUE``) without
-      an explicit ``paid_at`` -> default to ``now()`` so
-      ``Transaction.days_paid_before_due`` and the dashboard's "paid on
-      time" indicator work.
-    * Transitioning to a non-settled status without an explicit
-      ``paid_at`` -> clear the existing timestamp so a Paid transfer
-      reverted to Projected does not retain a stale payment time.
-
-    Both branches no-op when the caller passed ``paid_at`` explicitly
-    (including ``paid_at=None``); the explicit downstream assignment in
-    :func:`update_transfer` then takes effect.
+    The shadow checks pass by construction for any transfer whose own
+    transition was legal: a shadow's status equals the parent's pre-update
+    status (Transfer Invariant 4), and every transfer-legal move is also
+    transaction-legal (measured over both maps at X-aj1's trace, 0
+    exceptions, reverse control firing).
 
     Args:
         xfer: The parent :class:`Transfer` being updated.
         expense_shadow: The expense-side shadow :class:`Transaction`.
         income_shadow: The income-side shadow :class:`Transaction`.
-        updates: The :func:`update_transfer` kwargs; read for
-            ``status_id`` and probed for an explicit ``paid_at``.
-    """
-    new_status_id = updates["status_id"]
-    verify_transition(xfer.status_id, new_status_id, context="transfer")
-    xfer.status_id = new_status_id
-    expense_shadow.status_id = new_status_id
-    income_shadow.status_id = new_status_id
+        new_status_id: The ``ref.statuses.id`` all three rows move to.
 
-    if "paid_at" not in updates:
-        new_status = db.session.get(Status, new_status_id)
-        if new_status is not None:
-            if new_status.is_settled:
-                settled_ts = db.func.now()
-                expense_shadow.paid_at = settled_ts
-                income_shadow.paid_at = settled_ts
-            else:
-                expense_shadow.paid_at = None
-                income_shadow.paid_at = None
+    Raises:
+        ValidationError: If the transition is illegal for the transfer or
+            for either shadow (propagated from the state machine).
+    """
+    rows = (xfer, expense_shadow, income_shadow)
+    for row in rows:
+        verify_transition(row, new_status_id)
+
+    # ONE settle instant for the PAIR (Transfer Invariant 3), resolved before
+    # either shadow is written.  The seam's per-row rule is "preserve an
+    # existing instant, else stamp now()", which is right for a lone
+    # transaction and WRONG for a pair: two shadows whose timestamps already
+    # differ would each keep their own, and a pair where only one carries an
+    # instant would have the other stamped with today.  Both outcomes break the
+    # equality ``posting_service._entry_date`` depends on -- it reads the INCOME
+    # shadow's ``paid_at`` and its docstring records that "the two are always
+    # equal because the transfer service mirrors paid_at to both shadows".
+    # Preferring an EXISTING instant over ``now()`` is what stops a repair from
+    # inventing a settle day: the sibling already knows when the money moved,
+    # and that day is the ``entry_date`` the postings are filed under.
+    settled = new_status_id in settled_status_ids()
+    pair_instant = None
+    if settled:
+        pair_instant = (
+            expense_shadow.paid_at or income_shadow.paid_at or db.func.now()
+        )
+    for shadow in (expense_shadow, income_shadow):
+        status_seam.apply_status_change(
+            shadow, new_status_id, paid_at=pair_instant,
+        )
+    # The parent carries no ``paid_at`` column, so it takes no instant.
+    status_seam.apply_status_change(xfer, new_status_id)
 
 
 def _apply_actual_amount(
@@ -465,7 +476,7 @@ def _reconcile_postings_after_update(xfer: Transfer, updates: dict[str, object])
 
     * **Step-2 cash reconcile** when a magnitude / settled-sense / period field
       changed (``_POSTING_RELEVANT_FIELDS``).  Placed here -- NOT inside
-      ``_apply_status_change`` -- because ``actual_amount`` is applied AFTER
+      ``_apply_status_to_all_three`` -- because ``actual_amount`` is applied AFTER
       ``status_id`` and the grid shadow-edit path can settle and set an actual
       in one call; the reconcile reads the income shadow's ``effective_amount``,
       so it must run once everything is in place or it would post the pre-edit
@@ -586,11 +597,16 @@ def update_transfer(transfer_id, user_id, **kwargs):
         income_shadow.estimated_amount = new_amount
 
     # ── status_id ──────────────────────────────────────────────────
-    # Transition verified before any propagation, with the F-048
-    # defense-in-depth ``paid_at`` synchronization; see
-    # :func:`_apply_status_change` for the full audit rationale.
+    # All three transitions verified before any propagation, then applied
+    # through the ONE status seam, which owns the F-048 defense-in-depth
+    # ``paid_at`` synchronization and the ``status`` expire; see
+    # :func:`_apply_status_to_all_three` for the full audit rationale.  An
+    # explicit ``paid_at`` in this same call is applied by its own branch
+    # below and wins over whatever the seam derived here.
     if "status_id" in kwargs:
-        _apply_status_change(xfer, expense_shadow, income_shadow, kwargs)
+        _apply_status_to_all_three(
+            xfer, expense_shadow, income_shadow, kwargs["status_id"],
+        )
 
     # ── pay_period_id ──────────────────────────────────────────────
     if "pay_period_id" in kwargs:
@@ -779,10 +795,20 @@ def restore_transfer(transfer_id, user_id):
     re-syncs every field the service mirrors from the canonical parent
     onto both shadows (amount, status, period, category, due_date,
     is_override) in case any drifted via direct ORM mutation while the
-    transfer was soft-deleted.  ``actual_amount`` and ``paid_at`` are
-    deliberately excluded: the ``Transfer`` parent has no canonical
-    column for them (they live on the shadow ``Transaction`` only), so
-    there is no parent value to re-sync against.
+    transfer was soft-deleted.  ``actual_amount`` stays excluded: the
+    ``Transfer`` parent has no canonical column for it, so there is no value
+    to re-sync against.
+
+    **``paid_at`` IS now maintained, and it is not the parent that supplies
+    it** (plan step X-aj1).  Repairing a status through the one seam brings
+    the seam's timestamp rule with it, so a shadow repaired INTO a settled
+    status must carry an instant and one repaired out of it must not.  The
+    instant comes from the SIBLING shadow -- Transfer Invariant 3 says the
+    pair is equal, and the sibling already records when the money moved.
+    Taking it from there rather than from ``now()`` is what stops a repair
+    from inventing a settle day: since plan step E1a that civil day is the
+    ``entry_date`` the re-posted entry below is filed under, so a fabricated
+    instant would move money on what is supposed to be a repair.
 
     Idempotent: calling on an already-active transfer is a no-op.
 
@@ -815,8 +841,6 @@ def restore_transfer(transfer_id, user_id):
         )
         return xfer
 
-    xfer.is_deleted = False
-
     # Load ALL shadows without filtering by is_deleted -- they are
     # soft-deleted and that is exactly what we are undoing.  Same
     # query pattern as delete_transfer(soft=True).
@@ -826,73 +850,16 @@ def restore_transfer(transfer_id, user_id):
         .all()
     )
 
-    # ── Validate shadow count ───────────────────────────────────────
-    if len(shadows) != 2:
-        logger.error(
-            "Cannot restore transfer %d: expected 2 shadow transactions, "
-            "found %d.  Shadow IDs: %s.  Data integrity issue.",
-            transfer_id, len(shadows), [s.id for s in shadows],
-        )
-        # Roll back the is_deleted change on the transfer since we
-        # cannot restore it in a consistent state.
-        xfer.is_deleted = True
-        raise ValidationError(
-            f"Transfer {transfer_id} has {len(shadows)} shadow "
-            f"transactions (expected 2).  Cannot restore -- data "
-            f"integrity issue requiring manual intervention."
-        )
+    # ── Refuse before anything moves (X-aj1) ────────────────────────
+    # Shadow count, type pairing, archived endpoints (F-164) and -- new at
+    # ruling R-DO -- a status drift the state machine cannot legally repair.
+    # Run BEFORE the un-delete, which is a change from the code this replaced:
+    # that version flipped ``is_deleted`` first and then hand-restored it on
+    # each failing branch, so the rollback was written out three times and the
+    # fourth check would have had to remember it too.
+    assert_restorable(xfer, shadows, user_id)
 
-    # ── Validate shadow type pairing ────────────────────────────────
-    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
-    income_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
-    type_ids = {s.transaction_type_id for s in shadows}
-    if type_ids != {expense_type_id, income_type_id}:
-        logger.error(
-            "Cannot restore transfer %d: shadow type pairing is invalid.  "
-            "Expected one expense and one income, found type_ids=%s.",
-            transfer_id, type_ids,
-        )
-        xfer.is_deleted = True
-        raise ValidationError(
-            f"Transfer {transfer_id} shadows do not have the expected "
-            f"expense/income type pairing.  Cannot restore -- data "
-            f"integrity issue requiring manual intervention."
-        )
-
-    # ── Refuse restore onto archived accounts (F-164) ───────────────
-    # Account FK is RESTRICT (see ``models/transfer.py``) so the rows
-    # cannot be hard-deleted while the transfer references them; the
-    # only way they go away semantically is via ``is_active = False``.
-    # Reactivating a transfer pointed at an archived account would
-    # silently resurrect entries against an account the user has
-    # withdrawn from active projections, producing balance drift the
-    # user has no UI affordance to investigate.  Hard-fail instead and
-    # require the user to reactivate the account first.
-    from_account = db.session.get(Account, xfer.from_account_id)
-    to_account = db.session.get(Account, xfer.to_account_id)
-    from_active = bool(from_account is not None and from_account.is_active)
-    to_active = bool(to_account is not None and to_account.is_active)
-    if not (from_active and to_active):
-        log_event(
-            logger, logging.WARNING,
-            EVT_TRANSFER_RESTORE_REFUSED_ARCHIVED_ACCOUNT, BUSINESS,
-            "Refused to restore transfer with archived account",
-            user_id=user_id,
-            transfer_id=transfer_id,
-            from_account_id=xfer.from_account_id,
-            to_account_id=xfer.to_account_id,
-            from_account_active=from_active,
-            to_account_active=to_active,
-        )
-        # Roll back the is_deleted flip applied at the top of the
-        # function so the transfer stays soft-deleted on the caller's
-        # rollback path.  Matches the rollback pattern used in the
-        # shadow-count and shadow-type validation branches above.
-        xfer.is_deleted = True
-        raise ValidationError(
-            "Cannot restore transfer: source or destination account "
-            "is archived.  Reactivate the account before restoring."
-        )
+    xfer.is_deleted = False
 
     # ── Restore shadows and verify invariants ───────────────────────
     for shadow in shadows:
@@ -908,15 +875,8 @@ def restore_transfer(transfer_id, user_id):
             )
             shadow.estimated_amount = xfer.amount
 
-        # Invariant 4: shadow status must match transfer status.
-        if shadow.status_id != xfer.status_id:
-            logger.warning(
-                "Correcting shadow %d status_id drift: %s -> %s "
-                "(transfer %d status).",
-                shadow.id, shadow.status_id, xfer.status_id,
-                transfer_id,
-            )
-            shadow.status_id = xfer.status_id
+        # Invariant 4 is repaired for the PAIR after this loop, not per shadow
+        # -- see the call to :func:`_apply_status_to_all_three` below.
 
         # Invariant 5: shadow period must match transfer period.
         if shadow.pay_period_id != xfer.pay_period_id:
@@ -970,6 +930,34 @@ def restore_transfer(transfer_id, user_id):
                 transfer_id,
             )
             shadow.is_override = xfer.is_override
+
+    # ── Invariant 4: the PAIR's status, through the one seam ────────
+    # Repaired for both shadows together rather than one at a time, and that
+    # is load-bearing rather than tidy.  The seam's per-row timestamp rule
+    # ("preserve an instant, else stamp now()") would let a repair INVENT a
+    # settle day for a shadow that has none -- and since plan step E1a that day
+    # is the ``entry_date`` the re-posted entry below is filed under, so the
+    # repair would move money.  Going through the pair-aware applier makes the
+    # SIBLING's recorded instant the answer, which is what Transfer Invariant 3
+    # says it is.  The transfer itself is already at this status, so its own
+    # transition is the identity and legal by construction; the shadows'
+    # transitions were proved repairable by ``assert_restorable`` above, so
+    # neither verification can raise here.
+    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
+    expense_shadow = next(
+        s for s in shadows if s.transaction_type_id == expense_type_id
+    )
+    income_shadow = next(s for s in shadows if s is not expense_shadow)
+    if any(shadow.status_id != xfer.status_id for shadow in shadows):
+        logger.warning(
+            "Correcting shadow status drift on transfer %d: %s -> %s.",
+            transfer_id,
+            {shadow.id: shadow.status_id for shadow in shadows},
+            xfer.status_id,
+        )
+    _apply_status_to_all_three(
+        xfer, expense_shadow, income_shadow, xfer.status_id,
+    )
 
     db.session.flush()
 

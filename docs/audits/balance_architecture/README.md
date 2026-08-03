@@ -109,8 +109,14 @@ in two spellings, which nothing had named -- are now the same loop over the same
 leaves move**, and the new posting walk reconciles the ledger the OLD walk wrote to `(0, 0)`
 changed with the trial balance at `$0.00`.
 
-**X-ae IS BUILT AND GREEN, awaiting its PR** (2026-08-02), and it SHIPPED WIDER THAN IT WAS
-SCOPED. As ruled it closed **N-136** -- a reachable unhandled 500 at four `str.isdigit()` doors, one
+**X-ae IS IN PRODUCTION** (2026-08-02; **PR #79**, merge `a778703f`), **and it SHIPPED WIDER
+THAN IT WAS SCOPED.**  CI green on its first sight of it, including the `TZ=Pacific/Kiritimati`
+clock gate.  **Deployed 2026-08-02**: image `sha256:4e6adc8dd3da`, cosign-verified, container
+healthy in **15s** with **0 restarts** and no rollback -- verified from `docker inspect`, and
+the digest confirmed against the `a778703f` build run's own log rather than assumed from the
+`:latest` tag.  **The ship carried NO migration** (zero files under `migrations/` between
+`6f4b4cbf` and `a778703f`), so it was a pure image swap and a rollback is a pure digest
+revert -- the caveat about a rollback leaving old code on a new schema does not apply. As ruled it closed **N-136** -- a reachable unhandled 500 at four `str.isdigit()` doors, one
 of them the LOGIN path -- and every one of the four raises was REPRODUCED against a real request
 before anything was written. Then two neutral adversarial reviews refuted its central claim
 independently: it called itself *"the ONE answer to what row does this string name"* while two
@@ -138,8 +144,46 @@ the original ruling specified and measurement rejected. The query-string surface
 here and is **N-142**'s, because those ~30 call sites are mixed row ids and non-ids (`offset=0` is
 meaningful) and need a per-site ruling.
 
-**NEXT, in order: X-d, then S2-b**, with **X-ag** (the gate N-139 needs, instrument undecided) and
-**X-ah** (N-142) unscheduled behind them. The deploy that used to head this list is DONE (2026-08-02,
+**N-145 IS ANSWERED, and the developer refused all four options it offered** (2026-08-02, rulings
+**R-DN**..**R-DQ**): *"I want to make the fences structurally unnecessary."* That is step 3's own
+ruling -- structural, not a detector -- applied to `shekel-transaction-status-bypass` (**W9907**),
+and the trace it forced found that the 1000-line ceiling was a symptom. `transfer_service` carries a
+**second implementation of the transaction status seam**, which `status_seam.py:11-13` already says
+in its own words, and that duplication is also why the fence's allowlist has two entries. Merging
+them frees the room X-d needs -- but **NOT mostly from the merge, and an earlier draft of this
+paragraph said it did.**  Measured by AST extents: the seam merge is **-13** lines, `update_transfer`
+**+5**, and **-54** come from extracting `restore_transfer`'s four preconditions into
+`_transfer_validation`.  **As built the module lands at 987** -- the review fixes (R-DS's pair
+instant and the routed repair) added 50 back -- so the headroom over the 1000-line ceiling is **13
+lines** against X-d's ~9, not the comfortable margin a mid-build draft of this paragraph claimed.
+It fits, and it is thin: `transfer_service` is still a four-verb module and the NEXT change to it
+after X-d will hit the gate again.  Recorded as finding **N-152** rather than shaved a fifth time.
+
+**And the trace found a LIVE production defect that all four options would have shipped past
+(N-146).** On a finalised transfer the full-edit form disables the money fields, so a notes-only save
+submits `{version_id, status_id (identity), notes}` -- the template's own comment states that
+mechanism -- and the finalised lock therefore sees no locked field and lets it through. The transfer
+path then stamps `paid_at = now()` on the identity re-submit where the transaction seam would have
+PRESERVED it, and since E1a that day IS the posted `entry_date`. **Reproduced at `HEAD` in an
+isolated worktree with the exact form payload**: a transfer settled 7 days earlier moved from one
+ledger entry dated `2026-07-26` to three -- the original, a reversal, and a fresh posting at
+`2026-08-02`. **Editing the notes on a paid transfer moves its money forward to today**, by however
+long ago it really settled.
+
+**X-aj1 IS BUILT AND COMMITTED on branch `feat/one-status-seam`** (5 commits: `99794cf7` rulings,
+`1688f508` extraction, `63514efc` seam merge, `1e75d0ce` refusal, `d3c68cd5` as-built corrections).
+**Not yet PR'd or merged.** Verified standalone: 7,798 passed / 0 failed, again under CI's
+`TZ=Pacific/Kiritimati`; `pylint app/` and `scripts/` 10.00/10; the real-data baseline
+byte-identical over 9 accounts, 427 grid cells and 5,978 daily points, with that diff shown to catch
+a planted one-cent move among 10,539 figures; and three mutants planted, all three killed.
+
+**NEXT, in order: PR `feat/one-status-seam`, then X-d (PARKED at `49948f64`, see its entry for the
+resume list), then X-aj2, then X-ak, then X-ai, then S2-b**, with **X-ag** (the gate N-139 needs, instrument undecided) and **X-ah** (N-142)
+unscheduled behind them, and the new **Phase G** (N-147, the two remaining allowlist-bearing fences)
+after E2.  **X-ai is scheduled rather than
+remembered, by ruling R-DM**: it moves X-d's checked-projection assert to the COMMIT boundary, which
+is the only moment definitionally at the end of an operation and the only placement that also grades
+a write path with no posting-sync tail.  It carries **N-144**. The deploy that used to head this list is DONE (2026-08-02,
 `6f4b4cbf`), so nothing unshipped is riding under the next step -- which matters because X-d changes
 a WRITER and wants a rollback that isolates it.
 
@@ -1390,6 +1434,79 @@ branches in 49 files" and "about 50 distinct answers" are uncitable by any futur
 | **R-DF** (answered 2026-07-31, as recommended) | **The hole's reconciliation defect is finding N-128 with plan step X-l as its owner, and R-CX's false sentence is corrected in the same commit.**  What the fold should do with a day belonging to NO pay period is X-l's question -- that step already owns "past the materialized rows every consumer improvises" and is the one redesigning the calendar as a total function -- while X-ad's writer fix is what stops NEW holes reaching it.  **The correction is not optional and is the point of the ruling**: R-CX told the next reader that the seam was sound and every defect lay above it, which is exactly the sentence that would stop them looking here.  Rejected: widening X-x to refuse ANY hole (it would refuse pages for a user whose hole is years away and irrelevant to what they are reading -- a far larger behaviour change than R-CY authorised), and giving `_PeriodSpans` a rule for uncovered days now (most-root, but it edits the cash clock ruling R-L settled deliberately, it moves figures, and it needs its own step and its own oracle) | N-128 -> X-l |
 | **R-DH** (answered 2026-07-31, **NOT as recommended -- the developer pushed the design past the recommendation**; AMENDED the same day for the OPENING, and step S1-c DEFERRED.  **The AMENDMENT was REOPENED by the adversarial review and then REVERTED 2026-07-31 -- ruling on N-133/F1: "Revert + date the opening now".  The rule that ships has NO exception, and the opening now carries a stored user-supplied DATE (step 2's opening half), which is what answers the case the exception reached for**) | **An assertion is the CLOSING BALANCE for its civil day, and the day is the user's, not UTC.**  Opened by a live production defect: an ordinary bookkeeping session (read the bank, anchor, tick off what cleared) rendered the grid's projected end balance at **-$4,021.37** against a hand-computed **-$19.95**, because three rows recorded in the NINE SECONDS after the anchor (`-$4,001.42`) were subtracted from a bank balance that already contained them.  The recommendation was to adopt the day partition as the rule; the developer asked whether it is what a from-scratch design would do, and it is NOT -- it is the best available GUESS while nothing records when money moved, so the ruling promotes plan step **X-f** + finding **X5** from "after X-d" to the actual fix and demotes the day partition to the seam that carries it.  Six parts: **(a)** the day partition, assertion closes its day (measured against three alternatives -- gross plug `$40,554.34 -> $14,286.82`, net `-$6,998.90 -> -$940.06`, and it is the only rule under which the walk lands on the balance the bank shows).  **Those figures score the UN-AMENDED rule, which after the N-133/F1 revert is the rule that SHIPS: gross `$40,554.34 -> $15,367.94`, net `-$6,998.90 -> -$940.06`, worst `$4,161.47 -> $1,853.92` over 53 true-ups, verified against a pristine production clone.  The gross target this row first quoted, `$14,286.82`, was never reachable by any variant.  The amendment would have booked `-$2,997.48` net; both variants land the walk on `$1,307.66` and both give the current period `-$19.95`, so its cost was confined to March history and period 0's remainder (`$2,057.42`)**; **(b)** the civil day is `America/New_York`, storage unchanged, shipped in the SAME commit as (a) (22 of 139 settled rows land on a different day under UTC, 5 in a different pay period, and 2 Eastern evenings had one session split across two UTC days -- the shape that would defeat (a)); **(c)** envelope entries + anchor stays the process, made order-independent, with the invariant "recording a purchase and truing up by the same amount does not move the projected end balance" as a test; **(d)** `TransactionEntry.is_cleared` becomes DERIVED and its manual toggle is DELETED (a stored flag written as a side effect of the anchor save, with a manual override whose own docstring says it exists because the auto-rule is wrong); **(e)** a date means the day money HIT THE ACCOUNT, not the day of purchase; **(f)** "Timing & true-ups" splits into *Period timing* (a diagnostic that should read `$0.00`) and *Book vs bank* (the untracked spend), and the anchor form previews its own difference before saving.  Rejected: the shipped instant partition, settles winning same-day ties (worse than either), and keeping `is_cleared` with a better auto-rule (a denormalized copy of a derivable fact -- the `Account.current_anchor_*` disease X-e is already removing).  Full trace, measurements and build in **`anchor_settle_partition.md`**   **AMENDED 2026-08-01 at plan step S1-c, on parts (c), (d) and (f) (`anchor_settle_partition.md` Section 12).**  Building (d) as Section 10.6 recommended surfaced the defect underneath the whole fork: `transaction_entries.entry_date` was carrying TWO facts, so Section 10.3's "no date rule can answer both cases" was one field being asked two questions.  The column splits (ruling R-M as amended), and **(d) is RESTATED**: reconciliation is still DERIVED and the flag and its toggle are still deleted, but it derives from an OBSERVED `settled_on` rather than from a civil-day guess -- **a NULL is "not seen on a statement" and is NOT reconciled**, so the engine never guesses a posting day.  That satisfies Section 11.1's surviving premise (whether the bank posted a purchase is NOT derivable) which (d) as written could not.  **(c) is fully SATISFIED rather than half-broken**: with an observed date both invariants hold, in both orders, and the anchor-then-record order -- which today's shipped bulk clear gets wrong by the purchase amount on 14 of the developer's 53 same-day entries -- becomes correct.  **(f) ships as TWO rows with INDEPENDENT visibility flags** (a period carrying only true-ups must not render a permanently-`$0.00` timing row); measured on the clone, the split lands exactly on the hand-computed `-$427.22` / `-$160.05` halves.  The `+$534.08` Section 10.6 accepted **does not ship**: with NULL outstanding, no figure moves at all.  Its second half (the anchor form previewing its own difference before saving) remains OPEN at step 4. | X-f (widened), S1-c |
 | **R-DG** (answered 2026-07-31, as recommended) | **The whole residue is fixed and RE-REVIEWED before anything is committed; nothing ships piecemeal.**  Every confirmed finding from both reviews, the corrected measurements, the ~80 blinded tests, the seam raise, the callerless `covers()`, and the citations.  **Two of the fixes are structural rather than one-off**: the AST census script is COMMITTED, because Section 7.6 forbids an uncited claim and a count whose instrument was never committed is one; and the blinded-test class gets a GATE -- an autouse fixture failing any test in which `pay_calendar_gap` fires outside an explicit allowlist -- because a one-time sweep leaves the next step that converts a surface free to re-blind the same tests.  Rejected: committing the rulings and the month-end clock fix now and holding the rest (banks the merge-gate fix, but splits one arc's review across sessions and the clock fix is what makes X-x1 independently green, so it is not independent of the thing being held), and reverting X-x1/X-x2 to rebuild from the corrected premises (discards work whose measured core -- the `$3,228.55` fabrication -- both reviewers confirmed correct) | the X-x residue leaf |
+
+### Answered (developer ruling, 2026-08-02: X-d's four forks, all as recommended)
+
+The step's design questions, asked after the trace and after the two measurements that decide three
+of them. **Both measurements are on the dev-runtime clone at migration `d7c1f4a9e603`, and both are
+positive-controlled**, because a zero from a hand-written probe is worth nothing on its own:
+
+* **The two walks already agree.** `account_posting_service._walk.walk_account_ledger` (the postings
+  the writer reads back today) and `cash_ledger.walk_cash_ledger` (the SOURCE rows X-d moves it to)
+  produce identical corrections -- same `observed_on`, `pay_period_id`, `is_opening` and
+  before-balance -- over **75 corrections across 7 (account, scenario) pairs, 0 mismatched**. So the
+  writer swap is figure-neutral by measurement rather than by argument.
+* **The checked-projection assert would already HOLD**: the linked ledgers' per-`entry_date` nets
+  equal `cash_ledger.dated_deltas(walk)` collapsed per day over **79 dated nets, 0 divergent**.
+  **So cash needs no heal pass**, where E1a needed `_reconcile_lineage_transfer_entries` before the
+  loan assert could hold on real data. Negating the sign (E1a's loan convention) fails all 7 pairs,
+  which is the probe's positive control AND the first measurement of `dated_deltas`' own claim that
+  the cash walk books onto the linked ledger UN-negated.
+
+| # | ruling | consumed by |
+|---|---|---|
+| **R-DI** (answered 2026-08-02, as recommended) | **The residue arm is DELETED, and a posting the source rows cannot explain becomes a LOUD refusal instead of a silent absorption.**  X-d's walk reads SOURCE rows, so `account_posting_service._walk._residue_source_days` -- postings whose `transaction_id` / `transfer_id` were SET-NULLed by a hard delete -- has no counterpart and cannot come forward.  Ceding it loses no coverage, because the arm is a NO-OP by construction: its own docstring records that the reverse-before-delete discipline nets residue to zero per account AND per period, "so every group here sums to zero and is dropped".  What replaces it is the checked-projection assert, under which such a row is a per-date mismatch that refuses the write.  **The door is already closed at every hard-delete path, traced 2026-08-02**: `transfer_service.delete_transfer:702` reverses through `sync_transfer_postings(xfer, settled=False)` before `db.session.delete`; `routes/transactions/mutations.py:550` calls `reverse_postings_before_delete`; `credit_workflow.py:172` / `:237` and `entry_credit_workflow.py:163` do the same; and `recurrence_engine.py:327` deletes WITHOUT reversing yet cannot reach a posted row, because `_recurrence_common.partition_regeneration_rows:254` skips any row whose status `is_immutable` and `ref.statuses` has `is_settled` as a SUBSET of `is_immutable` (Paid, Received and Settled are all immutable), so a posted row is never in its delete set.  Measured on the dev-runtime clone: **0** unlinked non-correction entries and **0** transaction-linked entries resolving to a missing / soft-deleted / non-contributing row, positive-controlled by the same census returning **170** transaction-linked, **19** transfer-linked and **129** correction entries (129 == 8 `account_opening` + 109 `account_trueup` + 6 `loan_opening` + 6 `loan_trueup`).  **The cost, stated plainly:** a future orphan turns the next write touching that account into a `PostingError` rather than a quietly wrong balance.  That is E1a's own stance for loans (the N-11 class becomes an F1-class data item for a human), and it is what fail-loud ledger authority means on the cash side.  *Rejected:* keeping the arm by feeding residue into the new writer (a second event source inside the step whose whole point is ONE, and it absorbs contradictory data by design), and excluding residue from the assert's posted side (keeps the blindness AND adds a fence that reports clean over the one class it cannot see -- the shape Section 8 exists to catch) | X-d |
+| **R-DJ** (answered 2026-08-02, as recommended) | **Two distinct civil-day TYPES, and `ReconciledThrough.covers` narrows to the event one.**  Finding **N-135**'s obligation, discharged as ruled at step 3: `CashAnchorFact.observed_on` becomes an `ObservedOn` and `CashSourceFact.settled_on` a `MovedOn`, both frozen single-field records ordered against their OWN kind only.  After it `x <= fact.observed_on` -- verbatim the line step 3 deleted from `account_posting_service._walk` -- is a `TypeError`, and so is `fact.settled_on <= fact.observed_on`, which is the case N-135 cited when it ruled TWO types rather than one.  **Step 3's worry that narrowing `covers` would cost its totality did not survive reading the callers.**  Section 14.2 rules the rule TOTAL "in both the argument and the boundary", and the fear was that most of its six call sites pass a day that is not a settled day.  Traced 2026-08-02, every one asks about the SAME kind of day: `cash_ledger/_walk.py:290` and `account_posting_service/_walk.py:480` pass a source fact's `settled_on`; `cash_ledger/_amounts.py:319` and `routes/entries.py:153` pass a `TransactionEntry.settled_on`, which that model's own docstring calls "the day the bank TOOK the money"; `account_posting_service/_sync.py:294` passes a `JournalEntry.entry_date`, which `app/models/journal_entry.py:171` documents as the civil day the same `paid_at` falls on (and which R-DK deletes anyway); and `balance_at/_asset_contributions.py:329` passes `period.start_date`, which that feed itself emits as the modelled contribution's event date (`[(period.start_date, amount)]`).  So `covers` stays total over the CONCEPT -- every event has a day it counts from -- and stops being total over bare `date`, which is the only thing it was ever loose about.  A raw day enters the vocabulary through exactly two named doors: `MovedOn(day)` for a known day and `MovedOn.recorded(day_or_none)` for a stored nullable one.  *Rejected:* wrapping the two fields but leaving `covers` on `date` (closes the field hole and leaves every call site able to pass anything), and deferring N-135 a second time (X-d's own entry rules it an obligation, and X-d HALVES the surface, so deferring means wrapping a settled surface twice) | X-d |
+| **R-DK** (answered 2026-08-02, as recommended) | **The self-heal SKIP predicate is DELETED: every posted change runs the walk, the reconcile and the assert.**  `account_posting_service._sync.self_heal_anchor_corrections` skips `sync_account_anchor_postings` when the emitted delta rides on top of every assertion, so an assert placed inside that sync would not run on the most common write there is -- ticking a bill dated after the last balance reading.  The predicate is deleted rather than the assert re-homed, on three grounds.  **Its own docstring already concedes it is optional**: *"running it after every emission is always correct and only ever costs a walk; everything below is the proof that a particular walk would write nothing."*  **It is a cost guard that spells the money rule**, and this arc has paid for that shape once already -- finding N-133 / F4's silent timezone-sign dependency lived in this exact predicate for its whole life, and Section 14.3 states the lesson verbatim ("A cost guard that spells the money rule itself can come to disagree with it").  **And it is measurably cheap once R-DL lands**: on Checking (55 assertions, 139 settled rows) the skip costs `0.73 ms`, and the full X-d sync -- walk, reconcile AND assert -- measures **`11.13 ms` over 12 SQL statements**, against the pre-X-d walk + reconcile at **`70.87 ms` over 110**, which is what made the skip look load-bearing.  (The `8.6 ms` this row quoted when the ruling was taken was a SUM OF PARTS, not a measurement of the assembled path; it is corrected here to the measured figure, per Section 8's "recompute before quoting".)  Deleted with it: `_has_posted_anchor_correction` and the latent scenario-clone arm it exists for, whose whole job was to name the case the skip gets wrong.  *Rejected:* asserting only inside the anchor sync and recording the gap (a fence that reports clean over the write it is least able to see), and asserting additionally at every source posting while KEEPING the skip (the same total cost, plus the predicate) | X-d |
+| **R-DM** (answered 2026-08-02, as recommended, **with the end state named as its own step so it is not forgotten**) | **The checked-projection assert grades a FINISHED operation, never a half-finished one -- and the commit boundary is the end state, scheduled as X-ai.**  X-d's assert compares the posted ledger against the account's SOURCE ROWS, and every delete path reverses a row's postings to zero while the row still exists and still reads SETTLED -- forced by the schema, not chosen: `journal_entries.transaction_id` / `transfer_id` are `ON DELETE SET NULL`, so the reversal must be written while the link is live.  Between that reversal and the removal the rows and the ledger deliberately disagree, and the self-heal riding at the posting-sync tail ran the assert inside that window: **29 of the 56 suite failures, every one a delete / revert / restore**.  A second surface says the same thing differently -- `sync_transfer_postings(xfer, settled=False)` on a still-settled row -- because `settled=` is a caller's OPINION about a row that knows its own status (finding **N-144**).  **What ships now:** each sync splits into a non-asserting reconcile CORE and the checked wrapper -- the split `loan_posting_service` already ships (`_reconcile_loan_payment` for its reverse-before-delete, `sync_loan_postings` for the checked path), so no boolean selects between them, they are two names; ONE `posting_service.retire_transaction(txn, *, hard)` chokepoint reverses, removes and re-derives, collapsing the four transaction-delete sites that each spelled steps 1 and 2 by hand and none of which had a step 3; and `delete_transfer` re-derives both endpoints at its own end, beside the loan resync already there.  `retire_transaction` lives in `posting_service` and NOT `transaction_service`, which is forced rather than chosen: `transaction_service` imports `entry_service`, so `credit_workflow` -- one of its four callers -- could not import from it without closing the cycle `status_seam.py` records.  **What does NOT ship, and is scheduled instead:** the commit-boundary hook.  It is the most principled placement -- the invariant is "the COMMITTED books equal the COMMITTED rows", and the commit is the only moment that is definitionally the end of an operation, so it is the only form that also covers a future write path with no posting-sync tail at all.  It is refused HERE because X-d is already a writer swap, a module deletion and a type conversion, and this arc's own rule is that mixing mechanisms makes a slip unattributable ("the mix that makes a plumbing slip read as a fold slip, which is why this arc split X-c2b, X-g2 and X-g3"); it also interacts with `apply_anchor_true_up`, which deliberately wraps its own `commit()` in a `try` catching `StaleDataError` and `IntegrityError`.  **It gets step X-ai so the end state is scheduled rather than remembered.**  *Rejected:* an explicit re-derive at each of the five retire sites (five places must remember an ordering rule, and a forgotten one leaves a stale anchor correction nothing detects until the next sync -- the unowned obligation R-AO rules against), and making the assert tolerant of the in-flight state (hiding a contradiction, which the developer's own standing criterion refuses) | X-d, then X-ai |
+| **R-DL** (answered 2026-08-02, as recommended) | **The anchor reconcile resolves its two ledger accounts ONCE per account rather than once per correction, and the fix rides INSIDE X-d.**  Measured 2026-08-02 on Checking: `account_posting_service._anchors._account_anchor_correction_target` calls `posting_reads._ledger_account_for(fact.account_id)` and `ledger_account_service.get_or_create_anchor_equity_account(owner_id, fact.account_id)` INSIDE the per-correction loop, so 53 non-zero corrections issue **106 SELECTs** resolving the SAME two ledger accounts of the SAME account -- `64.5 ms` of a `66.3 ms` reconcile that writes nothing.  Every anchor true-up, every account create and the deploy-wide backfill pay it today, so it is a live inefficiency and not an X-d artifact.  It rides inside X-d because X-d rewrites that function anyway (its corrections change type from `AccountAnchorCorrection` to `cash_ledger.CashAnchorCorrection`) and because R-DK is unaffordable without it.  It moves no figure: the same two accounts are resolved, once instead of 53 times.  **Measured after the hoist, on the same account: the whole X-d sync is `11.13 ms` over 12 SQL statements**, against `70.87 ms` over 110 before it.  Its firing control asserts the SQL COUNT rather than the elapsed time, so a reintroduction fails a test rather than a stopwatch.  *Rejected:* shipping it as its own commit ahead of X-d (an extra PR cycle for a function X-d rewrites in the next one), and recording it as a finding and leaving it (it would force R-DK to be declined for a cost that is an N+1, not a property of the design) | X-d |
+
+### Answered (developer ruling, 2026-08-02: N-145 is not a size problem, and the status fence goes STRUCTURAL)
+
+**The developer refused all four options N-145 offered and ruled the root instead**: *"I want to make
+the fences structurally unnecessary."* That is step 3's own ruling -- the fence must be structural
+rather than a detector -- applied to `shekel-transaction-status-bypass` (**W9907**), and the trace
+that followed found a live production defect the four options would all have shipped past.
+
+**Everything below is MEASURED, and each measurement is positive-controlled:**
+
+* **The W9907 allowlist has two entries because there are TWO implementations of one seam.**
+  `status_seam.py:11-13` states it in its own words -- *"It is the transaction analog of
+  `transfer_service._apply_status_change` (which keeps its own private seam for a transfer's two
+  shadow rows)"*. The allowlist is not a policy; it is the shape of a duplication.
+* **Direct `.status_id` attribute writes in the whole of `app/`: FIVE.** AST census, 2026-08-02:
+  `status_seam.py:93` (the seam) and `transfer_service.py:411` (the parent), `:412` / `:413` (the two
+  shadows) and `:919` (the restore drift repair). Nothing else in the application writes it.
+* **Every legal TRANSFER transition is also a legal TRANSACTION transition.** Executed against
+  `_build_transitions` on both maps: **0** transfer-legal moves are transaction-illegal, and the
+  reverse control FIRES (Projected -> Credit / Received, and all of Received's and Credit's rows are
+  transaction-only). So mirroring a verified transfer status onto its shadows through the transaction
+  seam can never be refused while Transfer Invariant 4 holds.
+* **W9907 sees `setattr` only in its literal-string form** (`status_bypass.py:49-51`), and `app/`
+  carries **17** dynamic `setattr(obj, field, value)` loops it therefore cannot see. ONE of them
+  touches a status-bearing row (`routes/transactions/mutations.py:339`), correct only because a human
+  wrote an explicit `continue`.  **CORRECTED 2026-08-02 by this step's adversarial design review: an
+  earlier draft named `routes/transfers/templates.py:341` as a second such site and BOTH halves of
+  that were wrong.**  It writes a `TransferTemplate`, which carries no `status_id` column at all (only
+  `Transaction` and `Transfer` do), and it is gated by a POSITIVE allowlist
+  (`_TEMPLATE_UPDATE_FIELDS`, `:75-78`) that has never contained the field.  The other 16 loops are
+  unaudited as to which rows they can reach, which is the point rather than a gap in the census: the
+  checker cannot see any of them.
+* **Bulk `query.update({"status_id": ...})` / `.values(status_id=...)` sites: ZERO.** This is the one
+  measurement that could have killed the structural answer -- finding N-65 proved a bulk update is
+  invisible to every session listener -- and it comes back empty, so an attribute-level write door
+  has no known bypass.
+* **Reads of `.status_id`: 79 across 24 files**, which is what makes a read-only attribute
+  affordable.
+
+| # | ruling | consumed by |
+|---|---|---|
+| **R-DN** (answered 2026-08-02, the developer ruling the ROOT over all four options) | **ONE status seam, and the transition context stops being a caller's opinion.**  `transfer_service._apply_status_change` is DELETED and `status_seam.apply_status_change` takes a `Transaction` **or** a `Transfer`, deriving the transition map from the row's own type.  Three things fall out that no line-count option touched.  (a) it is what lets `_STATUS_SEAM_MODULES` reach ONE entry -- the module that owns the column.  **CORRECTED 2026-08-02, before this shipped, by this step's adversarial design review: an earlier draft of this clause said the allowlist "drops from two entries to ONE" as a consequence of the merge, and that is FALSE.**  Merging the seams removes the two ATTRIBUTE writes, but `transfer_service` also writes a status through two CONSTRUCTORS (`:143` and `:298`) that W9907's born-Projected rule refuses, so the entry survives the merge.  Measured: with the module removed from the allowlist, `pylint app/` reports exactly those two W9907s and nothing else.  The shrink belongs to X-aj2, and X-aj1's own step entry states that correctly -- this clause did not.  Kept visible rather than rewritten, because a ruling was taken partly on it.  (b) `verify_transition(current, new, context="transaction")` takes a caller-supplied STRING that must match the row it is about; Section 8 rules that an argument a caller can get wrong is a defect, not a contract, and derived from the row it cannot be got wrong.  (c) The three rows `transfer_service` writes never had `db.session.expire(row, ["status"])` run on them although BOTH status-bearing models declare `status` as `lazy="joined"` (three ROWS, two models) and the seam owns that expire (`status_seam.py:60-63`) -- **latent, not live**: every route commits before rendering and `expire_on_commit` is at its default, so it holds by accident rather than by construction.  **`Transfer` carries no `paid_at` column** (verified: `models/transfer.py` has none; `_apply_status_change` never assigned one), so the unified seam branches on the row type for the timestamp half rather than probing with `hasattr`, which plan step X-aa's lesson forbids (Section 8, "`hasattr` on a dataclass is not a test") -- **an earlier draft of this row cited R-CQ, which is the classifier RENAME and carries no such lesson; the misattribution reached `app/` before it was caught**.  *Rejected, with reasons measured rather than argued:* `posting_service.retire_transfer` (the import cycle that FORCED `retire_transaction` into `posting_service` -- `credit_workflow` cannot import `transaction_service` -- does not exist for transfers, and the soft branch mutates both shadows' `is_deleted`, which `CLAUDE.md` Transfer Invariant 4 reserves to the transfer service); the data-driven mirror loop (`setattr` in its dynamic form is invisible to W9907, so it would blind the fence in the one module allowed to write the column, to buy ~45 lines); the flat sibling `_transfer_restore.py` (it needs the fence's allowlist WIDENED for a line count, which is the opposite of this ruling) | X-aj |
+| **R-DO** (answered 2026-08-02, as recommended) | **An illegally-drifted shadow status is REFUSED, not silently repaired.**  `restore_transfer` today rewrites a drifted shadow's `status_id` to its parent's with no transition check (`transfer_service.py:911-919`); routed through the one seam it is verified, so a shadow that cannot LEGALLY reach its parent's status -- a Settled shadow under a Projected parent -- raises `ValidationError` instead of being quietly corrected.  **The same function already refuses the other two corruption shapes exactly this way**: a wrong shadow COUNT (`:839`) and a wrong expense/income type pairing (`:856`) both raise "data integrity issue requiring manual intervention".  Silently rewriting the third destroys the evidence of how it happened, and a settled shadow silently reverted to Projected would strand its postings -- fail-loud ledger authority one layer up from the ledger.  Unreachable by any current code path, because the five direct writes above are the only ones and FOUR of the five are the transfer service's own -- the fifth is the seam's own assignment.  **The "all five" of an earlier draft was wrong and is corrected here rather than quietly** | X-aj |
+| **R-DP** (answered 2026-08-02, as recommended) | **W9907 is DELETED, not shrunk -- the write door becomes structural.**  A one-entry allowlist is better than a two-entry one and is still a detector; step 3's ruling is that a restatement of the rule must be a `TypeError`, not a lint finding.  So `status_id` becomes a read-only attribute over the column and the only way to move a status is an operation that CANNOT skip the transition check -- after which `txn.status_id = 3` raises, `setattr(txn, "status_id", 3)` raises, and so does every one of the **17 dynamic `setattr` loops the checker is structurally blind to**.  Then the checker is deleted the way the balance NAME fences were deleted at D3 and E1e once W9910 made them redundant, which is this arc's own precedent for retiring a fence rather than maintaining it forever.  **The write door's exact shape is traced at the step and ruled there, not here**: the candidates are a `hybrid_property` over a renamed column, a value type only `verify_transition` can produce, and a model-level operation that verifies inside itself -- and the third inverts the Routes -> Services -> Models dependency rule, which is a real objection and not a preference.  Ruling the SHAPE from here would be guessing, which is what Section 8 forbids | X-aj |
+| **R-DQ** (answered 2026-08-02, as recommended) | **The two remaining allowlist-bearing fences become their own PHASE, scheduled rather than remembered.**  W9907 is the smallest of three -- five write sites -- and it is the one blocking X-d, so it goes first and alone.  `shekel-ledger-model-bypass`'s `_LEDGER_MODEL_ALLOWLIST` and the balance seam checker's roughly a dozen module sets and per-module export maps are the same shape and are NOT left in prose: they are finding **N-147**, owned by the new **Phase G**, which runs after E2 because E2 moves the very modules those allowlists name and doing the fences first would re-cut them.  `shekel-private-module-import` (W9910) is the model and is untouched -- its own docstring is the specification: *"name-INDEPENDENT and fail-closed by construction: it consults no producer list and no allowlist, so there is nothing to keep complete and nothing to rot"*  | Phase G |
+| **R-DR** (answered 2026-08-02, and the step is DECOMPOSED into three commits) | **`restore_transfer`'s four preconditions move to `_transfer_validation`, and X-aj1 ships as three commits so each mechanism can be rolled back on its own.**  Raised by this step's own adversarial design review, which found the largest structural decision in the step was ruled by nothing: R-DO rules the new REFUSAL, not the extraction, and the extraction's first docstring miscited R-DO as its authority.  **The measurement is what forced the ruling.**  An earlier draft credited the room X-d needs to the seam merge; by AST extents the merge is **-13** lines, `update_transfer` **+5**, and the extraction **-54** -- so `transfer_service.py` reaches 937 of 1000 mostly because of a decision nobody had taken.  It is ratified on its merits and not on the room: the four checks are preconditions on the rows a mutation operates on, which is `_transfer_validation`'s stated single responsibility; they need no fence change (they READ `allowed_transitions` and write no `status_id`, so W9907 is untouched -- verified); and gathering them is what exposed the defect underneath, which is that `restore_transfer` set `is_deleted = False` FIRST and hand-restored it on each of three failing branches.  Validating before mutating deletes all three hand-rollbacks instead of adding a fourth, and makes the class of miss structurally impossible.  **It is NOT the flat sibling R-DN rejected**: that option was a NEW module created to dodge the W9907 allowlist for a line count; this is precondition code moving into the module that already owns precondition code.  *The three commits, in the order MEASUREMENT forced -- this row got the order wrong twice before building it:* **1** the EXTRACTION (`1688f508`), which moves the three existing preconditions unchanged and deletes the three hand-rollbacks; **2** the seam merge and the row-derived workflow (`63514efc`); **3** R-DO's refusal and R-DS's restore half (`1e75d0ce`).  **The extraction must go first and that is not a preference**: with `restore_transfer` still inline, the merge alone takes the module to **1015** lines and fails the ceiling, so a merge-first commit is not independently green.  The first draft put the extraction last; the second put it second; only building it showed it has to be first.  Ruled by the developer over ratifying it as one commit, on the arc's own R-DM rule that mixing mechanisms makes a slip unattributable | X-aj1 |
+| **R-DS** (answered 2026-08-02, opened by the correctness review and RULED rather than left implicit) | **A status repair takes the PAIR's instant, and never invents one.**  Routing the drift repair through the one seam brought the seam's `paid_at` maintenance with it, and the seam's per-row rule -- preserve an existing instant, else stamp `now()` -- is right for a lone transaction and WRONG for a transfer's pair.  **Measured on the clean tree before the fix**: a shadow drifted to Projected with a NULL instant was repaired to Paid and stamped with TODAY (`None -> 2026-08-03`), while its sibling carried the real settle instant all along.  Since plan step E1a that civil day IS the `entry_date` the re-posted entry is filed under, so the repair moved money -- **finding N-146's own class, on the restore path, introduced by N-146's fix.**  The rule now: `_apply_status_to_all_three` resolves ONE instant for the pair before either shadow is written, preferring an existing one over `now()`, and `restore_transfer` repairs through that same applier rather than shadow-by-shadow.  Re-measured after: the repair takes the sibling's `2026-03-20 12:00:00` and invents nothing.  **It also restores a property the merge had silently dropped** (the review's M-2): the deleted seam computed one `now()` and assigned it to BOTH shadows, so the pair could never diverge, and a per-row seam let it -- which matters because `posting_service._entry_date` reads the INCOME shadow specifically and its docstring rests on the two being equal.  *Rejected:* giving the seam a "do not touch `paid_at`" sentinel (it closes the API gap but leaves the pair free to diverge, and a settled shadow with no instant then dates its postings from the period start), and leaving the repair outside the seam (which is what R-DO's refusal exists to end) | X-aj1 |
 
 ### Answered (developer ruling, 2026-07-26: X-g's five forks, all as recommended)
 
@@ -2681,8 +2798,9 @@ preconditions cite entries in that file.
   publishes, so it wants its own commit and its own render diff.
 
 - [x] **X-ae** `fix(app): a submitted digit string is parsed, not predicated` -- closes
-  **N-136**, **N-140** and **N-141**, and opened **N-139** and **N-142**. **BUILT AND GREEN, not
-  yet PR'd** (see the as-built note at the end of this entry). **The step SHIPPED WIDER THAN IT
+  **N-136**, **N-140**, **N-141** and **N-143**, and opened **N-139** and **N-142**.
+  **MERGED TO `main` 2026-08-02: PR #79, merge `a778703f`, commit `cbca7eed`** (see the
+  as-built note at the end of this entry).  Not yet deployed; no migration. **The step SHIPPED WIDER THAN IT
   WAS SCOPED, on the developer's ruling of 2026-08-02**, because two adversarial reviews
   independently proved its central claim false; the original four-door scope is recorded first
   and what actually shipped follows it. **`str.isdigit()` is used as the guard for an operation
@@ -3209,11 +3327,223 @@ preconditions cite entries in that file.
   changing the record (rule 7): the monthly engine wants the shifted date and the replay wants the
   real one, and today one field is serving both.
 
+- [ ] **X-aj** `refactor(status): one status seam, and the fence is structural` -- rulings **R-DN**,
+  **R-DO** and **R-DP**; closes **N-145** and **N-146**. **It runs BEFORE X-d** because N-145 blocks
+  X-d and this is what answers it, and because it changes a mutation path X-d also touches -- shipped
+  after X-d it would mix a status refactor into a writer swap's rollback.
+
+  **It is not a line-count step and must not be built as one.** The 1000-line ceiling on
+  `transfer_service.py` is the symptom; the cause is that the module carries a SECOND implementation
+  of the transaction status seam, which is also why the W9907 allowlist has two entries. Merging the
+  two is worth **-13** lines by itself; the module reaches **987** (from 999) only because
+  `restore_transfer`'s four preconditions move out with it, which is **-54**, and the review fixes
+  then added 50 back.  **Stated this way
+  because an earlier draft credited the whole ~62 to the merge and that is false** -- the room X-d
+  needs comes mostly from the extraction, so the extraction is a decision in its own right and is
+  ruled as one (**R-DR**) rather than riding in as a side effect.
+
+  **The step's own first action is the trace R-DP defers to it**, and no code is written before it:
+  which structural write door replaces the checker. Three candidates, each with a real objection to
+  weigh rather than a preference: a read-only `hybrid_property` over a renamed `_status_id` column
+  (the 5 constructor kwarg sites and `Transaction(status_id=...)` itself stop working and need a
+  factory); a value type only `verify_transition` can produce (nothing structurally prevents a caller
+  constructing one, so the safety is a convention again -- the thing this step exists to stop); and a
+  model-level operation that verifies inside itself (cleanest to use, but the model would import the
+  state machine, inverting `CLAUDE.md`'s Routes -> Services -> Models rule). **The trace measures the
+  blast radius before it rules**: 79 reads across 24 files, 5 constructor kwargs, the Marshmallow
+  schemas, and the `filter_by(status_id=...)` / `filter(Model.status_id == ...)` query forms, which
+  a `hybrid_property` must keep working at the CLASS level or the design is dead on arrival.
+
+  **What is already measured and does not need re-deriving** is in R-DN's block: five direct writes
+  in all of `app/`, the transfer map proved a strict subset of the transaction map with its control
+  firing, zero bulk `status_id` writes, and 17 dynamic `setattr` loops the checker cannot see.
+
+  **The controls this step owes**, each shown firing on a planted defect before it is trusted: the
+  N-146 regression (an identity re-submit must not move `paid_at` OR the posted `entry_date` -- it
+  fails at `HEAD` today, which is how the defect was found); R-DO's refusal, exercised on a shadow
+  drifted to a status its parent cannot legally reach; and, once the write door lands, a control
+  proving a bare `status_id` assignment and a dynamic `setattr` BOTH raise -- the second is the one
+  that matters, because it is the class W9907 was blind to and therefore the class no existing test
+  covers.
+
+  **DECOMPOSED at the trace, on a measurement, and the split is forced rather than chosen.** Merging
+  the two seams does NOT by itself shrink the allowlist, because `transfer_service` also writes a
+  status through two CONSTRUCTORS -- `Transfer(status_id=spec.status_id)` (`:298`) and
+  `_build_shadow`'s `Transaction(status_id=xfer.status_id)` (`:149`) -- and W9907's constructor rule
+  admits only a born-PROJECTED value. Those two writes are the same question R-DP has to answer
+  anyway (under a read-only attribute, `Transaction(status_id=...)` stops working at all five
+  constructor sites in `app/`), so they belong to the write-door leaf and not to the seam merge.
+
+  * [ ] **X-aj1** the seam merge and what the two reviews turned it into. Closes **N-146** and lands
+    **R-DN**, **R-DO**, **R-DR** and **R-DS**. Takes `transfer_service.py` to 987 lines -- 13 of
+    headroom against X-d's ~9, which fits and is thin (**N-152**) -- so **X-d unblocks here**; `transfer_service` stays in the W9907 allowlist until X-aj2, for the two
+    CONSTRUCTOR writes the merge does not touch. **Three commits, by ruling R-DR**, so a slip in one
+    mechanism cannot read as a slip in another:
+
+    * [x] **1** (`1688f508`) -- **R-DR**'s extraction: the three EXISTING preconditions move to
+      `_transfer_validation` unchanged, and the three hand-written `is_deleted` rollbacks go with
+      them because validating before mutating makes them unnecessary. 999 -> 938. **First, because
+      the merge does not fit without it** (measured: merge-first reaches 1015).
+    * [x] **2** (`63514efc`) -- **R-DN**'s seam merge. `_apply_status_change` deleted;
+      `status_seam.apply_status_change` takes either row type; `verify_transition` /
+      `allowed_transitions` take the ROW instead of `(id, context)`; `_build_transitions` loses its
+      string parameter and the unreachable `ValueError` that came with it. Closes **N-146**, and
+      lands **R-DS**'s pair instant, which the merge needs to be correct.
+    * [x] **3** (`1e75d0ce`) -- **R-DO**'s refusal (the fourth precondition) and **R-DS**'s restore
+      half, with five controls. Last, because both land INSIDE the function commit 1 creates.
+
+    **Both adversarial reviews earned their cost a THIRTEENTH time, and the sharpest finding was
+    inside the fix again.** The correctness review MEASURED that routing the drift repair through
+    the seam stamped `paid_at = now()` on a shadow that had none -- N-146's own defect class, on the
+    restore path, created by N-146's fix (**R-DS**). The design review measured that the room X-d
+    needs comes mostly from an extraction nobody had ruled (**R-DR**), and that R-DN(a)'s allowlist
+    claim was false and contradicted by this document's own step entry. **Six claims of mine were
+    wrong and are corrected in place rather than quietly**: the ~55-line attribution (three places),
+    R-DN(a), R-DO's "all five", the second `setattr` site (a `TransferTemplate`, which carries no
+    such column), "all three models", and a `hasattr` lesson cited to **R-CQ**, which is the
+    classifier rename -- that one had already reached `app/`. **Three mutants were run and all three
+    now die**; two survived the controls as first written, and the atomicity control was asserting on
+    the row the applier writes LAST, which is a control that cannot fail.
+  * [ ] **X-aj2** the structural write door and the DELETION of W9907 (**R-DP**), which is also where
+    the born-status rule is ruled -- carrying **N-149**. Its trace decides the three candidates
+    R-DP names, and it must rule what a row may be BORN as: today `create_transfer` runs no legality
+    check at all, so "every row is born Projected and every other status is a verified transition"
+    is available and is the rule that makes the constructor question disappear -- but it would refuse
+    creations the tests currently make (Received, Cancelled, Paid), and one of those, **Received, is
+    not in the transfer map at all**, so the refusal would be correct and the test wrong. That is a
+    behaviour change on a creation path and gets its own worked ruling, not a build decision.
+
+- [ ] **X-ak** `refactor(transfers): a shadow inherits its parent's fields by ONE rule` -- closes
+  **N-148**. **Root: the transfer -> shadow mirror is written THREE times and the three already
+  disagree.** `_build_shadow` states it at construction (`transfer_service.py:143-160`),
+  `update_transfer` states it per-field on edit (`:582-652`), and `restore_transfer` states it again
+  as drift repair (`:898-972`) -- and `scenario_id` is mirrored at construction (`:148`) while being
+  absent from the drift-repair list, although that function's own docstring claims it re-syncs
+  "every field the service mirrors from the canonical parent" (`:779-781`).
+
+  **Transfer Invariants 3, 4 and 5 are `CLAUDE.md` CRITICAL invariants and they currently rest on
+  three lists staying in step by memory.** Adding a mirrored field means remembering three places;
+  the measured proof that this does not hold is that it already has not.
+
+  Not a live money defect on today's data -- nothing in the application edits a transfer's scenario,
+  so the one disagreeing field cannot drift by any application path -- which is exactly why rule 7
+  applies: a finding that costs `$0.00` today is a defect waiting for the data to change. **Sequenced
+  after X-aj** because X-aj deletes one of the three statements' status half, and unifying a rule
+  while one of its statements is being deleted decides half a design.
+
+  **It is NOT folded into X-aj, by the developer's ruling of 2026-08-02**: unifying the mirror
+  CHANGES behaviour (restore would begin repairing `scenario_id`), and X-aj's whole value is being
+  provably behaviour-neutral apart from the changes R-DN, R-DO and R-DS name. Mixing them is the
+  shape ruling R-DM refused -- "the mix that makes a plumbing slip read as a fold slip".
+
+  **RE-SCOPED 2026-08-02 by X-aj1's adversarial design review, and the re-scope inverts the step's
+  first action.** As originally written this step unified three mirror STATEMENTS into one copier --
+  which would have made a denormalization cheaper to maintain, and this document has already ruled
+  that exact shape out of existence twice. R-DH (d) deleted `TransactionEntry.is_cleared` as *"a
+  denormalized copy of a derivable fact -- the `Account.current_anchor_*` disease X-e is already
+  removing"*, and X-e rules that column *"a reconciled cache or it is nothing"*. **A shadow's
+  `status_id`, `pay_period_id`, `estimated_amount`, `due_date` and `is_override` are the same shape**
+  (finding **N-150**), so this step RULES THE COPY FIRST and only then decides what to do about the
+  copiers. Three options, and the trace measures before it picks:
+
+  * **remove the copy** -- readers resolve through the parent. The counterweight is real and is why
+    this is not obvious: Transfer Invariant 5 says the balance calculator queries ONLY
+    `budget.transactions`, so a shadow's own columns are load-bearing on every read path (79 Python
+    reads plus 26 Jinja reads of `status_id` alone), and a shadow that does not look like a
+    transaction is the whole mechanism gone;
+  * **make it structural at the DATABASE** -- a deferred constraint or trigger asserting the
+    equality. This is the only form a bulk `UPDATE` cannot bypass, which matters because finding
+    N-65 measured that the database is reached three ways and no session listener sees the third;
+  * **keep the copy with its cost stated**, after which unifying the copiers is the right follow-up
+    and this step proceeds as originally written.
+
+  Only the third leaves X-ak as a copier-unification. **The step may not skip the question**, which
+  is what the original scoping did by treating "three statements" as the defect rather than as the
+  symptom.
+
 - [ ] **X-d** `fix(cash): the posted account ledger is a checked projection` -- E1a's shape for
   cash. The posting writer consumes X-a's walk instead of its own, and the per-visible-date assert
   (`sum(postings) == fold(ACTUAL events)`) makes a stale posting a detectable, repairable cache
   inconsistency. Ship-gated on a prod-data sweep for walk-invisible legacy rows, exactly as E1a
   was; any found row is an F1-class human decision, never a silent exclusion.
+
+  > **IN PROGRESS and PARKED** (2026-08-02). **N-145 is ANSWERED** -- ruling **R-DN**, and plan step
+  > **X-aj1** shipped it on branch `feat/one-status-seam`, taking `transfer_service.py` to **987 of
+  > 1000**, so R-DM's cash half now fits (13 lines of headroom against its ~9; the module is still a
+  > four-verb file, finding **N-152**).
+  >
+  > **The work is COMMITTED, as one throwaway WIP commit `49948f64` on
+  > `fix/xd-checked-projection`** -- `wip(cash): X-d checked projection -- PARKED, NOT FOR MERGE`.
+  > It was uncommitted in the working tree until 2026-08-02 and was parked so it stops depending on
+  > one; this follows the arc's own precedent (`wip/x-x-held`). **Nothing in it is for merge as-is**,
+  > and it was committed `--no-verify` because the suite is deliberately RED there (53 failures,
+  > classified below). To unpark: `git reset --soft HEAD~1`.
+  >
+  > **`fix/xd-checked-projection` branches off `dev` at `73158c27` and therefore does NOT contain
+  > X-aj1.** Resume by merging or rebasing onto whatever carries `feat/one-status-seam` first --
+  > otherwise `transfer_service.py` is back at 999 lines and R-DM's cash half does not fit. The two
+  > steps' file sets are disjoint (verified), so that merge is conflict-free except in this document.
+  > Rulings **R-DI**, **R-DJ**, **R-DK**, **R-DL** and **R-DM** are taken and recorded here. The
+  > arc's commit order still applies when it resumes: a `docs(balance):` rulings commit, then the
+  > code, then the tick.
+  >
+  > **Built and measured GREEN:**
+  >
+  > * the writer swap -- `account_posting_service/_walk.py` DELETED whole (the postings-sourced
+  >   walk, its three source loaders, `_linked_net_rows` and `AccountAnchorCorrection`); the writer
+  >   consumes `cash_ledger.walk_cash_ledger`. **Verified on the dev-runtime clone: the swapped sync
+  >   ran on all 7 non-loan accounts, its assert passed, and it WROTE NOTHING** -- 318 journal
+  >   entries / 643 postings / trial balance `$0.00` before and after. Before the swap, the two
+  >   walks were shown to produce identical corrections over 75 corrections / 7 (account, scenario)
+  >   pairs, 0 mismatched;
+  > * the checked-projection assert, extracted to
+  >   `_posting_reconcile.assert_ledger_projects_facts` and shared with the LOAN sync -- pylint's
+  >   `duplicate-code` reported the two copies, which is the gate doing its job. The sign stays with
+  >   each caller (cash books un-negated, loans negated); a probe negating the cash side failed all
+  >   7 pairs, which is that claim's first measurement rather than a restatement of the docstring;
+  > * **R-DL's N+1**: the anchor reconcile went from **`70.87 ms` over 110 SQL statements to
+  >   `11.13 ms` over 12**, on the real Checking account (55 assertions, 139 settled rows);
+  > * **R-DJ's two day types** -- `MovedOn` / `ObservedOn` in the new `cash_ledger/_days.py` package
+  >   FLOOR, with `ReconciledThrough` moved beside them and `covers` narrowed to the event kind. The
+  >   fence bit twice during the build: the deleted walk's bare-`date` call, and a test comparing
+  >   the two kinds by hand (`TypeError: '>' not supported between instances of 'MovedOn' and
+  >   'ObservedOn'`) -- verbatim the shape N-135 exists to stop;
+  > * **R-DK** -- the self-heal skip predicate and `_has_posted_anchor_correction` deleted;
+  > * **R-DM part 1** -- both syncs split into a non-asserting reconcile CORE plus the checked
+  >   wrapper, `posting_service.retire_transaction(txn, *, hard)` added, and
+  >   `reverse_transfer_postings_before_delete` added.  **Both new entry points are BUILT AND
+  >   UNWIRED**, and the tree says so at each of them rather than leaving a reader to infer that the
+  >   delete paths are already correct: the four transaction-delete sites still call
+  >   `reverse_postings_before_delete` then delete by hand, and `delete_transfer` still calls
+  >   `sync_transfer_postings(xfer, settled=False)`.  **`app/services/transfer_service.py` is at
+  >   HEAD, byte-unchanged** -- the wiring edit was written, hit N-145's ceiling at 1011/1000, and
+  >   was REVERTED rather than left in a state where the module fails the pylint floor the Stop hook
+  >   enforces.  Re-doing it is step 1 of the resume list;
+  > * `posting_service` crossed the 1000-line gate, so the deploy sweep moved to the PUBLIC sibling
+  >   `posting_resync.py` -- public because its one caller `scripts/init_database.py` is outside
+  >   `app.services` and W9910 refuses it a private module, and because a re-export from
+  >   `posting_service` would close an import cycle (that module driving this one);
+  > * `pylint app/ scripts/` **10.00/10 with zero messages**, every custom checker as `--fail-on`.
+  >
+  > **What REMAINS, in order:**
+  >
+  > 1. **Rule N-145** (the `transfer_service` seam) and land R-DM's cash half: `delete_transfer`
+  >    must re-derive BOTH endpoints' anchors AFTER the shadows are final. The four
+  >    transaction-delete sites (`mutations.py:550`, `credit_workflow.py:172` / `:237`,
+  >    `entry_credit_workflow.py:163`) still need collapsing onto `retire_transaction`.
+  > 2. **The test conversion, 56 failures / 7,734 passing, classified exactly**: **29** the assert
+  >    firing (all delete / revert / restore -- these are what step 1 closes), **10** naming the
+  >    deleted `walk_account_ledger` (re-rule onto `walk_cash_ledger` or delete with the module),
+  >    **15** the day-type conversion (fixtures building `settled_on=date(...)`), **1** the pin on
+  >    the skip predicate R-DK deleted, **1** other. **No test may be weakened to pass** (rule 5):
+  >    the 29 are a real ordering defect the assert caught.
+  > 3. **The controls this step OWES**: R-DL's hoist needs a firing control asserting the SQL COUNT
+  >    rather than elapsed time; the assert needs a planted-drift control; `retire_transaction`
+  >    needs one proving the anchor re-derive runs AFTER the row is final.
+  > 4. **The adversarial review**, then the production-clone verification against
+  >    `tests/manual/verify_balance_baseline.py` (a fresh clone -- only the dev-runtime `shekel`
+  >    database is at head `d7c1f4a9e603`; `shekel_f3_final`, `shekel_prodclone` and
+  >    `shekel_prodbase` are all stale).
 
   **PULLED FORWARD 2026-08-01, past X-ad / X-x / X-y / X-i / X-j / X-k / X-l / X-m / X-n, by the
   developer's ruling that the partition's fence be structural rather than a detector**
@@ -3253,6 +3583,30 @@ preconditions cite entries in that file.
   `ledger_report_service/_attribution.py`, and it opens no route file. N-136 is owned by **X-ae**,
   which is the step that actually touches the three parse sites. Recorded rather than silently
   re-homed, because an ownership claim is subject to this document's own citation standard.
+- [ ] **X-ai** `fix(posting): the checked-projection assert runs at the COMMIT boundary` -- the END
+  STATE ruling **R-DM** names and schedules rather than leaves to memory. X-d places the assert at
+  the end of each posting sync, which is the end of every operation the app performs TODAY; X-ai
+  moves it to the only moment that is definitionally the end of an operation -- the commit -- so the
+  invariant is checked exactly where it is claimed to hold.
+
+  **Why it is a step and not a preference.** The invariant is "the COMMITTED books equal the
+  COMMITTED rows". X-d approximates that by asserting after the last mutation of each KNOWN caller,
+  which holds only while every future caller also ends there -- a convention, and Section 8 rules a
+  convention weaker than a predicate. A commit-boundary hook is the only form that also grades a
+  write path with NO posting-sync tail at all, which is the class X-d cannot see.
+
+  **What it must decide, named now so the step starts from a trace rather than a guess:** which
+  accounts a commit touched (a session-level registry the syncs populate, versus inspecting
+  `session.dirty` / `new` / `deleted`); whether `before_commit` is the right SQLAlchemy hook given
+  that writing inside it needs an explicit flush; and how a raised `PostingError` interacts with
+  `anchor_service.apply_anchor_true_up`, which deliberately wraps its own `commit()` in a `try`
+  catching `StaleDataError` and `IntegrityError`. It also carries **N-144**: with the assert at the
+  commit boundary, `settled=` can stop being a caller-supplied opinion about a row that knows its own
+  status, which is what makes the disagreement R-DM ordered around UNREPRESENTABLE rather than merely
+  well-sequenced.
+
+  Sequenced after X-d because it replaces X-d's placement rather than adding to it, and because
+  X-d must be shipped and verified before its assert is moved.
 - [ ] **X-e** (old **X4**) `refactor(accounts): current_anchor_balance is a reconciled cache or it
   is nothing` -- today `cash_ledger.resolve_anchor` detects the divergence from the history table
   and only LOGS it (`EVT_ANCHOR_CACHE_RECONCILED`), never repairs it. Decide the column's fate once
@@ -3439,6 +3793,43 @@ meantime without deciding that first**, or the classification is written and the
   boundary holds before removing the gate that currently compensates for its absence (the C3b3
   prove-the-successor-first precedent, which this arc has now applied eight times).
 
+### Phase G -- the allowlist-free fences (RULED 2026-08-02, ruling R-DQ; runs after E2)
+
+**The developer's standing instruction, in their own words: "I want to make the fences structurally
+unnecessary."** A fence that carries a list of module names is a rule stated in prose plus a detector
+that has to be kept complete; a fence that is structural cannot be got wrong in the first place. This
+arc already owns both the precedent and the model. The precedent: the balance NAME fences were
+DELETED at plan steps D3 and E1e rather than maintained, once private packages made them redundant.
+The model: `shekel-private-module-import` (**W9910**), whose own docstring is the specification --
+*"name-INDEPENDENT and fail-closed by construction: it consults no producer list and no allowlist, so
+there is nothing to keep complete and nothing to rot."*
+
+**It runs after E2, and that is a dependency rather than a priority.** E2 moves the balance cluster's
+modules wholesale; every allowlist below is keyed on module names E2 rewrites, so doing the fences
+first would cut the same boundary twice. **W9907 is deliberately NOT here** -- it is the smallest of
+the three (five write sites in all of `app/`) and it BLOCKS X-d, so it ships first and alone as plan
+step **X-aj** under rulings R-DN / R-DP.
+
+- [ ] **G1** `refactor(gates): the ledger-model and balance-seam fences stop carrying name lists` --
+  closes **N-147**. **Its first action is a trace and no code is written before it**, because the two
+  remaining allowlists are not the same problem wearing two hats and this step must not assume they
+  are. `shekel-ledger-model-bypass`'s `_LEDGER_MODEL_ALLOWLIST` names the modules permitted to import
+  the three ledger models directly; the balance seam checker carries roughly a dozen module sets plus
+  a per-module EXPORT map, which is a different shape again -- it encodes what each producer may
+  publish, not merely who may import it.
+
+  **What the trace must establish, per allowlist, before any of them is touched**: whether the entry
+  exists because a boundary is genuinely absent (in which case the fix is the boundary, as W9910 was
+  for the name fences), or because a legitimate member is spelled as an outsider (in which case the
+  fix is the spelling), or because the rule is a value-level invariant a TYPE could carry (step 3's
+  `ReconciledThrough` shape, and X-aj's shape for `status_id`). Only the first of those three is a
+  package move; ruling all three the same way is the error this step exists to avoid.
+
+  **The deletion of each checker is the LAST commit of its own arm, never the first** -- the C3b3
+  prove-the-successor-first rule, which E2-n above states for the same reason and which this arc has
+  now applied eight times. A fence removed before its structural replacement is measured leaves the
+  invariant with nothing at all defending it.
+
 
 ## 6. The findings ledger
 
@@ -3515,7 +3906,7 @@ row, whose owner read `Section 5, Phase E2`; it is now `E2-0 / E2-n`, the phase'
 steps. Every other owner was already live, which is what the three hand-passes above bought and
 what nothing now has to buy again.
 
-**The ledger stands at 57 rows.** **X-f's build opened N-130 (the production defect), N-131 / N-132
+**The ledger stands at 66 rows.** **X-f's build opened N-130 (the production defect), N-131 / N-132
 (both CLOSED at the step), and its adversarial review then opened N-133 -- the one row in this arc
 that a MEASUREMENT contradicted a ruling on**: R-DH (a)'s opening amendment, made mid-build on a
 hypothetical and never re-scored, was 3.2x worse on the net plug than the rule the ruling's own table
@@ -3612,6 +4003,15 @@ done, and is what drifted.
 | N-137 (CI on PR #76, 2026-08-02) | **"Which pay period is it now" is answered on TWO clocks, and it was a MERGE-GATE time bomb that blocked every PR including a hotfix.**  `pay_period_service.get_current_period` and `get_current_and_future_periods` default `as_of` to `date.today()` -- the PROCESS zone -- while `account_service.create_account` resolves an anchor's period from `display_today()`.  The two pick DIFFERENT periods whenever the process day and the user's civil day straddle a period boundary.  **This is ruling R2's defect one level up**: R2 fixed the two anchor CALL SITES by passing `as_of=display_today()` and left the DEFAULT, which **20 of the 24** `app/` call sites use.  A fourth site, `income_service.py:131`, passes the PROCESS day EXPLICITLY into the balance seam (`balance_at/_inputs.py`), where a slip at a raise boundary returns the PRE-raise gross the employer-match cap is computed from.  Invisible in production, and that is why it grew: the container pins `TZ: America/New_York`, so process == display there.  CI pins `TZ=Pacific/Kiritimati` to catch this class, and on 2026-08-02 it did -- 8 failures on PR #76, **reproduced identically on `main`**, so it was never that PR's defect.  The TEST side had the mirror of it: `conftest._today_relative_start_date` and 14 sites in `test_accounts.py` built pay periods on the process day, so a fixture promising "today falls in period 4" put the USER's today in period 3 whenever the process day was a Monday | `$0.00` -- no figure is wrong in production, where the two clocks are the same day by container config.  The cost was a merge gate that failed outside the **04:00-09:59 UTC** window (EDT; on EST it narrows to 05:00-09:59, so the gate is red MORE often for four months a year), on a repo whose `main` is branch-protected: a hotfix could not have been merged for most of 2026-08-02 | **The MERGE-GATE half is CLOSED -- X-af SHIPPED to `main` 2026-08-02 (PR #77, merge `dbee3812`): test-only, 7,724 green under both zones, zero `app/` changes.  The APP half is OPEN and is N-138's, deliberately, which is why this row is re-pointed at that decision rather than archived: the defect is half-fixed, and filing it as CLOSED would lose the half that is not.**  Moving the two defaults was BUILT, measured, and REVERTED: it converts three app sites from agreeing-but-wrong into actively disagreeing (`dashboard_pulse_service` renders `today_offset` 14 against `days_total` 13 where `main` gives 0, breaking that function's own stated invariant; plus a salary WRITE path and the cockpit's window).  A partial move is measurably worse than either endpoint, so the app-side clock ships as ONE piece | developer-decision (2026-08-02) |
 | N-138 (X-af's trace, 2026-08-02) | **The app has TWO "today"s, no enforced rule about which is which, and -- the part that decides the fix -- NO INSTRUMENT THAT CAN SEE THE DIFFERENCE.**  269 real `date.today()` / `datetime.today()` CALL expressions: **78 in `app/` across 39 files, 191 in `tests/` across 29** (AST, post-X-af; the METHOD is part of the finding, because raw `grep` gives 267-381 depending on whether docstring mentions count, and a first draft of this row quoted 375/109/266, which reproduced under no method at all).  `display_today()`'s own docstring claims to draw the line -- storage and the replay boundary stay UTC, presentation uses the user's zone -- but **that sentence is itself wrong**: `date.today()` is the PROCESS zone, which in production is `America/New_York` and in CI is UTC+14, never UTC.  R2 already recorded three sites making the identical category error.  **Neither clock gate can detect a split**: `tests/test_services/`'s autouse `freeze_today` patches `date.today()` and `datetime.now()` together, and `SHEKEL_FAKE_TODAY` travels to a tz-AWARE instant, which makes `time_machine` rewrite `os.environ["TZ"]` to the display zone -- so the weekly calendar sweep runs with both clocks equal by construction.  N-137 is the fourth instance of this class (N-133 / R2, `anchor_settle_partition.md` 12.10, R2's three false comments, now the pay-period question) and every one was found by a merge gate rather than by a test | `$0.00` today: production pins the zone, so every site agrees there.  The exposure is any process that is NOT pinned -- CI, a cron, a script, the migration host -- plus the merge-gate lottery, which recurs for any site still on the wrong clock | **OPEN, and it is a DECISION before it is work.**  **The first task is the INSTRUMENT, not the sweep**: a `SHEKEL_FAKE_INSTANT` that travels to a NAIVE UTC datetime preserves `TZ` and lets the sweep see a split, and `freeze_today` must stop moving both clocks in lockstep.  Until that exists, no sweep can be verified and X-af's own reviews could not certify completeness.  Then choose: (a) sweep `app/` to `display_today()` with a `shekel-process-clock` checker allowlisting `app/utils/dates.py` -- the step-3 "make the wrong spelling impossible" pattern, and the only shape that stops a fifth instance; (b) sweep only the civil-window sites; or (c) rule the container pin sufficient and accept CI as the detector.  **Named sites to start from, measured by X-af's reviews**: `pay_period_service`'s two defaults, `income_service.py:131`, `pay_period_admin` x3, `dashboard_pulse_service.py:329/613/654/792`, `routes/salary/_helpers.py:152`, `routes/salary/cockpit.py:257`, and `conftest.py:1369` whose docstring already promises an alignment it no longer has | developer-decision (2026-08-02) |
 | N-142 (X-ae's adversarial reviews, 2026-08-02) | **`request.args.get(..., type=int)` is the one submitted-id surface X-ae did NOT convert, and it is lax in the same way the three it did convert were.**  Werkzeug catches the `ValueError`, so there is no crash -- but the coercion is `int()`, so it is Unicode-wide: measured, `args.get('account_id', type=int)` returns `106` for `'١٠٦'`, `2026` for `' 2026 '`, and `10` for `'1_0'`.  **43 `type=int` call sites by AST**, of which 39 are `request.args`, 3 a `request_args` alias, and 1 was `request.form` -- that last one (`transfers/_helpers.py`'s `source_txn_id`) was NOT a query-string site at all and is fixed in X-ae; the 42 query-string sites remain.  **They were left out on a real distinction rather than overlooked**: unlike the path parameters (all 123 row ids) and the schema fields (all 73 row ids), these are MIXED -- `account_id` and `period_id` are row ids, while `year`, `month`, `offset`, `periods` and `show_all` are not, and a blanket `parse_row_id` would refuse `0` where `offset=0` and `show_all=0` are meaningful.  So each site needs a per-site judgement, which is a step | `$0.00` and no crash: every one of these is a read-path filter or a display window, every id among them is re-scoped by owner downstream, and a respelled id resolves to the SAME row the ASCII spelling would.  The cost is that one row id keeps many spellings on this surface after the step whose deliverable was one -- a correctness-of-record defect, not a money defect | **OPEN.**  Needs a per-site ruling: row-id params take `type=parse_row_id`, and the genuinely-non-id params (`year`, `month`, `offset`, `periods`, `show_all`) need a separate ASCII-strict int coercion that permits `0` -- which is a second small rule in `digit_strings`, not a reuse of `parse_row_id` | X-ah |
+| N-144 (X-d trace, 2026-08-02) | **`settled=` is a caller's OPINION about a row that already knows its own status, and X-d's assert is what made the disagreement visible.**  `posting_service.sync_transaction_postings(txn, *, settled)` and `sync_transfer_postings(xfer, *, settled)` take the caller's word for whether the row's confirmed effect should be posted.  Censused at X-d across all twelve production call sites: **every one passes the row's own status** (`txn.status.is_settled` at `mutations.py:373` / `:721` / `:983` and `carry_forward_service/_execute.py:237`, `current_status.is_settled` at `transfer_service.py:521`, the restored status at `:984`, the row's settled sense at `loan_posting_service/_sync.py:233`) -- except the two RETIRE paths, which pass `False` while the row still reads settled, because the reversal must be written while the FK link is live.  Ruling **R-DM** ORDERED that window (the reversal stops asserting; the re-derive runs once the row is final) but did not remove the parameter, so a thirteenth caller can still hand the writer an opinion that contradicts the row | `$0.00` today: after R-DM the two retire paths are the only callers whose argument differs from the row, and both are chokepoints.  The cost when it fires is a posted ledger that disagrees with the rows it is a projection of, which is exactly what the checked-projection assert exists to refuse | **OPEN.**  The parameter can only go once the assert no longer runs inside the retire window, which is what the commit-boundary placement buys -- so it is carried by that step rather than done under R-DM | X-ai |
+| N-145 (X-d build, 2026-08-02) | **`app/services/transfer_service.py` sits at 999 lines against pylint's 1000-line ceiling, so the next change to it -- whatever it is -- must split it first.**  X-d's cash half of ruling R-DM adds ~9 lines to `delete_transfer` (re-derive both endpoints' anchors AFTER the shadows are final) and cannot land until the module has room.  The gate is correct and the module genuinely needs a seam; WHICH seam is a design decision, and four were traced: a symmetric `posting_service.retire_transfer(xfer, *, soft)` chokepoint mirroring the `retire_transaction` X-d already adds (which SHEDS lines from `transfer_service`, since `delete_transfer`'s soft/hard branch moves into it); collapsing `restore_transfer`'s six near-identical shadow re-mirror blocks into one data-driven loop (~-45 lines, a DRY win, but unrelated to X-d and on a mutation path); moving `restore_transfer` whole to a sibling module (~-210 lines, cleanest structurally, but it reaches for several of the module's private helpers so the move is not mechanical); and raising the ceiling with a scoped exemption (**rejected on sight** -- silencing a gate is what `CLAUDE.md`'s automated-enforcement section forbids).  **CORRECTION, 2026-08-02: the third option's stated objection is FALSE, and it is recorded here rather than quietly dropped because an option was rejected partly on it.**  An AST census of every module-level name each top-level function references finds `restore_transfer` using ZERO names defined in `transfer_service.py` -- every name it touches (`_get_transfer_or_raise`, `_sync_loan_postings_if_loan`, `ref_cache`, `db`, `log_event`) is already an import from a sibling.  Same for `delete_transfer`.  The move was mechanical all along; what actually disqualifies it is different and was not noticed until the ruling trace -- `app.services._transfer_restore` is not in `_STATUS_SEAM_MODULES`, so the option needs the W9907 allowlist WIDENED to accommodate a line count.  **Noted while tracing and deliberately NOT actioned** (rule 6): `transfer_service.py:525-531` re-syncs both endpoints after a settled `paid_at` edit, which R-DK makes redundant -- `sync_transfer_postings` self-heals both endpoints and no longer skips | `$0.00` -- a size gate, not a money defect.  It BLOCKS X-d, which is why it is a row rather than a note | **ANSWERED 2026-08-02 by ruling R-DN, and the developer refused all four options.**  The ruling is that the size gate is a SYMPTOM: the module is over the ceiling partly because it carries a second implementation of the transaction status seam, which is also why the W9907 allowlist has two entries.  Merging them frees the room, though **measurement corrected the attribution**: the merge itself is -13 lines and the -54 that actually clears the ceiling comes from extracting `restore_transfer`'s preconditions alongside it (ruling **R-DR**).  `transfer_service.py` reaches 937 of 1000.  Open until X-aj ships it | X-aj |
+| N-146 (X-aj trace, 2026-08-02) | **A notes-only save on a PAID transfer moves its money forward in the books to today, and it is the ordinary UI path.**  On a finalised transfer the full-edit form disables `amount` / `pay_period_id` / `category_id` / `due_date` -- and the template's own header comment states the consequence: *"a disabled input is omitted from the POST, so a notes-only save still succeeds"* (`_transfer_full_edit.html:9-14`).  The `status_id` `<select>` is NOT disabled and renders the current status pre-`selected` (`:72-76`), so the save submits `{version_id, status_id (identity), notes}`.  `_LOCKED_EDIT_FIELDS` (`routes/transfers/mutations.py:66-68`) therefore sees NO locked field, the finalised lock passes it, and `transfer_service._apply_status_change` fires on the legal identity transition -- where, unlike the transaction seam, it stamps `paid_at = now()` **unconditionally** rather than preserving an existing one (`transfer_service.py:415-424` against `status_seam.py:100-105`, whose docstring states the preserving rule and its reason: *"so editing a Paid row -- which re-submits its unchanged status_id -- never churns the original payment time"*).  **Since plan step E1a `paid_at`'s display-civil day IS the posted `entry_date`** (step C2's one clock), and `status_id` is in `_POSTING_RELEVANT_FIELDS`, so the reconcile then re-dates the ledger to match | **REPRODUCED AT `HEAD` in an isolated worktree (`73158c27`), with the exact form payload, not a crafted one.**  A transfer settled 7 days ago: `paid_at` `2026-07-27 02:17:26Z -> 2026-08-03 02:17:26Z`, and the posted ledger went from ONE entry dated `2026-07-26` to **THREE** -- the original, a reversal at `2026-07-26`, and a fresh posting at **`2026-08-02`**.  The money moved seven days forward, and every balance between those two dates with it.  The displacement is unbounded: it is the whole gap between the true settle day and the day the notes were edited, so a transfer settled months ago moves months | **OPEN.**  Closed by R-DN: the merged seam preserves an existing `paid_at` on an idempotent re-settle, which is the transaction seam's rule already.  The regression control is one of the three X-aj owes, and it FAILS at `HEAD` today, which is how this was found | X-aj |
+| N-147 (R-DQ, 2026-08-02) | **Two custom checkers still enforce a rule with a list of module names, which is a rule stated in prose plus a detector that must be kept complete.**  `shekel-ledger-model-bypass` carries `_LEDGER_MODEL_ALLOWLIST` (`ledger_model_fence.py:80`); the balance seam checker carries roughly a dozen module sets -- `_SEAM_PRIVATE_CONTEXT_MODULES`, `_LOAN_LEDGER_DEFINING_MODULES`, `_LOAN_PAYMENT_SEAM_MODULES`, `_LOAN_RESOLVER_ENGINE_MODULES`, `_CASH_LEDGER_MODULES`, `_KIND_CLASSIFIER_MODULES` -- plus a per-module EXPORT map, which is a DIFFERENT shape: it encodes what each producer may publish, not merely who may import it.  `shekel-private-module-import` (W9910) is the counter-example and the model, consulting no list at all.  **This is not a hypothetical maintenance worry**: this arc has already deleted the balance NAME fences at D3 and E1e once a structural boundary made them redundant, so the pattern of a list-bearing fence being retired rather than maintained is the arc's own established practice | `$0.00` directly -- a fence that is merely name-keyed has never itself moved a figure.  The cost is that each list is a second statement of a boundary, and a stale entry is a false negative, which is the dangerous direction for a fence.  The measured precedent is the balance name fences, which needed maintaining at every module move for the whole of Phases A-E until the structural form replaced them | **OPEN.**  Ruled 2026-08-02 (R-DQ) into its own phase, sequenced AFTER E2 because E2 moves the very modules these lists name.  Its first action is a trace that rules each allowlist separately -- absent boundary, mis-spelled member, or value-level invariant a TYPE could carry -- because ruling all three the same way is the error | G1 |
+| N-148 (X-aj trace, 2026-08-02) | **The transfer -> shadow mirror rule is written THREE times and the three already disagree.**  `_build_shadow` states it at construction (`transfer_service.py:143-160`), `update_transfer` states it per-field on edit (`:582-652`), and `restore_transfer` states it a third time as drift repair (`:898-972`).  **`scenario_id` is mirrored at construction (`:148`) and is absent from the drift-repair list**, while that function's own docstring claims it re-syncs "every field the service mirrors from the canonical parent" (`:779-781`) -- so the docstring is false of the code beneath it.  `CLAUDE.md` names Transfer Invariants 3, 4 and 5 CRITICAL, and all three currently rest on three lists staying in step by memory; the measured proof that memory does not hold is that it already has not | `$0.00` on today's data, and the reason is worth stating because it is what makes this rule 7's case rather than a live defect: no application path edits a transfer's `scenario_id` (`update_transfer` accepts no such kwarg), so the one disagreeing field cannot drift except by direct ORM mutation -- which is precisely the scenario the drift repair exists for.  A finding that costs nothing today is a defect waiting for the data to change | **OPEN.**  Ruled 2026-08-02 into its OWN step rather than folded into X-aj, because unifying the mirror CHANGES behaviour (restore would begin repairing `scenario_id`) and X-aj's value is being provably behaviour-neutral apart from R-DN's and R-DO's two named changes.  Sequenced after X-aj, which deletes the status half of one of the three statements | X-ak |
+| N-149 (X-aj trace, 2026-08-02) | **`create_transfer` applies NO transition check, so a transfer can be BORN in a status the transfer state machine exists to exclude.**  `verify_transition` appears exactly once in `transfer_service` (`:410`, the update path); the create path's only status handling is the `paid_at` coherence check at `:278-286`, which reads `is_settled` and never asks whether the status is legal for a transfer at all.  **The excluded statuses are excluded for a stated money reason**: `state_machine.py:30-35` records that Credit is kept out of the transfer map because *"a transfer pushed into Credit would be balance-excluded on both accounts with no compensating payback -- it would silently vanish from both projections"*, and that the split was made because a crafted PATCH could reach those states.  The PATCH door was closed; the CREATE door was never gated.  Settled is reachable the same way, which is a row born terminal without ever having been Done | `$0.00` today, and the reason is a property of the callers rather than of the design: all THREE production `create_transfer` call sites hardcode `projected_id` (`transfer_recurrence.py:103`, `routes/transfers/templates.py:665`, `routes/transfers/mutations.py:301`), so nothing user-reachable creates a transfer in any other status.  The suite does -- Paid, Received and Cancelled -- and **Received is not in the transfer map at all**, so those fixtures are constructing states the application says cannot exist | **OPEN.**  Carried by X-aj2 rather than fixed in X-aj1, because the fix is the born-status RULE ("born Projected, every other status a verified transition"), which is the same rule that decides what replaces the two constructor writes when `status_id` stops being assignable -- and it refuses creations the current tests make, so it is a behaviour change needing its own worked ruling | X-aj2 |
+| N-150 (X-aj1 adversarial design review, 2026-08-02) | **A transfer shadow STORES five fields that Transfer Invariant 4 says must always equal its parent's, and NOTHING enforces the equality.**  `status_id`, `pay_period_id`, `estimated_amount`, `due_date` and `is_override` are stored copies; verified 2026-08-02 that `models/transaction.py` and `models/transfer.py` carry no CHECK constraint on any of them, there is no trigger and no ORM event, and the transfer service is the only thing keeping them in step.  **This document has ruled the identical shape out of existence twice**: R-DH (d) deleted `TransactionEntry.is_cleared` as "a denormalized copy of a derivable fact -- the `Account.current_anchor_*` disease X-e is already removing", and X-e rules that column "a reconciled cache or it is nothing".  **Every artifact plan step X-aj1 adds exists because of the copy** -- the three-row broadcast, the subset proof that lets it not refuse mid-flight, ruling R-DS's pair instant, and ruling R-DO's whole refusal -- which is the measurement that this is a root and not a nit: a fix that only ever adds machinery to keep copies equal is treating the symptom.  The counterweight is equally real and is recorded so the step does not rediscover it: **Transfer Invariant 5 says the balance calculator queries ONLY `budget.transactions`**, so a shadow's own columns are read on every balance path, and a shadow that stops looking like a transaction takes the whole mechanism with it | `$0.00` today, and the reason is a property of the callers rather than of the design: only `transfer_service` writes these fields, so they cannot drift by any application path.  **They have already drifted in principle**: `restore_transfer` exists to repair exactly this, its repair list omits `scenario_id` (finding N-148), and X-aj1's own ruling R-DO had to decide what to do about a shadow whose stored status its parent's cannot legally reach.  The cost when it fires is a shadow the balance calculator counts under the wrong status, period or amount -- money, on the surface Invariant 5 points at | **OPEN.**  Owned by X-ak, whose scope this REVERSES: that step must rule the copy (remove it, make it structural at the database, or keep it with the cost stated) BEFORE deciding anything about the three copiers, because unifying them while the copy stands makes the denormalization cheaper to maintain -- the opposite of what R-DH (d) and X-e ruled for the same shape | X-ak |
+| N-151 (X-aj1 adversarial correctness review, 2026-08-02) | **The two `mark_done` routes pass an explicit `paid_at=now()`, which wins over the seam, so a REPLAYED settle still re-dates a settled transfer.**  Ruling R-DN's preserve-don't-churn rule closes finding N-146 for every caller that lets the seam decide; `routes/transfers/mutations.py:384-387` and `routes/transactions/mutations.py:592-595` do not -- they hand `db.func.now()` in, and `update_transfer`'s explicit-`paid_at` branch applies it after the seam has run.  An identity `Paid -> Paid` through either therefore re-stamps the instant and, since plan step E1a, re-dates the posted `entry_date` with it.  **This is pre-existing and NOT introduced by X-aj1**, and it is narrower than N-146 was: both buttons render only for a Projected row (`_transfer_full_edit.html:156`, `grid/_transaction_cell.html:137`), so reaching it needs a replayed or stale POST rather than an ordinary edit | Unmeasured on real data, and deliberately so: the displacement is the same unbounded gap N-146 carried (the true settle day to today), but N-146 was reachable by an ordinary notes edit and this needs a replayed request, so it is a smaller door onto the same room.  Recording it unmeasured rather than guessing a figure | **OPEN.**  The fix is a rule about what `mark_done` MEANS on an already-settled row -- "stamp the instant" or "settle it if it is not settled" -- which is the same question X-aj2 answers for what a row may be BORN as, so it is carried there rather than patched at two call sites | X-aj2 |
+| N-152 (X-aj1 as-built, 2026-08-02) | **`transfer_service.py` lands at 987 of its 1000-line ceiling, so the size gate is answered for X-d and NOT solved.**  X-aj1 was ruled explicitly not to be a line-count step, and it is not -- but the as-built headroom is **13 lines** against X-d's ~9, and the next change after that hits the gate again.  **The root is that the module is still four lifecycle verbs in one file**: `create_transfer` (~200 lines), `update_transfer` (~140), `delete_transfer` (~100) and `restore_transfer` (~170), plus the shadow constructor.  Three private siblings already exist (`_transfer_validation`, `_transfer_ownership`, `_transfer_loan_posting`) and `_transfer_validation`'s own docstring records that it was "extracted from `transfer_service` so that module stays under the 1000-line module limit" -- so X-aj1's extraction is the FOURTH shave, which is the measurement that shaving is the pattern rather than the fix | `$0.00` -- a size gate, not a money defect, and the same class N-145 was.  The cost is that every future step touching a transfer mutation pays a shave first, and a shave under pressure is how X-aj1's own extraction came to be built before it was ruled | **OPEN.**  The structural answer traced at X-aj1 and not taken there (it would have been a fourth mechanism in one step): make `transfer_service` a PACKAGE, one private leaf per verb, mirroring the 12 service packages this codebase already has and the three this arc built.  Two properties were verified while tracing: the W9907 allowlist keeps working with ZERO edit, because `_module_in_allowlist` matches "exactly, or as a package prefix, so a module later split into a package keeps its submodules inside the set"; and it TIGHTENS W9910, since `app.services._transfer_*` is today importable by every service module while `app.services.transfer_service._x` would not be.  Sequenced after X-ak, which may change what a shadow stores and therefore what the verbs do | X-ak |
 | N-139 (X-ae's build 2026-08-02; REFRAMED the same day when two adversarial reviews refuted its first statement) | **Nothing prevents a submitted digit string being parsed laxly again, and a checker on the method NAME does not prevent it -- which is what the first version of this row proposed.**  X-ae removed every Unicode-wide digit predicate from `app/` and `scripts/` (AST: exactly ONE call site remains, `digit_strings.py:91`, the implementation of the replacement), converted the URL converter and 73 schema declarations, and the reviews then showed the proposed gate would still report clean over the very defect it was written for: **a future author writing a bare `try: int(raw) / except ValueError` passes a `isdigit`/`isdecimal`/`isnumeric` matcher and reintroduces the many-spellings defect** -- and this step's own record proves that form insufficient, because it is what the 2026-08-01 ruling specified and what measurement rejected.  `re.fullmatch(r"\\d+", "١٠٦")` matches for the same reason.  **The signal is not a method name; it is Unicode-wide digit ACCEPTANCE, and it has at least four spellings** | `$0.00` today and no reachable crash: every surface X-ae covers is fixed and measured.  The exposure is the NEXT id parse written, which on this arc's history is a matter of when rather than whether -- four `isdigit()` sites accumulated with nothing watching, and the reviews found two more surfaces this step's own census had missed | **OPEN, and the INSTRUMENT is undecided, which is why this is a step and not a line.**  A checker is the only available shape -- the receiver is `str`, a builtin nobody can give a narrower type, so there is no `ReconciledThrough` to write and the developer's *structural-over-detector* ruling has nothing to prefer; `anchor_settle_partition.md` 14.5 is the precedent (a type and a checker fence COMPLEMENTARY holes).  But X-ag's trace must first answer what the checker MATCHES, given that the method name is measurably the wrong signal.  **A second draft of this row argued that step 3 proved a checker would be blind at a bare-local site; that claim was REFUTED by step 3's own review and withdrawn in 14.1**, and restating it was the stale-citation class this arc keeps paying for | X-ag |
 
 ## 7. Verification standard (what "done" means for every step)

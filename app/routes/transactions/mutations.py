@@ -235,9 +235,7 @@ def _resolve_status_change(txn, data):
     # request with a 400 and leaves the row untouched.  Audit reference: F-161 /
     # commit C-21 of the 2026-04-15 security remediation plan.
     try:
-        verify_transition(
-            txn.status_id, data["status_id"], context="transaction",
-        )
+        verify_transition(txn, data["status_id"])
     except ValidationError as exc:
         return _error_transaction_response(txn.id, str(exc))
 

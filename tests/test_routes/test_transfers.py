@@ -5,10 +5,13 @@ Tests for transfer template CRUD, grid cell endpoints, transfer instance
 operations, and ad-hoc transfer creation (§2.3 of the test plan).
 """
 
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
+from app import ref_cache
+from app.enums import StatusEnum
 from app.extensions import db
+from app.models.journal_entry import JournalEntry
 from app.models.account import Account
 from app.models.category import Category
 from app.models.transaction import Transaction
@@ -848,6 +851,99 @@ class TestTransferInstance:
 
             db.session.refresh(xfer)
             assert xfer.amount == Decimal("250.00")
+
+    def test_resubmitting_an_unchanged_status_does_not_re_date_the_money(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A notes-only save on a PAID transfer must not move its settle day.
+
+        Finding **N-146**, plan step X-aj1.  On a finalised transfer the
+        full-edit form disables the money fields, so they are omitted from the
+        POST and the finalised-row lock sees nothing locked; the status
+        ``<select>`` is NOT disabled and submits the row's own status, so an
+        ordinary notes edit arrives as an identity transition.  The transfer
+        service's own status seam re-stamped ``paid_at = now()`` on any entry
+        into a settled status -- and since plan step E1a that day IS the
+        ``entry_date`` the transfer's postings are filed under, so editing the
+        notes moved the money to today.  Measured at ``HEAD`` before the fix:
+        a transfer settled 7 days earlier went from ONE ledger entry to three,
+        the last dated today.
+
+        The payload here is the exact one the locked form submits.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
+            done_id = ref_cache.status_id(StatusEnum.DONE)
+
+            settled_at = datetime.now(timezone.utc) - timedelta(days=7)
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id,
+                status_id=done_id, paid_at=settled_at,
+            )
+            db.session.commit()
+
+            def _state():
+                """Return the shadows' settle instants and the posted days."""
+                db.session.expire_all()
+                paid = sorted(
+                    s.paid_at for s in db.session.query(Transaction)
+                    .filter_by(transfer_id=xfer.id).all()
+                )
+                dated = sorted(
+                    e.entry_date for e in db.session.query(JournalEntry)
+                    .filter_by(transfer_id=xfer.id).all()
+                )
+                return paid, dated
+
+            before = _state()
+            assert all(p is not None for p in before[0])
+
+            response = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={
+                    "version_id": str(xfer.version_id),
+                    "status_id": str(done_id),
+                    "notes": "reconciled against the statement",
+                },
+            )
+            assert response.status_code == 200, response.data[:400]
+
+            paid_after, dated_after = _state()
+            assert paid_after == before[0], (
+                f"the settle instant moved: {before[0]} -> {paid_after}"
+            )
+            assert dated_after == before[1], (
+                f"the posted entry_date moved: {before[1]} -> {dated_after}"
+            )
+
+            # ARCHIVING it must not re-date it either.  Paid -> Settled is a
+            # real state change, not an identity re-submit, and it reaches the
+            # same rule: the schema carries no ``paid_at``, so the seam decides,
+            # and before X-aj1 it stamped now() on any entry into a settled
+            # status.  Archiving a transfer paid last month used to move its
+            # posted entry to today.  Reachable from this very form -- Settled
+            # is in ``allowed_transitions`` for a Paid transfer and renders
+            # enabled.
+            settled_id = ref_cache.status_id(StatusEnum.SETTLED)
+            response = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={
+                    "version_id": str(xfer.version_id),
+                    "status_id": str(settled_id),
+                },
+            )
+            assert response.status_code == 200, response.data[:400]
+
+            paid_archived, dated_archived = _state()
+            assert paid_archived == before[0], (
+                f"archiving moved the settle instant: "
+                f"{before[0]} -> {paid_archived}"
+            )
+            assert dated_archived == before[1], (
+                f"archiving moved the posted entry_date: "
+                f"{before[1]} -> {dated_archived}"
+            )
 
     def test_update_transfer_clears_category(
         self, app, auth_client, seed_user, seed_periods_today
