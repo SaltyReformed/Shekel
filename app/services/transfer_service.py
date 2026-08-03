@@ -59,7 +59,9 @@ from app.services._transfer_validation import (
     _validate_positive_amount,
     assert_restorable,
 )
+from app.services import status_seam
 from app.services.state_machine import verify_transition
+from app.utils.balance_predicates import settled_status_ids
 from app.utils.log_events import (
     BUSINESS,
     EVT_TRANSFER_CREATED,
@@ -365,62 +367,72 @@ def create_transfer(spec: TransferSpec) -> Transfer:
     return xfer
 
 
-def _apply_status_change(
+def _apply_status_to_all_three(
     xfer: Transfer,
     expense_shadow: Transaction,
     income_shadow: Transaction,
-    updates: dict[str, object],
+    new_status_id: int,
 ) -> None:
-    """Apply a ``status_id`` update to the transfer and both shadows.
+    """Move a transfer and both shadows to one status, through the ONE seam.
 
-    Verify the transition BEFORE any propagation so an illegal request
-    (for example settled -> projected) leaves both the parent transfer
-    and the two shadow transactions untouched.  The state machine raises
-    ``ValidationError`` -- the route layer surfaces it as a 400.  Audit
-    reference: F-047 / commit C-21 of the 2026-04-15 security
-    remediation plan.
+    Replaces this module's own copy of the status seam (plan step X-aj1,
+    ruling **R-DN**); see :func:`app.services.status_seam.apply_status_change`
+    for the mechanics and for the three defects the duplicate carried.
 
-    Defense-in-depth ``paid_at`` synchronization (F-048 / C-22): the
-    route layer (``transfers.mark_done``, ``transactions.mark_done``
-    shadow path) is expected to pass an explicit ``paid_at`` whenever it
-    sets a settled status, but a future caller that forgets is still
-    forced into a coherent state here.  Two cases:
+    **Verified in FULL before anything is assigned.**  That preserves the
+    atomicity the deleted version promised -- an illegal request leaves the
+    transfer AND both shadows untouched (F-047 / commit C-21) -- and it is
+    what makes ruling **R-DO** safe here: a shadow whose status has drifted
+    somewhere the parent's status is not legally reachable from now REFUSES,
+    so assigning as we went would strand the transfer ahead of its shadows.
+    The seam re-verifies as it writes and stays the enforcement point; this
+    pass is for atomicity, mirroring how the transaction PATCH handler's
+    ``_resolve_status_change`` pre-check relates to the same seam.
 
-    * Transitioning to a settled status (``is_settled = TRUE``) without
-      an explicit ``paid_at`` -> default to ``now()`` so
-      ``Transaction.days_paid_before_due`` and the dashboard's "paid on
-      time" indicator work.
-    * Transitioning to a non-settled status without an explicit
-      ``paid_at`` -> clear the existing timestamp so a Paid transfer
-      reverted to Projected does not retain a stale payment time.
-
-    Both branches no-op when the caller passed ``paid_at`` explicitly
-    (including ``paid_at=None``); the explicit downstream assignment in
-    :func:`update_transfer` then takes effect.
+    The shadow checks pass by construction for any transfer whose own
+    transition was legal: a shadow's status equals the parent's pre-update
+    status (Transfer Invariant 4), and every transfer-legal move is also
+    transaction-legal (measured over both maps at X-aj1's trace, 0
+    exceptions, reverse control firing).
 
     Args:
         xfer: The parent :class:`Transfer` being updated.
         expense_shadow: The expense-side shadow :class:`Transaction`.
         income_shadow: The income-side shadow :class:`Transaction`.
-        updates: The :func:`update_transfer` kwargs; read for
-            ``status_id`` and probed for an explicit ``paid_at``.
-    """
-    new_status_id = updates["status_id"]
-    verify_transition(xfer.status_id, new_status_id, context="transfer")
-    xfer.status_id = new_status_id
-    expense_shadow.status_id = new_status_id
-    income_shadow.status_id = new_status_id
+        new_status_id: The ``ref.statuses.id`` all three rows move to.
 
-    if "paid_at" not in updates:
-        new_status = db.session.get(Status, new_status_id)
-        if new_status is not None:
-            if new_status.is_settled:
-                settled_ts = db.func.now()
-                expense_shadow.paid_at = settled_ts
-                income_shadow.paid_at = settled_ts
-            else:
-                expense_shadow.paid_at = None
-                income_shadow.paid_at = None
+    Raises:
+        ValidationError: If the transition is illegal for the transfer or
+            for either shadow (propagated from the state machine).
+    """
+    rows = (xfer, expense_shadow, income_shadow)
+    for row in rows:
+        verify_transition(row, new_status_id)
+
+    # ONE settle instant for the PAIR (Transfer Invariant 3), resolved before
+    # either shadow is written.  The seam's per-row rule is "preserve an
+    # existing instant, else stamp now()", which is right for a lone
+    # transaction and WRONG for a pair: two shadows whose timestamps already
+    # differ would each keep their own, and a pair where only one carries an
+    # instant would have the other stamped with today.  Both outcomes break the
+    # equality ``posting_service._entry_date`` depends on -- it reads the INCOME
+    # shadow's ``paid_at`` and its docstring records that "the two are always
+    # equal because the transfer service mirrors paid_at to both shadows".
+    # Preferring an EXISTING instant over ``now()`` is what stops a repair from
+    # inventing a settle day: the sibling already knows when the money moved,
+    # and that day is the ``entry_date`` the postings are filed under.
+    settled = new_status_id in settled_status_ids()
+    pair_instant = None
+    if settled:
+        pair_instant = (
+            expense_shadow.paid_at or income_shadow.paid_at or db.func.now()
+        )
+    for shadow in (expense_shadow, income_shadow):
+        status_seam.apply_status_change(
+            shadow, new_status_id, paid_at=pair_instant,
+        )
+    # The parent carries no ``paid_at`` column, so it takes no instant.
+    status_seam.apply_status_change(xfer, new_status_id)
 
 
 def _apply_actual_amount(
@@ -464,7 +476,7 @@ def _reconcile_postings_after_update(xfer: Transfer, updates: dict[str, object])
 
     * **Step-2 cash reconcile** when a magnitude / settled-sense / period field
       changed (``_POSTING_RELEVANT_FIELDS``).  Placed here -- NOT inside
-      ``_apply_status_change`` -- because ``actual_amount`` is applied AFTER
+      ``_apply_status_to_all_three`` -- because ``actual_amount`` is applied AFTER
       ``status_id`` and the grid shadow-edit path can settle and set an actual
       in one call; the reconcile reads the income shadow's ``effective_amount``,
       so it must run once everything is in place or it would post the pre-edit
@@ -585,11 +597,16 @@ def update_transfer(transfer_id, user_id, **kwargs):
         income_shadow.estimated_amount = new_amount
 
     # ── status_id ──────────────────────────────────────────────────
-    # Transition verified before any propagation, with the F-048
-    # defense-in-depth ``paid_at`` synchronization; see
-    # :func:`_apply_status_change` for the full audit rationale.
+    # All three transitions verified before any propagation, then applied
+    # through the ONE status seam, which owns the F-048 defense-in-depth
+    # ``paid_at`` synchronization and the ``status`` expire; see
+    # :func:`_apply_status_to_all_three` for the full audit rationale.  An
+    # explicit ``paid_at`` in this same call is applied by its own branch
+    # below and wins over whatever the seam derived here.
     if "status_id" in kwargs:
-        _apply_status_change(xfer, expense_shadow, income_shadow, kwargs)
+        _apply_status_to_all_three(
+            xfer, expense_shadow, income_shadow, kwargs["status_id"],
+        )
 
     # ── pay_period_id ──────────────────────────────────────────────
     if "pay_period_id" in kwargs:

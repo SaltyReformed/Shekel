@@ -180,9 +180,10 @@ class ShekelTransactionStatusBypassChecker(BaseChecker):
     joined ``status`` relationship in ONE place, so a confirmed settle can never
     be emitted twice or skipped by a forgotten site (the lifecycle-completeness
     risk Build-Order Step 3 names as its highest).  Only the seam's own module
-    (``app.services.status_seam``) and ``transfer_service`` (which legitimately
-    mirrors ``status_id`` onto a transfer's two shadow ``Transaction`` rows,
-    indistinguishable from a real transaction at the AST) may write it.  The
+    (``app.services.status_seam``) and ``transfer_service`` may write it -- the
+    latter for its two CONSTRUCTOR writes only, since plan step X-aj1 deleted the
+    module's own copy of the seam and it now assigns no ``status_id`` attribute
+    at all (see the note on :data:`_STATUS_SEAM_MODULES`).  The
     status analog of the balance-seam fence.
 
     Four write forms are matched (the 2026-07-02 adversarial review's H3/R3
@@ -215,17 +216,18 @@ class ShekelTransactionStatusBypassChecker(BaseChecker):
             "rows born-Projected and route status changes through "
             "status_seam.apply_status_change instead",
             "shekel-transaction-status-bypass",
-            "Every non-transfer Transaction.status_id change must go through "
+            "Every Transaction.status_id / Transfer.status_id change must go through "
             "app.services.status_seam.apply_status_change -- the single seam "
             "that runs the state-machine transition check, maintains paid_at, "
             "and refreshes the eagerly-joined status relationship. Centralizing "
             "it makes the settled-state boundary uniform and impossible to skip, "
             "which is what lets the posting ledger emit a confirmed settle "
             "exactly once (Build-Order Step 3). Only app.services.status_seam "
-            "(the seam) and transfer_service (which mirrors status_id onto a "
-            "transfer's two shadow Transaction rows -- a name-based checker "
-            "cannot tell those from a real transaction) may write status_id "
-            "directly; Transaction and Transfer are the only models carrying "
+            "(the seam) and transfer_service (whose two CONSTRUCTOR writes "
+            "build a transfer and its two shadows; plan step X-aj1 deleted that "
+            "module's own copy of the seam, so it assigns no status_id "
+            "attribute any more) may write status_id directly; "
+            "Transaction and Transfer are the only models carrying "
             "that column, so the syntactic match is precise. Four write forms "
             "are matched: direct assignment, the literal setattr form, a "
             "status_id key/keyword in a bulk .update()/.values() call, and a "

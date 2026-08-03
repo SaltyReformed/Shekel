@@ -32,7 +32,10 @@ from app import ref_cache
 from app.enums import StatusEnum
 from app.exceptions import ValidationError
 from app.models.ref import Status
+from app.models.transaction import Transaction
+from app.models.transfer import Transfer
 from app.services.state_machine import (
+    _build_transitions,
     finalised_edit_rejection,
     verify_transition,
 )
@@ -58,6 +61,27 @@ def _ids(app):
         }
 
 
+def _txn(status_id):
+    """Return an unsaved Transaction carrying *status_id*.
+
+    The state machine reads two things off the row -- its class, which selects
+    the workflow, and its ``status_id``, which is the current state -- so an
+    unsaved instance is a complete input and no session is needed.  Replaces
+    the entity-label string these tests used to pass beside a bare id (plan
+    step X-aj1, ruling R-DN): the workflow is the row's own now, so a test can
+    no longer assert a transaction id against the transfer map or the reverse.
+    """
+    return Transaction(status_id=status_id)
+
+
+def _xfer(status_id):
+    """Return an unsaved Transfer carrying *status_id*.
+
+    The transfer-workflow twin of :func:`_txn`; see there.
+    """
+    return Transfer(status_id=status_id)
+
+
 # ── Legal transitions from Projected ────────────────────────────────
 
 
@@ -69,31 +93,31 @@ class TestLegalTransitionsFromProjected:
         """Mark expense paid -- the most common transition."""
         ids = _ids(app)
         with app.app_context():
-            verify_transition(ids["projected"], ids["done"], context="transaction")
+            verify_transition(_txn(ids["projected"]), ids["done"])
 
     def test_projected_to_received(self, app):
         """Income deposited -- mirrors projected -> done for expenses."""
         ids = _ids(app)
         with app.app_context():
-            verify_transition(ids["projected"], ids["received"], context="transaction")
+            verify_transition(_txn(ids["projected"]), ids["received"])
 
     def test_projected_to_credit(self, app):
         """Mark as credit -- triggers the auto-payback workflow."""
         ids = _ids(app)
         with app.app_context():
-            verify_transition(ids["projected"], ids["credit"], context="transaction")
+            verify_transition(_txn(ids["projected"]), ids["credit"])
 
     def test_projected_to_cancelled(self, app):
         """Cancel a projected item -- never paid."""
         ids = _ids(app)
         with app.app_context():
-            verify_transition(ids["projected"], ids["cancelled"], context="transaction")
+            verify_transition(_txn(ids["projected"]), ids["cancelled"])
 
     def test_projected_to_projected_identity(self, app):
         """Idempotent re-submit of "set projected" must succeed silently."""
         ids = _ids(app)
         with app.app_context():
-            verify_transition(ids["projected"], ids["projected"], context="transaction")
+            verify_transition(_txn(ids["projected"]), ids["projected"])
 
 
 # ── Illegal transitions from Projected ──────────────────────────────
@@ -109,9 +133,7 @@ class TestIllegalTransitionsFromProjected:
         ids = _ids(app)
         with app.app_context():
             with pytest.raises(ValidationError) as excinfo:
-                verify_transition(
-                    ids["projected"], ids["settled"], context="transaction",
-                )
+                verify_transition(_txn(ids["projected"]), ids["settled"])
             # The exception message names both endpoints so the route
             # layer can surface a clear 400 to the user.
             msg = str(excinfo.value)
@@ -131,31 +153,31 @@ class TestLegalTransitionsFromDoneReceived:
         """Archive a paid expense."""
         ids = _ids(app)
         with app.app_context():
-            verify_transition(ids["done"], ids["settled"], context="transaction")
+            verify_transition(_txn(ids["done"]), ids["settled"])
 
     def test_received_to_settled(self, app):
         """Archive received income."""
         ids = _ids(app)
         with app.app_context():
-            verify_transition(ids["received"], ids["settled"], context="transaction")
+            verify_transition(_txn(ids["received"]), ids["settled"])
 
     def test_done_to_projected_revert(self, app):
         """Revert a mistakenly-marked Paid expense back to Projected."""
         ids = _ids(app)
         with app.app_context():
-            verify_transition(ids["done"], ids["projected"], context="transaction")
+            verify_transition(_txn(ids["done"]), ids["projected"])
 
     def test_received_to_projected_revert(self, app):
         """Revert a mistakenly-marked Received income back to Projected."""
         ids = _ids(app)
         with app.app_context():
-            verify_transition(ids["received"], ids["projected"], context="transaction")
+            verify_transition(_txn(ids["received"]), ids["projected"])
 
     def test_done_to_done_identity(self, app):
         """Re-marking Paid is idempotent."""
         ids = _ids(app)
         with app.app_context():
-            verify_transition(ids["done"], ids["done"], context="transaction")
+            verify_transition(_txn(ids["done"]), ids["done"])
 
 
 # ── Illegal transitions from Done / Received ────────────────────────
@@ -171,36 +193,28 @@ class TestIllegalTransitionsFromDoneReceived:
         ids = _ids(app)
         with app.app_context():
             with pytest.raises(ValidationError):
-                verify_transition(
-                    ids["done"], ids["credit"], context="transaction",
-                )
+                verify_transition(_txn(ids["done"]), ids["credit"])
 
     def test_done_to_cancelled_rejected(self, app):
         """Cannot cancel a paid expense -- the payment already happened."""
         ids = _ids(app)
         with app.app_context():
             with pytest.raises(ValidationError):
-                verify_transition(
-                    ids["done"], ids["cancelled"], context="transaction",
-                )
+                verify_transition(_txn(ids["done"]), ids["cancelled"])
 
     def test_received_to_credit_rejected(self, app):
         """Income cannot become credit -- credit is expense-only."""
         ids = _ids(app)
         with app.app_context():
             with pytest.raises(ValidationError):
-                verify_transition(
-                    ids["received"], ids["credit"], context="transaction",
-                )
+                verify_transition(_txn(ids["received"]), ids["credit"])
 
     def test_received_to_cancelled_rejected(self, app):
         """Cannot cancel received income -- the deposit already happened."""
         ids = _ids(app)
         with app.app_context():
             with pytest.raises(ValidationError):
-                verify_transition(
-                    ids["received"], ids["cancelled"], context="transaction",
-                )
+                verify_transition(_txn(ids["received"]), ids["cancelled"])
 
 
 # ── Credit / Cancelled successors ───────────────────────────────────
@@ -216,31 +230,27 @@ class TestCreditAndCancelledSuccessors:
         """unmark_credit transitions credit -> projected."""
         ids = _ids(app)
         with app.app_context():
-            verify_transition(ids["credit"], ids["projected"], context="transaction")
+            verify_transition(_txn(ids["credit"]), ids["projected"])
 
     def test_cancelled_to_projected(self, app):
         """Reactivate a cancelled item back to projected."""
         ids = _ids(app)
         with app.app_context():
-            verify_transition(ids["cancelled"], ids["projected"], context="transaction")
+            verify_transition(_txn(ids["cancelled"]), ids["projected"])
 
     def test_credit_to_done_rejected(self, app):
         """Credit -> Done would skip the auto-payback cleanup workflow."""
         ids = _ids(app)
         with app.app_context():
             with pytest.raises(ValidationError):
-                verify_transition(
-                    ids["credit"], ids["done"], context="transaction",
-                )
+                verify_transition(_txn(ids["credit"]), ids["done"])
 
     def test_cancelled_to_done_rejected(self, app):
         """Cancelled -> Done would resurrect a row without the projected step."""
         ids = _ids(app)
         with app.app_context():
             with pytest.raises(ValidationError):
-                verify_transition(
-                    ids["cancelled"], ids["done"], context="transaction",
-                )
+                verify_transition(_txn(ids["cancelled"]), ids["done"])
 
 
 # ── Settled is terminal ─────────────────────────────────────────────
@@ -254,34 +264,28 @@ class TestSettledIsTerminal:
         """Re-settling a settled row succeeds silently."""
         ids = _ids(app)
         with app.app_context():
-            verify_transition(ids["settled"], ids["settled"], context="transaction")
+            verify_transition(_txn(ids["settled"]), ids["settled"])
 
     def test_settled_to_projected_rejected(self, app):
         """Reverting a settled row would invalidate the carry-forward audit."""
         ids = _ids(app)
         with app.app_context():
             with pytest.raises(ValidationError):
-                verify_transition(
-                    ids["settled"], ids["projected"], context="transaction",
-                )
+                verify_transition(_txn(ids["settled"]), ids["projected"])
 
     def test_settled_to_done_rejected(self, app):
         """Settled rows cannot return to any active state."""
         ids = _ids(app)
         with app.app_context():
             with pytest.raises(ValidationError):
-                verify_transition(
-                    ids["settled"], ids["done"], context="transaction",
-                )
+                verify_transition(_txn(ids["settled"]), ids["done"])
 
     def test_settled_to_cancelled_rejected(self, app):
         """Cannot cancel an archived row -- archival is irreversible."""
         ids = _ids(app)
         with app.app_context():
             with pytest.raises(ValidationError):
-                verify_transition(
-                    ids["settled"], ids["cancelled"], context="transaction",
-                )
+                verify_transition(_txn(ids["settled"]), ids["cancelled"])
 
 
 # ── Defensive: corrupt or unknown current state ─────────────────────
@@ -301,7 +305,7 @@ class TestCorruptCurrentStateRejected:
         # legitimately assigned).
         with app.app_context():
             with pytest.raises(ValidationError) as excinfo:
-                verify_transition(-1, ids["projected"], context="transaction")
+                verify_transition(_txn(-1), ids["projected"])
             # Message must name the unknown ID so an operator can
             # locate the offending row in the audit log.
             assert "-1" in str(excinfo.value)
@@ -324,9 +328,7 @@ class TestTransferTransitions:
         ids = _ids(app)
         with app.app_context():
             with pytest.raises(ValidationError) as excinfo:
-                verify_transition(
-                    ids["projected"], ids["credit"], context="transfer",
-                )
+                verify_transition(_xfer(ids["projected"]), ids["credit"])
             assert "transfer" in str(excinfo.value)
 
     def test_projected_to_received_rejected_for_transfer(self, app):
@@ -334,53 +336,45 @@ class TestTransferTransitions:
         ids = _ids(app)
         with app.app_context():
             with pytest.raises(ValidationError):
-                verify_transition(
-                    ids["projected"], ids["received"], context="transfer",
-                )
+                verify_transition(_xfer(ids["projected"]), ids["received"])
 
     def test_projected_to_done_allowed_for_transfer(self, app):
         """Mark a transfer done -- the normal settle path for both shadows."""
         ids = _ids(app)
         with app.app_context():
-            verify_transition(ids["projected"], ids["done"], context="transfer")
+            verify_transition(_xfer(ids["projected"]), ids["done"])
 
     def test_projected_to_cancelled_allowed_for_transfer(self, app):
         """Cancel a projected transfer."""
         ids = _ids(app)
         with app.app_context():
-            verify_transition(
-                ids["projected"], ids["cancelled"], context="transfer",
-            )
+            verify_transition(_xfer(ids["projected"]), ids["cancelled"])
 
     def test_done_to_settled_allowed_for_transfer(self, app):
         """Archive a completed transfer."""
         ids = _ids(app)
         with app.app_context():
-            verify_transition(ids["done"], ids["settled"], context="transfer")
+            verify_transition(_xfer(ids["done"]), ids["settled"])
 
     def test_done_to_projected_revert_allowed_for_transfer(self, app):
         """Revert a mistakenly-marked transfer back to Projected."""
         ids = _ids(app)
         with app.app_context():
-            verify_transition(ids["done"], ids["projected"], context="transfer")
+            verify_transition(_xfer(ids["done"]), ids["projected"])
 
     def test_cancelled_to_projected_allowed_for_transfer(self, app):
         """Reactivate a cancelled transfer."""
         ids = _ids(app)
         with app.app_context():
-            verify_transition(
-                ids["cancelled"], ids["projected"], context="transfer",
-            )
+            verify_transition(_xfer(ids["cancelled"]), ids["projected"])
 
     def test_settled_terminal_for_transfer(self, app):
         """Settled stays terminal in the transfer map too."""
         ids = _ids(app)
         with app.app_context():
-            verify_transition(ids["settled"], ids["settled"], context="transfer")
+            verify_transition(_xfer(ids["settled"]), ids["settled"])
             with pytest.raises(ValidationError):
-                verify_transition(
-                    ids["settled"], ids["projected"], context="transfer",
-                )
+                verify_transition(_xfer(ids["settled"]), ids["projected"])
 
     def test_credit_as_current_status_rejected_for_transfer(self, app):
         """A transfer already sitting in Credit is corrupt for this entity;
@@ -389,20 +383,76 @@ class TestTransferTransitions:
         ids = _ids(app)
         with app.app_context():
             with pytest.raises(ValidationError) as excinfo:
-                verify_transition(
-                    ids["credit"], ids["projected"], context="transfer",
-                )
+                verify_transition(_xfer(ids["credit"]), ids["projected"])
             assert "transfer" in str(excinfo.value)
 
-    def test_unknown_context_raises_value_error(self, app):
-        """A typo'd context is a programming error -- fail loud, never
-        silently fall back to either entity's map."""
-        ids = _ids(app)
+    def test_every_transfer_legal_move_is_also_transaction_legal(self, app):
+        """The transfer map must stay a SUBSET of the transaction map.
+
+        Two shipped docstrings rest on this and neither could see it before:
+        ``transfer_service._apply_status_to_all_three`` says the shadow
+        verifications "pass by construction for any transfer whose own
+        transition was legal", and ``restore_transfer``'s repair says its
+        transition check "cannot raise here".  Both are true only while every
+        move the TRANSFER map permits is one the TRANSACTION map also permits,
+        because a transfer's status is mirrored onto two ``Transaction`` rows
+        that are graded against the transaction map.
+
+        Widening the transfer map alone -- say adding ``cancelled -> done`` --
+        would satisfy every other test in this file and then 400 every real
+        transfer edit at the shadow step.  This is the control that fails
+        instead.
+        """
         with app.app_context():
-            with pytest.raises(ValueError):
-                verify_transition(
-                    ids["projected"], ids["done"], context="transferr",
-                )
+            # pylint: disable-next=protected-access
+            maps = _build_transitions()
+            txn_map, xfer_map = maps["transaction"], maps["transfer"]
+            offending = {
+                current: sorted(moves - txn_map.get(current, set()))
+                for current, moves in xfer_map.items()
+                if moves - txn_map.get(current, set())
+            }
+            assert not offending, (
+                f"transfer-legal moves the transaction map refuses: {offending}"
+            )
+
+    def test_the_subset_control_is_not_vacuous(self, app):
+        """The reverse does NOT hold -- so the check above is a real constraint.
+
+        Without this, ``test_every_transfer_legal_move_is_also_transaction_legal``
+        would still pass if the two maps were made identical, and the asymmetry
+        it protects (transfers exclude Credit and Received, deliberately, for
+        the money reason in this module's docstring) would be gone unnoticed.
+        """
+        with app.app_context():
+            # pylint: disable-next=protected-access
+            maps = _build_transitions()
+            txn_map, xfer_map = maps["transaction"], maps["transfer"]
+            extra = {
+                current: sorted(moves - xfer_map.get(current, set()))
+                for current, moves in txn_map.items()
+                if moves - xfer_map.get(current, set())
+            }
+            assert extra, (
+                "the transaction map no longer permits anything the transfer "
+                "map forbids -- the two workflows have collapsed into one"
+            )
+
+    def test_a_row_that_is_not_status_bearing_raises_type_error(self, app):
+        """A non-status-bearing row is a programming error -- fail loud, never
+        silently fall back to either entity's map.
+
+        This asserted a typo'd ``context`` string until plan step X-aj1 (ruling
+        R-DN).  That error is now UNREPRESENTABLE -- the workflow comes from the
+        row's own class, so there is no label to misspell -- and the class of
+        mistake that remains is handing the state machine something that is not
+        a status-bearing row at all.  The refusal matters in the same way the
+        old one did: the transaction map is a strict SUPERSET of the transfer
+        map, so a silent default would widen whatever was passed.
+        """
+        with app.app_context():
+            with pytest.raises(TypeError):
+                verify_transition(object(), ref_cache.status_id(StatusEnum.DONE))
 
 
 # ── Context label propagates to the exception message ───────────────
@@ -418,9 +468,7 @@ class TestContextLabelPropagation:
         ids = _ids(app)
         with app.app_context():
             with pytest.raises(ValidationError) as excinfo:
-                verify_transition(
-                    ids["settled"], ids["projected"], context="transaction",
-                )
+                verify_transition(_txn(ids["settled"]), ids["projected"])
             assert "transaction" in str(excinfo.value)
 
     def test_transfer_context_label(self, app):
@@ -428,9 +476,7 @@ class TestContextLabelPropagation:
         ids = _ids(app)
         with app.app_context():
             with pytest.raises(ValidationError) as excinfo:
-                verify_transition(
-                    ids["settled"], ids["projected"], context="transfer",
-                )
+                verify_transition(_xfer(ids["settled"]), ids["projected"])
             assert "transfer" in str(excinfo.value)
 
 

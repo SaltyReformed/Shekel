@@ -226,7 +226,7 @@ class TestTheEditPathIsGuardedToo:
         """A rejected edit is atomic -- transfer and BOTH shadows unchanged.
 
         The check runs before any field is applied, the same discipline
-        ``_apply_status_change`` follows for an illegal status transition.  A
+        ``_apply_status_to_all_three`` follows for an illegal status transition.  A
         guard that raised halfway through would leave the three rows disagreeing,
         breaking Transfer Invariant 3 while reporting an error.
 
