@@ -24,7 +24,10 @@ These FOUR helpers are a cohesive, transfer-service-private cluster (single
 responsibility: validate inputs and load-and-verify the rows a mutation operates
 on).  They write no ``status_id`` and construct no ``Transaction`` -- so they stay
 clear of the W9907 status fence that keeps the status-mirroring appliers in the
-parent module -- and they compute no balance.
+parent module -- and they compute no balance.  :func:`assert_restorable` READS the
+state machine (:func:`~app.services.state_machine.allowed_transitions`) to decide
+whether a drifted shadow is legally repairable; reading the transition rules is
+not writing a status, so the fence is unaffected.
 Flask-isolated like the parent service: plain data in, ORM objects out, no
 ``request`` / ``session`` imports.
 """
@@ -39,6 +42,7 @@ from app.models.transfer import Transfer
 from app import ref_cache
 from app.enums import TxnTypeEnum
 from app.exceptions import NotFoundError, ValidationError
+from app.services.state_machine import allowed_transitions
 from app.utils.log_events import (
     BUSINESS,
     EVT_TRANSFER_RESTORE_REFUSED_ARCHIVED_ACCOUNT,
@@ -183,7 +187,7 @@ def assert_restorable(xfer, shadows, user_id):
     """Refuse a restore whose preconditions do not hold, before anything moves.
 
     The four checks ``restore_transfer`` runs before it un-deletes a thing.
-    Extracted here at plan step X-aj1 (ruling **R-DR**) because they are
+    Extracted here at plan step X-aj1 (ruling **R-DO**) because they are
     precondition checks on the rows a mutation operates on, which is this
     module's single responsibility, and because gathering them made the caller's
     own defect visible: it used to set ``is_deleted = False`` FIRST and then
@@ -202,6 +206,12 @@ def assert_restorable(xfer, shadows, user_id):
        onto one would resurrect entries against an account the user has
        withdrawn from active projections, producing balance drift they have no
        UI affordance to investigate.
+    4. **Unrepairable status drift (ruling R-DO).** A shadow whose status the
+       state machine cannot legally move to the parent's is corruption, not
+       drift.  It used to be rewritten with no transition check at all, which
+       destroys the evidence of how it happened -- and a settled shadow silently
+       reverted to Projected would strand its postings.  It is refused in the
+       same voice as checks 1 and 2, which is what makes the three consistent.
 
     Args:
         xfer: The soft-deleted :class:`~app.models.transfer.Transfer` being
@@ -261,4 +271,22 @@ def assert_restorable(xfer, shadows, user_id):
         raise ValidationError(
             "Cannot restore transfer: source or destination account "
             "is archived.  Reactivate the account before restoring."
+        )
+
+    unrepairable = {
+        shadow.id: shadow.status_id for shadow in shadows
+        if shadow.status_id != xfer.status_id
+        and xfer.status_id not in allowed_transitions(shadow)
+    }
+    if unrepairable:
+        logger.error(
+            "Cannot restore transfer %d: shadow(s) %s hold a status that "
+            "cannot legally reach the transfer's status %s.  Data "
+            "integrity issue.",
+            transfer_id, unrepairable, xfer.status_id,
+        )
+        raise ValidationError(
+            f"Transfer {transfer_id} has a shadow transaction whose status "
+            f"cannot legally be reconciled with the transfer's.  Cannot "
+            f"restore -- data integrity issue requiring manual intervention."
         )

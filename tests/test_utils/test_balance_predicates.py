@@ -757,6 +757,16 @@ class TestNoInlineStatusBusinessLogic:
         # match parent), comparing two model fields not a constant.
         ("services/transfer_service.py",
          "shadow.status_id != xfer.status_id"),
+        # _transfer_validation: the SAME relational-integrity comparison,
+        # in the restore precondition that refuses a drift the state
+        # machine cannot legally repair (plan step X-aj1, ruling R-DO).
+        # It moved here with the three checks it now sits beside; this
+        # entry is that move's other half.  **This allowlist is keyed on a
+        # FILE PATH, so the move invalidated it and this gate caught it** --
+        # which is finding N-147's thesis demonstrated on the gate itself,
+        # and is why Phase G exists.
+        ("services/_transfer_validation.py",
+         "shadow.status_id != xfer.status_id"),
         # archive_helpers: SQL JOIN ON clauses on the status FK.
         ("utils/archive_helpers.py",
          "Transaction.status_id == Status.id"),

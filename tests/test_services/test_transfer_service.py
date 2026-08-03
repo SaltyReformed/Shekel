@@ -6,11 +6,13 @@ delete_transfer.  Covers all five core invariants, validation rules,
 edge cases, and cross-user isolation.
 """
 
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 import pytest
 
+from app import ref_cache
+from app.enums import StatusEnum, TxnTypeEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.category import Category
@@ -1132,6 +1134,174 @@ class TestRestoreTransfer:
             # Amount, status, period unchanged.
             assert result.amount == Decimal("250.00")
 
+    def test_repairable_status_drift_is_still_repaired(
+        self, app, db, transfer_data,
+    ):
+        """A shadow drifted to a LEGALLY reachable status is repaired, quietly.
+
+        The positive control for
+        :meth:`test_unrepairable_status_drift_is_refused` below -- without it
+        that test could pass by refusing every drift, which would silently
+        break the repair this function exists for.  Projected -> Paid is a
+        legal transaction transition, so the shadow is pulled back into line
+        with its parent and the restore succeeds.
+        """
+        with app.app_context():
+            td = transfer_data
+            xfer = _create_basic_transfer(td)
+            xfer_id = xfer.id
+            paid_id = ref_cache.status_id(StatusEnum.DONE)
+            transfer_service.update_transfer(
+                xfer_id, td["user"].id, status_id=paid_id,
+            )
+            transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
+            db.session.flush()
+
+            # Drift ONE shadow backwards to Projected, which Paid is legally
+            # reachable from.  Written directly, which is what the drift this
+            # repair exists for looks like.
+            drifted = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer_id).first()
+            )
+            drifted.status_id = ref_cache.status_id(StatusEnum.PROJECTED)
+            db.session.flush()
+
+            transfer_service.restore_transfer(xfer_id, td["user"].id)
+
+            db.session.refresh(drifted)
+            assert drifted.status_id == paid_id
+            assert drifted.is_deleted is False
+
+    def test_a_status_repair_takes_the_siblings_instant_never_today(
+        self, app, db, transfer_data,
+    ):
+        """A drift repair must not INVENT a settle day.
+
+        Routing the repair through the status seam (ruling R-DN) brought the
+        seam's ``paid_at`` maintenance with it, and the seam's per-row rule is
+        "preserve an instant, else stamp ``now()``".  For a PAIR that rule is
+        wrong: the sibling shadow already records when the money moved, and
+        since plan step E1a that civil day is the ``entry_date`` the re-posted
+        entry is filed under -- so stamping today would move money on a repair.
+        The pair-aware applier prefers the existing instant.
+
+        This is also the only assertion in the suite that a bare
+        ``shadow.status_id = xfer.status_id`` write cannot satisfy, so it is
+        what pins the repair to the seam at all.
+        """
+        with app.app_context():
+            td = transfer_data
+            xfer = _create_basic_transfer(td)
+            xfer_id = xfer.id
+            paid_id = ref_cache.status_id(StatusEnum.DONE)
+            real_settle = datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc)
+            transfer_service.update_transfer(
+                xfer_id, td["user"].id, status_id=paid_id, paid_at=real_settle,
+            )
+            transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
+            db.session.flush()
+
+            # Drift ONE shadow back to Projected and strip its instant; its
+            # sibling keeps the real one.
+            drifted, sibling = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer_id).order_by(Transaction.id).all()
+            )
+            drifted.status_id = ref_cache.status_id(StatusEnum.PROJECTED)
+            drifted.paid_at = None
+            db.session.flush()
+            assert sibling.paid_at == real_settle
+
+            transfer_service.restore_transfer(xfer_id, td["user"].id)
+            db.session.flush()
+            db.session.refresh(drifted)
+
+            assert drifted.paid_at == real_settle, (
+                f"the repair invented a settle day: {drifted.paid_at} "
+                f"instead of the sibling's {real_settle}"
+            )
+
+    def test_a_repair_into_a_projected_status_clears_the_instant(
+        self, app, db, transfer_data,
+    ):
+        """Repairing a shadow DOWN to Projected drops its stale payment time.
+
+        The other half of the rule above: a row that is not settled must not
+        carry a settle instant, or ``days_paid_before_due`` and the paid-on-time
+        indicator read a payment that has not happened.  Together the two pin
+        both directions of the seam's ``paid_at`` maintenance on the repair
+        path, which had none before ruling R-DO routed it through the seam.
+        """
+        with app.app_context():
+            td = transfer_data
+            xfer = _create_basic_transfer(td)
+            xfer_id = xfer.id
+            transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
+            db.session.flush()
+
+            # Parent stays Projected; drift ONE shadow up to Paid with a time.
+            drifted = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer_id).order_by(Transaction.id).first()
+            )
+            drifted.status_id = ref_cache.status_id(StatusEnum.DONE)
+            drifted.paid_at = datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc)
+            db.session.flush()
+
+            transfer_service.restore_transfer(xfer_id, td["user"].id)
+            db.session.flush()
+            db.session.refresh(drifted)
+
+            assert drifted.status_id == xfer.status_id
+            assert drifted.paid_at is None, (
+                f"a Projected shadow kept a payment time: {drifted.paid_at}"
+            )
+
+    def test_unrepairable_status_drift_is_refused(
+        self, app, db, transfer_data,
+    ):
+        """A shadow the state machine cannot legally move is REFUSED (R-DO).
+
+        Settled is terminal: nothing is reachable from it, so a Settled shadow
+        under a Projected parent cannot be reconciled by any legal transition.
+        Before plan step X-aj1 this was silently rewritten to the parent's
+        status with no transition check at all, which destroys the evidence of
+        how the row got there -- and reverting a settled shadow to Projected
+        would strand its postings.  It now refuses in the same voice as the
+        shadow-count and type-pairing corruption checks it sits beside.
+
+        The refusal must also leave the transfer SOFT-DELETED: nothing is
+        mutated before the preconditions run, so there is no half-restored
+        state to roll back.
+        """
+        with app.app_context():
+            td = transfer_data
+            xfer = _create_basic_transfer(td)
+            xfer_id = xfer.id
+            transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
+            db.session.flush()
+
+            drifted = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer_id).first()
+            )
+            drifted.status_id = ref_cache.status_id(StatusEnum.SETTLED)
+            db.session.flush()
+
+            with pytest.raises(ValidationError, match="cannot legally"):
+                transfer_service.restore_transfer(xfer_id, td["user"].id)
+
+            # Asserted on the IN-MEMORY row, deliberately without a refresh.
+            # ``restore_transfer`` never flushes on the refusal path, so a
+            # refresh would re-read the un-restored DB row and pass no matter
+            # what the function did -- an assertion that cannot fail.  The
+            # question is whether the in-session object was left half-restored,
+            # and only the un-refreshed object can answer it.
+            assert xfer.is_deleted is True, (
+                "the refusal left the transfer half-restored in the session"
+            )
+
     def test_rejects_nonexistent_transfer(self, app, db, transfer_data):
         """Verify that restore_transfer raises NotFoundError for a transfer
         ID that does not exist, using the same generic message as other
@@ -1701,3 +1871,59 @@ class TestDueDateAndPaidAtShadows:
             assert len(shadows) == 2
             for s in shadows:
                 assert s.paid_at is None
+
+
+class TestTheStatusMirrorIsAtomic:
+    """A rejected status move must leave all three rows untouched (F-047)."""
+
+    def test_a_shadow_whose_move_is_illegal_blocks_the_whole_trio(
+        self, app, db, transfer_data,
+    ):
+        """The pre-verify pass exists for a drifted shadow, and this is it.
+
+        ``_apply_status_to_all_three`` verifies all three rows before the seam
+        assigns any.  The input that needs it: the INCOME shadow drifted to
+        Settled (terminal) under a Projected parent being moved to Paid.  The
+        transfer's move is legal (Projected -> Paid) and the income shadow's is
+        not (nothing is reachable from Settled).
+
+        **The EXPENSE shadow is what proves the pre-pass.**  The applier writes
+        the shadows before the parent, so the parent is safe either way; a
+        verify-as-you-go loop would assign the expense shadow, then raise on the
+        income shadow, leaving the pair disagreeing -- Transfer Invariant 4
+        broken while an error is reported.  Asserting on the parent instead
+        would be a control that cannot fail, which is how this test was first
+        written and what a mutation run caught.
+
+        This matters beyond tidiness because ``_apply_shadow_update``'s own
+        error path documents that a half-applied ``update_transfer`` leaves
+        dirty mutations staged on the session.
+        """
+        with app.app_context():
+            td = transfer_data
+            xfer = _create_basic_transfer(td)
+            projected_id = xfer.status_id
+            expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
+            shadows = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id).all()
+            )
+            expense_shadow = next(
+                s for s in shadows
+                if s.transaction_type_id == expense_type_id
+            )
+            income_shadow = next(s for s in shadows if s is not expense_shadow)
+            income_shadow.status_id = ref_cache.status_id(StatusEnum.SETTLED)
+            db.session.flush()
+
+            with pytest.raises(ValidationError):
+                transfer_service.update_transfer(
+                    xfer.id, td["user"].id,
+                    status_id=ref_cache.status_id(StatusEnum.DONE),
+                )
+
+            assert expense_shadow.status_id == projected_id, (
+                "the expense shadow was moved before the income shadow's own "
+                "move was refused -- the pair is now half-applied"
+            )
+            assert xfer.status_id == projected_id

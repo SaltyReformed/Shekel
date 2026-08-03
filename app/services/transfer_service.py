@@ -795,10 +795,20 @@ def restore_transfer(transfer_id, user_id):
     re-syncs every field the service mirrors from the canonical parent
     onto both shadows (amount, status, period, category, due_date,
     is_override) in case any drifted via direct ORM mutation while the
-    transfer was soft-deleted.  ``actual_amount`` and ``paid_at`` are
-    deliberately excluded: the ``Transfer`` parent has no canonical
-    column for them (they live on the shadow ``Transaction`` only), so
-    there is no parent value to re-sync against.
+    transfer was soft-deleted.  ``actual_amount`` stays excluded: the
+    ``Transfer`` parent has no canonical column for it, so there is no value
+    to re-sync against.
+
+    **``paid_at`` IS now maintained, and it is not the parent that supplies
+    it** (plan step X-aj1).  Repairing a status through the one seam brings
+    the seam's timestamp rule with it, so a shadow repaired INTO a settled
+    status must carry an instant and one repaired out of it must not.  The
+    instant comes from the SIBLING shadow -- Transfer Invariant 3 says the
+    pair is equal, and the sibling already records when the money moved.
+    Taking it from there rather than from ``now()`` is what stops a repair
+    from inventing a settle day: since plan step E1a that civil day is the
+    ``entry_date`` the re-posted entry below is filed under, so a fabricated
+    instant would move money on what is supposed to be a repair.
 
     Idempotent: calling on an already-active transfer is a no-op.
 
@@ -840,12 +850,13 @@ def restore_transfer(transfer_id, user_id):
         .all()
     )
 
-    # ── Refuse before anything moves (X-aj1, ruling R-DR) ───────────
-    # Shadow count, type pairing and archived endpoints (F-164), run BEFORE the
-    # un-delete.  That ordering is the point: this function used to flip
-    # ``is_deleted`` first and hand-restore it on each failing branch, so the
-    # rollback was written out three times with three chances for the next
-    # branch to forget it.  Validating before mutating deletes all three.
+    # ── Refuse before anything moves (X-aj1) ────────────────────────
+    # Shadow count, type pairing, archived endpoints (F-164) and -- new at
+    # ruling R-DO -- a status drift the state machine cannot legally repair.
+    # Run BEFORE the un-delete, which is a change from the code this replaced:
+    # that version flipped ``is_deleted`` first and then hand-restored it on
+    # each failing branch, so the rollback was written out three times and the
+    # fourth check would have had to remember it too.
     assert_restorable(xfer, shadows, user_id)
 
     xfer.is_deleted = False
@@ -864,15 +875,8 @@ def restore_transfer(transfer_id, user_id):
             )
             shadow.estimated_amount = xfer.amount
 
-        # Invariant 4: shadow status must match transfer status.
-        if shadow.status_id != xfer.status_id:
-            logger.warning(
-                "Correcting shadow %d status_id drift: %s -> %s "
-                "(transfer %d status).",
-                shadow.id, shadow.status_id, xfer.status_id,
-                transfer_id,
-            )
-            shadow.status_id = xfer.status_id
+        # Invariant 4 is repaired for the PAIR after this loop, not per shadow
+        # -- see the call to :func:`_apply_status_to_all_three` below.
 
         # Invariant 5: shadow period must match transfer period.
         if shadow.pay_period_id != xfer.pay_period_id:
@@ -926,6 +930,34 @@ def restore_transfer(transfer_id, user_id):
                 transfer_id,
             )
             shadow.is_override = xfer.is_override
+
+    # ── Invariant 4: the PAIR's status, through the one seam ────────
+    # Repaired for both shadows together rather than one at a time, and that
+    # is load-bearing rather than tidy.  The seam's per-row timestamp rule
+    # ("preserve an instant, else stamp now()") would let a repair INVENT a
+    # settle day for a shadow that has none -- and since plan step E1a that day
+    # is the ``entry_date`` the re-posted entry below is filed under, so the
+    # repair would move money.  Going through the pair-aware applier makes the
+    # SIBLING's recorded instant the answer, which is what Transfer Invariant 3
+    # says it is.  The transfer itself is already at this status, so its own
+    # transition is the identity and legal by construction; the shadows'
+    # transitions were proved repairable by ``assert_restorable`` above, so
+    # neither verification can raise here.
+    expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
+    expense_shadow = next(
+        s for s in shadows if s.transaction_type_id == expense_type_id
+    )
+    income_shadow = next(s for s in shadows if s is not expense_shadow)
+    if any(shadow.status_id != xfer.status_id for shadow in shadows):
+        logger.warning(
+            "Correcting shadow status drift on transfer %d: %s -> %s.",
+            transfer_id,
+            {shadow.id: shadow.status_id for shadow in shadows},
+            xfer.status_id,
+        )
+    _apply_status_to_all_three(
+        xfer, expense_shadow, income_shadow, xfer.status_id,
+    )
 
     db.session.flush()
 
