@@ -50,12 +50,14 @@ from app.services import (
     account_posting_service,
     account_service,
     anchor_service,
+    balance_at,
     posting_service,
 )
 from app.services.anchor_service import AnchorTrueUpOutcome
 from app.services.auth_service import hash_password
 from app.utils.dates import to_display_date
 from tests._test_helpers import (
+    correction_net_in_period,
     create_account_of_type,
     create_loan_account,
     create_settled_cash_transaction,
@@ -133,18 +135,20 @@ def _origin_day(account):
     return row.observed_on
 
 
-def _add_assertion(account, balance, created_at):
+def _add_assertion(account, balance, created_at, pay_period_id=None):
     """Append a true-up ``AccountAnchorHistory`` row at a controlled instant.
 
     Mirrors ``anchor_service.stage_anchor_true_up`` (history row + the
     ``current_anchor_*`` cache write) but pins ``created_at`` explicitly, with
     ``observed_on`` derived from it, so the civil-day partition under test is
     exact.  Anchors against the account's current anchor period (the fixture
-    bootstrap).  Flushes.
+    bootstrap) unless *pay_period_id* names another -- which the R2 attribution
+    cases need, a row's stored period being the slot its correction is FILED
+    under and not something the observed day derives.  Flushes.
     """
     row = AccountAnchorHistory(
         account_id=account.id,
-        pay_period_id=account.current_anchor_period_id,
+        pay_period_id=pay_period_id or account.current_anchor_period_id,
         anchor_balance=Decimal(str(balance)),
         created_at=created_at,
         # The civil day this assertion is the closing balance FOR, kept in step
@@ -201,6 +205,20 @@ def _entry_legs(entry_id):
         .filter_by(journal_entry_id=entry_id)
         .all()
     }
+
+
+def _correction_net_in_period(account_id, scenario_id, source_enum, period_id):
+    """Sum an account's correction legs on its LINKED ledger in ONE pay period.
+
+    Resolves the account's linked ledger, then defers to the shared
+    ``tests._test_helpers.correction_net_in_period`` -- the same reading the
+    loan anchor suite makes, so the two halves of the R2 fix are graded by one
+    query rather than two that happen to agree.
+    """
+    linked = _ledger_of_kind(account_id, LedgerAccountKindEnum.LINKED)
+    return correction_net_in_period(
+        _db.session, linked.id, scenario_id, source_enum, period_id,
+    )
 
 
 def _settle_expense(seed_user, account, amount, paid_at):
@@ -965,6 +983,225 @@ class TestSyncAccountAnchorPostings:
             ) == Decimal("500.00")
 
 
+class TestCorrectionPeriodAttribution:
+    """An anchor correction books in the period containing its OWN day.
+
+    The production defect these pin (finding N-161, plan step X-ai-r), and it
+    had two halves.  The reconcile key was ``(source kind, entry date)`` with
+    no period, so two assertions observed on ONE civil day could not be told
+    apart and a reversal of one period's postings was filed against another;
+    and the period the entry was FILED under was copied from the history row's
+    stored ``pay_period_id``, which is a CACHE of the same day-to-period
+    derivation and can be split from its own day by a clock.  Measured on a
+    production clone: corrections of ``+$386.85`` and ``-$186.85`` had posted
+    as ``+$3,054.36`` in one period and ``-$2,854.36`` in the next.
+
+    The fixture is production's shape exactly -- the second assertion is
+    recorded late on the LAST DAY of a period while its stored
+    ``pay_period_id`` names the NEXT one (production's row was created 21:28
+    Eastern on the boundary day).  The rule under test is that the LEDGER
+    ignores that stored period and files both corrections in the period
+    containing the day they assert, which is what ruling R-DH states
+    (``account_service.resolve_anchor_period_id``: "the period is DERIVED from
+    the day, not chosen beside it") and what the grid's "Book vs bank" row
+    already does (``balance_at._cash_periods._assertion_sums`` buckets on
+    ``observed_on``).  Reading the stored column instead put the two surfaces
+    at odds by the whole correction on two of the clone's periods; deriving it
+    agrees with the grid on all 61.
+    """
+
+    _ASSERTION_DAY = date(2026, 4, 3)
+
+    def _period_containing_the_day(self, seed_user, index=1):
+        """Add (and return) a pay period whose range contains the assertion day."""
+        period = PayPeriod(
+            user_id=seed_user["user"].id,
+            start_date=date(2026, 3, 21), end_date=self._ASSERTION_DAY,
+            period_index=index,
+        )
+        _db.session.add(period)
+        _db.session.flush()
+        return period
+
+    def _period_after_the_day(self, seed_user, index=2):
+        """Add (and return) the period that STARTS the day after the assertion."""
+        period = PayPeriod(
+            user_id=seed_user["user"].id,
+            start_date=date(2026, 4, 4), end_date=date(2026, 4, 17),
+            period_index=index,
+        )
+        _db.session.add(period)
+        _db.session.flush()
+        return period
+
+    def test_the_stored_period_is_ignored_and_the_day_decides(
+        self, app, db, seed_user,
+    ):
+        """A row mis-filed into the NEXT period still books in the day's period.
+
+        Production's shape exactly: two assertions an hour apart on one civil
+        day that is a period's LAST day, the second recorded late enough that
+        its stored ``pay_period_id`` names the following period.  Both
+        corrections must book in the period CONTAINING the day -- ``+100.00``
+        and ``-50.00`` merging to one ``+50.00`` entry there -- and the period
+        the second row names must hold nothing.
+
+        The ledger otherwise disagrees with the grid's "Book vs bank" row,
+        which buckets the same corrections on ``observed_on``, by the whole
+        correction.  Measured on a production clone: deriving agrees with the
+        grid on all 61 periods, reading the stored column on 59 of 61.
+
+        Linked total ``500 opening + 100 - 50 = 550.00``, the later value.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            account = _make_account(seed_user, "500.00")
+            _pin_opening(account)
+            containing = self._period_containing_the_day(seed_user)
+            following = self._period_after_the_day(seed_user)
+            at = settle_instant_on(self._ASSERTION_DAY)
+            _add_assertion(account, "600.00", at, pay_period_id=containing.id)
+            _add_assertion(
+                account, "550.00", at + _ONE_HOUR, pay_period_id=following.id,
+            )
+            # The preconditions: ONE civil day, and the second row filed
+            # against a period its own observed day falls outside.
+            assert to_display_date(at) == to_display_date(at + _ONE_HOUR)
+            assert following.start_date > self._ASSERTION_DAY
+            _db.session.commit()
+
+            account_posting_service.sync_account_anchor_postings(
+                account.id, scenario_id,
+            )
+            _db.session.commit()
+
+            assert _correction_net_in_period(
+                account.id, scenario_id,
+                PostingSourceEnum.ACCOUNT_TRUEUP, containing.id,
+            ) == Decimal("50.00")
+            assert _correction_net_in_period(
+                account.id, scenario_id,
+                PostingSourceEnum.ACCOUNT_TRUEUP, following.id,
+            ) == Decimal("0.00")
+            trueups = _correction_entries(
+                account.id, scenario_id, PostingSourceEnum.ACCOUNT_TRUEUP,
+            )
+            assert all(
+                entry.entry_date == self._ASSERTION_DAY for entry in trueups
+            )
+            assert posting_service.account_posting_total(
+                account.id, scenario_id,
+            ) == Decimal("550.00")
+
+    def _assert_beyond_the_schedule(self, seed_user):
+        """Post one true-up whose day no pay period contains; return the account.
+
+        ``seed_user`` carries only its 2024 bootstrap period, so an assertion
+        dated 2026 has no containing period and
+        :func:`app.services.loan_ledger.resolve_anchor_pay_period` falls back
+        to it -- the state a user reaches by asserting a balance past the end
+        of their generated schedule.  ``600 - 500 = +100.00``.
+        """
+        account = _make_account(seed_user, "500.00")
+        _pin_opening(account)
+        _add_assertion(
+            account, "600.00", settle_instant_on(self._ASSERTION_DAY),
+        )
+        _db.session.commit()
+        account_posting_service.sync_account_anchor_postings(
+            account.id, seed_user["scenario"].id,
+        )
+        _db.session.commit()
+        return account
+
+    def test_a_period_appearing_around_the_day_refiles_the_correction(
+        self, app, db, seed_user,
+    ):
+        """Generating the period that contains the day moves the correction into it.
+
+        The R2 case on the cash side, and it is reachable by an ordinary
+        schedule extension: a correction filed against the fallback period is
+        REVERSED there -- netting it to ``0.00`` -- and re-posted in the period
+        that now contains its day.  A period-blind key compared the two as
+        equal and left the correction in the fallback permanently.
+
+        The total does not move: this is an attribution change, not a
+        revaluation.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            fallback = seed_user["bootstrap_period"]
+            account = self._assert_beyond_the_schedule(seed_user)
+            assert _correction_net_in_period(
+                account.id, scenario_id,
+                PostingSourceEnum.ACCOUNT_TRUEUP, fallback.id,
+            ) == Decimal("100.00")
+
+            containing = self._period_containing_the_day(seed_user)
+            _db.session.commit()
+            account_posting_service.sync_account_anchor_postings(
+                account.id, scenario_id,
+            )
+            _db.session.commit()
+
+            assert _correction_net_in_period(
+                account.id, scenario_id,
+                PostingSourceEnum.ACCOUNT_TRUEUP, fallback.id,
+            ) == Decimal("0.00")
+            assert _correction_net_in_period(
+                account.id, scenario_id,
+                PostingSourceEnum.ACCOUNT_TRUEUP, containing.id,
+            ) == Decimal("100.00")
+            assert posting_service.account_posting_total(
+                account.id, scenario_id,
+            ) == Decimal("600.00")
+
+    def test_the_refiled_correction_reconcile_is_idempotent(
+        self, app, db, seed_user,
+    ):
+        """A re-sync after the re-file writes nothing and moves no period.
+
+        The convergence half: the finer key must reach its fixpoint in one
+        pass rather than shuttling the correction between the two periods.
+        Asserts the re-filed STATE either side of the extra sync, so it cannot
+        pass by nothing having moved in the first place.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            fallback = seed_user["bootstrap_period"]
+            account = self._assert_beyond_the_schedule(seed_user)
+            containing = self._period_containing_the_day(seed_user)
+            _db.session.commit()
+            account_posting_service.sync_account_anchor_postings(
+                account.id, scenario_id,
+            )
+            _db.session.commit()
+            settled = len(_correction_entries(
+                account.id, scenario_id, PostingSourceEnum.ACCOUNT_TRUEUP,
+            ))
+            assert _correction_net_in_period(
+                account.id, scenario_id,
+                PostingSourceEnum.ACCOUNT_TRUEUP, containing.id,
+            ) == Decimal("100.00")
+
+            account_posting_service.sync_account_anchor_postings(
+                account.id, scenario_id,
+            )
+            _db.session.commit()
+
+            assert len(_correction_entries(
+                account.id, scenario_id, PostingSourceEnum.ACCOUNT_TRUEUP,
+            )) == settled
+            assert _correction_net_in_period(
+                account.id, scenario_id,
+                PostingSourceEnum.ACCOUNT_TRUEUP, containing.id,
+            ) == Decimal("100.00")
+            assert _correction_net_in_period(
+                account.id, scenario_id,
+                PostingSourceEnum.ACCOUNT_TRUEUP, fallback.id,
+            ) == Decimal("0.00")
+
+
 # ---------------------------------------------------------------------------
 # _sync entry points -- scenarios, loans, per-user resync
 # ---------------------------------------------------------------------------
@@ -1249,3 +1486,98 @@ class TestSyncEntryPoints:
             assert posting_service.account_posting_total(
                 account2.id, baseline2.id,
             ) == Decimal("100.00")
+
+
+class TestLedgerAgreesWithTheGridOnAssertionPeriods:
+    """The posted ledger and the grid bucket a true-up into the SAME period.
+
+    The property ruling R-EA was decided on, pinned as a test rather than left
+    as a measurement in a docstring (plan step X-ai-r; finding N-169).  Two
+    independent implementations answer "which pay period did this balance
+    assertion book in": the WRITER derives it through
+    ``loan_ledger.resolve_anchor_pay_period`` and stamps
+    ``journal_entries.pay_period_id``; the READER
+    (``balance_at._cash_periods._assertion_sums``) buckets the walk's
+    corrections by ``spans.containing(observed_on)`` and renders the result as
+    the grid's "Book vs bank" row.  They agreed on 61 of 61 periods of a
+    production clone when the ruling was taken; nothing in the tree held them
+    together afterwards, which is how the ledger and the grid came to disagree
+    by a whole correction in the first place.
+
+    **Scoped to TRUE-UPS, and that is not a convenience.**  ``_assertion_sums``
+    folds ``anchor_corrections[1:]`` -- ruling R-I moves the OPENING into the
+    fold's seed, where it back-projects rather than stepping the balance on its
+    own day -- while the ledger keeps an ``account_opening`` entry in a period.
+    Comparing the opening would compare two different questions.
+    """
+
+    def test_trueup_periods_match_the_grids_book_vs_bank_row(
+        self, app, db, seed_user,
+    ):
+        """Every period's posted true-up net equals the grid's book_vs_bank.
+
+        Three assertions across two periods on one account, so the comparison
+        has something to disagree about: +100.00 and -50.00 in the first
+        period and +250.00 in the second.  The ledger's per-period true-up net
+        must equal the figure the grid renders for that period, cell for cell,
+        with at least one period non-zero (a comparison of all-zeros grades
+        nothing).
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            account = _make_account(seed_user, "500.00")
+            _pin_opening(account)
+            first = PayPeriod(
+                user_id=seed_user["user"].id,
+                start_date=date(2026, 3, 21), end_date=date(2026, 4, 3),
+                period_index=1,
+            )
+            second = PayPeriod(
+                user_id=seed_user["user"].id,
+                start_date=date(2026, 4, 4), end_date=date(2026, 4, 17),
+                period_index=2,
+            )
+            _db.session.add_all([first, second])
+            _db.session.flush()
+            _add_assertion(
+                account, "600.00", settle_instant_on(date(2026, 3, 25)),
+            )
+            _add_assertion(
+                account, "550.00", settle_instant_on(date(2026, 4, 1)),
+            )
+            _add_assertion(
+                account, "800.00", settle_instant_on(date(2026, 4, 10)),
+            )
+            _db.session.commit()
+            account_posting_service.sync_account_anchor_postings(
+                account.id, scenario_id,
+            )
+            _db.session.commit()
+
+            ctx = balance_at.BalanceContext.build(
+                seed_user["user"].id, as_of=date(2026, 4, 17),
+            )
+            periods = (
+                _db.session.query(PayPeriod)
+                .filter_by(user_id=seed_user["user"].id)
+                .order_by(PayPeriod.period_index)
+                .all()
+            )
+            grid = balance_at.grid_balance_view(account, ctx, periods)
+
+            compared = 0
+            for period in periods:
+                column = grid.columns.get(period.id)
+                if column is None:
+                    continue
+                assert _correction_net_in_period(
+                    account.id, scenario_id,
+                    PostingSourceEnum.ACCOUNT_TRUEUP, period.id,
+                ) == column.book_vs_bank
+                compared += 1
+            assert compared == len(periods)
+            # The comparison has teeth only if something is non-zero: the
+            # first period books 600-500 = +100.00 then 550-600 = -50.00
+            # (net +50.00) and the second 800-550 = +250.00.
+            assert grid.columns[first.id].book_vs_bank == Decimal("50.00")
+            assert grid.columns[second.id].book_vs_bank == Decimal("250.00")

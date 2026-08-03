@@ -55,12 +55,14 @@ from app.services import (
     loan_ledger,
     loan_loaders,
     loan_posting_service,
+    pay_period_admin,
     posting_service,
     transfer_service,
 )
 from tests._test_helpers import (
     add_escrow_line,
     clear_loan_ledger,
+    correction_net_in_period,
     create_loan_account,
     create_loan_with_trueup,
     create_settled_transfer,
@@ -1765,6 +1767,173 @@ class TestSyncLoanAnchorCorrections:
                 loan.id, scenario_id,
             )
             db.session.commit()
+            assert posting_service.account_posting_total(
+                loan.id, scenario_id,
+            ) == Decimal("-100000.00")
+
+
+def _anchor_net_in_period(loan_id, scenario_id, source_enum, period_id):
+    """Sum a loan's anchor-correction legs on its LINKED ledger in ONE period.
+
+    Resolves the loan's linked ledger, then defers to the shared
+    ``tests._test_helpers.correction_net_in_period`` -- the same reading the
+    account anchor suite makes, so the two halves of the R2 fix are graded by
+    one query rather than two that happen to agree.
+    """
+    linked_id = ledger_accounts_for_account(_db.session, loan_id)[0].id
+    return correction_net_in_period(
+        _db.session, linked_id, scenario_id, source_enum, period_id,
+    )
+
+
+class TestLoanAnchorPeriodAttribution:
+    """A loan correction re-files when the calendar grows a period around it.
+
+    The loan twin of the account side's R2 fix (plan step X-ai-r).  A loan
+    anchor carries no stored ``pay_period_id`` -- ``budget.loan_anchor_events``
+    has no such column and the origination is synthesized from ``LoanParams``
+    -- so its period is DERIVED from its date through
+    ``resolve_anchor_pay_period``.  When no period CONTAINS the date it falls
+    back to the LATEST period ending on or before it (and to the earliest only
+    when the date precedes the whole schedule).
+
+    That fallback is where the calendar and the ledger come apart.  A user
+    whose schedule ends before their asserted anchor date gets the correction
+    filed against whichever period they happen to have last; extending the
+    schedule (an ordinary ``extend_pay_periods`` or the rolling-window top-up)
+    then creates the period that really contains it.  Under a period-blind
+    reconcile key the target and the posted entry compared equal -- same source
+    kind, same date -- so the delta was zero and the correction sat in the
+    stale period forever, and any later adjustment would have been filed there
+    too.  With the period in the key the stale period reverses to zero and the
+    real one posts fresh.
+    """
+
+    _LATE_ANCHOR_DATE = date(2026, 6, 15)
+
+    def test_extending_the_schedule_refiles_an_anchor_into_its_real_period(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A true-up dated past the schedule moves to the period that grows around it.
+
+        ``seed_periods`` ends 2026-05-21, so a $100,000 true-up dated
+        2026-06-15 has no containing period and books against the LAST one by
+        fallback.  Its correction is ``owed_before - verified = 250000 -
+        100000 = +150,000.00``.  Extending the schedule by three periods
+        creates the one containing 2026-06-15, so the re-sync must net the
+        stale period back to ``0.00`` and carry the full ``+150,000.00`` in the
+        real one.  The loan's total is unchanged either way -- this is an
+        attribution move, not a revaluation.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            user_id = seed_user["user"].id
+            loan = _make_loan(seed_user, anchor_date=self._LATE_ANCHOR_DATE)
+            loan_posting_service.sync_loan_anchor_corrections(
+                loan.id, scenario_id,
+            )
+            db.session.commit()
+
+            stale_period = seed_periods[-1]
+            # The precondition: no seeded period contains the anchor date, so
+            # the true-up landed on the last one by fallback.
+            assert stale_period.end_date < self._LATE_ANCHOR_DATE
+            assert _anchor_net_in_period(
+                loan.id, scenario_id,
+                PostingSourceEnum.LOAN_TRUEUP, stale_period.id,
+            ) == Decimal("150000.00")
+
+            new_periods = pay_period_admin.extend_pay_periods(user_id, 3)
+            db.session.commit()
+            containing = next(
+                period for period in new_periods
+                if period.start_date
+                <= self._LATE_ANCHOR_DATE
+                <= period.end_date
+            )
+
+            loan_posting_service.sync_loan_anchor_corrections(
+                loan.id, scenario_id,
+            )
+            db.session.commit()
+
+            assert _anchor_net_in_period(
+                loan.id, scenario_id,
+                PostingSourceEnum.LOAN_TRUEUP, stale_period.id,
+            ) == Decimal("0.00")
+            assert _anchor_net_in_period(
+                loan.id, scenario_id,
+                PostingSourceEnum.LOAN_TRUEUP, containing.id,
+            ) == Decimal("150000.00")
+            # -250000 opening + 150000 true-up: the attribution moved, the
+            # balance did not.
+            assert posting_service.account_posting_total(
+                loan.id, scenario_id,
+            ) == Decimal("-100000.00")
+
+    def test_the_refiled_anchor_reconcile_is_idempotent(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Re-syncing after the re-file writes nothing and moves no period.
+
+        The convergence half: the finer key must reach its fixpoint in one
+        pass rather than shuttling the correction between the two periods.
+        Asserts the re-filed STATE either side of the extra sync -- an earlier
+        version checked only the entry count and the total, which a re-file
+        that never happened satisfies just as well, so it passed against the
+        un-fixed code and graded nothing.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            user_id = seed_user["user"].id
+            loan = _make_loan(seed_user, anchor_date=self._LATE_ANCHOR_DATE)
+            loan_posting_service.sync_loan_anchor_corrections(
+                loan.id, scenario_id,
+            )
+            db.session.commit()
+            stale_period = seed_periods[-1]
+            new_periods = pay_period_admin.extend_pay_periods(user_id, 3)
+            db.session.commit()
+            containing = next(
+                period for period in new_periods
+                if period.start_date
+                <= self._LATE_ANCHOR_DATE
+                <= period.end_date
+            )
+            loan_posting_service.sync_loan_anchor_corrections(
+                loan.id, scenario_id,
+            )
+            db.session.commit()
+            settled = len(_anchor_correction_entries(
+                loan.id, scenario_id, PostingSourceEnum.LOAN_TRUEUP,
+            ))
+            # The re-file the fixpoint is being asserted OVER -- without this
+            # the test cannot tell convergence from nothing having moved.
+            assert _anchor_net_in_period(
+                loan.id, scenario_id,
+                PostingSourceEnum.LOAN_TRUEUP, containing.id,
+            ) == Decimal("150000.00")
+            assert _anchor_net_in_period(
+                loan.id, scenario_id,
+                PostingSourceEnum.LOAN_TRUEUP, stale_period.id,
+            ) == Decimal("0.00")
+
+            loan_posting_service.sync_loan_anchor_corrections(
+                loan.id, scenario_id,
+            )
+            db.session.commit()
+
+            assert len(_anchor_correction_entries(
+                loan.id, scenario_id, PostingSourceEnum.LOAN_TRUEUP,
+            )) == settled
+            assert _anchor_net_in_period(
+                loan.id, scenario_id,
+                PostingSourceEnum.LOAN_TRUEUP, containing.id,
+            ) == Decimal("150000.00")
+            assert _anchor_net_in_period(
+                loan.id, scenario_id,
+                PostingSourceEnum.LOAN_TRUEUP, stale_period.id,
+            ) == Decimal("0.00")
             assert posting_service.account_posting_total(
                 loan.id, scenario_id,
             ) == Decimal("-100000.00")

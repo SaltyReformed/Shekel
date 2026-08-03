@@ -172,8 +172,29 @@ class CashAnchorFact:
             branches on account class (ruling R-J), and neither does the fold
             above it; classifying asset vs liability belongs to the net-worth
             consumers.
-        pay_period_id: The history row's pay period (NOT NULL) -- the period a
-            correction derived from this assertion is attributed to.
+        pay_period_id: The history row's stored pay period (NOT NULL).
+            **It is a CACHE of a derivation, not an independent fact, and no
+            reader of THIS FIELD survives in ``app/`` as of plan step
+            X-ai-r.**  (The same datum is still read off the ORM row in
+            :func:`app.services.cash_ledger.resolve_anchor`, which compares it
+            against ``Account.current_anchor_period_id`` to log a cache
+            divergence -- a question about the ROW, not about which period a
+            correction books in.)  It is
+            written by ``account_service.resolve_anchor_period_id`` from the
+            same civil day :attr:`observed_on` records, so the two are two
+            statements of one fact -- and a clock split between the two
+            writers made them disagree on real data (a true-up recorded 21:28
+            Eastern on a period's LAST day, stored against the NEXT period).
+            It used to be "the period a correction derived from this assertion
+            is attributed to"; it is not, because projecting it put the posted
+            ledger at odds with the grid's "Book vs bank" row by the whole
+            correction.  Both ledgers now DERIVE a correction's period from
+            the assertion's day
+            (:func:`app.services.loan_ledger.resolve_anchor_pay_period`), which
+            is what ruling R-DH states.  A reader wanting "which period does
+            this assertion book in" must derive it the same way; this field
+            answers only "which period is the row filed under", which is the
+            CASCADE grouping and the F-103 unique index (finding N-169).
         observed_on: The civil day this balance was TRUE (ruling R-DH) -- the
             business date the whole partition turns on.  A source whose
             :attr:`CashSourceFact.settled_on` is at or before it is already

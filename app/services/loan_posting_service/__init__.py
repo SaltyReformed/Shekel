@@ -65,10 +65,11 @@ Books through :mod:`app.services.posting_service`'s shared balanced-write path
 (``_ledger_account_for``), so an unbalanced entry can never be written and every
 source shares one leg convention.  The reconcile primitives shared with the
 Step-5 account anchor package (``delta_legs`` / ``summed_posting_legs`` /
-``posted_correction_legs`` / ``emit_anchor_correction_entry`` / the owner
-resolver) live in :mod:`app.services._posting_reconcile`, so the two
-correction packages can never drift on the delta math or the
-correction-entry shape.  Reuses the resolver's OWN pure primitives
+``posted_correction_legs`` / ``emit_correction_deltas``, which owns the
+union-the-keys loop and the ``emit_anchor_correction_entry`` call inside it /
+the owner resolver) live in :mod:`app.services._posting_reconcile`, so the two
+correction packages can never drift on the delta math, the correction-entry
+shape, or the reconcile loop itself.  Reuses the resolver's OWN pure primitives
 (``resolve_periods`` / ``monthly_due_date``), so the posted ledger and the
 resolver can never drift on the rate path or the anchor boundary.  Flask-isolated:
 plain data in, plain values out; flushes but never commits (the caller owns the
