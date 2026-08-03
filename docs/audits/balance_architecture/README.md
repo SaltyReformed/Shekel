@@ -35,17 +35,28 @@ residue shipped the F1 ruling (the OPENING exception deleted from both walks), s
 F6, F7, F8, F9, F12 -- plus the eight items its own second adversarial review found
 (`anchor_settle_partition.md` Section 9).
 
-> **PRODUCTION RUNS `dde107f6` and `main` == `dde107f6`, so PROD IS CURRENT WITH `main`.**
-> Re-measured 2026-08-03 (afternoon) from the container itself, not from a paragraph:
-> `docker inspect shekel-prod-app` reports image `sha256:5cd2c22d13fc` carrying
-> `org.opencontainers.image.revision = dde107f6`, started **2026-08-03T14:41Z**, **0
-> restarts**, `health=healthy`.  So step 3 (PR #76), X-af (PR #77), X-ae (PR #79) AND X-aj1
-> (PR #80) are all live.  **PR #81 (X-ai-r) is OPEN, not merged and not deployed**; it
-> carries 7 commits, `polyglot-lint` SUCCESS and `lint-and-test` still running.  **X-ai-r
-> changes production DATA with no migration** -- the deploy hook runs
-> `backfill_all_account_anchor_postings_after_migration` unconditionally, adding exactly
-> +2 entries / +4 postings -- so its post-deploy check is a ledger census, not a figure
-> diff.  Migration head is unchanged at `d7c1f4a9e603` on every one of these --
+> **PRODUCTION RUNS `e5f27154` and `main` == `e5f27154`, so PROD IS CURRENT WITH `main`.
+> X-ai-r IS IN PRODUCTION (PR #81, merged and deployed 2026-08-03T18:28Z).**
+> Re-measured from the container itself, not from a paragraph: `docker inspect
+> shekel-prod-app` reports image `sha256:8a51f9059187` carrying
+> `org.opencontainers.image.revision = e5f271544561b7d465dc46d47e2d1a620aa67467`, **0
+> restarts**, `health=healthy`, healthy **15s** after `shekel-deploy` recreated it
+> (`5cd2c22d13fc -> 8a51f9059187`, cosign-verified, no rollback).  So step 3 (PR #76),
+> X-af (PR #77), X-ae (PR #79), X-aj1 (PR #80) AND X-ai-r (PR #81) are all live.
+>
+> **X-ai-r changed production DATA with no migration, and the post-deploy census matched
+> the prediction exactly.**  The deploy hook runs
+> `backfill_all_account_anchor_postings_after_migration` unconditionally, so it wrote **+2
+> journal entries / +4 postings** (318 -> 320, 643 -> 647) at deploy.  Verified against a
+> full 389-cell snapshot taken BEFORE the deploy: **exactly 4 cells moved, all the
+> 2026-06-03 Checking pair** -- period 5 `+$3,054.36 -> +$200.00`, period 6 `-$2,854.36 ->
+> $0.00` -- trial balance held at `$0.00`, migration head unchanged, anchor history
+> unchanged at 77 rows, and the count of periods carrying an unbalanced ledger account was
+> **10 before and 10 after** (the finer key locked no new period).  The two entries are
+> `319` (period 5, the correction) and `320` (period 6, the R2 REVERSAL -- it lands in the
+> period of the postings it undoes and carries their date, which is why it is one of the
+> six entries whose `entry_date` sits outside its own period; its pair nets to `$0.00`).
+> Migration head is unchanged at `d7c1f4a9e603` on every one of these --
 
 > **none of these ships carried a migration**, so each was a pure image swap and a rollback
 > is a pure digest revert.  Step 3 was measured to move **0 of 16,536 seam leaves**, so no
