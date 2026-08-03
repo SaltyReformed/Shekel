@@ -45,8 +45,8 @@ assertion, with no exception for the opening (finding N-133 / F1, whose
 one-day-old exception is recorded in ``anchor_settle_partition.md`` at R-DH (a)
 along with the ``$2,057.42`` it cost).  The instant partition it
 replaces decided that question by CLICK ORDER -- neither
-``Transaction.paid_at`` (``db.func.now()`` at the click,
-``status_seam.py:105``) nor ``AccountAnchorHistory.created_at`` measures when
+``Transaction.paid_at`` (``db.func.now()`` at the click, deleted at plan step
+X-f1) nor ``AccountAnchorHistory.created_at`` measures when
 money moved -- and on production 2026-07-31 an ordinary bookkeeping session
 (read the bank, enter the anchor, tick off what cleared) subtracted ``$4,001.42``
 of already-cleared payments a second time, rendering the grid's projected end
@@ -299,10 +299,10 @@ class CashSourceFact:
     **There is no instant on this record, and its absence is the ruling** (R-DH).
     It carried ``occurred_at`` -- ``paid_at`` normalized to UTC -- until
     2026-07-31, and every consumer that wanted a DAY re-derived one from it.  The
-    instant was never a fact about the money: ``paid_at`` is stamped
-    ``db.func.now()`` when the user clicks (``status_seam.py:105``) and the API
-    refuses any other value (``schemas/validation/transactions.py:62`` is
-    ``dump_only``), so its sub-day precision described bookkeeping keystrokes and
+    instant was never a fact about the money: ``paid_at`` was stamped
+    ``db.func.now()`` when the user clicked and the API refused any other
+    value (it was ``dump_only``), so its sub-day precision described
+    bookkeeping keystrokes and
     the partition that consumed it decided ``$4,001.42`` of real money by click
     order.  Storing only what is known keeps a consumer from reaching for
     precision the datum does not have.

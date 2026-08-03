@@ -369,11 +369,13 @@ class TestHero:
         on-time 2, late 0, avg 0.00.
         """
         with app.app_context():
-            from datetime import datetime, timezone
             due = seed_periods[0].start_date
-            # Noon UTC on the due date -> same civil day in the display tz,
-            # so days_paid_before_due == 0 (on time).
-            paid = datetime(due.year, due.month, due.day, 12, tzinfo=timezone.utc)
+            # The settle day IS the due date, so days_paid_before_due == 0 (on
+            # time).  It was a noon-UTC instant until plan step X-f1, chosen so
+            # the display-timezone conversion landed back on the same civil day;
+            # the column stores that day directly now, so the arithmetic is
+            # exact rather than zone-dependent.
+            paid = due
             _txn(db, seed_user, seed_periods[0], "R", "Rent", "1200.00",
                  actual="1200.00", due_date=due, settled_on=paid)
             _txn(db, seed_user, seed_periods[0], "G", "Groceries", "400.00",

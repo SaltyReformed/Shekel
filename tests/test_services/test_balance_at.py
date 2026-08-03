@@ -82,7 +82,6 @@ from app.services.balance_at._resolution import (
     configured_loan,
     resolved_loan,
 )
-from app.utils.dates import display_today
 from tests._test_helpers import (
     add_txn,
     create_account_of_type,
@@ -2408,7 +2407,7 @@ class TestASettledRowMovesEveryCashAnswerTogether:
                 # The DAY is PASSED, not left to the status seam: this test
                 # needs the settle on a specific day (one after the anchor's
                 # period start), not on today.  It used to be passed for a
-                # stronger reason -- the seam stamped ``paid_at`` from the
+                # stronger reason -- the seam stamped the settle day from the
                 # DATABASE clock, which ``freeze_today`` cannot patch -- and
                 # that reason died with plan step X-f1 (ruling R-EC): the seam
                 # stamps ``display_today()``, a Python read the freeze governs.
@@ -4271,7 +4270,7 @@ class TestLoanNotYetOriginated:
 
         So the payment is now one production CAN produce: its installment
         (2026-05-01, from ``periods[8]``) falls AFTER origination, so the boundary
-        allows it, and it is SETTLED EARLY -- ``paid_at`` 2026-03-10, before the
+        allows it, and it is SETTLED EARLY -- settled 2026-03-10, before the
         loan closes.  Paying an installment ahead of closing is legitimate and
         the fold splits it correctly.  The state under test is unchanged: one
         confirmed payment, a ``0.00`` balance, and a loan that has not

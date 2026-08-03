@@ -49,11 +49,12 @@ Architecture:
     commit -- the caller owns the session boundary.
 """
 
-from datetime import date, datetime
+from datetime import date
 from typing import Optional, Union
 
+from app.exceptions import ValidationError
 from app.extensions import db
-from app.models.transaction import Transaction
+from app.models.transaction import Transaction, reject_settle_instant
 from app.models.transfer import Transfer
 from app.services.state_machine import verify_transition
 from app.utils.balance_predicates import settled_status_ids
@@ -69,6 +70,61 @@ from app.utils.dates import display_today
 #: test".  (An earlier draft cited ruling R-CQ for that; R-CQ is the classifier
 #: RENAME and carries no such lesson.)
 StatusBearingRow = Union[Transaction, Transfer]
+
+
+def reject_settle_day_without_settled_status(
+    status_id: int, settled_on: Optional[date],
+) -> None:
+    """Refuse a settle day supplied for a status that is not settled.
+
+    **One half of the settled-iff-dated invariant, stated once** (plan step
+    X-f1, finding **N-183**).  A row carries the civil day its money moved if
+    and only if it is in a settled status (Paid / Received / Settled), so a day
+    handed in beside a Projected / Credit / Cancelled status is not a value to
+    store -- it is a request to record a payment that has not happened.
+
+    It is a module-level function rather than an inline check inside
+    :func:`apply_status_change` because ONE caller has to ask the question
+    BEFORE the seam can: ``transfer_service.create_transfer`` validates
+    ``spec.settled_on`` against ``spec.status_id`` before any row exists, and
+    for an unsettled create it never reaches the seam at all (its settle branch
+    is gated on the status being settled), so the day would be silently
+    dropped.  Two moments, one rule -- the alternative is the same sentence
+    written twice, which is this arc's own root cause 1.
+
+    Args:
+        status_id: The ``ref.statuses.id`` the row is (or would be) in.
+        settled_on: The settle day supplied beside it, or ``None`` when the
+            caller supplied none.  ``None`` is always accepted -- it means "no
+            day was offered", which is legal for either kind of status.
+
+    Raises:
+        ValidationError: When *settled_on* is not ``None`` and *status_id* is
+            not one of :func:`~app.utils.balance_predicates.settled_status_ids`.
+
+            **A ``ValidationError`` (a 400) rather than a programming error,
+            and NO form can reach it yet.**  Measured: no schema declares a
+            settle day, no template renders one, and no ``app/`` caller passes
+            ``settled_on`` to ``transfer_service.update_transfer`` -- so today
+            the only way here is a service-layer mistake, for which a 400 is
+            generous.  Plan step **X-f1c** is what makes it a user mistake with
+            a correction: it puts the field on the full-edit door, and
+            submitting a day while moving the row back to Projected becomes an
+            ordinary form error.  The class is chosen for the door that is
+            coming rather than re-picked when it lands; saying so beats a
+            rationale in the present tense that is not yet true.
+    """
+    if settled_on is None:
+        return
+    if status_id in settled_status_ids():
+        return
+    raise ValidationError(
+        f"A settle day ({settled_on.isoformat()}) was supplied for status "
+        f"{status_id}, which is not a settled status.  A row records the day "
+        "its money moved only while it is settled (Paid / Received / "
+        "Settled); mark it settled to give it a day, or clear the day to "
+        "leave it projected."
+    )
 
 
 def apply_status_change(
@@ -129,6 +185,12 @@ def apply_status_change(
             ONE legitimate meaning is "the user typed this day" -- the transfer
             edit door, and the transfer service's pair resolution.
 
+            **A day supplied for a NON-settled status is REFUSED**
+            (:func:`reject_settle_day_without_settled_status`, finding
+            **N-183**), which is what makes "a row is settled if and only if it
+            carries a settle day" a property of this function rather than a
+            convention its callers keep.
+
             **The day is the USER's, not the server's** (ruling R-DH (b)).
             ``display_today()`` reads the display timezone, where
             ``date.today()`` would read the process's UTC day and file an
@@ -159,31 +221,32 @@ def apply_status_change(
 
     Raises:
         ValidationError: If the transition is illegal for *row*'s workflow
-            (propagated from ``verify_transition``).
-        TypeError: If *row* is not a status-bearing model (propagated from the
-            state machine -- a programming error at the call site).
+            (propagated from ``verify_transition``), or if *settled_on* is
+            supplied for a *new_status_id* that is not settled (propagated from
+            :func:`reject_settle_day_without_settled_status`).
+        TypeError: If *settled_on* is a ``datetime`` rather than a civil
+            ``date`` (finding **N-179**), or if *row* is not a status-bearing
+            model (propagated from the state machine -- a programming error at
+            the call site).
     """
-    # A ``datetime`` is REFUSED rather than accepted and truncated, and this is
-    # not defensive programming -- it is finding N-179, measured.  ``datetime``
-    # subclasses ``date``, so the annotation catches nothing and PostgreSQL
-    # coerces the value into the ``DATE`` column on the SESSION clock, which is
-    # UTC: an instant at 2026-03-04 04:30 UTC (2026-03-03 23:30 Eastern) stores
-    # as 2026-03-04, one day later than the user's civil day.  That is exactly
-    # the UTC-vs-display split ruling R-DH (b) exists to delete, reintroduced
-    # one layer down and SILENTLY -- a converted suite left 16 sites passing an
-    # instant here and 8 of them stayed green, one of them writing a journal
-    # entry whose DATE column held ``2026-03-20T13:00:00+00:00``.  The check is
-    # ordered before ``verify_transition`` so a bad value cannot mutate the row
-    # even on a legal transition.
-    if isinstance(settled_on, datetime):
-        raise TypeError(
-            f"settled_on must be a date, got datetime {settled_on!r}.  A "
-            "settle records the CIVIL DAY its money moved, and an instant "
-            "handed here is truncated by PostgreSQL on the session clock "
-            "(UTC), so an evening-Eastern settle would be filed on the "
-            "following day.  Pass the user's civil day -- display_today(), or "
-            "the day the bank showed."
-        )
+    # A ``datetime`` is REFUSED rather than accepted and truncated (finding
+    # N-179).  The rule and its message live on the column
+    # (:func:`app.models.transaction.reject_settle_instant`, wired as an ORM
+    # validator) so EVERY write path refuses it, not just this door; it is
+    # called again here, ahead of ``verify_transition``, purely for the ordering
+    # -- the validator would not fire until the assignment below, by which point
+    # ``status_id`` has already moved, and a refused call must leave the row
+    # untouched.
+    reject_settle_instant(settled_on)
+
+    # The other half of the settled-iff-dated invariant, and it is checked here
+    # so EVERY caller inherits it (finding **N-183**).  Without it the explicit
+    # arm below writes a day onto whatever status it is handed, which is how
+    # ``transfer_service.update_transfer`` could date a Projected transfer; the
+    # invariant then held only because no caller happened to do it.  Ordered
+    # before ``verify_transition`` for the same reason the ``datetime`` refusal
+    # is: a rejected call must not have mutated the row.
+    reject_settle_day_without_settled_status(new_status_id, settled_on)
 
     verify_transition(row, new_status_id)
     row.status_id = new_status_id
@@ -195,6 +258,12 @@ def apply_status_change(
     # status_id -- never churns the day its money moved).  Skipped whole for a
     # Transfer, which has no such column; its shadows carry the day and get
     # their own call.
+    #
+    # The three arms are exhaustive and the invariant falls out of them: the
+    # guard above has already refused an explicit day on a non-settled status,
+    # so arm 1 fires only INTO the settled band, arm 2 clears whenever the row
+    # leaves it, and arm 3 fills the band's first entry.  A settled row always
+    # leaves here dated and a non-settled row always leaves here undated.
     if isinstance(row, Transaction):
         if settled_on is not None:
             row.settled_on = settled_on

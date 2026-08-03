@@ -122,8 +122,9 @@ def utc_instant(instant: datetime) -> datetime:
     helpers that implemented it were deleted rather than kept.
 
     Args:
-        instant: A stored ``paid_at`` / ``created_at`` / ``asserted_at``
-            instant.  Naive values are assumed UTC.
+        instant: A stored ``created_at`` / ``asserted_at`` instant.  Naive
+            values are assumed UTC.  (``paid_at`` was a third such caller
+            until plan step X-f1 replaced it with a stored civil day.)
 
     Returns:
         The aware-UTC equivalent of *instant*.

@@ -182,7 +182,7 @@ def _reject_installment_move_before_loan(
 
     Runs BEFORE any field is applied, so a rejected edit leaves the transfer and
     both shadows untouched -- the same discipline
-    :func:`app.services.transfer_service._apply_status_to_all_three` follows
+    :func:`app.services._transfer_status.apply_status_to_all_three` follows
     for an illegal status transition.
 
     Only ``pay_period_id`` / ``due_date`` can move which installment a payment

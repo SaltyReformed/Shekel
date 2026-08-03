@@ -299,9 +299,10 @@ def planned_cash_rows(
     Projected here) and in what they RETURN, and that second difference is the
     ruling:
 
-    * a SETTLED row can be dated by this leaf -- its instant is
-      ``COALESCE(paid_at, period start)``, a stored fact -- so ``_events`` returns
-      it valued and dated, as a
+    * a SETTLED row can be dated by this leaf -- its ``settled_on`` is a
+      STORED fact and nothing derives it (plan step X-f1, ruling R-EC; it was
+      ``COALESCE(paid_at, period start)`` until then) -- so ``_events``
+      returns it valued and dated, as a
       :class:`~app.services.cash_ledger.CashSourceFact`;
     * a PROJECTED row cannot.  Its effective date is
       ``max(its attribution date, as_of + 1 day)`` (ruling R-G: "a plan cannot

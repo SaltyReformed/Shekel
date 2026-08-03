@@ -35,7 +35,6 @@ from tests._test_helpers import (
     create_loan_account,
     create_settled_transfer,
     loan_income_shadow,
-    settle_instant_on,
 )
 
 # A short amortizing loan so the whole contractual schedule is enumerable:

@@ -328,7 +328,7 @@ class TestBalanceRow:
         moves.  Hand-computed: $1,000.00 anchor - $1,200.00 = -$200.00 from
         that period on.
 
-        The row's ``paid_at`` is stamped at the settle (the wall clock), which
+        The row's settle day is the user's today, which
         is after every seeded period here, so the balance drops in the LAST
         column rather than in the row's own -- which is why the assertion reads
         the final period and why finding N-42 (nothing records when money
@@ -3802,8 +3802,8 @@ class TestTransactionNameRows:
             # These figures moved twice: $4,850 / $4,550 before plan step
             # X-c2b2's cutover, $6,350 / $6,050 at it, and back at ruling R-DH
             # (2026-07-31).  The cutover read "the row was recorded after the
-            # anchor" as "the money moved after the anchor", but ``paid_at`` is
-            # stamped at the CLICK and the assertion carries no date at all, so
+            # anchor" as "the money moved after the anchor", but the settle was
+            # stamped at the CLICK and the assertion carried no date at all, so
             # on the real workflow -- true up, then tick off what already
             # cleared -- that inference is backwards.  It rendered the
             # developer's own grid at -$4,021.37 against a true -$19.95.
@@ -4054,6 +4054,10 @@ class TestTooltipContent:
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
                 status_id=paid.id,
+                # A settled row carries the day its money moved; this fixture
+                # is bare (no seam), so it states the day the readers would
+                # otherwise refuse to guess (plan step X-f1).
+                settled_on=current.start_date,
                 name="Test Est Comparison",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
@@ -4086,6 +4090,10 @@ class TestTooltipContent:
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
                 status_id=paid.id,
+                # A settled row carries the day its money moved; this fixture
+                # is bare (no seam), so it states the day the readers would
+                # otherwise refuse to guess (plan step X-f1).
+                settled_on=current.start_date,
                 name="Test Equal Amounts",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
@@ -4119,6 +4127,10 @@ class TestTooltipContent:
                 scenario_id=seed_user["scenario"].id,
                 account_id=seed_user["account"].id,
                 status_id=paid.id,
+                # A settled row carries the day its money moved; this fixture
+                # is bare (no seam), so it states the day the readers would
+                # otherwise refuse to guess (plan step X-f1).
+                settled_on=current.start_date,
                 name="Test Paid Status",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
@@ -5270,8 +5282,8 @@ class TestGridMatchedByRowPeriod:
         )
 
 
-class TestPaidAtLifecycle:
-    """Tests for paid_at timestamp management during status changes."""
+class TestSettleDayLifecycle:
+    """Tests for settled_on management during status changes, at the route."""
 
     def _create_test_txn(self, seed_user, seed_periods_today):
         """Create a projected expense transaction for testing."""
@@ -5319,8 +5331,8 @@ class TestPaidAtLifecycle:
         db.session.commit()
         return txn
 
-    def test_paid_at_set_on_mark_done(self, app, auth_client, seed_user, seed_periods_today):
-        """POST /transactions/<id>/mark-done sets paid_at timestamp for expenses."""
+    def test_settle_day_set_on_mark_done(self, app, auth_client, seed_user, seed_periods_today):
+        """POST /transactions/<id>/mark-done records the settle day for expenses."""
         with app.app_context():
             txn = self._create_test_txn(seed_user, seed_periods_today)
             assert txn.settled_on is None
@@ -5329,10 +5341,10 @@ class TestPaidAtLifecycle:
             assert response.status_code == 200
 
             db.session.refresh(txn)
-            assert txn.settled_on is not None
+            assert txn.settled_on == display_today()
 
-    def test_paid_at_set_on_mark_received(self, app, auth_client, seed_user, seed_periods_today):
-        """POST /transactions/<id>/mark-done sets paid_at timestamp for income."""
+    def test_settle_day_set_on_mark_received(self, app, auth_client, seed_user, seed_periods_today):
+        """POST /transactions/<id>/mark-done records the settle day for income."""
         with app.app_context():
             txn = self._create_income_txn(seed_user, seed_periods_today)
             assert txn.settled_on is None
@@ -5341,17 +5353,17 @@ class TestPaidAtLifecycle:
             assert response.status_code == 200
 
             db.session.refresh(txn)
-            assert txn.settled_on is not None
+            assert txn.settled_on == display_today()
 
-    def test_paid_at_nulled_on_status_revert(self, app, auth_client, seed_user, seed_periods_today):
-        """PATCH /transactions/<id> with status_id reverted to projected nulls paid_at."""
+    def test_settle_day_cleared_on_status_revert(self, app, auth_client, seed_user, seed_periods_today):
+        """PATCH /transactions/<id> reverting to Projected clears the settle day."""
         with app.app_context():
             from app import ref_cache
             from app.enums import StatusEnum
 
             txn = self._create_test_txn(seed_user, seed_periods_today)
 
-            # Mark done to set paid_at.
+            # Mark done to record the settle day.
             auth_client.post(f"/transactions/{txn.id}/mark-done")
             db.session.refresh(txn)
             assert txn.settled_on is not None
@@ -5367,8 +5379,16 @@ class TestPaidAtLifecycle:
             db.session.refresh(txn)
             assert txn.settled_on is None
 
-    def test_paid_at_re_mark_sets_new_timestamp(self, app, auth_client, seed_user, seed_periods_today):
-        """Mark done, revert to projected, mark done again -- paid_at is set both times."""
+    def test_re_mark_after_a_revert_sets_a_fresh_settle_day(self, app, auth_client, seed_user, seed_periods_today):
+        """Mark done, revert to projected, mark done again -- the day is set both times.
+
+        A revert genuinely CLEARS the day (the row is no longer settled, so the
+        invariant says it carries none), and the next settle stamps a fresh one.
+        The assertion is against ``display_today()`` rather than against the
+        first day: this row is settled twice under one clock, so "the second is
+        not earlier than the first" is true by construction and would hold even
+        if the seam had never cleared it.
+        """
         with app.app_context():
             from app import ref_cache
             from app.enums import StatusEnum
@@ -5378,8 +5398,7 @@ class TestPaidAtLifecycle:
             # First mark done.
             auth_client.post(f"/transactions/{txn.id}/mark-done")
             db.session.refresh(txn)
-            first_paid_at = txn.settled_on
-            assert first_paid_at is not None
+            assert txn.settled_on == display_today()
 
             # Revert to projected.
             projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
@@ -5390,17 +5409,16 @@ class TestPaidAtLifecycle:
             db.session.refresh(txn)
             assert txn.settled_on is None
 
-            # Mark done again.
+            # Mark done again -- a FIRST entry into the settled band, because
+            # the revert cleared the day, so the seam stamps today afresh.
             auth_client.post(f"/transactions/{txn.id}/mark-done")
             db.session.refresh(txn)
-            second_paid_at = txn.settled_on
-            assert second_paid_at is not None
-            assert second_paid_at >= first_paid_at
+            assert txn.settled_on == display_today()
 
-    def test_paid_at_not_set_on_non_settling_status_change(
+    def test_settle_day_not_set_on_non_settling_status_change(
         self, app, auth_client, seed_user, seed_periods_today
     ):
-        """POST /transactions/<id>/cancel does not set paid_at."""
+        """POST /transactions/<id>/cancel records no settle day."""
         with app.app_context():
             txn = self._create_test_txn(seed_user, seed_periods_today)
             assert txn.settled_on is None
@@ -5411,26 +5429,68 @@ class TestPaidAtLifecycle:
             db.session.refresh(txn)
             assert txn.settled_on is None
 
-    def test_paid_at_preserved_on_non_status_update(
+    def test_settle_day_preserved_on_non_status_update(
         self, app, auth_client, seed_user, seed_periods_today
     ):
-        """PATCH /transactions/<id> editing a non-status field preserves paid_at.
+        """PATCH /transactions/<id> editing a non-status field keeps the day.
 
         Edits a display field (``notes``) rather than ``estimated_amount``:
-        the finalised-row edit lock (#26) refuses money/period/category
-        edits on a Paid row, but display fields stay editable, so this
-        remains the faithful probe that a non-status edit does not clear
-        ``paid_at`` (the revert-paid_at logic fires only on a status
-        change to a non-settled status).
+        the finalised-row edit lock (#26) refuses money/period/category edits on
+        a Paid row, but display fields stay editable, so this is the faithful
+        probe that a non-status edit neither clears nor moves the settle day
+        (the seam clears it only on a status change out of the settled band).
+
+        **It could not fail until this was written** (finding **N-182**'s
+        sibling, found by a neutral review that PROVED it: with
+        ``_apply_regular_update`` wrapped to move every settled row it touched
+        by 7 days, this class stayed green and so did 703 tests around it).  It
+        captured the original day and then asserted only ``is not None``, so it
+        graded "the row still has a day" where its own name promises "the row
+        still has THAT day" -- and the difference is money, because since plan
+        step E1a the settle day IS the ``entry_date`` its postings are filed
+        under.  **This is N-146's class on the transaction side**: an ordinary
+        notes edit moving a settled payment's money to today, which is exactly
+        the live production defect that opened X-aj1 on the transfer side.
+
+        So it back-dates THROUGH the seam first and asserts the LEDGER as well
+        as the column, the same shape as
+        :meth:`test_a_replayed_mark_done_does_not_re_date_the_money`.
         """
         with app.app_context():
+            from app import ref_cache
+            from app.enums import StatusEnum
+            from app.models.journal_entry import JournalEntry
+            from app.services import posting_service, status_seam
+
             txn = self._create_test_txn(seed_user, seed_periods_today)
 
-            # Mark done to set paid_at.
+            # Mark done to record the settle day.
             auth_client.post(f"/transactions/{txn.id}/mark-done")
             db.session.refresh(txn)
-            original_paid_at = txn.settled_on
-            assert original_paid_at is not None
+            assert txn.settled_on == display_today()
+
+            # Back-date THROUGH the seam and re-reconcile, so the posted ledger
+            # follows the column and the assertions below start from the state a
+            # genuinely week-old settle is really in.
+            settled_a_week_ago = display_today() - timedelta(days=7)
+            status_seam.apply_status_change(
+                txn,
+                ref_cache.status_id(StatusEnum.DONE),
+                settled_on=settled_a_week_ago,
+            )
+            posting_service.sync_transaction_postings(txn, settled=True)
+            db.session.commit()
+
+            def _ledger_days():
+                return sorted(
+                    entry.entry_date
+                    for entry in db.session.query(JournalEntry)
+                    .filter(JournalEntry.transaction_id == txn.id)
+                    .all()
+                )
+
+            days_before = _ledger_days()
+            assert days_before, "fixture posted no journal entry to grade"
 
             # Edit a non-status, non-locked field -- no status change.
             response = auth_client.patch(
@@ -5439,50 +5499,106 @@ class TestPaidAtLifecycle:
             )
             assert response.status_code == 200
 
-            db.session.refresh(txn)
+            db.session.expire_all()
+            txn = db.session.get(Transaction, txn.id)
             assert txn.notes == "Reconciled against statement"
-            assert txn.settled_on is not None
+            assert txn.settled_on == settled_a_week_ago, (
+                "A notes-only edit re-dated the settle: "
+                f"{settled_a_week_ago} -> {txn.settled_on} (finding N-146)."
+            )
+            assert _ledger_days() == days_before, (
+                "A notes-only edit moved the posted ledger: "
+                f"{days_before} -> {_ledger_days()} (finding N-146)."
+            )
 
-    def test_mark_done_idempotent_preserves_paid_at(
+    def test_a_replayed_mark_done_does_not_re_date_the_money(
         self, app, auth_client, seed_user, seed_periods_today
     ):
-        """POST /transactions/<id>/mark-done twice both succeed; paid_at is preserved.
+        """A replayed mark-done leaves a settled row's money where it is.
 
-        An idempotent re-mark (Paid -> Paid) keeps the ORIGINAL payment time: the
-        status seam stamps now() only on the first entry into a settled status
-        and leaves an existing stamp untouched on a re-settle (Commit 5).  Before
-        the seam, the manual mark-done branch overwrote paid_at with now() on
-        every call.  This route-level assertion matches the service-level pin in
-        tests/test_services/test_status_seam.py::test_re_settle_preserves_existing_paid_at.
+        An idempotent re-mark (Paid -> Paid) keeps the ORIGINAL settle day: the
+        seam stamps the user's today only on the first entry into a settled
+        status and leaves an existing day untouched on a re-settle.  ``done ->
+        done`` is a legal transition and this route does not gate on status, so
+        a stale page, a second tab or a replayed POST really does re-submit the
+        settle.
+
+        **The row is back-dated THROUGH the seam first, and that is what makes
+        this control able to fail** (finding **N-182**).  Settling twice under
+        one clock leaves both calls yielding the same ``display_today()``, so
+        the old ``second == first`` assertion was true by construction --
+        measured, it passed with the preserve arm deleted.  This is the
+        transaction-side mirror of
+        ``test_transfers.py::test_re_marking_a_settled_transfer_does_not_re_date_it``,
+        which back-dates through ``update_transfer`` for the same reason.
+
+        It asserts the LEDGER as well as the column, because since plan step
+        E1a the settle day IS the ``entry_date`` the row's postings are filed
+        under -- so a re-stamp does not merely churn a field, it moves the
+        money (finding **N-146**'s class).
         """
         with app.app_context():
+            from app import ref_cache
+            from app.enums import StatusEnum
+            from app.models.journal_entry import JournalEntry
+            from app.services import posting_service, status_seam
+
             txn = self._create_test_txn(seed_user, seed_periods_today)
 
             # First mark done.
             resp1 = auth_client.post(f"/transactions/{txn.id}/mark-done")
             assert resp1.status_code == 200
             db.session.refresh(txn)
-            first_paid_at = txn.settled_on
-            assert first_paid_at is not None
+            assert txn.settled_on == display_today()
 
-            # Second mark done (idempotent Paid -> Paid).
+            # Back-date THROUGH the seam and re-reconcile, so the posted ledger
+            # follows the column.  Writing the attribute directly would leave
+            # the entries dated today and the ledger assertion below could pass
+            # on a stale ledger rather than on a preserved one.
+            settled_a_week_ago = display_today() - timedelta(days=7)
+            status_seam.apply_status_change(
+                txn,
+                ref_cache.status_id(StatusEnum.DONE),
+                settled_on=settled_a_week_ago,
+            )
+            posting_service.sync_transaction_postings(txn, settled=True)
+            db.session.commit()
+
+            def _ledger_days():
+                return sorted(
+                    entry.entry_date
+                    for entry in db.session.query(JournalEntry)
+                    .filter(JournalEntry.transaction_id == txn.id)
+                    .all()
+                )
+
+            days_before = _ledger_days()
+            assert days_before, "fixture posted no journal entry to grade"
+
+            # The replay (idempotent Paid -> Paid).
             resp2 = auth_client.post(f"/transactions/{txn.id}/mark-done")
             assert resp2.status_code == 200
-            db.session.refresh(txn)
-            second_paid_at = txn.settled_on
-            assert second_paid_at is not None
-            # Preserved, not churned -- exactly the original timestamp.
-            assert second_paid_at == first_paid_at
+            db.session.expire_all()
+            txn = db.session.get(Transaction, txn.id)
 
-    def test_paid_at_stamped_on_patch_settle(
+            assert txn.settled_on == settled_a_week_ago, (
+                "A replayed mark-done re-dated the settle: "
+                f"{settled_a_week_ago} -> {txn.settled_on} (finding N-146)."
+            )
+            assert _ledger_days() == days_before, (
+                "The replayed mark-done moved the posted ledger: "
+                f"{days_before} -> {_ledger_days()} (finding N-146)."
+            )
+
+    def test_settle_day_stamped_on_patch_settle(
         self, app, auth_client, seed_user, seed_periods_today
     ):
-        """PATCH /transactions/<id> settling to Paid stamps paid_at (the C5 fix).
+        """PATCH /transactions/<id> settling to Paid records the day (the C5 fix).
 
         Before the status seam, the inline PATCH path assigned status_id without
-        stamping paid_at, leaving a Paid row with a NULL payment time -- it
+        recording the day, leaving a Paid row with no settle day -- it
         bypassed the now()-stamp that mark_done and transfers apply.  The seam
-        now owns paid_at for every status change, so a PATCH that settles a
+        now owns the settle day for every status change, so a PATCH that settles a
         Projected row records the timestamp the same way mark_done does.
         """
         with app.app_context():
@@ -5509,7 +5625,7 @@ class TestBornProjected:
 
     The create schemas drop ``status_id`` and the create routes assign Projected
     unconditionally, so a crafted request cannot mint a born-settled row (which
-    would carry a NULL paid_at, bypass verify_transition, and post nothing to the
+    would carry no settle day, bypass verify_transition, and post nothing to the
     ledger).  The "record an already-paid item" flow is the correct
     create-Projected-then-mark-done.
     """
@@ -5634,16 +5750,30 @@ class TestSchemaValidation:
             errors = schema.validate({"due_date": "2026-04-15"})
             assert "due_date" not in errors
 
-    def test_schema_paid_at_is_dump_only(self, app):
-        """paid_at is dump_only so it is ignored when submitted in PATCH data.
+    def test_schema_refuses_to_load_a_settle_day(self, app):
+        """A submitted settle day is dropped: no form may set it today.
 
-        The field should not appear in loaded data even when submitted.
+        **It pinned ``paid_at`` being ``dump_only`` until plan step X-f1**, and
+        ruling R-EC deleted the field with the column -- which left the old
+        assertion passing on ``unknown=EXCLUDE`` rather than on the rule, i.e.
+        unable to fail.  What it grades now is the state the schema is actually
+        in: the settle day has NO load path, so the only way a row gets one is
+        ``status_seam.apply_status_change``.
+
+        Plan step **X-f1c** is what changes this -- it puts ``settled_on`` on
+        the full-edit form so a user can correct the day off a statement -- and
+        this assertion is what will fail when it does, which is the point of
+        leaving it here rather than deleting it.
         """
         from app.schemas.validation import TransactionUpdateSchema
         with app.app_context():
             schema = TransactionUpdateSchema()
-            data = schema.load({"paid_at": "2026-04-15T10:00:00"})
-            assert "paid_at" not in data
+            assert "settled_on" not in schema.fields, (
+                "the update schema declares settled_on -- if plan step X-f1c "
+                "has landed, this test is what needs re-deriving"
+            )
+            data = schema.load({"settled_on": "2026-04-15"})
+            assert "settled_on" not in data
 
 
 class TestMobileThisPeriodPartial:
@@ -5969,6 +6099,8 @@ class TestMobileCardActionBar:
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
                 estimated_amount=Decimal("42.00"),
+                # A settled row carries the day its money moved.
+                settled_on=current.start_date,
             )
             db.session.add(txn)
             db.session.commit()
@@ -6004,6 +6136,8 @@ class TestMobileCardActionBar:
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
                 estimated_amount=Decimal("42.00"),
+                # A settled row carries the day its money moved.
+                settled_on=current.start_date,
             )
             db.session.add(txn)
             db.session.commit()
@@ -6046,6 +6180,8 @@ class TestMobileCardActionBar:
                 category_id=salary_cat.id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
                 estimated_amount=Decimal("2500.00"),
+                # A settled row carries the day its money moved.
+                settled_on=current.start_date,
             )
             db.session.add(txn)
             db.session.commit()

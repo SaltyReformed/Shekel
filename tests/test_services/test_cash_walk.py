@@ -35,8 +35,11 @@ from app.services.cash_ledger import (
     settled_cash_facts,
     walk_cash_ledger,
 )
-from app.utils.dates import DISPLAY_TIMEZONE, to_display_date
+from app.enums import StatusEnum
+from app.exceptions import UndatedSettleError
+from app.utils.dates import DISPLAY_TIMEZONE, display_today, to_display_date
 from tests._test_helpers import (
+    add_txn,
     append_balance_assertion,
     create_settled_cash_transaction,
     create_settled_transfer,
@@ -51,7 +54,7 @@ def _instant(year, month, day, hour=0, minute=0, second=0):
 
     The arguments are read as the DISPLAY timezone -- the clock the user is
     actually looking at -- and converted to UTC for storage, which is the
-    direction production runs in: ``paid_at`` and ``created_at`` are stamped
+    direction production runs in: the settle day and ``created_at`` are stamped
     when the user acts and stored UTC.
 
     **It read them as UTC until ruling R-DH (b)** (2026-07-31), and the default
@@ -176,7 +179,7 @@ class TestTheClosingBalancePartition:
     against a true ``-$19.95``: three payments recorded in the nine seconds
     AFTER an anchor were subtracted from a bank balance that already contained
     them.  Neither instant the partition compared is a fact about money --
-    ``paid_at`` is ``db.func.now()`` at the click (``status_seam.py:105``) and
+    the settle day was ``db.func.now()`` at the click, before plan step X-f1, and
     an ``AccountAnchorHistory`` row has no date column at all -- so it decided
     which of two BUTTONS was pressed first and spent that answer on cash.  See
     ``docs/audits/balance_architecture/anchor_settle_partition.md``.
@@ -213,12 +216,13 @@ class TestTheClosingBalancePartition:
             account, period, Decimal("2932.41"),
             _instant(2026, 7, 24, 12, 57, 8),
         )
-        for amount, at in (
-            (Decimal("108.15"), _instant(2026, 7, 24, 13, 7, 11)),
-            (Decimal("131.60"), _instant(2026, 7, 24, 13, 7, 18)),
-        ):
+        # Both were RECORDED minutes after the assertion and both carry its own
+        # civil day, which is the shape ruling R-DH (a) turns on: the settle day
+        # is what partitions, and the recording minute is not a fact about money.
+        for amount in (Decimal("108.15"), Decimal("131.60")):
             create_settled_cash_transaction(
-                seed_user, db.session, period, amount, settled_on=at,
+                seed_user, db.session, period, amount,
+                settled_on=date(2026, 7, 24),
             )
         db.session.commit()
 
@@ -267,7 +271,7 @@ class TestTheClosingBalancePartition:
         _assert_balance(account, period, Decimal("2932.41"), asserted_at)
         create_settled_cash_transaction(
             seed_user, db.session, period, Decimal("77.00"),
-            settled_on=asserted_at,
+            settled_on=asserted_at.astimezone(DISPLAY_TIMEZONE).date(),
         )
         db.session.commit()
 
@@ -550,72 +554,87 @@ class TestSourceFactValuation:
 
 
 class TestAttributionIsOneKey:
-    """One instant per fact; the civil day it counts from falls out of it."""
+    """One STORED day per fact; nothing here derives it (ruling R-EC)."""
 
-    def test_a_null_paid_at_falls_back_to_the_period_start(
+    def test_a_settled_row_with_no_day_is_REFUSED_not_dated(
         self, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """8 of 146 settled prod rows carry no ``paid_at``; the fallback is real.
+        """The walk raises rather than inventing a day for a broken row.
 
-        The day becomes the row's pay-period ``start_date``, returned
-        UNCONVERTED -- the same civil day
-        :func:`app.services.posting_service._civil_settle_date` gives the entry
-        dating, because both delegate to
-        :func:`app.utils.dates.to_display_civil_date`.
+        **This test asserted the opposite until plan step X-f1**: the reader
+        derived the day from ``paid_at`` and fell back to the row's pay-period
+        ``start_date`` when the instant was NULL, and 8 of 146 production
+        settled rows took that fallback.  It was a GUESS the reader could not
+        see -- money placed on a day nothing recorded -- and the migration made
+        it a stored fact for exactly those 8 rows instead of leaving the engine
+        to re-invent it every read.
 
-        **The "unconverted" half is the load-bearing one** (ruling R-DH (b)).
-        The fallback is already a civil date and was never an instant, so a rule
-        that manufactured midnight and converted it to the display zone would
-        shift this row a day EARLIER and could carry it into the previous pay
-        period.  Measured on production 2026-07-31: 4 of the real Checking
-        account's settled rows carry no ``paid_at`` and 3 of the 4 would cross a
-        period boundary under that mistake.
+        With the guess gone, an undated settled row is a broken invariant
+        (``status_seam.apply_status_change`` writes the status and the day in
+        one statement), and the honest response is to FAIL LOUD.  Silently
+        dating it would put real money on a fabricated day; silently dropping it
+        would take money out of a balance without saying so.
+
+        The row is built by the BARE constructor helper with an explicit
+        ``settled_on=None``, which is the only way to construct the state now --
+        and that is the point.  Every write door refuses it: the seam writes the
+        day in the same statement as the status, and
+        ``create_settled_cash_transaction`` reconciles the ledger, which reaches
+        this same refusal before the fixture even returns.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         period = seed_periods[3]
         _restamp_opening(account, _instant(2026, 1, 1))
-        create_settled_cash_transaction(
-            seed_user, db.session, period, Decimal("12.34"),
-            settled_on=None, name="legacy settle",
+        txn = add_txn(
+            db.session, seed_user, period, "legacy settle", "12.34",
+            status_enum=StatusEnum.DONE, settled_on=None,
         )
         db.session.commit()
 
-        fact, = settled_cash_facts(account.id, scenario.id)
-        assert fact.settled_on == period.start_date
+        with pytest.raises(UndatedSettleError) as exc:
+            settled_cash_facts(account.id, scenario.id)
+        assert str(txn.id) in str(exc.value), (
+            "the refusal must name the row so a broken row is identifiable "
+            f"without re-querying; got: {exc.value}"
+        )
 
-    def test_the_settled_day_is_the_users_day_not_the_utc_day(
-        self, db, seed_user, seed_periods,
+    def test_an_evening_eastern_settle_counts_from_the_users_day(
+        self, db, seed_user, seed_periods, monkeypatch,
     ):  # pylint: disable=unused-argument
-        """A settle at 23:30 Eastern counts from the user's day, not UTC's.
+        """A settle at 20:00 Eastern attributes to THAT day, not to UTC's next.
 
-        The discriminating instant: 2026-03-03 23:30 Eastern is already
-        2026-03-04 in UTC.  Picking one where the two zones agree would pin
-        nothing.
+        The discriminating clock: 2026-03-03 20:00 Eastern is already
+        2026-03-04 in UTC, so a fixture pinned where the two zones agree would
+        prove nothing.  ``freeze_today`` is asked for that instant explicitly --
+        its default is noon UTC, which is the same civil day in both calendars.
 
-        **Ruling R-DH (b) inverted this test** (2026-07-31; it asserted the UTC
-        day, and was named for it).  The balance ledgers were on the STORAGE
-        clock because ``journal_entries.entry_date`` was stamped through
-        ``utc_civil_date``; that writer moved to the user's day WITH both folds,
-        so the equality this test guards still holds and now holds on the
-        calendar the ``DATE`` columns it is compared against actually mean.
-        Measured on production: 22 of 139 settled Checking rows land on a
-        different day under UTC, 5 of them in a different PAY PERIOD, and two
-        evening sessions were split across two UTC days -- the shape that
-        defeats the closing-balance partition above.
+        **It goes through the real write door rather than setting the column**,
+        and that is what makes it a walk-grain pin of ruling **R-DH (b)** rather
+        than a restatement of its own fixture.  The rule lives in
+        ``status_seam`` since plan step X-f1 -- nothing downstream derives a day
+        any more -- so this asserts the composition: the seam records the user's
+        civil day, and the walk attributes the cash to it unchanged.  Measured
+        on production before the column existed: 22 of 139 settled Checking rows
+        land on a different day under UTC and 5 of those in a different PAY
+        PERIOD.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         period = seed_periods[2]
         _restamp_opening(account, _instant(2026, 1, 1))
+        # 01:00 UTC on the 4th is 20:00 Eastern on the 3rd.
+        freeze_today(monkeypatch, date(2026, 3, 4), at_time=time(1, 0))
+        assert display_today() == date(2026, 3, 3)
+        assert date.today() == date(2026, 3, 4), (
+            "the freeze must separate the two calendars or this test cannot "
+            "tell the display rule from the process one"
+        )
+
         txn = create_settled_cash_transaction(
             seed_user, db.session, period, Decimal("5.00"),
-            settled_on=date(2026, 3, 3),
         )
         db.session.commit()
 
-        # The STORED instant really is the next UTC day, so the assertion below
-        # is a zone choice and not a coincidence.
-        assert txn.settled_on.astimezone(timezone.utc).date() == date(2026, 3, 4)
-
+        assert txn.settled_on == date(2026, 3, 3)
         fact, = settled_cash_facts(account.id, scenario.id)
         assert fact.settled_on == date(2026, 3, 3)
 
@@ -771,7 +790,7 @@ class TestPreOpeningSources:
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         period = seed_periods[0]
-        opening_at = date(2026, 2, 1)
+        opening_at = _instant(2026, 2, 1)
         _restamp_opening(account, opening_at)
         create_settled_cash_transaction(
             seed_user, db.session, period, Decimal("500.00"),
@@ -804,7 +823,7 @@ class TestPreOpeningSources:
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         period = seed_periods[0]
-        _restamp_opening(account, date(2026, 2, 1))
+        _restamp_opening(account, _instant(2026, 2, 1))
         create_settled_cash_transaction(
             seed_user, db.session, period, Decimal("500.00"),
             settled_on=date(2026, 1, 15), name="pre-opening",
@@ -1178,7 +1197,7 @@ class TestTheSourceOrderIsLoadBearing:
 
     The discriminating shape is an id order that DISAGREES with the day order,
     which is ordinary: a purchase entered late carries a higher id and an
-    earlier ``paid_at``.
+    earlier settle day.
     """
 
     def test_a_later_id_on_an_earlier_day_is_still_absorbed(

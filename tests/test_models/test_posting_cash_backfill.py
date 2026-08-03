@@ -32,24 +32,47 @@ guard, ref-id resolution, and all of Pass B) still runs unchanged -- only Pass
 A's INSERT carries the ``kind_id`` the Step-4 backfill would assign.  The
 injection reuses the frozen mapping SQL as its single source.
 
-The asserted invariants (plan Section 6 / Commit 7):
+**THE PASS-B HALF OF THIS SUITE WAS DELETED AT PLAN STEP X-f1** (developer
+ruling, 2026-08-03).  What survives is the set of tests that never reach the
+frozen SQL -- the three EXCLUSION cases, which are answered by
+``_has_settled_cash_transactions``'s early return before any statement is
+built -- plus the revision pair and the source-level downgrade check.
 
-  * a settled plain expense / income backfills to exactly one balanced entry:
-    the signed cash leg on the linked ledger account and its negation on the
-    resolved category ledger account, summing to zero, source kind
-    ``transaction``, both legs the income/expense posting kind;
-  * the confirmed cash effect is ``COALESCE(actual, estimated) - SUM(credit
-    entries)`` -- an envelope with credit entries posts the debit-only outflow,
-    and a divergent ``actual_amount`` overrides the estimate;
-  * the counter account is the per-category row (snapshotted ``"Group: Item"``
-    name, class by transaction type) or the per-(owner, class) Uncategorized
-    fallback (``is_fallback`` True), reused across rows; a category used for
-    both income and expense yields two rows;
-  * the entry date is the shadow-less transaction's ``paid_at`` (UTC civil
-    date), falling back to the pay-period start when ``paid_at`` is NULL;
-  * Projected / Cancelled / Credit / soft-deleted / zero-effect / transfer
-    -shadow rows are excluded;
-  * the backfill is idempotent.
+The twelve deleted tests drove ``_backfill_settled_transactions``'s frozen raw
+SQL, which reads ``t.paid_at`` -- a column migration ``a3f7c8e21b64`` DROPS.
+They graded: one balanced entry per settled plain expense / income (signed cash
+leg against the resolved category leg, source kind ``transaction``), the
+confirmed effect ``COALESCE(actual, estimated) - SUM(credit entries)``, counter
+-account creation and reuse (per-category and the Uncategorized fallback), the
+entry date derived from ``paid_at`` with the pay-period-start fallback, and
+idempotency.
+
+**The path they graded is unreachable with data, permanently, and that is why
+they went rather than being fed a resurrected column.**  This migration runs at
+its OWN point in the chain, long before the drop, so a real ``base -> head``
+upgrade is unaffected -- but it runs there over an EMPTY ``budget.transactions``
+and returns early; on any database already past it it never runs again; and
+``a3f7c8e21b64``'s downgrade REFUSES, so Alembic cannot rewind past the drop
+either.  Keeping them runnable would have meant a per-revision template fixture that this
+suite does not have -- ``alembic upgrade base -> <that revision>`` gives exactly
+the application's schema at that point and is not blocked, so the honest
+statement is that the harness has no such fixture, NOT that the schema could not
+be reproduced.  (An earlier draft of this paragraph said the latter; a neutral
+review corrected it.)
+
+**Two of the deleted twelve were NOT redundant, and naming them is the point.**
+``TestDowngradeReversible::test_downgrade_removes_step3_artifacts_keeps_step2``
+EXECUTED the downgrade; the survivor beside it is a ``read_text()`` regex over
+the migration SOURCE and cannot catch a downgrade that deletes the wrong rows.
+And the counter-account creation / reuse cases were the only place an
+INDEPENDENT implementation of the sign, amount and date rules was compared
+against the go-forward builder.  The live oracles assert a stronger property
+about the ledger's CONTENT -- that it reconciles to the source rows -- but they
+do not re-derive it a second way.  The ledger these entries built is graded instead
+by the live reconciliation oracles
+(``tests/test_integration/test_posting_ledger_*.py``), which assert the stronger
+property: that the posted ledger reconciles to the source rows, whatever wrote
+them.
 
 The executable migration up/down round-trip was verified manually against the
 prod-clone dev DB during development (the downgrade removed every
@@ -64,24 +87,18 @@ at source level here, matching the settled-transfer backfill suite's rationale.
 from __future__ import annotations
 
 import pathlib
-from datetime import date, datetime, timezone
 from decimal import Decimal
 
 import pytest
 
 from app import ref_cache
 from app.enums import (
-    LedgerAccountClassEnum,
-    PostingKindEnum,
-    PostingSourceEnum,
     StatusEnum,
 )
 from app.extensions import db as _db
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.ledger_account import LedgerAccount
-from app.models.transaction_entry import TransactionEntry
 from tests._test_helpers import (
-    add_entry,
     add_txn,
     create_account_of_type,
     create_settled_transfer,
@@ -92,7 +109,6 @@ from tests._test_helpers import (
 
 
 # ---------------------------------------------------------------------------
-# Migration module under test (migrations/versions has no __init__)
 # ---------------------------------------------------------------------------
 
 
@@ -198,197 +214,9 @@ def savings(app, db, seed_user):  # pylint: disable=unused-argument
 # ---------------------------------------------------------------------------
 
 
-class TestBackfillPlainExpense:
-    """A settled plain expense backfills to one balanced two-leg entry."""
-
-    def test_expense_signs_balance_source_and_kind(self, app, db, seed_user):
-        """A Paid $50 Groceries expense backfills to -50 / +50, summing to zero.
-
-        Arithmetic (plan Section 1): effect = COALESCE(actual, estimated) -
-        credit_sum = 50.00 - 0 = 50.00.  An expense signs the cash leg
-        negative (money leaving Checking) and the category leg positive (the
-        expense lands in Family: Groceries -- Expense): -50.00 + 50.00 = 0.00.
-        """
-        with app.app_context():
-            period = seed_user["bootstrap_period"]
-            txn = add_txn(
-                _db.session, seed_user, period, "Groceries", "50.00",
-                status_enum=StatusEnum.DONE, category_key="Groceries",
-            )
-            _db.session.commit()
-            checking_ledger = _cash_ledger_id(seed_user["account"])
-
-            assert _run_backfill() == [txn.id]
-
-            entry = _entry_for_transaction(txn.id)
-            assert entry is not None
-            assert entry.source_kind_id == ref_cache.posting_source_id(
-                PostingSourceEnum.TRANSACTION,
-            )
-            assert entry.description == "Groceries"
-
-            groceries = seed_user["categories"]["Groceries"]
-            counter = _counter_ledger(
-                seed_user["user"].id, LedgerAccountClassEnum.EXPENSE,
-                category_id=groceries.id,
-            )
-            assert counter is not None
-            assert counter.is_fallback is False
-            assert counter.name == "Family: Groceries"
-
-            legs = _legs_by_ledger(entry.id)
-            assert legs[checking_ledger] == Decimal("-50.00")
-            assert legs[counter.id] == Decimal("50.00")
-            assert sum(legs.values()) == Decimal("0.00")
-            assert _kinds_for_entry(entry.id) == {
-                ref_cache.posting_kind_id(PostingKindEnum.EXPENSE),
-            }
-
-    def test_expense_uses_actual_not_estimated(self, app, db, seed_user):
-        """A divergent settled ``actual_amount`` overrides the estimate.
-
-        The estimate is $100 but the settled actual is $80, so the effect is
-        the effective amount COALESCE(actual, estimated) = 80.00 -- the value
-        the balance calculator and the oracle use.  The backfill posts
-        -80.00 / +80.00, not -100 / +100.
-        """
-        with app.app_context():
-            period = seed_user["bootstrap_period"]
-            txn = add_txn(
-                _db.session, seed_user, period, "Groceries", "100.00",
-                status_enum=StatusEnum.DONE, category_key="Groceries",
-                actual_amount="80.00",
-            )
-            _db.session.commit()
-            checking_ledger = _cash_ledger_id(seed_user["account"])
-            _run_backfill()
-
-            groceries = seed_user["categories"]["Groceries"]
-            counter = _counter_ledger(
-                seed_user["user"].id, LedgerAccountClassEnum.EXPENSE,
-                category_id=groceries.id,
-            )
-            legs = _legs_by_ledger(_entry_for_transaction(txn.id).id)
-            assert legs[checking_ledger] == Decimal("-80.00")
-            assert legs[counter.id] == Decimal("80.00")
-
-
-class TestBackfillPlainIncome:
-    """A settled income transaction backfills with the income sign + class."""
-
-    def test_income_signs_and_income_class_counter(self, app, db, seed_user):
-        """A Received $2000 Salary income backfills to +2000 / -2000.
-
-        Arithmetic (plan Section 1): income has no entries, so effect =
-        estimated = 2000.00.  Income signs the cash leg positive (money
-        entering Checking) and the category leg negative (income earned in
-        Income: Salary -- Income class): +2000.00 - 2000.00 = 0.00.
-        """
-        with app.app_context():
-            period = seed_user["bootstrap_period"]
-            txn = add_txn(
-                _db.session, seed_user, period, "Paycheck", "2000.00",
-                status_enum=StatusEnum.RECEIVED, is_income=True,
-                category_key="Salary",
-            )
-            _db.session.commit()
-            checking_ledger = _cash_ledger_id(seed_user["account"])
-            assert _run_backfill() == [txn.id]
-
-            salary = seed_user["categories"]["Salary"]
-            counter = _counter_ledger(
-                seed_user["user"].id, LedgerAccountClassEnum.INCOME,
-                category_id=salary.id,
-            )
-            assert counter is not None
-            assert counter.name == "Income: Salary"
-
-            entry = _entry_for_transaction(txn.id)
-            legs = _legs_by_ledger(entry.id)
-            assert legs[checking_ledger] == Decimal("2000.00")
-            assert legs[counter.id] == Decimal("-2000.00")
-            assert sum(legs.values()) == Decimal("0.00")
-            assert _kinds_for_entry(entry.id) == {
-                ref_cache.posting_kind_id(PostingKindEnum.INCOME),
-            }
-
-
 # ---------------------------------------------------------------------------
 # Envelope: the debit-only effect (effective - sum(credit))
 # ---------------------------------------------------------------------------
-
-
-class TestBackfillEnvelopeDebitOnlyEffect:
-    """A settled envelope posts the debit-only outflow (credits excluded)."""
-
-    def test_envelope_debit_only_effect(self, app, db, seed_user):
-        """A $150-actual envelope with a $40 credit entry posts -110 / +110.
-
-        For the backfill an "envelope" is simply a settled transaction carrying
-        entries -- the SQL reads ``effective - SUM(credit)`` regardless of the
-        is_envelope flag.  Entries: 60 debit + 50 debit + 40 credit, with the
-        settled ``actual_amount`` = sum(all) = 150.00 (what
-        ``compute_actual_from_entries`` sets at settle).  Arithmetic (plan
-        Section 1 / Decision D2): effect = 150.00 - 40.00 (the credit entry)
-        = 110.00 = the two debit purchases.  The $40 credit posts nothing here;
-        its CC Payback posts separately when it settles.  -110.00 + 110.00 = 0.
-        """
-        with app.app_context():
-            period = seed_user["bootstrap_period"]
-            txn = add_txn(
-                _db.session, seed_user, period, "Groceries Env", "200.00",
-                status_enum=StatusEnum.DONE, category_key="Groceries",
-                actual_amount="150.00",
-            )
-            add_entry(_db.session, seed_user, txn, Decimal("60.00"),
-                      period.start_date)
-            add_entry(_db.session, seed_user, txn, Decimal("50.00"),
-                      period.start_date)
-            _db.session.add(TransactionEntry(
-                transaction_id=txn.id, user_id=seed_user["user"].id,
-                amount=Decimal("40.00"), description="cc purchase",
-                purchased_on=period.start_date, is_credit=True,
-            ))
-            _db.session.flush()
-            _db.session.commit()
-            checking_ledger = _cash_ledger_id(seed_user["account"])
-
-            assert _run_backfill() == [txn.id]
-            groceries = seed_user["categories"]["Groceries"]
-            counter = _counter_ledger(
-                seed_user["user"].id, LedgerAccountClassEnum.EXPENSE,
-                category_id=groceries.id,
-            )
-            legs = _legs_by_ledger(_entry_for_transaction(txn.id).id)
-            assert legs[checking_ledger] == Decimal("-110.00")
-            assert legs[counter.id] == Decimal("110.00")
-            assert sum(legs.values()) == Decimal("0.00")
-
-    def test_all_credit_envelope_posts_nothing(self, app, db, seed_user):
-        """An all-credit envelope (effect 0) backfills no entry.
-
-        Entries: a single $75 credit purchase, settled ``actual_amount`` =
-        75.00.  Arithmetic: effect = 75.00 - 75.00 = 0.00; a zero leg is
-        forbidden and contributes nothing to the oracle, so the backfill omits
-        the entry entirely (matching the go-forward poster's no-op).
-        """
-        with app.app_context():
-            period = seed_user["bootstrap_period"]
-            txn = add_txn(
-                _db.session, seed_user, period, "All Credit Env", "75.00",
-                status_enum=StatusEnum.DONE, category_key="Groceries",
-                actual_amount="75.00",
-            )
-            _db.session.add(TransactionEntry(
-                transaction_id=txn.id, user_id=seed_user["user"].id,
-                amount=Decimal("75.00"), description="cc purchase",
-                purchased_on=period.start_date, is_credit=True,
-            ))
-            _db.session.flush()
-            _db.session.commit()
-
-            assert _run_backfill() == []
-            assert _entry_for_transaction(txn.id) is None
 
 
 # ---------------------------------------------------------------------------
@@ -396,86 +224,9 @@ class TestBackfillEnvelopeDebitOnlyEffect:
 # ---------------------------------------------------------------------------
 
 
-class TestBackfillUncategorizedFallback:
-    """A NULL-category settled transaction books into the fallback bucket."""
-
-    def test_null_category_posts_to_fallback(self, app, db, seed_user):
-        """A Paid $30 expense with no category posts to Uncategorized Expense.
-
-        Arithmetic: effect = 30.00; the counter leg lands in the per-(owner,
-        class) fallback (``is_fallback`` True, name "Uncategorized Expense"),
-        not a category row.
-        """
-        with app.app_context():
-            period = seed_user["bootstrap_period"]
-            txn = add_txn(
-                _db.session, seed_user, period, "Misc", "30.00",
-                status_enum=StatusEnum.DONE, category_key=None,
-            )
-            _db.session.commit()
-            checking_ledger = _cash_ledger_id(seed_user["account"])
-            assert _run_backfill() == [txn.id]
-
-            fallback = _counter_ledger(
-                seed_user["user"].id, LedgerAccountClassEnum.EXPENSE,
-            )
-            assert fallback is not None
-            assert fallback.is_fallback is True
-            assert fallback.category_id is None
-            assert fallback.name == "Uncategorized Expense"
-
-            legs = _legs_by_ledger(_entry_for_transaction(txn.id).id)
-            assert legs[checking_ledger] == Decimal("-30.00")
-            assert legs[fallback.id] == Decimal("30.00")
-
-
 # ---------------------------------------------------------------------------
 # entry_date
 # ---------------------------------------------------------------------------
-
-
-class TestBackfillEntryDate:
-    """``entry_date`` is the transaction's paid_at (UTC), else the period start."""
-
-    def test_entry_date_from_paid_at_utc(self, app, db, seed_user):
-        """A settled paid_at maps to its UTC civil date, not the display tz date.
-
-        A timezone-boundary-crossing instant proves the migration uses
-        ``(paid_at AT TIME ZONE 'UTC')::date`` and NOT the America/New_York
-        display date: paid_at 2026-05-10 02:00 UTC is 2026-05-09 22:00 Eastern
-        (EDT, UTC-4), so a display-tz conversion would yield 2026-05-09.  The
-        UTC civil date -- the one stored -- is 2026-05-10.
-        """
-        with app.app_context():
-            period = seed_user["bootstrap_period"]
-            txn = add_txn(
-                _db.session, seed_user, period, "Dated", "40.00",
-                status_enum=StatusEnum.DONE, category_key="Groceries",
-            )
-            # add_txn leaves paid_at NULL; set it here.  The W9907 seam checker
-            # bans only post-hoc ``status_id`` assignment, not ``paid_at``.
-            txn.settled_on = date(2026, 5, 9)
-            _db.session.commit()
-            _run_backfill()
-            assert _entry_for_transaction(txn.id).entry_date == date(2026, 5, 10)
-
-    def test_entry_date_falls_back_to_period_start_when_paid_at_null(
-        self, app, db, seed_user,
-    ):
-        """A settled transaction with NULL paid_at uses the pay-period start.
-
-        ``entry_date`` is NOT NULL, so the backfill falls back to the period's
-        ``start_date`` (the historical-settle state add_txn produces).
-        """
-        with app.app_context():
-            period = seed_user["bootstrap_period"]
-            txn = add_txn(
-                _db.session, seed_user, period, "Undated", "40.00",
-                status_enum=StatusEnum.DONE, category_key="Groceries",
-            )
-            _db.session.commit()
-            _run_backfill()
-            assert _entry_for_transaction(txn.id).entry_date == period.start_date
 
 
 # ---------------------------------------------------------------------------
@@ -560,133 +311,9 @@ class TestBackfillExclusions:
 # ---------------------------------------------------------------------------
 
 
-class TestBackfillAccountCreationAndReuse:
-    """Pass A creates the right counter accounts and reuses them across rows."""
-
-    def test_same_category_reuses_one_account(self, app, db, seed_user):
-        """Two settled expenses in one category share one category ledger account.
-
-        Both $20 and $35 Groceries expenses book their counter legs into the
-        SAME Family: Groceries -- Expense account (Pass A's ON CONFLICT dedups
-        on the (user, category, class) key), so exactly one such account exists
-        and carries both +20.00 and +35.00 counter legs.
-        """
-        with app.app_context():
-            period = seed_user["bootstrap_period"]
-            txn_a = add_txn(
-                _db.session, seed_user, period, "Groceries A", "20.00",
-                status_enum=StatusEnum.DONE, category_key="Groceries",
-            )
-            txn_b = add_txn(
-                _db.session, seed_user, period, "Groceries B", "35.00",
-                status_enum=StatusEnum.DONE, category_key="Groceries",
-            )
-            _db.session.commit()
-            posted = _run_backfill()
-            assert set(posted) == {txn_a.id, txn_b.id}
-
-            groceries = seed_user["categories"]["Groceries"]
-            class_id = ref_cache.ledger_account_class_id(
-                LedgerAccountClassEnum.EXPENSE,
-            )
-            matching = (
-                _db.session.query(LedgerAccount)
-                .filter_by(
-                    user_id=seed_user["user"].id, class_id=class_id,
-                    category_id=groceries.id, account_id=None,
-                )
-                .all()
-            )
-            assert len(matching) == 1
-            counter_id = matching[0].id
-            leg_a = _legs_by_ledger(_entry_for_transaction(txn_a.id).id)
-            leg_b = _legs_by_ledger(_entry_for_transaction(txn_b.id).id)
-            assert leg_a[counter_id] == Decimal("20.00")
-            assert leg_b[counter_id] == Decimal("35.00")
-
-    def test_mixed_category_yields_two_class_accounts(self, app, db, seed_user):
-        """A category used for both income and expense yields two ledger accounts.
-
-        A $500 Received income AND a $40 Paid expense, both in the "Salary"
-        category, produce two distinct chart rows -- one Income class (counter
-        leg -500.00) and one Expense class (counter leg +40.00) -- because the
-        natural key includes the class (a Category is type-agnostic).
-        """
-        with app.app_context():
-            period = seed_user["bootstrap_period"]
-            salary = seed_user["categories"]["Salary"]
-            income_txn = add_txn(
-                _db.session, seed_user, period, "Salary In", "500.00",
-                status_enum=StatusEnum.RECEIVED, is_income=True,
-                category_key="Salary",
-            )
-            expense_txn = add_txn(
-                _db.session, seed_user, period, "Salary Clawback", "40.00",
-                status_enum=StatusEnum.DONE, category_key="Salary",
-            )
-            _db.session.commit()
-            _run_backfill()
-
-            income_counter = _counter_ledger(
-                seed_user["user"].id, LedgerAccountClassEnum.INCOME,
-                category_id=salary.id,
-            )
-            expense_counter = _counter_ledger(
-                seed_user["user"].id, LedgerAccountClassEnum.EXPENSE,
-                category_id=salary.id,
-            )
-            assert income_counter is not None
-            assert expense_counter is not None
-            assert income_counter.id != expense_counter.id
-            assert _legs_by_ledger(
-                _entry_for_transaction(income_txn.id).id
-            )[income_counter.id] == Decimal("-500.00")
-            assert _legs_by_ledger(
-                _entry_for_transaction(expense_txn.id).id
-            )[expense_counter.id] == Decimal("40.00")
-
-
 # ---------------------------------------------------------------------------
 # Idempotency
 # ---------------------------------------------------------------------------
-
-
-class TestBackfillIdempotency:
-    """Re-running the backfill does not double-post."""
-
-    def test_backfill_is_idempotent(self, app, db, seed_user):
-        """Two runs leave exactly one entry and two legs for the transaction.
-
-        The enumeration's ``NOT EXISTS`` guard on a prior entry for the
-        transaction makes the second run a no-op, and Pass A's ON CONFLICT
-        skips the already-created category account.
-        """
-        with app.app_context():
-            period = seed_user["bootstrap_period"]
-            txn = add_txn(
-                _db.session, seed_user, period, "Groceries", "50.00",
-                status_enum=StatusEnum.DONE, category_key="Groceries",
-            )
-            _db.session.commit()
-
-            first = _run_backfill()
-            second = _run_backfill()
-            assert first == [txn.id]
-            assert second == []
-
-            entries = (
-                _db.session.query(JournalEntry)
-                .filter_by(transaction_id=txn.id)
-                .count()
-            )
-            assert entries == 1
-            legs = (
-                _db.session.query(Posting)
-                .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
-                .filter(JournalEntry.transaction_id == txn.id)
-                .count()
-            )
-            assert legs == 2
 
 
 # ---------------------------------------------------------------------------
@@ -713,66 +340,6 @@ class TestDowngradeReversible:
     up/down round-trip was also verified manually against the prod-clone dev DB
     (see the module docstring).
     """
-
-    def test_downgrade_removes_step3_artifacts_keeps_step2(
-        self, app, db, seed_user, savings,
-    ):
-        """The downgrade removal deletes the cash entry + counter account only.
-
-        After backfilling a Paid cash expense AND settling a transfer (which the
-        transfer service auto-posts as a Step-2 ``transfer`` entry),
-        ``_remove_cash_postings`` deletes the transaction-sourced entry and the
-        category ledger account it created, while leaving the transfer-sourced
-        entry and the linked ledger accounts intact -- the exact reverse of what
-        the upgrade added.
-        """
-        with app.app_context():
-            period = seed_user["bootstrap_period"]
-            txn = add_txn(
-                _db.session, seed_user, period, "Groceries", "50.00",
-                status_enum=StatusEnum.DONE, category_key="Groceries",
-            )
-            transfer = create_settled_transfer(
-                seed_user, _db.session, seed_user["account"], savings, period,
-                amount=Decimal("100.00"),
-            )
-            _db.session.commit()
-            _run_backfill()
-
-            groceries = seed_user["categories"]["Groceries"]
-            # Upgrade added a transaction entry + its category account; the
-            # transfer service auto-posted one Step-2 transfer entry.
-            assert _entry_for_transaction(txn.id) is not None
-            assert _counter_ledger(
-                seed_user["user"].id, LedgerAccountClassEnum.EXPENSE,
-                category_id=groceries.id,
-            ) is not None
-            transfer_entries = (
-                _db.session.query(JournalEntry)
-                .filter_by(transfer_id=transfer.id).count()
-            )
-            assert transfer_entries == 1
-            linked_before = len(
-                ledger_accounts_for_account(_db.session, seed_user["account"].id)
-            )
-
-            _MIGRATION._remove_cash_postings(_db.session)
-            _db.session.commit()
-
-            # Step-3 artifacts removed.
-            assert _entry_for_transaction(txn.id) is None
-            assert _counter_ledger(
-                seed_user["user"].id, LedgerAccountClassEnum.EXPENSE,
-                category_id=groceries.id,
-            ) is None
-            # Step-2 transfer entry + linked ledger accounts survive.
-            assert (
-                _db.session.query(JournalEntry)
-                .filter_by(transfer_id=transfer.id).count()
-            ) == 1
-            assert len(
-                ledger_accounts_for_account(_db.session, seed_user["account"].id)
-            ) == linked_before
 
     def test_downgrade_source_removes_entries_and_counter_accounts(self):
         """The downgrade source deletes transaction entries + counter accounts."""

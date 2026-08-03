@@ -5,7 +5,7 @@ Tests for transfer template CRUD, grid cell endpoints, transfer instance
 operations, and ad-hoc transfer creation (§2.3 of the test plan).
 """
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 from decimal import Decimal
 
 from app import ref_cache
@@ -26,6 +26,7 @@ from app.services.balance_at import BalanceContext
 from app.services import transfer_service
 from app.services.auth_service import hash_password
 from app.services import account_service
+from app.utils.dates import display_today
 from tests._test_helpers import create_loan_account, field_is_disabled
 
 
@@ -862,7 +863,7 @@ class TestTransferInstance:
         POST and the finalised-row lock sees nothing locked; the status
         ``<select>`` is NOT disabled and submits the row's own status, so an
         ordinary notes edit arrives as an identity transition.  The transfer
-        service's own status seam re-stamped ``paid_at = now()`` on any entry
+        service's own status seam re-stamped the settle instant on any entry
         into a settled status -- and since plan step E1a that day IS the
         ``entry_date`` the transfer's postings are filed under, so editing the
         notes moved the money to today.  Measured at ``HEAD`` before the fix:
@@ -876,7 +877,7 @@ class TestTransferInstance:
             xfer = _create_transfer(seed_user, seed_periods_today, savings)
             done_id = ref_cache.status_id(StatusEnum.DONE)
 
-            settled_at = datetime.now(timezone.utc) - timedelta(days=7)
+            settled_at = display_today() - timedelta(days=7)
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
                 status_id=done_id, settled_on=settled_at,
@@ -919,7 +920,7 @@ class TestTransferInstance:
 
             # ARCHIVING it must not re-date it either.  Paid -> Settled is a
             # real state change, not an identity re-submit, and it reaches the
-            # same rule: the schema carries no ``paid_at``, so the seam decides,
+            # same rule: the schema carries no settle day, so the seam decides,
             # and before X-aj1 it stamped now() on any entry into a settled
             # status.  Archiving a transfer paid last month used to move its
             # posted entry to today.  Reachable from this very form -- Settled
@@ -1577,18 +1578,18 @@ class TestAdHoc:
                 f"Expected 2 distinct ad-hoc transfers, found {count}"
             )
 
-    def test_mark_done_transfer_sets_paid_at_on_shadows(
+    def test_mark_done_transfer_sets_the_settle_day_on_both_shadows(
         self, app, auth_client, seed_user, seed_periods_today
     ):
-        """POST /transfers/instance/<id>/mark-done sets paid_at on both shadows.
+        """POST /transfers/instance/<id>/mark-done dates both shadows.
 
         F-048 / C-22: parity with ``transactions.mark_done``.
         Settling a transfer must record when it was settled so
         ``Transaction.days_paid_before_due`` analytics, the
         dashboard's "paid on time" indicator, and any downstream
-        report that joins on ``paid_at`` work.  Both shadow
+        report that reads the settle day work.  Both shadow
         transactions are checked because the parent transfer has
-        no ``paid_at`` column of its own.
+        no ``settled_on`` column of its own.
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -1608,7 +1609,7 @@ class TestAdHoc:
             for shadow in shadows:
                 assert shadow.status.name == "Paid"
                 assert shadow.settled_on is not None, (
-                    f"Shadow {shadow.id} has NULL paid_at after mark-done; "
+                    f"Shadow {shadow.id} has no settled_on after mark-done; "
                     f"the F-048 parity gap is back."
                 )
 
@@ -1621,7 +1622,7 @@ class TestAdHoc:
         legal transition and neither mark-done route gates on status, so a stale
         page, a second tab or a replayed POST re-submits the settle.  The route
         used to pass ``settled_on=db.func.now()`` explicitly, and
-        ``update_transfer``'s explicit-``paid_at`` branch writes both shadows
+        ``update_transfer``'s explicit-day branch wrote both shadows
         VERBATIM after the status seam has already preserved the existing
         instant -- so the re-submit moved the money to today.  Since plan step
         E1a a settle's civil day IS the posted ``entry_date``, which is why this
@@ -1646,7 +1647,7 @@ class TestAdHoc:
             # today and the assertion below could pass on a stale ledger rather
             # than on a preserved one -- the control has to start from the state
             # a genuinely week-old settle is really in.
-            settled_a_week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+            settled_a_week_ago = display_today() - timedelta(days=7)
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id, settled_on=settled_a_week_ago,
             )
@@ -1661,13 +1662,13 @@ class TestAdHoc:
                 )
 
             days_before = _ledger_days()
-            shadow_instants_before = {
+            shadow_days_before = {
                 shadow.id: shadow.settled_on
                 for shadow in db.session.query(Transaction)
                 .filter_by(transfer_id=xfer.id, is_deleted=False)
                 .all()
             }
-            assert shadow_instants_before, "fixture produced no shadows"
+            assert shadow_days_before, "fixture produced no shadows"
 
             # The replay.
             assert auth_client.post(
@@ -1681,11 +1682,11 @@ class TestAdHoc:
                 .all()
             ):
                 moved = (
-                    shadow.settled_on - shadow_instants_before[shadow.id]
-                ).total_seconds()
+                    shadow.settled_on - shadow_days_before[shadow.id]
+                ).days
                 assert moved == 0, (
-                    f"Shadow {shadow.id} was re-dated by {moved / 86400:.2f} "
-                    f"days by a replayed mark-done (N-178)."
+                    f"Shadow {shadow.id} was re-dated by {moved} days by a "
+                    f"replayed mark-done (N-178)."
                 )
             assert _ledger_days() == days_before, (
                 "The replayed mark-done moved the posted ledger: "

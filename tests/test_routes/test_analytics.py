@@ -634,7 +634,7 @@ class TestBalanceSheetTab:
     Checking's $1000 opening is dated by its origination ``created_at``
     (the real DB clock), which the module's frozen 2026-03-20 ``today``
     predates, so the default as-of does NOT fold it.  Content is therefore
-    exercised with a settled transaction whose ``paid_at`` is pinned inside
+    exercised with a settled transaction whose settle day is pinned inside
     the frozen range; the opening is excluded but as a WHOLE entry, so the
     tie-out still closes.  A far-future ``today`` refreeze is avoided
     deliberately: Flask-Login would treat the real-clock session as
@@ -713,7 +713,7 @@ class TestBalanceSheetTab:
     ):
         """A settled income posts to the sheet and the tie-out stays green.
 
-        A $500 income settled with a ``paid_at`` inside the frozen range
+        A $500 income settled on a day inside the frozen range
         (2026-02-15) folds into the default as-of (2026-03-20): Checking
         +500 (Asset) and Retained Earnings +500 (Income closed into
         equity).  The seed opening's journal entry_date is the real-clock
@@ -1451,7 +1451,7 @@ class TestCalendarFlowStrip:
         bill nobody paid, and one that pins no trough.
         """
         with app.app_context():
-            from datetime import date, datetime, time, timezone
+            from datetime import date, datetime, timezone
             from decimal import Decimal
             from tests._test_helpers import create_settled_cash_transaction
 
@@ -1501,7 +1501,7 @@ class TestCalendarFlowStrip:
         documents: a past month's line moves on what actually happened.
         """
         with app.app_context():
-            from datetime import date, datetime, time, timezone
+            from datetime import date, datetime, timezone
             from decimal import Decimal
             from tests._test_helpers import create_settled_cash_transaction
 
@@ -1872,6 +1872,9 @@ def _settled_spending_txn(db, seed_user, period, name, category_key,
         actual_amount=Decimal(actual) if actual is not None else None,
         category_id=cat.id if cat else None,
         due_date=due_date,
+        # A settled row carries the day its money moved; this bare fixture
+        # states it rather than leaving a row the readers refuse (X-f1).
+        settled_on=due_date or period.start_date,
     )
     db.session.add(txn)
     db.session.flush()

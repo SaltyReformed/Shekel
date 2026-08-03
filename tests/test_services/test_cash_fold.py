@@ -40,7 +40,7 @@ implementation fails rather than a comment asserting it:
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
-from app.utils.dates import display_today, DISPLAY_TIMEZONE
+from app.utils.dates import DISPLAY_TIMEZONE
 from app.enums import StatusEnum
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
@@ -61,7 +61,6 @@ from tests._test_helpers import (
     mark_purchase_settled,
     override_anchor,
     restamp_opening_assertion,
-    settle_instant_on,
 )
 
 # An as-of far past every valuation date these ACTUAL-tier tests read, so the
@@ -76,7 +75,7 @@ def _instant(year, month, day, hour=0, minute=0, second=0):
 
     The arguments are read as the DISPLAY timezone -- the clock the user is
     actually looking at -- and converted to UTC for storage, which is the
-    direction production runs in: ``paid_at`` and ``created_at`` are stamped
+    direction production runs in: the settle day and ``created_at`` are stamped
     when the user acts and stored UTC.
 
     **It read them as UTC until ruling R-DH (b)** (2026-07-31), and the default
@@ -136,7 +135,7 @@ class TestTheOpeningMovesIntoTheSeed:
         and the zero-seeded prefix (-$500.00, the leaf's own partial sum).
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        _opened_at(account, date(2026, 2, 1))
+        _opened_at(account, _instant(2026, 2, 1))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[0], Decimal("500.00"),
             settled_on=date(2026, 1, 15), name="pre-opening",
@@ -252,14 +251,14 @@ class TestTheOpeningMovesIntoTheSeed:
         EXCEPT the first, where it answers -$500.00.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        _opened_at(account, date(2026, 2, 1))
+        _opened_at(account, _instant(2026, 2, 1))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[0], Decimal("500.00"),
             settled_on=date(2026, 1, 15), name="pre-opening",
         )
         append_balance_assertion(
             db.session, account, seed_periods[3], Decimal("2000.00"),
-            date(2026, 3, 1),
+            _instant(2026, 3, 1),
         )
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[6], Decimal("250.00"),
@@ -469,7 +468,7 @@ class TestEveryAssertionIsReplayed:
         )
         append_balance_assertion(
             db.session, account, seed_periods[4], Decimal("900.00"),
-            date(2026, 3, 1),
+            _instant(2026, 3, 1),
         )
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[6], Decimal("300.00"),
@@ -851,7 +850,7 @@ class TestTotality:
         the day before.  Hand-computed and identical across all three.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        _opened_at(account, date(2026, 2, 1))
+        _opened_at(account, _instant(2026, 2, 1))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[0], Decimal("500.00"),
             settled_on=date(2026, 1, 15), name="pre-opening",
@@ -989,16 +988,15 @@ _DRIFT_AS_OF = date(2026, 10, 8)
 _DRIFT_REASSERTION = Decimal("5412.83")
 _DRIFT_REASSERTION_AT = _instant(2026, 7, 3, 9, 0)
 _DRIFT_REASSERTION_INDEX = 13
-# Ruling R-B is an INSTANT partition, so period 13's two settled rows straddle
-# the assertion ON ITS OWN CIVIL DAY: the income strictly before it (absorbed by
-# the reset), the expense strictly after (riding on top).  Only the SIDE of the
-# assertion each falls on is load-bearing; the hour is arbitrary, and the
-# exactly-at-the-instant boundary is graded at the leaf
-# (``test_cash_walk.py``'s ``test_a_settle_at_exactly_the_assertion_instant_``
-# ``is_absorbed``).  A date-keyed partition puts BOTH on one side and cannot
-# reproduce period 13's figure either way.
-_DRIFT_STRADDLE_BEFORE_AT = _instant(2026, 7, 3, 8, 0)
-_DRIFT_STRADDLE_AFTER_AT = _instant(2026, 7, 3, 10, 0)
+# Period 13's two settled rows sit on the assertion's OWN CIVIL DAY, and under
+# ruling R-DH (a) an assertion is the CLOSING balance for its day -- so BOTH are
+# inside it and the reset absorbs both.  They were two instants an hour either
+# side of the assertion's when ruling R-B partitioned by instant; R-DH replaced
+# that rule and the figures below were recomputed for it then, so collapsing the
+# pair to the one day they always shared moves nothing.  Kept as a named
+# constant rather than inlined because "the settles that share the assertion's
+# day" is the property period 13 is here to grade.
+_DRIFT_STRADDLE_DAY = date(2026, 7, 3)
 
 # Rows worth exactly nothing, in four shapes.  See the class docstring for what
 # they are and are NOT: three independent layers zero them, so no single-point
@@ -1035,25 +1033,26 @@ _DRIFT_LATE_STRAY = Decimal("88.23")
 _DRIFT_STRAY_LATE_DAYS = 20
 
 
-def _drift_settle_instants(period, index):
-    """Return ``(income_instant, expense_instant)`` for a settled period.
+def _drift_settle_days(period, index):
+    """Return ``(income_day, expense_day)`` for a settled period.
 
     Args:
         period: The :class:`~app.models.pay_period.PayPeriod` being filled.
         index: Its ``period_index``.
 
     Returns:
-        The two aware-UTC settle instants.  Period 13's straddle the
-        re-assertion; every other period's sit on ordinary days inside their own
-        period.
+        The two civil settle days.  Period 13's both fall on the re-assertion's
+        own day; every other period's sit on ordinary days inside their own
+        period.  They were noon-UTC INSTANTS until plan step X-f1 (ruling
+        R-EC) -- noon UTC is the same civil day in the display timezone, which
+        is the day the readers derived from them, so every figure below is
+        unchanged.
     """
     if index == _DRIFT_REASSERTION_INDEX:
-        return _DRIFT_STRADDLE_BEFORE_AT, _DRIFT_STRADDLE_AFTER_AT
+        return _DRIFT_STRADDLE_DAY, _DRIFT_STRADDLE_DAY
     return (
-        settle_instant_on(period.start_date + timedelta(days=_DRIFT_INCOME_DAY)),
-        settle_instant_on(
-            period.start_date + timedelta(days=_DRIFT_EXPENSE_DAY),
-        ),
+        period.start_date + timedelta(days=_DRIFT_INCOME_DAY),
+        period.start_date + timedelta(days=_DRIFT_EXPENSE_DAY),
     )
 
 
@@ -1132,14 +1131,14 @@ def _build_drift_shape(db_session, seed_user, periods):
     """
     for index in _DRIFT_SETTLED_PERIODS:
         period = periods[index]
-        income_at, expense_at = _drift_settle_instants(period, index)
+        income_day, expense_day = _drift_settle_days(period, index)
         create_settled_cash_transaction(
             seed_user, db_session, period, _DRIFT_INCOME, is_income=True,
-            name=f"paycheck p{index}", settled_on=income_at,
+            name=f"paycheck p{index}", settled_on=income_day,
         )
         create_settled_cash_transaction(
             seed_user, db_session, period, _DRIFT_EXPENSE,
-            name=f"rent p{index}", settled_on=expense_at,
+            name=f"rent p{index}", settled_on=expense_day,
             actual_amount=(
                 _DRIFT_ACTUAL_EXPENSE if index == _DRIFT_ACTUAL_INDEX else None
             ),

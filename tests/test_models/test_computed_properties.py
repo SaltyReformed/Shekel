@@ -10,12 +10,14 @@ Tests for computed properties on models:
 """
 
 from datetime import date, datetime, timezone
+
+import pytest
 from decimal import Decimal
 
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.ref import Status, TransactionType
-from app.models.transaction import Transaction
+from app.models.transaction import Transaction, reject_settle_instant
 from app.models.transfer import Transfer
 from app.services.paycheck_calculator import (
     DeductionBreakdown,
@@ -630,11 +632,97 @@ class TestDaysUntilDue:
             assert txn.days_until_due is None
 
 
+class TestSettleDayRefusesAnInstant:
+    """The COLUMN refuses a ``datetime``, on every ORM write path (N-179).
+
+    ``datetime`` subclasses ``date``, so the type annotation catches nothing and
+    the value reaches PostgreSQL, which coerces it into the ``DATE`` column on
+    the SESSION clock -- UTC.  An instant at 2026-03-04 04:30 UTC is
+    2026-03-03 23:30 Eastern, so the row would store 2026-03-04: one day late,
+    silently, which is the split ruling R-DH (b) exists to delete.
+
+    **These pin the VALIDATOR, and they exist because nothing did.**  The seam
+    calls :func:`~app.models.transaction.reject_settle_instant` itself, ahead of
+    any assignment, so ``test_status_seam.py``'s refusal test proves the SEAM
+    and cannot reach the column hook at all -- it asserts the row was left
+    untouched, i.e. that the assignment never ran.  Deleting the ``@validates``
+    decorator therefore regressed nothing detectable, which is finding N-182's
+    own shape (a guarantee with no pin) inside the fix for N-179.  The hook is
+    what makes the claim "the column simply does not accept the type" true of a
+    future fixture or service that writes the attribute directly.
+    """
+
+    def test_a_plain_assignment_is_refused(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """``txn.settled_on = <datetime>`` raises before anything is stored."""
+        with app.app_context():
+            status = db.session.query(Status).filter_by(name="Paid").one()
+            expense_type = (
+                db.session.query(TransactionType).filter_by(name="Expense").one()
+            )
+            txn = Transaction(
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                account_id=seed_user["account"].id,
+                status_id=status.id,
+                name="Instant refusal",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=expense_type.id,
+                estimated_amount=Decimal("100.00"),
+                settled_on=seed_periods[0].start_date,
+            )
+            db.session.add(txn)
+            db.session.flush()
+
+            with pytest.raises(TypeError, match="must be a date"):
+                txn.settled_on = datetime(2026, 3, 4, 4, 30, tzinfo=timezone.utc)
+            # The stored day is untouched: the validator runs before the set.
+            assert txn.settled_on == seed_periods[0].start_date
+
+    def test_a_constructor_kwarg_is_refused(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """``Transaction(settled_on=<datetime>)`` raises at construction.
+
+        The declarative constructor assigns through ``setattr``, so the same
+        validator covers it -- which is the path a fixture is most likely to
+        take, and the one the X-f1 conversion actually took 16 times.
+        """
+        with app.app_context():
+            status = db.session.query(Status).filter_by(name="Paid").one()
+            expense_type = (
+                db.session.query(TransactionType).filter_by(name="Expense").one()
+            )
+            with pytest.raises(TypeError, match="must be a date"):
+                Transaction(
+                    pay_period_id=seed_periods[0].id,
+                    scenario_id=seed_user["scenario"].id,
+                    account_id=seed_user["account"].id,
+                    status_id=status.id,
+                    name="Instant refusal",
+                    category_id=seed_user["categories"]["Groceries"].id,
+                    transaction_type_id=expense_type.id,
+                    estimated_amount=Decimal("100.00"),
+                    settled_on=datetime(2026, 3, 4, 4, 30, tzinfo=timezone.utc),
+                )
+
+    def test_a_civil_date_and_none_both_pass_through(self):
+        """The rule refuses instants only -- it is not a general type gate.
+
+        Asserted on the shared function rather than through the ORM so the
+        pass-through arms are stated where the refusal is, and so a future
+        caller can see that ``None`` (an unsettled row) is legal.
+        """
+        assert reject_settle_instant(date(2026, 3, 4)) == date(2026, 3, 4)
+        assert reject_settle_instant(None) is None
+
+
 class TestDaysPaidBeforeDue:
     """Tests for Transaction.days_paid_before_due computed property."""
 
     def _make_txn(self, seed_user, seed_periods, due_date_val, settled_on_val):
-        """Helper: create a transaction with given due_date and paid_at."""
+        """Helper: create a transaction with given due_date and settle day."""
         status = db.session.query(Status).filter_by(name="Paid").one()
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
         txn = Transaction(
@@ -657,7 +745,7 @@ class TestDaysPaidBeforeDue:
         """Paid 3 days before due returns 3 (positive = early)."""
         with app.app_context():
             due = date(2026, 3, 15)
-            paid = datetime(2026, 3, 12, 10, 0, 0, tzinfo=timezone.utc)
+            paid = date(2026, 3, 12)
             txn = self._make_txn(seed_user, seed_periods, due, paid)
             assert txn.days_paid_before_due == 3
 
@@ -665,12 +753,12 @@ class TestDaysPaidBeforeDue:
         """Paid 2 days after due returns -2 (negative = late)."""
         with app.app_context():
             due = date(2026, 3, 15)
-            paid = datetime(2026, 3, 17, 10, 0, 0, tzinfo=timezone.utc)
+            paid = date(2026, 3, 17)
             txn = self._make_txn(seed_user, seed_periods, due, paid)
             assert txn.days_paid_before_due == -2
 
-    def test_days_paid_before_due_no_paid_at(self, app, db, seed_user, seed_periods):
-        """No paid_at timestamp returns None."""
+    def test_days_paid_before_due_no_settle_day(self, app, db, seed_user, seed_periods):
+        """No settle day returns None -- an unsettled row's timeliness is moot."""
         with app.app_context():
             txn = self._make_txn(
                 seed_user, seed_periods,
@@ -679,20 +767,29 @@ class TestDaysPaidBeforeDue:
             )
             assert txn.days_paid_before_due is None
 
-    def test_days_paid_before_due_evening_eastern_is_on_time(
+    def test_days_paid_before_due_is_exact_civil_date_arithmetic(
         self, app, db, seed_user, seed_periods,
     ):
-        """An 8:05pm-Eastern settle on the due date is on time (0), not late (F3).
+        """A settle ON the due date is on time (0), with no timezone in it.
 
-        Paid at 2026-01-16 01:05 UTC -- 2026-01-15 8:05pm Eastern (EST,
-        UTC-5) -- on a 2026-01-15 due date.  Truncating ``paid_at`` in UTC
-        lands on Jan 16 and reports -1 (a day late by wall-clock drift); the
-        display-timezone rule lands it on the Jan 15 due date, so the result
-        is 0.  This pins the F3 fix that no other timeliness test (all
-        mid-morning UTC, same civil day either way) exercises.
+        **This test used to carry the F3 rule and no longer can, by
+        construction.**  It pinned an 8:05pm-Eastern settle -- stored as
+        2026-01-16 01:05 UTC -- reporting 0 against a 2026-01-15 due date,
+        because the property converted the instant to the display timezone
+        before truncating it; truncating in UTC reported -1, a day late by
+        wall-clock drift.  Plan step X-f1 removed the conversion along with the
+        instant: both operands are civil dates now and the subtraction is exact.
+
+        **The rule did not disappear, it MOVED to the write door**, which is the
+        only place an instant still becomes a day:
+        ``test_status_seam.py::TestApplyStatusChangeSettleDay::``
+        ``test_the_stamped_day_is_the_users_day_not_the_process_utc_day``
+        freezes the clock at an evening-Eastern instant and asserts the seam
+        records the Eastern day.  Naming that here matters: a reader who finds
+        this test looking for F3's coverage must be sent to where it lives, not
+        left thinking it was dropped.
         """
         with app.app_context():
             due = date(2026, 1, 15)
-            paid = datetime(2026, 1, 16, 1, 5, tzinfo=timezone.utc)
-            txn = self._make_txn(seed_user, seed_periods, due, paid)
+            txn = self._make_txn(seed_user, seed_periods, due, due)
             assert txn.days_paid_before_due == 0

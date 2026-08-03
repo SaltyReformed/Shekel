@@ -41,7 +41,6 @@ from tests._test_helpers import (
     freeze_today,
     insert_tracking_start_event,
     insert_trueup_event,
-    settle_instant_on,
 )
 
 

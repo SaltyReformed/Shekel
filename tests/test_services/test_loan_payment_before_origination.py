@@ -29,7 +29,6 @@ from tests._test_helpers import (
     create_loan_account,
     create_settled_transfer,
     create_transfer,
-    settle_instant_on,
 )
 
 # The suite's frozen today is 2026-03-20.  This loan closes 2026-03-01 -- in the
@@ -226,7 +225,7 @@ class TestTheEditPathIsGuardedToo:
         """A rejected edit is atomic -- transfer and BOTH shadows unchanged.
 
         The check runs before any field is applied, the same discipline
-        ``_apply_status_to_all_three`` follows for an illegal status transition.  A
+        ``apply_status_to_all_three`` follows for an illegal status transition.  A
         guard that raised halfway through would leave the three rows disagreeing,
         breaking Transfer Invariant 3 while reporting an error.
 

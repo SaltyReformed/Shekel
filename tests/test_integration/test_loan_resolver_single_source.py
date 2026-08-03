@@ -48,7 +48,6 @@ from tests._test_helpers import (
     create_loan_account,
     create_settled_transfer,
     loan_params_for,
-    settle_instant_on,
 )
 
 
@@ -148,7 +147,7 @@ def _settle_one_payment(seed_user, loan_account, period, auth_client):
 
     Routes through ``create_settled_transfer`` -- transfer_service, the same
     settle state machine (``update_transfer`` to DONE) the mark-done route drives
-    -- with ``paid_at`` pinned to the period's start, so the payment is visible
+    -- with the settle day pinned to the period's start, so the payment is visible
     today under C2's settled-date clock.  The HTTP mark-done route stamps
     ``now()``, whose UTC-civil date can sit a day ahead of the host's
     ``date.today()`` and hide the payment; that route path is covered directly by

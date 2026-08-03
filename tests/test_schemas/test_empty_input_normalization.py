@@ -14,12 +14,16 @@ helper directly, so a schema that stops routing its ``@pre_load``
 through the helper fails here too.
 """
 
+from marshmallow import fields
 from werkzeug.datastructures import MultiDict
 
+from app.schemas.validation._helpers import (
+    BaseSchema,
+    _normalize_empty_inputs,
+)
 from app.schemas.validation import (
     AccountTypeUpdateSchema,
     PensionProfileUpdateSchema,
-    TransactionUpdateSchema,
     TransferUpdateSchema,
 )
 
@@ -70,13 +74,38 @@ class TestEmptyInputNormalization:
     def test_dump_only_nullable_field_stays_dropped(self):
         """A dump_only field keeps the drop behavior even when nullable.
 
-        ``TransactionUpdateSchema.settled_on`` is ``allow_none`` but
-        ``dump_only``: it can never load a value, so mapping its empty
-        submit to ``None`` would only hand the loader a key it
-        discards.  The pre-change shape (key absent) is preserved.
+        A ``dump_only`` field can never load a value, so mapping its empty
+        submit to ``None`` would only hand the loader a key it discards; the
+        key is dropped instead.
+
+        **It is asserted against the HELPER, not through ``load()``, and that
+        took two attempts** (plan step X-f1).  The case used
+        ``TransactionUpdateSchema.paid_at`` -- the only ``dump_only`` field in
+        the whole validation package -- and ruling R-EC deleted the field with
+        the column, which left the assertion passing on ``unknown=EXCLUDE``
+        rather than on the rule.  Re-pointing it at a locally-declared
+        ``dump_only`` field did not fix that: with the ``not field.dump_only``
+        arm DELETED the loaded payload is byte-identical, because marshmallow
+        discards a ``dump_only`` key on load either way.  **The branch is
+        invisible downstream of ``load()``**, so a test that goes through
+        ``load()`` cannot grade it -- measured, by deleting the arm and watching
+        the suite stay green.  Calling the helper directly is what makes the
+        rule falsifiable.
         """
-        data = TransactionUpdateSchema().load({"paid_at": ""})
-        assert data == {}
+
+        class _DumpOnlyProbe(BaseSchema):
+            """A minimal schema carrying the two field shapes under test."""
+
+            settled_on = fields.Date(allow_none=True, dump_only=True)
+            name = fields.String(allow_none=True)
+
+        cleaned = _normalize_empty_inputs(
+            _DumpOnlyProbe(), {"settled_on": "", "name": ""},
+        )
+        # The dump_only key is DROPPED; the ordinary nullable one beside it is
+        # kept as an explicit None, so this separates the two arms rather than
+        # passing on an empty payload.
+        assert cleaned == {"name": None}
 
     def test_transfer_category_clear_loads_as_none(self):
         """The transfer full-edit "-- None --" category posts as None.

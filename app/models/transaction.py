@@ -6,8 +6,10 @@ assigned to a specific pay period and scenario, with estimated and
 actual amounts plus a status workflow.
 """
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
+
+from sqlalchemy.orm import validates
 
 from app.extensions import db
 from app import ref_cache
@@ -18,6 +20,48 @@ from app.models.mixins import (
     TimestampMixin,
     TrackingVisibilityMixin,
 )
+
+
+def reject_settle_instant(value: date | None) -> date | None:
+    """Return *value*, refusing a ``datetime`` where a civil DAY is required.
+
+    **The ONE statement of finding N-179's rule**, consumed by the column's own
+    ORM validator below and by ``status_seam.apply_status_change`` -- which
+    calls it BEFORE it assigns anything, so a rejected settle leaves the row
+    entirely untouched rather than status-changed and undated.
+
+    ``datetime`` subclasses ``date``, so a type annotation catches nothing and
+    the value flows all the way to PostgreSQL, which coerces it into the
+    ``DATE`` column on the SESSION clock -- UTC.  An instant at
+    2026-03-04 04:30 UTC is 2026-03-03 23:30 Eastern, so the row stores
+    2026-03-04: one day later than the user's civil day, silently, which is
+    exactly the UTC-vs-display split ruling **R-DH (b)** exists to delete,
+    reintroduced one layer down.  Measured during the X-f1 conversion: 16 test
+    sites handed the seam an instant and 8 of them stayed GREEN while doing it,
+    one writing a journal entry whose ``DATE`` column held
+    ``2026-03-20T13:00:00+00:00``.
+
+    Args:
+        value: The candidate settle day, or ``None``.
+
+    Returns:
+        *value* unchanged, so the function composes into an assignment.
+
+    Raises:
+        TypeError: When *value* is a ``datetime``.  A programming error at the
+            call site rather than user input -- no form can submit an instant
+            into a date field -- so it is not a ``ValidationError``.
+    """
+    if isinstance(value, datetime):
+        raise TypeError(
+            f"settled_on must be a date, got datetime {value!r}.  A "
+            "settle records the CIVIL DAY its money moved, and an instant "
+            "handed here is truncated by PostgreSQL on the session clock "
+            "(UTC), so an evening-Eastern settle would be filed on the "
+            "following day.  Pass the user's civil day -- display_today(), or "
+            "the day the bank showed."
+        )
+    return value
 
 
 class Transaction(
@@ -234,6 +278,39 @@ class Transaction(
     # ``status_id`` -- so they cannot diverge.  See the class docstring for why
     # this is not a CHECK constraint and why it has no bounds.
     settled_on = db.Column(db.Date)
+
+    @validates("settled_on")
+    def _refuse_a_settle_instant(self, _key, value):
+        """Refuse a ``datetime`` written to :attr:`settled_on`, on ANY path.
+
+        The type guard lives on the COLUMN rather than only at the write door,
+        and that placement is the point (finding **N-179**).  The seam refuses
+        an instant it is handed, but nothing stopped a caller -- or a fixture --
+        assigning the attribute directly, and PostgreSQL then truncates the
+        instant on the UTC session clock in silence.  A validator fires for the
+        constructor, for a plain ``txn.settled_on = ...``, and for every ORM
+        write path, so the wrong type is a loud ``TypeError`` wherever it is
+        written instead of a day that is wrong by one.
+
+        It is not a fence with an allowlist and it hunts no call sites: the
+        column simply does not accept the type.  The residual, stated because
+        an unstated limit reads as stronger than it is: a bulk
+        ``query.update({"settled_on": ...})`` bypasses the ORM attribute layer
+        and is not seen here, the same boundary
+        ``LoanAnchorEvent``'s append-only guard states for itself.
+
+        Args:
+            value: The candidate settle day.  (SQLAlchemy also passes the
+            attribute name, always ``settled_on``, which this ignores.)
+
+        Returns:
+            *value* unchanged when it is a civil ``date`` or ``None``.
+
+        Raises:
+            TypeError: When *value* is a ``datetime`` (from
+                :func:`reject_settle_instant`).
+        """
+        return reject_settle_instant(value)
     # is_envelope and companion_visible are provided by
     # TrackingVisibilityMixin.  On an ad-hoc (template_id IS NULL) row
     # they carry the row's own setting; on a template-generated row they

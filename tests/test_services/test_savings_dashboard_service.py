@@ -1136,7 +1136,7 @@ class TestPaidOffReadsTheLedgerNotTheReplay:
         # Pylint: import-outside-toplevel -- the file-wide deferred-import
         # convention for test-local symbols.
         # pylint: disable=import-outside-toplevel
-        from tests._test_helpers import create_settled_transfer, settle_instant_on
+        from tests._test_helpers import create_settled_transfer
 
         with app.app_context():
             acct = _create_small_loan(seed_user, db.session)

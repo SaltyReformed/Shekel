@@ -144,6 +144,20 @@ them).  Must run *before* the Commit-2 schema downgrade (``bdde62675c9b``),
 which drops the ``category_id`` / ``is_fallback`` / ``transaction_id`` columns:
 once this has run, no category/fallback rows remain and every
 ``transaction_id`` is gone, so that column drop is clean.
+
+**ITS DATA PATH BECAME UNREACHABLE AT ``a3f7c8e21b64`` (plan step X-f1), and the
+Pass-B test suite was DELETED there rather than fed a resurrected column**
+(developer ruling, 2026-08-03).  The SQL below reads ``t.paid_at``, which that
+revision DROPS.  Nothing is broken by this: a ``base -> head`` upgrade still
+runs this migration at its own point in the chain, long before the drop -- but
+it runs there over an EMPTY ``budget.transactions`` and returns early, and on
+any database already past this revision it never runs again.  ``a3f7c8e21b64``'s
+downgrade REFUSES, so Alembic cannot rewind past the drop either.  **Do not
+"fix" the SQL below to read ``settled_on``**: that column does not exist at this
+revision, and rewriting it would break the one run that still happens.
+``tests/test_models/test_posting_cash_backfill.py`` keeps the tests that never
+reach this statement (the exclusions, which the early return answers) and
+records what the deleted twelve graded.
 """
 from collections import namedtuple
 from decimal import Decimal

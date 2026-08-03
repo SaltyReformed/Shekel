@@ -41,11 +41,20 @@ plan Section 6:
      ``journal_entry.user_id``) -- a posting carries no ``user_id``; its owner is
      reached only through its journal entry, and one owner's / scenario's
      reconciliation never picks up another's.
-  7. **Backfill == go-forward.**  A transaction posted by the ``posting_service``
-     Python builder and the same transaction posted by the raw-SQL Commit-7
-     migration backfill produce identical legs and reconcile identically.
-  8. **Revert-and-recategorize reconciles (the plan Section 2.8 CRITICAL
+  7. **Revert-and-recategorize reconciles (the plan Section 2.8 CRITICAL
      regression lock)** -- driven through the real PATCH route, then swept.
+
+**A "backfill == go-forward" invariant was listed here and its case is DELETED**
+(plan step X-f1; see the note above ``TestRevertAndRecategorizeReconciles``).  It
+compared the ``posting_service`` Python builder against the raw-SQL Commit-7
+migration backfill on one transaction.  **Losing it lost something real and
+saying so is the point**: it was the only check that an INDEPENDENT
+implementation of the sign / amount / date rules agreed with the go-forward
+builder, and the two surviving "backfill == go-forward" tests elsewhere
+(``test_posting_ledger_account_backfill.py``, ``test_loan_posting_backfill.py``)
+reuse the go-forward builder, so they are true by construction.  It went because
+the SQL it drove reads a column the head revision drops, not because it was
+redundant.
 
 Two adversarial cases prove the oracle is not vacuous: tampering a settled
 transaction's estimate makes the per-account reconciliation FAIL -- driven
@@ -112,13 +121,10 @@ from app.services import ledger_account_service, posting_service, status_seam
 from app.utils.balance_predicates import settled_status_ids
 from tests._test_helpers import (
     add_txn,
-    clear_postings_for_transaction,
     create_account_of_type,
     create_settled_cash_transaction,
     create_settled_transfer,
-    inject_cash_backfill_kind_id,
     linked_ledger_account,
-    load_migration_module,
 )
 
 
@@ -595,15 +601,6 @@ def _counter_ledger_id(
     return ledger_account_service.get_or_create_category_ledger_account(
         user_id, category_id, ledger_class,
     ).id
-
-
-# The Commit-7 backfill migration module, loaded once so its idempotent
-# ``_backfill_settled_transactions`` raw-SQL builder can be invoked directly (the
-# historical producer), the same pattern the Step-2 oracle and the backfill suite
-# use.
-_BACKFILL_MIGRATION = load_migration_module(
-    "7d63529e4300_backfill_historical_cash_postings.py"
-)
 
 
 # ---------------------------------------------------------------------------
@@ -1100,96 +1097,21 @@ class TestOwnerIsolationViaJournalEntry:
 
             _assert_full_reconciliation(scenario1)
             _assert_full_reconciliation(scenario2)
-
-
 # ---------------------------------------------------------------------------
-# 7. Backfilled vs go-forward postings reconcile identically
+# THE BACKFILL-VS-GO-FORWARD CASE WAS DELETED AT PLAN STEP X-f1
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def _cash_backfill_kind_id(monkeypatch):
-    """Inject the Step-4 ``kind_id`` into the frozen 7d63 Pass-A SQL.
-
-    Requested only by the backfill==go-forward test below -- the sole test here
-    that invokes the migration's raw-SQL backfill.  Step 4, Commit 2 made
-    ``ledger_accounts.kind_id`` NOT NULL, so the frozen Pass-A INSERT (which
-    omits it, and which ``ON CONFLICT DO NOTHING`` does NOT rescue from the NOT
-    NULL) must carry the kind the Step-4 backfill would assign.  Delegates to the
-    shared :func:`inject_cash_backfill_kind_id` helper the cash-backfill suite
-    also uses; ``monkeypatch`` auto-reverts.
-    """
-    inject_cash_backfill_kind_id(monkeypatch, _BACKFILL_MIGRATION)
-
-
-class TestBackfillAndGoForwardAgree:
-    """The raw-SQL backfill and the posting_service builder produce equal legs."""
-
-    def test_same_transaction_posts_identically_both_ways(
-        self, app, db, seed_user, _cash_backfill_kind_id,
-    ):
-        """A cash expense posted go-forward then re-posted by the backfill matches.
-
-        Arithmetic: a $50 Groceries expense posts -50 / +50 go-forward (the
-        ``posting_service`` Python builder).  Clearing those legs to the
-        pre-ledger state and running the migration's raw-SQL backfill re-posts the
-        SAME -50 / +50.  Asserting the two are equal leg-for-leg catches any
-        divergence between the producers, and the oracle reconciles identically
-        over the backfilled postings.
-        """
-        with app.app_context():
-            scenario_id = seed_user["scenario"].id
-            user_id = seed_user["user"].id
-            checking = seed_user["account"]
-            period = seed_user["bootstrap_period"]
-
-            txn = create_settled_cash_transaction(
-                seed_user, db.session, period, Decimal("50.00"),
-                category=seed_user["categories"]["Groceries"],
-            )
-            db.session.commit()
-            txn_id = txn.id
-            groceries_counter = _counter_ledger_id(
-                user_id, LedgerAccountClassEnum.EXPENSE,
-                seed_user["categories"]["Groceries"].id,
-            )
-
-            # Capture the go-forward legs (Checking rides its $1000.00
-            # Step-5 opening: 1000 - 50).
-            forward_checking = _independent_ledger_sum(checking.id, scenario_id)
-            forward_counter = _ledger_account_sum(groceries_counter, scenario_id)
-            assert forward_checking == Decimal("950.00")
-            assert forward_counter == Decimal("50.00")
-
-            # Clear to the pre-ledger historical state and re-post via the
-            # migration's raw-SQL backfill (the historical producer).  The
-            # Groceries-Expense counter account survives the clear; the backfill
-            # reuses it (ON CONFLICT) rather than making a second.
-            clear_postings_for_transaction(txn_id)
-            assert _independent_ledger_sum(
-                checking.id, scenario_id,
-            ) == Decimal("1000.00")  # cleared back to the opening
-            posted = _BACKFILL_MIGRATION._backfill_settled_transactions(
-                db.session,
-            )
-            db.session.commit()
-            assert posted == [txn_id]
-
-            # The backfilled net equals the go-forward net, account for account.
-            assert _independent_ledger_sum(
-                checking.id, scenario_id,
-            ) == forward_checking
-            assert _ledger_account_sum(
-                groceries_counter, scenario_id,
-            ) == forward_counter
-            # Exactly one balanced entry was re-posted for the transaction.
-            assert (
-                _db.session.query(JournalEntry)
-                .filter_by(transaction_id=txn_id)
-                .count()
-            ) == 1
-            assert _entries_violating_balance() == []
-            _assert_full_reconciliation(scenario_id)
+#
+# ``TestBackfillAndGoForwardAgree`` drove the historical migration's frozen raw
+# SQL, which reads a ``paid_at`` column migration ``a3f7c8e21b64`` DROPS.  It is
+# the same class the developer ruled on for the two dedicated backfill suites
+# (2026-08-03): the path is UNREACHABLE with data -- the migration runs only at
+# its own point in the chain, long before the drop, over an empty table, and
+# ``a3f7c8e21b64``'s downgrade REFUSES so Alembic cannot rewind past the drop --
+# so the case graded a producer that can never run again against one that runs
+# every day.  What it asserted, and what the rest of this oracle still asserts
+# without it: the two producers post leg-for-leg identical entries for one
+# settled source, and the ledger reconciles either way.  The GO-FORWARD half of
+# that is covered by every other case here; the historical half has no future.
 
 
 # ---------------------------------------------------------------------------

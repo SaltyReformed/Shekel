@@ -316,12 +316,12 @@ becomes a RECONCILIATION rather than a reset -- so the steps that served the OLD
 against it rather than run first.
 
 **NEXT, in order: X-f1, X-f2, X-f3 (the cutover -- MOVES MONEY, own PR), X-f4, X-f5, then X-f6**
-(bank import, the ruled follow-on).  **X-f1 is IN FLIGHT and PARKED RED on branch
-`feat/xf1-settle-day`** (`1ca63972` docs, `70ba87f6` build; 102 tests fail; not pushed).  Its
-step entry in Section 5 carries a **"X-f1b as PARKED: everything needed to resume COLD"** block --
-what is proven, what is only assumed, the environment, the three test locations (one of which this
-step missed and went RED), and the remaining work in order.  Read that block before touching the
-branch; its first item is the ship gate, not cleanup.  **X-ai-s (the migration) is HELD pending X-f3**: it buys
+(bank import, the ruled follow-on).  **X-f1b is GREEN on branch `feat/xf1-settle-day`** -- the
+suite is 7,784 / 0 under both timezones, all three test locations run, and the real-data baseline is
+byte-identical with a firing positive control.  Its step entry in Section 5 carries the **"X-f1b as
+BUILT"** record: what the 102 parked failures actually were, the three findings it closed, the four
+things its second pair of reviews found (one of them a defect the step itself introduced), and what
+the 22 deleted migration tests really cost.  **X-f1c and X-f1d remain.**  **X-ai-s (the migration) is HELD pending X-f3**: it buys
 per-ASSERTION attribution for the correction family X-f3 deletes, and running it first would ship a
 migration and a backfill for something about to be removed.  **X-ai-r is DONE** (`c518d2e4` /
 `8281e82c`, PR #81) and its LOAN half survives untouched.  After X-f: **X-ai-a, X-ai-b, X-ai-c,
@@ -330,21 +330,26 @@ existing), then **re-land the REST of X-d**, then **X-aj2**, **X-ak**, with **X-
 needs, instrument undecided), **X-ah** (N-142) and **X-al** (N-154) unscheduled behind them, and
 **Phase G now INSIDE E2**.  **S2-b is absorbed into X-f1** and is no longer a separate step.
 
-**X-f1b IS BUILT AND NOT SHIPPABLE, and three neutral adversarial reviews are why.**  The app half
-is done and MEASURED: `pylint app/` and `scripts/` 10.00/10, the checker meta-suite 144/144, the
+**X-f1b WAS BUILT AND NOT SHIPPABLE, and three neutral adversarial reviews were why.  It is
+SHIPPABLE now** -- the paragraphs below record the state it was parked in, because the reason it was
+parked is the finding: the app half measured clean while the test half had lost the coverage of two
+rules, and a step that grades its own app code with a harness that cannot see the loss will report
+success.  The app half was MEASURED: `pylint app/` and `scripts/` 10.00/10, the checker meta-suite 144/144, the
 migration runs on a production clone with the settled-iff-dated invariant EXACT (156 settled all
 dated, 843 non-settled all NULL), `verify_balance_baseline.py` **byte-identical** over 9 accounts /
 427 grid cells / 5,978 daily points with a positive control firing (one settle day moved 30 days ->
 16-line diff), the downgrade refusing, and its recovery SQL EXERCISED in a rolled-back transaction
-(156/156 rows round-trip to the same civil day).  **The tests are not done: 102 fail**, and the
-reviews found the remaining work is not the mechanical part.
+(156/156 rows round-trip to the same civil day).  **The tests were not done: 102 failed**, and the
+reviews found the remaining work was not the mechanical part.  It is done now -- see the as-built
+record for what those 102 turned out to be.
 
 **THREE OF THE STEP'S OWN CLAIMS WERE REFUTED, and all three corrections are in place.**  *"No
 figure moves"* was FALSE -- the backfill moves a payment-timeliness metric onto a day nothing
 observed, and the balance harness structurally cannot see it because it is not a balance
-(**N-181**).  *"Enforced structurally at the seam"* was FALSE AS STATED -- `update_transfer` writes
-`settled_on` unfenced and can either date an unsettled transfer or 500 a settled one (**N-183**,
-which BLOCKS X-f1c).  *"The three deleted helpers are callerless"* was FALSE -- eight live
+(**N-181**, still OPEN, owned by X-f1c).  *"Enforced structurally at the seam"* was FALSE AS STATED
+-- `update_transfer` wrote `settled_on` unfenced and could either date an unsettled transfer or 500 a
+settled one (**N-183**, CLOSED at X-f1b: both writes route through the seam now, and the seam itself
+refuses a day for a non-settled status).  *"The three deleted helpers are callerless"* was FALSE -- eight live
 references survived, and one of them made this repo's OWN checker meta-test RED
 (`balance_seam.py` still ruled on `settled_civil_day`), a gate the step never ran.
 
@@ -352,20 +357,23 @@ references survived, and one of them made this repo's OWN checker meta-test RED
 derived day CORRECTLY -- all nine genuine UTC/Eastern day differences verified arithmetically, and
 no hand-computed money figure was edited -- and still destroyed the coverage of two rules, because
 it treated "recompute the day at each site" as the whole job when seven of those sites were the only
-tests HOLDING a rule.  **The display-timezone settle rule now has zero tests: swapping
-`display_today()` for `date.today()` in the seam ships a green suite**, which is the exact L9 /
+tests HOLDING a rule.  **The display-timezone settle rule had zero tests: swapping
+`display_today()` for `date.today()` in the seam shipped a green suite**, which is the exact L9 /
 R-DH (b) / F3 defect three rulings closed.  And the three "a re-settle must not re-date the money"
-pins can no longer fail, because both calls now yield the same `display_today()` -- that is N-146
+pins could not fail, because both calls yielded the same `display_today()` -- that is N-146
 and N-178's own class losing its transaction-side guard in the very step that fixed a new instance
 of it.  The discriminating pattern exists in this step's own diff (the N-178 transfer test back-dates
 BEFORE replaying) and was applied to one side only.
 
-**One defect the reviews found was closed immediately, structurally: N-179.**  A `datetime` handed to
+**One defect the reviews found was closed immediately, structurally: N-179 -- and the fix below was
+later found to be HALF of it, because it refused only what the seam was handed.  The rule moved onto
+the COLUMN at X-f1b; see the as-built record.**  A `datetime` handed to
 `settled_on` was silently truncated on the UTC session clock, so an evening-Eastern settle stored one
 day late -- the very split R-DH (b) exists to delete, one layer down and with no error.  Sixteen test
 sites did it and eight stayed GREEN; one run wrote a journal entry whose `DATE` column held
 `2026-03-20T13:00:00+00:00`.  `apply_status_change` now REFUSES a `datetime` before it touches the
-row.  That is the one write door refusing a wrong type rather than a checker hunting call sites.
+row.  That is the one write door refusing a wrong type rather than a checker hunting call sites --
+and every OTHER write path now refuses it too, via a `@validates` hook on the column.
 
 **X-f1 IS SCOPED AND ITS THREE FORKS ARE RULED (2026-08-03, R-EC..R-EE), and the first one DELETES
 A COLUMN.**  `transactions.settled_on` REPLACES `paid_at` rather than joining it, on the developer's
@@ -2058,6 +2066,36 @@ CONSEQUENCE of rulings already taken, recorded here rather than re-asked.
 RESET (X-f3's cutover), does not classify any residual (X-f3), and does not build the
 outstanding-set reconcile for transactions (X-f2).  It gives a settle a day the user owns; what that
 day is compared against is unchanged.
+
+### Answered (developer ruling, 2026-08-03: the 22 historical-migration tests are DELETED)
+
+Taken after being shown the option space with the measured facts, not a recommendation alone.  The
+question: migration `a3f7c8e21b64` drops `budget.transactions.paid_at`, and 22 of the 29 tests in
+`test_posting_cash_backfill.py` / `test_posting_ledger_backfill.py` invoke the FROZEN raw SQL of
+`7d63529e4300` / `db239773c2fd`, which read that column.
+
+**MEASURED before the ruling, and these facts carried it:** a real `base -> head` upgrade is
+unaffected -- those migrations run at their own point in the chain, ~27 revisions before the drop;
+on any database already past them they never run again; and `a3f7c8e21b64`'s downgrade REFUSES, so
+Alembic cannot rewind past the drop either.  **The backfill's data path is unreachable with data,
+permanently.**  The only future execution is a fresh template build, over an empty table, where the
+migration returns early.
+
+**RULED: delete the 22, keep the 7 that never reach the frozen SQL, and record in each migration's
+own docstring that its data path became unreachable and why.**  The alternative offered was an
+autouse fixture that re-adds the dropped column and feeds the SQL synthetic instants; it was
+declined.  A third option (assert the SQL at source level) was declined as weaker than what it
+replaced -- this document already rules a static check weaker than an executed one.
+
+**Two corrections to how this was justified, both from the review that followed.**  The deletion
+DID cost coverage and the first draft implied it did not: the executed-downgrade case, the
+zero-effective-transfer exclusion, and the two `BackfillAndGoForwardAgree` cases (found afterwards
+in the live oracles, same class, also deleted) have no survivors -- the last were the only place an
+INDEPENDENT implementation of the sign / amount / date rules was compared against the go-forward
+builder.  And the stated reason "keeping them needs a schema that is not the application's" was
+FALSE: `alembic upgrade base -> <that revision>` gives exactly that schema.  The true reason is that
+the harness has no per-revision template fixture.  Both corrections are written into the modules and
+migrations themselves, where the next reader of that SQL will be.
 
 ## 5. The steps
 
@@ -4704,7 +4742,7 @@ preconditions cite entries in that file.
     LIVE defect the conversion trace found and REPRODUCED.  Ships BEFORE the column change and on
     the CURRENT column, so it is independently revertable and provable against `paid_at` rather
     than tangled with a rename.
-  * [ ] **X-f1b** the column, the migration, the seam, and all 11 readers.  **Figure-neutral BY
+  * [x] **X-f1b** the column, the migration, the seam, and all 11 readers.  **Figure-neutral BY
     CONSTRUCTION**: the backfill is the deleted derivation verbatim
     (`COALESCE((paid_at AT TIME ZONE 'America/New_York')::date, pay_period.start_date)` for settled
     rows, NULL otherwise), so the gate is `verify_balance_baseline.py` byte-identical on two
@@ -4715,116 +4753,127 @@ preconditions cite entries in that file.
     are deleted once callerless.
   ---
 
-  #### X-f1b as PARKED: everything needed to resume COLD
+  #### X-f1b as BUILT: the test half, and the four things it found
 
-  **PARKED RED on branch `feat/xf1-settle-day`, 2026-08-03, NOT FOR MERGE.**  Two commits on top
-  of `fac90200`: **`1ca63972`** (the rulings, the N-177 / N-178 findings, and the review findings
-  N-179..N-183 -- docs only, green) and **`70ba87f6`** (the build -- **RED at 102 tests**).  Not
-  pushed.  The parked-RED convention is X-d's (`feat/xd-checked-projection`); the head commit
-  message states the RED status in its own subject line, as X-d's does.
+  **GREEN and complete, 2026-08-03.**  The suite is **7,784 passed / 0 failed** under both
+  `America/New_York` and CI's `TZ=Pacific/Kiritimati`; `pylint app/ scripts/` 10.00/10 with the full
+  `--fail-on` set; **all three test locations** run -- `./scripts/test.sh`, `pytest
+  tools/plan_gate/` (17), and `pytest tools/pylint/tests/` (146), the third being the one the parked
+  build never ran and went RED on.
 
-  **What is PROVEN, and what is only ASSUMED.**  Do not re-derive the first list; do not trust the
-  second without measuring.
+  **The park record said 102 tests failed and that the remaining work was "not the mechanical
+  part".  That was right.**  Of the 102: ~66 were fixtures building a settled row with no day, 22
+  drove a frozen migration's raw SQL against a column the head revision drops, and 14 were the
+  anchor-reconciliation oracle written in INSTANTS end to end.  Each needed a different answer.
 
-  | proven, on a production clone | how |
-  |---|---|
-  | the settled-iff-dated invariant holds EXACTLY | 156 settled all dated, 843 non-settled all NULL |
-  | no BALANCE moves | `verify_balance_baseline.py` byte-identical: 9 accounts, 427 grid cells, 5,978 daily points |
-  | that harness is not blind | positive control: one settle day moved 30 days -> 16-line diff |
-  | the migration runs forward | `flask db upgrade` on the clone, both post-backfill gates pass |
-  | the downgrade refuses | raises, migration head unchanged |
-  | its recovery SQL WORKS | exercised in a rolled-back transaction, 156/156 round-trip to the same civil day across 5 months |
-  | the N-178 fix is a firing control | RED without it (7.00 days), GREEN with it |
-  | `pylint app/` + `scripts/` | 10.00/10 with the full `--fail-on` set |
-  | the checker meta-suite | 146 passed |
-  | the plan gate | 17 passed |
+  **Verified on real production data, not a fixture.**  A fresh clone restored at prod's head
+  (`d7c1f4a9e603`), baselined from a `fac90200` worktree, migrated, re-baselined from HEAD:
+  `verify_balance_baseline.py` **byte-identical** over 9 accounts, 427 grid cells and 5,978 daily
+  points.  **Positive control**: moving ONE settled row's day by 30 days produces a 34-line diff, so
+  the identity is a measurement and not a blind harness.  The settled-iff-dated invariant holds
+  EXACTLY on that clone -- 156 settled rows all dated, 0 non-settled rows dated -- and the migration
+  now proves a THIRD invariant it had only assumed (below).
 
-  **ASSUMED and NOT measured:** that the 102 remaining failures are all conversion residue rather
-  than real defects.  The test-integrity review sampled them and agreed, but sampled is not
-  exhaustive -- and this document's own Section 7 says an oracle is never sampled.  **Re-measure
-  before believing it.**
+  **N-183 closed structurally, and it forced the extraction N-152 predicted.**  `update_transfer`
+  assigned `settled_on` on both shadows directly; `create_transfer`'s born-settled branch did too.
+  Both route through the seam now, so `Transaction.settled_on` has ONE writer in `app/`.  Making
+  room for it hit the 1000-line ceiling at 987, which is exactly what **N-152** said the next change
+  to that module would do -- so the status and settle-day appliers moved to
+  `app/services/_transfer_status.py` (`apply_status_to_all_three`, `apply_settle_day_to_pair`,
+  `apply_settle_day_correction`), leaving `transfer_service` at 934.  **The split is by
+  responsibility, not by line count**: those three functions are the only place a transfer's three
+  rows resolve a shared status and a shared day, which is Transfer Invariant 3.
 
-  **The session scratchpad is GONE.**  Everything in it -- the baselines, the AST census scripts,
-  the suite output files, the reviewers' brief -- was keyed to a session directory that no longer
-  exists.  Nothing below depends on it; every command re-creates what it needs.
+  **The create path is narrowed deliberately, and the reason is worth keeping.**  Routing a
+  born-settled create through `apply_status_to_all_three` would verify the PARENT's transition too,
+  and the transfer workflow map has no `Received` entry -- so it would refuse a state
+  `create_transfer` has always accepted.  Rejecting that state may well be right; it is a create-path
+  rule and not this step's to decide, so only the two rows that carry the column are written.
 
-  **Environment.**  The measurement clone is **`shekel_xf1`** on the dev Postgres
-  (`127.0.0.1:5432`), restored 2026-08-03 from production and **already upgraded to
-  `a3f7c8e21b64`**.  If it is gone, re-make it by the procedure in `archive/`'s clone notes:
-  `docker exec shekel-prod-db sh -c 'PGPASSWORD="$(cat /run/secrets/postgres_password)" pg_dump -U
-  "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner --no-privileges'` into a fresh database, then
-  `DATABASE_URL=...shekel_xf1 flask db upgrade`.  A HOST probe must use `127.0.0.1` (not
-  `localhost`, which resolves to `::1` first) and `render_as_string(hide_password=False)`.
+  **N-179 closed one layer deeper than the parked build had it.**  The seam refused an instant it was
+  HANDED; nothing stopped `txn.settled_on = <datetime>`, which PostgreSQL truncates on the UTC
+  session clock.  The rule now lives on the COLUMN -- `models.transaction.reject_settle_instant`
+  behind a SQLAlchemy `@validates` hook -- so the constructor, a plain attribute write and every ORM
+  path refuse it, and the seam calls the same function early only so a rejected call has not already
+  moved `status_id`.  **That is a type the column does not accept, not a checker hunting call
+  sites.**  Residual, stated rather than implied: a bulk `query.update()` bypasses the ORM attribute
+  layer, the same boundary `LoanAnchorEvent`'s append-only guard states for itself.
 
-  **Baselines** are re-captured, not recovered:
-  `DATABASE_URL=postgresql://.../shekel_xf1 python tests/manual/verify_balance_baseline.py OUT.json`
-  -- once on the branch and once from a `git worktree` at `fac90200`, then `diff`.  **Use a
-  worktree, never `git checkout`**, which reverts the tree and discards the work.
+  **N-182 closed, and every repair is mutation-verified.**  `freeze_today` now threads `at_time`
+  into the DATABASE half of the freeze; the two halves were noon UTC and the caller's instant, hours
+  and a civil date apart, which is the split that helper's own docstring was written about.  The new
+  pin freezes at 01:00 UTC -- 20:00 EST / 21:00 EDT the previous evening, so it separates the two
+  calendars on both sides of DST -- and asserts the seam takes the EASTERN day.  **Seven mutants
+  planted, seven killed, one control each**: `display_today` -> `date.today`; the settled-status
+  guard dropped; the instant accepted; the preserve arm dropped; the `@validates` decorator dropped;
+  the shared refusal disabled; and a non-status edit moving a settled row by 7 days.
 
-  **The test template must be rebuilt** whenever the migration changes:
-  `TEST_ADMIN_DATABASE_URL=postgresql://<user>:<pw>@127.0.0.1:5433/postgres
-  TEST_DATABASE_URL=postgresql://<user>:<pw>@127.0.0.1:5433/shekel_test
-  python scripts/build_test_template.py`.
+  **THE 22 MIGRATION TESTS WERE DELETED ON THE DEVELOPER'S RULING (2026-08-03), and two more of the
+  same class were found afterwards.**  `test_posting_cash_backfill.py` (12) and
+  `test_posting_ledger_backfill.py` (10) drove `7d63529e4300` / `db239773c2fd`'s frozen raw SQL,
+  which reads `t.paid_at`.  Measured before the ruling: a real `base -> head` upgrade is unaffected
+  (those migrations run at their own point in the chain, long before the drop), on any database past
+  them they never run again, and `a3f7c8e21b64`'s downgrade REFUSES so Alembic cannot rewind past the
+  drop -- **the data path is unreachable, permanently**.  The alternative offered was a fixture that
+  re-adds the dropped column; the developer ruled deletion.  Both migrations and both test modules
+  now record what went and why.  A neutral review then found the same shape twice more, as
+  `TestBackfillAndGoForwardAgree` inside the two LIVE reconciliation oracles, and those went too.
 
-  **THE GATE THIS STEP MISSED, and it went RED.**  There are **three** test locations, not two:
-  `./scripts/test.sh` (the suite), `pytest tools/plan_gate/` (this document's ledger), and
-  **`pytest tools/pylint/tests/`** (the custom checkers' own meta-suite).  The third caught a
-  deleted name left in `balance_seam.py`'s ruling set -- exactly what its
-  `test_classification_sets_match_the_real_fenced_modules` is written to catch -- after
-  `pylint app/` had reported 10.00/10.  **Run all three.**
+  **What the deletion actually cost, named rather than glossed** (the review's finding, and it
+  corrects an overstatement of mine): the executed downgrade case has no survivor -- the one left is
+  a `read_text()` regex over the migration SOURCE and cannot catch a downgrade that deletes the wrong
+  rows; the zero-effective-transfer exclusion has no survivor; and the two `BackfillAndGoForward`
+  cases were the only place an INDEPENDENT implementation of the sign / amount / date rules was
+  compared against the go-forward builder (the two surviving tests of that name reuse the go-forward
+  builder, so they are true by construction).  **And my justification was overstated**: keeping them
+  would NOT have required "a schema that is not the application's" -- `alembic upgrade base -> <that
+  revision>` gives exactly that schema.  The honest statement is that the harness has no
+  per-revision template fixture.
 
-  **The remaining work, in order.  The first item is the one that decides whether this step is
-  honest.**
+  **The ORACLE was re-derived in DAYS, not renamed** -- and doing it found a divergence older than
+  this step.  `_latest_assertion` ordered on `(created_at, id)` while `cash_ledger.resolve_anchor`
+  orders on `(observed_on, created_at, id)`: since plan step 2 made `observed_on` a user-supplied
+  column, a balance asserted for an earlier day but typed later is not the current one, and the
+  oracle would have named it.  **An oracle stating a DIFFERENT rule than the engine is the shape that
+  lets both be wrong together while the sweep reports clean.**  The source side restates the refusal
+  rather than importing `settled_day`, so the two sides still read different tables with independent
+  code.  Every hand-computed figure in that file is unchanged, which is the evidence the conversion
+  was faithful: the fixtures now say `observed_day_of(<the same instant expression>)`, which is
+  verbatim what the deleted derivation computed.
 
-  1. **N-182 -- restore the two rules the conversion left untested.**  This is not cleanup; it is
-     the step's ship gate.  (a) The display-timezone settle rule has ZERO pins: **swapping
-     `display_today()` for `date.today()` in `status_seam.py` currently ships a GREEN suite.**  A new
-     pin must freeze the clock at an EVENING-EASTERN instant -- `freeze_today` defaults to NOON UTC,
-     which is the same civil day in both zones, so no existing clock-freezing test in the suite can
-     tell the two rules apart.  (b) The three transaction-side "a re-settle must not re-date the
-     money" pins can no longer fail, because both calls now yield the same `display_today()`.  **The
-     discriminating pattern is already in this branch**, applied to the transfer side only:
-     `tests/test_routes/test_transfers.py::test_re_marking_a_settled_transfer_does_not_re_date_it`
-     back-dates THROUGH the service first, so the ledger follows, and only then replays.  Mirror it
-     at `test_grid.py`'s `TestPaidAtLifecycle` and `test_status_seam.py`'s re-settle test.
-  2. **N-179's remaining half -- 16 test sites still pass a `datetime`.**  The seam refuses them
-     now, so they fail loudly rather than storing a UTC-truncated day.  Find them with an AST pass
-     for `settled_on=` / `.settled_on =` whose value resolves to a datetime expression, **resolving
-     LOCAL VARIABLES** -- the audit that missed them only checked direct expressions, which is why
-     eight sites stayed green.  The mirror hazard is equally real: five ASSERTION instants were
-     converted to plain dates, and a `date` written to a `timestamptz` becomes midnight UTC, i.e.
-     the previous Eastern evening.
-  3. **Re-derive the anchor-reconciliation ORACLE in DAYS.  Do not rename it.**
-     `tests/test_integration/test_posting_ledger_account_anchor_reconciliation.py` is the
-     independent second opinion for the anchor partition and is written in INSTANTS end to end
-     (`_as_utc`, `_period_start_instant`, `_source_attribution_instant`, and the `<=` / `>`
-     comparisons they feed).  The engine now partitions on a stored civil DAY.  A rename leaves it
-     restating the OLD rule against the NEW engine, which is worse than leaving it broken -- and its
-     `_period_start_instant` fallback arm corresponds to a fallback that no longer exists, because
-     `settled_day` refuses.
-  4. **Decide what happens to the 22 historical-migration tests.**
-     `tests/test_models/test_posting_cash_backfill.py` and `test_posting_ledger_backfill.py` drive
-     the historical migrations' RAW SQL, which reads `t.paid_at` (`7d63529e4300:279`,
-     `db239773c2fd:168`).  No fixture rename can fix them; either delete them or gate them on the
-     pre-drop schema.  Note one has its assertion left pinned to the OPPOSITE rule
-     (`test_posting_cash_backfill.py:440` asserts the UTC day against an input moved to the display
-     day -- unsatisfiable by construction), so it must be re-derived, not just re-run.
-  5. **Then the remaining conversion residue** -- roughly 70 `UndatedSettleError` failures are
-     fixtures constructing settled rows directly instead of through the seam.  Mechanical.  Also
-     drop the four unused `display_today` imports the script added and the ~11 now-dead
-     `settle_instant_on` imports, and rename the ~30 test classes and docstrings that still say
-     `paid_at`.  Note `tests/` is out of `pylint` scope (`.pre-commit-config.yaml`), so nothing
-     catches this residue automatically.
-  6. **N-183 before X-f1c**, then X-f1c, then X-f1d.
+  **The migration grew a THIRD gate, because the other two were gated and this one was assumed.**
+  `posting_service._entry_date` dates a transfer's journal entry from the INCOME shadow alone and
+  rests on the pair carrying one day (Transfer Invariant 3).  The upgrade now refuses if any settled
+  transfer's shadows disagree.  Measured on a production clone: 0 diverge.  **Positive-controlled**:
+  planting a 3-day divergence makes the migration refuse and leaves the head at `d7c1f4a9e603`.  Its
+  downgrade refusal also moved from `RuntimeError` to `NotImplementedError`, which is what
+  `.claude/rules/database.md` names and what all three existing unconditional refusals use.
 
-  **Two traps that will bite a reader who skips the findings.**  A `datetime` in `settled_on` is
-  now a `TypeError` at the seam but is still SILENTLY truncated by PostgreSQL if written by any
-  other path -- which is why N-183's unfenced `update_transfer` write matters more than its `$0.00`
-  cost suggests.  And `tests/_test_helpers.py`'s settle factories still accept an explicit
-  `settled_on=None`, which builds the broken row on purpose (N-182's sibling); four call sites do
-  it, and the docstring says so now rather than claiming the state is unreachable.
+  **FOUR THINGS THE SECOND PAIR OF REVIEWS FOUND, and one of them was mine.**
 
-  ---
+  1. **I dated two PROJECTED rows.**  A blanket edit that added `settled_on=current.start_date` to
+     five grid fixtures caught two whose status is deliberately Projected -- the converse violation,
+     and under a copy-pasted comment saying "a settled row carries the day its money moved".  Found
+     by a reviewer, not by my own census, which was looking only for the other direction.
+  2. **`test_settle_day_preserved_on_non_status_update` could not fail**, and the reviewer PROVED it:
+     with `_apply_regular_update` wrapped to move every settled row it touched by 7 days, that class
+     and 703 tests around it stayed green.  It captured the original day and then asserted only `is
+     not None`.  **That is N-146's class on the transaction side** -- an ordinary notes edit moving a
+     settled payment's money -- i.e. the live production defect that opened X-aj1, with no cover.  It
+     back-dates through the seam and asserts the LEDGER now, and the reviewer's own mutation kills it.
+  3. **The `@validates` hook had zero tests**, found INDEPENDENTLY by both reviews.  The seam's
+     refusal test proves the seam, not the column: it asserts the row was left untouched, i.e. that
+     the assignment never ran.  Deleting the decorator shipped a green suite.  Pinned now, and the
+     deletion kills the pin.
+  4. **A control I had already "fixed" once still could not fire** (**N-184**).  The dump-only
+     normalization case pinned `TransactionUpdateSchema.paid_at`, the only such field in the package,
+     which R-EC deleted -- so it passed on `unknown=EXCLUDE`.  Re-pointing it at a locally-declared
+     `dump_only` field did NOT help: marshmallow discards the key either way, so the branch is
+     invisible downstream of `load()`.  Only asserting on the helper makes it falsifiable.
+
+  **The lesson, and it is the third time this arc has paid it: a repair for "a control that cannot
+  fail" is itself a control, and needs the same mutation.**  Two of the four above are repairs that
+  did not fire until they were planted against.
 
   * [ ] **X-f1c** the two edit doors (R-ED, R-EE): `settled_on` on the full-edit form, out of
     `_LOCKED_EDIT_FIELDS` and INTO `_POSTING_RELEVANT_FIELDS`; and the true-up form's statement date,
@@ -5184,11 +5233,11 @@ row, whose owner read `Section 5, Phase E2`; it is now `E2-0 / E2-n`, the phase'
 steps. Every other owner was already live, which is what the three hand-passes above bought and
 what nothing now has to buy again.
 
-**The ledger stands at 97 rows.**  Six (**N-171**..**N-176**) are the from-scratch anchor
+**The ledger stands at 96 rows.**  Six (**N-171**..**N-176**) are the from-scratch anchor
 investigation's, owned by the **X-f1** / **X-f3** / **X-f4** leaves ruling **R-EB** created, and the
 91st is **N-177** -- the dead `Settled` status, opened by X-f1's trace **on the developer's own
 question** and given the new step **X-am** on their ruling -- and the 92nd is **N-178**, a LIVE
-re-dating defect the same trace found and REPRODUCED, owned by **X-f1b0**.  **N-179..N-183 are X-f1b's THREE adversarial reviews**, which refuted three of the step's own claims -- see the X-f1b as-built entry.  That is the third time in this arc a
+re-dating defect the same trace found and REPRODUCED, owned by **X-f1b0**.  **N-179..N-183 were X-f1b's THREE adversarial reviews**, which refuted three of the step's own claims; **N-179, N-182 and N-183 CLOSED when the step shipped** and their resolutions are in the X-f1b as-built entry, leaving N-180 (X-e) and N-181 (X-f1c).  **N-184 and N-185 are the same step's SECOND pair of reviews**, run against the finished tree: one found a control that could not fail inside the repair for a control that could not fail, the other found that the two halves of this step's own invariant are fenced unequally.  That is the third time in this arc a
 developer question has opened a finding no review did (N-119 at X-aa, N-174 at X-f, this one). **X-f's build opened N-130 (the production defect), N-131 / N-132
 (both CLOSED at the step), and its adversarial review then opened N-133 -- the one row in this arc
 that a MEASUREMENT contradicted a ruling on**: R-DH (a)'s opening amendment, made mid-build on a
@@ -5321,11 +5370,10 @@ done, and is what drifted.
 | N-176 (same investigation; a POSITIVE CONTROL, recorded because it is the only production exercise of the path) | **Five posted correction days on Checking carry no surviving anchor history row, and all five self-healed to `$0.00`.**  Entry dates 2026-04-29, 2026-05-06, 2026-05-15, 2026-06-16 and 2026-07-07 appear in the posted corrections but not in `account_anchor_history` (55 rows on 51 distinct days; the posted side carries 56 days).  Each nets to exactly zero, which means `_posted_only_key_period_id`'s defensive branch -- the one its own docstring calls unreachable through the linear lifecycle -- has in fact run in production and reversed correctly | **`$0.00`**, by construction and by measurement | **OPEN as a RECORD, not a defect.**  It matters to R-EB because X-f4 deletes that branch with the rest of the correction machinery, and deleting a path that has demonstrably fired in production should be a stated deletion rather than an unnoticed one | X-f4 |
 | N-177 (X-f1's trace 2026-08-03, on the developer's own question -- *"I don't manually change a status from paid to settled so how does a transaction receive the status settled now?"*; measured read-only on a fresh PRODUCTION clone) | **The `Settled` status has no writer, no reader that distinguishes it, and zero rows.**  Measured: **0 of 897 non-deleted transactions and 0 of 120 non-deleted transfers** carry it (transactions are Projected 710 / Paid 134 / Received 22 / Credit 10 / Cancelled 21; transfers Projected 98 / Paid 17 / Cancelled 5), and **0 of 1,110 transaction + transfer audit rows have ever written `status_id = 6`** across the audit table's whole retention window (2026-05-06 to 2026-08-03, 2,712 rows -- so this is "never in three months", not "never ever").  `StatusEnum.SETTLED` has exactly four `app/` references and NONE assigns it to a row; the only door is the status `<select>` in the two full-edit popovers.  The balance engine cannot tell it from `Paid`: every consumer reads the SET `settled_status_ids()`, never the member, and `is_immutable` is already true for `Paid` and `Received`.  Its entire distinct behaviour is one transition-map line -- `settled: {settled}`, terminal | **`$0.00` today, and the cost is a THIRD member in the predicate every balance rule in this arc is written against.**  It is also a live trap for X-f1: `Paid -> Settled` is a RE-ENTRY into the settled band, and the seam preserves the settle instant on re-entry (`status_seam.py:157`) precisely so archiving does not re-date the money -- the N-146 defect class.  A stored `settled_on` must inherit that rule verbatim, so the dead status still constrains the new column's design | **OPEN.**  Developer ruled 2026-08-03 that it *"probably doesn't need to exist"* and directed it be recorded for later rather than taken inside X-f1 -- which is rule 7's own remedy (its OWN step, not a deferral).  **X-f1 does NOT wait on it**: the preserve-on-re-entry rule is required whether or not the third member survives, and X-f1 pins it with a test | X-am |
 | N-178 (X-f1's conversion trace 2026-08-03; REPRODUCED against real requests before it was written down, with a positive control) | **Re-POSTing mark-done on an already-settled TRANSFER moves its money to today -- finding N-146 through a door N-146's fix did not close.**  X-aj1 fixed the re-dating at the SEAM (`status_seam.py:157` preserves an existing instant on re-entry into the settled band), but `transfer_service.update_transfer` carries an explicit `paid_at` kwarg whose branch (`:658-661`) writes both shadows VERBATIM after `_apply_pair_status` has already preserved -- and **both mark-done doors pass `paid_at=db.func.now()` unconditionally** (`routes/transfers/mutations.py:386`, `routes/transactions/mutations.py:594`).  `done -> done` is a legal transition, and neither route gates on status.  **Reproduced**: a transfer settled 7 days earlier, back-dated THROUGH the service so the ledger followed, then re-POSTed -- `paid_at` moved 7.00 days and the ledger gained a reversal at `2026-07-27` plus a fresh posting at `2026-08-03`.  **Positive control: the ORDINARY transaction path does NOT re-date** (it passes no explicit instant, so the seam preserves), which localises the defect to the kwarg rather than to the route pattern | **the whole amount of any re-POSTed settled transfer, moved by however long ago it really settled** -- on the rows this arc records as carrying the largest cash movements.  Not reachable by a normal click (both buttons render only for Projected), so the doors are a stale page, a second tab, a replayed POST or a back-button resubmit -- which is the same reachability class N-146 had and was ruled a live defect on | **OPEN.**  Root fix, not a route guard: the explicit kwarg exists so a caller can say "the user TYPED this day", and neither mark-done door is that caller -- the seam already stamps on first entry and preserves on re-entry, so both passes are redundant and one is harmful.  The revert-side `svc_kwargs["paid_at"] = None` (`routes/transactions/mutations.py:169`) is redundant too: the seam clears on leaving the settled band.  The kwarg SURVIVES for X-f1c's edit door, which is its only legitimate caller | X-f1b0 |
-| N-179 (X-f1b's three adversarial reviews, 2026-08-03; found independently by two of the three, and MEASURED against the test database) | **A `datetime` handed to `settled_on` was silently truncated to the UTC day, reintroducing the exact split ruling R-DH (b) exists to delete -- one layer down and with no error.**  `datetime` subclasses `date`, so the `Optional[date]` annotation catches nothing and PostgreSQL coerces on the SESSION clock, which is UTC: measured, `2026-03-04 04:30Z` (2026-03-03 23:30 Eastern) stores as **2026-03-04**, one day late.  The converted suite left **16 sites** passing an instant, **8 of which stayed GREEN**, and one run wrote a journal entry whose `DATE` column held `2026-03-20T13:00:00+00:00`.  The mirror hazard is real too -- a `date` written to a `timestamptz` becomes midnight UTC, i.e. the previous Eastern evening -- and the conversion did that to five assertion instants | **`$0.00` today** (every green site happens to use a noon-UTC or >=1-day offset) and the whole class tomorrow: this is a money-dating rule failing SILENTLY, which is the shape this arc exists to remove | **CLOSED at X-f1b** by a `TypeError` refusal in `status_seam.apply_status_change`, ordered BEFORE `verify_transition` so a bad value cannot mutate the row even on a legal transition.  Structural, not a detector: the one write door refuses the wrong type rather than a checker hunting call sites.  **The 16 test sites still need converting** -- that half is X-f1b's remaining work, and the refusal is what makes them fail loudly instead of silently | X-f1b |
+| N-184 (X-f1b's test-integrity review, 2026-08-03; PROVEN by deleting the branch and watching the suite stay green) | **`_normalize_empty_inputs`'s `dump_only` arm has no production instance left, and it is INVISIBLE downstream of `load()`.**  `TransactionUpdateSchema.paid_at` was the only `dump_only` field in the whole validation package and ruling R-EC deleted it with the column, so `app/schemas/validation/_helpers.py:95`'s `and not field.dump_only` now guards a shape nothing declares.  Worse for the test: marshmallow discards a `dump_only` key on load either way, so a case routed through `load()` passes identically with the arm deleted -- which the FIRST repair of this row did, and a mutation caught | **`$0.00`** -- the branch is correct and inert.  The cost is a live line of code whose only test could not fail, in the package the arc reads most | **PARTLY CLOSED at X-f1b**: the case is asserted against the HELPER now, where the arm IS observable, and a planted deletion kills it.  **What is still open is whether the arm should exist**: plan step X-f1c puts `settled_on` on the full-edit form and decides whether it loads or is `dump_only`.  If it loads, this branch has had no instance for two steps and goes | X-f1c |
+| N-185 (X-f1b's correctness review, 2026-08-03) | **`settled_on` is now exactly as load-bearing as `status_id`, and only one of the two has a fence.**  W9907 (`shekel-transaction-status-bypass`) refuses a `status_id` write outside the seam; nothing refuses a `settled_on` write.  The invariant binds them -- a row is settled iff it carries a day, and the seam writes both in one statement -- so a second writer of EITHER breaks it, which is precisely what N-183 was.  The only thing keeping `routes/transactions/mutations.py:340`'s `setattr(txn, field, value)` loop from becoming that second writer is the field's absence from `TransactionUpdateSchema`, **and plan step X-f1c adds it** | **`$0.00` today** and a re-run of N-183 the moment the edit door lands | **OPEN.**  Do NOT grow W9907 an arm: the developer's standing ruling is that fences become structurally unnecessary, and the scheduled mechanism already exists -- **X-aj2 replaces W9907's write door with a read-only attribute**.  `settled_on` joins `status_id` under THAT mechanism, so the pair gets one structural answer rather than two checkers.  Until X-aj2, X-f1c must route its new edit door through the seam as `update_transfer` now does | X-aj2 |
 | N-180 (X-f1b's design review, 2026-08-03) | **A de-duplication rationale in `balance_at/_loan_interest.py` was falsified by ruling R-DH and the X-f1 conversion then edited an INVENTED CITATION into it.**  The paragraph argued that `confirmed_shadows_through` is a UTC-visibility subset while the tax `as_of` is a display date, so an evening settle is counted twice.  `payment_visible_on` became display-tz at R-DH (b), and since X-f1 the day is STORED in the user's zone and converted by nothing -- so the premise is doubly false.  The conversion rewrote the citation to `to_utc_civil_date(settled_on)`, **a function that has never existed in `app/`** | **`$0.00`** -- the code was never wrong (the de-dup runs off `_due_slot` over the walk, not off this claim); only the reason written beside it was.  The cost is that the stated rationale for a de-duplication design is false, and a future reader would rely on it | **OPEN.**  The falsified paragraph is REPLACED in place at X-f1b and the invented citation deleted, but **whether the two sets can still differ for any other reason is UNVERIFIED**, so the de-dup stays and this row owns the question.  X-e re-reads this package | X-e |
 | N-181 (X-f1b's app-code review, 2026-08-03; MEASURED on the production clone) | **The backfill moves one figure, and `verify_balance_baseline.py` structurally cannot see it because it is not a balance.**  `Transaction.days_paid_before_due` gated on "was an instant recorded" and now gates on "is the row settled".  The 8 legacy settled rows whose `paid_at` was NULL take their pay period's `start_date` -- exactly what every reader already derived, so no BALANCE moves -- but they now enter `spending_analysis.payment_timeliness_from_txns` for the first time, dated by a day nothing observed.  All 8 carry a `due_date` and `spending_report_service` applies no transfer-shadow filter, so they reach the metric: the four expense legs report **8 days early, on time, on time, 1 day late** | **a soft metric on `/analytics`**, not a balance.  The claim "no figure moves" was FALSE as stated and is corrected in the migration docstring, the model docstring and this document | **OPEN.**  Narrowing the backfill to `paid_at IS NOT NULL` was REJECTED -- it leaves 8 settled rows undated, which the balance walk now REFUSES, trading a soft metric for a 500 on the grid.  The resolution is **X-f1c's edit door**, which is what lets those 8 legacy days be corrected to what the bank actually did | X-f1c |
-| N-182 (X-f1b's test-integrity review, 2026-08-03; the reviewer ran the suite to confirm each) | **The conversion computed every derived day correctly and still destroyed the coverage of two rules, because it treated "recompute the day at each site" as the whole job.**  **(a) The display-timezone settle rule has ZERO tests left**: all seven pins were deleted (`TestToDisplayCivilDate`) or made VACUOUS -- e.g. `test_ledger_report_service.py:241` now asserts "a row dated 2026-12-31 lands in the 2026 statement", which cannot fail, while its docstring still describes an instant that no longer exists.  **Swapping `display_today()` for `date.today()` in the seam ships a GREEN suite**, which is the L9 / R-DH (b) / F3 defect three rulings closed.  **(b) The three "a re-settle must not re-date the money" pins can no longer fail** -- they compared two `db.func.now()` instants, and both calls now yield the same `display_today()` whether the seam preserves or not.  **(c)** two order-independence controls became tautologies (both same-day settles are now byte-identical fixtures), **(d)** the anchor-reconciliation ORACLE was renamed rather than re-derived and still restates an INSTANT partition against a day-keyed SUT, **(e)** 22 historical-migration tests read `t.paid_at` in raw SQL and are structurally untestable, one of them (`test_posting_cash_backfill.py:440`) left asserting the UTC day against an input moved to the display day -- unsatisfiable by construction | **the two rules with no test on the transaction path**: "an evening-Eastern settle is filed on the Eastern day" and "a replayed settle does not move the money".  The second is N-146 / N-178's own class, and X-f1b0 shipped a genuinely discriminating pin for it on the TRANSFER side only | **OPEN, and X-f1b does not ship until it closes.**  The fix pattern for (b) already exists in this step's own diff (`test_transfers.py`'s N-178 test back-dates BEFORE replaying, so it discriminates); it was applied to one side and not the other.  (a) needs a new pin that freezes the clock at an evening-Eastern instant -- note `freeze_today`'s default is NOON UTC, the same civil day in both zones, so **no existing clock-freezing test in the suite can distinguish the two rules** | X-f1b |
-| N-183 (X-f1b's app-code review, 2026-08-03) | **`transfer_service.update_transfer` writes `settled_on` to both shadows with NO validation, and `create_transfer` guards the identical combination.**  `update_transfer(id, uid, settled_on=<date>)` on a PROJECTED transfer dates an unsettled row -- the `_DATED_UNSETTLED` state migration `a3f7c8e21b64` refuses to ship with -- and nothing raises, because the reconcile arm requires `current_status.is_settled`.  `update_transfer(id, uid, settled_on=None)` on a SETTLED transfer NULLs both shadows and then 500s through `_entry_date` -> `UndatedSettleError`, which the route's `except` list does not cover.  `create_transfer` rejects exactly this at `transfer_service.py:281-288`; the update path does not | **a knob that can only corrupt or 500.**  `$0.00` today because no `app/` caller passes it -- and **X-f1c is about to become that caller**, which is why this is sequenced ahead of it | **OPEN, and it BLOCKS X-f1c.**  Route the write through the seam (which now also refuses a `datetime`, N-179) or mirror `create_transfer`'s guard: refuse a non-`None` day when the post-update status is not settled, and refuse `None` when it is.  Then decide whether W9907 should grow a `settled_on` arm -- the column is now exactly as load-bearing as `status_id`, and three docstrings assert a structural guarantee the code does not yet provide | X-f1c |
 | N-139 (X-ae's build 2026-08-02; REFRAMED the same day when two adversarial reviews refuted its first statement) | **Nothing prevents a submitted digit string being parsed laxly again, and a checker on the method NAME does not prevent it -- which is what the first version of this row proposed.**  X-ae removed every Unicode-wide digit predicate from `app/` and `scripts/` (AST: exactly ONE call site remains, `digit_strings.py:91`, the implementation of the replacement), converted the URL converter and 73 schema declarations, and the reviews then showed the proposed gate would still report clean over the very defect it was written for: **a future author writing a bare `try: int(raw) / except ValueError` passes a `isdigit`/`isdecimal`/`isnumeric` matcher and reintroduces the many-spellings defect** -- and this step's own record proves that form insufficient, because it is what the 2026-08-01 ruling specified and what measurement rejected.  `re.fullmatch(r"\\d+", "١٠٦")` matches for the same reason.  **The signal is not a method name; it is Unicode-wide digit ACCEPTANCE, and it has at least four spellings** | `$0.00` today and no reachable crash: every surface X-ae covers is fixed and measured.  The exposure is the NEXT id parse written, which on this arc's history is a matter of when rather than whether -- four `isdigit()` sites accumulated with nothing watching, and the reviews found two more surfaces this step's own census had missed | **OPEN, and the INSTRUMENT is undecided, which is why this is a step and not a line.**  A checker is the only available shape -- the receiver is `str`, a builtin nobody can give a narrower type, so there is no `ReconciledThrough` to write and the developer's *structural-over-detector* ruling has nothing to prefer; `anchor_settle_partition.md` 14.5 is the precedent (a type and a checker fence COMPLEMENTARY holes).  But X-ag's trace must first answer what the checker MATCHES, given that the method name is measurably the wrong signal.  **A second draft of this row argued that step 3 proved a checker would be blind at a bare-local site; that claim was REFUTED by step 3's own review and withdrawn in 14.1**, and restating it was the stale-citation class this arc keeps paying for | X-ag |
 
 ## 7. Verification standard (what "done" means for every step)
@@ -5449,6 +5497,33 @@ done, and is what drifted.
 * Boundary predicates standing in for instants or records are this codebase's signature defect
   (the walk clock, the period-start payment date, the archived X0 rule). When a rule says
   "period", ask if it means "instant"; when it says "schedule", ask if it means "record".
+* **A REPAIR for "a control that cannot fail" is itself a control, and needs the same mutation.**
+  X-f1b's whole ship gate was N-182 -- two rules whose pins had gone vacuous -- and the repair pass
+  shipped THREE more of the same shape before a review caught them: the `@validates` hook's pin
+  (which the seam's own pre-check made unreachable), the dump-only normalization case (re-pointed
+  once and STILL unfalsifiable, because the branch is invisible downstream of `load()`), and the
+  preserve-on-notes-edit case (which asserted `is not None` where its name promised "that day").  The
+  author of a fix for an untestable claim is in exactly the frame of mind that writes another one.
+  **Plant the mutation the fix is FOR, not a mutation nearby**: deleting the decorator, deleting the
+  branch, moving the day.
+* **When a conversion is mechanical, the DIRECTION of the type change has a mirror, and the mirror
+  is silent.**  X-f1 turned settle instants into civil days; the same pass turned five ASSERTION
+  instants into days, where a `date` reaching a `timestamptz` becomes midnight UTC -- the PREVIOUS
+  Eastern evening, i.e. the previous business day.  Four of the five failed loudly by accident (a
+  helper called `.tzinfo` on them); nothing structural caught them.  Both directions now refuse:
+  the column refuses a `datetime`, and the assertion builders refuse a `date`.
+* **An ORACLE that states a different rule than the engine lets both be wrong together while the
+  sweep reports clean.**  The anchor-reconciliation oracle ordered "the latest assertion" on
+  `(created_at, id)` while `resolve_anchor` orders on `(observed_on, created_at, id)` -- a
+  divergence dating from plan step 2, invisible for three steps because no fixture separated the two
+  keys.  Found only by re-deriving the oracle instead of renaming it.  **When a rule moves, re-read
+  the oracle's restatement of it, not just its vocabulary.**
+* **Ask what a test's failure would have COST before deleting it, and write the answer down.**
+  X-f1b deleted 24 tests whose code path is provably unreachable, and the first draft of that
+  record implied nothing was lost.  Three things were: an executed downgrade, one exclusion rule,
+  and the only comparison of an INDEPENDENT implementation against the go-forward builder.  The
+  deletion was still right; the silence about it was not.  A deletion that cannot name its cost has
+  not been measured.
 * **Review a FROZEN tree.** X-s ran two adversarial reviews in parallel and applied the first's
   fixes while the second was still reading; the second reported the artifact changing underneath it
   and its gate results graded a tree that no longer existed. Both gates and both real-data harnesses

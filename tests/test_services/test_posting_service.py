@@ -56,8 +56,8 @@ each fixture account's OPENING anchor correction at create time (the seed
 Checking's $1000.00, the ledger-suite Savings' $100.00 sentinel), and the
 effect-time self-heal at the sync tails keeps those corrections current, so
 ``account_posting_total`` is an ABSOLUTE balance: ``latest anchor +
-post-assertion settled effects``.  A ``paid_at``-stamped settle (the helper
-default, ``now()``) rides on top of the opening; a NULL-``paid_at`` settle in
+post-assertion settled effects``.  A settle dated today (the helper default)
+rides on top of the opening; a settle dated in
 the 2024 bootstrap period is attributed BEFORE the origination assertion and
 is absorbed into the opening delta instead (the total returns to the anchor).
 The ``settled_*_effect`` source-table readers are unchanged.
@@ -67,7 +67,7 @@ The ``settled_*_effect`` source-table readers are unchanged.
 # pattern; test bodies bind fixtures by name.
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date
 from decimal import Decimal
 
 import pytest
@@ -83,12 +83,18 @@ from app.extensions import db as _db
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.services import ledger_account_service, posting_service, transfer_service
+from app.services import (
+    ledger_account_service,
+    posting_service,
+    status_seam,
+    transfer_service,
+)
 from app.services._posting_write import _emit_balanced_entry
 from app.services.posting_service import (
     PostingError,
     _PostingLeg,
 )
+from app.exceptions import ValidationError
 from app.utils.dates import display_today
 from tests._test_helpers import (
     add_txn,
@@ -291,7 +297,7 @@ class TestSyncSettlePostsBalancedEntry:
             )
             assert entry.description == "Transfer: Checking to Posting Savings"
             # entry_date is a concrete civil date: the server-side
-            # ``db.func.now()`` paid_at (create_settled_transfer's default) was
+            # the helper's default settle day was
             # materialized, not left as an unresolved SQL expression.
             assert isinstance(entry.entry_date, date)
             # Legs: -100 from Checking, +100 to Savings, summing to zero.
@@ -374,28 +380,27 @@ class TestSyncSettlePostsBalancedEntry:
 
 
 class TestSyncSettleEntryDate:
-    """``entry_date`` is the shadow paid_at's USER day, else the period start."""
+    """``entry_date`` is the shadow's recorded settle DAY."""
 
-    def test_entry_date_from_paid_at_is_the_users_day_not_utc(
+    def test_entry_date_is_the_rows_recorded_settle_day(
         self, app, db, seed_user, savings,
     ):
-        """A settled paid_at maps to its DISPLAY civil date, NOT the UTC one.
+        """A settled transfer's postings are dated by its recorded settle day.
 
-        Arithmetic: paid_at 2026-05-10 02:00 UTC is 2026-05-09 22:00 in the
-        America/New_York display timezone (UTC-4 in May), so the two civil dates
-        differ.  The entry date must be the user's 2026-05-09.  A UTC conversion
-        would wrongly yield 2026-05-10 and fail this assertion (the regression
-        guard, pointed the other way).
+        The entry date is the shadow's stored ``settled_on``, unmodified: no
+        conversion, no fallback.
 
-        **Ruling R-DH (b) inverted this test** (2026-07-31,
-        ``docs/audits/balance_architecture/anchor_settle_partition.md``).  The
-        stored ``entry_date`` was the UTC civil date, matching the historical
-        backfill; it moved to the user's day TOGETHER with the cash fold and the
-        loan fold, because an entry date is compared against and bucketed by
-        plain ``DATE`` columns that mean the user's civil days.  Storage is
-        unchanged -- ``paid_at`` is still stored UTC -- and the three writers
-        moved as one, because moving any of them alone is what would put a
-        transfer's two legs on different days.
+        **The rule it grades has moved twice.**  Ruling R-DH (b) inverted it in
+        2026-07-31: ``entry_date`` had been ``paid_at``'s UTC civil date and
+        became the USER's, together with the cash fold and the loan fold,
+        because an entry date is compared against and bucketed by plain ``DATE``
+        columns that mean the user's civil days -- and the three writers had to
+        move as one, since moving any alone would put a transfer's two legs on
+        different days.  Plan step X-f1 then deleted the derivation entirely:
+        the day is stored, so there is no zone left to get wrong HERE.  The zone
+        rule now lives at the write door and is pinned there
+        (``test_status_seam.py``); what this case still owns is that the writer
+        reads the recorded day rather than re-deriving one.
         """
         with app.app_context():
             transfer = create_settled_transfer(
@@ -409,25 +414,26 @@ class TestSyncSettleEntryDate:
             # The user's civil date 2026-05-09, NOT the UTC 2026-05-10.
             assert entry.entry_date == date(2026, 5, 9)
 
-    def test_entry_date_falls_back_to_period_start_when_paid_at_null(
+    def test_a_settled_transfer_cannot_be_left_without_a_day(
         self, app, db, seed_user, savings,
     ):
-        """A settled transfer with NULL paid_at uses the pay-period start.
+        """Clearing a settled transfer's day is REFUSED, not defaulted.
 
-        ``entry_date`` is NOT NULL; with no ``paid_at`` recorded (a historical
-        settle, or a reverted shadow), the entry date is the period's
-        ``start_date`` (here the bootstrap period's 2024-01-05).
+        **This test asserted the fallback until plan step X-f1**: with no
+        ``paid_at`` recorded, ``entry_date`` -- which is NOT NULL -- took the pay
+        period's ``start_date``.  That was a guess the reader could not see, and
+        the day is a stored fact now, so there is nothing to fall back TO.  A
+        transfer edit that would leave a settled pair undated is refused at the
+        service, which is what keeps ``entry_date`` derivable at all.
         """
         with app.app_context():
             period = seed_user["bootstrap_period"]
-            transfer = create_settled_transfer(
-                seed_user, _db.session, seed_user["account"], savings,
-                period, amount=Decimal("100.00"), settled_on=None,
-            )
-            _db.session.commit()
-            # Commit-5 wiring: the settle auto-posted; read the entry back.
-            entry = _entries_for_transfer(transfer.id)[0]
-            assert entry.entry_date == period.start_date
+            with pytest.raises(ValidationError) as exc:
+                create_settled_transfer(
+                    seed_user, _db.session, seed_user["account"], savings,
+                    period, amount=Decimal("100.00"), settled_on=None,
+                )
+            assert "cannot be cleared" in str(exc.value)
 
 
 # ---------------------------------------------------------------------------
@@ -996,7 +1002,9 @@ class TestTransactionSettlePostsBalancedEntry:
             _add_txn_entry(seed_user, txn, "50.00", is_credit=False)
             _add_txn_entry(seed_user, txn, "40.00", is_credit=True)
             # Simulate settle_from_entries: actual = sum(all entries), Paid.
-            txn.status_id = ref_cache.status_id(StatusEnum.DONE)
+            status_seam.apply_status_change(
+                txn, ref_cache.status_id(StatusEnum.DONE),
+            )
             txn.actual_amount = Decimal("150.00")
             _db.session.commit()
             cash_ledger = _ledger_id(seed_user["account"])
@@ -1034,7 +1042,9 @@ class TestTransactionAllCreditNoop:
                 Decimal("200.00"),
             )
             _add_txn_entry(seed_user, txn, "40.00", is_credit=True)
-            txn.status_id = ref_cache.status_id(StatusEnum.DONE)
+            status_seam.apply_status_change(
+                txn, ref_cache.status_id(StatusEnum.DONE),
+            )
             txn.actual_amount = Decimal("40.00")
             _db.session.commit()
 
@@ -1083,7 +1093,9 @@ class TestEnvelopeCreditDominatesKeepsExpenseSign:
             _add_txn_entry(seed_user, txn, "1.00", is_credit=False)
             _add_txn_entry(seed_user, txn, "99.00", is_credit=True)
             # Simulate settle_from_entries: actual = sum(all entries), Paid.
-            txn.status_id = ref_cache.status_id(StatusEnum.DONE)
+            status_seam.apply_status_change(
+                txn, ref_cache.status_id(StatusEnum.DONE),
+            )
             txn.actual_amount = Decimal("100.00")
             _db.session.commit()
             cash_ledger = _ledger_id(seed_user["account"])
@@ -1192,7 +1204,7 @@ class TestTransactionReversal:
 
         Final books: category A nets to **zero**, category B carries the
         +100.00 expense, and Checking's total sits on its $1000.00 anchor
-        (the NULL-``paid_at`` -100 is pre-assertion-absorbed: the self-heal
+        (the period-start-dated -100 is pre-assertion-absorbed: the self-heal
         re-based the opening to +1100).  Reading the posted side from the
         ledger -- never from ``txn.category_id`` -- is what makes the
         per-category books correct.
@@ -1397,20 +1409,25 @@ class TestTransactionShadowNoop:
 
 
 class TestTransactionEntryDate:
-    """``entry_date`` is the paid_at's USER civil date, else the period start."""
+    """``entry_date`` is the row's recorded settle DAY.
 
-    def test_entry_date_from_paid_at_is_the_users_day_not_utc(
+    A sibling case, ``test_entry_date_falls_back_to_period_start_when_paid_at_``
+    ``null``, was DELETED at plan step X-f1 rather than re-derived: it built a
+    row whose settle day equalled its pay period's start, which is the exact
+    value the deleted fallback produced, so the two rules coincide on it and
+    nothing it asserted could tell them apart.  Measured by a neutral review --
+    replacing ``_transaction_entry_date`` with the old ``return
+    txn.pay_period.start_date`` left it PASSING while the case below failed.
+    """
+
+    def test_entry_date_is_the_rows_recorded_settle_day(
         self, app, db, seed_user,
     ):
-        """A settled paid_at maps to its DISPLAY civil date, NOT the UTC one.
+        """A settled transaction's postings are dated by its recorded settle day.
 
-        Arithmetic: paid_at 2026-05-10 02:00 UTC is 2026-05-09 22:00 in
-        America/New_York (UTC-4 in May), so the two civil dates differ.  The
-        entry date must be the user's 2026-05-09, read back via a query so a
-        server-side ``db.func.now()`` would also materialise correctly.
-
-        The transaction twin of the transfer case above, and inverted by the
-        same ruling R-DH (b); see that docstring for why storage is untouched.
+        The transaction twin of the transfer case above; see that docstring for
+        how the rule moved from a UTC derivation (pre-R-DH (b)) to a display-zone
+        one and then to a stored fact (plan step X-f1).
         """
         with app.app_context():
             period = seed_user["bootstrap_period"]
@@ -1426,29 +1443,6 @@ class TestTransactionEntryDate:
             )
             _db.session.commit()
             assert entry.entry_date == date(2026, 5, 9)
-
-    def test_entry_date_falls_back_to_period_start_when_paid_at_null(
-        self, app, db, seed_user,
-    ):
-        """A settled transaction with NULL paid_at uses the pay-period start.
-
-        ``entry_date`` is NOT NULL; with no ``paid_at`` recorded the entry date
-        falls back to the period's ``start_date``.
-        """
-        with app.app_context():
-            period = seed_user["bootstrap_period"]
-            txn = add_txn(
-                _db.session, seed_user, period, "Groceries", "50.00",
-                status_enum=StatusEnum.DONE, category_key="Groceries",
-            )
-            _db.session.commit()
-
-            [entry] = posting_service.sync_transaction_postings(
-                txn, settled=True,
-            )
-            _db.session.commit()
-            assert entry.entry_date == period.start_date
-
 
 class TestTransactionFailLoud:
     """Broken invariants raise PostingError rather than posting silently."""
@@ -1495,7 +1489,7 @@ class TestSettledTransactionEffect:
         Arithmetic: a $50 Paid expense (-50) and a $2000 Received income
         (+2000) on Checking net to +1950.00.  ``settled_transaction_effect``
         (a source-table query) reports exactly that; both settles are
-        stamped ``paid_at`` now (post-assertion), so
+        dated today (post-assertion), so
         ``account_posting_total`` (the ledger sum) carries the same +1950.00
         on top of the $1000.00 opening -- 2950.00.  The two independent
         tables agree on the transactions' contribution only because no
@@ -1513,7 +1507,7 @@ class TestSettledTransactionEffect:
                 status_enum=StatusEnum.RECEIVED, is_income=True,
                 category_key="Salary",
             )
-            # Stamp both settles post-assertion (add_txn leaves paid_at
+            # Date both settles post-assertion (add_txn dates a settled row on
             # NULL, whose period-start fallback would predate the fixture
             # anchor and absorb the effects into the opening instead).
             # Server-side now(): the directory conftest freezes the PYTHON
@@ -1553,7 +1547,9 @@ class TestSettledTransactionEffect:
             _add_txn_entry(seed_user, txn, "60.00", is_credit=False)
             _add_txn_entry(seed_user, txn, "50.00", is_credit=False)
             _add_txn_entry(seed_user, txn, "40.00", is_credit=True)
-            txn.status_id = ref_cache.status_id(StatusEnum.DONE)
+            status_seam.apply_status_change(
+                txn, ref_cache.status_id(StatusEnum.DONE),
+            )
             txn.actual_amount = Decimal("150.00")
             _db.session.commit()
 
@@ -1584,7 +1580,9 @@ class TestSettledTransactionEffect:
             _add_txn_entry(seed_user, envelope, "60.00", is_credit=False)
             _add_txn_entry(seed_user, envelope, "50.00", is_credit=False)
             _add_txn_entry(seed_user, envelope, "40.00", is_credit=True)
-            envelope.status_id = ref_cache.status_id(StatusEnum.DONE)
+            status_seam.apply_status_change(
+                envelope, ref_cache.status_id(StatusEnum.DONE),
+            )
             envelope.actual_amount = Decimal("150.00")
             add_txn(
                 _db.session, seed_user, period, "Rent", "30.00",
@@ -1626,7 +1624,7 @@ class TestPeriodAttribution:
         Settle a $100 expense in period P (paid 2026-01-05, so the settle
         entry is dated 2026-01-05 in P).  Simulate the revert-and-move PATCH
         exactly as the handler applies it -- ``pay_period_id`` moved to F and
-        ``paid_at`` cleared BEFORE the reconcile -- then reconcile with
+        the settle day cleared BEFORE the reconcile -- then reconcile with
         ``settled=False``.  The reversal entry must carry period P (never F)
         and the inherited 2026-01-05 date (never F's start or today), so P
         nets to zero per ledger account and F holds nothing.  A later
@@ -1650,11 +1648,16 @@ class TestPeriodAttribution:
             assert settle_entry.pay_period_id == period.id
             assert settle_entry.entry_date == date(2026, 1, 5)
 
-            # The revert-and-move PATCH, as _apply_regular_update applies it:
-            # the new period and the cleared paid_at land BEFORE the reconcile.
+            # The revert-and-move PATCH, exactly as ``_apply_regular_update``
+            # applies it: the new period lands, and the status goes through the
+            # SEAM -- which is what clears the settle day, since plan step X-f1
+            # made the two one write.  Both land BEFORE the reconcile.
             txn.pay_period_id = moved_to.id
-            txn.settled_on = None
+            status_seam.apply_status_change(
+                txn, ref_cache.status_id(StatusEnum.PROJECTED),
+            )
             _db.session.flush()
+            assert txn.settled_on is None
             [reversal] = posting_service.sync_transaction_postings(
                 txn, settled=False,
             )
@@ -1673,14 +1676,21 @@ class TestPeriodAttribution:
             assert per_period[period.id][cash_ledger] == Decimal("0.00")
             assert moved_to.id not in per_period
 
-            # A later re-settle posts into the NEW period alone (paid_at is
-            # cleared, so the entry dates at F's start -- the settle fallback).
+            # A later re-settle posts into the NEW period alone, dated the day
+            # the user re-settled it on -- the seam's stamp.  It dated at the
+            # period's ``start_date`` until plan step X-f1, because the cleared
+            # instant fell back to it; a re-settle records a real day now, and
+            # the row's budget period and its cash day are allowed to disagree.
+            status_seam.apply_status_change(
+                txn, ref_cache.status_id(StatusEnum.DONE),
+            )
+            _db.session.flush()
             [resettle] = posting_service.sync_transaction_postings(
                 txn, settled=True,
             )
             _db.session.commit()
             assert resettle.pay_period_id == moved_to.id
-            assert resettle.entry_date == moved_to.start_date
+            assert resettle.entry_date == display_today()
             per_period = _period_nets_for_transaction(txn.id)
             assert per_period[period.id][cash_ledger] == Decimal("0.00")
             assert per_period[moved_to.id][cash_ledger] == Decimal("-100.00")
@@ -1691,7 +1701,7 @@ class TestPeriodAttribution:
         """The transfer reversal lands in the settle period, like a transaction.
 
         Settle a $100 Checking -> Savings transfer in period P (auto-posted at
-        creation), move it to F with ``paid_at``-equivalent state as the
+        creation), move it to F with the equivalent settle-day state as the
         transfer PATCH leaves it, and reconcile ``settled=False``: the
         reversal entry carries P, both ledgers net to zero in P, and F holds
         nothing -- the transfer twin of the transaction case above.

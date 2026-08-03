@@ -22,6 +22,7 @@ from decimal import Decimal
 from app import ref_cache
 from app.enums import StatusEnum
 from app.extensions import db
+from app.services import status_seam
 from app.models.ref import Status, TransactionType
 from app.models.transaction import Transaction
 
@@ -57,15 +58,18 @@ def _walk_to_settled(txn):
 
     The state machine forbids a direct projected -> settled jump, so
     tests that need a settled row to attack must first land on Done.
-    Bypasses the route layer to keep the helper terse -- the
-    transitions exercised here are themselves covered by the legal
-    suite and by the existing transfer-service tests.
+    Bypasses the ROUTE layer to keep the helper terse -- the transitions
+    exercised here are themselves covered by the legal suite and by the
+    existing transfer-service tests -- but goes through the status SEAM rather
+    than assigning the column: since plan step X-f1 the seam writes the settle
+    day in the same call, and a bare assignment leaves a settled row with no
+    day, which every balance reader refuses.
     """
     done_id = ref_cache.status_id(StatusEnum.DONE)
     settled_id = ref_cache.status_id(StatusEnum.SETTLED)
-    txn.status_id = done_id
+    status_seam.apply_status_change(txn, done_id)
     db.session.commit()
-    txn.status_id = settled_id
+    status_seam.apply_status_change(txn, settled_id)
     db.session.commit()
 
 
@@ -173,7 +177,7 @@ class TestPatchAcceptsLegalTransition:
             projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
 
             # Walk to Done first.
-            txn.status_id = done_id
+            status_seam.apply_status_change(txn, done_id)
             db.session.commit()
 
             response = auth_client.patch(
@@ -220,7 +224,7 @@ class TestPatchRejectsFinalisedFieldEdit:
         stored amount is unchanged (the headline silent-rewrite gap)."""
         with app.app_context():
             txn = _create_projected_expense(seed_user, seed_periods_today)
-            txn.status_id = ref_cache.status_id(StatusEnum.DONE)
+            status_seam.apply_status_change(txn, ref_cache.status_id(StatusEnum.DONE))
             db.session.commit()
 
             response = auth_client.patch(
@@ -283,7 +287,7 @@ class TestPatchRejectsFinalisedFieldEdit:
         amount is refused -- archiving is not a revert, so the lock holds."""
         with app.app_context():
             txn = _create_projected_expense(seed_user, seed_periods_today)
-            txn.status_id = ref_cache.status_id(StatusEnum.DONE)
+            status_seam.apply_status_change(txn, ref_cache.status_id(StatusEnum.DONE))
             db.session.commit()
             settled_id = ref_cache.status_id(StatusEnum.SETTLED)
 
@@ -325,7 +329,7 @@ class TestPatchAllowsEditableField:
         money / period / category / due-date fields are locked."""
         with app.app_context():
             txn = _create_projected_expense(seed_user, seed_periods_today)
-            txn.status_id = ref_cache.status_id(StatusEnum.DONE)
+            status_seam.apply_status_change(txn, ref_cache.status_id(StatusEnum.DONE))
             db.session.commit()
 
             response = auth_client.patch(
@@ -343,7 +347,7 @@ class TestPatchAllowsEditableField:
         allowed -- the escape hatch the lock deliberately preserves."""
         with app.app_context():
             txn = _create_projected_expense(seed_user, seed_periods_today)
-            txn.status_id = ref_cache.status_id(StatusEnum.DONE)
+            status_seam.apply_status_change(txn, ref_cache.status_id(StatusEnum.DONE))
             db.session.commit()
             projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
 
@@ -371,7 +375,7 @@ class TestPatchAllowsEditableField:
         with app.app_context():
             txn = _create_projected_expense(seed_user, seed_periods_today)
             done_id = ref_cache.status_id(StatusEnum.DONE)
-            txn.status_id = done_id
+            status_seam.apply_status_change(txn, done_id)
             db.session.commit()
 
             response = auth_client.patch(

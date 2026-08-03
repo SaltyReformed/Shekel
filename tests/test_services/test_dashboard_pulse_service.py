@@ -46,6 +46,7 @@ from tests._test_helpers import (
     create_hysa_account,
     create_loan_account,
     create_savings_account,
+    default_settle_day,
     make_investment_account,
     make_salary_profile,
     set_default_grid_account,
@@ -67,16 +68,20 @@ def _add_expense(
 
     Returns the created Transaction (flushed).
     """
+    status_id = ref_cache.status_id(status_enum)
     txn = Transaction(
         account_id=seed_user["account"].id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
-        status_id=ref_cache.status_id(status_enum),
+        status_id=status_id,
         name=name,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
         estimated_amount=Decimal(str(amount)),
         due_date=due_date,
         is_deleted=is_deleted,
+        # A settled row must carry the day its money moved; the rule for a
+        # BARE-built fixture row is shared rather than restated (X-f1).
+        settled_on=default_settle_day(period, status_id),
     )
     db_session.add(txn)
     db_session.flush()

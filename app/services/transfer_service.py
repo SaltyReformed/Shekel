@@ -46,6 +46,11 @@ from app.services._transfer_loan_posting import (
     _reverse_loan_payment_before_delete,
     _sync_loan_postings_if_loan,
 )
+from app.services._transfer_status import (
+    apply_settle_day_correction,
+    apply_settle_day_to_pair,
+    apply_status_to_all_three,
+)
 from app.services._transfer_ownership import (
     _get_owned_account,
     _get_owned_category,
@@ -59,10 +64,7 @@ from app.services._transfer_validation import (
     _validate_positive_amount,
     assert_restorable,
 )
-from app.services import status_seam
-from app.services.state_machine import verify_transition
-from app.utils.balance_predicates import settled_status_ids
-from app.utils.dates import display_today
+from app.services.status_seam import reject_settle_day_without_settled_status
 from app.utils.log_events import (
     BUSINESS,
     EVT_TRANSFER_CREATED,
@@ -278,14 +280,13 @@ def create_transfer(spec: TransferSpec) -> Transfer:
     _get_owned_category(spec.category_id, spec.user_id)
     _get_owned_transfer_template(spec.transfer_template_id, spec.user_id)
     created_status = db.session.get(Status, spec.status_id)
-    if spec.settled_on is not None and not (
-        created_status is not None and created_status.is_settled
-    ):
-        raise ValidationError(
-            "settled_on is the settle day of a transfer created already "
-            "settled; a transfer created with an unsettled status has not "
-            "been paid, so it cannot carry one."
-        )
+    # The settled-iff-dated rule, asked BEFORE any row exists.  It is the seam's
+    # own predicate rather than a second statement of it (plan step X-f1b,
+    # finding **N-183**): the seam cannot answer this case itself, because the
+    # born-settled branch below is gated on the status being settled, so an
+    # unsettled create carrying a day never reaches it and the day would be
+    # dropped in silence.  One rule, two moments.
+    reject_settle_day_without_settled_status(spec.status_id, spec.settled_on)
 
     # ── Ref data lookups ───────────────────────────────────────────
     expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
@@ -341,13 +342,14 @@ def create_transfer(spec: TransferSpec) -> Transfer:
     # also rejects a ``settled_on`` on an unsettled create before any row
     # exists.  ``display_today()`` rather than the server's day: this value IS
     # the ``entry_date`` the postings below are filed under (step C2's one
-    # clock), and that day is the user's (ruling R-DH (b)).
+    # clock), and that day is the user's (ruling R-DH (b)) -- and the SEAM is
+    # what applies it, since plan step X-f1b made that the column's one writer
+    # (finding N-183).  The shadows are born in the parent's status, so this is
+    # an identity status change carrying the day and moves nothing else.
     if created_status is not None and created_status.is_settled:
-        settled_day = (
-            spec.settled_on if spec.settled_on is not None else display_today()
+        apply_settle_day_to_pair(
+            expense_shadow, income_shadow, spec.settled_on,
         )
-        expense_shadow.settled_on = settled_day
-        income_shadow.settled_on = settled_day
         db.session.flush()
         posting_service.sync_transfer_postings(xfer, settled=True)
         _sync_loan_postings_if_loan(xfer)
@@ -369,76 +371,6 @@ def create_transfer(spec: TransferSpec) -> Transfer:
         income_shadow_id=income_shadow.id,
     )
     return xfer
-
-
-def _apply_status_to_all_three(
-    xfer: Transfer,
-    expense_shadow: Transaction,
-    income_shadow: Transaction,
-    new_status_id: int,
-) -> None:
-    """Move a transfer and both shadows to one status, through the ONE seam.
-
-    Replaces this module's own copy of the status seam (plan step X-aj1,
-    ruling **R-DN**); see :func:`app.services.status_seam.apply_status_change`
-    for the mechanics and for the three defects the duplicate carried.
-
-    **Verified in FULL before anything is assigned.**  That preserves the
-    atomicity the deleted version promised -- an illegal request leaves the
-    transfer AND both shadows untouched (F-047 / commit C-21) -- and it is
-    what makes ruling **R-DO** safe here: a shadow whose status has drifted
-    somewhere the parent's status is not legally reachable from now REFUSES,
-    so assigning as we went would strand the transfer ahead of its shadows.
-    The seam re-verifies as it writes and stays the enforcement point; this
-    pass is for atomicity, mirroring how the transaction PATCH handler's
-    ``_resolve_status_change`` pre-check relates to the same seam.
-
-    The shadow checks pass by construction for any transfer whose own
-    transition was legal: a shadow's status equals the parent's pre-update
-    status (Transfer Invariant 4), and every transfer-legal move is also
-    transaction-legal (measured over both maps at X-aj1's trace, 0
-    exceptions, reverse control firing).
-
-    Args:
-        xfer: The parent :class:`Transfer` being updated.
-        expense_shadow: The expense-side shadow :class:`Transaction`.
-        income_shadow: The income-side shadow :class:`Transaction`.
-        new_status_id: The ``ref.statuses.id`` all three rows move to.
-
-    Raises:
-        ValidationError: If the transition is illegal for the transfer or
-            for either shadow (propagated from the state machine).
-    """
-    rows = (xfer, expense_shadow, income_shadow)
-    for row in rows:
-        verify_transition(row, new_status_id)
-
-    # ONE settle DAY for the PAIR (Transfer Invariant 3), resolved before
-    # either shadow is written.  The seam's per-row rule is "preserve an
-    # existing day, else stamp today", which is right for a lone transaction and
-    # WRONG for a pair: two shadows whose days already differ would each keep
-    # their own, and a pair where only one carries a day would have the other
-    # stamped with today.  Both outcomes break the equality
-    # ``posting_service._entry_date`` depends on -- it reads the INCOME shadow's
-    # ``settled_on`` and its docstring records that the two are always equal
-    # because the transfer service mirrors the day to both shadows.
-    # Preferring an EXISTING day over today is what stops a repair from
-    # inventing a settle day: the sibling already knows when the money moved,
-    # and that day is the ``entry_date`` the postings are filed under.
-    settled = new_status_id in settled_status_ids()
-    pair_day = None
-    if settled:
-        pair_day = (
-            expense_shadow.settled_on
-            or income_shadow.settled_on
-            or display_today()
-        )
-    for shadow in (expense_shadow, income_shadow):
-        status_seam.apply_status_change(
-            shadow, new_status_id, settled_on=pair_day,
-        )
-    # The parent carries no ``settled_on`` column, so it takes no day.
-    status_seam.apply_status_change(xfer, new_status_id)
 
 
 def _apply_actual_amount(
@@ -482,7 +414,7 @@ def _reconcile_postings_after_update(xfer: Transfer, updates: dict[str, object])
 
     * **Step-2 cash reconcile** when a magnitude / settled-sense / period field
       changed (``_POSTING_RELEVANT_FIELDS``).  Placed here -- NOT inside
-      ``_apply_status_to_all_three`` -- because ``actual_amount`` is applied AFTER
+      ``apply_status_to_all_three`` -- because ``actual_amount`` is applied AFTER
       ``status_id`` and the grid shadow-edit path can settle and set an actual
       in one call; the reconcile reads the income shadow's ``effective_amount``,
       so it must run once everything is in place or it would post the pre-edit
@@ -606,11 +538,12 @@ def update_transfer(transfer_id, user_id, **kwargs):
     # All three transitions verified before any propagation, then applied
     # through the ONE status seam, which owns the F-048 defense-in-depth
     # ``settled_on`` synchronization and the ``status`` expire; see
-    # :func:`_apply_status_to_all_three` for the full audit rationale.  An
+    # :func:`app.services._transfer_status.apply_status_to_all_three` for
+    # the full audit rationale.  An
     # explicit ``settled_on`` in this same call is applied by its own branch
     # below and wins over whatever the seam derived here.
     if "status_id" in kwargs:
-        _apply_status_to_all_three(
+        apply_status_to_all_three(
             xfer, expense_shadow, income_shadow, kwargs["status_id"],
         )
 
@@ -664,11 +597,13 @@ def update_transfer(transfer_id, user_id, **kwargs):
     # The ONE caller that legitimately supplies a day is the user CORRECTING
     # it (ruling R-ED).  Both mark-done routes used to pass one and did not
     # mean it: their value overrode the seam's preserve rule and re-dated a
-    # replayed settle (finding N-178, plan step X-f1b0).
+    # replayed settle (finding N-178, plan step X-f1b0).  It assigned the
+    # column on both shadows here until plan step X-f1b, which made that a
+    # second write door for the column the seam owns (finding N-183).
     if "settled_on" in kwargs:
-        new_settled_on = kwargs["settled_on"]
-        expense_shadow.settled_on = new_settled_on
-        income_shadow.settled_on = new_settled_on
+        apply_settle_day_correction(
+            xfer, expense_shadow, income_shadow, kwargs["settled_on"],
+        )
 
     # ── is_override ────────────────────────────────────────────────
     if "is_override" in kwargs:
@@ -886,7 +821,9 @@ def restore_transfer(transfer_id, user_id):
             shadow.estimated_amount = xfer.amount
 
         # Invariant 4 is repaired for the PAIR after this loop, not per shadow
-        # -- see the call to :func:`_apply_status_to_all_three` below.
+        # -- see the call to
+        # :func:`app.services._transfer_status.apply_status_to_all_three`
+        # below.
 
         # Invariant 5: shadow period must match transfer period.
         if shadow.pay_period_id != xfer.pay_period_id:
@@ -965,7 +902,7 @@ def restore_transfer(transfer_id, user_id):
             {shadow.id: shadow.status_id for shadow in shadows},
             xfer.status_id,
         )
-    _apply_status_to_all_three(
+    apply_status_to_all_three(
         xfer, expense_shadow, income_shadow, xfer.status_id,
     )
 

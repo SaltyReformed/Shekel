@@ -17,6 +17,7 @@ from datetime import (
     date as _real_date,
     datetime as _real_datetime,
     timedelta as _real_timedelta,
+    timezone as _real_timezone,
 )
 from decimal import Decimal
 
@@ -151,6 +152,14 @@ def freeze_today(monkeypatch, target_date, modules=None, at_time=None):
     correctly in one of them.  It is finding N-132's shape a sixth time --
     midnight UTC used to MEAN a civil day -- and it is fixed here rather than
     worked around at each reader.
+
+    **Both halves now take the SAME instant, ``at_time`` included** (plan step
+    X-f1b).  The database half derived its own noon from ``target_date`` until
+    then, so a caller that named an EVENING instant -- the only kind that can
+    tell a display-timezone rule apart from a UTC one, which is what finding
+    **N-182** needed -- re-opened the same split the paragraph above closed, in
+    the direction nothing had exercised.  Nothing moves at the default: noon UTC
+    on ``target_date`` is exactly what the database half computed for itself.
 
     Args:
         monkeypatch:
@@ -290,7 +299,15 @@ def freeze_today(monkeypatch, target_date, modules=None, at_time=None):
         except (AttributeError, TypeError):
             pass
 
-    _freeze_db_clock(monkeypatch, target_date)
+    # BOTH halves of the freeze take the SAME instant, including when the caller
+    # named one with ``at_time``.  Handing this half ``target_date`` (and letting
+    # it re-derive noon) is the exact defect the docstring above records: two
+    # halves of one freeze, hours and a civil date apart.  With the default
+    # ``at_time`` this value IS ``settle_instant_on(target_date)``, so nothing
+    # moves for a test that does not ask for an instant.
+    _freeze_db_clock(
+        monkeypatch, target_datetime.replace(tzinfo=_real_timezone.utc),
+    )
 
 
 # ── the DATABASE half of the frozen clock (finding N-65) ──────────────
@@ -594,7 +611,7 @@ def bind_db_clock_rewriter(engine):
     _DB_CLOCK_BOUND_ENGINES.add(engine)
 
 
-def _freeze_db_clock(monkeypatch, target_date):
+def _freeze_db_clock(monkeypatch, frozen_instant):
     """Make the DATABASE's clock agree with the clock the test just froze.
 
     The structural half of finding N-65 (balance plan step X-h).  Freezing
@@ -624,12 +641,17 @@ def _freeze_db_clock(monkeypatch, target_date):
     (:func:`bind_db_clock_rewriter`), never lazily, so neither mechanism
     depends on the other having run.
 
-    The instant is :func:`settle_instant_on`'s, which is this suite's existing
-    primitive for "a deterministic instant on this civil day" -- noon UTC, the
-    same civil day in the display timezone, so the frozen date the test reads
-    from ``date.today()`` and the date the app RENDERS for these rows are the
-    same date.  Reusing it is deliberate: a second convention for the same
-    question is what this plan step exists to delete.
+    The instant is the one :func:`freeze_today` froze ``datetime.now()`` to, so
+    the two halves cannot disagree about WHEN "now" is.  By default that is noon
+    UTC -- :func:`settle_instant_on`'s value, this suite's existing primitive for
+    "a deterministic instant on this civil day", the same civil day in the
+    display timezone, so the frozen date the test reads from ``date.today()`` and
+    the date the app RENDERS for these rows are the same date.  A caller that
+    names an instant with ``at_time`` gets THAT instant here too: an
+    evening-Eastern freeze (the only kind that can tell a display-timezone rule
+    apart from a UTC one) would otherwise leave the database eleven hours and one
+    civil date away from the app, which is the split this docstring's sibling
+    paragraph in :func:`freeze_today` was written about.
 
     Production is unchanged, and deliberately so.  The database is the right
     authority for a production timestamp -- two app workers with skewed clocks
@@ -646,7 +668,9 @@ def _freeze_db_clock(monkeypatch, target_date):
     Args:
         monkeypatch: pytest's ``monkeypatch`` fixture, so the frozen clock
             reverts with the test that set it.
-        target_date: The civil date the test froze ``date.today()`` to.
+        frozen_instant: The aware-UTC instant :func:`freeze_today` froze
+            ``datetime.now()`` to -- noon UTC on the target date unless the
+            caller named another with ``at_time``.
     """
     global _DB_CLOCK_LISTENERS_INSTALLED  # pylint: disable=global-statement
     # Pylint: ``import-outside-toplevel`` -- see :func:`_db_clock_insert_attrs`.
@@ -659,7 +683,7 @@ def _freeze_db_clock(monkeypatch, target_date):
         _DB_CLOCK_LISTENERS_INSTALLED = True
     monkeypatch.setattr(
         f"{__name__}._FROZEN_DB_CLOCK",
-        _FrozenDbClock(settle_instant_on(target_date)),
+        _FrozenDbClock(frozen_instant),
     )
 
 
@@ -2403,14 +2427,15 @@ def create_settled_transfer(
             on the SETTLED date -- typically the period's ``start_date``.  It
             took an INSTANT until plan step X-f1 and callers wrapped their day in
             ``settle_instant_on``; the column stores the day now, so the day is
-            passed directly.  **Passing ``None`` EXPLICITLY still writes NULL
-            onto a settled row, which is the broken invariant
-            ``balance_predicates.settled_day`` refuses** -- the sentinel is
-            ``_UNSET_SETTLED_ON``, not ``None``, so this helper can still build a
-            row no reader can date.  An earlier draft of this docstring claimed
-            that state was "no longer constructible"; a neutral review found four
-            call sites doing exactly it (finding N-182).  Until those are
-            converted, ``None`` here means "build the broken row on purpose".
+            passed directly.  **Passing ``None`` EXPLICITLY is now REFUSED**, and
+            this paragraph promised the opposite until a neutral review caught
+            it: the sentinel is ``_UNSET_SETTLED_ON``, not ``None``, so an
+            explicit ``None`` reaches ``update_transfer`` and, since finding
+            **N-183** routed that write through the status seam, raises
+            ``ValidationError`` ("the settle day cannot be cleared") rather than
+            NULLing a settled pair.  A fixture that genuinely needs the broken
+            settled-with-no-day row builds it with the bare :func:`add_txn`
+            instead, which is what that builder is for.
         name: Optional transfer display name.
         scenario: The :class:`~app.models.scenario.Scenario` to place the
             transfer (and both shadows) in.  Defaults to ``None``, which uses
@@ -2845,11 +2870,41 @@ def mark_purchase_settled(db_session, account, entry, settled_on=None):
     return entry
 
 
+def default_settle_day(period, status_id):
+    """Return the settle day a BARE-built fixture row takes for *status_id*.
+
+    **One statement of the rule, for the two bare ``Transaction`` builders that
+    need it** (:func:`add_txn` and ``test_calendar_service``'s module-local
+    twin).  A row built in a settled status must carry a settle day -- a settled
+    row without one is the state
+    :func:`app.utils.balance_predicates.settled_day` refuses -- and the day is
+    the pay period's ``start_date``, because that is precisely what every reader
+    derived for such a row before plan step X-f1: these builders never set
+    ``paid_at``, so ``to_display_civil_date(None, period.start_date)`` answered
+    the period start.  Stamping ``display_today()`` instead would silently move
+    that cash to today and re-date whatever figure the fixture was built to
+    grade.
+
+    Args:
+        period: The :class:`~app.models.pay_period.PayPeriod` the row sits in.
+        status_id: The ``ref.statuses.id`` the row is built in.
+
+    Returns:
+        ``period.start_date`` for a settled status, ``None`` for any other.
+    """
+    # pylint: disable=import-outside-toplevel  -- same circular-dep
+    # avoidance as the loan helpers above.
+    from app.utils.balance_predicates import settled_status_ids
+
+    return period.start_date if status_id in settled_status_ids() else None
+
+
 def add_txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     db_session, seed_user, period, name, amount,
     status_enum=None, is_income=False,
     due_date=None, category_key=None, is_deleted=False,
     actual_amount=None, account=None, scenario=None,
+    settled_on=_UNSET_SETTLED_ON,
 ):
     """Create a projected (default) transaction on the seed user's account.
 
@@ -2858,6 +2913,26 @@ def add_txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     ``_add_txn`` -- a duplicate-code finding).  Builds an income or expense
     row with optional actual amount, due date, category, soft-delete flag,
     and status.  Flushes; the caller commits.
+
+    **A row built in a SETTLED status gets a settle day here, and the default
+    is the pay period's ``start_date``** (plan step X-f1).  It is deliberately
+    the period start and not today: this builder never set ``paid_at``, so
+    every settled row it produced used to reach the readers as
+    ``to_display_civil_date(None, period.start_date)`` -- the period start --
+    which is the day every hand-computed figure in the suites that consume it
+    was written against.  It is also the day migration ``a3f7c8e21b64``'s
+    backfill gave the real rows in the same shape.  Stamping ``display_today()``
+    instead would silently move that cash to today and re-date whatever
+    balance, period subtotal or ledger entry the fixture was built to grade.
+
+    It stays a BARE builder -- it does not route through
+    ``status_seam.apply_status_change`` -- because that is its purpose: several
+    suites need "a settled row the posting writer has never seen", and the seam
+    would additionally refuse ``Projected -> Settled``, which is not a legal
+    transaction transition but is a legitimate STARTING state for a fixture.
+    What it may not produce is an INCOHERENT row: a settled row with no settle
+    day is the state ``balance_predicates.settled_day`` refuses, and every
+    reader of it would raise.
 
     Args:
         db_session: The test ``db.session``.
@@ -2881,6 +2956,13 @@ def add_txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         scenario: The :class:`~app.models.scenario.Scenario` the row lives in;
             defaults to the seed user's baseline.  Pass a non-baseline scenario
             to exercise multi-scenario isolation.
+        settled_on: The civil day the row's money moved.  Omit it for the
+            default described above (``period.start_date`` for a settled
+            status, ``None`` for any other).  Pass a day to place the cash
+            somewhere specific -- the shape a fixture needs when it grades WHICH
+            day a balance steps on.  Passing ``None`` explicitly builds the
+            broken settled-with-no-day row on purpose, which is what a negative
+            control for :func:`app.utils.balance_predicates.settled_day` needs.
 
     Returns:
         The created :class:`~app.models.transaction.Transaction` (flushed).
@@ -2890,11 +2972,13 @@ def add_txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     from app import ref_cache
     from app.enums import StatusEnum, TxnTypeEnum
     from app.models.transaction import Transaction
-
     if status_enum is None:
         status_enum = StatusEnum.PROJECTED
     account = seed_user["account"] if account is None else account
     scenario = seed_user["scenario"] if scenario is None else scenario
+    status_id = ref_cache.status_id(status_enum)
+    if settled_on is _UNSET_SETTLED_ON:
+        settled_on = default_settle_day(period, status_id)
     type_id = (
         ref_cache.txn_type_id(TxnTypeEnum.INCOME)
         if is_income
@@ -2908,7 +2992,7 @@ def add_txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         account_id=account.id,
         pay_period_id=period.id,
         scenario_id=scenario.id,
-        status_id=ref_cache.status_id(status_enum),
+        status_id=status_id,
         name=name,
         category_id=cat_id,
         transaction_type_id=type_id,
@@ -2916,10 +3000,50 @@ def add_txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         actual_amount=Decimal(str(actual_amount)) if actual_amount is not None else None,
         due_date=due_date,
         is_deleted=is_deleted,
+        settled_on=settled_on,
     )
     db_session.add(txn)
     db_session.flush()
     return txn
+
+
+def require_assertion_instant(at):
+    """Return *at*, refusing a plain ``date`` where an INSTANT is required.
+
+    **The mirror of the settle column's type guard, and it exists because the
+    X-f1 conversion tripped over exactly this** (finding **N-179**'s other
+    direction).  A settle records a civil DAY; an ASSERTION records the instant
+    it was typed (``AccountAnchorHistory.created_at``, a ``timestamptz``) and
+    DERIVES its business day from it.  A bulk conversion that turned settle
+    instants into days caught five assertion sites in the same pass, and each
+    then failed deep inside ``to_display_tz`` with ``'date' object has no
+    attribute 'tzinfo'`` -- or, had it reached the column, would have been
+    stored as MIDNIGHT UTC, which is the previous Eastern evening and therefore
+    the previous business day.
+
+    Every assertion builder in this module routes through it, so handing one a
+    day fails at the call site with a message that says what to pass.
+
+    Args:
+        at: The candidate recording instant.
+
+    Returns:
+        *at* unchanged when it is a ``datetime``.
+
+    Raises:
+        TypeError: When *at* is a ``date`` that is not a ``datetime``.
+    """
+    if isinstance(at, _real_date) and not isinstance(at, _real_datetime):
+        raise TypeError(
+            f"An assertion is pinned by the INSTANT it was recorded at, got "
+            f"the civil day {at!r}.  Its business day (``observed_on``) is "
+            "DERIVED from that instant in the display timezone, and a bare "
+            "date reaches the timestamptz column as midnight UTC -- the "
+            "PREVIOUS Eastern evening, so the assertion would be filed a day "
+            "early.  Pass an aware-UTC datetime: the suite's own "
+            "``_instant(...)`` helper, or ``settle_instant_on(day)``."
+        )
+    return at
 
 
 def observed_day_of(instant):
@@ -3148,6 +3272,7 @@ def _restamp_assertion(db_session, account, at, *, newest):
     # avoidance as the loan helpers above.
     from app.models.account import AccountAnchorHistory
 
+    require_assertion_instant(at)
     db_session.flush()
     order = (AccountAnchorHistory.created_at, AccountAnchorHistory.id)
     if newest:
@@ -3210,6 +3335,8 @@ def append_balance_assertion(
     # avoidance as the loan helpers above.
     from app.models.account import AccountAnchorHistory
 
+    require_assertion_instant(at)
+    require_assertion_instant(at if recorded_at is None else recorded_at)
     row = AccountAnchorHistory(
         account_id=account.id,
         pay_period_id=period.id,

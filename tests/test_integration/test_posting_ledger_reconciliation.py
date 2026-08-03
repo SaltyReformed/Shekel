@@ -92,11 +92,9 @@ from app.models.transfer import Transfer
 from app.services import posting_service, transfer_service
 from app.utils.balance_predicates import settled_status_ids
 from tests._test_helpers import (
-    clear_postings_for_transfer,
     create_account_of_type,
     create_settled_transfer,
     linked_ledger_account,
-    load_migration_module,
 )
 
 
@@ -368,14 +366,6 @@ def _build_asset_and_liability_books(seed_user) -> tuple:
     )
     _db.session.commit()
     return savings, mortgage
-
-
-# The Commit-3 migration module, loaded once so its idempotent
-# ``_backfill_settled_transfers`` raw-SQL builder can be invoked directly (the
-# historical producer), the same pattern the backfill suite uses.
-_BACKFILL_MIGRATION = load_migration_module(
-    "db239773c2fd_create_journal_entries_account_postings_.py"
-)
 
 
 # ---------------------------------------------------------------------------
@@ -798,81 +788,21 @@ class TestOwnerIsolationViaJournalEntry:
 
             _assert_full_reconciliation(scenario1)
             _assert_full_reconciliation(scenario2)
-
-
 # ---------------------------------------------------------------------------
-# Backfilled vs go-forward postings reconcile identically
+# THE BACKFILL-VS-GO-FORWARD CASE WAS DELETED AT PLAN STEP X-f1
 # ---------------------------------------------------------------------------
-
-
-class TestBackfillAndGoForwardAgree:
-    """The raw-SQL backfill and the posting_service builder produce equal legs."""
-
-    @pytest.mark.server_clock
-    def test_same_transfer_posts_identically_both_ways(
-        self, app, db, seed_user,
-    ):
-        """A transfer posted go-forward then re-posted by the backfill matches.
-
-        Arithmetic: a $100 Checking -> Savings settle posts -100 / +100
-        go-forward (the ``posting_service`` Python builder).  Clearing those
-        legs to the pre-ledger state and running the migration's raw-SQL
-        backfill re-posts the SAME -100 / +100.  Asserting the two are equal
-        leg-for-leg catches any divergence between the two producers, and the
-        oracle reconciles identically over the backfilled postings.
-        """
-        with app.app_context():
-            scenario_id = seed_user["scenario"].id
-            checking = seed_user["account"]
-            savings = create_account_of_type(
-                seed_user, _db.session, "Savings", "Backfill-vs-Forward Savings",
-            )
-            _db.session.commit()
-            transfer = create_settled_transfer(
-                seed_user, _db.session, checking, savings,
-                seed_user["bootstrap_period"], amount=Decimal("100.00"),
-            )
-            _db.session.commit()
-
-            # Capture the go-forward legs on each account's ledger (each
-            # rides its Step-5 opening: Savings 100 + 100, Checking
-            # 1000 - 100).
-            forward_savings = _independent_ledger_sum(savings.id, scenario_id)
-            forward_checking = _independent_ledger_sum(checking.id, scenario_id)
-            assert forward_savings == Decimal("200.00")
-            assert forward_checking == Decimal("900.00")
-
-            # Clear to the pre-ledger historical state and re-post via the
-            # migration's raw-SQL backfill (the historical producer).
-            clear_postings_for_transfer(transfer.id)
-            assert _independent_ledger_sum(
-                savings.id, scenario_id,
-            ) == Decimal("100.00")  # cleared back to the opening
-            posted = _BACKFILL_MIGRATION._backfill_settled_transfers(_db.session)
-            _db.session.commit()
-            assert posted == [transfer.id]
-
-            # The backfilled net equals the go-forward net, account for
-            # account, and the oracle reconciles over the backfilled postings.
-            assert _independent_ledger_sum(
-                savings.id, scenario_id,
-            ) == forward_savings
-            assert _independent_ledger_sum(
-                checking.id, scenario_id,
-            ) == forward_checking
-            # Exactly one balanced entry with a single +100 leg on Savings
-            # (one matching leg, not two that merely net to +100).
-            assert (
-                _db.session.query(JournalEntry)
-                .filter_by(transfer_id=transfer.id)
-                .count()
-            ) == 1
-            assert list(
-                _legs_by_account(savings.id, transfer.id).values()
-            ) == [Decimal("100.00")]
-            assert _entries_violating_balance() == []
-            assert _trial_balance() == Decimal("0.00")
-            _assert_full_reconciliation(scenario_id)
+#
+# ``TestBackfillAndGoForwardAgree`` drove the historical migration's frozen raw
+# SQL, which reads a ``paid_at`` column migration ``a3f7c8e21b64`` DROPS.  It is
+# the same class the developer ruled on for the two dedicated backfill suites
+# (2026-08-03): the path is UNREACHABLE with data -- the migration runs only at
+# its own point in the chain, long before the drop, over an empty table, and
+# ``a3f7c8e21b64``'s downgrade REFUSES so Alembic cannot rewind past the drop --
+# so the case graded a producer that can never run again against one that runs
+# every day.  What it asserted, and what the rest of this oracle still asserts
+# without it: the two producers post leg-for-leg identical entries for one
+# settled transfer, and the ledger reconciles either way.  The GO-FORWARD half of
+# that is covered by every other case here; the historical half has no future.
 
 
 # ---------------------------------------------------------------------------

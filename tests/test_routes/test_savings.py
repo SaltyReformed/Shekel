@@ -1335,6 +1335,10 @@ class TestEmergencyFundCommittedBaseline:
                     category_id=category_id,
                     transaction_type_id=expense_type_id,
                     estimated_amount=Decimal("10.00"),
+                    # A settled row carries the day its money moved; this bare
+                    # fixture states the day its readers would otherwise refuse
+                    # to guess (plan step X-f1).
+                    settled_on=period.start_date,
                 )
                 db.session.add(txn)
 
@@ -1402,6 +1406,7 @@ class TestEmergencyFundCommittedBaseline:
                     category_id=category_id,
                     transaction_type_id=expense_type_id,
                     estimated_amount=Decimal("120.00"),
+                    settled_on=period.start_date,
                 ))
                 db.session.add(Transaction(
                     account_id=savings.id,
@@ -1412,6 +1417,7 @@ class TestEmergencyFundCommittedBaseline:
                     category_id=category_id,
                     transaction_type_id=expense_type_id,
                     estimated_amount=Decimal("300.00"),
+                    settled_on=period.start_date,
                 ))
             db.session.commit()
 

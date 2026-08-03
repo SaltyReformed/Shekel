@@ -109,7 +109,7 @@ def _settle(transfer, user_id, **extra):
     """Settle a transfer (Projected -> Done) through the service chokepoint.
 
     Mirrors the ``transfers.mark_done`` route: status -> Done with a concrete
-    ``paid_at``.  Extra kwargs (e.g. ``actual_amount``) are forwarded so a test
+    the settle day.  Extra kwargs (e.g. ``actual_amount``) are forwarded so a test
     can settle and set an actual amount in one call.
     """
     transfer_service.update_transfer(
@@ -484,7 +484,7 @@ class TestSettleWithActualSameCall:
         The grid shadow-edit path can send ``status_id=done`` AND
         ``actual_amount`` in a single ``update_transfer`` call, and the service
         applies ``actual_amount`` AFTER ``status_id``.  The reconcile runs at
-        the END of ``update_transfer`` (NOT inside ``_apply_status_to_all_three``), so
+        the END of ``update_transfer`` (NOT inside ``apply_status_to_all_three``), so
         it reads the FINAL income-shadow effective amount.
 
         Arithmetic: nominal $100, settled actual $88.00 -> the income shadow's

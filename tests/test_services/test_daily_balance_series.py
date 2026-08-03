@@ -56,6 +56,7 @@ from app.services.scenario_resolver import get_baseline_scenario
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
     append_balance_assertion,
+    default_settle_day,
     mark_purchase_settled,
     settle_instant_on,
 )
@@ -73,11 +74,12 @@ def _add_txn(
     type_id = ref_cache.txn_type_id(
         TxnTypeEnum.INCOME if is_income else TxnTypeEnum.EXPENSE,
     )
+    status_id = ref_cache.status_id(status)
     txn = Transaction(
         account_id=seed_user["account"].id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
-        status_id=ref_cache.status_id(status),
+        status_id=status_id,
         name=name,
         transaction_type_id=type_id,
         estimated_amount=Decimal(str(amount)),
@@ -85,6 +87,9 @@ def _add_txn(
             Decimal(str(actual_amount)) if actual_amount is not None else None
         ),
         due_date=due_date,
+        # A settled row must carry the day its money moved; the rule for a
+        # BARE-built fixture row is shared rather than restated (X-f1).
+        settled_on=default_settle_day(period, status_id),
     )
     db.session.add(txn)
     db.session.flush()
@@ -246,13 +251,13 @@ class TestDailySeriesEdges:
         (plan finding cash D1).  The fold counts a settled row from the day its
         money moved.
 
-        The row is built without a ``paid_at``, so its visible day falls back
-        to its pay period's start -- period 7's 2026-04-10 -- and the line
-        drops ``$150`` there and stays down.  (Production always stamps one;
-        what finding N-42 says is that the instant it stamps is the data-entry
-        CLICK, not when the money moved, which is what plan step X-f fixes.
-        The NULL here is the fixture keeping the day deterministic under a
-        frozen clock, not a shape the app produces.)
+        The row is dated on its pay period's start -- period 7's 2026-04-10 --
+        so the line drops ``$150`` there and stays down.  It reached that day
+        through a NULL-``paid_at`` FALLBACK until plan step X-f1, and the day is
+        the same one: the bare builder now states it rather than letting each
+        reader substitute it.  What the fixture buys is unchanged -- a day that
+        is deterministic under a frozen clock -- and what X-f1 changed is that
+        the day is a recorded fact rather than a reader's opinion.
         """
         with app.app_context():
             _seed_april(db, seed_user, seed_periods)

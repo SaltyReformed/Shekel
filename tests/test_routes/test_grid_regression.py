@@ -500,7 +500,7 @@ class TestPaydayWorkflowRegression:
         reflected it -- $2,500 of real money "lost" at the moment the user
         recorded it (finding cash D1).  That reasoning reads the ORDER OF TWO
         CLICKS as chronology, and on real data it is wrong far more often than
-        right: ``paid_at`` is ``db.func.now()`` at the click and the assertion
+        right: the settle day was ``db.func.now()`` at the click and the assertion
         has no date column at all, so the user's actual workflow -- read the
         bank, enter the anchor, then tick off what already cleared -- files
         every one of those settles AFTER an anchor that already contains them.

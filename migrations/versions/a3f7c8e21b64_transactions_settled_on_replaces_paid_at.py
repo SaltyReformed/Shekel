@@ -151,6 +151,29 @@ _DATED_UNSETTLED = sa.text("""
 """)
 
 
+# The third gate, and the one the other two did not cover: a transfer's two
+# shadows must derive the SAME day.  ``posting_service._entry_date`` reads the
+# INCOME shadow's day for the pair and its docstring rests on the two being
+# equal (Transfer Invariant 3), so a divergent pair would date one leg of a
+# balanced entry from a day the other leg does not share.  The backfill cannot
+# CREATE a divergence -- both shadows carry the same ``pay_period_id`` and, in
+# practice, the same ``paid_at`` -- but "cannot" was an assumption while the
+# other two invariants were gated, so it is measured instead.  Measured on the
+# 2026-08-03 production clone: 0 transfers diverge.
+_DIVERGENT_SHADOW_PAIR = sa.text("""
+    SELECT t.transfer_id,
+           MIN(t.settled_on) AS earliest,
+           MAX(t.settled_on) AS latest
+    FROM budget.transactions t
+    JOIN ref.statuses s ON s.id = t.status_id
+    WHERE t.transfer_id IS NOT NULL
+      AND s.is_settled
+    GROUP BY t.transfer_id
+    HAVING MIN(t.settled_on) IS DISTINCT FROM MAX(t.settled_on)
+    ORDER BY t.transfer_id
+""")
+
+
 def upgrade():
     """Add the settle day, backfill it from the deleted derivation, drop the instant."""
     op.add_column(
@@ -194,11 +217,34 @@ def upgrade():
             "invariant this migration establishes does not hold."
         )
 
+    divergent = connection.execute(_DIVERGENT_SHADOW_PAIR).fetchall()
+    if divergent:
+        listed = "; ".join(
+            f"transfer_id={row[0]} earliest={row[1]} latest={row[2]}"
+            for row in divergent
+        )
+        raise RuntimeError(
+            f"Refusing to drop budget.transactions.paid_at: "
+            f"{len(divergent)} settled transfer(s) have shadows whose "
+            f"settled_on disagree -- {listed}.  Transfer Invariant 3 says the "
+            "two shadows carry one day, and posting_service._entry_date dates "
+            "the PAIR's journal entry from the income shadow alone, so a "
+            "divergent pair would file one leg of a balanced entry on a day "
+            "the other leg does not share."
+        )
+
     op.drop_column("transactions", "paid_at", schema="budget")
 
 
 def downgrade():
     """Refuse: a civil date cannot reconstruct the instant this dropped.
+
+    ``NotImplementedError`` rather than ``RuntimeError``: it is the class
+    ``.claude/rules/database.md`` names for a downgrade that cannot be
+    faithful, and the three existing unconditional refusals in this tree use
+    it (``7abcbf372fff``, ``b4c5d6e7f8a9``, ``a80c3447c153``).  A
+    ``RuntimeError`` here is reserved for a conditional fail-loud guard
+    inside a WORKING downgrade.
 
     See the module docstring.  The refusal is unconditional because after the
     upgrade nothing distinguishes a backfilled day from one the user typed, and
@@ -207,7 +253,7 @@ def downgrade():
     consider knowable (it gates on ``paid_at IS NOT NULL``, and 8 rows carry a
     day that came from their pay-period start rather than from any instant).
     """
-    raise RuntimeError(
+    raise NotImplementedError(
         "Cannot downgrade a3f7c8e21b64: budget.transactions.settled_on holds a "
         "civil DAY and budget.transactions.paid_at held an INSTANT, so nothing "
         "here reconstructs the dropped value -- and a settled row's day may be "

@@ -46,6 +46,7 @@ from tests._test_helpers import (
     create_envelope_txn,
     create_settled_cash_transaction,
     linked_ledger_account,
+    observed_day_of,
     override_anchor,
     settle_instant_on,
 )
@@ -510,7 +511,7 @@ class TestTheProjectionIgnoresTheOrderOfABookkeepingSession:
                 create_settled_cash_transaction(
                     seed_user, _db.session, period, amount,
                     account=anchor_first, name=f"A cleared {index}",
-                    settled_on=noon + timedelta(hours=1 + index),
+                    settled_on=observed_day_of(noon),
                 )
 
             # ORDER B: the same two payments are ticked BEFORE the anchor.
@@ -518,7 +519,7 @@ class TestTheProjectionIgnoresTheOrderOfABookkeepingSession:
                 create_settled_cash_transaction(
                     seed_user, _db.session, period, amount,
                     account=settles_first, name=f"B cleared {index}",
-                    settled_on=noon - timedelta(hours=2 - index),
+                    settled_on=observed_day_of(noon),
                 )
             override_anchor(
                 _db.session, settles_first, period, _ANCHOR,
@@ -537,9 +538,15 @@ class TestTheProjectionIgnoresTheOrderOfABookkeepingSession:
             # accounts is RECORDING ORDER and nothing else.  Stated rather than
             # assumed -- an unstated day relationship is how a fixture stops
             # exercising the rule it names (finding N-132 / N-133 F2).
-            for instant in (noon, noon + timedelta(hours=3),
-                            noon - timedelta(hours=2)):
+            #
+            # The ASSERTION instants are the only instants left: the settles
+            # carry a stored civil day since plan step X-f1, and both sessions
+            # give them ``observed_day_of(noon)``.  A third instant was checked
+            # here (``noon - timedelta(hours=2)``, order B's earlier settle) and
+            # no fixture uses it any more.
+            for instant in (noon, noon + timedelta(hours=3)):
                 assert to_display_date(instant) == display_today()
+            assert observed_day_of(noon) == display_today()
 
             order_a = _projected_end_balance(anchor_first, user_id, period)
             order_b = _projected_end_balance(settles_first, user_id, period)

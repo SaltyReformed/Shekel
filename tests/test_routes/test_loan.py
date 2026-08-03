@@ -6,7 +6,7 @@ rate history, and payoff calculator across multiple loan types.
 """
 
 import re
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -29,7 +29,7 @@ from app.services.balance_at._resolution import (
     contractual_schedule_from_origination,
 )
 from app.services.transfer_service import TransferSpec, create_transfer
-from app.utils.dates import display_today, add_months
+from app.utils.dates import add_months
 from app.services import (
     account_service,
     balance_at,
@@ -52,7 +52,6 @@ from tests._test_helpers import (
     loan_params_for,
     posted_loan_balance_at,
     select_option_values,
-    settle_instant_on,
 )
 
 
@@ -3172,7 +3171,7 @@ def _create_transfer_to_loan(seed_user, loan_account, period, amount,
     ``now()``, and the real clock sits past these fixtures' frozen todays and
     seeded 2026 periods -- the payment would be invisible to every bounded
     read).  Period start is the exact visibility these fixtures had before
-    E1a, when a born-settled create left ``paid_at`` NULL and every reader
+    E1a, when a born-settled create left the settle day NULL and every reader
     fell back to the period start, so no test's arithmetic moves.
     """
     status_id = ref_cache.status_id(status_enum)

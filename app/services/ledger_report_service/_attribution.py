@@ -25,8 +25,8 @@ from its pay period, which is what the derivation this replaced did:
   shadow), so a transfer's two legs land on one date;
 * sourceless corrections (``loan_opening`` / ``loan_trueup`` / ``account_opening``
   / ``account_trueup``, both concrete FKs NULL): by the stored ``entry_date`` (a
-  correction is an anchor fact dated by the anchor's civil date -- it has no
-  ``paid_at`` instant to convert);
+  correction is an anchor fact dated by the anchor's observed civil day, and
+  never had a settle day of its own);
 * hard-delete residue (a ``transaction`` / ``transfer`` / ``loan_payment`` source
   whose concrete FK was SET-NULLed): DROPPED, as whole entries -- each sums to
   zero (the reverse-before-delete discipline), so dropping it leaves the trial

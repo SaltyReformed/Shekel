@@ -96,8 +96,9 @@ class ReconciledThrough:
     is visible in review, where a ``<=`` was not.
 
     **Why the day and not the instant, measured.**  Neither instant available
-    is a fact about money: ``Transaction.paid_at`` is ``db.func.now()`` at the
-    click and an assertion's ``created_at`` is when it was typed.  So the
+    is a fact about money: ``Transaction.paid_at`` WAS ``db.func.now()`` at the
+    click (deleted at plan step X-f1) and an assertion's ``created_at`` is
+    when it was typed.  So the
     instant partition asked "which button was pressed first" and answered a
     question about cash with it.  On production 2026-07-31 an ordinary session
     -- read the bank, enter ``$1,307.66``, tick off what cleared -- recorded

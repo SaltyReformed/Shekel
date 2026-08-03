@@ -20,7 +20,7 @@ source (including the seed Checking's opening, whose ``entry_date`` is its
 origination ``created_at``'s civil date) is folded regardless of the test clock
 or timezone; a dedicated case pins the as-of cutoff itself.
 """
-from datetime import date, datetime, timezone
+from datetime import date
 from decimal import Decimal
 
 import pytest
@@ -45,13 +45,14 @@ from tests._test_helpers import (
 # clock- and timezone-independent (nothing is ever attributed after it).
 _ALL_ACTIVITY = date.max
 
-# A settle instant comfortably AFTER any test-created account's origination
-# (which is the server clock at ``create_account`` time), so a settle pinned
-# here RIDES ON TOP of the opening -- it is strictly after the assertion moment
-# -- rather than being absorbed into it (the moment-of-assertion rule).  A
-# settle dated before origination is instead already inside the asserted
-# opening balance.
-_RIDES_ON_TOP = datetime(2099, 6, 1, 12, tzinfo=timezone.utc)
+# A settle DAY comfortably after any test-created account's origination (which
+# is the server clock at ``create_account`` time), so a settle pinned here RIDES
+# ON TOP of the opening rather than being absorbed into it.  A settle dated
+# before origination is instead already inside the asserted opening balance.
+# It was a noon-UTC instant until plan step X-f1; the column stores a civil day
+# now, and handing an instant to the seam is refused (finding N-179) rather than
+# silently truncated on the UTC session clock.
+_RIDES_ON_TOP = date(2099, 6, 1)
 
 
 def _find_line(lines, label):
@@ -521,7 +522,7 @@ class TestBalanceSheetPosition:
             assert before.tie_out.in_balance is True
 
             on_day = ledger_report_service.compute_balance_sheet(
-                user_id, _RIDES_ON_TOP.date(),
+                user_id, _RIDES_ON_TOP,
             )
             assert _find_line(
                 on_day.assets.lines, "Checking",

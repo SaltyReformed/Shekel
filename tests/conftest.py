@@ -684,9 +684,11 @@ def _calendar_sweep():
     failure.**  It moves the PYTHON clock -- ``date.today()``,
     ``datetime.now()`` and therefore :func:`app.utils.dates.display_today`.  It
     does NOT move POSTGRES: ``created_at`` / ``updated_at`` are
-    ``server_default=db.func.now()`` (``app/models/mixins.py:237-263``) and
-    ``paid_at`` is ``db.func.now()`` (``app/services/status_seam.py:105``), all
-    evaluated in the database.  So under a fake date every server-stamped row
+    ``server_default=db.func.now()`` (``app/models/mixins.py:237-263``),
+    evaluated in the database.  (The settle day was a fourth such reach until
+    plan step X-f1; the seam stamps ``display_today()`` into a ``DATE`` column
+    now, which this instrument DOES move.)  So under a fake date every
+    server-stamped row
     carries the REAL instant, and a test comparing a fixture-built date against
     a server-stamped one fails by the offset between them.  That failure is an
     artifact of this instrument, not a defect in the test -- see
@@ -1055,8 +1057,8 @@ def seed_user(app, db):
             # **It is what makes "and then things happened" say so.**  An
             # assertion is the CLOSING balance for its civil day, so a settle
             # dated that day is INSIDE it.  ``tests/test_services/conftest.py``
-            # freezes today, and the ordinary settle idiom is
-            # ``paid_at = db.func.now()`` -- so an origination left on the
+            # freezes today, and the ordinary settle idiom dates the row on the
+            # user's today -- so an origination left on the
             # frozen clock lands on the very civil day the settles do, and every
             # fixture meaning "an account existed, then money moved" silently
             # became "money moved on the opening's own day".  Those fixtures
@@ -1828,7 +1830,6 @@ def cross_page_loan_off_schedule_ctx(db, seed_user):
     from tests._test_helpers import (
         create_loan_with_trueup,
         create_settled_transfer,
-        settle_instant_on,
     )
 
     user = seed_user["user"]

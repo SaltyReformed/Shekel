@@ -21,6 +21,7 @@ from app.models.transaction_template import TransactionTemplate
 import pytest
 
 from app.services import balance_at, calendar_service
+from tests._test_helpers import default_settle_day
 from app.services.balance_at import BalanceContext
 from app.services.balance_at import _context as resolution_context
 from app.services.calendar_service import (
@@ -77,12 +78,17 @@ def _add_transaction(
         if is_income
         else ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
     )
+    status_id = ref_cache.status_id(status)
     txn = Transaction(
         account_id=seed_user["account"].id,
         template_id=template.id if template else None,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
-        status_id=ref_cache.status_id(status),
+        status_id=status_id,
+        # A settled row must carry the day its money moved, and the rule for a
+        # BARE-built fixture row is shared with ``_test_helpers.add_txn`` rather
+        # than restated (plan step X-f1).
+        settled_on=default_settle_day(period, status_id),
         name=name,
         category_id=None,
         transaction_type_id=type_id,

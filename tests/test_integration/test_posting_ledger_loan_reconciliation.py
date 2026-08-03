@@ -177,7 +177,6 @@ from tests._test_helpers import (
     posted_loan_balance_at,
     posted_loan_balance_map,
     seam_confirmed_view,
-    settle_instant_on,
     SPLIT_LOAN,
 )
 

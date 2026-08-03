@@ -353,7 +353,7 @@ class TestCarryForwardStatusRecheck:
         BEFORE the bulk UPDATE applies.  The bulk UPDATE's
         ``status_id == projected`` WHERE clause should reject the
         change for that row, leaving it Paid in the source period
-        with a coherent paid_at audit.
+        with a coherent settle-day audit.
         """
         from unittest.mock import patch  # pylint: disable=import-outside-toplevel
         from sqlalchemy import text  # pylint: disable=import-outside-toplevel
@@ -387,11 +387,17 @@ class TestCarryForwardStatusRecheck:
                 # the race produces in production.  Bumping
                 # version_id mirrors the optimistic-lock contract a
                 # real concurrent commit would honor.
+                #
+                # It writes ``settled_on`` in the SAME statement as
+                # ``status_id`` because that is what the seam does, and a
+                # settled row without a day is a state every reader refuses
+                # (plan step X-f1).  ``CURRENT_DATE`` rather than an instant:
+                # the column is a civil DAY.
                 db.session.execute(
                     text(
                         "UPDATE budget.transactions "
                         "SET status_id = :paid, "
-                        "    paid_at = NOW(), "
+                        "    settled_on = CURRENT_DATE, "
                         "    version_id = version_id + 1 "
                         "WHERE id = :tid"
                     ),

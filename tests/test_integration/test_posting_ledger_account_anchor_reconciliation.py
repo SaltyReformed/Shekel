@@ -14,24 +14,33 @@ The absolute invariant, per non-loan account A in scenario S::
 
     linked_ledger(A, S) == latest_anchor(A)
                            + SUM(net of A's settled sources in S whose
-                                 attribution instant is STRICTLY AFTER the
-                                 latest assertion instant)
+                                 SETTLE DAY is STRICTLY AFTER the latest
+                                 assertion's BUSINESS DAY)
 
-An anchor is a moment-of-assertion FACT: the engine excludes settled items from
-every period's sum because the anchor already reflects all settled activity
-known at the moment it was asserted (``apply_anchor_true_up``: "the user is
-declaring 'my real checking is now $X' -- every past-dated debit purchase is
-already in that number").  So sources attributed AT OR BEFORE the latest
-assertion instant are ABSORBED into the opening / true-up deltas (they are
-already inside the asserted balance) and sources attributed AFTER it RIDE ON
-TOP.  The attribution instant is the source's CURRENT ``paid_at`` (a transfer's
-by its income shadow, equal to the expense shadow's by Transfer Invariant 3),
-falling back to its pay period ``start_date`` at midnight UTC when ``paid_at``
-is NULL -- exactly the walk's partition rule, restated independently here from
-the transaction table.  A period-granular reading would mis-state the balance
-sheet by every pre-true-up settle in the anchor period (the plan review's
-CRITICAL-1); the ``TestAbsoluteInvariantPerAccount`` fixture pins that exact
-regression.
+An anchor is a CLOSING-BALANCE fact for its own civil day (ruling **R-DH (a)**):
+the engine excludes settled items from every period's sum because the anchor
+already reflects the settled activity of the day it is about
+(``apply_anchor_true_up``: "the user is declaring 'my real checking is now $X'
+-- every past-dated debit purchase is already in that number").  So sources
+dated ON OR BEFORE the latest assertion's day are ABSORBED into the opening /
+true-up deltas and only a strictly LATER day rides on top.
+
+**Both sides of that comparison are stored DAYS, and this oracle was written in
+INSTANTS end to end until plan step X-f1** (ruling **R-EC**).  The source side
+is ``transactions.settled_on`` -- a transfer's read off its income shadow, equal
+to the expense shadow's by Transfer Invariant 3 -- with NO fallback: an undated
+settled row is a broken invariant the engine refuses, and this oracle asserts
+the same rather than substituting a pay-period start.  The assertion side is
+``account_anchor_history.observed_on``, and "latest" orders on
+``(observed_on, created_at, id)``: the BUSINESS day first, because
+``observed_on`` has been user-supplied since plan step 2, so a balance asserted
+for an earlier day but typed later is not the current one.  A rename would have
+left this oracle restating the OLD rule against the NEW engine, which is worse
+than leaving it broken; each rule is re-derived instead.
+
+A period-granular reading would mis-state the balance sheet by every pre-true-up
+settle in the anchor period (the plan review's CRITICAL-1); the
+``TestAbsoluteInvariantPerAccount`` fixture pins that exact regression.
 
 **Non-tautological by construction**, the same three independent ways the Step-3
 cash oracle is (``test_posting_ledger_cash_reconciliation.py``):
@@ -69,7 +78,7 @@ standard.
 """
 from __future__ import annotations
 
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -145,16 +154,6 @@ def _as_utc(instant: datetime) -> datetime:
     return instant.astimezone(timezone.utc)
 
 
-def _period_start_instant(start_date) -> datetime:
-    """Return a pay period start ``date`` as its midnight-UTC instant.
-
-    The attribution fallback for a source with no ``paid_at`` -- the earliest
-    instant of the storage-timezone civil day, the instant analogue of the
-    ``COALESCE(paid_at, start_date)`` entry-date rule.
-    """
-    return datetime.combine(start_date, time.min, tzinfo=timezone.utc)
-
-
 def _independent_linked_ledger_sum(account_id: int, scenario_id: int) -> Decimal:
     """Sum a non-loan account's LINKED ledger legs in a scenario (independent).
 
@@ -194,15 +193,15 @@ def _linked_ledger_sum_as_of(
 ) -> Decimal:
     """Sum a LINKED ledger's legs on entries dated at or before *civil_date*.
 
-    The "ledger through an assertion instant" reader: every linked-ledger entry
-    -- a source OR an anchor correction -- carries ``entry_date`` equal to the
-    display-timezone civil date of its ``paid_at`` (``posting_service._entry_date`` /
-    ``_transaction_entry_date`` date sources off ``paid_at``; corrections off
-    the anchor's ``created_at``), so summing legs with ``entry_date <=
-    civil_date`` reconstructs the ledger as of the END of that civil day.  When
-    a fixture places every event on a DISTINCT, increasing civil day, "as of the
-    end of day D" equals "as of the assertion instant on day D" -- the
-    ``TestLedgerThroughEachAssertionInstant`` invariant.
+    The "ledger through an assertion day" reader: every linked-ledger entry --
+    a source OR an anchor correction -- carries an ``entry_date`` equal to the
+    civil day its money moved (``posting_service._entry_date`` /
+    ``_transaction_entry_date`` read the STORED ``transactions.settled_on``
+    since plan step X-f1; corrections take the anchor's observed day), so
+    summing legs with ``entry_date <= civil_date`` reconstructs the ledger as of
+    the END of that civil day -- the ``TestLedgerThroughEachAssertionDay``
+    invariant.  The fixture places every event on a DISTINCT, increasing civil
+    day so each as-of names exactly one state.
     """
     return (
         _db.session.query(
@@ -223,20 +222,31 @@ def _linked_ledger_sum_as_of(
     )
 
 
-def _latest_assertion(account_id: int) -> tuple[datetime, Decimal]:
-    """Return an account's latest ``(assertion instant, anchor balance)``.
+def _latest_assertion(account_id: int) -> tuple[date, Decimal]:
+    """Return an account's latest ``(asserted business day, anchor balance)``.
 
     Reads ``account_anchor_history`` directly -- the row with the max
-    ``(created_at, id)``, exactly the row ``cash_ledger.resolve_anchor``
-    picks -- so the "latest anchor" the invariant references is taken from the
-    source of truth, not the ``current_anchor_balance`` cache the writer also
-    maintains (which a bug could desync).  The instant is normalized to aware
-    UTC via the oracle's own :func:`_as_utc`.
+    ``(observed_on, created_at, id)``, exactly the row
+    ``cash_ledger.resolve_anchor`` picks -- so the "latest anchor" the invariant
+    references is taken from the source of truth, not the
+    ``current_anchor_balance`` cache the writer also maintains (which a bug
+    could desync).
+
+    **All THREE keys are load-bearing and this oracle ordered on only two until
+    plan step X-f1.**  ``observed_on`` is the BUSINESS day the balance was true
+    for and has been a user-supplied column since plan step 2, so the recording
+    order and the business order can differ outright: a balance asserted for an
+    earlier day but typed later is not the current one, and ``created_at`` first
+    names it.  ``created_at`` then separates two assertions about one day, and
+    ``id`` breaks a tie between two stamped at one instant.  The oracle stating
+    a DIFFERENT "latest" rule than the engine is the shape that lets both be
+    wrong together while the sweep reports clean.
     """
     row = (
         _db.session.query(AccountAnchorHistory)
         .filter_by(account_id=account_id)
         .order_by(
+            AccountAnchorHistory.observed_on.desc(),
             AccountAnchorHistory.created_at.desc(),
             AccountAnchorHistory.id.desc(),
         )
@@ -246,22 +256,29 @@ def _latest_assertion(account_id: int) -> tuple[datetime, Decimal]:
         f"account {account_id} has no anchor history -- every real account "
         f"carries its origination row, so this is a broken fixture"
     )
-    return _as_utc(row.created_at), Decimal(str(row.anchor_balance))
+    return row.observed_on, Decimal(str(row.anchor_balance))
 
 
-def _source_attribution_instant(txn) -> datetime:
-    """Return a settled source's attribution instant (aware UTC), independently.
+def _source_settled_day(txn) -> date:
+    """Return a settled source's civil settle day, independently, or REFUSE.
 
-    The source's CURRENT ``paid_at`` (aware UTC), falling back to its pay
-    period ``start_date`` at midnight UTC when ``paid_at`` is NULL.  For a
-    transfer shadow the walk attributes by the INCOME shadow's ``paid_at``; both
-    shadows carry the same ``paid_at`` (Transfer Invariant 3 mirrors it), so
-    reading each shadow's own ``paid_at`` here is the same instant computed
-    independently of the "income shadow" concept.
+    The source's stored ``settled_on`` -- the day its cash moved.  It derived
+    the day from ``paid_at``, falling back to the pay period's ``start_date``,
+    until plan step X-f1 replaced the instant with the stored day and the
+    fallback with a refusal; this restates that refusal rather than importing
+    it, because an oracle that shares the engine's accessor cannot catch the
+    engine dating a row it should have refused.
+
+    For a transfer shadow the walk attributes by the INCOME shadow's day; both
+    shadows carry the same day (Transfer Invariant 3 mirrors it), so reading
+    each shadow's own is the same value computed independently of the "income
+    shadow" concept.
     """
-    if txn.settled_on is not None:
-        return _as_utc(txn.settled_on)
-    return _period_start_instant(txn.pay_period.start_date)
+    assert txn.settled_on is not None, (
+        f"transaction {txn.id} is settled but carries no settled_on -- the "
+        "engine refuses this row, so a fixture that produced it is broken"
+    )
+    return txn.settled_on
 
 
 def _independent_source_effect(txn) -> Decimal:
@@ -286,19 +303,20 @@ def _independent_source_effect(txn) -> Decimal:
 
 
 def _independent_post_assertion_source_effect(
-    account_id: int, scenario_id: int, latest_asserted_at: datetime,
+    account_id: int, scenario_id: int, latest_asserted_day: date,
 ) -> Decimal:
-    """Sum an account's settled source effect attributed AFTER the latest anchor.
+    """Sum an account's settled source effect dated AFTER the latest anchor's day.
 
     Over the account's settled (``status.is_settled``), non-deleted
     transactions AND transfer shadows in *scenario_id*, add each source's signed
-    effect (:func:`_independent_source_effect`) iff its attribution instant is
-    STRICTLY AFTER *latest_asserted_at* -- the sources that ride on top of the
-    asserted balance.  Sources attributed at or before the assertion are already
-    inside the anchor and are absorbed by the opening / true-up deltas, so they
-    are excluded here.  Read from ``transactions`` (a different table than the
-    ledger side), so asserting the equality reconciles what the producers wrote
-    against the transaction source of truth.
+    effect (:func:`_independent_source_effect`) iff its settle day is STRICTLY
+    AFTER *latest_asserted_day* -- the sources that ride on top of the asserted
+    balance.  An assertion is the CLOSING balance for its own civil day (ruling
+    R-DH (a)), so a source dated ON that day is already inside it and is
+    absorbed by the opening / true-up delta; only a strictly later day rides.
+    Read from ``transactions`` (a different table than the ledger side), so
+    asserting the equality reconciles what the producers wrote against the
+    transaction source of truth.
     """
     txns = (
         _db.session.query(Transaction)
@@ -314,7 +332,7 @@ def _independent_post_assertion_source_effect(
         (
             _independent_source_effect(txn)
             for txn in txns
-            if _source_attribution_instant(txn) > latest_asserted_at
+            if _source_settled_day(txn) > latest_asserted_day
         ),
         Decimal("0"),
     )
@@ -425,10 +443,10 @@ def _assert_account_anchors_reconcile(scenario_id: int) -> None:
     )
     for ledger_account in linked:
         account_id = ledger_account.account_id
-        latest_asserted_at, latest_anchor = _latest_assertion(account_id)
+        latest_asserted_day, latest_anchor = _latest_assertion(account_id)
         ledger = _independent_linked_ledger_sum(account_id, scenario_id)
         effect = _independent_post_assertion_source_effect(
-            account_id, scenario_id, latest_asserted_at,
+            account_id, scenario_id, latest_asserted_day,
         )
         assert ledger == latest_anchor + effect, (
             f"account {account_id}: linked ledger {ledger} != latest anchor "
@@ -507,12 +525,13 @@ def _true_up_at(account, balance, created_at) -> None:
 
 
 def _settle_expense(seed_user, account, amount, settled_on):
-    """Settle an expense on *account* at a pinned ``paid_at``; return it.
+    """Settle an expense on *account* on a pinned civil DAY; return it.
 
-    ``paid_at`` may be an instant or ``None`` (the period-start fallback under
-    test), pinned so the posted entry and the walk's attribution agree, as in
-    production.  Placed in the seed bootstrap period; the walk attributes by
-    instant, so the period placement is immaterial except for the NULL fallback.
+    ``settled_on`` is the day the cash moved, pinned so the posted entry and the
+    walk's attribution agree, as in production.  Placed in the seed bootstrap
+    period; the walk attributes by the settle DAY, so the period placement is
+    immaterial.  It took an instant (or ``None``, for the period-start fallback)
+    until plan step X-f1 removed both the derivation and the fallback.
     """
     return create_settled_cash_transaction(
         seed_user, _db.session, seed_user["bootstrap_period"],
@@ -562,15 +581,17 @@ class TestAbsoluteInvariantPerAccount:
             origin = _origin_instant(savings)
 
             _settle_expense(
-                seed_user, savings, "200.00", origin + timedelta(days=1),
+                seed_user, savings, "200.00",
+                observed_day_of(origin + timedelta(days=1)),
             )
             _true_up_at(savings, "350.00", origin + timedelta(days=2))
             _settle_expense(
-                seed_user, savings, "100.00", origin + timedelta(days=3),
+                seed_user, savings, "100.00",
+                observed_day_of(origin + timedelta(days=3)),
             )
             db.session.commit()
 
-            latest_asserted_at, latest_anchor = _latest_assertion(savings.id)
+            latest_asserted_day, latest_anchor = _latest_assertion(savings.id)
             assert latest_anchor == Decimal("350.00")
 
             # (a) hand-computed literal == independent ledger-table query.
@@ -580,7 +601,7 @@ class TestAbsoluteInvariantPerAccount:
             # (b) independent source query == the hand-computed post-assertion
             #     effect (only the T+3h spend rides on top).
             assert _independent_post_assertion_source_effect(
-                savings.id, scenario_id, latest_asserted_at,
+                savings.id, scenario_id, latest_asserted_day,
             ) == Decimal("-100.00")
             # (c) the production service helpers agree too.
             assert posting_service.account_posting_total(
@@ -604,13 +625,13 @@ class TestAbsoluteInvariantPerAccount:
     def test_source_at_exact_assertion_instant_is_absorbed(
         self, app, db, seed_user,
     ):
-        """A source whose paid_at EQUALS the assertion instant is absorbed (<= tie).
+        """A source dated the assertion's OWN civil day is absorbed (<= tie).
 
         The exact boundary the walk's inclusive ``<=`` partition and the
         oracle's strict ``>`` post-assertion filter meet: Savings anchored
-        $500.00; a $75.00 expense whose ``paid_at`` EQUALS the true-up's
-        ``created_at`` (T2); the true-up asserts $425.00.  The spend is absorbed
-        into the anchor (its instant is not strictly after T2): ledger_before =
+        $500.00; a $75.00 expense settled on the true-up's own business day
+        (T2's); the true-up asserts $425.00.  The spend is absorbed
+        into the anchor (its day is not strictly after T2's): ledger_before =
         500 - 75 = 425, so the true-up delta is 0 and books NOTHING, and the
         spend does not ride on top.
 
@@ -630,7 +651,9 @@ class TestAbsoluteInvariantPerAccount:
             db.session.commit()
             instant = _origin_instant(savings) + timedelta(hours=2)
 
-            _settle_expense(seed_user, savings, "75.00", instant)
+            _settle_expense(
+                seed_user, savings, "75.00", observed_day_of(instant),
+            )
             _true_up_at(savings, "425.00", instant)
             db.session.commit()
 
@@ -639,10 +662,10 @@ class TestAbsoluteInvariantPerAccount:
             ) == Decimal("425.00")
             # The tie source is NOT strictly after the assertion, so nothing
             # rides on top (a strict-< walk would report -75.00 here).
-            latest_asserted_at, latest_anchor = _latest_assertion(savings.id)
+            latest_asserted_day, latest_anchor = _latest_assertion(savings.id)
             assert latest_anchor == Decimal("425.00")
             assert _independent_post_assertion_source_effect(
-                savings.id, scenario_id, latest_asserted_at,
+                savings.id, scenario_id, latest_asserted_day,
             ) == Decimal("0.00")
             # The true-up delta was zero (the tie was absorbed): no true-up entry
             # -- a strict-< walk would have booked one.
@@ -733,7 +756,7 @@ class TestTransferSourceRidesOnTop:
 # ---------------------------------------------------------------------------
 
 
-class TestLedgerThroughEachAssertionInstant:
+class TestLedgerThroughEachAssertionDay:
     """At every historical assertion instant the ledger equalled that anchor."""
 
     @pytest.mark.server_clock
@@ -769,17 +792,19 @@ class TestLedgerThroughEachAssertionInstant:
             )
             db.session.commit()
             origin = _origin_instant(savings)
-            day0 = origin.date()
+            day0 = observed_day_of(origin)
 
             _settle_expense(
-                seed_user, savings, "200.00", origin + timedelta(days=5),
+                seed_user, savings, "200.00",
+                observed_day_of(origin + timedelta(days=5)),
             )
             _assert_balance_at(savings, "350.00", origin + timedelta(days=10))
             account_posting_service.sync_account_anchor_postings_all_scenarios(
                 savings.id,
             )
             _settle_expense(
-                seed_user, savings, "100.00", origin + timedelta(days=15),
+                seed_user, savings, "100.00",
+                observed_day_of(origin + timedelta(days=15)),
             )
             db.session.commit()
 
@@ -839,11 +864,13 @@ class TestRevertAfterTrueupSelfHeals:
             origin = _origin_instant(savings)
 
             spend = _settle_expense(
-                seed_user, savings, "200.00", origin + timedelta(days=1),
+                seed_user, savings, "200.00",
+                observed_day_of(origin + timedelta(days=1)),
             )
             _true_up_at(savings, "350.00", origin + timedelta(days=2))
             _settle_expense(
-                seed_user, savings, "100.00", origin + timedelta(days=3),
+                seed_user, savings, "100.00",
+                observed_day_of(origin + timedelta(days=3)),
             )
             db.session.commit()
             _assert_account_anchors_reconcile(scenario_id)
@@ -890,19 +917,24 @@ class TestRevertAfterTrueupSelfHeals:
 class TestPreAnchorAbsorption:
     """A settle attributed before the opening is absorbed into the opening delta."""
 
-    def test_null_paid_at_settle_absorbed_into_opening(
+    def test_a_spend_dated_before_the_opening_is_absorbed_into_it(
         self, app, db, seed_user,
     ):
-        """A NULL-paid_at spend (2024 period start) is inside the 2026 opening.
+        """A 2024-dated spend is inside the 2026 opening.
 
-        A $200.00 expense with ``paid_at`` NULL sits in the 2024 bootstrap
-        period, so its attribution instant is that period's start (2024-01-05
-        midnight UTC) -- BEFORE the account's origination assertion (server-now,
-        2026).  The C6 self-heal at the settle re-derives the opening: its delta
-        becomes 500 - (-200) = +700.00, so the linked ledger stays exactly on the
-        500.00 anchor and NO source rides on top.
+        A $200.00 expense settled on the 2024 bootstrap period's start day --
+        BEFORE the account's origination assertion (server-now, 2026).  The C6
+        self-heal at the settle re-derives the opening: its delta becomes
+        500 - (-200) = +700.00, so the linked ledger stays exactly on the 500.00
+        anchor and NO source rides on top.
 
           linked = 700 (opening) - 200 = 500.00 = latest anchor 500 + 0
+
+        **The row reached that day through a FALLBACK until plan step X-f1** --
+        it carried no ``paid_at`` and every reader substituted its pay period's
+        ``start_date`` -- and this test was named for the fallback.  The day is
+        a stored fact now and the substitution is gone, so the fixture states
+        the day it always meant.  Every figure is unchanged, because the day is.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -912,7 +944,10 @@ class TestPreAnchorAbsorption:
             )
             db.session.commit()
 
-            _settle_expense(seed_user, savings, "200.00", None)
+            _settle_expense(
+                seed_user, savings, "200.00",
+                seed_user["bootstrap_period"].start_date,
+            )
             db.session.commit()
 
             assert posting_service.account_posting_total(
@@ -937,9 +972,9 @@ class TestPreAnchorAbsorption:
             )
             assert opening_net == Decimal("700.00")
             # Nothing rides on top: the spend is pre-assertion.
-            latest_asserted_at, _latest = _latest_assertion(savings.id)
+            latest_asserted_day, _latest = _latest_assertion(savings.id)
             assert _independent_post_assertion_source_effect(
-                savings.id, scenario_id, latest_asserted_at,
+                savings.id, scenario_id, latest_asserted_day,
             ) == Decimal("0.00")
             _assert_account_anchors_reconcile(scenario_id)
 
@@ -1029,10 +1064,12 @@ class TestNegativelyAnchoredLiability:
                 anchor_balance=Decimal("-500.00"),
             )
             db.session.commit()
-            origin = _origin_instant(card)
-
+            # The civil day an hour after the origination instant -- verbatim
+            # what the deleted derivation computed for the instant this fixture
+            # used to pass, so the figures below are unchanged (plan step X-f1).
             _settle_expense(
-                seed_user, card, "120.00", origin + timedelta(hours=1),
+                seed_user, card, "120.00",
+                observed_day_of(_origin_instant(card) + timedelta(hours=1)),
             )
             db.session.commit()
 
@@ -1354,11 +1391,13 @@ class TestBackfillEqualsGoForward:
             db.session.commit()
             origin = _origin_instant(savings)
             _settle_expense(
-                seed_user, savings, "200.00", origin + timedelta(days=1),
+                seed_user, savings, "200.00",
+                observed_day_of(origin + timedelta(days=1)),
             )
             _true_up_at(savings, "350.00", origin + timedelta(days=2))
             _settle_expense(
-                seed_user, savings, "100.00", origin + timedelta(days=3),
+                seed_user, savings, "100.00",
+                observed_day_of(origin + timedelta(days=3)),
             )
             db.session.commit()
             forward_total = posting_service.account_posting_total(
@@ -1541,7 +1580,7 @@ def _transfer_net_in_period(account_id, scenario_id, period_id) -> Decimal:
 
 
 class TestSettledTransferAttributionMutation:
-    """A settled transfer's period / paid_at edit keeps the anchor sound (F1)."""
+    """A settled transfer's period / settle-day edit keeps the anchor sound (F1)."""
 
     @pytest.mark.server_clock
     def test_settled_period_move_reposts_and_reconciles(
@@ -1605,16 +1644,16 @@ class TestSettledTransferAttributionMutation:
             _assert_account_anchors_reconcile(scenario_id)
 
     @pytest.mark.server_clock
-    def test_settled_paid_at_move_across_anchor_reconciles(
+    def test_settle_day_move_across_the_anchor_reconciles(
         self, app, db, seed_user,
     ):
-        """Moving a settled transfer's paid_at across the anchor re-derives openings.
+        """Moving a settled transfer's settle day across the anchor re-derives openings.
 
         A $150.00 Checking -> Savings transfer settled AFTER both origination
         anchors (rides on top): Savings 200 + 150 = 350, Checking 1000 - 150 =
-        850.  Moving its ``paid_at`` to BEFORE the anchors (a 2024 instant)
+        850.  Moving its settle day to BEFORE the anchors (a 2024 day)
         through ``update_transfer`` makes the transfer PRE-assertion, so it must
-        be ABSORBED into the openings.  ``paid_at`` changes no leg, so the
+        be ABSORBED into the openings.  The settle day changes no leg, so the
         Step-2 reconcile-to-target writes nothing and its effect-time self-heal
         never fires; the F1 direct resync re-derives both endpoints' openings so
         the absolute invariant still holds with NO manual sync.  Post-move both
@@ -1643,7 +1682,7 @@ class TestSettledTransferAttributionMutation:
             ) == Decimal("350.00")
             _assert_account_anchors_reconcile(scenario_id)
 
-            # Move paid_at BEFORE both origination anchors (server-now 2026).
+            # Move the settle day BEFORE both origination anchors (server-now 2026).
             transfer_service.update_transfer(
                 transfer.id, user_id,
                 settled_on=date(2024, 1, 5),
@@ -1657,8 +1696,8 @@ class TestSettledTransferAttributionMutation:
             assert posting_service.account_posting_total(
                 checking.id, scenario_id,
             ) == Decimal("1000.00")
-            latest_asserted_at, _latest = _latest_assertion(savings.id)
+            latest_asserted_day, _latest = _latest_assertion(savings.id)
             assert _independent_post_assertion_source_effect(
-                savings.id, scenario_id, latest_asserted_at,
+                savings.id, scenario_id, latest_asserted_day,
             ) == Decimal("0.00")
             _assert_account_anchors_reconcile(scenario_id)

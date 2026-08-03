@@ -87,7 +87,7 @@ about writes, and a "everything goes through the seam" claim that
 quietly meant "every write" is the kind of overclaim this arc keeps
 paying for:
 
-* ``app/services/transfer_service.py:_apply_status_to_all_three`` --
+* ``app/services/_transfer_status.py:apply_status_to_all_three`` --
   verifies all three of a transfer's rows BEFORE the seam assigns any,
   so an illegal move leaves the trio untouched (F-047 atomicity).
 * ``app/services/_transfer_validation.py:assert_restorable`` -- asks

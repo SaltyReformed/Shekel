@@ -18,6 +18,7 @@ from decimal import Decimal
 from app import ref_cache
 from app.enums import RoleEnum, StatusEnum, TxnTypeEnum
 from app.extensions import db
+from app.services import status_seam
 from app.models.account import Account
 from app.models.category import Category
 from app.models.pay_period import PayPeriod
@@ -845,7 +846,7 @@ class TestMarkPaidButtonVisibility:
             seed_user, companion_visible=True, name="Groceries",
         )
         txn = _make_txn(seed_user, seed_periods_today[0], template, name="Groceries")
-        txn.status_id = ref_cache.status_id(StatusEnum.DONE)
+        status_seam.apply_status_change(txn, ref_cache.status_id(StatusEnum.DONE))
         db.session.commit()
 
         comp = _login_companion(app)

@@ -44,7 +44,7 @@ P&I is round(250000 x 0.005 x 1.005^360 / (1.005^360 - 1)) = **1498.88**, the
 threshold every row's ``extra_payment`` is measured against.
 """
 
-from datetime import date, datetime, timezone
+from datetime import date
 from decimal import Decimal
 
 import pytest
@@ -76,7 +76,6 @@ from tests._test_helpers import (
     insert_trueup_event,
     posted_loan_balance_at,
     seam_confirmed_view,
-    settle_instant_on,
     SPLIT_LOAN,
 )
 
@@ -121,7 +120,7 @@ def _make_loan(
 def _settle(seed_user, loan, period, cash=Decimal("1000.00"), settled_on=None):
     """Settle a Checking -> loan payment through the production transfer path.
 
-    ``settled_on`` pins the payment's ``paid_at`` civil date, which is what its
+    ``settled_on`` pins the payment's settle day, which is what its
     VISIBILITY keys on (plan step C2's one clock); it defaults to the pay
     period's own start so every payment in a shape is visible from a known day.
     """

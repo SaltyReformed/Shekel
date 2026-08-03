@@ -62,7 +62,6 @@ from tests._test_helpers import (
     freeze_today,
     insert_tracking_start_event,
     posted_loan_balance_at,
-    settle_instant_on,
 )
 
 # The controlled loan terms, shared with B1's hand-computed suite
@@ -95,7 +94,7 @@ def _make_loan(seed_user, db, **kwargs):
 def _settle(seed_user, db, loan, period, amount=Decimal("1000.00")):
     """Settle a Checking -> loan payment transfer through the sole writer.
 
-    Pins ``paid_at`` to the period's start (C2 keys visibility on the settled
+    Pins the settle day to the period's start (C2 keys visibility on the settled
     date), so the payment is visible from its period start -- the deterministic
     past date the every-day walk below values it from.
     """

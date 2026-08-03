@@ -1156,16 +1156,23 @@ class TestAttributionEdgeCases:
             assert sheet.tie_out.in_balance is True
             _assert_ledger_self_consistent()
 
-    def test_null_paid_at_falls_back_to_period_start(
+    def test_a_settle_on_the_period_start_attributes_to_that_day(
         self, app, db, seed_user,
     ):
-        """A NULL-paid_at settle attributes to its pay period's start date.
+        """A settle dated on its pay period's start attributes to that day.
 
-        A $150.00 Groceries expense with ``paid_at`` NULL, in a period starting
-        2099-08-03, attributes to 2099-08-03 (the pay-period ``start_date``
-        fallback).  So the August 2099 month window includes it and July does
-        not, and it folds onto an as-of-2099-08-03 balance sheet -- the fallback
-        the reader shares with the entry-dating rule.
+        A $150.00 Groceries expense settled 2099-08-03, in a period starting
+        2099-08-03.  So the August 2099 month window includes it and July does
+        not, and it folds onto an as-of-2099-08-03 balance sheet.
+
+        **It reached that day through a FALLBACK until plan step X-f1** -- the
+        row carried no ``paid_at`` and the reader substituted the period's
+        ``start_date`` -- and this case was named for the fallback.  The day is
+        a stored fact now and the substitution is gone, so the fixture states
+        the day it always meant; every figure below is unchanged, because the
+        day is.  What the case still grades is real and unrelated to the
+        fallback: a settle day sitting exactly ON a window boundary belongs to
+        the LATER window, and to the balance sheet as of that day.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -1179,7 +1186,7 @@ class TestAttributionEdgeCases:
                 seed_user, db.session, period, Decimal("150.00"),
                 account=seed_user["account"],
                 category=seed_user["categories"]["Groceries"],
-                settled_on=None,
+                settled_on=period.start_date,
             )
             db.session.commit()
 
