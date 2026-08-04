@@ -10,8 +10,8 @@ the grid editor below, so only that family remains.
 
 ``true_up`` routes the actual mutation, history-row append,
 conditional entries reconcile, and commit through
-:func:`app.services.anchor_service.apply_anchor_true_up`, so the
-F-103 / C-22 same-day same-balance idempotency rule and the
+:func:`app.services.anchor_service.apply_anchor_true_up`, so the duplicate rule
+(ruling **R-EQ**: an assertion is refused only when it changes nothing) and the
 concurrency contract live in exactly one place.  This module is
 therefore deliberately thin: it owns the HTTP-shaped concerns (form
 validation, HTMX-fragment rendering, HX-Trigger header composition)
@@ -221,12 +221,13 @@ def reconcile_purchases(account_id):
     engine guessed.
 
     **It is its own request, and that is deliberate.**  Folding it into
-    ``apply_anchor_true_up`` would put it inside that function's F-103
-    duplicate handler, which catches an ``IntegrityError``, rolls the session
-    back and reports idempotent success -- so a same-day re-assert would
-    silently discard every reconciliation the user had just made while the UI
-    said it saved.  A separate transaction cannot be swallowed by another
-    one's rollback.
+    ``apply_anchor_true_up`` would put it inside the transaction that function
+    ROLLS BACK when a submission changes nothing (ruling R-EQ) while reporting
+    idempotent success -- so a re-assert of the governing balance would silently
+    discard every reconciliation the user had just made while the UI said it
+    saved.  A separate transaction cannot be swallowed by another one's
+    rollback.  The mechanism was an ``IntegrityError`` handler around a unique
+    index until plan step X-f1c4b; the hazard is the same and so is the ruling.
 
     A submitted value that does not name a row is dropped by
     :func:`~app.utils.digit_strings.parse_row_ids` before the service is
@@ -297,7 +298,7 @@ def _true_up_success_response(
 ) -> tuple[str, int, dict[str, str]]:
     """Compose the grid anchor true-up success response.
 
-    Shared by ``true_up``'s COMMITTED and DUPLICATE_SAME_DAY outcomes
+    Shared by ``true_up``'s COMMITTED and UNCHANGED outcomes
     (both render the updated display cell and fire ``balanceChanged`` so
     other surfaces recompute).  The single-account grid and dashboard
     surfaces append an out-of-band ``#anchor-as-of`` snippet dating the
@@ -412,7 +413,8 @@ def true_up(account_id):
     overwritten by a second tab**: two assertions of different balances are
     two facts, the later-observed one is current, and neither is lost.  Two
     tabs submitting the SAME balance for the same day are still idempotent --
-    the F-103 unique index catches those and the route reports success.  The
+    the write door compares against the governing assertion under the owner's
+    lock and writes nothing (ruling R-EQ), and the route reports success.  The
     LEDGER those assertions reconcile into is a different question, answered a
     layer down by the per-owner write lock
     (:mod:`app.services.user_write_lock`) rather than here: a lock at this door
@@ -438,8 +440,8 @@ def true_up(account_id):
 
     # Canonical anchor true-up path: route the assertion append, the posting
     # re-base and the commit through the single authoritative helper
-    # (``anchor_service.apply_anchor_true_up``) so the F-103 / C-22 same-day
-    # same-balance idempotency rule cannot drift.  The route pre-gates
+    # (``anchor_service.apply_anchor_true_up``) so ruling R-EQ's duplicate
+    # rule cannot drift.  The route pre-gates
     # the amortizing kind, so the service's
     # ``AmortizingAccountAnchorError`` backstop is unreachable here (a
     # bypassing caller correctly surfaces it as a 500).  The
@@ -451,13 +453,14 @@ def true_up(account_id):
         new_balance=new_balance,
     )
 
-    # DUPLICATE_SAME_DAY and COMMITTED share the success response (the
+    # UNCHANGED and COMMITTED share the success response (the
     # updated cell + an OOB "as of" snippet + the HX-Trigger that
     # recomputes other grid cells), so they converge on one return.
-    if outcome is AnchorTrueUpOutcome.DUPLICATE_SAME_DAY:
-        # F-103 idempotent success: the staged row was rolled back, so expire
-        # the session's view of the account and let the partial re-read the
-        # assertion that did commit.
+    if outcome is AnchorTrueUpOutcome.UNCHANGED:
+        # Ruling R-EQ idempotent success: the submission asserts the balance
+        # that already stands, so nothing was written and the session was
+        # rolled back.  Expire the account so the partial re-reads the
+        # assertion that governs rather than anything this request held.
         db.session.expire(account)
     else:
         db.session.refresh(account)

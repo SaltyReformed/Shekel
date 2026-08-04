@@ -1133,19 +1133,19 @@ class TestTrueUp:
 
 
 class TestTrueUpSameDayDuplicate:
-    """F-103 / C-22: same-day same-balance double-submit dedupe."""
+    """Ruling R-EQ: a re-submit of the governing balance writes nothing."""
 
     def test_double_submit_creates_one_history_row(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
         """Two identical true-ups same day produce exactly one history row.
 
-        F-103 / C-22: the partial unique expression index
-        ``uq_anchor_history_account_period_balance_day`` rejects the
-        second INSERT when the user clicks Save twice in a row.
-        The route catches the IntegrityError and returns the
-        already-current balance so the user sees idempotent success
-        instead of a 500.
+        The second submit asserts what the first made governing, so the
+        write door appends nothing and the route returns the already-current
+        balance -- the user sees idempotent success rather than a 500 or a
+        duplicate row.  **It was a unique-index rejection translated by an
+        exception handler until plan step X-f1c4b** (ruling R-EQ); the
+        user-visible behaviour is unchanged, which is why this test is.
         """
         with app.app_context():
             account_id = seed_user["account"].id
@@ -1167,9 +1167,9 @@ class TestTrueUpSameDayDuplicate:
             # (E-19, Commit 3): the factory writes a fixture-time
             # origination row at $1000.00 (seed_user's seed balance),
             # so the total count after the double-submit is 2 (one
-            # origination + one true-up), not 1.  The F-103 dedupe
-            # claim is that the true-up balance ($1234.56) only
-            # appears once -- the second submit is suppressed.
+            # origination + one true-up), not 1.  The claim is that the
+            # true-up balance ($1234.56) only appears once -- the second
+            # submit changed nothing and so wrote nothing.
             db.session.expire_all()
             history_at_trueup_balance = (
                 db.session.query(AccountAnchorHistory)
@@ -1182,7 +1182,7 @@ class TestTrueUpSameDayDuplicate:
             assert len(history_at_trueup_balance) == 1, (
                 f"Expected 1 anchor history row at the true-up balance "
                 f"after double-submit, found {len(history_at_trueup_balance)}; "
-                "F-103 dedupe failed."
+                "a submission that changes nothing must write nothing."
             )
 
     def test_same_day_different_balance_creates_two_rows(
@@ -1190,10 +1190,9 @@ class TestTrueUpSameDayDuplicate:
     ):
         """Same-day true-ups with different balances both succeed.
 
-        F-103 / C-22: the unique constraint includes
-        ``anchor_balance``, so a legitimate same-day correction (the
-        user noticed an error and re-trued at a different amount)
-        must NOT be blocked.
+        A legitimate same-day correction (the user noticed an error and
+        re-trued at a different amount) changes what governs, so it must NOT
+        be blocked.
         """
         with app.app_context():
             account_id = seed_user["account"].id
@@ -1212,11 +1211,10 @@ class TestTrueUpSameDayDuplicate:
             # Re-pin (E-19, Commit 3): the factory writes a
             # fixture-time origination row before the test starts.
             # Filter on the true-up balances ($1000, $1100) to verify
-            # both distinct true-ups produced their own audit row
-            # (which is what F-103 actually asserts).  The fixture's
-            # origination row is at the same $1000 balance as r1,
-            # which is correctly suppressed by the unique index --
-            # only one $1000 row survives, plus the new $1100 row.
+            # both distinct true-ups produced their own audit row.  The
+            # fixture's origination row is at the same $1000 balance as r1
+            # but on an EARLIER day, so r1 changed what governs (the day
+            # moved) and appended; r2 then appended the $1100 correction.
             db.session.expire_all()
             history_balances = {
                 h.anchor_balance for h in

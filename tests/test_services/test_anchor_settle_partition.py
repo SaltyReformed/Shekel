@@ -476,10 +476,10 @@ class TestTheProjectionIgnoresTheOrderOfABookkeepingSession:
         a $500.00 swing decided by which button was pressed first.
 
         **The permutation runs on TWO accounts rather than by re-asserting one**,
-        because re-asserting the same balance for the same business day is a
-        DOUBLE-SUBMIT and the F-103 unique index rejects it -- correctly.  Two
-        accounts holding identical facts in opposite recording orders is the
-        same experiment without fighting a guard that is doing its job.
+        because re-asserting the balance that already governs writes nothing
+        (ruling R-EQ) -- correctly, since it changes nothing.  Two accounts
+        holding identical facts in opposite recording orders is the same
+        experiment without fighting a rule that is doing its job.
         """
         with app.app_context():
             user_id = seed_user["user"].id

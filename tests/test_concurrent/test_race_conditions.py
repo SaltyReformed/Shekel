@@ -414,8 +414,9 @@ class TestConcurrentAnchorUpdate:
     contend for: two assertions of different balances are two FACTS, the
     later-observed one is current, and neither is lost.  **A 409 here is now a
     regression, not a contract.**  Two threads asserting the SAME balance on
-    the same day are still idempotent -- the F-103 unique index catches those
-    and the route reports success.
+    the same day are still idempotent -- since ruling R-EQ the write door
+    compares against the governing assertion under the owner's write lock, so
+    the waiter sees the winner's row, writes nothing and reports success.
 
     **Invariant 4 is the one this class was missing, and it is the reason the
     409's deletion was not free.**  "Append-only" is true of

@@ -1,17 +1,22 @@
 """
 Shekel Budget App -- Anchor Service Tests
 
-Unit tests for :mod:`app.services.anchor_service`.  Pins the three
-outcomes of :func:`apply_anchor_true_up` and the non-F-103
-``IntegrityError`` re-raise contract.
+Unit tests for :mod:`app.services.anchor_service`.  Pins both outcomes of
+:func:`apply_anchor_true_up` and its loan twin, ruling **R-EQ**'s duplicate
+rule, and the contract that an unexpected ``IntegrityError`` propagates.
 
 Pre-extraction these branches were covered indirectly by the grid
 HTMX-route test suites (``TestTrueUpSameDayDuplicate`` and
 ``TestTrueUpStaleForm``).  The route suites still exercise the
 wiring; these tests pin the helper's contract directly so a future
-change to the route cannot accidentally drift the shared semantics,
-and they close the pre-existing coverage gap for the F-103 same-day
-idempotency path.
+change to the route cannot accidentally drift the shared semantics.
+
+**The idempotency tests graded a UNIQUE INDEX until plan step X-f1c4b** and
+now grade the write-door rule that replaced it: an assertion is refused only
+when it changes nothing.  The index answered the double-submit cases the same
+way; it answered a re-assertion of a superseded balance WRONGLY, and no test
+had asked it -- so each door gained one
+(``test_reasserting_a_superseded_balance_is_recorded``).
 """
 
 from datetime import date, timedelta
@@ -19,6 +24,7 @@ from decimal import Decimal
 from unittest.mock import patch
 
 import pytest
+import sqlalchemy as sa
 from sqlalchemy.exc import IntegrityError
 
 from app import ref_cache
@@ -38,13 +44,12 @@ from app.services import (
     pay_period_service,
 )
 from app.services.anchor_service import (
-    ANCHOR_HISTORY_UNIQUE_INDEX,
-    LOAN_ANCHOR_EVENT_UNIQUE_INDEX,
     AnchorTrueUpOutcome,
     apply_anchor_true_up,
     apply_loan_anchor_true_up,
     record_loan_tracking_start,
 )
+from app.utils.dates import display_today
 from tests._test_helpers import insert_origination_rate
 from app.services import cash_ledger
 
@@ -237,10 +242,10 @@ class TestApplyAnchorTrueUpCommitted:
         ``test_routes/test_accounts.py``).
 
         That reconcile step is deliberately a SEPARATE request: folding it in
-        here would put it inside this function's F-103 duplicate handler, which
-        catches an ``IntegrityError``, rolls the session back and reports
-        idempotent success -- so a same-day re-assert would silently discard
-        every reconciliation just made while the UI said it saved.
+        here would put it inside the transaction an UNCHANGED submission rolls
+        back and reports as idempotent success -- so a re-assert of the
+        governing balance would silently discard every reconciliation just made
+        while the UI said it saved.
 
         Re-fetches the account via ``db.session.get`` so it is
         attached to the current scoped session.  The conftest's ``db``
@@ -290,27 +295,29 @@ class TestApplyAnchorTrueUpCommitted:
             )
 
 
-class TestApplyAnchorTrueUpDuplicateSameDay:
-    """DUPLICATE_SAME_DAY outcome: F-103 / C-22 idempotent success.
+class TestApplyAnchorTrueUpUnchanged:
+    """UNCHANGED outcome: ruling R-EQ's idempotent success.
 
-    The partial unique expression index
-    ``uq_anchor_history_account_period_balance_day`` rejects a second
-    INSERT for the same ``(account_id, pay_period_id, anchor_balance,
-    UTC day)`` tuple.  The helper translates that into
-    ``DUPLICATE_SAME_DAY`` rather than letting the ``IntegrityError``
-    escape.
+    An assertion is refused only when it changes nothing.  The write door
+    compares the submission against the assertion that currently GOVERNS
+    (``cash_ledger.resolve_anchor``) and appends only when they differ.
+
+    **This class graded a UNIQUE INDEX until plan step X-f1c4b**
+    (``uq_anchor_history_account_period_balance_day``, dropped by migration
+    ``a3f6c1d84b90``).  The index answered the first two cases below the same
+    way; it answered the THIRD wrongly, and no test had ever asked it.
     """
 
-    def test_double_call_same_balance_returns_duplicate_same_day(
+    def test_double_call_same_balance_returns_unchanged(
         self, app, db, seed_user, seed_periods_today,
     ):
         """Two identical helper calls produce exactly one history row.
 
-        Hand-check: ``apply_anchor_true_up`` called twice with the
-        same ``(account, balance, period)`` on the same UTC day
-        returns ``COMMITTED`` then ``DUPLICATE_SAME_DAY``, and the
-        on-disk history shows exactly one row at the duplicate balance
-        (plus whatever origination/prior history the fixture wrote).
+        The retry case the rule exists for.  ``apply_anchor_true_up`` called
+        twice with the same balance on the same civil day returns ``COMMITTED``
+        then ``UNCHANGED``, and the on-disk history shows exactly one row at
+        that balance (plus whatever origination/prior history the fixture
+        wrote).
 
         Account re-fetched via ``db.session.get`` for current-session
         attachment (see sibling-class rationale).
@@ -324,14 +331,13 @@ class TestApplyAnchorTrueUpDuplicateSameDay:
             )
             assert outcome_first is AnchorTrueUpOutcome.COMMITTED
 
-            # Second call: same balance, same period, same UTC day.
-            # The F-103 partial unique index rejects the INSERT and
-            # the helper translates that into idempotent success.
+            # Second call: the same balance for the same civil day is now what
+            # governs, so there is nothing to append.
             outcome_second = apply_anchor_true_up(
                 account=account,
                 new_balance=Decimal("1234.56"),
             )
-            assert outcome_second is AnchorTrueUpOutcome.DUPLICATE_SAME_DAY
+            assert outcome_second is AnchorTrueUpOutcome.UNCHANGED
 
             db.session.expire_all()
             rows_at_duplicate_balance = (
@@ -343,8 +349,8 @@ class TestApplyAnchorTrueUpDuplicateSameDay:
                 .all()
             )
             assert len(rows_at_duplicate_balance) == 1, (
-                f"F-103 / C-22: expected exactly one history row at the "
-                f"duplicate balance after the double call, found "
+                f"A repeated submission must append nothing: expected exactly "
+                f"one history row at that balance, found "
                 f"{len(rows_at_duplicate_balance)}."
             )
 
@@ -353,10 +359,9 @@ class TestApplyAnchorTrueUpDuplicateSameDay:
     ):
         """Same-day true-ups with different balances both succeed.
 
-        F-103 / C-22 negative case: the unique constraint includes
-        ``anchor_balance``, so a legitimate same-day correction (the
-        user noticed an error and re-trued at a different amount)
-        MUST NOT be blocked.  Both calls return ``COMMITTED``.
+        A legitimate same-day correction (the user noticed an error and
+        re-trued at a different amount) MUST NOT be blocked.  Both calls
+        return ``COMMITTED``.
 
         Account re-fetched via ``db.session.get`` for current-session
         attachment (see sibling-class rationale).
@@ -382,10 +387,10 @@ class TestApplyAnchorTrueUpDuplicateSameDay:
                 .filter_by(account_id=account.id)
                 .all()
             }
-            # The fixture's origination row sits at $1000.00 (seed
-            # balance); the unique index correctly suppresses the
-            # second $1000.00, but the $1100.00 row survives.  Assert
-            # the two true-up balances are both represented.
+            # The fixture's origination row already sits at $1000.00 for an
+            # earlier day, so the first call above appends nothing new to this
+            # SET while the $1100.00 row is added.  Assert both balances are
+            # represented.
             assert Decimal("1100.00") in balances, (
                 "$1100.00 same-day correction must commit a history row."
             )
@@ -393,41 +398,166 @@ class TestApplyAnchorTrueUpDuplicateSameDay:
                 "$1000.00 history row must survive the same-day double."
             )
 
-
-class TestApplyAnchorTrueUpReraisesUnknownIntegrityError:
-    """Unknown ``IntegrityError`` re-raises (no silent F-103 swallowing)."""
-
-    def test_non_f103_integrity_error_is_reraised(
+    def test_reasserting_a_superseded_balance_is_recorded(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """A different constraint failure must NOT be treated as idempotent.
+        """Re-asserting a balance that was corrected away is a real change.
 
-        Engineers the case by patching ``is_unique_violation`` (the
-        helper's discriminator) to return False -- the helper sees an
-        IntegrityError but cannot confirm it is the F-103 unique-index
-        violation, so it must re-raise.  This pins the
-        "don't silently swallow IntegrityError" contract independent of
-        which constraint the engine fired.
+        **The defect ruling R-EQ exists for, and the deleted unique index's
+        negative control.**  Three submissions on one civil day:
 
-        Account re-fetched via ``db.session.get`` for current-session
-        attachment (see ``TestApplyAnchorTrueUpCommitted`` rationale).
+          1. ``$500.00`` -- committed.
+          2. ``$600.00`` -- committed (the user corrects themselves).
+          3. ``$500.00`` -- the user decides the first reading was right.
+
+        The third changes what governs from ``$600.00`` to ``$500.00``, so it
+        must be recorded and the resolver must answer ``$500.00``.  Under
+        ``uq_anchor_history_account_period_balance_day`` it collided with row 1,
+        was swallowed as idempotent success, and every surface kept rendering
+        ``$600.00`` while the app reported the correction saved.  Account 1 on
+        the 2026-08-04 production clone carries 2-3 assertions on 3 of its 50
+        assertion days, so this sequence is an ordinary bookkeeping session.
         """
         with app.app_context():
             account = db.session.get(Account, seed_user["account"].id)
 
-            # Commit one history row at this balance so the next call
-            # WILL produce an IntegrityError from F-103.
-            outcome_first = apply_anchor_true_up(
-                account=account,
-                new_balance=Decimal("2222.22"),
+            assert apply_anchor_true_up(
+                account=account, new_balance=Decimal("500.00"),
+            ) is AnchorTrueUpOutcome.COMMITTED
+            assert apply_anchor_true_up(
+                account=account, new_balance=Decimal("600.00"),
+            ) is AnchorTrueUpOutcome.COMMITTED
+            assert apply_anchor_true_up(
+                account=account, new_balance=Decimal("500.00"),
+            ) is AnchorTrueUpOutcome.COMMITTED, (
+                "Re-asserting a superseded balance CHANGES what governs "
+                "($600.00 -> $500.00), so it is a fact and must be recorded."
             )
-            assert outcome_first is AnchorTrueUpOutcome.COMMITTED
 
-            # Now patch the discriminator so the IntegrityError is
-            # not recognised as F-103.  The helper must re-raise.
+            db.session.expire_all()
+            reloaded = db.session.get(Account, account.id)
+            assert cash_ledger.resolve_anchor(reloaded).balance == Decimal(
+                "500.00"
+            ), (
+                "The correction must be what governs.  A content-keyed unique "
+                "index answered $600.00 here while reporting success."
+            )
+            rows_at_500 = (
+                db.session.query(AccountAnchorHistory)
+                .filter_by(
+                    account_id=account.id, anchor_balance=Decimal("500.00"),
+                )
+                .all()
+            )
+            assert len(rows_at_500) == 2, (
+                f"Both $500.00 assertions are facts -- the original and the "
+                f"correction back to it -- so the append-only history holds "
+                f"two, not {len(rows_at_500)}."
+            )
+
+
+class TestGoverningAnchorOnIsDayScoped:
+    """``cash_ledger.governing_anchor_on`` answers as of a DAY, not as of now.
+
+    The cash half of ruling R-EQ's horizon, and the unit that makes plan step
+    X-f1c4c safe.  The cash door stamps ``display_today()`` until that step, so
+    today the day-scoped answer and ``resolve_anchor`` coincide -- which is
+    exactly why the rule is installed BEFORE the field that makes them diverge.
+    Graded here directly rather than through a door that cannot yet reach it,
+    because a rule with no reachable caller has no negative control.
+    """
+
+    def test_it_ignores_assertions_made_for_later_days(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """An assertion for a LATER day does not govern an earlier one.
+
+        Three assertions on the days AFTER the account's opening -- $100 on
+        O+1, $200 on O+5, $300 on O+10 -- then ask what governed on O+5: $200,
+        not the $300 that ``resolve_anchor`` returns.  Asking ``resolve_anchor``
+        here is what made every back-dated re-submit append a duplicate on the
+        loan door.
+
+        Every day is derived from the account's OWN opening rather than from
+        ``display_today()``, so the fixture holds wherever in the calendar it
+        runs -- the seeded origination is itself dated by the fixture's clock,
+        and days offset backwards from today can land before it.
+        """
+        with app.app_context():
+            account = _make_checking_account(seed_user, anchor_balance="50.00")
+            db.session.flush()
+            opening = cash_ledger.resolve_anchor(account).observed_on
+            for offset, balance in ((1, "100.00"), (5, "200.00"), (10, "300.00")):
+                db.session.add(AccountAnchorHistory(
+                    account_id=account.id,
+                    anchor_balance=Decimal(balance),
+                    observed_on=opening + timedelta(days=offset),
+                ))
+            db.session.commit()
+
+            governing = cash_ledger.governing_anchor_on(
+                account.id, opening + timedelta(days=5),
+            )
+            assert governing.balance == Decimal("200.00"), (
+                f"the assertion governing O+5 is the one made ON O+5, not the "
+                f"later O+10 one; got {governing.balance}"
+            )
+            assert governing.observed_on == opening + timedelta(days=5)
+            assert cash_ledger.resolve_anchor(account).balance == Decimal(
+                "300.00"
+            ), "resolve_anchor still answers as of NOW -- the two differ"
+
+    def test_it_answers_none_before_the_first_assertion(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A day before every assertion has nothing governing it.
+
+        The writer's honest answer, and the reason this returns ``None`` where
+        ``resolve_anchor`` raises: a submission for a day nothing governs is
+        necessarily new, which is a fact about the write, not a broken
+        invariant.
+        """
+        with app.app_context():
+            account = _make_checking_account(seed_user, anchor_balance="75.00")
+            db.session.commit()
+            opening = cash_ledger.resolve_anchor(account).observed_on
+
+            assert cash_ledger.governing_anchor_on(
+                account.id, opening - timedelta(days=1),
+            ) is None
+
+
+class TestApplyAnchorTrueUpReraisesUnknownIntegrityError:
+    """An unexpected ``IntegrityError`` propagates rather than being swallowed.
+
+    **The ``except IntegrityError`` block this graded was DELETED at plan step
+    X-f1c4b** with the index that produced it.  The contract survives the
+    deletion and is what this now grades directly: nothing on the true-up path
+    may convert a database-level failure into an outcome the route renders as
+    success.  Kept rather than deleted because the cost of re-growing such a
+    handler is a silent write loss reported as a save, which is the exact defect
+    ruling R-EQ was ruled on.
+    """
+
+    def test_integrity_error_from_the_resync_is_not_swallowed(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """An ``IntegrityError`` raised by the posting re-sync reaches the caller.
+
+        Engineered at the re-sync rather than at a real constraint because
+        every constraint the true-up can now violate is a programming error
+        with no reachable input: the decision that used to end in a unique
+        violation is made before anything is staged.  Patching the one call
+        that can still raise from the database keeps the contract testable
+        without asserting on a specific constraint.
+        """
+        with app.app_context():
+            account = db.session.get(Account, seed_user["account"].id)
+
             with patch(
-                "app.services.anchor_service.is_unique_violation",
-                return_value=False,
+                "app.services.account_posting_service."
+                "sync_account_anchor_postings_all_scenarios",
+                side_effect=IntegrityError("stmt", {}, Exception("boom")),
             ):
                 with pytest.raises(IntegrityError):
                     apply_anchor_true_up(
@@ -435,14 +565,16 @@ class TestApplyAnchorTrueUpReraisesUnknownIntegrityError:
                         new_balance=Decimal("2222.22"),
                     )
 
-            # And the session is clean (the helper rolled back before
-            # re-raising, so subsequent work is unimpeded).
-            db.session.rollback()  # defensive; idempotent.
+            db.session.rollback()
             reloaded = db.session.get(Account, account.id)
-            assert cash_ledger.resolve_anchor(reloaded).balance == Decimal("2222.22"), (
-                "First commit's balance survives; the re-raised "
-                "IntegrityError on the second call rolled back its "
-                "own attempted mutation."
+            assert cash_ledger.resolve_anchor(reloaded).balance == Decimal(
+                "1000.00"
+            ), (
+                "The failed true-up must not have committed: the seed "
+                "origination's $1,000.00 still governs, because the $2,222.22 "
+                "assertion was staged in the transaction the IntegrityError "
+                "aborted.  Asserting the SURVIVING figure, not merely 'not the "
+                "new one' -- a negative passes for any wrong value."
             )
 
 
@@ -476,30 +608,41 @@ class TestApplyAnchorTrueUpModuleContract:
         are not distinguishable from a green suite.
         """
         assert {m.name for m in AnchorTrueUpOutcome} == {
-            "COMMITTED", "DUPLICATE_SAME_DAY",
+            "COMMITTED", "UNCHANGED",
         }
 
-    def test_unique_index_constant_matches_model_index_name(self, app):
-        """The exported constant must match the live index name.
+    def test_neither_anchor_table_carries_a_uniqueness_guard(self, app, db):
+        """Ruling R-EQ's structural claim, asserted against the LIVE schema.
 
-        Three sites must agree: the model
-        (``AccountAnchorHistory.__table_args__``), the migration
-        (``e8b14f3a7c22``), and the helper (this module).  A drift in
-        any one would break the F-103 catch silently -- the
-        IntegrityError would no longer be recognised and the helper
-        would re-raise instead of returning ``DUPLICATE_SAME_DAY``.
+        The duplicate rule is a write-door comparison, and re-adding a unique
+        index over either anchor table's own values would silently restore the
+        false refusal ``TestApplyAnchorTrueUpUnchanged`` grades -- the door's
+        compare would pass, the INSERT would collide, and the caller would see
+        an ``IntegrityError`` on a legitimate correction.
+
+        Asserted against ``pg_indexes`` rather than ``__table_args__`` because
+        the model and the database can disagree: a model-only assertion passes
+        on a database whose index was never dropped, which is the exact state
+        migration ``a3f6c1d84b90`` exists to leave behind.
         """
         with app.app_context():
-            assert ANCHOR_HISTORY_UNIQUE_INDEX == (
-                "uq_anchor_history_account_period_balance_day"
-            )
-            # Confirm the index name is present on the live model.
-            from app.models.account import AccountAnchorHistory  # pylint: disable=import-outside-toplevel
-            index_names = {
-                idx.name for idx in AccountAnchorHistory.__table_args__
-                if hasattr(idx, "name")
+            unique_indexes = {
+                (row.tablename, row.indexname)
+                for row in db.session.execute(sa.text(
+                    "SELECT tablename, indexname, indexdef FROM pg_indexes "
+                    "WHERE schemaname = 'budget' AND tablename IN "
+                    "('account_anchor_history', 'loan_anchor_events') "
+                    "AND indexdef LIKE 'CREATE UNIQUE%' "
+                    "AND indexname NOT LIKE '%_pkey'"
+                ))
             }
-            assert ANCHOR_HISTORY_UNIQUE_INDEX in index_names
+            assert unique_indexes == set(), (
+                f"An anchor table has regrown a uniqueness guard: "
+                f"{sorted(unique_indexes)}.  Ruling R-EQ puts the duplicate "
+                f"rule at the write door, which can compare against what "
+                f"governs; an index over the row's values cannot, and refuses "
+                f"a legitimate re-assertion."
+            )
 
 
 # ── Loan Anchor Trueup ────────────────────────────────────────────────
@@ -716,10 +859,10 @@ class TestRecordLoanTrackingStart:
             assert tracking_fact.is_opening is False
             assert tracking_fact.anchor_balance == Decimal("18000.00")
 
-    def test_double_call_same_returns_duplicate_same_day(
+    def test_double_call_same_returns_unchanged(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """A same (date, balance) resubmit on the same UTC day is idempotent."""
+        """A resubmit of the governing (date, balance) is idempotent."""
         with app.app_context():
             account = _make_loan_account(seed_user)
             db.session.commit()
@@ -735,22 +878,72 @@ class TestRecordLoanTrackingStart:
                 anchor_date=date.today(),
             )
             assert first is AnchorTrueUpOutcome.COMMITTED
-            assert second is AnchorTrueUpOutcome.DUPLICATE_SAME_DAY
+            assert second is AnchorTrueUpOutcome.UNCHANGED
+
+    def test_resubmit_is_recognised_after_a_later_trueup(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A re-submitted OPENING is recognised even under a later true-up.
+
+        Ruling R-EQ scopes the loan comparison to the submission's own SOURCE,
+        and this is why.  A ``tracking_start`` is by definition the earliest
+        anchor, so once any ``user_trueup`` is recorded the latest row of ANY
+        source is that true-up -- and comparing against it would let a
+        double-submitted opening append a second ``tracking_start``, which
+        ``loan_loaders._opening_anchor_fact`` reads as the loan's opening
+        whatever else was recorded later.
+        """
+        with app.app_context():
+            account = _make_loan_account(seed_user)
+            db.session.commit()
+            opening_day = date.today() - timedelta(days=30)
+
+            assert record_loan_tracking_start(
+                account=account,
+                anchor_balance=Decimal("18000.00"),
+                anchor_date=opening_day,
+            ) is AnchorTrueUpOutcome.COMMITTED
+            assert apply_loan_anchor_true_up(
+                account=account,
+                anchor_balance=Decimal("17000.00"),
+                anchor_date=date.today(),
+            ) is AnchorTrueUpOutcome.COMMITTED
+
+            # The latest row of ANY source is now the true-up; the opening is
+            # still what a re-submitted opening duplicates.
+            assert record_loan_tracking_start(
+                account=account,
+                anchor_balance=Decimal("18000.00"),
+                anchor_date=opening_day,
+            ) is AnchorTrueUpOutcome.UNCHANGED
+
+            db.session.expire_all()
+            tracking_source_id = ref_cache.loan_anchor_source_id(
+                LoanAnchorSourceEnum.TRACKING_START,
+            )
+            openings = (
+                db.session.query(LoanAnchorEvent)
+                .filter_by(account_id=account.id, source_id=tracking_source_id)
+                .all()
+            )
+            assert len(openings) == 1, (
+                f"A re-submitted opening must append nothing; found "
+                f"{len(openings)} tracking_start rows."
+            )
 
 
-class TestApplyLoanAnchorTrueUpDuplicateSameDay:
-    """DUPLICATE_SAME_DAY: same (date, balance) on the same UTC day -> idempotent."""
+class TestApplyLoanAnchorTrueUpUnchanged:
+    """UNCHANGED: a resubmit of the governing (date, balance) is idempotent."""
 
-    def test_double_call_same_balance_returns_duplicate_same_day(
+    def test_double_call_same_balance_returns_unchanged(
         self, app, db, seed_user, seed_periods_today,
     ):
         """Two identical trueups produce exactly one new event row.
 
         Hand-check: :func:`apply_loan_anchor_true_up` called twice
-        with the same ``(date, balance)`` on the same UTC day
-        returns ``COMMITTED`` then ``DUPLICATE_SAME_DAY``, and the
-        event log shows exactly one trueup row (plus the
-        origination).
+        with the same ``(date, balance)`` returns ``COMMITTED`` then
+        ``UNCHANGED``, and the event log shows exactly one trueup row
+        (plus the origination).
         """
         with app.app_context():
             account = _make_loan_account(seed_user)
@@ -768,7 +961,7 @@ class TestApplyLoanAnchorTrueUpDuplicateSameDay:
                 anchor_balance=Decimal("17000.00"),
                 anchor_date=today,
             )
-            assert outcome_second is AnchorTrueUpOutcome.DUPLICATE_SAME_DAY
+            assert outcome_second is AnchorTrueUpOutcome.UNCHANGED
 
             db.session.expire_all()
             trueups = (
@@ -781,8 +974,110 @@ class TestApplyLoanAnchorTrueUpDuplicateSameDay:
                 .all()
             )
             assert len(trueups) == 1, (
-                "Same-day same-balance double-submit must produce "
-                "exactly one row (uq_loan_anchor_events_acct_date_bal_day)."
+                "A repeated submission must append nothing: expected exactly "
+                "one event row at that (date, balance)."
+            )
+
+    def test_reasserting_a_superseded_balance_is_recorded(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """Re-asserting a loan balance that was corrected away is a real change.
+
+        The loan twin of the checking regression, and the one whose exposure is
+        LIVE today: the loan form already lets the user type the date, so the
+        deleted ``uq_loan_anchor_events_acct_date_bal_day`` could refuse this
+        sequence on any recording day.  ``$17,000`` -> ``$16,500`` -> back to
+        ``$17,000`` for one anchor date; the third changes what governs and
+        must be recorded.
+        """
+        with app.app_context():
+            account = _make_loan_account(seed_user)
+            today = date.today()
+
+            for balance in ("17000.00", "16500.00", "17000.00"):
+                assert apply_loan_anchor_true_up(
+                    account=account,
+                    anchor_balance=Decimal(balance),
+                    anchor_date=today,
+                ) is AnchorTrueUpOutcome.COMMITTED, (
+                    f"Asserting ${balance} changed what governs, so it is a "
+                    "fact and must be recorded."
+                )
+
+            db.session.expire_all()
+            trueup_source_id = ref_cache.loan_anchor_source_id(
+                LoanAnchorSourceEnum.USER_TRUEUP,
+            )
+            governing = (
+                db.session.query(LoanAnchorEvent)
+                .filter_by(account_id=account.id, source_id=trueup_source_id)
+                .order_by(
+                    LoanAnchorEvent.anchor_date.desc(),
+                    LoanAnchorEvent.created_at.desc(),
+                    LoanAnchorEvent.id.desc(),
+                )
+                .first()
+            )
+            assert governing.anchor_balance == Decimal("17000.00"), (
+                "The correction back to $17,000.00 must be what governs; the "
+                "deleted unique index left $16,500.00 governing while the "
+                "route flashed that the balance was already recorded."
+            )
+
+    def test_back_dated_resubmit_is_idempotent(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """A re-submitted BACK-DATED true-up appends nothing.
+
+        **The defect the first version of ruling R-EQ's implementation had, and
+        the reason the comparison is scoped to the submitted DATE.**  Comparing
+        against the account's LATEST event instead, a submission for an earlier
+        date can never compare equal -- so every double-click on a back-dated
+        correction appended another row, permanently, in a table whose ORM
+        guards refuse UPDATE and DELETE.  Two independent adversarial reviews
+        reproduced it here, on the door that has had a user-supplied date field
+        since Commit 16.
+
+        Sequence: a true-up for TODAY, then one back-dated 10 days, then the
+        back-dated one again.  The third governs the same date as the second and
+        changes nothing, so it must write nothing -- even though a LATER event
+        exists.
+        """
+        with app.app_context():
+            account = _make_loan_account(seed_user)
+            back_dated = date.today() - timedelta(days=10)
+
+            assert apply_loan_anchor_true_up(
+                account=account, anchor_balance=Decimal("17000.00"),
+                anchor_date=date.today(),
+            ) is AnchorTrueUpOutcome.COMMITTED
+            assert apply_loan_anchor_true_up(
+                account=account, anchor_balance=Decimal("16000.00"),
+                anchor_date=back_dated,
+            ) is AnchorTrueUpOutcome.COMMITTED
+            assert apply_loan_anchor_true_up(
+                account=account, anchor_balance=Decimal("16000.00"),
+                anchor_date=back_dated,
+            ) is AnchorTrueUpOutcome.UNCHANGED, (
+                "The re-submitted back-dated true-up changes nothing at its own "
+                "date, so it must append nothing -- comparing against the LATEST "
+                "event instead makes every back-dated retry a duplicate."
+            )
+
+            db.session.expire_all()
+            rows = (
+                db.session.query(LoanAnchorEvent)
+                .filter_by(
+                    account_id=account.id,
+                    anchor_date=back_dated,
+                    anchor_balance=Decimal("16000.00"),
+                )
+                .all()
+            )
+            assert len(rows) == 1, (
+                f"Expected exactly one event at the back-dated key, found "
+                f"{len(rows)} -- each surplus row renders a phantom line on the "
+                f"loan dashboard's drift card and cannot be deleted."
             )
 
     def test_same_day_different_balance_both_commit(
@@ -790,12 +1085,10 @@ class TestApplyLoanAnchorTrueUpDuplicateSameDay:
     ):
         """Same-day trueups with different balances both succeed.
 
-        The unique index covers ``anchor_balance`` as well as
-        ``anchor_date``, so a legitimate same-day correction (the
-        user noticed an error and re-trued at a different amount)
-        MUST NOT be blocked.  Both calls return ``COMMITTED``; the
-        resolver's (anchor_date, created_at) DESC ordering naturally
-        picks the later one for display.
+        A legitimate same-day correction (the user noticed an error and
+        re-trued at a different amount) MUST NOT be blocked.  Both calls
+        return ``COMMITTED``; the resolver's (anchor_date, created_at) DESC
+        ordering naturally picks the later one for display.
         """
         with app.app_context():
             account = _make_loan_account(seed_user)
@@ -826,38 +1119,27 @@ class TestApplyLoanAnchorTrueUpDuplicateSameDay:
 
 
 class TestApplyLoanAnchorTrueUpReraisesUnknownIntegrityError:
-    """Unknown ``IntegrityError`` re-raises (no silent same-day swallowing)."""
+    """An unexpected ``IntegrityError`` propagates rather than being swallowed.
 
-    def test_non_duplicate_integrity_error_is_reraised(
+    The loan twin of the checking class above.  Its ``except IntegrityError``
+    lived in ``loan_posting_service.sync_all_scenarios_or_duplicate``, which the
+    loan anchor path stopped calling at plan step X-f1c4b (that helper survives
+    for the ARM rate change, whose table is EDITABLE and whose unique key is a
+    real business rule).  The contract it protected is graded here directly.
+    """
+
+    def test_integrity_error_from_the_resync_is_not_swallowed(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """A different constraint failure must NOT be treated as idempotent.
-
-        Engineers the case by patching ``is_unique_violation`` -- the
-        same-day-duplicate discriminator, which the Build-Order Step 4
-        wiring moved into the shared
-        :func:`app.services.loan_posting_service.sync_all_scenarios_or_duplicate`
-        helper (the loan true-up now re-splits every scenario in the same
-        transaction and delegates the duplicate translation there) -- to return
-        False.  The helper sees an IntegrityError but cannot confirm it is the
-        same-day uniqueness violation, so it must re-raise.  Pins the "don't
-        silently swallow IntegrityError" contract independent of which
-        constraint the engine fired.
-        """
+        """An ``IntegrityError`` raised by the loan re-sync reaches the caller."""
         with app.app_context():
             account = _make_loan_account(seed_user)
             today = date.today()
 
-            outcome_first = apply_loan_anchor_true_up(
-                account=account,
-                anchor_balance=Decimal("19000.00"),
-                anchor_date=today,
-            )
-            assert outcome_first is AnchorTrueUpOutcome.COMMITTED
-
             with patch(
-                "app.services.loan_posting_service._sync.is_unique_violation",
-                return_value=False,
+                "app.services.loan_posting_service."
+                "sync_loan_postings_all_scenarios",
+                side_effect=IntegrityError("stmt", {}, Exception("boom")),
             ):
                 with pytest.raises(IntegrityError):
                     apply_loan_anchor_true_up(
@@ -866,8 +1148,6 @@ class TestApplyLoanAnchorTrueUpReraisesUnknownIntegrityError:
                         anchor_date=today,
                     )
 
-            # Session is clean after the re-raise (the helper rolled
-            # back before raising, so subsequent work is unimpeded).
             db.session.rollback()
             trueups_at_balance = (
                 db.session.query(LoanAnchorEvent)
@@ -877,35 +1157,10 @@ class TestApplyLoanAnchorTrueUpReraisesUnknownIntegrityError:
                 )
                 .all()
             )
-            assert len(trueups_at_balance) == 1, (
-                "First trueup row survives; the re-raised "
-                "IntegrityError rolled back the second attempt."
+            assert not trueups_at_balance, (
+                "The failed true-up must not have committed: the event was "
+                "staged in the transaction the IntegrityError aborted."
             )
-
-
-class TestApplyLoanAnchorTrueUpModuleContract:
-    """Pins the public surface of the loan-anchor helper."""
-
-    def test_loan_unique_index_constant_matches_model(self, app):
-        """The exported constant must match the live index name.
-
-        Three sites must agree: the model
-        (:class:`LoanAnchorEvent.__table_args__`), the
-        loan_anchor_events migration, and the helper (this module).
-        A drift in any one would break the same-day catch silently --
-        the IntegrityError would no longer be recognised and the
-        helper would re-raise instead of returning
-        ``DUPLICATE_SAME_DAY``.
-        """
-        with app.app_context():
-            assert LOAN_ANCHOR_EVENT_UNIQUE_INDEX == (
-                "uq_loan_anchor_events_acct_date_bal_day"
-            )
-            index_names = {
-                idx.name for idx in LoanAnchorEvent.__table_args__
-                if hasattr(idx, "name")
-            }
-            assert LOAN_ANCHOR_EVENT_UNIQUE_INDEX in index_names
 
 
 class TestApplyAnchorTrueUpKindGate:

@@ -77,7 +77,9 @@ class AnchorPoint:
     finding N-133 / F12's other half.**  That field was ``created_at``
     truncated to a UTC day, justified in its own docstring by matching the
     ``uq_anchor_history_account_period_balance_day`` index -- which now keys
-    on the stored ``observed_on`` instead, so the justification was gone.
+    on the stored ``observed_on`` instead, so the justification was gone.  That
+    index is itself deleted now (ruling R-EQ, plan step X-f1c4b): the duplicate
+    rule is a write-door comparison against the governing assertion.
     No production code read it: the account-detail route deliberately reads
     ``created_at`` and says why (a UTC day renders a late-evening Eastern
     anchor on the wrong day), and its only reader in the repository was one
@@ -89,6 +91,80 @@ class AnchorPoint:
     balance: Decimal
     observed_on: date
     created_at: datetime
+
+
+def _governing_row(
+    account_id: int, on_or_before: date | None,
+) -> AccountAnchorHistory | None:
+    """Return the assertion that GOVERNS, optionally as of a civil day.
+
+    The ONE query behind both :func:`resolve_anchor` (``on_or_before=None`` --
+    which assertion governs now) and :func:`governing_anchor_on`
+    (``on_or_before=D`` -- which governed on day D).  They are the same question
+    with the same tie-breaks and only the horizon differs, so they are one
+    implementation: two queries that "agree by reading" is the defect this
+    package's own history is made of.
+
+    Args:
+        account_id: The account whose assertions to search.
+        on_or_before: The civil day to answer as of, or ``None`` for the
+            account's latest assertion at any date.
+
+    Returns:
+        The governing :class:`AccountAnchorHistory` row, or ``None`` when the
+        account has no assertion at or before the horizon.
+    """
+    query = db.session.query(AccountAnchorHistory).filter(
+        AccountAnchorHistory.account_id == account_id,
+    )
+    if on_or_before is not None:
+        query = query.filter(AccountAnchorHistory.observed_on <= on_or_before)
+    return query.order_by(
+        AccountAnchorHistory.observed_on.desc(),
+        AccountAnchorHistory.created_at.desc(),
+        AccountAnchorHistory.id.desc(),
+    ).first()
+
+
+def governing_anchor_on(
+    account_id: int, observed_on: date,
+) -> AnchorPoint | None:
+    """Return the assertion that governed ``account_id`` on ``observed_on``.
+
+    **The WRITE doors' question** (ruling **R-EQ**, plan step X-f1c4b): before
+    appending an assertion for a civil day, does it change what is already true
+    on that day?  It differs from :func:`resolve_anchor` only when the day being
+    asserted is not the newest one the account carries -- a BACK-DATED
+    assertion, which is what plan step X-f1c4c makes reachable on the cash door
+    and what the loan door has allowed since Commit 16.
+
+    **Asking ``resolve_anchor`` instead is a measured defect, not a shortcut.**
+    A submission for an earlier day compared against the LATEST assertion can
+    never match, so a double-click on a back-dated correction appends a
+    duplicate every time -- reproduced on the loan door by two independent
+    reviews of X-f1c4b before this function existed.  A submission for day D can
+    only change what is true at or after D, so D is the horizon the comparison
+    belongs at.
+
+    Args:
+        account_id: The account being asserted about.
+        observed_on: The civil day the submission asserts a balance for.
+
+    Returns:
+        The governing :class:`AnchorPoint`, or ``None`` when the account has no
+        assertion at or before *observed_on* -- in which case the submission is
+        necessarily new.  Unlike :func:`resolve_anchor` this does NOT raise on
+        an account with no history: "nothing governs this day yet" is an honest
+        answer to a writer, where it is a broken invariant to a reader.
+    """
+    governing = _governing_row(account_id, on_or_before=observed_on)
+    if governing is None:
+        return None
+    return AnchorPoint(
+        balance=Decimal(str(governing.anchor_balance)),
+        observed_on=governing.observed_on,
+        created_at=governing.created_at,
+    )
 
 
 def resolve_anchor(account: Account) -> AnchorPoint:
@@ -167,16 +243,7 @@ def resolve_anchor(account: Account) -> AnchorPoint:
             see the function docstring above for the regression-trap
             rationale.
     """
-    latest: AccountAnchorHistory | None = (
-        db.session.query(AccountAnchorHistory)
-        .filter_by(account_id=account.id)
-        .order_by(
-            AccountAnchorHistory.observed_on.desc(),
-            AccountAnchorHistory.created_at.desc(),
-            AccountAnchorHistory.id.desc(),
-        )
-        .first()
-    )
+    latest = _governing_row(account.id, on_or_before=None)
     if latest is None:
         raise RuntimeError(
             f"resolve_anchor: account id={account.id} has zero "

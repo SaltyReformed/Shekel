@@ -77,6 +77,7 @@ from ._events import (
 )
 from ._facts import (
     AnchorPoint,
+    governing_anchor_on,
     planned_cash_rows,
     reconciled_through,
     resolve_anchor,
@@ -91,6 +92,7 @@ from ._walk import (
 
 __all__ = [
     "AnchorPoint",
+    "governing_anchor_on",
     "CashAnchorCorrection",
     "CashAnchorFact",
     "CashLedgerWalk",

@@ -409,10 +409,20 @@ def sync_all_scenarios_or_duplicate(
 ) -> bool:
     """Re-sync a loan across scenarios and flush, reporting a same-key duplicate.
 
-    The shared body of the two loan-GLOBAL chokepoints that append a
-    unique-constrained row and THEN re-sync -- the balance true-up (which adds
-    a :class:`~app.models.loan_anchor_event.LoanAnchorEvent`) and the ARM rate
-    change (which adds a :class:`~app.models.loan_features.RateHistory` row).
+    The body of the loan-GLOBAL chokepoint that appends a unique-constrained
+    row and THEN re-syncs: the ARM rate change (which adds a
+    :class:`~app.models.loan_features.RateHistory` row).
+
+    **It had a second caller until plan step X-f1c4b** -- the balance true-up,
+    which appended a :class:`~app.models.loan_anchor_event.LoanAnchorEvent` and
+    leaned on ``uq_loan_anchor_events_acct_date_bal_day``.  Ruling **R-EQ**
+    deleted that index because a content key cannot tell a transport retry from
+    a deliberate re-assertion; the anchor door decides before it stages and calls
+    :func:`sync_loan_postings_all_scenarios` directly.  **This helper is right
+    for the caller it kept**: ``rate_history`` is an EDITABLE table whose
+    ``uq_rate_history_account_effective_date`` states a real business rule (one
+    rate per effective date, corrected by editing the row), not an idempotency
+    guess.
     Runs :func:`sync_loan_postings_all_scenarios` (whose queries autoflush the
     caller's just-added row) then an explicit flush, so a same-key duplicate the
     pending row collides on surfaces HERE -- inside one ``try`` -- and is
@@ -429,9 +439,9 @@ def sync_all_scenarios_or_duplicate(
         loan_account_id: The loan whose corrections to reconcile across every
             scenario it is displayed in.
         unique_index_name: The unique index / constraint the caller's pending
-            row can collide on (``uq_loan_anchor_events_acct_date_bal_day`` for
-            a true-up, ``uq_rate_history_account_effective_date`` for a rate
-            change).
+            row can collide on -- ``uq_rate_history_account_effective_date``,
+            the only one left since ruling R-EQ deleted the loan-anchor index
+            (plan step X-f1c4b).
 
     Returns:
         ``True`` when the sync + flush succeeded (the caller should commit);

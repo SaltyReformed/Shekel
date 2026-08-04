@@ -119,12 +119,15 @@ def lock_user_writes(user_id: int) -> None:
     Blocks until any other transaction holding the same key commits or rolls
     back; PostgreSQL releases it automatically at this transaction's end.
 
-    The lock is not a substitute for the constraints underneath it.  A
-    duplicate ``period_index`` is still forbidden by
-    ``UNIQUE(user_id, period_index)`` and a duplicate same-day assertion by
-    ``uq_anchor_history_account_period_balance_day``; the lock is what the
-    reconcile has instead of such a constraint, because the quantity it must
-    protect is a SUM it read rather than a row it is about to write.
+    The lock is not a substitute for the constraints underneath it: a duplicate
+    ``period_index`` is still forbidden by ``UNIQUE(user_id, period_index)``.
+    The lock is what a caller has instead of such a constraint when the quantity
+    it must protect is something it READ rather than a row it is about to write
+    -- a posted SUM for the reconciles, and since ruling **R-EQ** (plan step
+    X-f1c4b) the governing assertion for the two anchor doors, whose duplicate
+    rule moved out of a unique index for exactly that reason.  Those doors take
+    it BEFORE their read, which is the ordering invariant this module's docstring
+    states.
 
     Args:
         user_id: The owning user's id, used as the lock's second key.

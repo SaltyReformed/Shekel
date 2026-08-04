@@ -207,8 +207,8 @@ class TestDashboardGrouping:
         # origination assertion is already $1,000.00.  This line used to write
         # ``current_anchor_balance = 1000.00`` beside that assertion, which was
         # redundant even then; ruling R-EH deleted the column, and re-asserting
-        # the same balance on the same day is what the F-103 unique index
-        # refuses.  The fixture's balance comes from the seed.
+        # the same balance for the same day is what the write door answers as
+        # UNCHANGED (ruling R-EQ).  The fixture's balance comes from the seed.
 
         # Add a Money Market account (is_liquid=True by seed).
         mm_type = db.session.query(AccountType).filter_by(

@@ -63,6 +63,7 @@ from app.services import (
     transfer_service,
 )
 from app.services.account_projection import AccountProjectionKind, classify_account
+from app.services.user_write_lock import lock_user_writes
 from app.utils import archive_helpers
 from app.utils.account_validation import (
     _create_schema,
@@ -390,12 +391,29 @@ def update_account(account_id):
         flash(failure[0], failure[1])
         return redirect(url_for("accounts.edit_account", account_id=account_id))
 
+    # The owner's write lock, taken HERE and unconditionally, because this route
+    # is the one place two of its own branches would otherwise take the same two
+    # locks in opposite orders (plan step X-f1c4b).  The anchor branch reaches
+    # ``lock_user_writes`` inside ``stage_anchor_true_up`` BEFORE the ``setattr``
+    # loop's ``UPDATE budget.accounts`` flushes, while a type-only edit flushes
+    # that UPDATE first and does not reach the advisory lock until the posting
+    # re-sync several statements later.  Two tabs, same account, one of each:
+    # PostgreSQL detects the cycle and aborts one with an unhandled 500 on a
+    # money route.  Reproduced against a real database by a neutral concurrency
+    # review of this step, and NOT shipped -- taking the lock before any row is
+    # touched makes every branch satisfy the invariant
+    # :mod:`app.services.user_write_lock` states, which finding **N-193** says
+    # the settle paths still break.  It is re-entrant and transaction-scoped, so
+    # the nested acquisitions below cost nothing.
+    lock_user_writes(current_user.id)
+
     # Handle anchor balance update with audit trail.  Tracking
     # ``anchor_changed`` separately from ``new_anchor`` is necessary
     # because the staging below appends a new assertion, which becomes the
     # one this comparison reads; a later re-test would always be False and
-    # skip the reconcile call.  The flag is set exactly when the balance
-    # actually changed.  The comparison reads the latest ASSERTION since
+    # skip the reconcile call.  The flag is the SERVICE's answer to whether an
+    # assertion was actually appended (ruling R-EQ), never a second guess at it.
+    # The comparison reads the latest ASSERTION since
     # plan step X-f1c3a -- it was ``account.current_anchor_balance``, the
     # cache column that mirrored it.
     #
@@ -412,8 +430,24 @@ def update_account(account_id):
     anchor_changed = False
     if new_anchor is not None:
         new_anchor = Decimal(str(new_anchor))
+        # **This gate is NOT a second copy of ruling R-EQ's duplicate rule, and
+        # deleting it would move money.**  It asks "did the user change the
+        # balance FIELD", which is a question about this FORM; the service asks
+        # "does this assertion change what governs", which is a question about
+        # the LEDGER.  They differ on a form that PRE-FILLS the field: with a
+        # governing assertion of $500 observed last week, saving a NAME change
+        # submits $500 unchanged, and the service's rule would append a fresh
+        # assertion dated today -- moving ``reconciled_through`` forward and
+        # absorbing outstanding purchases the user never reconciled.  A rename
+        # is not a balance reading.  Two neutral reviews of plan step X-f1c4b
+        # recommended dropping this gate; both missed that consequence.
+        #
+        # The real defect it leaves is that the account-edit door and the
+        # one-click editor answer the SAME submission differently (finding
+        # **N-195**), and the fix for that is plan step **X-f1e**, which deletes
+        # this door -- a balance is asserted at one door or the divergence is
+        # permanent.
         if new_anchor != cash_ledger.resolve_anchor(account).balance:
-            anchor_changed = True
             # ONE definition of what an assertion IS, and it lives in
             # ``anchor_service`` (ruling R-DH, plan step 2).  This route
             # restated it inline, and the two had already drifted: the
@@ -422,8 +456,10 @@ def update_account(account_id):
             # asserted TRUE for, which the whole anchor/settle partition
             # turns on -- would have had to be added HERE too, as a third
             # copy of a rule two writers already state.  A route composes
-            # services; it does not re-implement one.
-            anchor_service.stage_anchor_true_up(
+            # services; it does not re-implement one.  Its RETURN is what sets
+            # the flag: the reconcile below must run when an assertion was
+            # appended, and the only thing that knows is the writer.
+            anchor_changed = anchor_service.stage_anchor_true_up(
                 account=account,
                 new_balance=new_anchor,
             )

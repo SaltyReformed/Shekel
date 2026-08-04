@@ -595,8 +595,8 @@ class TestWalkAccountLedger:
 
         The $200.00 expense (paid T+1h) is reversed (the revert path's
         ``settled=False`` reconcile); a true-up at T+2h asserting $480.00
-        (distinct from the $500.00 origination -- the F-103 same-day
-        same-balance unique index would reject a literal duplicate) then
+        (distinct from the $500.00 origination -- asserting the balance that
+        already governs writes nothing, ruling R-EQ) then
         sees ledger_before 500.00 -- the reverted source contributes
         nothing, whatever its settle day said.
         """

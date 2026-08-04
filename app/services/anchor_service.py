@@ -69,28 +69,52 @@ plan step X-f1c3c the reconcile takes a per-owner advisory lock for itself
 (:mod:`app.services.user_write_lock`), so the guarantee belongs to the code
 that needs it rather than to whichever caller happened to write a row first.
 
-One failure mode is part of the contract:
+**An assertion is refused only when it CHANGES NOTHING, and that rule is this
+module's** (ruling **R-EQ**, plan step X-f1c4b).  Both doors take the owner's
+write lock, read the assertion that currently GOVERNS what the submission would
+govern, and append only when the submission differs from it.  An identical
+submission writes nothing and reports ``UNCHANGED``, which the routes render as
+success -- so a double-click, a network retry and a back-and-resubmit are
+absorbed, while a correction never is.
 
-  * **F-103 / C-22 same-day same-balance idempotency.** The unique
-    index ``uq_anchor_history_account_period_balance_day`` on
-    ``(account_id, anchor_balance, observed_on)``
-    rejects a second history INSERT asserting the same balance for the
-    same BUSINESS day -- a network retry, a double-click on Save, or a
-    back-and-resubmit.
-    We translate that ``IntegrityError`` into ``DUPLICATE_SAME_DAY``
-    so the caller renders an idempotent success (the prior request
-    committed the same value the current request was trying to
-    submit).  Its last column was ``((created_at AT TIME ZONE
-    'UTC')::date)`` until ``observed_on`` existed, which keyed the guard
-    to a UTC day while ruling R-DH's day is the user's -- so two
-    assertions on two different Eastern days sharing one UTC day were
-    rejected as duplicates (finding N-133 / F12).  The loan path uses
-    the analogous expression index
-    ``uq_loan_anchor_events_acct_date_bal_day`` covering
-    ``(account_id, anchor_date, anchor_balance,
-    ((created_at AT TIME ZONE 'UTC')::date))`` -- mirrors the checking
-    semantics so a double-click on the loan dashboard's "Record
-    balance" button is idempotent in the same way.
+**Both doors carried a content-keyed UNIQUE INDEX for this until X-f1c4b, and
+the index could not express the rule.**  ``uq_anchor_history_account_period_balance_day``
+covered ``(account_id, anchor_balance, observed_on)`` and
+``uq_loan_anchor_events_acct_date_bal_day`` covered ``(account_id, anchor_date,
+anchor_balance, ((created_at AT TIME ZONE 'UTC')::date))``; each write door
+translated the violation into idempotent success.  **A transport retry and a
+deliberate re-assertion are byte-identical by construction**, so a key over the
+row's own values must mis-classify one of them -- and it mis-classified the
+correction: assert ``$500`` for a day, correct it to ``$600``, then re-assert
+``$500`` for that day, and the index rejected the third write while the app
+reported it saved and kept rendering ``$600``.  Comparing against the governing
+row instead is exact in both directions, because "did this change anything" is a
+question about STATE, which the row's contents alone cannot answer.
+
+Two consequences worth stating, both measured before the indexes were dropped:
+
+  * **The remaining exposure is a surplus audit row, not money.**  Two truly
+    concurrent identical submissions could each pass the compare -- except they
+    cannot, because the compare runs under the same per-owner lock the reconcile
+    takes (:mod:`app.services.user_write_lock`), taken at the TOP of the door so
+    the waiter re-reads the winner's row.  Even without it the cost was
+    ``$0.00``: a duplicate assertion's correction delta is zero, a zero delta
+    emits no legs (``account_posting_service._anchors``), and same-day
+    corrections merge on one key.
+  * **The lock moved EARLIER, not merely inward, and the "first lock" property
+    belongs to the CALLER.**  It was taken inside the reconcile, several
+    statements in; both doors now take it before their first read.  That is only
+    the invariant :mod:`app.services.user_write_lock` states ("this lock must be
+    the FIRST lock a transaction takes") when nothing the caller did earlier has
+    already taken a row lock -- and ``lock_user_writes`` runs through
+    ``db.session.execute``, which AUTOFLUSHES, so a caller that assigns to an ORM
+    row before calling here emits that ``UPDATE`` first and inverts the order
+    silently.  The three HTMX/loan doors do only reads beforehand;
+    ``routes/accounts/crud.update_account`` takes the lock itself, at the top,
+    because two of its own branches would otherwise order the advisory lock and
+    the ``accounts`` row lock oppositely (a deadlock reproduced against a real
+    database while reviewing this step).  **None of that closes finding N-193**,
+    whose cycle is settle-versus-truncate and is untouched.
 
 Pre-Commit-16 this consolidation eliminates two byte-identical
 ``try/except`` blocks in ``app/routes/accounts.py``; the loan
@@ -123,8 +147,6 @@ import logging
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy.exc import IntegrityError
-
 from app import ref_cache
 from app.enums import LoanAnchorSourceEnum
 from app.extensions import db
@@ -132,35 +154,14 @@ from app.models.account import Account, AccountAnchorHistory
 from app.models.loan_anchor_event import LoanAnchorEvent
 from app.services import (
     account_posting_service,
+    cash_ledger,
     loan_posting_service,
 )
+from app.services.user_write_lock import lock_user_writes
 from app.utils.dates import display_today
-from app.utils.db_errors import is_unique_violation
 
 
 logger = logging.getLogger(__name__)
-
-
-# Name of the unique index that backstops the F-103 / C-22 same-day
-# same-balance idempotency rule.  It keys ``(account_id, anchor_balance,
-# observed_on)`` -- the BUSINESS day.  ``pay_period_id`` left the key with the
-# COLUMN at plan step X-f1c3b (ruling R-EO), which made the guard strictly
-# tighter and rejected 0 of the 78 production rows.  It was a PARTIAL
-# EXPRESSION index on a UTC-day truncation of ``created_at`` until plan step 2
-# gave the row a stored day (finding N-133 / F12).  Mirrors the literal in
-# ``app/models/account.py:AccountAnchorHistory.__table_args__``, its creating
-# migration ``e8b14f3a7c22`` and its re-keying migration ``c4a19e7b2d80``;
-# renaming the index requires a coordinated edit across all four sites.
-ANCHOR_HISTORY_UNIQUE_INDEX = "uq_anchor_history_account_period_balance_day"
-
-
-# Name of the partial unique expression index that backstops the
-# same-day same-balance idempotency rule on loan anchor events
-# (Commit 16, mirrors the checking-anchor index above).  Mirrors the
-# literal in ``app/models/loan_anchor_event.py:LoanAnchorEvent.__table_args__``
-# and Commit 12's loan_anchor_events migration; renaming the index
-# requires a coordinated edit across all three sites.
-LOAN_ANCHOR_EVENT_UNIQUE_INDEX = "uq_loan_anchor_events_acct_date_bal_day"
 
 
 class AmortizingAccountAnchorError(ValueError):
@@ -189,22 +190,19 @@ class AnchorTrueUpOutcome(enum.Enum):
         COMMITTED: The new ``AccountAnchorHistory`` row was written
             and the commit succeeded.  Route renders the success
             partial (200) and, where relevant, the OOB swap + HX-Trigger.
-        DUPLICATE_SAME_DAY: The F-103 unique index rejected the second
-            INSERT for the same ``(account_id, anchor_balance,
-            observed_on)`` tuple -- the same BUSINESS day, not the same
-            UTC recording day (finding N-133 / F12).  The key lost its
-            ``pay_period_id`` column with ruling R-EO (plan step
-            X-f1c3b) and this docstring named the pre-re-key four-column
-            tuple until X-f1c3c.  The session was
-            rolled back.  Route
-            treats this as idempotent success (the first request
-            committed the same value the second was trying to submit)
-            and renders the success partial without re-issuing the
-            commit.
+        UNCHANGED: The submission matched the assertion that already
+            GOVERNS, so nothing was written and the session was rolled
+            back (ruling R-EQ).  Route treats this as idempotent success
+            -- the state the caller asked for is the state that stands --
+            and renders the success partial without re-issuing the commit.
+            **It was ``DUPLICATE_SAME_DAY`` until plan step X-f1c4b**, when
+            it named a unique-index violation rather than a decision: the
+            name said "you sent this twice", which is exactly the thing a
+            content key cannot know.  This one says what is true.
     """
 
     COMMITTED = "committed"
-    DUPLICATE_SAME_DAY = "duplicate_same_day"
+    UNCHANGED = "unchanged"
 
 
 def stage_anchor_true_up(
@@ -212,14 +210,47 @@ def stage_anchor_true_up(
     account: Account,
     new_balance: Decimal,
     notes: str | None = None,
-) -> None:
+) -> bool:
     """Append a dated balance ASSERTION for ``account`` without committing.
 
     The flush-only in-memory core of :func:`apply_anchor_true_up`, shared with
     the full-form account edit (``routes/accounts/crud.update_account``) so the
     two write doors cannot drift on what an assertion IS.  It does NOT clear
-    past-dated entries, does NOT commit, and does NOT translate the F-103
-    outcome -- the caller owns the transaction.
+    past-dated entries and does NOT commit -- the caller owns the transaction.
+
+    **It decides whether there is anything to append, and that decision is
+    ruling R-EQ.**  It takes the owner's write lock, asks
+    :func:`app.services.cash_ledger.resolve_anchor` which assertion currently
+    governs, and appends only when the submission differs from it.  Three
+    properties are load-bearing and each is here rather than in a caller:
+
+    * **The lock precedes the read.**  A compare-then-append is a
+      read-modify-write, so an unserialised one lets two concurrent submissions
+      each read the pre-state and both append.  It is taken here rather than at
+      a door because BOTH doors reach this function.  It is NOT a guarantee that
+      the advisory lock is the transaction's FIRST lock: ``lock_user_writes``
+      executes a statement and therefore AUTOFLUSHES, so a caller holding a
+      dirty ORM row emits that ``UPDATE`` -- and takes its row lock -- before
+      this line.  That ordering is the caller's to keep, which is why
+      ``routes/accounts/crud.update_account`` takes the same re-entrant lock at
+      its own top rather than relying on this one.
+    * **The governing assertion is asked for, never re-derived.**
+      :func:`app.services.cash_ledger.governing_anchor_on` shares ONE query with
+      ``resolve_anchor`` -- same tie-breaks, ``(observed_on, created_at, id)``
+      DESC, matching the walk's replay -- and differs only in its horizon.  A
+      local ``MAX``/``first()`` here would be a second statement of that rule,
+      which is the defect class this module's own history is made of.
+    * **The comparison is against the row governing the SUBMITTED DAY, not the
+      account's latest row.**  Two things follow, and both were measured.  The
+      deleted unique index asked "does an identical row exist anywhere", so
+      re-asserting a balance that had since been superseded was refused and
+      reported as saved.  But comparing against the LATEST row instead has the
+      mirror-image fault: a submission for an EARLIER day can never equal it, so
+      a double-click on a back-dated correction appends every time -- reproduced
+      on the loan door by two independent reviews of this step.  A submission
+      for day D can only change what is true at or after D, so D is the horizon.
+      The cash door cannot back-date until plan step X-f1c4c, which is exactly
+      why the rule is installed before the field is.
 
     **What it stages shrank twice, and both shrinks are the same ruling
     applied one table apart.**  It used to re-point ``current_anchor_period_id``
@@ -242,22 +273,49 @@ def stage_anchor_true_up(
         notes: Optional free-text note for the history row's ``notes``
             column, so the audit trail names the originating path.  ``None``
             leaves it NULL, matching the true-up route path.
+
+    Returns:
+        ``True`` when an assertion was appended to the session; ``False`` when
+        the submission matched the governing assertion and nothing was staged.
+        The caller decides what an unchanged submission means for ITS
+        transaction -- :func:`apply_anchor_true_up` rolls back and reports
+        ``UNCHANGED``, while the account-edit door has other pending work and
+        must not.
+
+    Raises:
+        RuntimeError: When the account carries no assertion at all, from
+            :func:`app.services.cash_ledger.resolve_anchor`.  Unreachable for a
+            real account (``account_service.create_account`` writes the
+            origination assertion in the same flush as the row), and the same
+            loud failure every reader of that account would already get.
     """
+    # Ruling R-EQ: the lock comes FIRST, before the read the decision below is
+    # made from.  See the function docstring for why it is here and not at
+    # either door.
+    lock_user_writes(account.user_id)
+    # The civil day this balance is asserted TRUE for (ruling R-DH).  A
+    # true-up is the user reading their bank NOW, so it is today in the
+    # USER's zone -- not ``date.today()``, which is the server's UTC day
+    # and files an 8pm-Eastern true-up under tomorrow.  It is the same day
+    # ``cash_anchor_facts`` derived from ``created_at`` before the column
+    # existed, so this write moves no figure.  Plan step X-f1c4c's form field
+    # is what makes it user-supplied, exactly as
+    # ``account_service.create_account`` already takes it for an opening; the
+    # parameter arrives with that consumer, not before it.
+    observed_on = display_today()
+    governing = cash_ledger.governing_anchor_on(account.id, observed_on)
+    if governing is not None and (
+        (governing.observed_on, governing.balance) == (observed_on, new_balance)
+    ):
+        return False
+
     db.session.add(AccountAnchorHistory(
         account_id=account.id,
         anchor_balance=new_balance,
-        # The civil day this balance is asserted TRUE for (ruling R-DH).  A
-        # true-up is the user reading their bank NOW, so it is today in the
-        # USER's zone -- not ``date.today()``, which is the server's UTC day
-        # and files an 8pm-Eastern true-up under tomorrow.  It is the same day
-        # ``cash_anchor_facts`` derived from ``created_at`` before the column
-        # existed, so this write moves no figure.  Plan step 2's remaining half
-        # (the true-up form's own date field) is what makes it user-supplied,
-        # exactly as ``account_service.create_account`` already takes it for an
-        # opening; the parameter arrives with that consumer, not before it.
-        observed_on=display_today(),
+        observed_on=observed_on,
         notes=notes,
     ))
+    return True
 
 
 def apply_anchor_true_up(
@@ -313,6 +371,14 @@ def apply_anchor_true_up(
     The waiting transaction re-reads under READ COMMITTED -- verified as the
     default on dev, test and production, with no override anywhere -- so it
     sees the winner's postings and reconciles to the true merged target.
+    **Since plan step X-f1c4b the SAME lock is taken one layer up**, in
+    :func:`stage_anchor_true_up`, because ruling R-EQ's compare-then-append is
+    itself a read-modify-write.  It is re-entrant and transaction-scoped, so
+    taking it twice costs nothing.  On THIS path it is also the transaction's
+    first lock -- the route does only reads before calling (measured, statement
+    by statement, by a neutral concurrency review) -- but that is a property of
+    the route, not of the lock, and finding **N-193** stays open for the settle
+    paths regardless.
 
     **It touches no entry, and that is ruling R-DH (d).**  It used to bulk-flip
     ``is_cleared`` on every entry dated on or before the server's today, which
@@ -322,15 +388,16 @@ def apply_anchor_true_up(
     day.  Which outstanding purchases the statement actually showed is a
     separate step the route offers AFTER this commit succeeds
     (``entry_service.record_settled_days``) -- and it is deliberately not
-    folded in here, because the F-103 duplicate below is swallowed as
-    idempotent success after a ``rollback()``, so a reconciliation riding in
-    this transaction would be silently discarded while the UI reported a save.
+    folded in here, because an UNCHANGED submission rolls this transaction
+    back, so a reconciliation riding in it would be silently discarded while
+    the UI reported a save.
 
-    The posting re-sync stays inside the same ``try`` as ``commit()``: its
-    first query forces a session autoflush of the pending history row, so the
-    F-103 unique violation can surface there rather than at ``commit()``, and
-    catching only around the commit would let it propagate as a 500 instead of
-    the idempotent ``DUPLICATE_SAME_DAY`` outcome.
+    **The ``try`` / ``except IntegrityError`` around the re-sync left with the
+    index** (ruling R-EQ, plan step X-f1c4b).  It existed to catch the F-103
+    unique violation that the re-sync's autoflush surfaced and translate it into
+    an outcome; with the decision made BEFORE anything is staged, an
+    ``IntegrityError`` here is an unexpected constraint failure and its correct
+    disposition is the 500 it now gets.
 
     Args:
         account: An attached :class:`Account` row.  Caller is
@@ -342,6 +409,9 @@ def apply_anchor_true_up(
 
     Returns:
         AnchorTrueUpOutcome -- which response the route should render.
+        ``UNCHANGED`` when the submission matched the governing assertion, in
+        which case this function has rolled the session back and written
+        nothing.
 
     Raises:
         AmortizingAccountAnchorError: When ``account`` is an amortizing
@@ -350,11 +420,12 @@ def apply_anchor_true_up(
             :func:`apply_loan_anchor_true_up`; the cash column must not
             become a second stored loan balance (B-15 / ruling D4).
             Raised BEFORE anything is staged, so the session is clean.
-        IntegrityError: When the IntegrityError raised at commit time
-            is NOT the F-103 unique-index violation -- a different
-            constraint failed and we must not swallow it.  Caller
-            propagates (Flask will surface as 500, which is the
-            correct disposition for an unexpected DB-level failure).
+        IntegrityError: When the posting re-sync or the commit trips a
+            constraint.  No longer caught here -- ruling R-EQ made the only
+            reachable one (the deleted unique index) impossible -- so it
+            propagates as the 500 an unexpected DB-level failure deserves.
+            Flask's teardown removes the session, which rolls the transaction
+            back and releases the advisory lock.
     """
     acct_type = account.account_type
     if acct_type is not None and acct_type.has_amortization:
@@ -364,36 +435,92 @@ def apply_anchor_true_up(
             "cash anchor"
         )
 
-    stage_anchor_true_up(account=account, new_balance=new_balance)
-
-    try:
-        # Build-Order Step 5: the new assertion re-bases the account's
-        # anchor corrections in EVERY scenario (anchor history is
-        # per-account) -- the fresh history row autoflushes into the walk's
-        # first query, so the reconcile books the true-up delta in the same
-        # transaction.  Inside this ``try`` so the F-103 duplicate surfacing
-        # at its flushes translates into the outcome enum.  An amortizing loan
-        # is a structural no-op (loans true-up through
-        # :func:`apply_loan_anchor_true_up`).
-        account_posting_service.sync_account_anchor_postings_all_scenarios(
-            account.id,
-        )
-        db.session.commit()
-    except IntegrityError as exc:
+    if not stage_anchor_true_up(account=account, new_balance=new_balance):
+        # Ruling R-EQ: the submission IS the governing assertion, so there is
+        # nothing to append and nothing for the reconcile to move.  Roll back
+        # rather than returning on an open transaction -- the stager took the
+        # owner's write lock to make its read safe, and only a commit or a
+        # rollback releases it.
+        # Read the id BEFORE the rollback: afterwards the instance is expired
+        # and touching an attribute opens a fresh transaction purely to recover
+        # a value already in hand.
+        account_id = account.id
         db.session.rollback()
-        if not is_unique_violation(exc, ANCHOR_HISTORY_UNIQUE_INDEX):
-            # Some other constraint failed -- do not silently treat as
-            # idempotent success; re-raise so the unexpected DB-level
-            # failure surfaces (Flask returns 500).
-            raise
         logger.info(
-            "Duplicate same-day anchor history prevented for account %d "
-            "(idempotent success)",
-            account.id,
+            "Anchor true-up for account %d asserts the balance that already "
+            "stands; nothing written (idempotent success)",
+            account_id,
         )
-        return AnchorTrueUpOutcome.DUPLICATE_SAME_DAY
+        return AnchorTrueUpOutcome.UNCHANGED
 
+    # Build-Order Step 5: the new assertion re-bases the account's
+    # anchor corrections in EVERY scenario (anchor history is
+    # per-account) -- the fresh history row autoflushes into the walk's
+    # first query, so the reconcile books the true-up delta in the same
+    # transaction.  An amortizing loan is a structural no-op (loans true-up
+    # through :func:`apply_loan_anchor_true_up`).
+    account_posting_service.sync_account_anchor_postings_all_scenarios(
+        account.id,
+    )
+    db.session.commit()
     return AnchorTrueUpOutcome.COMMITTED
+
+
+def _governing_loan_anchor(
+    account_id: int, source_id: int, anchor_date: date,
+) -> LoanAnchorEvent | None:
+    """Return the event of ``source_id`` governing ``anchor_date``.
+
+    The loan twin of :func:`app.services.cash_ledger.governing_anchor_on`, and
+    the WRITER's question rather than a reader's (ruling **R-EQ**, plan step
+    X-f1c4b): of the rows this door could have written for this date, which one
+    stands.
+
+    **The ``anchor_date <=`` bound is the whole point and was missing from the
+    first version of this step.**  Ordering by date alone answers "the latest
+    event of this source", so a submission for an EARLIER date could never
+    compare equal and every double-click on a back-dated correction appended a
+    duplicate -- reproduced twice, independently, against this door, which is
+    the one that has had a user-supplied date field since Commit 16.  A
+    submission for date D can only change what is true at or after D.
+
+    **It is not a second copy of the resolver's latest-anchor rule.**  The
+    resolver answers over :func:`app.services.loan_loaders.load_loan_anchor_facts`
+    -- every source PLUS the synthesized origination, which has no stored row and
+    can never be the thing a submission duplicates.  Sharing a query between the
+    two would mean filtering the reader's synthesized fact back out, which is
+    more coupling than the four lines it would save.  Its ordering is deliberately
+    STRICTER than the resolver's, which breaks a ``(anchor_date, created_at)``
+    tie by first-maximal-wins with no ``id`` term (finding **N-196**); this door
+    must name one row deterministically.
+
+    Args:
+        account_id: The loan account whose anchors to search.
+        source_id: The ``ref.loan_anchor_sources`` id to scope to (see
+            :func:`_append_loan_anchor_and_sync` for why the scope is per
+            source).
+        anchor_date: The date the submission asserts for -- the comparison's
+            horizon.
+
+    Returns:
+        The governing :class:`LoanAnchorEvent`, or ``None`` when the account has
+        no stored anchor of that source at or before *anchor_date* -- in which
+        case the submission is necessarily new.
+    """
+    return (
+        db.session.query(LoanAnchorEvent)
+        .filter(
+            LoanAnchorEvent.account_id == account_id,
+            LoanAnchorEvent.source_id == source_id,
+            LoanAnchorEvent.anchor_date <= anchor_date,
+        )
+        .order_by(
+            LoanAnchorEvent.anchor_date.desc(),
+            LoanAnchorEvent.created_at.desc(),
+            LoanAnchorEvent.id.desc(),
+        )
+        .first()
+    )
 
 
 def _append_loan_anchor_and_sync(
@@ -414,14 +541,40 @@ def _append_loan_anchor_and_sync(
     Appends ONE row to the append-only :class:`LoanAnchorEvent` table, then
     re-syncs the loan's genesis postings in EVERY scenario (the anchor is
     per-account, not per-scenario) via
-    :func:`app.services.loan_posting_service.sync_all_scenarios_or_duplicate` --
+    :func:`app.services.loan_posting_service.sync_loan_postings_all_scenarios` --
     which re-runs the running-balance walk so payments re-split from the new
     anchor.  The just-added event becomes visible to that walk because the sync's
     first query autoflushes it (load-bearing -- must NOT run under
-    ``session.no_autoflush``).  A same-day partial-unique rejection
-    (``uq_loan_anchor_events_acct_date_bal_day``) surfaced by that flush is
-    translated into the idempotent ``DUPLICATE_SAME_DAY`` outcome; a non-anchor
-    ``IntegrityError`` propagates (the correct 500 disposition).
+    ``session.no_autoflush``).
+
+    **Whether there is anything to append is decided here, by ruling R-EQ**, and
+    the decision is the checking door's rule on this table: take the owner's
+    write lock, read the event that currently GOVERNS, append only when the
+    submission differs.  It replaced
+    ``loan_posting_service.sync_all_scenarios_or_duplicate`` on this path (that
+    helper survives for the ARM rate change, whose table is EDITABLE and whose
+    unique key is therefore a real business rule rather than an idempotency
+    guess) and with it the partial expression index
+    ``uq_loan_anchor_events_acct_date_bal_day``.
+
+    **"Governing" is scoped per SOURCE here and not on the checking side, and
+    that difference is the tables', not a drift.**  A ``tracking_start`` and a
+    ``user_trueup`` are DISTINCT FACTS even at the same date and balance:
+    :func:`app.services.loan_loaders.load_loan_anchor_facts` loads both as
+    assertions differing only in ``is_tracking_start``, and
+    ``loan_posting_service.loan_balance_anchor_history`` renders that label on
+    the loan dashboard's drift card.  A cross-source comparison would answer
+    UNCHANGED to a ``tracking_start`` because a same-valued ``user_trueup``
+    stands, silently dropping the label the user asked to record.
+    ``AccountAnchorHistory`` carries one kind of fact and needs no such split.
+
+    *An earlier version of this paragraph justified the split by claiming a
+    ``tracking_start`` is privileged as the loan's OPENING, citing
+    ``loan_loaders._opening_anchor_fact``.  That function was DELETED in the
+    loan arc and the live loader states the opposite -- "Origination is the
+    opening ALWAYS", and a ``tracking_start`` "RESETS the running balance at its
+    own date like any true-up".  A neutral review caught it; the split is right
+    and the reason was not.*
 
     Args:
         account: An attached :class:`Account` row for the loan.  Caller owns the
@@ -435,30 +588,38 @@ def _append_loan_anchor_and_sync(
             ``USER_TRUEUP`` or ``TRACKING_START``.
 
     Returns:
-        ``COMMITTED`` when the event was written and committed;
-        ``DUPLICATE_SAME_DAY`` when the same-day partial unique rejected an
-        identical INSERT.
-
-    Raises:
-        IntegrityError: When the surfaced ``IntegrityError`` is NOT the
-            same-day-uniqueness violation (a different constraint failed).
+        ``COMMITTED`` when the event was written and committed; ``UNCHANGED``
+        when the submission matched the governing event of its own source, in
+        which case nothing was written and the session was rolled back.
     """
+    # Ruling R-EQ: the lock precedes the read the decision is made from, and on
+    # this path it is also the transaction's first lock (finding N-193's
+    # ordering invariant).  The all-scenario sync below takes the same
+    # re-entrant lock again, harmlessly.
+    lock_user_writes(account.user_id)
+    source_id = ref_cache.loan_anchor_source_id(source)
+    governing = _governing_loan_anchor(account.id, source_id, anchor_date)
+    if governing is not None and (
+        (governing.anchor_date, Decimal(str(governing.anchor_balance)))
+        == (anchor_date, anchor_balance)
+    ):
+        # See the cash door: the id is read before the rollback expires it.
+        account_id = account.id
+        db.session.rollback()
+        logger.info(
+            "Loan anchor (%s) for account %d on %s asserts the balance that "
+            "already stands; nothing written (idempotent success)",
+            source.value, account_id, anchor_date,
+        )
+        return AnchorTrueUpOutcome.UNCHANGED
+
     db.session.add(LoanAnchorEvent(
         account_id=account.id,
         anchor_date=anchor_date,
         anchor_balance=anchor_balance,
-        source_id=ref_cache.loan_anchor_source_id(source),
+        source_id=source_id,
     ))
-    if not loan_posting_service.sync_all_scenarios_or_duplicate(
-        account.id, LOAN_ANCHOR_EVENT_UNIQUE_INDEX,
-    ):
-        logger.info(
-            "Duplicate same-day loan anchor (%s) prevented for account %d "
-            "on %s (idempotent success)",
-            source.value, account.id, anchor_date,
-        )
-        return AnchorTrueUpOutcome.DUPLICATE_SAME_DAY
-
+    loan_posting_service.sync_loan_postings_all_scenarios(account.id)
     db.session.commit()
     return AnchorTrueUpOutcome.COMMITTED
 
@@ -506,14 +667,13 @@ def apply_loan_anchor_true_up(
     serialised now, by the per-owner lock the reconcile takes for itself
     (:mod:`app.services.user_write_lock`).
 
-    The ``DUPLICATE_SAME_DAY`` outcome mirrors the checking-anchor
-    semantics: when a second request submits the same
-    ``(account_id, anchor_date, anchor_balance)`` on the same UTC
-    calendar day, the partial unique expression index
-    ``uq_loan_anchor_events_acct_date_bal_day`` rejects the INSERT,
-    we roll back, and return DUPLICATE_SAME_DAY so the caller renders
-    idempotent success.  This handles network retries and
-    double-clicks on the Save button.
+    The ``UNCHANGED`` outcome mirrors the checking-anchor semantics: when a
+    request submits the ``(anchor_date, anchor_balance)`` the governing
+    ``user_trueup`` already asserts, nothing is written and the caller renders
+    idempotent success.  This handles network retries and double-clicks on the
+    Save button.  **It was a UTC-calendar-day unique index until plan step
+    X-f1c4b** (ruling R-EQ), which refused a re-assertion of a balance that had
+    since been superseded on the same recording day and reported it as saved.
 
     Args:
         account: An attached :class:`Account` row for the loan.
@@ -536,20 +696,11 @@ def apply_loan_anchor_true_up(
 
     Returns:
         AnchorTrueUpOutcome -- ``COMMITTED`` when a new event row was
-        written and the commit succeeded; ``DUPLICATE_SAME_DAY`` when
-        the loan partial unique index rejected an identical
-        same-day INSERT.  Those are the only two members the enum has
-        carried since ruling R-EN deleted ``STALE_CONFLICT`` (plan step
-        X-f1c3c), so the two anchor paths now return the same pair.
-
-    Raises:
-        IntegrityError: When the IntegrityError surfaced while re-splitting
-            and flushing the true-up (via
-            :func:`app.services.loan_posting_service.sync_all_scenarios_or_duplicate`)
-            is NOT the same-day-uniqueness violation -- a different
-            constraint failed and we must not swallow it.  Caller
-            propagates (Flask will surface as 500, which is the
-            correct disposition for an unexpected DB-level failure).
+        written and the commit succeeded; ``UNCHANGED`` when the submission
+        asserts what the governing ``user_trueup`` already asserts.  Those are
+        the only two members the enum has carried since ruling R-EN deleted
+        ``STALE_CONFLICT`` (plan step X-f1c3c), so the two anchor paths return
+        the same pair.
     """
     return _append_loan_anchor_and_sync(
         account=account,
@@ -579,9 +730,10 @@ def record_loan_tracking_start(
     :class:`LoanParams` are untouched; they still drive the amortization
     schedule / projection.
 
-    Shares the append + all-scenario re-sync + same-day idempotency of
+    Shares the append + all-scenario re-sync + duplicate rule of
     :func:`apply_loan_anchor_true_up` via :func:`_append_loan_anchor_and_sync`;
-    the only difference is the anchor source.  Like a true-up it never mutates
+    the only difference is the anchor source, which is also the scope the
+    duplicate rule compares within.  Like a true-up it never mutates
     :class:`LoanParams`.
 
     Args:
@@ -596,12 +748,11 @@ def record_loan_tracking_start(
             recorded payment so no payment is left pre-opening.
 
     Returns:
-        ``COMMITTED`` on a new committed event; ``DUPLICATE_SAME_DAY`` on a
-        same-day identical INSERT (idempotent success).
-
-    Raises:
-        IntegrityError: When a surfaced ``IntegrityError`` is NOT the
-            same-day-uniqueness violation (a different constraint failed).
+        ``COMMITTED`` on a new committed event; ``UNCHANGED`` when the
+        submission asserts what the governing ``tracking_start`` already asserts
+        (idempotent success).  The comparison is scoped to this source, so a
+        re-submitted opening is recognised even when true-ups have been recorded
+        after it -- see :func:`_append_loan_anchor_and_sync`.
     """
     return _append_loan_anchor_and_sync(
         account=account,

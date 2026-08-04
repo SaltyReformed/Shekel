@@ -257,6 +257,16 @@ _FENCED_MODULE_RULINGS = {
         # date), not a computed projection.  Consumers read it for the "as of"
         # caption; their balances come from the seam.
         "resolve_anchor",
+        # The same stored FACT, asked as of a civil day instead of as of now
+        # (ruling R-EQ, plan step X-f1c4b).  Same row, same tie-breaks, same
+        # query -- the horizon is the only difference, so it carries
+        # ``resolve_anchor``'s ruling verbatim.  It is emphatically NOT a
+        # balance-at-T: it answers which assertion the user had made by day D,
+        # never what the account held then, which is the seam's question and
+        # folds settled movements this function cannot see.  Its only callers
+        # are the two anchor WRITE doors, deciding whether a submission changes
+        # anything.
+        "governing_anchor_on",
         # The PLAN loader (plan step X-b), a non-producer on the same ground
         # as its settled twin ``settled_cash_facts`` below: it SELECTS rows and
         # returns them unchanged.  Its WINDOWED sibling

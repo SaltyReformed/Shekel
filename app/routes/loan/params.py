@@ -266,13 +266,13 @@ def true_up_balance(account_id):
       * COMMITTED: a new ``LoanAnchorEvent`` row is written and
         committed; the user is redirected back to the dashboard with
         a success flash.
-      * DUPLICATE_SAME_DAY: the partial unique expression index
-        ``uq_loan_anchor_events_acct_date_bal_day`` rejected the
-        INSERT (the user double-clicked or a network retry replayed
-        the same submission on the same UTC calendar day); the route
-        treats this as idempotent success -- the prior request
-        committed the same value this one was trying to submit -- and
-        redirects with an informational flash.
+      * UNCHANGED: the submission asserts the ``(date, balance)`` the
+        governing ``user_trueup`` already asserts (the user double-clicked
+        or a network retry replayed the submission), so nothing was
+        written; the route treats it as idempotent success and redirects
+        with an informational flash.  **It was a unique-index rejection
+        until ruling R-EQ** (plan step X-f1c4b), which could not tell that
+        retry from a deliberate re-assertion and refused both.
 
     The function does NOT mutate :class:`LoanParams.current_principal`.
     The column is non-authoritative seed (E-18 / Commit 15) and the
@@ -311,11 +311,11 @@ def true_up_balance(account_id):
         anchor_date=anchor_date,
     )
 
-    if outcome is AnchorTrueUpOutcome.DUPLICATE_SAME_DAY:
-        # F-103 idempotent success path: the prior request committed
-        # the same (date, balance) tuple this request was trying to
-        # submit.  No new row, but the on-display value is already
-        # correct; flash an informational message and redirect.
+    if outcome is AnchorTrueUpOutcome.UNCHANGED:
+        # Ruling R-EQ idempotent success path: the governing true-up already
+        # asserts this (date, balance).  No new row, and the on-display value
+        # is already what was submitted; flash an informational message and
+        # redirect.
         flash(
             "Loan balance already recorded for that date.",
             "info",
@@ -373,7 +373,12 @@ def record_tracking_start(account_id):
          route-level because the schema has no access to the loan.
 
     Outcomes mirror the true-up: COMMITTED (success flash + redirect) or
-    DUPLICATE_SAME_DAY (idempotent success on a same-day identical resubmit).
+    UNCHANGED (idempotent success when the governing ``tracking_start`` already
+    asserts this ``(date, balance)``).  The comparison is scoped to the
+    ``tracking_start`` source, so a re-submitted opening is recognised even
+    after true-ups have been recorded on later dates -- which a
+    latest-row-of-any-source rule would have missed, because an opening is by
+    definition the earliest anchor.
 
     A tracking-start is meant to be the FIRST anchor recorded (the opening).  A
     ``user_trueup`` dated earlier than the tracking-start is not rejected here;
@@ -424,7 +429,7 @@ def record_tracking_start(account_id):
         anchor_date=anchor_date,
     )
 
-    if outcome is AnchorTrueUpOutcome.DUPLICATE_SAME_DAY:
+    if outcome is AnchorTrueUpOutcome.UNCHANGED:
         flash(
             "Tracking-start balance already recorded for that date.",
             "info",

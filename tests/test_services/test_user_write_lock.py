@@ -38,11 +38,15 @@ from sqlalchemy.exc import OperationalError
 
 from app.extensions import db
 from app.models.ref import AccountType
+from app.models.account import Account
 from app.services import (
     account_posting_service,
     account_service,
+    anchor_service,
+    cash_ledger,
     loan_posting_service,
 )
+from app.utils.dates import display_today
 from app.services.user_write_lock import (
     _USER_WRITE_LOCK_NAMESPACE,
     lock_every_user_writes,
@@ -381,3 +385,133 @@ class TestTheKeyIsTheOwner:
                 f"expected two acquisitions of the one key; got {keys}"
             )
             db.session.rollback()
+
+
+class TestTheAnchorDoorsTakeTheLockBeforeTheyRead:
+    """Ruling R-EQ's compare-then-append is locked, on every anchor door.
+
+    **Every one of these was a surviving mutant.**  A neutral concurrency review
+    of plan step X-f1c4b applied four mutations to ``anchor_service`` -- delete
+    the cash lock, move it after the cash read, delete the loan lock, move it
+    after the loan read -- and the FULL 7,813-test suite passed under all four.
+    The rule the step exists for was entirely ungraded: `test_anchor_service.py`
+    contained no lock assertion at all, and this module's ordering class graded
+    only the reconciles, which the doors reach several statements later.
+
+    A compare-then-append is a read-modify-write.  Locking after the read
+    serialises nothing -- the loser re-reads the same pre-state it would have
+    read anyway and appends its duplicate -- so PRESENCE and ORDERING are graded
+    separately, exactly as :class:`TestTheReconcileTakesTheLockBeforeItReads`
+    does one layer down.
+    """
+
+    def test_cash_true_up_locks_before_reading_the_governing_assertion(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """``apply_anchor_true_up`` locks before it reads anchor history."""
+        assert seed_periods_today
+        with app.app_context():
+            account = _checking_account(seed_user)
+            db.session.commit()
+
+            _result, statements = capture_sql_statements(
+                lambda: anchor_service.apply_anchor_true_up(
+                    account=account, new_balance=Decimal("1750.00"),
+                ),
+            )
+
+            assert took_advisory_lock(statements), (
+                "the cash true-up emitted no advisory lock; two concurrent "
+                "submissions would both read the pre-state and both append"
+            )
+            assert any(
+                "account_anchor_history" in text for text, _params in statements
+            ), "the door read no anchor history -- the test graded nothing"
+            assert advisory_lock_precedes(statements, "account_anchor_history"), (
+                "the door read the governing assertion BEFORE taking the lock; "
+                "serialising after the read serialises nothing"
+            )
+
+    def test_loan_true_up_locks_before_reading_the_governing_event(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """``apply_loan_anchor_true_up`` locks before it reads anchor events."""
+        assert seed_periods_today
+        with app.app_context():
+            loan = create_loan_account(
+                seed_user, db.session, name="Anchor Door Probe Loan",
+                principal=Decimal("15000.00"), rate=Decimal("0.05000"),
+            )
+            db.session.commit()
+
+            _result, statements = capture_sql_statements(
+                lambda: anchor_service.apply_loan_anchor_true_up(
+                    account=loan,
+                    anchor_balance=Decimal("12345.67"),
+                    anchor_date=display_today(),
+                ),
+            )
+
+            assert took_advisory_lock(statements), (
+                "the loan true-up emitted no advisory lock; the loan reconcile "
+                "has carried this race since Commit 16"
+            )
+            assert any(
+                "loan_anchor_events" in text for text, _params in statements
+            ), "the door read no anchor events -- the test graded nothing"
+            assert advisory_lock_precedes(statements, "loan_anchor_events"), (
+                "the door read the governing event BEFORE taking the lock"
+            )
+
+    def test_account_edit_locks_before_it_touches_the_accounts_row(
+        self, app, auth_client, db, seed_user, seed_periods_today,
+    ):
+        """``update_account`` locks first on the branch that changes NO anchor.
+
+        **This is the one that failed before the fix, and it is a DEADLOCK
+        control rather than a race control.**  The anchor branch reaches the
+        advisory lock inside ``stage_anchor_true_up`` before the ``setattr``
+        loop's ``UPDATE budget.accounts`` flushes, while a type-only edit
+        flushes that UPDATE first and does not reach the lock until the posting
+        re-sync.  Two tabs, same account, one of each: PostgreSQL detects the
+        cycle and aborts one with an unhandled 500 on a money route -- which a
+        neutral review reproduced against a real database.
+
+        Graded through the ROUTE rather than the service because the hazard is
+        the route's statement ORDER, which is what a future refactor would
+        silently invert.
+        """
+        assert seed_periods_today
+        with app.app_context():
+            account = db.session.get(Account, seed_user["account"].id)
+            savings_type_id = db.session.query(AccountType).filter_by(
+                name="Savings",
+            ).one().id
+            unchanged_balance = cash_ledger.resolve_anchor(account).balance
+            form = {
+                "name": account.name,
+                "account_type_id": str(savings_type_id),
+                "anchor_balance": str(unchanged_balance),
+                "version_id": str(account.version_id),
+                "is_active": "true",
+            }
+
+        _response, statements = capture_sql_statements(
+            lambda: auth_client.post(
+                f"/accounts/{seed_user['account'].id}", data=form,
+            ),
+        )
+
+        assert took_advisory_lock(statements), (
+            "the account-edit route emitted no advisory lock on its "
+            "type-change branch"
+        )
+        assert any(
+            text.strip().upper().startswith("UPDATE BUDGET.ACCOUNTS")
+            for text, _params in statements
+        ), "the edit wrote no accounts row -- the test graded nothing"
+        assert advisory_lock_precedes(statements, "UPDATE budget.accounts"), (
+            "the route took the accounts ROW lock before the advisory lock on "
+            "this branch, while its anchor branch takes them the other way "
+            "round -- two tabs, one of each, deadlock"
+        )

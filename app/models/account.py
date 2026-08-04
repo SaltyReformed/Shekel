@@ -155,43 +155,37 @@ class AccountAnchorHistory(AccountScopedMixin, CreatedAtMixin, db.Model):
     period an assertion books in derives it from the day, which is ruling
     R-EA verbatim.
 
-    Same-day duplicate prevention (F-103 / C-22): the unique index
-    ``uq_anchor_history_account_period_balance_day`` on ``(account_id,
-    anchor_balance, observed_on)`` rejects a second row with identical values
-    asserting the same business day.  This
-    is the database-level backstop for ``true_up`` double-submits:
-    a network retry, a double-click on the Save button, or the
-    back-and-resubmit pattern would otherwise create two consecutive
-    history rows with the same anchor_balance, polluting the audit
-    trail with entries that record nothing the prior row did not
-    already record.
+    **This table has NO uniqueness constraint, and that is ruling R-EQ** (plan
+    step X-f1c4b).  It carried ``uq_anchor_history_account_period_balance_day``
+    on ``(account_id, anchor_balance, observed_on)`` as the database-level
+    backstop for ``true_up`` double-submits -- a network retry, a double-click,
+    a back-and-resubmit.  **A key over the row's own values cannot do that job**:
+    a transport retry and a deliberate re-assertion carry identical values by
+    construction, so the index had to mis-classify one of them, and it
+    mis-classified the correction.  Assert ``$500`` for a day, correct it to
+    ``$600``, then re-assert ``$500`` for that day and the index rejected the
+    third write while ``anchor_service`` reported it as saved and every surface
+    kept rendering ``$600``.  Measured on the developer's own data, account 1
+    carries 2-3 assertions on 3 of its 50 assertion days, so the shape is
+    ordinary rather than exotic.
 
-    **Its key lost ``pay_period_id`` with the column, and the guard got
-    STRICTLY TIGHTER rather than looser** (measured: 0 of the 78 production
-    rows are rejected by the narrower key).  The period was derived from the
-    day, so two rows sharing a day shared a period -- except across a schedule
-    rebuild, which is the one case the narrower key now also catches.  The
-    index NAME is deliberately unchanged: renaming it would touch
-    ``anchor_service.ANCHOR_HISTORY_UNIQUE_INDEX`` and every migration that
-    references it, for a word.
+    The rule lives at the write door instead (:func:`stage_anchor_true_up`),
+    where the question can be answered exactly: an assertion is refused only
+    when it matches the assertion that currently GOVERNS.  What that costs and
+    what it buys is stated in ``anchor_service``'s module docstring; what it
+    costs THIS table is nothing, because a surplus row would be financially
+    inert (a zero-delta anchor correction emits no legs, and two assertions of
+    one balance replay to one balance).
 
-    The index intentionally includes ``anchor_balance`` so two
-    legitimate true-ups on the same day -- the user noticed an
-    arithmetic error and corrected the balance twice -- are still
-    allowed; only literal duplicate rows (same balance, same
-    day, same account) are rejected.
+    The key's own history, kept because it explains two other comments: it lost
+    ``pay_period_id`` with the column at ruling R-EO, and its last term was
+    ``((created_at AT TIME ZONE 'UTC')::date)`` until ``observed_on`` existed
+    (finding N-133 / F12), which keyed a USER's day to a UTC one.  Each move was
+    an attempt to make a content key mean what the door meant.
 
-    **Its last column was ``((created_at AT TIME ZONE 'UTC')::date)`` until
-    ``observed_on`` existed** (finding N-133 / F12).  That keyed the guard to a
-    UTC day while the ruling's day is the user's, so two assertions of one
-    balance on two different Eastern days that happened to share a UTC day
-    (23:00 EDT one evening, 01:00 EDT the next) were rejected as a same-day
-    duplicate.  Keying on the stored business date fixes that and still catches
-    every double-submit, because a double-click asserts one ``observed_on``.
-    It also retires the functional-index machinery: the ``AT TIME ZONE`` pin
-    existed only because PostgreSQL refuses a bare ``::date`` cast in an index
-    (it depends on the session TimeZone and is therefore not IMMUTABLE), and a
-    plain ``DATE`` column needs no pin at all.
+    ``idx_anchor_history_account`` survives and is not a uniqueness guard: it
+    serves the per-account lookups (:func:`app.services.cash_ledger.resolve_anchor`
+    and :func:`~app.services.cash_ledger.cash_anchor_facts`).
     """
 
     __tablename__ = "account_anchor_history"
@@ -200,11 +194,6 @@ class AccountAnchorHistory(AccountScopedMixin, CreatedAtMixin, db.Model):
             "idx_anchor_history_account",
             "account_id",
             "created_at",
-        ),
-        db.Index(
-            "uq_anchor_history_account_period_balance_day",
-            "account_id", "anchor_balance", "observed_on",
-            unique=True,
         ),
         {"schema": "budget"},
     )

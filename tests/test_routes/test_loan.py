@@ -7471,17 +7471,17 @@ class TestLoanBalanceTrueUp:
         )
         assert after == before
 
-    def test_trueup_duplicate_same_day_idempotent(
+    def test_trueup_resubmit_is_idempotent(
         self, auth_client, seed_user, db, seed_periods,
     ):
         """Submitting the same (date, balance) twice is idempotent.
 
-        The partial unique expression index
-        ``uq_loan_anchor_events_acct_date_bal_day`` rejects the second
-        identical insert; :func:`apply_loan_anchor_true_up` translates
-        that into ``DUPLICATE_SAME_DAY`` and the route flashes an
-        informational message.  Exactly one new event row exists at
-        the (date, balance) tuple after both calls.
+        The second submit asserts what the first made governing, so
+        :func:`apply_loan_anchor_true_up` writes nothing, returns
+        ``UNCHANGED``, and the route flashes an informational message.
+        Exactly one new event row exists at the (date, balance) tuple after
+        both calls.  **It was a unique-index rejection until plan step
+        X-f1c4b** (ruling R-EQ); the route behaviour is unchanged.
         """
         from app.models.loan_anchor_event import LoanAnchorEvent as _LAE  # pylint: disable=import-outside-toplevel
         acct = _create_auto_loan(seed_user, db.session)
@@ -7515,8 +7515,8 @@ class TestLoanBalanceTrueUp:
             .all()
         )
         assert len(matching) == 1, (
-            "Same-day same-balance double-submit must produce exactly "
-            "one row (uq_loan_anchor_events_acct_date_bal_day)."
+            "A resubmit of the governing (date, balance) must write nothing, "
+            "so exactly one row survives."
         )
 
 
