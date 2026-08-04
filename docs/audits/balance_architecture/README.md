@@ -408,10 +408,10 @@ index 60 on the clone's calendar), unreachable on today's data and owned by X-ak
 > | fact | value |
 > |---|---|
 > | branch | `feat/xf1-settle-day` |
-> | local HEAD | `44986f88` |
-> | `origin/feat/xf1-settle-day` | `e7f782d6` -- **4 commits BEHIND local; nothing since `e7f782d6` is pushed** |
+> | local HEAD | `4b0af18b` |
+> | `origin/feat/xf1-settle-day` | `e7f782d6` -- **5 commits BEHIND local; nothing since `e7f782d6` is pushed** |
 > | PR | none |
-> | working tree | ~95 changed files incl. the UNTRACKED migration `c81f0a5b3e27` |
+> | working tree | CLEAN -- 99 files landed in `4b0af18b`, migration `c81f0a5b3e27` included |
 > | production | `d7c1f4a9e603` -- **none of this cluster is deployed** |
 >
 > | commit | step | suite at that commit |
@@ -420,8 +420,11 @@ index 60 on the clone's calendar), unreachable on today's data and owned by X-ak
 > | `c16bdb3b` | **X-f1c3a** the asserted balance has one resolver | 7,815 passed |
 > | `379ed1af` | **X-f1c3b** an assertion is a day and a balance | 7,813 passed, both clocks |
 > | `44986f88` | the previous session's cold-resume record | docs only |
+| `4b0af18b` | **X-f1c3c** the anchor balance has one home, and the reconcile has a lock | 7,811 passed, both clocks |
 >
-> **X-f1c3c IS BUILT AND UNCOMMITTED.**  It drops both `accounts.current_anchor_*` columns and,
+> **X-f1c3c IS COMMITTED at `4b0af18b`** (2026-08-04, after the three reviews below).  Local HEAD is
+> `4b0af18b`; `origin` is still `e7f782d6`, so the branch is now **5 commits ahead and nothing is
+> pushed**.  What the commit contains:  It drops both `accounts.current_anchor_*` columns and,
 > because they existed only for those columns, `ck_accounts_anchor_balance_present`, the deferrable
 > `NO ACTION` FK, `_DEFER_ANCHOR_FK_SQL`, `_reanchor_accounts`,
 > `PeriodLockReason.ACCOUNT_ANCHOR` (+ its query and its settings chip),
