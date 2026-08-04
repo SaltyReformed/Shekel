@@ -379,6 +379,13 @@ class TestSyncSettlePostsBalancedEntry:
             assert legs[savings_ledger] == Decimal("97.50")
 
 
+#: A settle day in the PAST of this suite's frozen today (2026-03-20, set by
+#: ``tests/test_services/conftest.py``), and inside the seeded period range.
+#: Ruling **R-EJ** refuses a settle dated ahead of the clock, so a fixture that
+#: means "this money moved" has to name a day that has happened.
+_A_RECORDED_SETTLE_DAY = date(2026, 3, 9)
+
+
 class TestSyncSettleEntryDate:
     """``entry_date`` is the shadow's recorded settle DAY."""
 
@@ -401,18 +408,24 @@ class TestSyncSettleEntryDate:
         rule now lives at the write door and is pinned there
         (``test_status_seam.py``); what this case still owns is that the writer
         reads the recorded day rather than re-deriving one.
+
+        The day is a PAST one relative to this suite's frozen today, and since
+        ruling **R-EJ** it has to be: a settled row asserts that money has
+        already moved, so the write door refuses a settle dated ahead of the
+        clock.  It was ``2026-05-09`` against a today of ``2026-03-20`` -- two
+        months in its own future, which nothing had ever refused.
         """
         with app.app_context():
             transfer = create_settled_transfer(
                 seed_user, _db.session, seed_user["account"], savings,
                 seed_user["bootstrap_period"], amount=Decimal("100.00"),
-                settled_on=date(2026, 5, 9),
+                settled_on=_A_RECORDED_SETTLE_DAY,
             )
             _db.session.commit()
             # Commit-5 wiring: the settle auto-posted; read the entry back.
             entry = _entries_for_transfer(transfer.id)[0]
-            # The user's civil date 2026-05-09, NOT the UTC 2026-05-10.
-            assert entry.entry_date == date(2026, 5, 9)
+            # The recorded day, verbatim -- no conversion, no fallback.
+            assert entry.entry_date == _A_RECORDED_SETTLE_DAY
 
     def test_a_settled_transfer_cannot_be_left_without_a_day(
         self, app, db, seed_user, savings,

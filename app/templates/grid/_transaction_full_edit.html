@@ -219,6 +219,48 @@
                {{ 'disabled' if locked else '' }}>
       </div>
 
+      {# Settled on -- the civil day the money actually moved (ruling R-ED).
+         Rendered ONLY for a row that is currently settled, because that is
+         exactly when the fact exists: a Projected row's money has not moved,
+         so there is no day to state.  Deliberately NOT disabled on a finalised
+         row, unlike the money / period / due-date fields above: those are
+         BUDGET DECISIONS the lock protects from being rewritten, and this is
+         an OBSERVED FACT about the bank, which gets corrected when the
+         statement disagrees (``_helpers._LOCKED_EDIT_FIELDS`` carries the
+         rule).
+
+         Changing it MOVES MONEY on the grid -- since plan step E1a this day is
+         the ``entry_date`` the row's ledger postings are filed under, and the
+         route reconciles them to the new day in the same request.
+
+         An empty submit means "leave the day alone", not "clear it": the
+         schema field is not ``allow_none``, so ``strip_empty_strings`` DROPS
+         an empty value.  A settled row always carries a day; the way to remove
+         one is to set Status to Projected, which clears it at the seam -- and
+         the ``title`` says so, because a comment here is read by nobody who
+         needs it.
+
+         ``max`` is TODAY (ruling R-EJ): a settled row's money has already
+         moved, so the day cannot be one that has not happened.  The browser
+         refuses first and ``status_seam.reject_future_settle_day`` is the
+         backstop, the same layering accounts/form.html uses for an anchor's
+         observed_on.  There is deliberately no ``min`` -- a settle legitimately
+         falls before its own pay period (11 of 156 settled rows on the
+         2026-08-03 production clone do). #}
+      {% if txn.status and txn.status.is_settled %}
+      <div class="mb-2">
+        <label class="form-label mb-0 small" for="settled-on-{{ txn.id }}">
+          Money moved on
+        </label>
+        <input type="date" name="settled_on" id="settled-on-{{ txn.id }}"
+               value="{{ txn.settled_on.isoformat() if txn.settled_on is not none else '' }}"
+               min="{{ settle_day_min.isoformat() }}"
+               max="{{ today.isoformat() }}"
+               class="form-control form-control-sm"
+               title="The day your bank actually took (or paid) this. Correct it if your statement shows a different day. Clearing it does nothing. Setting Status to Projected says the money did not move, and discards any day typed here.">
+      </div>
+      {% endif %}
+
       {# Ad-hoc tracking / visibility flags.  Only ad-hoc rows
          (template_id IS NULL) carry their own flags; template-generated
          rows inherit them from the template, so the controls are hidden

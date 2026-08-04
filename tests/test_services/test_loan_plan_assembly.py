@@ -34,8 +34,17 @@ from tests._test_helpers import (
     add_escrow_line,
     create_loan_account,
     create_settled_transfer,
+    freeze_today,
     loan_income_shadow,
 )
+
+#: The read instant for the early-settled-payment case ONLY -- deliberately
+#: later than the module-wide :data:`_AS_OF` below, because that case is about a
+#: payment settled 2026-05-20 and read before its 2026-06-01 installment falls
+#: due.  The test freezes TODAY to this as well as reading at it: the settle must
+#: be in the past for the write door to accept it (ruling R-EJ), and the two must
+#: agree or the fixture's calendar contradicts itself.
+_EARLY_SETTLE_AS_OF = date(2026, 5, 25)
 
 # A short amortizing loan so the whole contractual schedule is enumerable:
 # $12,000 at 6% over 6 months, originated 2026-01-01, due on the 1st.
@@ -255,7 +264,7 @@ def test_a_planned_record_keys_its_rate_and_escrow_on_the_due_date(
 
 
 def test_an_early_settled_payment_is_not_re_synthesized_as_estimated(
-    seed_user, db, seed_periods,
+    seed_user, db, monkeypatch, seed_periods,
 ):
     """A payment settled by as_of but due after it is in the SEED, not the plan.
 
@@ -265,7 +274,16 @@ def test_an_early_settled_payment_is_not_re_synthesized_as_estimated(
     as_of`` -- so without a settled-slot exclusion the ESTIMATED tier would
     synthesize it and :func:`fold_forward` would subtract its principal a SECOND
     time.  It must be absent from the plan.
+
+    **Today is moved to the read instant**, overriding this suite's module
+    freeze at 2026-03-20 (which its conftest invites a test to do).  The whole
+    premise is a payment that HAS settled (2026-05-20), read a few days later;
+    under the module clock that settle sits two months in its own future, which
+    ruling R-EJ refuses at the write door because a settled row asserts that
+    money has already moved.  The fixture's calendar has to contain its own
+    today.
     """
+    freeze_today(monkeypatch, _EARLY_SETTLE_AS_OF)
     account = create_loan_account(
         seed_user, db.session,
         principal=_PRINCIPAL, rate=_RATE, term=_TERM,
@@ -282,7 +300,7 @@ def test_an_early_settled_payment_is_not_re_synthesized_as_estimated(
     db.session.commit()
 
     # Read after the settlement but before the installment's due date.
-    ctx = BalanceContext.build(seed_user["user"].id, date(2026, 5, 25))
+    ctx = BalanceContext.build(seed_user["user"].id, _EARLY_SETTLE_AS_OF)
     plan = loan_plan(account, ctx)
 
     dues = [payment.due_date for payment in plan]

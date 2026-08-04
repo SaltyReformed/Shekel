@@ -124,13 +124,12 @@ def earliest_observable_day(user_id: int) -> date:
     service would refuse below -- ONE definition of the bound, rather than a
     template literal that drifts from the validation behind it.
 
-    It is ``min(the user's earliest pay period start, today)``.  Taking the
-    EARLIER of the two is what keeps the bound from refusing a legitimate
-    account: a user whose periods are all still in the future must be able to
-    assert what they hold right now, while nobody may back-date an assertion
-    into a past the app has no schedule for (finding N-133, the review of the
-    F1 revert -- an unbounded day opens the modelled-accrual window on it and
-    fabricates contribution history back to it).
+    **The rule itself moved to**
+    :func:`app.services.pay_period_service.earliest_recordable_day` at plan
+    step X-f1c (ruling **R-EL**), because the settle-day write door needs the
+    same bound and ``status_seam`` must stay below the services that call it.
+    This stays as the account-facing name its callers already use; the
+    behaviour is unchanged and there is one implementation.
 
     Args:
         user_id: The account owner whose schedule sets the floor.
@@ -140,15 +139,7 @@ def earliest_observable_day(user_id: int) -> date:
         periods at all -- the account create itself then fails on the missing
         schedule, which is a clearer error than a date bound.
     """
-    today = display_today()
-    earliest = (
-        db.session.query(db.func.min(PayPeriod.start_date))
-        .filter(PayPeriod.user_id == user_id)
-        .scalar()
-    )
-    if earliest is None:
-        return today
-    return min(earliest, today)
+    return pay_period_service.earliest_recordable_day(user_id)
 
 
 def _reject_undatable_observation(user_id: int, observed_on: date) -> None:

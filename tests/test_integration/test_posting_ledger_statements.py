@@ -78,11 +78,14 @@ from app.services import (
     posting_service,
 )
 from app.services.ledger_report_service import StatementWindow
+import pytest
+
 from tests._test_helpers import (
     create_account_of_type,
     create_loan_with_trueup,
     create_settled_cash_transaction,
     create_settled_transfer,
+    freeze_today,
     linked_ledger_account,
     observed_day_of,
 )
@@ -93,12 +96,57 @@ from tests._test_helpers import (
 # regardless of when CI runs (account openings carry the server-now civil date).
 _ALL_ACTIVITY = date.max
 
-# The clean far-future year every hand-computed calendar fixture pins its
-# settles into: comfortably after the accounts' server-now origination
-# (~today), so a pinned settle rides ON TOP of the opening rather than being
-# absorbed, and far from any real clock so a "year" window sees only what the
-# fixture put there.
+# The clean year every hand-computed calendar fixture pins its settles into:
+# far from any real activity so a "year" window sees only what the fixture put
+# there, and after the accounts' origination so a pinned settle rides ON TOP of
+# the opening rather than being absorbed into it.
+#
+# **The module FREEZES today into it** (:func:`_today_inside_the_fixture_year`
+# below), and that pairing is load-bearing since ruling **R-EJ**.  The year was
+# chosen as "far FUTURE" precisely so it would sit after an origination stamped
+# with the server clock -- but a settle dated after today is exactly what R-EJ
+# refuses, because a settled row asserts that money HAS moved.  The fixture's
+# premise was only ever expressible while that guard was missing: an account
+# opened TODAY closes its opening balance on today, so nothing settled today
+# can ride on top of it, and reaching for tomorrow was the workaround.
+#
+# Freezing today INTO the year fixes it at the root: the accounts originate on
+# 2099-01-01, the settles land in March and April of the same year, and the
+# ordering the fixtures actually depend on holds without any date being in its
+# own future.  Every hand-computed figure and every ``"2099"`` window label is
+# unchanged.
 _Y = 2099
+
+#: The day every account these fixtures create is OPENED on -- the first of
+#: :data:`_Y`, so an opening precedes every settle the fixtures pin and a
+#: settle therefore rides ON TOP of it rather than being absorbed.  Passed to
+#: the account factory explicitly, never re-stamped afterwards: the factory
+#: posts the opening's anchor correction keyed on this day.
+_FIXTURE_OPENING = date(_Y, 1, 1)
+
+#: The day this module's clock is frozen to -- the LAST of :data:`_Y`, so every
+#: settle the fixtures pin is in the past, which is what ruling R-EJ requires
+#: of a settled row and what production always looks like.
+_FIXTURE_TODAY = date(_Y, 12, 31)
+
+
+@pytest.fixture(autouse=True)
+def _today_after_the_fixture_year(monkeypatch):
+    """Freeze today to :data:`_FIXTURE_TODAY` for every test in this module.
+
+    A fixture's calendar must contain its own today, and this one has three
+    instants that must stay in order: the opening, the settles, and now.  These
+    suites pin settles into :data:`_Y` and open accounts explicitly at
+    :data:`_FIXTURE_OPENING`, so freezing now at the end of the same year puts
+    all three in the production order -- an account existed, then money moved,
+    and today is after both.
+
+    Without it the clock sits in the real present while the calendar sits in
+    2099, which is the fixture-clock defect class findings N-131, N-132 and R8
+    were all instances of, and which ruling R-EJ's write-door guard turns from
+    silent into loud.
+    """
+    freeze_today(monkeypatch, _FIXTURE_TODAY)
 
 
 def _noon(year: int, month: int, day: int) -> datetime:
@@ -480,10 +528,12 @@ class TestRichFixtureStatements:
             card = create_account_of_type(
                 seed_user, db.session, "Credit Card", "Rewards Card",
                 anchor_balance=Decimal("-500.00"),
+                observed_on=_FIXTURE_OPENING,
             )
             savings = create_account_of_type(
                 seed_user, db.session, "Savings", "Rainy Day",
                 anchor_balance=Decimal("200.00"),
+                observed_on=_FIXTURE_OPENING,
             )
             db.session.commit()
 
@@ -738,6 +788,7 @@ class TestAccountingIdentityAtMultipleAsOf:
             savings = create_account_of_type(
                 seed_user, db.session, "Savings", "Ladder Savings",
                 anchor_balance=Decimal("500.00"),
+                observed_on=_FIXTURE_OPENING,
             )
             db.session.commit()
 

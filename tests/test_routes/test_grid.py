@@ -36,6 +36,7 @@ from tests._test_helpers import (
     field_is_disabled,
     freeze_today,
     mark_purchase_settled,
+    net_posted_by_day,
     posted_loan_balance_at,
     settle_instant_on,
 )
@@ -5590,6 +5591,410 @@ class TestSettleDayLifecycle:
                 f"{days_before} -> {_ledger_days()} (finding N-146)."
             )
 
+    def _ledger_days_for(self, txn_id):
+        """Return the ``entry_date`` of every journal entry linked to *txn_id*.
+
+        The LEDGER half of every settle-day assertion below.  Ruling **R-ED**
+        names it as this half's gate in terms: the test must assert that the
+        ledger FOLLOWED, not merely that the column changed -- since plan step
+        E1a the settle day IS the ``entry_date`` a row's postings are filed
+        under, so a column that moves without the ledger is the books silently
+        disagreeing with the screen.
+        """
+        from app.models.journal_entry import JournalEntry
+
+        return sorted(
+            entry.entry_date
+            for entry in db.session.query(JournalEntry)
+            .filter(JournalEntry.transaction_id == txn_id)
+            .all()
+        )
+
+    def _settled_txn_dated(self, seed_user, seed_periods_today, day):
+        """Return a settled transaction whose money moved on *day*, ledger in step.
+
+        Built THROUGH the seam and reconciled, so the fixture's own postings
+        carry *day* -- a row dated by a bare attribute write would leave the
+        ledger at today and let a "the ledger followed" assertion pass on a
+        stale comparison rather than on the edit under test.
+        """
+        from app import ref_cache
+        from app.enums import StatusEnum
+        from app.services import status_seam
+
+        txn = self._create_test_txn(seed_user, seed_periods_today)
+        status_seam.apply_status_change(
+            txn, ref_cache.status_id(StatusEnum.DONE), settled_on=day,
+        )
+        posting_service.sync_transaction_postings(txn, settled=True)
+        db.session.commit()
+        assert txn.settled_on == day
+        assert self._ledger_days_for(txn.id) == [day], (
+            "fixture did not post its entry at the settle day"
+        )
+        return txn
+
+    def test_editing_the_settle_day_moves_the_ledger_with_it(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """PATCH ``settled_on`` on a settled row re-dates its postings (R-ED).
+
+        The correction ruling **R-ED** exists for: the user read their
+        statement and the money moved on a different day than the one-click
+        settle recorded.  ``settled_on`` is in
+        ``mutations._POSTING_RELEVANT_FIELDS``, so the per-``(period,
+        entry_date)`` reconcile reverses the stale-dated entry at ITS own day
+        and re-posts the effect at the corrected one (finding **N-13**).
+
+        The assertion is on the LEDGER, which is R-ED's stated gate.  The
+        corrected day must be present and the original must be net-zero
+        (reversal + original), never simply absent -- the reversal is history,
+        not an erasure.
+        """
+        with app.app_context():
+            original_day = display_today() - timedelta(days=6)
+            corrected_day = display_today() - timedelta(days=2)
+            txn = self._settled_txn_dated(
+                seed_user, seed_periods_today, original_day,
+            )
+
+            response = auth_client.patch(
+                f"/transactions/{txn.id}",
+                data={"settled_on": corrected_day.isoformat()},
+            )
+            assert response.status_code == 200
+
+            db.session.expire_all()
+            txn = db.session.get(Transaction, txn.id)
+            assert txn.settled_on == corrected_day
+
+            # The WHOLE effect must now sit at the corrected day and nothing at
+            # the original.  The original day's ENTRIES survive as history --
+            # the reconcile adds a reversal rather than erasing them -- so the
+            # raw list of ``entry_date`` values still contains it; only the NET
+            # separates "re-dated" from "posted twice", which is why the
+            # assertion is on the net and not on membership.
+            assert self._net_by_day(txn.id) == {corrected_day: Decimal("100.00")}, (
+                "the settle day moved but the posted ledger did not follow: "
+                f"net effect by day is {self._net_by_day(txn.id)}, expected the "
+                f"whole $100.00 at {corrected_day} and nothing left at "
+                f"{original_day}"
+            )
+            assert original_day in self._ledger_days_for(txn.id), (
+                "the original day's entries vanished instead of reversing -- a "
+                "correction restates history, it does not erase it"
+            )
+
+    def _net_by_day(self, txn_id):
+        """Return ``{entry_date: net posted magnitude}`` for one transaction.
+
+        Thin wrapper over the shared
+        :func:`tests._test_helpers.net_posted_by_day` -- the transfer suite asks
+        the same question through the same reduction with a different filter
+        clause, and carrying two copies is the duplication R0801 cannot see
+        because it does not run on ``tests/``.
+        """
+        from app.models.journal_entry import JournalEntry
+
+        return net_posted_by_day(JournalEntry.transaction_id == txn_id)
+
+    def test_reverting_to_projected_ignores_the_submitted_settle_day(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """The unlock path survives the form re-submitting the row's own day.
+
+        Ruling **R-EG**.  The full-edit form submits every enabled field, and
+        the documented way to unlock a finalised row is to set Status to
+        Projected in that same form -- so a revert arrives carrying the settle
+        day the row already had.  The seam's
+        ``reject_settle_day_without_settled_status`` refuses that pair with a
+        400 (correctly, for a service caller asserting both facts on purpose),
+        and applying that refusal here would break the ONLY unlock path on
+        every settled row.
+
+        ``status_seam.settle_day_for_status`` drops the day instead: the user
+        picked Projected, which says the money did not move.  Graded on the
+        400 NOT happening, on the column being cleared, and on the ledger
+        being reversed -- a revert that left postings behind would be the
+        balance keeping money the user just said was never spent.
+        """
+        with app.app_context():
+            from app import ref_cache
+            from app.enums import StatusEnum
+
+            settled_day = display_today() - timedelta(days=3)
+            txn = self._settled_txn_dated(
+                seed_user, seed_periods_today, settled_day,
+            )
+
+            response = auth_client.patch(
+                f"/transactions/{txn.id}",
+                data={
+                    "status_id": str(ref_cache.status_id(StatusEnum.PROJECTED)),
+                    # Exactly what the rendered form re-submits: the day the
+                    # row already carries, untouched by the user.
+                    "settled_on": settled_day.isoformat(),
+                },
+            )
+            assert response.status_code == 200, (
+                "the documented unlock path (Status -> Projected) was refused "
+                f"because the form re-submitted the row's own settle day: "
+                f"{response.get_data(as_text=True)[:300]}"
+            )
+
+            db.session.expire_all()
+            txn = db.session.get(Transaction, txn.id)
+            assert txn.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
+            assert txn.settled_on is None, (
+                "the revert kept the settle day, breaking the settled-iff-dated "
+                "invariant"
+            )
+            # The WHOLE mapping, not just the old day.  Checking only that the
+            # settled day cleared would pass a revert that reversed that day and
+            # re-posted the effect at some OTHER date -- money still spent, just
+            # moved.  A neutral review found this side asserting the weak form
+            # while its transfer sibling asserted the strong one, and the
+            # sibling's docstring claiming the asymmetry had already been fixed.
+            assert self._net_by_day(txn.id) == {}, (
+                "reverting to Projected left a posted effect somewhere"
+            )
+
+    def test_a_settle_day_cannot_date_a_projected_row(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """A day submitted for a Projected row is dropped, not written.
+
+        Finding **N-185**'s structural half.  ``settled_on`` is now exactly as
+        load-bearing as ``status_id`` -- the invariant binds them -- so the
+        PATCH handler's generic ``setattr`` loop must never see it: a bare
+        ``setattr`` would date a row whose money has not moved, which is
+        finding **N-183** re-run on the transaction side.  ``_SEAM_OWNED_FIELDS``
+        excludes it from the loop and the seam is the only writer.
+
+        This is the falsifiable form of that claim: remove ``settled_on`` from
+        ``_SEAM_OWNED_FIELDS`` and the loop dates this Projected row.
+        """
+        with app.app_context():
+            txn = self._create_test_txn(seed_user, seed_periods_today)
+            assert txn.settled_on is None
+
+            response = auth_client.patch(
+                f"/transactions/{txn.id}",
+                data={"settled_on": (display_today() - timedelta(days=1)).isoformat()},
+            )
+            assert response.status_code == 200
+
+            db.session.expire_all()
+            txn = db.session.get(Transaction, txn.id)
+            assert txn.settled_on is None, (
+                "a Projected row was given a settle day -- the PATCH setattr "
+                "loop is writing the column the seam owns (finding N-185)"
+            )
+            assert self._ledger_days_for(txn.id) == [], (
+                "a Projected row posted to the ledger"
+            )
+
+    def test_a_future_settle_day_is_refused_and_moves_no_money(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A day that has not happened is refused, and the balance holds.
+
+        Ruling **R-EJ**.  A settled source counts from its own ``settled_on``,
+        and ``walk_cash_ledger`` absorbs one into an assertion only when the
+        assertion is dated ON OR AFTER it -- so a future-dated settle rides on
+        top of every assertion until that day arrives, putting already-spent
+        money back in the rendered balance.  Measured on the live route before
+        the guard existed: a ``$100`` expense settled three days ago read
+        ``$900`` against a ``$1,000`` anchor, and PATCHing its day to
+        ``today + 400`` answered **200** with the balance back at ``$1,000``.
+
+        **It is the LIKELY input, not an exotic one.**  The box tells the user
+        to correct the day against their statement, and a statement's most
+        common disagreement is a PENDING item carrying a future posting date.
+
+        The BALANCE is asserted, not just the status code: a 400 that still let
+        the write through would pass a status-only check, and the balance is the
+        thing the defect actually moved.
+        """
+        with app.app_context():
+            settled_day = display_today() - timedelta(days=3)
+            txn = self._settled_txn_dated(
+                seed_user, seed_periods_today, settled_day,
+            )
+            ctx = BalanceContext.build(seed_user["user"].id)
+            before = balance_at.cash_balance_at(
+                seed_user["account"], ctx, display_today(),
+            )
+
+            response = auth_client.patch(
+                f"/transactions/{txn.id}",
+                data={
+                    "settled_on": (display_today() + timedelta(days=400)).isoformat(),
+                },
+            )
+            assert response.status_code == 400, (
+                f"a settle day 400 days out was accepted: {response.status_code}"
+            )
+
+            db.session.expire_all()
+            txn = db.session.get(Transaction, txn.id)
+            assert txn.settled_on == settled_day, (
+                "the refused day was written anyway"
+            )
+            ctx = BalanceContext.build(seed_user["user"].id)
+            assert balance_at.cash_balance_at(
+                seed_user["account"], ctx, display_today(),
+            ) == before, (
+                "the refused future settle moved the rendered balance -- "
+                "already-spent money came back"
+            )
+
+    def test_a_mistyped_year_is_refused_and_moves_no_money(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A settle day before the schedule is refused at the DOOR.
+
+        Ruling **R-EL**, the mirror of R-EJ above and the input it was decided
+        on.  A day at or before an assertion is ABSORBED into it by
+        ``walk_cash_ledger``, which then resets the running total to the
+        asserted balance -- so the row's delta is discarded and the projection
+        RISES by its amount while the row still reads Paid.
+        ``fields.Date()`` deserializes ``"0202-08-04"`` to a real ``date``, so a
+        mistyped YEAR is an ordinary slip in a box whose own tooltip invites
+        correction.
+
+        **The bound is at the door, not at the seam**, because a genuine
+        pre-schedule settle is legitimate -- money moved before you started
+        budgeting, which a bank import produces in bulk, and which the seam must
+        keep accepting (``test_status_seam.TestTheSettleDayFloor``).  What is
+        never legitimate is a human typing a year wrong.
+
+        The BALANCE is asserted, not just the status code, for the reason the
+        R-EJ case above gives: a 400 that still let the write through would pass
+        a status-only check.
+        """
+        with app.app_context():
+            settled_day = display_today() - timedelta(days=3)
+            txn = self._settled_txn_dated(
+                seed_user, seed_periods_today, settled_day,
+            )
+            ctx = BalanceContext.build(seed_user["user"].id)
+            before = balance_at.cash_balance_at(
+                seed_user["account"], ctx, display_today(),
+            )
+
+            response = auth_client.patch(
+                f"/transactions/{txn.id}",
+                data={"settled_on": "0202-08-04"},
+            )
+            assert response.status_code == 400, (
+                "a settle day in the year 202 was accepted: "
+                f"{response.status_code}"
+            )
+
+            db.session.expire_all()
+            txn = db.session.get(Transaction, txn.id)
+            assert txn.settled_on == settled_day, (
+                "the refused day was written anyway"
+            )
+            ctx = BalanceContext.build(seed_user["user"].id)
+            assert balance_at.cash_balance_at(
+                seed_user["account"], ctx, display_today(),
+            ) == before, (
+                "the mistyped year moved the rendered balance -- spent money "
+                "came back out of the projection"
+            )
+
+    def test_todays_settle_day_is_accepted_at_the_boundary(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """TODAY is on the allowed side of the future refusal.
+
+        The boundary control for ruling **R-EJ**: the guard is ``>`` today, not
+        ``>=``, because settling something today is the ordinary case and a
+        one-click settle stamps exactly this day.  Without this, a refusal
+        written with the wrong comparison would pass the test above and break
+        every settle.
+        """
+        with app.app_context():
+            txn = self._settled_txn_dated(
+                seed_user, seed_periods_today,
+                display_today() - timedelta(days=4),
+            )
+
+            response = auth_client.patch(
+                f"/transactions/{txn.id}",
+                data={"settled_on": display_today().isoformat()},
+            )
+            assert response.status_code == 200, response.get_data(as_text=True)[:300]
+
+            db.session.expire_all()
+            assert db.session.get(Transaction, txn.id).settled_on == display_today()
+
+    def test_full_edit_offers_the_settle_day_only_on_a_settled_row(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """The correction input renders for a settled row and not before.
+
+        A Projected row's money has not moved, so there is no day to state and
+        offering the box would invite a forecast in a fact column -- the same
+        rule ``_transaction_entries.html`` applies to a purchase's posting date.
+        The paired assertions are what make this a test of the CONDITION rather
+        than of the field merely existing somewhere.
+
+        **The settle day is moved OFF today before the pre-fill is graded, and
+        that is load-bearing.**  ``mark-done`` stamps today, and the template
+        also renders ``max="<today>"`` -- so a row settled today puts today's
+        ISO string in the body TWICE, and ``today in body`` passes with
+        ``value=""``.  A neutral review proved exactly that.  Re-dating first
+        makes the assertion grade ``value=`` alone, and the ``max`` is asserted
+        separately below so neither hides the other.
+        """
+        with app.app_context():
+            txn = self._create_test_txn(seed_user, seed_periods_today)
+
+            projected_response = auth_client.get(
+                f"/transactions/{txn.id}/full-edit",
+            )
+            assert projected_response.status_code == 200
+            projected_body = projected_response.get_data(as_text=True)
+            assert 'name="settled_on"' not in projected_body
+
+            auth_client.post(f"/transactions/{txn.id}/mark-done")
+            # Off today, so the pre-fill cannot be satisfied by the ``max``.
+            corrected = display_today() - timedelta(days=6)
+            auth_client.patch(
+                f"/transactions/{txn.id}",
+                data={"settled_on": corrected.isoformat()},
+            )
+            db.session.expire_all()
+            txn = db.session.get(Transaction, txn.id)
+            assert txn.settled_on == corrected
+
+            settled_response = auth_client.get(
+                f"/transactions/{txn.id}/full-edit",
+            )
+            assert settled_response.status_code == 200
+            settled_body = settled_response.get_data(as_text=True)
+            assert 'name="settled_on"' in settled_body
+            assert f'value="{corrected.isoformat()}"' in settled_body, (
+                "the correction input is not pre-filled with the stored day"
+            )
+            # The browser-side half of ruling R-EJ, and it must be the USER's
+            # today rather than the process's: a display-vs-UTC split would let
+            # the input refuse a day the seam accepts.  Distinct from the stored
+            # day above, so one cannot satisfy the other.
+            assert f'max="{display_today().isoformat()}"' in settled_body, (
+                "the settle-day input does not bound itself at the user's today"
+            )
+            # It must NOT be disabled on a finalised row -- that is exactly the
+            # distinction ruling R-ED draws against the money/period fields
+            # beside it, and a disabled input submits nothing.
+            assert not field_is_disabled(settled_body, "settled_on"), (
+                "the settle day is locked on a finalised row, so the "
+                "correction R-ED exists for is unreachable"
+            )
+
     def test_settle_day_stamped_on_patch_settle(
         self, app, auth_client, seed_user, seed_periods_today
     ):
@@ -5750,30 +6155,38 @@ class TestSchemaValidation:
             errors = schema.validate({"due_date": "2026-04-15"})
             assert "due_date" not in errors
 
-    def test_schema_refuses_to_load_a_settle_day(self, app):
-        """A submitted settle day is dropped: no form may set it today.
+    def test_schema_loads_a_settle_day_only_from_the_edit_door(self, app):
+        """The UPDATE schema accepts a settle day; the two CREATE schemas do not.
 
-        **It pinned ``paid_at`` being ``dump_only`` until plan step X-f1**, and
-        ruling R-EC deleted the field with the column -- which left the old
-        assertion passing on ``unknown=EXCLUDE`` rather than on the rule, i.e.
-        unable to fail.  What it grades now is the state the schema is actually
-        in: the settle day has NO load path, so the only way a row gets one is
-        ``status_seam.apply_status_change``.
+        **It refused every settle day until plan step X-f1c** (this test's
+        predecessor asserted exactly that and named X-f1c as what would break
+        it).  Ruling **R-ED** opened the correction door: a settle day is an
+        OBSERVED FACT about the user's bank, and an observed fact must be
+        correctable when the statement disagrees.
 
-        Plan step **X-f1c** is what changes this -- it puts ``settled_on`` on
-        the full-edit form so a user can correct the day off a statement -- and
-        this assertion is what will fail when it does, which is the point of
-        leaving it here rather than deleting it.
+        The CREATE halves stay shut, and that is the half still worth pinning:
+        a transaction is born Projected -- ``status_seam.apply_status_change``
+        is the only path into a settled status -- so a submitted day at create
+        time would either date an unsettled row (breaking the settled-iff-dated
+        invariant) or mint a born-settled row that bypassed the state machine
+        and posted nothing to the ledger.
         """
-        from app.schemas.validation import TransactionUpdateSchema
+        from app.schemas.validation import (
+            InlineTransactionCreateSchema,
+            TransactionCreateSchema,
+            TransactionUpdateSchema,
+        )
         with app.app_context():
-            schema = TransactionUpdateSchema()
-            assert "settled_on" not in schema.fields, (
-                "the update schema declares settled_on -- if plan step X-f1c "
-                "has landed, this test is what needs re-deriving"
-            )
-            data = schema.load({"settled_on": "2026-04-15"})
-            assert "settled_on" not in data
+            loaded = TransactionUpdateSchema().load({"settled_on": "2026-04-15"})
+            assert loaded == {"settled_on": date(2026, 4, 15)}
+
+            for create_schema in (
+                TransactionCreateSchema(), InlineTransactionCreateSchema(),
+            ):
+                assert "settled_on" not in create_schema.fields, (
+                    f"{type(create_schema).__name__} declares settled_on: a "
+                    "created row is Projected and carries no settle day"
+                )
 
 
 class TestMobileThisPeriodPartial:

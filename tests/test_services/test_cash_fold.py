@@ -58,6 +58,7 @@ from tests._test_helpers import (
     create_savings_account,
     create_settled_cash_transaction,
     create_settled_transfer,
+    freeze_today,
     mark_purchase_settled,
     override_anchor,
     restamp_opening_assertion,
@@ -328,13 +329,21 @@ class TestSettledMoneyRidesOnTheAssertionItFollowed:
     """
 
     def test_a_transfer_settled_after_the_assertion_reduces_the_balance(
-        self, db, seed_user, seed_periods,
+        self, db, monkeypatch, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
         """The reported bug, reproduced: $5,644.27 - $2,000.00 = $3,644.27.
 
         The real Money Market shape: opening $1,000.00 (2026-01-01), the user
         asserts $5,644.27 (2026-03-01 12:20:20), and a $2,000.00 transfer to
         Checking settles a month later (2026-04-01 19:47:44).
+
+        **Today is moved to the end of that history**, overriding this suite's
+        module freeze at 2026-03-20 (which the suite's own conftest invites a
+        test to do).  The narrative is a PAST: the transfer HAS settled.  Under
+        the module's clock it would settle a fortnight in its own future, which
+        ruling R-EJ refuses at the write door -- correctly, because a settled
+        row asserts that money has already moved.  The fixture's calendar has to
+        contain its own today.
 
         Hand-computed: the transfer is attributed AFTER the assertion, so it
         rides on top of it and the fold reads $5,644.27 through 03-31 and
@@ -346,6 +355,7 @@ class TestSettledMoneyRidesOnTheAssertionItFollowed:
         exactly as it reaches the shipping projection; neither queries
         ``Transfer``.
         """
+        freeze_today(monkeypatch, date(2026, 4, 5))
         scenario = seed_user["scenario"]
         money_market = create_savings_account(
             seed_user, db.session, "Money Market", Decimal("1000.00"),

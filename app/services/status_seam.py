@@ -45,6 +45,20 @@ Architecture:
     credit_workflow`` import cycle: were the seam in ``transaction_service``
     (which imports ``entry_service``), ``credit_workflow`` could not import it
     without closing that cycle.
+  - **It also owns the DOOR-SIDE reading of a submitted settle day**
+    (:func:`settle_day_for_status`, plan step X-f1c / ruling R-EG), which is
+    form-submission policy rather than a primitive.  It lives here anyway, and
+    the narrower "primitive only" claim this paragraph used to make alone was
+    corrected by a neutral review: the rule has THREE route doors (the
+    transaction PATCH, the transfer PATCH, and the transaction PATCH's
+    shadow branch) spread over two route packages, so the alternatives were a
+    shared route helper -- a cross-package private import, which W9910 fences --
+    or three spellings of one rule, which is this arc's own root cause 1.  It
+    sits beside the refusal it defers to
+    (:func:`reject_settle_day_without_settled_status`) so the forgiving door
+    rule and the fail-loud service rule are read together.
+  - The dependency claim above is unchanged by that: the function is pure, and
+    reads only the settled-status predicate.
   - No Flask imports.  Mutates the passed row in place; does NOT flush or
     commit -- the caller owns the session boundary.
 """
@@ -56,6 +70,7 @@ from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.transaction import Transaction, reject_settle_instant
 from app.models.transfer import Transfer
+from app.services import pay_period_service
 from app.services.state_machine import verify_transition
 from app.utils.balance_predicates import settled_status_ids
 from app.utils.dates import display_today
@@ -125,6 +140,180 @@ def reject_settle_day_without_settled_status(
         "Settled); mark it settled to give it a day, or clear the day to "
         "leave it projected."
     )
+
+
+def reject_future_settle_day(settled_on: Optional[date]) -> None:
+    """Refuse a settle day that has not happened yet (ruling **R-EJ**).
+
+    A row carries a settle day if and only if it is settled, and settled means
+    the money HAS moved -- so a day in the future is not a fact about money, it
+    is a forecast in a fact column.  ``Transaction``'s class docstring specified
+    this rule before any door could reach it: *"a 'not in the future' rule is
+    not expressible in a CHECK (it is not immutable) and lives at the write door
+    instead, exactly as ruling R-M's purchase-date guard does for an entry."*
+    Plan step X-f1c is that write door, and the first one where a USER supplies
+    the day.
+
+    **What it costs to omit, MEASURED end to end through the live routes** (two
+    independent derivations, one number -- the step's own trace and a neutral
+    adversarial review).  A settled source counts from its own ``settled_on``
+    (``cash_ledger.dated_deltas``), and
+    :func:`app.services.cash_ledger.walk_cash_ledger` absorbs one into an
+    assertion only when the assertion is dated ON OR AFTER it -- so a
+    future-dated settle rides on top of every assertion until that day arrives.
+    On a ``$1,000`` anchor a ``$100`` expense settled three days ago reads
+    ``$900``; PATCH its day forward and the route answers ``200`` with the
+    balance back at ``$1,000``.  **Already-spent money, back in the projection.**
+
+    **And it is the LIKELY input, not an exotic one.**  The correction box tells
+    the user to correct the day against their statement, and a statement's most
+    common disagreement is a PENDING item carrying a FUTURE posting date.
+
+    **The opposite rule on ``TransactionEntry.settled_on`` is not a
+    contradiction.**  A future ENTRY posting day is the CONSERVATIVE direction --
+    ``ReconciledThrough.covers`` answers False, the debit stays reserved, the
+    balance stays low -- so that door bounds only from below and says so.  A
+    future ``Transaction.settled_on`` points the other way: it takes settled
+    money OUT of the balance.  The two fields' rationales do not transfer.
+
+    It lives here, beside :func:`reject_settle_day_without_settled_status` and
+    the ``datetime`` refusal, for the reason those are here: ONE door, every
+    write path, a value the seam does not accept rather than a check each caller
+    has to remember.  Both date inputs also carry ``max`` = today, so the browser
+    refuses first and this is the backstop -- the same layering
+    ``accounts/form.html`` uses for an anchor's ``observed_on``.
+
+    **The clock is the USER's** (ruling R-DH (b)).  ``display_today()``, never
+    ``date.today()``: the process's UTC day is already tomorrow at 8pm Eastern,
+    so the server's clock would refuse a settle the user is making right now.
+
+    Args:
+        settled_on: The candidate settle day, or ``None`` when none was
+            supplied.  ``None`` is always accepted -- it means "derive the day
+            from the status", which is the everyday path.
+
+    Raises:
+        ValidationError: When *settled_on* is later than the user's today.  A
+            400 rather than a programming error, because plan step X-f1c makes
+            it reachable by an ordinary user typing in the correction box; the
+            route layer renders it as a designed error fragment.
+    """
+    if settled_on is None:
+        return
+    today = display_today()
+    if settled_on <= today:
+        return
+    raise ValidationError(
+        f"A settle day of {settled_on.isoformat()} has not happened yet "
+        f"(today is {today.isoformat()}).  A row records the day its money "
+        "moved, so the day cannot be in the future -- if the payment is "
+        "scheduled rather than made, leave it Projected."
+    )
+
+
+def settle_day_for_status(
+    user_id: int, new_status_id: int, submitted_day: Optional[date],
+) -> Optional[date]:
+    """Return the settle day a FORM submission means, and refuse an impossible one.
+
+    **The edit doors' half of the settled-iff-dated invariant, stated once**
+    (plan step X-f1c, ruling **R-EG**).  Both full-edit forms submit the row's
+    whole state on Save, and the documented way to unlock a finalised row is to
+    set Status to Projected in that same form -- so a revert arrives as
+    ``{status_id: Projected, settled_on: <the day the row already carried>}``.
+    That day is a stale ECHO of the state being left, not an assertion that
+    money moved: the user picked Projected, which says it did not.  The seam's
+    own :func:`reject_settle_day_without_settled_status` refuses that pair with
+    a 400 -- correctly, for a SERVICE caller, which is asserting both facts on
+    purpose -- and applying that refusal to a form submission would make the
+    only documented unlock path fail on every settled row.
+
+    So the rule is: **a day counts only when the row is moving INTO (or staying
+    in) the settled band.**  Anywhere else it is dropped and the seam clears the
+    column, which is what a revert means.
+
+    It lives here, beside the refusal it defers to, rather than in either route:
+    the transaction PATCH and the transfer PATCH are two doors onto ONE rule,
+    and two spellings of it is this arc's own root cause 1.  It does NOT weaken
+    the service guard -- the seam still refuses a day handed to it for an
+    unsettled status, so a programmatic caller that means it still fails loud.
+
+    **It also enforces the FLOOR (ruling R-EL), and the floor is a DOOR rule
+    rather than a seam invariant -- which is the whole reason it is here and not
+    in** :func:`apply_status_change`.  :func:`reject_future_settle_day` refuses a
+    day in the future from ANY caller, because no caller can legitimately record
+    money that has not moved.  The other end is not like that.  A day at or
+    before an assertion is ABSORBED into it by ``cash_ledger._walk``, which then
+    resets the running total to the asserted balance -- and for a GENUINE
+    pre-schedule settle that is CORRECT (ruling R-EB: an assertion reconciles, so
+    anything before it is already inside the asserted balance).  Recording money
+    that moved before you started budgeting is a real thing to do, and a bank
+    import would do it in bulk.  **What is never legitimate is a HUMAN typing a
+    year wrong**, so the bound belongs where a human types.
+
+    Measured: enforcing it at the seam instead refused **six** existing tests
+    whose scenario is a payment budgeted to a 2026 pay period whose cash moved in
+    December 2025 -- the year-boundary attribution rule, and exactly the shape an
+    import produces.  Enforcing it here refuses none of them, because they call
+    the service.
+
+    ``fields.Date()`` deserializes ``"0202-08-04"`` to a real ``date``, so the
+    typo is an ordinary slip in a box whose own tooltip invites correction.
+    Worked on a ``$1,000`` anchor observed three days ago with a ``$100`` settled
+    expense: the grid reads ``$900``, and after the typo ``$1,000``, with the
+    ``$100`` becoming an unexplained plug at the next anchor re-derive -- the row
+    still reading Paid throughout.  The bound is
+    :func:`app.services.pay_period_service.earliest_recordable_day`, the SAME
+    floor an anchor's ``observed_on`` has used since finding **N-133**, and both
+    settle-day inputs carry it as ``min``.
+
+    **Only a FORWARDED day is bounded.**  A day dropped beside a revert writes
+    nothing, so refusing it would break the unlock path R-EG exists to keep open.
+
+    Args:
+        user_id: The row owner, whose pay-period schedule sets the floor.
+        new_status_id: The ``ref.statuses.id`` the row is moving to -- the
+            SUBMITTED status when the form carried one, else the row's current
+            one (an edit that changes only the day is an identity transition).
+        submitted_day: The civil day the form submitted, or ``None`` when it
+            submitted none.  An empty date input loads as absent rather than as
+            an explicit ``None`` (the field is not ``allow_none``), because a
+            settled row always carries a day: the way to remove one is to leave
+            the settled band, which clears it.
+
+    Returns:
+        *submitted_day* when *new_status_id* is settled -- which is
+        ``None`` itself when the form submitted none, and that is the same
+        answer the unsettled branch gives; ``None`` otherwise.  The seam reads
+        ``None`` as "derive the day from the status", i.e. preserve on a
+        re-settle and clear on a revert.
+
+    Raises:
+        ValidationError: When the day would be FORWARDED and precedes the
+            owner's earliest recordable day (ruling R-EL).  A 400: it is
+            ordinary user input from the correction box.
+
+    Note:
+        There is deliberately no ``if submitted_day is None`` short-circuit.
+        It would be unreachable as a DECISION -- both branches already answer
+        ``None`` for a ``None`` day -- so no single-line mutation of this
+        function could fail a test written against it.  A neutral review found
+        one here, in the same step that deleted exactly that shape from
+        ``_normalize_empty_inputs`` (finding **N-184**); a guard whose only
+        possible test cannot fail is not a guard.
+    """
+    if new_status_id not in settled_status_ids():
+        return None
+    if submitted_day is not None:
+        floor = pay_period_service.earliest_recordable_day(user_id)
+        if submitted_day < floor:
+            raise ValidationError(
+                f"A settle day of {submitted_day.isoformat()} is before this "
+                f"budget's schedule starts ({floor.isoformat()}).  Check the "
+                "year -- or generate earlier pay periods first if the money "
+                "really moved then."
+            )
+    return submitted_day
 
 
 def apply_status_change(
@@ -247,6 +436,12 @@ def apply_status_change(
     # before ``verify_transition`` for the same reason the ``datetime`` refusal
     # is: a rejected call must not have mutated the row.
     reject_settle_day_without_settled_status(new_status_id, settled_on)
+
+    # A day that has not happened yet is refused (ruling **R-EJ**), ordered with
+    # the two refusals above for the same reason: a rejected call must leave the
+    # row untouched.  See :func:`reject_future_settle_day` for the measurement --
+    # a future-dated settle puts already-spent money back in the balance.
+    reject_future_settle_day(settled_on)
 
     verify_transition(row, new_status_id)
     row.status_id = new_status_id

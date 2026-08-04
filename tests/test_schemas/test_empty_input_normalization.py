@@ -14,6 +14,8 @@ helper directly, so a schema that stops routing its ``@pre_load``
 through the helper fails here too.
 """
 
+from datetime import date
+
 from marshmallow import fields
 from werkzeug.datastructures import MultiDict
 
@@ -24,6 +26,7 @@ from app.schemas.validation._helpers import (
 from app.schemas.validation import (
     AccountTypeUpdateSchema,
     PensionProfileUpdateSchema,
+    TransactionUpdateSchema,
     TransferUpdateSchema,
 )
 
@@ -71,41 +74,33 @@ class TestEmptyInputNormalization:
         data = PensionProfileUpdateSchema().load({"csrf_token": ""})
         assert data == {}
 
-    def test_dump_only_nullable_field_stays_dropped(self):
-        """A dump_only field keeps the drop behavior even when nullable.
+    def test_nullable_arm_is_reached_through_the_helper(self):
+        """The allow_none arm maps an empty submit to an explicit ``None``.
 
-        A ``dump_only`` field can never load a value, so mapping its empty
-        submit to ``None`` would only hand the loader a key it discards; the
-        key is dropped instead.
+        Asserted against the HELPER rather than through ``load()`` so the arm
+        is falsifiable on its own: deleting ``if field.allow_none`` kills this
+        case directly instead of being masked by a schema's other fields.
 
-        **It is asserted against the HELPER, not through ``load()``, and that
-        took two attempts** (plan step X-f1).  The case used
-        ``TransactionUpdateSchema.paid_at`` -- the only ``dump_only`` field in
-        the whole validation package -- and ruling R-EC deleted the field with
-        the column, which left the assertion passing on ``unknown=EXCLUDE``
-        rather than on the rule.  Re-pointing it at a locally-declared
-        ``dump_only`` field did not fix that: with the ``not field.dump_only``
-        arm DELETED the loaded payload is byte-identical, because marshmallow
-        discards a ``dump_only`` key on load either way.  **The branch is
-        invisible downstream of ``load()``**, so a test that goes through
-        ``load()`` cannot grade it -- measured, by deleting the arm and watching
-        the suite stay green.  Calling the helper directly is what makes the
-        rule falsifiable.
+        **This replaced a ``dump_only`` case that could not fail** (finding
+        **N-184**, closed at plan step X-f1c).  That case pinned an
+        ``and not field.dump_only`` arm which existed for exactly one field --
+        ``TransactionUpdateSchema.paid_at``, deleted with its column by ruling
+        R-EC -- and which was invisible downstream of ``load()`` regardless,
+        because marshmallow discards a ``dump_only`` key either way.  The arm
+        and its test are both gone; no schema in the package declares a
+        ``dump_only`` field, and X-f1c's settle-day field LOADS.
         """
 
-        class _DumpOnlyProbe(BaseSchema):
-            """A minimal schema carrying the two field shapes under test."""
+        class _NullableProbe(BaseSchema):
+            """A minimal schema carrying both field shapes under test."""
 
-            settled_on = fields.Date(allow_none=True, dump_only=True)
-            name = fields.String(allow_none=True)
+            cleared = fields.String(allow_none=True)
+            required_ish = fields.String()
 
         cleaned = _normalize_empty_inputs(
-            _DumpOnlyProbe(), {"settled_on": "", "name": ""},
+            _NullableProbe(), {"cleared": "", "required_ish": ""},
         )
-        # The dump_only key is DROPPED; the ordinary nullable one beside it is
-        # kept as an explicit None, so this separates the two arms rather than
-        # passing on an empty payload.
-        assert cleaned == {"name": None}
+        assert cleaned == {"cleared": None}
 
     def test_transfer_category_clear_loads_as_none(self):
         """The transfer full-edit "-- None --" category posts as None.

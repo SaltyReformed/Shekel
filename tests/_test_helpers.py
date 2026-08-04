@@ -3800,3 +3800,64 @@ def inject_cash_backfill_kind_id(monkeypatch, migration_module):
             "fallback",
         ),
     )
+
+
+def net_posted_by_day(filter_clause):
+    """Return ``{entry_date: net posted magnitude}`` for one source row.
+
+    The LEDGER half of every settle-day assertion in the X-f1c suites, shared
+    because the transaction and transfer versions differed only in their filter
+    clause (``JournalEntry.transaction_id == id`` vs ``.transfer_id == id``) --
+    identical ``group_by``, identical reduction, identical rationale.  ``tests/``
+    is outside R0801's reach, so that duplication had to be found by reading;
+    it was, by a neutral review.
+
+    **The NET is what separates "re-dated" from "posted twice".**  A settle-day
+    correction leaves the original day's entries in place as history and adds a
+    reversal (the R2 attribution rule), so the raw list of ``entry_date`` values
+    still contains the old day and a membership test grades nothing.  Summed per
+    ``(day, ledger account)`` the reconciled-away day collapses to ``$0.00`` and
+    only the live day carries the effect.
+
+    The reduction is per LEDGER ACCOUNT, not per day: netting across accounts
+    within a day would collapse to ``$0.00`` for ANY balanced entry, which is
+    every entry this project writes -- an assertion that could never fail.  The
+    per-day value returned is the LARGEST per-account absolute residue, not a
+    sum across accounts; every leg of a balanced entry carries the same
+    magnitude, so it reads as "the size of this row's effect on that day".  An
+    earlier draft of this paragraph said "the sum", which the code never did.
+
+    Args:
+        filter_clause: The SQLAlchemy clause selecting the journal entries of
+            one source row, e.g. ``JournalEntry.transaction_id == txn.id``.
+
+    Returns:
+        ``{entry_date: Decimal}`` for the days that still carry a non-zero net
+        posted effect.  A day whose entries net to zero is DROPPED, so the
+        mapping reads as "where this row's money is posted right now" and an
+        exact-dict assertion grades both halves of a correction at once.
+    """
+    # Imported here rather than at module scope: this helper module is imported
+    # by conftest-adjacent code before the app's models are configured in some
+    # collection orders, and the ledger models are needed only by this function.
+    from app.extensions import db  # pylint: disable=import-outside-toplevel
+    from app.models.journal_entry import (  # pylint: disable=import-outside-toplevel
+        JournalEntry, Posting,
+    )
+
+    rows = (
+        db.session.query(
+            JournalEntry.entry_date,
+            Posting.ledger_account_id,
+            db.func.sum(Posting.amount),
+        )
+        .join(Posting, Posting.journal_entry_id == JournalEntry.id)
+        .filter(filter_clause)
+        .group_by(JournalEntry.entry_date, Posting.ledger_account_id)
+        .all()
+    )
+    net = {}
+    for entry_date, _ledger_account_id, total in rows:
+        residue = abs(Decimal(str(total)))
+        net[entry_date] = max(net.get(entry_date, Decimal("0.00")), residue)
+    return {day: amount for day, amount in net.items() if amount != 0}

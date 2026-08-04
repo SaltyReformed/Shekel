@@ -6,7 +6,7 @@ rate history, and payoff calculator across multiple loan types.
 """
 
 import re
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -5264,7 +5264,7 @@ class TestDashboardPayoffConsistency:
     """
 
     def test_payoff_committed_matches_dashboard_chart(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, monkeypatch, seed_periods,
     ):
         """Payoff committed chart data matches dashboard committed chart.
 
@@ -5280,7 +5280,16 @@ class TestDashboardPayoffConsistency:
         month, both routes produce empty committed arrays, and the
         equality assertion passes trivially without exercising the
         integration the test was written to verify.
+        **Today is moved past that payment**, overriding the module freeze at
+        2026-03-20.  A settled payment in a period that STARTS after today is a
+        settle in its own future, which ruling R-EJ refuses at the write door --
+        a settled row asserts that money has already moved.  The clock is moved
+        rather than the period, because the period is load-bearing here: the
+        docstring above explains why seed_periods[7] specifically must line up
+        with the schedule's first payment month, and moving it would make the
+        assertion vacuous in exactly the way that paragraph warns about.
         """
+        freeze_today(monkeypatch, seed_periods[7].start_date + timedelta(days=5))
         acct = _create_fresh_mortgage(
             seed_user, db.session, origination_date=date(2026, 3, 1),
         )
@@ -5317,14 +5326,21 @@ class TestDashboardPayoffConsistency:
         assert all(v is None for v in overlay[:current_index])
 
     def test_payoff_with_payments_no_crash(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, monkeypatch, seed_periods,
     ):
         """Payoff calculator with prepared payments does not crash.
 
         After the DRY refactor, both routes use _load_route_context.
         Verify the payoff calculator handles prepared payments correctly
         in both extra_payment and target_date modes.
+
+        **Today is moved past the settled payment**, overriding the module
+        freeze at 2026-03-20: a settled payment whose period STARTS after today
+        is a settle in its own future, which ruling R-EJ refuses at the write
+        door.  The PROJECTED payment below stays where it is -- a projected row
+        carries no settle day, so it is legitimately still ahead.
         """
+        freeze_today(monkeypatch, seed_periods[7].start_date + timedelta(days=5))
         acct = _create_fresh_mortgage(seed_user, db.session)
         _create_transfer_to_loan(
             seed_user, acct, seed_periods[7], Decimal("1580.17"),

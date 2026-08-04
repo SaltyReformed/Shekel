@@ -14,6 +14,7 @@ from sqlalchemy import or_
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.exceptions import ValidationError
+from app.utils.dates import display_today
 from app.utils.log_events import (
     BUSINESS,
     EVT_PAY_PERIODS_GENERATED,
@@ -22,6 +23,53 @@ from app.utils.log_events import (
 
 logger = logging.getLogger(__name__)
 
+
+
+def earliest_recordable_day(user_id: int) -> date:
+    """Return the earliest civil day this user's app can honestly date money at.
+
+    ``min(the user's earliest pay period start, today)``.  Taking the EARLIER of
+    the two is what keeps the bound from refusing a legitimate entry: a user
+    whose periods are all still in the future must be able to record what
+    happened today, while nobody may back-date into a past the app has no
+    schedule for.
+
+    **It has TWO consumers, and it lives here so they cannot drift.**
+
+    * ``account_service._reject_undatable_observation`` -- an anchor's
+      ``observed_on``.  An unbounded day opens the modelled-return window
+      (``balance_at._asset_fold._AccrualWindow`` materialises EVERY calendar day
+      from it) and fabricates contribution history back to it (finding
+      **N-133**).
+    * ``status_seam.reject_settle_day_before_the_schedule`` -- a settle day
+      (plan step X-f1c, ruling **R-EL**).  An unbounded day is absorbed into the
+      opening assertion by ``cash_ledger._walk``, which then resets the running
+      total to the asserted balance -- so the row's money silently leaves the
+      projection while the row still reads Paid.
+
+    It was ``account_service.earliest_observable_day`` until X-f1c needed the
+    same bound one module lower.  This module is the right home: the rule is a
+    PAY-PERIOD SCHEDULE question with no account in it, and living here keeps it
+    reachable from ``status_seam``, which must stay below the services that call
+    it.
+
+    Args:
+        user_id: The owner whose schedule sets the floor.
+
+    Returns:
+        The earliest recordable civil day.  Today when the user has no pay
+        periods at all -- every caller's own operation then fails on the missing
+        schedule, which is a clearer error than a date bound.
+    """
+    today = display_today()
+    earliest = (
+        db.session.query(db.func.min(PayPeriod.start_date))
+        .filter(PayPeriod.user_id == user_id)
+        .scalar()
+    )
+    if earliest is None:
+        return today
+    return min(earliest, today)
 
 def _reject_overlapping_batch(existing_periods, new_starts):
     """Reject a batch whose earliest new payday overlaps existing coverage.

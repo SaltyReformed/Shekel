@@ -2106,24 +2106,39 @@ class TestReaderParallelRunAgainstResolver:
     def test_early_settled_payment_keeps_the_parallel_run_exact(
         self, app, db, monkeypatch, seed_user, seed_periods,
     ):
-        """A payment settled before its period begins never desyncs the ledger.
+        """A payment settled a month before its installment never desyncs the ledger.
 
         The R1 regression lock for the 2026-07-02 review's H2 ("early settle,
         then time passes"): with today re-frozen MID-window (2026-02-10), the
-        P3 payment (due 04-01) settles EARLY.  Its Step-2 cash entry posts at
-        settle -- and since R1 its split correction posts in the SAME moment --
-        so when its period later begins, the linked ledger nets to the REAL
-        principal, not the raw cash.  Pinned via the independent resolver: the
-        map equals the un-seeded replay at EVERY period start, through the
-        early-settled period and the carried-flat tail (on-schedule cash, so
-        the two producers must agree to the penny).  On the pre-R1 ledger the
-        map read LOW by the payment's full interest from P3's period start
-        until the next loan write -- exactly what this parallel run catches.
+        2026-03-01 installment is paid on 2026-01-30 -- a month EARLY.  Its
+        Step-2 cash entry posts at settle -- and since R1 its split correction
+        posts in the SAME moment -- so when that installment later comes due,
+        the linked ledger nets to the REAL principal, not the raw cash.  Pinned
+        via the independent resolver: the map equals the un-seeded replay at
+        EVERY period start, through the early-settled period and the
+        carried-flat tail (on-schedule cash, so the two producers must agree to
+        the penny).  On the pre-R1 ledger the map read LOW by the payment's
+        full interest from the settle forward until the next loan write --
+        exactly what this parallel run catches.
+
+        **"Early" is measured against the INSTALLMENT here, which is what a
+        borrower means by paying early -- and it is the widest early settle
+        BOTH producers can see.**  Until 2026-08-04 this fixture instead settled
+        the payment on a pay-period start that had not arrived: a settle dated
+        three weeks in its own FUTURE, which ruling **R-EJ** now refuses at the
+        write door and which the app never produced.  Moving the CASH before its
+        own pay period begins is a different case and the app DOES produce it:
+        the ledger dates the entry by the day the money moved, while the
+        resolver's replay/projection cut keys on the pay-period start, so the
+        two diverge there BY CONSTRUCTION.  That is a producer defect, not a
+        property of this fixture -- finding **N-187**, owned by plan step
+        **X-an** -- so this test does not encode it, and re-dating this fixture
+        into it would report the defect as an expectation.
 
         Today's displays stay untouched: the scalar reader at the frozen today
-        equals the resolver at today (both exclude the not-yet-begun period).
-        The full reconciliation sweep runs last -- completeness now covers the
-        early-settled payment (its correction must exist at settle).
+        equals the resolver at today.  The full reconciliation sweep runs last
+        -- completeness now covers the early-settled payment (its correction
+        must exist at settle).
         """
         with app.app_context():
             frozen = date(2026, 2, 10)
@@ -2135,16 +2150,49 @@ class TestReaderParallelRunAgainstResolver:
             ).state.monthly_payment
 
             _settle(seed_user, loan, seed_periods[_P1], amount=monthly_pi)
-            _settle(seed_user, loan, seed_periods[_P3], amount=monthly_pi)
+            # The EARLY payment, and its three dates are deliberately distinct:
+            # the cash moves 2026-01-30, the pay period that books it is the one
+            # CONTAINING that day (so neither producer is asked to guess), and
+            # the installment it satisfies is 2026-03-01 -- still unpaid and
+            # still in the future at the frozen today.
+            #
+            # The cash day is a period START, not the frozen today, because the
+            # assertion loop below compares a map read at each period's END
+            # against the resolver read at that period's START: the two agree
+            # only when nothing is dated strictly INSIDE a period.  A settle on
+            # the frozen today lands mid-period and makes the map (which has
+            # seen it) differ from the resolver (which has not) -- a divergence
+            # in the FIXTURE's sampling, not in the producers being compared.
+            early_period = next(
+                period for period in seed_periods
+                if period.start_date <= frozen <= period.end_date
+            )
+            early = _settle(
+                seed_user, loan, early_period, amount=monthly_pi,
+                settled_on=early_period.start_date,
+            )
+            # The installment this cash paid.  Set explicitly for the same
+            # reason ``TestLatePaidPaymentDating`` does: the pay period governs
+            # the CASH and the stored due date governs the INSTALLMENT, and
+            # re-deriving one from the other is the defect that class pins.
+            shadow = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=early.id, account_id=loan.id)
+                .one()
+            )
+            shadow.due_date = date(2026, 3, 1)
+            db.session.flush()
+            loan_posting_service.sync_loan_postings_all_scenarios(loan.id)
             db.session.commit()
-            # The premise: P1's period has begun by the frozen today; P3's has
-            # not -- an EARLY settle.
-            assert seed_periods[_P1].start_date <= frozen
-            assert seed_periods[_P3].start_date > frozen
+            # The premise: the money HAS moved (its day is at or before today)
+            # and the installment it paid is NOT yet due -- an early settle.
+            assert early_period.start_date <= frozen
+            assert shadow.due_date > frozen
 
-            # The parallel run holds at EVERY period start -- including P3's
-            # period and the tail after it, where the pre-R1 ledger carried the
-            # raw cash (no interest backout) and this assertion fails.
+            # The parallel run holds at EVERY period start -- including the
+            # period the early installment comes due in and the tail after it,
+            # where the pre-R1 ledger carried the raw cash (no interest backout)
+            # and this assertion fails.
             balance_map = _posted_period_map(loan.id, scenario_id, seed_periods)
             for period in seed_periods:
                 resolver_at_start = _resolver_balance(
@@ -2163,7 +2211,7 @@ class TestReaderParallelRunAgainstResolver:
             )
 
             # Today's scalar is untouched by the early settle: reader ==
-            # resolver at the frozen today (both exclude the unbegun period).
+            # resolver at the frozen today (both have seen the early cash).
             assert _posted_balance(
                 loan.id, scenario_id, frozen,
             ) == _resolver_balance(loan.id, scenario_id, frozen)

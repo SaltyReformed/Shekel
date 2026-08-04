@@ -22,6 +22,7 @@ from app.services import pay_period_service
 from app.services.scenario_resolver import get_baseline_scenario
 from app.services.state_machine import allowed_transitions
 from app.utils.auth_helpers import require_owner
+from app.utils.dates import display_today
 from app.routes._render_helpers import render_transaction_cell
 from app.routes.transactions._bp import transactions_bp
 from app.routes.transactions._helpers import (
@@ -91,6 +92,16 @@ def get_full_edit(txn_id):
             categories=categories,
             source_txn_id=txn.id,
             periods=periods,
+            # The settle-day correction's bounds -- ``max`` from ruling R-EJ,
+            # ``min`` from ruling R-EL.  The USER's today, never
+            # ``date.today()``: the process clock is pinned to the display zone
+            # in the deployed container but not in CI or a script, and the input
+            # must not refuse a day the seam would accept.  The floor is the
+            # SAME function the seam refuses below, not a second rule.
+            today=display_today(),
+            settle_day_min=pay_period_service.earliest_recordable_day(
+                current_user.id,
+            ),
             # Pre-hint (grid audit D2): the status dropdown disables
             # transitions the state machine would reject.
             allowed_status_ids=allowed_transitions(xfer),
@@ -112,6 +123,13 @@ def get_full_edit(txn_id):
         txn=txn,
         statuses=statuses,
         periods=periods,
+        # The settle-day correction's bounds (rulings R-EJ / R-EL) -- see the
+        # transfer branch above for why the clock is the display one and why the
+        # floor comes from the seam's own function.
+        today=display_today(),
+        settle_day_min=pay_period_service.earliest_recordable_day(
+            current_user.id,
+        ),
         # Pre-hint (grid audit D2): the status dropdown disables
         # transitions the state machine would reject from the row's
         # current status.
