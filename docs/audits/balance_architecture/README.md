@@ -310,124 +310,240 @@ the OPPOSITE case on a later clock (now derived from `display_today()`).  New fi
 app into TWO day-to-period rules that disagree for a day past the schedule (writer index 0, ledger
 index 60 on the clone's calendar), unreachable on today's data and owned by X-ak with N-168.
 
-> ### X-f1c's COLD-RESUME RECORD (2026-08-03 evening) -- read this before touching the tree
+> ### X-f1c's COLD-RESUME RECORD (2026-08-04, session end) -- read this before touching the tree
 >
-> **X-f1c1 AND X-f1c2 ARE COMMITTED AND PUSHED.  The working tree is CLEAN.**  Branch
-> `feat/xf1-settle-day`, HEAD `7e9f261a`, `origin/feat/xf1-settle-day` == HEAD, **no PR open**
-> (`gh pr list --head feat/xf1-settle-day --state all` is empty).  Three commits landed
-> 2026-08-04, and **each was verified independently green in its own worktree** rather than only
-> at the tip:
+> **READ THESE TWO BLOCKS BEFORE ANYTHING ELSE: a CRITICAL design defect the app-code review
+> found, and a red tree.**
+>
+> ---
+>
+> **CRITICAL -- RULING R-EN's STATED RATIONALE IS PARTLY WRONG, AND X-f1c3c MUST NOT SHIP UNTIL
+> THIS IS RESOLVED.**  R-EN deleted the C-17 lock on the ground that *"an assertion history is
+> APPEND-ONLY, so a second tab overwrites nothing."*  **That is true of `account_anchor_history`
+> and FALSE of the transaction a true-up actually runs.**  `apply_anchor_true_up` also calls
+> `sync_account_anchor_postings_all_scenarios`, which is a reconcile-to-target: read the
+> assertions, read what is posted, compute `target - posted`, INSERT the difference.  That is a
+> read-modify-write against `budget.journal_entries` / `budget.account_postings` with **no unique
+> index and no advisory lock** -- and the deleted `version_id` UPDATE was the only thing
+> serialising it, because it autoflushed and took a row lock *before* the walk.
+>
+> **Reproduced deterministically by the reviewer** (probe since removed), and it also fired on 2 of
+> the first 2 unmodified `TestConcurrentAnchorUpdate` runs and 0 of the next 13 -- a real
+> scheduler-dependent race, not a test artifact:
+>
+> ```
+> STATUS a=200 b=200
+> RESOLVED 2000.00   LEDGER TOTAL 3000.00
+> ```
+>
+> Both requests answer 200; the account's linked ledger permanently disagrees with its resolved
+> assertion by the delta.  It breaks `_anchors.py`'s own stated invariant ("the linked ledger sums
+> to an ABSOLUTE balance"), and the balance sheet reads those postings -- both sides wrong, trial
+> balance still `$0.00`, so nothing fails loudly until the account's next anchor sync, which may be
+> never.
+>
+> **The recommended fix is better than what was deleted:** take a per-account transaction-scoped
+> `pg_advisory_xact_lock` at the top of `apply_anchor_true_up`, the primitive
+> `pay_schedule_service.lock_schedule` already uses per user.  It protects the RECONCILE rather
+> than a column that happened to sit in front of it, and it also closes the same race between
+> `true_up` and `update_account`'s anchor branch -- which the surviving C-17 lock does NOT cover,
+> since `true_up` no longer touches the row that lock guards.  **R-EN's rationale needs rewriting
+> either way: "append-only" is a property of one table in a transaction that mutates three.**
+>
+> **And the test I rewrote cannot catch it (C2).**  `test_concurrent_true_up` asserts both requests
+> return 200, both assertions exist, and the resolver returns one of them -- all true in the broken
+> state.  The missing assertion is the one the change removed the need for and did not replace:
+> **the linked-ledger posting sum must equal `resolve_anchor(account).balance`.**
+>
+> ---
+>
+> **THE TREE IS ALSO RED, AND THAT BREAKAGE IS MINE AND KNOWN.  FIX IT FIRST so the suite is a
+> usable instrument again.**
+> `tests/test_routes/test_accounts.py` is missing **5 `pay_period_service.generate_pay_periods(...)`
+> calls** (9 present, 14 at HEAD).  A cleanup pass deleted `periods = generate_pay_periods(...)`
+> statements as "unused locals" -- but the CALL creates the periods the fixtures anchor against, so
+> deleting it removed real setup, not a dead binding.  Three tests fail as a result, all in that one
+> file, all from that one cause:
+>
+> * `TestCheckingDetailCanonicalProducer::test_accounts_checking_zero_anchor_renders_projection`
+> * `TestCashDetailContext::test_interest_next_year_zero_for_zero_apy`
+> * `TestCashDetailClickToEditHero::test_cash_band_renders_full_band`
+>
+> **The fix is to restore those five statements verbatim from
+> `git show HEAD:tests/test_routes/test_accounts.py`, bindings included**, and to accept the
+> resulting `W0612 unused-variable` -- `tests/` is not pylint-gated, and a harmless unused binding
+> is a far better trade than silently altering fixture setup in a 6,000-line route suite.  The same
+> deletion was made in three other files and has already been repaired correctly there
+> (`test_analytics.py`, `test_savings.py`, `test_calendar_service.py` -- counts verified equal to
+> HEAD).  **Everything else in the working tree was green before this pass.**
+>
+> *The lesson, and the developer said it first: this step should have been decomposed across
+> sessions from the start.*  X-f1c3 is three leaves, two destructive migrations, ~80 changed files
+> and three adversarial reviews; attempting it in one session is what produced a mechanical
+> cleanup pass applied with too little care at the end of it.
+>
+> **BRANCH STATE, re-measured from `git status -sb` / `git ls-remote` / `gh pr list`:**
+>
+> | fact | value |
+> |---|---|
+> | branch | `feat/xf1-settle-day` |
+> | local HEAD | `379ed1af` |
+> | `origin/feat/xf1-settle-day` | `e7f782d6` -- **3 commits BEHIND local; nothing since `e7f782d6` is pushed** |
+> | PR | none |
+> | working tree | ~84 changed files incl. the UNTRACKED migration `c81f0a5b3e27` |
+> | production | `d7c1f4a9e603` -- **none of this cluster is deployed** |
 >
 > | commit | step | suite at that commit |
 > |---|---|---|
-> | `eff69763` | the rulings doc (R-EK, R-EL; the X-u lesson puts it first) | 7,786 passed |
-> | `0b04f255` | **X-f1c1** the transaction door + the three shared rules | 7,805 passed |
-> | `7e9f261a` | **X-f1c2** the transfer door | 7,818 passed |
+> | `6fc17ce6` | rulings R-EM..R-EP + Section 5 re-scope + 10 owner re-points | docs only |
+> | `c16bdb3b` | **X-f1c3a** the asserted balance has one resolver | 7,815 passed |
+> | `379ed1af` | **X-f1c3b** an assertion is a day and a balance | 7,813 passed, both clocks |
 >
-> **The boxes are deliberately NOT ticked yet, and that is a gate constraint rather than an
-> oversight.**  Rule 2 ticks a step and re-points every row that named it; four rows still name
-> these leaves (**N-181**, **N-184**, **N-186**, **N-189**), and `tools/plan_gate` FAILS on a row
-> whose owner is ticked.  X-f1c is a decomposed header whose leaves ship together, and c3/c4
-> remain -- so the tick, the hashes and the four re-points all happen in one pass when X-f1c
-> completes.
+> **X-f1c3c IS BUILT AND UNCOMMITTED.**  It drops both `accounts.current_anchor_*` columns and,
+> because they existed only for those columns, `ck_accounts_anchor_balance_present`, the deferrable
+> `NO ACTION` FK, `_DEFER_ANCHOR_FK_SQL`, `_reanchor_accounts`,
+> `PeriodLockReason.ACCOUNT_ANCHOR` (+ its query and its settings chip),
+> `account_service.resolve_anchor_period_id` (**closing N-170** -- one day-to-period rule survives),
+> `AccountSpec.anchor_period_id`, and -- ruling **R-EN** -- `AnchorTrueUpOutcome.STALE_CONFLICT`,
+> `_anchor_conflict_response`, the 409 conflict cell, the anchor form's hidden `version_id` and
+> `AnchorUpdateSchema.version_id`.  `update_account`'s `if current_period:` fork goes with them,
+> **closing N-134 at X-f1c3c rather than X-f1c4**.  Migration `c81f0a5b3e27`.
 >
-> *An earlier version of this block said "BUILT and UNCOMMITTED" and, before that, "nothing
-> pushed" -- the second was false when written (`git ls-remote` answered `578a9136`) and is exactly
-> the sentence a cold-resuming session acts on.  Re-measure this block from `git status -sb` and
-> `git ls-remote` at each edit rather than carrying it forward.*  **A knowingly-RED commit is on
-> the remote in this branch's history** (`70ba87f6`, subject `[WIP -- RED, NOT FOR MERGE]`); it is
-> true of that commit and of nothing since, and the squash-or-merge choice at the PR should account
-> for it.
+> **Verified BEFORE the cleanup pass broke the three tests** (so these numbers stand for everything
+> except that one file): full suite **7,790 / 0** under `America/New_York` AND
+> `TZ=Pacific/Kiritimati`; `pylint app/` and `scripts/` 10.00/10 with the full `--fail-on` set;
+> plan gate 17/17; on a production clone the seam baseline (9 accounts, 427 grid cells, 5,978 daily
+> points) **byte-identical across all three leaves**, positive control firing at 868 diff lines;
+> `c81f0a5b3e27` run BOTH directions.  **Re-run all of it after the repair; do not carry these
+> figures forward as if they still describe the tree.**
 >
-> **Staging lesson, kept because it cost a re-split:** `git add -p`, never `git add -A` -- two
-> mutation-planting reviews ran in this worktree earlier (Section 8).  And a per-commit greenness
-> check is not optional here: the first attempt at this split put the both-doors empty-input test
-> in c1, where `TransferUpdateSchema.settled_on` did not yet exist, and only the worktree run
-> caught it.
+> **A DEFECT R-EN OPENED, found by the concurrency test and fixed in the same diff.**  The C-17 lock
+> had been serialising two concurrent true-ups; without it both reach
+> `ledger_account_service.get_or_create_anchor_equity_account`, a check-then-INSERT, and the loser
+> 500s on `uq_ledger_accounts_account_kind` -- on an operation that in fact succeeded.  Fixed at the
+> CLASS: one `_add_or_reuse` SAVEPOINT helper all three `get_or_create_*` chart resolvers consume.
+> The lock was never what made those correct; the same race is reachable on the category and loan
+> resolvers through any two concurrent settles.  Four tests cover it, two proved by planting the
+> race-unsafe original.
 >
-> **The suite is GREEN at 7,818 / 0 under BOTH clocks (2026-08-04), and everything below is
-> re-verified rather than carried forward.**  `pylint app/` and `scripts/` 10.00/10 with the full
-> `--fail-on` set; full suite 7,818 passed under `America/New_York` AND `TZ=Pacific/Kiritimati`; the
-> **plan gate 17/17** -- which lives in `tools/plan_gate`, NOT `tests/`, so `./scripts/test.sh` does
-> not run it and a green suite will hide a Section 9 rule 6 violation (it hid one this session).
-> The touched date-sensitive files also pass a calendar sweep at `SHEKEL_FAKE_TODAY` = 2026-06-01 /
-> 2026-12-31 / 2027-02-28.
+> **THREE NEUTRAL ADVERSARIAL REVIEWS RAN AND ALL THREE RETURNED.**  Their residue is worked
+> only partly; what is fixed and what is open is listed per review below.
 >
-> **The one parked failure is RULED and gone.**  It was
-> `test_early_settled_payment_keeps_the_parallel_run_exact` (finding **N-186**); answering the
-> question it forbade re-dating until produced ruling **R-EK** and finding **N-187** (the ledger and
-> the resolver key on different facts), the fixture was re-pointed to the early settle both producers
-> can see, and the producer defect underneath went to the new step **X-an**.
+> * **Test integrity -- returned.**  Four HIGH, seven MEDIUM, a LOW band.  Fixed: the
+>   assertion-free `test_anchor_period_set`; the wrongly-deleted enum-size test (it graded the
+>   member SET, not the deleted member -- restored at two members); `_add_or_reuse` having no test;
+>   no catalog lock on the dropped columns (added to `TestAccountVersionIdColumn`); the concurrency
+>   class/method docstrings that still instructed a reader to restore the 409; the
+>   `TestAnchorTemplatesEmitVersionPin` docstring contradicting its own first test; the empty
+>   `TestApplyAnchorTrueUpStaleConflict` class; two docstrings promising a rule their deleted
+>   assertion graded; and prose a global regex had corrupted into
+>   "wrote `cash_ledger.resolve_anchor(accounts).balance`".
+>   **STILL OPEN:** migration `c81f0a5b3e27`'s downgrade SQL is executed by no test; **M8**
+>   `test_a_stale_form_still_records_its_assertion` never actually sends a `version_id`, so the
+>   thing R-EN made tolerable is not exercised; **M9** the reset-openings assertion was weakened
+>   from "equals the anchor period" to "is in the set of all six live periods" and should resolve
+>   the period containing the assertion's own day; **M10** four conflict-cell deletions and the
+>   whole `test_anchor_fk_deferrable.py` deletion have no test-side record; three class docstrings
+>   (`TestCashDetailClickToEditHero`, `TestInvestmentBalanceHeroTrueUp`, a `test_dashboard.py`
+>   comment) still advertise the 409; `test_true_up_records_without_a_current_pay_period` does not
+>   assert its own precondition; one line in `test_the_reset_preserves_every_balance_assertion` is
+>   trivially true (it checks the PRE-reset snapshot); blank-line residue at four deletion sites.
+> * **Claims audit -- returned.**  Claims 1, 2, 3, 4, 7, 8a verified exactly against production;
+>   the `version_id` mechanism verified sound.  **Two claims of mine were FALSE and are corrected
+>   in place**: `create_loan_account`'s `anchor_period` did NOT have "zero loads in its body" -- it
+>   was LIVE, reaching `AccountSpec.anchor_period_id`, and I measured it only AFTER deleting its
+>   use, which is a measurement of a state I had just created; and `a3f7c8e21b64`'s downgrade
+>   refuses UNCONDITIONALLY, not "once any row carries a settle day".  Also corrected: a wrong line
+>   citation (`_events.py:143-146` -> `:132-134`), a `transfer.py` attribution that presented an
+>   inference as a quote, "~30 revisions" (really **53**), "312 references across ~50 test files"
+>   (really 273 occurrences / 266 lines / 45 files), "twelve rendering surfaces" (really 24 read
+>   sites over 16 modules + 12 template references), and two README bullets that credited X-f1c3b
+>   with deletions X-f1c3c makes.  **STILL OPEN:** stale citations inherited by re-pointed findings
+>   rows (`_kernel.py:508`, `:440`, `:341`, `_investment.py:127` -- **that file does not exist** --
+>   and `_data.py:184`); and `c16bdb3b`'s commit message states the caption drift as "+56 / -55"
+>   when the natural reading of new-minus-old is "-56 / +55" (the magnitudes and the two accounts
+>   are right; history is not being rewritten for it, so it is recorded here instead).
+> * **App code -- returned after the session had begun writing this record.**  It found **C1**
+>   (above), **C2** (above), and **H1**: re-pointing `integrity_check.py`'s BA-01 moved it from
+>   `check_referential_integrity` (which stamps every check `critical`) into
+>   `check_balance_anomalies` (which stamps every check `warning`), so "an account the resolver
+>   cannot answer for" -- a state that makes `resolve_anchor` raise on every page -- now exits 2
+>   instead of 1 and `verify_backup.sh` logs it as WARNING.  The comment and the severity
+>   contradict each other; give it `critical`.
+>   **MEDIUM/LOW, all stale-doc or residue:** `apply_loan_anchor_true_up`'s docstring still calls
+>   `STALE_CONFLICT` "part of the enum's contract" (`anchor_service.py:456`, `:497`);
+>   `routes/accounts/anchor.py`'s MODULE docstring still names the C-17 contract, the `version_id`
+>   pre-flush check and the 409 (`:11-26`, `:100`, `:511`); `_true_up_success_response`'s Args block
+>   says `updated_at` dates the snippet while the code two lines down uses `observed_on`;
+>   `_sync.py:489` justifies its own caller with `_reanchor_accounts`, deleted;
+>   `PeriodLockReason` + two truncate docstrings still promise the ACCOUNT_ANCHOR refusal
+>   (`pay_period_admin.py:52`, `:241`, `:336`); `_anchors.py:325` justifies a PostingError with the
+>   NOT NULL `pay_period_id` R-EO deleted; `DUPLICATE_SAME_DAY`'s docstring names the pre-re-key
+>   4-column tuple; `_add_or_reuse`'s docstring over-claims ("EVERY get-or-create in this module" --
+>   `create_ledger_account_for_account` was not converted); two resolvers still log "Created" for a
+>   reused row; `_bump_account_version_outside_session` and three imports are orphaned in tests;
+>   four test comments still cite the 409 as the reason for the `revert` token; and **L5: a
+>   mechanical rename corrupted a HISTORICAL sentence** -- `test_anchor_service.py:933` now reads
+>   "wrote ``cash_ledger.resolve_anchor(accounts).balance``" where B-15 was about writing the
+>   COLUMN.  *(The two prose corruptions this session already repaired were a different pair; this
+>   is a third, plus the still-misnamed `column_before` local beside it.)*
+>   **VERIFIED SOUND by that review, so it need not be re-derived:** migration `c81f0a5b3e27`
+>   exercised both directions on a throwaway database including the owner-scoping edge case, the
+>   `_UNRESOLVED` gate firing and rolling back, and the restored FK's deferrability; the
+>   append-only claim at the level of `budget.accounts` (no path writes a column, `version_id`
+>   semantics intact for the doors that still write the row); `_add_or_reuse`'s SAVEPOINT mechanics
+>   audited against SQLAlchemy 2.0.49 internals AND probed empirically; the four natural-key index
+>   names; `AnchorUpdateSchema` dropping `version_id` being backward-compatible under
+>   `unknown = EXCLUDE`; and a clean-restart full suite at **7,796 / 0** with `pylint app/` and
+>   `scripts/` both 10.00/10.
 >
-> **THREE neutral adversarial reviews then ran against the finished tree and all three found
-> something** (ruling **R-EL**'s block in Section 4 carries the detail).  The app-code review found a
-> live defect this step opened -- the settle-day box was bounded above and not below (**N-189**).
-> The test-integrity review found two tests that could not fail, proving one by running it under a
-> shifted calendar.  The claims audit found two false statements in this document and four
-> overclaims.  **All repaired in this pass**, each repair re-proved by mutation where it was a test.
+> **The seam harness is BLIND to most of this cluster.**  `verify_balance_baseline.py` walks the
+> `balance_at` seam; the grid header, reconcile panel, Property market value, archived drawer,
+> dashboard hero, pulse and retirement table are outside it -- the N-181 lesson repeating.  A
+> surface probe covering exactly those was written and run at each leaf (all identical).  **It is
+> in the session scratchpad, not the repo**, so it must be re-created -- or, better and not yet
+> ruled, moved into `tests/manual/` beside the baseline harness.
 >
-> **What is DONE, so it is not re-derived:**
+> **Environment, so a resume does not debug a stale fixture:** the test template
+> (`shekel_test_template`, `shekel-dev-test-db`, port 5433) is REBUILT to `c81f0a5b3e27` and no
+> longer has the dropped columns -- **it does NOT match `origin`, so a session that checks out the
+> pushed tree must re-run `python scripts/build_test_template.py`** with `TEST_DATABASE_URL` /
+> `TEST_ADMIN_DATABASE_URL` exported from `.env` (the script's default admin URL is a unix socket
+> that does not exist here).  The production clone `shekel_xf1c3` is on `shekel-dev-db` (port 5432)
+> at `c81f0a5b3e27`.  A `git worktree` at HEAD may be left under the session scratchpad; remove it
+> with `git worktree prune`.
 >
-> * **Five rulings, R-EF..R-EJ**, in Section 4.  Three came from MEASUREMENT during the build, not
->   from the plan: the transaction door alone corrects 0 of N-181's 8 rows (R-EF), the field as
->   scoped would 400 the only unlock path on every settled row (R-EG), and the statement date
->   stales the anchor cache (R-EH).  R-EJ is a hole X-f1c itself opened.
-> * **Both edit doors**, `status_seam.settle_day_for_status` as the one shared rule, `settled_on`
->   into `_POSTING_RELEVANT_FIELDS` and out of the `setattr` loop via `_SEAM_OWNED_FIELDS`,
->   `Transfer.settled_on` as a read-only SCOPED QUERY (not a backref walk -- see below), N-184's
->   dead `dump_only` arm deleted, and the `_shadow_mutations.py` split the 1000-line ceiling forced
->   (which is what **N-152** predicted for the next change to that module).
-> * **14 mutants planted, 14 killed.**  Including both survivors the reviews found: the shadow
->   PATCH door had ZERO coverage anywhere in 7,803 tests, and the income-shadow test graded
->   POSITION rather than account.  The second was fixed in the CODE -- the property names the row
->   in SQL, so a positional read is no longer expressible.
-> * **Driven end to end in a throwaway clone** (its own container and database, both destroyed;
->   dev untouched, 999 transactions, original password hash).  A transaction corrected 07/31 ->
->   07/28 and a transfer 07/31 -> 07/27 through the real popovers, then a revert to Projected with
->   the day still in the form: **no 400**.  Ledger followed -- transfer 57 nets `-1910.95` /
->   `+1910.95` entirely at the corrected day, the reverted transaction nets `$0.00` at both days,
->   trial balance `$0.00`.  Locked/unlocked contrast confirmed by attribute: amount, period, due
->   date and category `disabled=True`; settle day and status `disabled=False`.
-> * **Six test modules re-clocked**, each of which encoded a settle in its own future and only
->   compiled because no guard existed -- the fixture-clock defect class N-131 / N-132 / R8 belong
->   to.  **One** `2099` suite freezes its own clock into its own calendar (`test_posting_ledger_statements`:
->   opening at `_FIXTURE_OPENING`, today at `_FIXTURE_TODAY` -- measured, those two names exist in
->   that module and nowhere else, and an earlier draft of this line said "the two `2099` suites",
->   which was false); `test_ledger_report_service` moved its "rides on top" day into an EMPTY PAST
->   year (2025) with the account opened before it; and four others (`test_loan`, `test_cash_fold`,
->   `test_loan_plan_assembly`, `test_posting_service`) move their frozen today past their own history
->   rather than moving the money.
+> **NEXT, in order:** **(1) restore the five `generate_pay_periods` calls and get the suite green
+> again**; **(2) resolve C1 -- the per-account advisory lock, plus C2's ledger-equals-resolver
+> assertion, plus a rewrite of R-EN's rationale in Section 4, this migration docstring and
+> `anchor_service`**; (3) work the rest of the review residue above (H1's severity first);
+> (4) re-run the full verification (both clocks, lint, plan gate, clone baseline, both migration
+> directions); (5) commit X-f1c3c; (6) **X-f1c4** -- now only the statement-date FIELD and its
+> render, because X-f1c3b did its period half and X-f1c3c closed N-134; (7) **X-f1d**, the
+> `anchor_settle_partition.md` archive move (N-175); (8) **push** -- nothing is on the remote yet;
+> (9) tick X-f1c's leaves + re-point every row naming them in ONE pass (rule 2); (10) the PR.
+> **X-an follows X-f1's ship**, not this branch.
 >
-> **The one thing a restore already ate once, so check it is present:**
-> `status_seam.reject_future_settle_day` plus its call in `apply_status_change`, `max="{{
-> today.isoformat() }}"` on both settle-day inputs, `today=display_today()` passed by all three
-> render sites, and the `gate_error` consolidation + `try`/`except ValidationError` around the seam
-> call in `_apply_regular_update`.  A reviewer's `cp` restore reverted exactly those mid-session.
+> **DO NOT TICK X-f1c3a / X-f1c3b / X-f1c3c YET** -- a gate constraint, not an oversight.  Fourteen
+> Section 6 rows name X-f1c's leaves as their owner (**N-4**, **N-5**, **N-73**, **N-83**,
+> **N-103**, **N-134**, **N-168**, **N-169**, **N-170**, **cash D4**, **N-181**, **N-184**,
+> **N-186**, **N-189**) and `tools/plan_gate` FAILS on a row whose owner is ticked.  **That gate is
+> not in `tests/`**, so `./scripts/test.sh` never runs it: run
+> `python -m pytest tools/plan_gate -c /dev/null -q` by hand after editing the ledger.
 >
-> **NEXT, in order:** ~~rule **N-186**~~, ~~the three reviews~~, ~~commit the leaves~~ (all DONE
-> 2026-08-04); ~~rule **X-f1c3**'s four forks~~ (DONE 2026-08-04, rulings **R-EM**..**R-EP**, and the
-> third widened the step -- see below); then **X-f1c3a** / **X-f1c3b** / **X-f1c3c**; then
-> **X-f1c4** (the statement date, now only its FIELD -- X-f1c3b does its period half); then
-> **X-f1d** (the `anchor_settle_partition.md` archive move, N-175); then tick X-f1c's leaves +
-> re-point N-181 / N-184 / N-186 / N-189 in ONE pass (rule 2); then the PR.  **X-an follows X-f1's
-> ship**, not this branch.
+> **The ship carries THREE MIGRATIONS**, so a prod rollback is NOT a pure digest revert.  Chain:
+> `d7c1f4a9e603` (prod) -> `a3f7c8e21b64` (X-f1b, drops `transactions.paid_at`, downgrade refuses
+> UNCONDITIONALLY) -> `b6d1e94c07af` (X-f1c3b) -> `c81f0a5b3e27` (X-f1c3c).  The last two have
+> WORKING downgrades, and **each restores a CORRECTED value rather than the byte-for-byte
+> original** -- both repair finding N-168's mis-filed rows on the way back.  Stated in both
+> migration docstrings, because anyone diffing a pre-drop dump against a post-downgrade dump will
+> see those rows differ.
 >
-> **X-f1c3 IS NOW THREE LEAVES AND TWO DESTRUCTIVE MIGRATIONS, and the widening came from the
-> developer refusing both offered options on one fork.**  The question was whether to guard
-> `account_anchor_history.pay_period_id`'s CASCADE or retarget its FK; the answer was to DELETE the
-> column (R-EO), because the codebase's own docstring already says nothing reads it, production
-> already has 2 of 78 rows whose stored period contradicts their own day, and its CASCADE is what
-> makes `reset_pay_periods` destroy 69 real balance observations and fabricate 9 replacements.
->
-> **The ship carries THREE MIGRATIONS**, so a prod rollback is NOT a pure digest revert the way
-> X-ae, X-aj1 and X-ai-r were.  `a3f7c8e21b64` (X-f1b) drops `transactions.paid_at` and its
-> downgrade REFUSES once any row carries a settle day; X-f1c3b and X-f1c3c each add a destructive
-> one, both with WORKING downgrades (each dropped column is an exact function of a surviving fact).
-> Plan the deploy note accordingly -- this is the first ship in this cluster where "revert the
-> digest" is insufficient.
->
-> **`grep -rn "MUTANT" app/ tests/ tools/` is clean as of this record**, and every mutant planted
-> this session was reverted with the revert verified by `git diff --stat` on the file.
+> **Staging lesson, still current:** `git add -p`, never `git add -A` -- mutation-planting reviews
+> have run in this worktree (Section 8).  `grep -rn "MUTANT" app/ tests/ tools/ scripts/` was clean
+> at session end.  And a bulk mechanical edit over `tests/` needs the same per-change scrutiny as
+> app code: an AST pass that deletes "unused" assignments will happily delete a call whose RETURN
+> was unused but whose SIDE EFFECT was the fixture.
 
 **THE ORDER CHANGED 2026-08-03 on ruling R-EB, and this paragraph is the orientation to trust.**
 The anchor half is redesigned from scratch -- the ledger becomes sum-of-postings and an assertion
@@ -441,11 +557,12 @@ resolver still decides "has this payment happened yet?" from the PAY PERIOD whil
 uses the day the money moved, so an installment paid before its pay period begins renders twice on
 the loan detail page (**N-187**, `$1,003.87` in the reproduction, `$0.00` on today's production data
 and one click away).  **X-f1b is GREEN and COMMITTED on branch
-`feat/xf1-settle-day`** (`51679384`, four commits on `fac90200`) -- **not pushed, not PR'd**.  The
-suite is 7,786 / 0 under both timezones, all three test locations run, and the real-data baseline is
-byte-identical with a firing positive control.  **The head-but-two commit's subject still reads
-`[WIP -- RED, NOT FOR MERGE]`; that is true of that commit and of nothing since.**  Its step entry in Section 5 carries the **"X-f1b as
-BUILT"** record: what the 102 parked failures actually were, the three findings it closed, the four
+`feat/xf1-settle-day`.**  *The branch state is deliberately NOT restated here: it went stale twice
+by being carried forward in prose, and the COLD-RESUME RECORD above is the one place that carries
+it, re-measured at every edit.*  A `[WIP -- RED, NOT FOR MERGE]` commit is in this branch's
+published history (`70ba87f6`); it is true of that commit and of nothing since, and the
+squash-or-merge choice at the PR should account for it.  X-f1b's step entry in Section 5 carries
+the **"X-f1b as BUILT"** record: what the 102 parked failures actually were, the three findings it closed, the four
 things its second pair of reviews found (one of them a defect the step itself introduced), and what
 the 22 deleted migration tests really cost.  **X-f1c and X-f1d remain, and X-f1 does not SHIP without
 them**: ruling N-175 binds the `anchor_settle_partition.md` archive move to this step so the
@@ -2648,7 +2765,7 @@ budgeting artifact -- and the column is `ON DELETE CASCADE`, so the budgeting ar
 the bank fact.  That, and not the FK's action, is the defect.
 
 **The column has no reader, and the codebase already said so.**
-`cash_ledger/_events.py:143-146` states it in those words -- *"It is a CACHE of a derivation, not an
+`cash_ledger/_events.py:132-134` states it in those words -- *"It is a CACHE of a derivation, not an
 independent fact, and no reader of THIS FIELD survives in `app/` as of plan step X-ai-r"* -- which is
 finding **N-169**'s second half.  Re-verified here, and the one exception it names is exactly what
 X-f1c3 removes: `_facts.py:211` reads it only to compare against the cache column this step deletes.
@@ -2708,11 +2825,12 @@ lock as sole guard (ships the data-loss path and makes a routable check the only
 it); and giving it its own step behind X-f1c3, which was offered and declined because X-f1c3 would
 then have to ship an interim anchor lock and an interim reset path for the next step to delete.
 
-**`RESTRICT` was considered and is wrong**, and the reason is on the record one table over:
+**`RESTRICT` was considered and is wrong**, and the mechanism is on the record one table over:
 `models/transfer.py:108-120` (F-136 / C-43) documents that PostgreSQL evaluates every referential
-action for a single DELETE in one pass, so a user-cascade fanning into `pay_periods` and
-`account_anchor_history` at once would raise on a `RESTRICT` even though every row is destined for
-deletion.  The question is moot here only because the FK is being deleted outright; it is recorded
+action for a single DELETE in one pass, so a user-cascade would raise on a `RESTRICT` even though
+every row is destined for deletion.  *That comment's worked example is `transfers`, not
+`account_anchor_history`* -- the mechanism carries, the example is this document's inference and is
+labelled as one.  The question is moot here only because the FK is being deleted outright; it is recorded
 so a future reader does not "fix" the FK back into existence with the wrong action.
 
 **R-EP -- "as of when was this balance asserted" gets ONE source: the assertion's own
@@ -5585,8 +5703,9 @@ preconditions cite entries in that file.
       THREE leaves, and the re-scope is again the finding.**  As written (ruling **R-EH**) it was one
       leaf dropping two `accounts` columns, and the trace measured three things that sentence did not
       have.  The census is **65 references over 24 `app/` modules and 5 templates** (R-EH's own
-      re-measure said 24 files and it was right; the earlier "12" was not), plus **312 references
-      across ~50 test files**.  **Substituting moves NO figure: the cache agrees with the latest
+      re-measure said 24 files and it was right; the earlier "12" was not), plus **273 occurrences over 266 lines in 45 test
+      files** (an earlier draft said "312 across ~50" and no `grep` variant reproduces it; the
+      `app/` half of the same sentence is exact).  **Substituting moves NO figure: the cache agrees with the latest
       assertion on 9 of 9 production accounts.**  The order below is load-bearing -- the resolver
       exists before anything drops, and the assertion is freed from the period before the reset path
       that fabricates one is deleted.
@@ -5608,19 +5727,21 @@ preconditions cite entries in that file.
         `account_anchor_history.pay_period_id` and its CASCADE FK, and re-keys
         `uq_anchor_history_account_period_balance_day` to `(account_id, anchor_balance,
         observed_on)` -- strictly tighter, **0 of 78 production rows rejected**.  Deletes
-        `AnchorPoint.period`, `CashAnchorFact.pay_period_id`, `PeriodLockReason.ACCOUNT_ANCHOR` +
-        `_period_ids_that_are_account_anchors`, and `account_service.resolve_anchor_period_id` with
-        `AccountSpec.anchor_period_id`.  **`reset_pay_periods` stops destroying and fabricating the
+        `AnchorPoint.period` and `CashAnchorFact.pay_period_id`.  **`reset_pay_periods` stops destroying and fabricating the
         user's assertion history**: with no FK to the wiped periods, 69 real observations survive a
         schedule rebuild that deletes them today, and `_reanchor_accounts` shrinks from "restore the
         balance by writing a fresh origination row" to re-pointing one column.  Closes **N-168**,
         **N-169**'s cash half, **N-170**.
 
-        *The build trace moved two deletions from this leaf to the next, and the reason is worth
-        stating:* `_reanchor_accounts`, `preserved_balances`, `resolve_anchor_period_id` and
-        `AccountSpec.anchor_period_id` cannot go HERE, because `accounts.current_anchor_period_id`
-        still exists at this point and a schedule rebuild must still re-point it.  They die with
-        that column in X-f1c3c.  The leaf order (b then c) is unchanged and correct: freeing the
+        *The build trace moved FOUR deletions from this leaf to the next, and the reason is
+        worth stating:* `_reanchor_accounts`, `preserved_balances`,
+        `account_service.resolve_anchor_period_id` / `AccountSpec.anchor_period_id`, and
+        `PeriodLockReason.ACCOUNT_ANCHOR` with `_period_ids_that_are_account_anchors` all cannot go
+        HERE, because `accounts.current_anchor_period_id` still exists at this point -- a schedule
+        rebuild must still re-point it and the lock still has a column to read.  They die with that
+        column in X-f1c3c.  *A first correction to this bullet moved two of the four and left the
+        lock behind, so the plan contradicted the code comment written beside it; a claims audit
+        caught that.*  The leaf order (b then c) is unchanged and correct: freeing the
         assertion FIRST is what lets the reset stop fabricating.
       * [ ] **X-f1c3c** `refactor(accounts): drop the anchor cache columns` -- ruling **R-EH**'s
         original scope, now the last leaf.  Destructive migration (`Review:` line): drops
