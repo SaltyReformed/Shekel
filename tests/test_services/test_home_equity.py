@@ -84,7 +84,6 @@ class TestResolveHomeEquity:
                     account_type_id=property_type.id,
                     name="House",
                     anchor_balance=Decimal("400000.00"),
-                    anchor_period_id=seed_periods_today[0].id,
                 ),
             )
             db.session.add(prop)
@@ -121,7 +120,6 @@ class TestResolveHomeEquity:
                     account_type_id=property_type.id,
                     name="Paid-off House",
                     anchor_balance=Decimal("300000.00"),
-                    anchor_period_id=seed_periods_today[0].id,
                 ),
             )
             db.session.commit()

@@ -239,7 +239,6 @@ def _create_other_user_txn():
         cadence_days=14,
     )
     db.session.flush()
-    account.current_anchor_period_id = periods[0].id
 
     projected = db.session.query(Status).filter_by(name="Projected").one()
     expense_type = db.session.query(TransactionType).filter_by(

@@ -15,7 +15,6 @@ on a corrupted one.  See ``docs/plans/implementation_plan_pay_period_crud.md``.
 from __future__ import annotations
 
 from datetime import date
-from decimal import Decimal
 
 import pytest
 
@@ -28,7 +27,6 @@ from app.services.pay_period_admin import PeriodLockReason
 from tests._test_helpers import (
     add_txn,
     assert_pay_period_invariants,
-    create_savings_account,
 )
 
 
@@ -69,6 +67,13 @@ def _add_rule_anchor(db_session, seed_user, period):
     db_session.add(rule)
     db_session.flush()
     return rule
+
+
+# ``test_account_anchor_locks`` was DELETED at plan step X-f1c3c (ruling
+# R-EO): ``PeriodLockReason.ACCOUNT_ANCHOR`` is gone, because neither an
+# account nor a balance assertion references a pay period any more, so the
+# state it classified cannot arise.  The other four reasons are graded
+# unchanged, and the precedence test below still pins their ordering.
 
 
 class TestClassifyPeriodLock:
@@ -152,25 +157,6 @@ class TestClassifyPeriodLock:
             assert pay_period_admin.classify_period_lock(
                 bootstrap, as_of=_BOOTSTRAP_AS_OF,
             ) == PeriodLockReason.LEDGER_POSTINGS
-
-    def test_account_anchor_locks(self, app, db, seed_user):
-        """A ZERO-anchor account's anchor period -> ACCOUNT_ANCHOR.
-
-        A $0.00 opening books nothing (the zero-delta rule), so the anchor
-        period holds no postings and the classifier reaches the
-        ACCOUNT_ANCHOR reason -- the reason itself stays covered now that
-        the seeded bootstrap reports LEDGER_POSTINGS instead.
-        """
-        with app.app_context():
-            periods = _make_future_periods(db.session, seed_user)
-            create_savings_account(
-                seed_user, db.session, "Zero Anchor Savings",
-                Decimal("0.00"), anchor_period_id=periods[3].id,
-            )
-            db.session.commit()
-            assert pay_period_admin.classify_period_lock(
-                periods[3],
-            ) == PeriodLockReason.ACCOUNT_ANCHOR
 
     def test_recurrence_anchor_locks(self, app, db, seed_user):
         """A future period that is a rule's start period -> RECURRENCE_ANCHOR."""

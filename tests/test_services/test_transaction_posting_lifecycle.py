@@ -61,6 +61,7 @@ from tests._test_helpers import (
     create_envelope_txn,
     linked_ledger_account,
 )
+from app.services import cash_ledger
 
 
 # ---------------------------------------------------------------------------
@@ -172,7 +173,7 @@ def _assert_reconciles(scenario_id, *accounts):
             posting_service.settled_transfer_effect(account.id, scenario_id)
             + posting_service.settled_transaction_effect(account.id, scenario_id)
         )
-        opening = Decimal(str(account.current_anchor_balance))
+        opening = Decimal(str(cash_ledger.resolve_anchor(account).balance))
         assert posted == opening + effect, (
             f"account {account.id}: ledger {posted} != opening {opening} "
             f"+ source effect {effect}"

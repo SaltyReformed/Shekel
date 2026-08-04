@@ -105,7 +105,7 @@ def _create_fixed_loan(seed_user, period):
         seed_user, db.session, name="Single-Source Mortgage",
         principal=FIXED_PRINCIPAL, rate=FIXED_RATE, term=FIXED_TERM,
         origination_date=ORIGINATION_DATE, payment_day=1,
-        account_type=AcctTypeEnum.MORTGAGE, anchor_period=period,
+        account_type=AcctTypeEnum.MORTGAGE,
     )
     return account, loan_params_for(db.session, account.id)
 
@@ -131,7 +131,7 @@ def _create_arm_loan(seed_user, period):
         seed_user, db.session, name="Single-Source ARM",
         principal=ARM_PRINCIPAL, rate=ARM_RATE, term=ARM_TERM,
         origination_date=ORIGINATION_DATE, payment_day=1,
-        account_type=AcctTypeEnum.MORTGAGE, anchor_period=period,
+        account_type=AcctTypeEnum.MORTGAGE,
     )
     loan_params = loan_params_for(db.session, account.id)
     loan_params.is_arm = True

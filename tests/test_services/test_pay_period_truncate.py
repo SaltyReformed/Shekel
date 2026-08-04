@@ -21,7 +21,6 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
-from sqlalchemy.exc import IntegrityError
 
 from app import ref_cache
 from app.enums import (
@@ -198,7 +197,6 @@ class TestTruncateHappyPath:
             user_id = seed_user["user"].id
             savings = create_savings_account(
                 seed_user, db.session, "Savings", Decimal("500.00"),
-                anchor_period_id=periods[0].id,
             )
             make_transfer_template(db.session, seed_user, savings)
             period_population.populate_periods_from_active_templates(
@@ -279,6 +277,16 @@ class TestTruncateHappyPath:
             assert all(r.passed for r in check_referential_integrity(db.session))
 
 
+# Three ACCOUNT_ANCHOR cases were DELETED at plan step X-f1c3c (ruling R-EO):
+# truncate blocking on a period an account anchored to, the same for a period
+# holding no correction, and the raw bulk-DELETE raising an IntegrityError on
+# the anchor FK.  All three graded a lock and an FK that are gone -- neither an
+# account nor a balance assertion references a pay period, so no period delete
+# can strand one.  The period's POSTED state is what is still worth refusing,
+# and ``LEDGER_POSTINGS`` (which outranked ``ACCOUNT_ANCHOR`` in the precedence
+# anyway) covers it; its own cases in this class are untouched.
+
+
 class TestTruncateHardLocks:
     """Hard locks refuse the delete and change nothing (Discipline 4)."""
 
@@ -326,30 +334,6 @@ class TestTruncateHardLocks:
             assert PeriodLockReason.HISTORICAL in excinfo.value.blocking.values()
             assert _count_periods(db.session, user_id) == before
 
-    def test_account_anchor_blocks(self, app, db, seed_user):
-        """A ZERO-anchor account's anchor period in the window is hard-locked.
-
-        The $0.00 opening books nothing (the zero-delta rule), so the block
-        is the ACCOUNT_ANCHOR reason itself, not the LEDGER_POSTINGS gate a
-        non-zero opening would trip first (see the companion below).
-        """
-        with app.app_context():
-            periods = _future_periods(db.session, seed_user, count=6)
-            user_id = seed_user["user"].id
-            create_savings_account(
-                seed_user, db.session, "Savings", Decimal("0.00"),
-                anchor_period_id=periods[2].id,  # index 3
-            )
-            db.session.commit()
-
-            with pytest.raises(PayPeriodLocked) as excinfo:
-                pay_period_admin.truncate_pay_periods(
-                    user_id, keep_through_index=periods[1].period_index,
-                )
-            assert excinfo.value.blocking.get(periods[2].id) == (
-                PeriodLockReason.ACCOUNT_ANCHOR
-            )
-
     def test_nonzero_anchor_opening_blocks_as_ledger_postings(
         self, app, db, seed_user,
     ):
@@ -385,7 +369,6 @@ class TestTruncateHardLocks:
             )
             create_savings_account(
                 seed_user, db.session, "Savings", Decimal("500.00"),
-                anchor_period_id=anchored.id,
             )
             db.session.commit()
             before = _count_periods(db.session, user_id)
@@ -396,58 +379,6 @@ class TestTruncateHardLocks:
                 )
             assert excinfo.value.blocking.get(anchored.id) == (
                 PeriodLockReason.LEDGER_POSTINGS
-            )
-            assert _count_periods(db.session, user_id) == before
-
-    def test_anchor_period_holding_no_correction_blocks_as_account_anchor(
-        self, app, db, seed_user,
-    ):
-        """A period that merely NAMES an account's anchor locks as the anchor.
-
-        The day/period split, and what plan step X-ai-r changed about it.  An
-        account is forced onto a FUTURE pay period while its balance is
-        observed TODAY -- legal through ``AccountSpec`` (the explicit id
-        wins), and unreachable through every production path, which derives
-        the period from the day (``account_service.resolve_anchor_period_id``).
-        The $500.00 opening correction books in the period containing the
-        OBSERVED day, so the forced period holds no posting at all and is
-        refused as the ACCOUNT_ANCHOR it is.
-
-        It reported LEDGER_POSTINGS until X-ai-r, because the writer copied
-        the row's stored ``pay_period_id`` and filed $500.00 of correction
-        into a period the balance was never asserted for.  **The protection
-        did not weaken**: the truncate is still refused and nothing is
-        deleted -- the reason moved with the postings.
-        """
-        with app.app_context():
-            user_id = seed_user["user"].id
-            # Derived from the app's own day, NOT from a hard-coded start:
-            # the case needs a period that does NOT contain the observed day,
-            # and ``_future_periods``' default start is only "future" while
-            # the directory clock freeze happens to precede it.  A draft of
-            # this test asserted that precondition over the hard-coded start
-            # and so graded the OPPOSITE case (the period contains today ->
-            # LEDGER_POSTINGS) on any clock past it.
-            periods = _future_periods(
-                db.session, seed_user, count=6,
-                start=display_today() + timedelta(days=1),
-            )
-            create_savings_account(
-                seed_user, db.session, "Savings", Decimal("500.00"),
-                anchor_period_id=periods[2].id,
-            )
-            db.session.commit()
-            before = _count_periods(db.session, user_id)
-            # The precondition: the observed day (today) is NOT inside the
-            # period the account was forced onto -- true by construction now.
-            assert periods[2].start_date > display_today()
-
-            with pytest.raises(PayPeriodLocked) as excinfo:
-                pay_period_admin.truncate_pay_periods(
-                    user_id, keep_through_index=periods[1].period_index,
-                )
-            assert excinfo.value.blocking.get(periods[2].id) == (
-                PeriodLockReason.ACCOUNT_ANCHOR
             )
             assert _count_periods(db.session, user_id) == before
 
@@ -472,7 +403,6 @@ class TestTruncateHardLocks:
             user_id = seed_user["user"].id
             savings = create_savings_account(
                 seed_user, db.session, "Savings", Decimal("500.00"),
-                anchor_period_id=seed_user["bootstrap_period"].id,
             )
             db.session.flush()
             _emit_untethered_entry(
@@ -561,24 +491,6 @@ class TestTruncateHardLocks:
             assert excinfo.value.blocking.get(periods[2].id) == (
                 PeriodLockReason.RECURRENCE_ANCHOR
             )
-
-    def test_bulk_delete_of_anchor_period_raises_integrity_error(
-        self, app, db, seed_user,
-    ):
-        """The Phase 0 FK refuses a direct delete of an anchor period.
-
-        The application lock is the first guard; this proves the database
-        backstop -- a delete that somehow bypassed the lock raises
-        IntegrityError immediately, never silently NULLing the anchor.
-        """
-        with app.app_context():
-            bootstrap = seed_user["bootstrap_period"]
-            with pytest.raises(IntegrityError):
-                db.session.query(PayPeriod).filter(
-                    PayPeriod.id == bootstrap.id,
-                ).delete(synchronize_session=False)
-                db.session.flush()
-            db.session.rollback()
 
 
 class TestTruncateDiscardGate:
@@ -684,7 +596,6 @@ class TestTruncateDiscardGate:
             user_id = seed_user["user"].id
             savings = create_savings_account(
                 seed_user, db.session, "Savings", Decimal("500.00"),
-                anchor_period_id=periods[0].id,
             )
             make_transfer_template(db.session, seed_user, savings)
             period_population.populate_periods_from_active_templates(
@@ -706,7 +617,6 @@ class TestTruncateDiscardGate:
             user_id = seed_user["user"].id
             savings = create_savings_account(
                 seed_user, db.session, "Savings", Decimal("500.00"),
-                anchor_period_id=periods[0].id,
             )
             _make_adhoc_transfer(db.session, seed_user, savings, periods[2])
             db.session.commit()

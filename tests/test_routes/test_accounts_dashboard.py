@@ -87,8 +87,7 @@ class TestDashboardGrouping:
 
     def test_dashboard_hysa_shows_interest(self, auth_client, seed_user, db, seed_periods_today):
         """HYSA account card shows APY info."""
-        acct = _create_hysa_account(seed_user, db.session)
-        acct.current_anchor_period_id = seed_periods_today[0].id
+        _create_hysa_account(seed_user, db.session)
         db.session.commit()
 
         resp = auth_client.get("/savings")
@@ -99,11 +98,8 @@ class TestDashboardGrouping:
     def test_dashboard_emergency_includes_hysa(self, auth_client, seed_user, db, seed_periods_today):
         """Emergency fund total includes HYSA balances."""
         # Create a savings account so emergency fund section appears.
-        savings_acct = _create_savings_account(seed_user, db.session)
-        savings_acct.current_anchor_period_id = seed_periods_today[0].id
-
-        hysa_acct = _create_hysa_account(seed_user, db.session)
-        hysa_acct.current_anchor_period_id = seed_periods_today[0].id
+        _create_savings_account(seed_user, db.session)
+        _create_hysa_account(seed_user, db.session)
         db.session.commit()
 
         resp = auth_client.get("/savings")
@@ -141,7 +137,6 @@ class TestDashboardGrouping:
             anchor_balance=Decimal("200000.00"),
             origination_date=date(2023, 1, 1), payment_day=1,
             account_type=AcctTypeEnum.MORTGAGE,
-            anchor_period=seed_periods_today[0],
         )
 
         resp = auth_client.get("/savings")
@@ -157,7 +152,6 @@ class TestDashboardGrouping:
             anchor_balance=Decimal("20000.00"),
             origination_date=date(2024, 6, 1), payment_day=15,
             account_type=AcctTypeEnum.AUTO_LOAN,
-            anchor_period=seed_periods_today[0],
         )
 
         resp = auth_client.get("/savings")
@@ -173,7 +167,6 @@ class TestDashboardGrouping:
             anchor_balance=Decimal("150000.00"),
             origination_date=date(2022, 1, 1), payment_day=1,
             account_type=AcctTypeEnum.MORTGAGE,
-            anchor_period=seed_periods_today[0],
         )
 
         resp = auth_client.get("/savings")
@@ -210,9 +203,12 @@ class TestDashboardGrouping:
         Money Market are also is_liquid=True. CD (is_liquid=False) and
         retirement accounts should not contribute.
         """
-        # seed_user["account"] is a Checking account (is_liquid=True).
-        seed_user["account"].current_anchor_balance = Decimal("1000.00")
-        seed_user["account"].current_anchor_period_id = seed_periods_today[0].id
+        # seed_user["account"] is a Checking account (is_liquid=True) whose
+        # origination assertion is already $1,000.00.  This line used to write
+        # ``current_anchor_balance = 1000.00`` beside that assertion, which was
+        # redundant even then; ruling R-EH deleted the column, and re-asserting
+        # the same balance on the same day is what the F-103 unique index
+        # refuses.  The fixture's balance comes from the seed.
 
         # Add a Money Market account (is_liquid=True by seed).
         mm_type = db.session.query(AccountType).filter_by(
@@ -224,7 +220,6 @@ class TestDashboardGrouping:
                 account_type_id=mm_type.id,
                 name="My Money Market",
                 anchor_balance=Decimal("2000.00"),
-                anchor_period_id=seed_periods_today[0].id,
             ),
         )
         db.session.add(mm_acct)
@@ -237,7 +232,6 @@ class TestDashboardGrouping:
                 account_type_id=cd_type.id,
                 name="My CD",
                 anchor_balance=Decimal("5000.00"),
-                anchor_period_id=seed_periods_today[0].id,
             ),
         )
         db.session.add(cd_acct)
@@ -271,7 +265,6 @@ class TestDashboardGrouping:
                     account_type_id=custom_type.id,
                     name="Custom Liquid",
                     anchor_balance=Decimal("3000.00"),
-                    anchor_period_id=seed_periods_today[0].id,
                 ),
             )
             db.session.add(acct)
@@ -522,7 +515,6 @@ class TestAccountHardDelete:
                     account_type_id=checking_type.id,
                     name="Other Checking",
                     anchor_balance=Decimal("500.00"),
-                    anchor_period_id=_bootstrap.id,
                 ),
             )
             db.session.commit()

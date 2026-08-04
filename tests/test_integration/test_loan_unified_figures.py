@@ -97,7 +97,6 @@ def _create_fixed_loan(seed_user, period, *, name="C17 Mortgage"):
         seed_user, db.session, name=name, principal=FIXED_PRINCIPAL,
         rate=FIXED_RATE, term=FIXED_TERM, origination_date=FIXED_ORIGINATION,
         payment_day=1, account_type=AcctTypeEnum.MORTGAGE,
-        anchor_period=period,
     )
     return account, loan_params_for(db.session, account.id)
 
@@ -120,7 +119,6 @@ def _create_arm_loan(seed_user, period, *, name="C17 ARM"):
         seed_user, db.session, name=name, principal=ARM_PRINCIPAL,
         rate=ARM_RATE, term=ARM_TERM, origination_date=FIXED_ORIGINATION,
         payment_day=1, account_type=AcctTypeEnum.MORTGAGE,
-        anchor_period=period,
     )
     loan_params = loan_params_for(db.session, account.id)
     loan_params.is_arm = True
@@ -813,7 +811,7 @@ def test_standing_extra_folds_past_the_shadow_horizon(
             seed_user, db.session, name="C8a Mortgage",
             principal=FIXED_PRINCIPAL, rate=FIXED_RATE, term=FIXED_TERM,
             origination_date=as_of, payment_day=payment_day,
-            account_type=AcctTypeEnum.MORTGAGE, anchor_period=current_period,
+            account_type=AcctTypeEnum.MORTGAGE,
         )
         loan_params = loan_params_for(db.session, account.id)
         extra = Decimal("500.00")

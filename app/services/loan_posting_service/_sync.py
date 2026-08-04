@@ -39,6 +39,7 @@ from app.services.posting_service import (
     sync_transfer_postings,
 )
 from app.services.scenario_resolver import get_baseline_scenario
+from app.services.user_write_lock import lock_every_user_writes, lock_user_writes
 from app.utils.db_errors import is_unique_violation
 from app.utils.money import round_money
 
@@ -123,6 +124,29 @@ def sync_loan_postings(loan_account_id: int, scenario_id: int) -> None:
     sync happened to run.  Flushes but does not commit (the caller owns the
     transaction).
 
+    **Takes the owner's write lock before it walks** (plan step X-f1c3c).  All
+    three reconciles below are read-modify-writes -- read what is posted,
+    subtract it from what the walk says, write the difference -- and two of
+    them interleaved both compute their delta against the same posted state.
+    The loan half never had even the accidental serialisation the cash half
+    lost at ruling R-EN: a loan true-up appends to
+    :class:`~app.models.loan_anchor_event.LoanAnchorEvent` and UPDATEs no row,
+    so nothing has serialised this since Commit 16.  R-EN cited the loan
+    contract as the precedent for deleting the cash lock, which is how a
+    defect became a rationale.  See :mod:`app.services.user_write_lock`.
+
+    **A loan with no resolvable owner still FAILS LOUD, and an earlier version
+    of this step made it a silent no-op.**  ``account_owner_id`` returns
+    ``None`` only when the ``accounts`` row is absent (``user_id`` is NOT
+    NULL), and at that point ``_ledger_account_for`` below raises
+    ``PostingError`` for the missing chart-of-accounts pairing -- which is the
+    disposition this codebase wants for a broken invariant.  The lock simply
+    cannot be keyed without an owner, so the acquisition is skipped and the
+    existing raise is left to fire.  *The claim that this matched "the same
+    disposition the reconciles below already have" was FALSE and was caught by
+    a neutral adversarial review: the cash twin no-ops on a missing account by
+    design, this one raises, and the two are not the same rule.*
+
     Args:
         loan_account_id: The loan whose full ledger to reconcile.
         scenario_id: The budget scenario to reconcile within.
@@ -131,6 +155,9 @@ def sync_loan_postings(loan_account_id: int, scenario_id: int) -> None:
         PostingError: When the reconciled ledger does not equal the fold of the
             loan's events (:func:`_assert_checked_projection`).
     """
+    owner_id = account_owner_id(loan_account_id)
+    if owner_id is not None:
+        lock_user_writes(owner_id)
     walk = walk_loan_ledger(loan_account_id, scenario_id)
     # ONE linked-ledger resolution per sync, shared by the lineage probe and
     # the assert (each used to resolve its own -- a redundant query).
@@ -353,16 +380,26 @@ def sync_loan_postings_all_scenarios(loan_account_id: int) -> None:
     A brand-new or unresolvable loan (no anchors) syncs nothing.  Idempotent and
     self-healing.  Flushes but does not commit (the caller owns the transaction).
 
+    **Takes the owner's write lock before the scenario read, and so does the
+    per-scenario sync it loops** (plan step X-f1c3c).  Both, not one: the lock
+    is re-entrant within a transaction, and the SCENARIO SET below is itself a
+    read this function then acts on -- a scenario that became live between that
+    read and the loop would otherwise be missed.  The cash twin
+    (``account_posting_service._sync.sync_account_anchor_postings_all_scenarios``)
+    is locked at the same two points for the same two reasons.
+
     Args:
         loan_account_id: The loan whose corrections to reconcile across every
             scenario it is displayed in.
     """
-    scenario_ids = set(_scenarios_with_loan_payments(loan_account_id))
     owner_id = account_owner_id(loan_account_id)
-    if owner_id is not None:
-        baseline = get_baseline_scenario(owner_id)
-        if baseline is not None:
-            scenario_ids.add(baseline.id)
+    if owner_id is None:
+        return
+    lock_user_writes(owner_id)
+    scenario_ids = set(_scenarios_with_loan_payments(loan_account_id))
+    baseline = get_baseline_scenario(owner_id)
+    if baseline is not None:
+        scenario_ids.add(baseline.id)
     for scenario_id in sorted(scenario_ids):
         sync_loan_postings(loan_account_id, scenario_id)
 
@@ -465,10 +502,21 @@ def backfill_all_loan_postings() -> list[int]:
     which initialises ``ref_cache`` first because the migration host does not),
     the backfill suite, or the reconciliation oracle.
 
+    **One of the two transactions in the app that reconcile more than one
+    OWNER** (the cash twin ``backfill_all_account_anchor_postings`` is the
+    other), so it takes every per-user write lock up front, ascending by user id
+    (:func:`app.services.user_write_lock.lock_every_user_writes`), before the
+    first loan is visited.  The loop below walks loans ascending by ACCOUNT id,
+    which visits owners in no particular order; pre-taking the locks makes the
+    acquisition order a property of this function rather than of the loan
+    table's contents, so two concurrent sweeps cannot take the same two keys in
+    opposite orders.
+
     Returns:
         The loan account ids reconciled, ascending -- for the deploy log and
         test introspection (empty on a loan-free database).
     """
+    lock_every_user_writes()
     return _reconcile_loan_account_ids(loan_loaders.load_all_loan_account_ids())
 
 

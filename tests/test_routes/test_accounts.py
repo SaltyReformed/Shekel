@@ -84,7 +84,6 @@ def _create_other_user_account():
             account_type_id=checking_type.id,
             name="Other Checking",
             anchor_balance=Decimal("500.00"),
-            anchor_period_id=bootstrap.id,
             notes="_create_other_user_account fixture",
         ),
     )
@@ -193,7 +192,7 @@ class TestAccountCreate:
                 .filter_by(user_id=seed_user["user"].id, name="Savings")
                 .one()
             )
-            assert acct.current_anchor_balance == Decimal("500.00")
+            assert cash_ledger.resolve_anchor(acct).balance == Decimal("500.00")
 
     def test_create_account_stores_the_submitted_observed_on(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -241,12 +240,13 @@ class TestAccountCreate:
             # Non-vacuity: the submitted day is genuinely not today, so this
             # cannot pass by the default coinciding with the assertion.
             assert observed != display_today()
-            # The ASSERTION carries no period since ruling R-EO -- a fact about
-            # a bank is not filed under a budgeting artifact.  The account's
-            # cache column still resolves the period CONTAINING that day, not
-            # today's, which is the rule this case exists for.
+            # The ASSERTION carries no period since ruling R-EO -- a fact
+            # about a bank is not filed under a budgeting artifact -- and the
+            # account carries none either since ruling R-EH.  The rule this
+            # case exists for is that the SUBMITTED day survives the round
+            # trip, which the assertion above grades; the period half of it
+            # went with the columns.
             assert not hasattr(row, "pay_period_id")
-            assert acct.current_anchor_period_id == earlier.id
 
     def test_create_account_refuses_a_future_observed_on(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -387,7 +387,7 @@ class TestAccountCreate:
                 .filter_by(user_id=seed_user["user"].id, name="Zero Savings")
                 .one()
             )
-            assert acct.current_anchor_balance == Decimal("0")
+            assert cash_ledger.resolve_anchor(acct).balance == Decimal("0")
 
             # Omitting anchor_balance entirely also defaults to zero.
             response = auth_client.post("/accounts", data={
@@ -400,7 +400,7 @@ class TestAccountCreate:
                 .filter_by(user_id=seed_user["user"].id, name="No Balance Savings")
                 .one()
             )
-            assert acct2.current_anchor_balance == Decimal("0")
+            assert cash_ledger.resolve_anchor(acct2).balance == Decimal("0")
 
     def test_create_account_validation_error(self, app, auth_client, seed_user):
         """POST /accounts with missing name shows a validation error."""
@@ -470,7 +470,6 @@ class TestAccountUpdate:
                     account_type_id=savings_type.id,
                     name="Savings",
                     anchor_balance=Decimal("0"),
-                    anchor_period_id=seed_user["bootstrap_period"].id,
                 ),
             )
             db.session.add(second)
@@ -569,7 +568,6 @@ class TestAccountArchive:
                     account_type_id=savings_type.id,
                     name="Savings",
                     anchor_balance=Decimal("0"),
-                    anchor_period_id=seed_user["bootstrap_period"].id,
                 ),
             )
             db.session.add(savings)
@@ -979,7 +977,7 @@ class TestTrueUp:
             assert response.headers.get("HX-Trigger") == "balanceChanged"
 
             acct = db.session.get(Account, account_id)
-            assert acct.current_anchor_balance == Decimal("3000.00")
+            assert cash_ledger.resolve_anchor(acct).balance == Decimal("3000.00")
 
             # The true-up's history row is the most recent for this
             # account; the fixture-time origination row is the prior
@@ -992,18 +990,66 @@ class TestTrueUp:
             )
             assert history.anchor_balance == Decimal("3000.00")
 
-    def test_true_up_no_current_period(self, app, auth_client, seed_user):
-        """PATCH /accounts/<id>/true-up returns 400 when no pay periods exist."""
+    def test_true_up_records_without_a_current_pay_period(
+        self, app, auth_client, seed_user, db,
+    ):
+        """A true-up with no period covering today is RECORDED, not refused.
+
+        The direct inversion of ``test_true_up_no_current_period``, which
+        asserted a 400 and the message "No current pay period found".  Ruling
+        R-EO deleted the pay period from a balance assertion, so this door has
+        no period to resolve and nothing it can fail to find -- refusing a
+        balance the user read off their bank because a BUDGETING artifact is
+        missing was finding N-134's shape on the true-up door.
+
+        Non-vacuity: ``seed_user`` alone seeds no period covering today (that
+        is what made the old 400 fire), and the assertion is read back out of
+        the history table rather than off the response.
+        """
         with app.app_context():
             account_id = seed_user["account"].id
-
-            response = auth_client.patch(
-                f"/accounts/{account_id}/true-up",
-                data={"anchor_balance": "1000.00"},
+            # The PRECONDITION, asserted rather than assumed.  This test is
+            # about the no-current-period door, so it grades nothing if the
+            # fixture ever starts seeding a period covering today -- it would
+            # pass as an ordinary true-up.  ``seed_user``'s bootstrap period is
+            # HARDCODED to 2026-01-05..2026-01-18 (``conftest``), not derived
+            # from the user's creation date as an earlier version of this
+            # comment said, so ``get_current_period`` is ``None`` on every day
+            # after 2026-01-18 and this is not date-fragile.
+            assert pay_period_service.get_current_period(
+                seed_user["user"].id,
+            ) is None, (
+                "this test grades the no-current-period door; the fixture now "
+                "seeds a period covering today, so it would pass vacuously"
             )
 
-            assert response.status_code == 400
-            assert b"No current pay period found" in response.data
+            before_rows = db.session.query(AccountAnchorHistory).filter_by(
+                account_id=account_id,
+            ).count()
+
+            # NOT the fixture's own $1,000.00.  A first version of this test
+            # asserted the resolver returned "1000.00" -- which ``seed_user``'s
+            # origination assertion already says, so a true-up that returned 200
+            # and wrote NOTHING passed it.  Proven vacuous by a neutral review,
+            # which made ``stage_anchor_true_up`` return before its
+            # ``session.add`` and watched this test stay green.
+            response = auth_client.patch(
+                f"/accounts/{account_id}/true-up",
+                data={"anchor_balance": "1750.25"},
+            )
+
+            assert response.status_code == 200, response.data[:200]
+            db.session.expire_all()
+            account = db.session.get(Account, account_id)
+            anchor = cash_ledger.resolve_anchor(account)
+            assert anchor.balance == Decimal("1750.25")
+            # Recorded AS OF the user's civil day, not the process's.
+            assert anchor.observed_on == display_today()
+            # Exactly one row appended -- an INSERT that also destroyed the
+            # origination assertion would satisfy the balance check alone.
+            assert db.session.query(AccountAnchorHistory).filter_by(
+                account_id=account_id,
+            ).count() == before_rows + 1
 
     def test_true_up_invalid_amount(self, app, auth_client, seed_user, seed_periods_today):
         """PATCH /accounts/<id>/true-up with invalid amount returns 400 with errors JSON."""
@@ -1028,7 +1074,7 @@ class TestTrueUp:
         """
         with app.app_context():
             other = _create_other_user_account()
-            orig_balance = other["account"].current_anchor_balance
+            orig_balance = cash_ledger.resolve_anchor(other["account"]).balance
 
             response = auth_client.patch(
                 f"/accounts/{other['account'].id}/true-up",
@@ -1040,7 +1086,7 @@ class TestTrueUp:
             # Prove no state change occurred.
             db.session.expire_all()
             db.session.refresh(other["account"])
-            assert other["account"].current_anchor_balance == orig_balance
+            assert cash_ledger.resolve_anchor(other["account"]).balance == orig_balance
 
     def test_true_up_accounts_revert_skips_as_of_oob(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -1534,7 +1580,6 @@ class TestTheReconcileRoute:
                     account_type_id=checking_type.id,
                     name="Checking 2",
                     anchor_balance=Decimal("2000.00"),
-                    anchor_period_id=seed_periods_today[0].id,
                 ),
             )
             db.session.add(account_b)
@@ -1686,7 +1731,6 @@ class TestTheReconcileRoute:
                     account_type_id=savings_type.id,
                     name="Savings",
                     anchor_balance=Decimal("1000.00"),
-                    anchor_period_id=seed_periods_today[0].id,
                 ),
             )
             db.session.commit()
@@ -1995,7 +2039,6 @@ class TestAccountTypes:
                     account_type_id=in_use_type.id,
                     name="Custom Account",
                     anchor_balance=Decimal("100.00"),
-                    anchor_period_id=seed_user["bootstrap_period"].id,
                 ),
             )
             db.session.add(using_account)
@@ -2864,7 +2907,6 @@ class TestInterestDispatch:
                     account_type_id=hsa_type.id,
                     name="HSA Detail Test",
                     anchor_balance=500,
-                    anchor_period_id=seed_periods_today[0].id,
                 ),
             )
             db.session.add(acct)
@@ -2894,7 +2936,6 @@ class TestInterestDispatch:
                     account_type_id=hsa_type.id,
                     name="HSA No Params",
                     anchor_balance=100,
-                    anchor_period_id=seed_periods_today[0].id,
                 ),
             )
             db.session.add(acct)
@@ -3048,7 +3089,6 @@ class TestWizardBanner:
                     account_type_id=hysa_type.id,
                     name="Banner HYSA",
                     anchor_balance=Decimal("5000.00"),
-                    anchor_period_id=seed_periods_today[0].id,
                 ),
             )
             db.session.add(acct)
@@ -3080,7 +3120,6 @@ class TestWizardBanner:
                     account_type_id=hysa_type.id,
                     name="No Banner HYSA",
                     anchor_balance=Decimal("5000.00"),
-                    anchor_period_id=seed_periods_today[0].id,
                 ),
             )
             db.session.add(acct)
@@ -3111,7 +3150,6 @@ class TestWizardBanner:
                     account_type_id=k401_type.id,
                     name="Banner 401k",
                     anchor_balance=Decimal("10000.00"),
-                    anchor_period_id=seed_periods_today[0].id,
                 ),
             )
             db.session.add(acct)
@@ -3145,7 +3183,6 @@ class TestWizardBanner:
                     account_type_id=k401_type.id,
                     name="No Banner 401k",
                     anchor_balance=Decimal("10000.00"),
-                    anchor_period_id=seed_periods_today[0].id,
                 ),
             )
             db.session.add(acct)
@@ -3190,7 +3227,6 @@ class TestCheckingDetail:
                 account_type_id=checking_type.id,
                 name="Detail Checking",
                 anchor_balance=Decimal(balance),
-                anchor_period_id=periods[0].id,
             ),
         )
         db.session.add(acct)
@@ -3350,7 +3386,6 @@ class TestCheckingDetail:
                     account_type_id=savings_type.id,
                     name="My Savings",
                     anchor_balance=Decimal("1000.00"),
-                    anchor_period_id=seed_user["bootstrap_period"].id,
                 ),
             )
             db.session.add(savings)
@@ -3803,7 +3838,6 @@ class TestCheckingDetailCanonicalProducer:
                     account_type_id=checking_type.id,
                     name="Second Checking",
                     anchor_balance=Decimal("1000.00"),
-                    anchor_period_id=current_period.id,
                 ),
             )
             db.session.flush()
@@ -3882,7 +3916,10 @@ class TestCheckingDetailCanonicalProducer:
         ``TestCheckingDetail`` tests so the horizon is in range.
         """
         with app.app_context():
-            periods = pay_period_service.generate_pay_periods(
+            # The CALL is the setup: it creates the ten periods this
+            # page projects across.  The return value is unused since
+            # the anchor no longer names a period.
+            pay_period_service.generate_pay_periods(
                 user_id=seed_user["user"].id,
                 start_date=display_today(),
                 num_periods=10,
@@ -3897,7 +3934,6 @@ class TestCheckingDetailCanonicalProducer:
                     account_type_id=checking_type.id,
                     name="Zero Anchor Checking",
                     anchor_balance=Decimal("0.00"),
-                    anchor_period_id=periods[0].id,
                 ),
             )
             db.session.flush()
@@ -4022,14 +4058,13 @@ class TestCheckingDashboardLink:
     def test_dashboard_has_checking_detail_link(self, app, auth_client, seed_user):
         """GET /savings links the checking card to the unified detail page."""
         with app.app_context():
-            periods = pay_period_service.generate_pay_periods(
+            # The CALL is the setup: the dashboard can only compute a
+            # balance for the seed account across periods that exist.
+            pay_period_service.generate_pay_periods(
                 user_id=seed_user["user"].id,
                 start_date=display_today(),
                 num_periods=10,
             )
-            # Set anchor on the seed_user account so the dashboard
-            # can compute balances for it.
-            seed_user["account"].current_anchor_period_id = periods[0].id
             db.session.commit()
 
             resp = auth_client.get("/savings")
@@ -4052,7 +4087,9 @@ class TestCheckingDashboardLink:
         them the same cash detail page as checking.
         """
         with app.app_context():
-            periods = pay_period_service.generate_pay_periods(
+            # The CALL is the setup: the dashboard can only compute a
+            # balance for either card across periods that exist.
+            pay_period_service.generate_pay_periods(
                 user_id=seed_user["user"].id,
                 start_date=display_today(),
                 num_periods=10,
@@ -4066,12 +4103,10 @@ class TestCheckingDashboardLink:
                     account_type_id=savings_type.id,
                     name="My Savings",
                     anchor_balance=Decimal("0"),
-                    anchor_period_id=periods[0].id,
                 ),
             )
             db.session.add(savings)
 
-            seed_user["account"].current_anchor_period_id = periods[0].id
             db.session.commit()
 
             resp = auth_client.get("/savings")
@@ -4164,7 +4199,6 @@ class TestCashDetailContext:
                 account_type_id=checking_type.id,
                 name="Ctx Checking",
                 anchor_balance=Decimal("5000.00"),
-                anchor_period_id=periods[0].id,
             ),
         )
         db.session.add(acct)
@@ -4295,7 +4329,6 @@ class TestCashDetailContext:
                     account_type_id=checking_type.id,
                     name="Anchor Date Checking",
                     anchor_balance=Decimal("1000.00"),
-                    anchor_period_id=seed_periods_today[0].id,
                 ),
             )
             db.session.add(acct)
@@ -4329,7 +4362,9 @@ class TestCashDetailContext:
         plain (non-interest) accounts.
         """
         with app.app_context():
-            periods = pay_period_service.generate_pay_periods(
+            # The CALL is the setup: the next-year window needs a year
+            # of periods to sum interest across.
+            pay_period_service.generate_pay_periods(
                 user_id=seed_user["user"].id,
                 start_date=display_today(),
                 num_periods=30,
@@ -4341,7 +4376,6 @@ class TestCashDetailContext:
                     account_type_id=hysa_type.id,
                     name="Zero APY HYSA",
                     anchor_balance=Decimal("10000.00"),
-                    anchor_period_id=periods[0].id,
                 ),
             )
             db.session.add(acct)
@@ -4385,7 +4419,6 @@ class TestCashDetailContext:
                     account_type_id=hysa_type.id,
                     name="Window HYSA",
                     anchor_balance=Decimal("10000.00"),
-                    anchor_period_id=periods[0].id,
                 ),
             )
             db.session.add(acct)
@@ -4513,7 +4546,6 @@ class TestCashDetailWrongTypeMatrix:
                     account_type_id=acct_type.id,
                     name=f"WrongType {type_name}",
                     anchor_balance=Decimal("1000.00"),
-                    anchor_period_id=seed_user["bootstrap_period"].id,
                 ),
             )
             db.session.add(acct)
@@ -4546,7 +4578,6 @@ class TestCashDetailNewCoverage:
                     account_type_id=cc_type.id,
                     name="My Card",
                     anchor_balance=Decimal("-250.00"),
-                    anchor_period_id=seed_user["bootstrap_period"].id,
                 ),
             )
             db.session.add(acct)
@@ -4595,6 +4626,44 @@ def _bump_account_version_outside_session(account_id):
 
 class TestAccountVersionIdColumn:
     """Schema-level invariants for the optimistic-lock counter."""
+
+    def test_the_anchor_cache_columns_are_gone(self, app):
+        """``budget.accounts`` carries NO anchor cache columns (ruling R-EH).
+
+        **Asserted rather than merely deleted**, for the reason the sibling
+        lock one table over gives (``test_c43_ondelete_and_naming_convention
+        .test_account_anchor_history_has_no_pay_period_fk``): a future
+        migration re-adding ``current_anchor_balance`` /
+        ``current_anchor_period_id`` would re-open a denormalized second
+        balance -- the state whose divergence this arc spent a step deleting --
+        with nothing objecting, and "the tests stopped mentioning it" is not
+        something a reader can distinguish from an accident.
+
+        The CHECK and the deferrable FK that existed only for those columns are
+        asserted gone in the same pass, because each is independently
+        re-addable and each carried its own cost: the CHECK was redundant with
+        a NOT NULL, and the FK's deferrability existed solely so the pay-period
+        reset could re-point the column mid-transaction.
+        """
+        with app.app_context():
+            insp = inspect(db.engine)
+            cols = {
+                c["name"] for c in insp.get_columns("accounts", schema="budget")
+            }
+            assert "current_anchor_balance" not in cols
+            assert "current_anchor_period_id" not in cols
+
+            checks = {
+                c["name"]
+                for c in insp.get_check_constraints("accounts", schema="budget")
+            }
+            assert "ck_accounts_anchor_balance_present" not in checks
+
+            fks = {
+                fk.get("name")
+                for fk in insp.get_foreign_keys("accounts", schema="budget")
+            }
+            assert "accounts_current_anchor_period_id_fkey" not in fks
 
     def test_version_id_column_present_and_not_null(self, app):
         """The live ``budget.accounts`` table carries a NOT NULL ``version_id``."""
@@ -4715,7 +4784,7 @@ class TestAccountVersionIdLifecycle:
             initial_version = db.session.get(Account, acct_id).version_id
 
             for _ in range(5):
-                _ = db.session.get(Account, acct_id).current_anchor_balance
+                _ = db.session.get(Account, acct_id).name
                 db.session.expire_all()
 
             final_version = db.session.get(Account, acct_id).version_id
@@ -4763,7 +4832,13 @@ class TestAccountConcurrentMutationStaleData:
 
             _bump_account_version_outside_session(acct_id)
 
-            acct.current_anchor_balance = Decimal("9999.00")
+            # ANY mutable column proves the version pin -- the point is that
+            # the ORM narrows the UPDATE by ``version_id``, not which field is
+            # written.  It used to write ``current_anchor_balance``, deleted at
+            # plan step X-f1c3c (ruling R-EH); ``name`` is the column the
+            # account-edit form actually writes and the one whose door still
+            # carries this lock.
+            acct.name = "Renamed Under A Stale Version"
 
             with pytest.raises(StaleDataError):
                 db.session.commit()
@@ -4772,7 +4847,7 @@ class TestAccountConcurrentMutationStaleData:
 
             db.session.expire_all()
             persisted = db.session.get(Account, acct_id)
-            assert persisted.current_anchor_balance != Decimal("9999.00")
+            assert persisted.name != "Renamed Under A Stale Version"
             assert persisted.version_id == 2
 
     def test_concurrent_delete_raises_stale_data_error(
@@ -4790,7 +4865,6 @@ class TestAccountConcurrentMutationStaleData:
                     account_type_id=checking_type.id,
                     name="Spare",
                     anchor_balance=Decimal("0.00"),
-                    anchor_period_id=seed_user["bootstrap_period"].id,
                 ),
             )
             db.session.add(spare)
@@ -4811,184 +4885,73 @@ class TestAccountConcurrentMutationStaleData:
             )
 
 
-class TestTrueUpStaleForm:
-    """``true_up`` (PATCH /accounts/<id>/true-up) optimistic-locking behaviour."""
+class TestTrueUpIsAppendOnly:
+    """``true_up`` (PATCH /accounts/<id>/true-up) records, it does not contend.
 
-    def test_true_up_succeeds_with_matching_version(
-        self, app, auth_client, seed_user, seed_periods_today,
+    **This class graded the C-17 optimistic lock until plan step X-f1c3c**, in
+    four cases: a matching ``version_id`` succeeds and bumps the counter, a
+    stale one answers 409 with the conflict cell, a flush-time
+    ``StaleDataError`` answers the same 409, and an omitted version falls
+    through to the database check.  Ruling R-EN deleted all of it, because the
+    path stopped writing the row the lock guarded -- a true-up APPENDS an
+    assertion, so there is nothing for a second tab to overwrite.  The four
+    cases are replaced by the one that states the new contract, plus the
+    concurrent case in ``test_race_conditions.TestConcurrentAnchorUpdate``
+    (both requests 200, both assertions recorded).
+    """
+
+    def test_a_stale_form_still_records_its_assertion(
+        self, app, auth_client, seed_user, seed_periods_today, db,
     ):
-        """A submitted ``version_id`` that matches the row succeeds and bumps the counter."""
-        with app.app_context():
-            acct_id = seed_user["account"].id
-            initial_version = db.session.get(Account, acct_id).version_id
+        """A true-up submitted against a stale row succeeds and is recorded.
 
-            response = auth_client.patch(
-                f"/accounts/{acct_id}/true-up",
-                data={
-                    "anchor_balance": "1100.00",
-                    "version_id": str(initial_version),
-                },
-            )
+        The direct inversion of ``test_true_up_returns_409_on_stale_version``.
+        The account row is advanced out from under the form (simulating another
+        tab having edited the account), and the true-up is submitted anyway.
+        It must be accepted: what the user is declaring is what their bank
+        holds, and that statement does not become false because some other
+        field on the account changed.
 
-            assert response.status_code == 200, response.data
+        **The payload carries the stale ``version_id``, and that is the whole
+        point of the test.**  A first version of it advanced the row and then
+        submitted no version at all, which graded a form that never had the
+        pin rather than the one R-EN actually makes tolerable: a page cached
+        BEFORE the deploy, whose form still renders the hidden field.  That
+        payload reaches ``AnchorUpdateSchema``, which no longer declares
+        ``version_id`` -- so this also pins the ``unknown = EXCLUDE``
+        backward-compatibility the deletion rests on.  A schema that started
+        rejecting unknown fields would 400 here.
 
-            db.session.expire_all()
-            acct = db.session.get(Account, acct_id)
-            assert acct.current_anchor_balance == Decimal("1100.00")
-            assert acct.version_id == initial_version + 1
-
-    def test_true_up_returns_409_on_stale_version(
-        self, app, auth_client, seed_user, seed_periods_today,
-    ):
-        """A submitted ``version_id`` older than the current row returns 409.
-
-        The route MUST short-circuit before touching the database; the
-        anchor balance and ``AccountAnchorHistory`` table both stay
-        unchanged.  This is the manual-verification scenario from the
-        C-17 plan: Tab 1 holds an old version, Tab 2 commits to bump
-        the row, Tab 1 resubmits with the stale version -- the
-        server must refuse.
-
-        ``stale_version`` is captured from the row state before the
-        bump rather than hard-coded to 1; ``seed_periods_today`` also
-        commits an UPDATE to set the anchor period and would otherwise
-        leave the row at version 2 before this test even runs.
+        Non-vacuity: the version is genuinely advanced first (asserted), the
+        submitted pin is asserted to be the STALE one, and the assertion is
+        read back out of ``account_anchor_history`` rather than off the
+        response, so a 200 that recorded nothing fails here.
         """
         with app.app_context():
             acct_id = seed_user["account"].id
-
-            # Capture the version Tab 1 would have loaded.
-            stale_version = db.session.get(Account, acct_id).version_id
-
-            # Simulate Tab 2 having already advanced the row.
+            before = db.session.get(Account, acct_id).version_id
             _bump_account_version_outside_session(acct_id)
             db.session.expire_all()
-            current_version = db.session.get(Account, acct_id).version_id
-            assert current_version == stale_version + 1, (
-                "fixture invariant: bump must advance the version by "
-                "exactly one"
-            )
-            balance_before = db.session.get(Account, acct_id).current_anchor_balance
-            history_count_before = (
-                db.session.query(AccountAnchorHistory)
-                .filter_by(account_id=acct_id).count()
-            )
+            current = db.session.get(Account, acct_id).version_id
+            assert current != before
 
-            response = auth_client.patch(
+            resp = auth_client.patch(
                 f"/accounts/{acct_id}/true-up",
                 data={
-                    "anchor_balance": "1200.00",
-                    "version_id": str(stale_version),
+                    "anchor_balance": "4242.42",
+                    # The pin the pre-deploy form still renders, and it is
+                    # STALE -- the row has moved past it.  Before R-EN this
+                    # exact payload answered 409.
+                    "version_id": str(before),
                 },
             )
-
-            assert response.status_code == 409, (
-                f"stale version_id must produce 409 Conflict, got "
-                f"{response.status_code}: {response.data!r}"
-            )
-            # The conflict UI must include the "changed by another action"
-            # affordance and the latest balance.
-            body = response.data.decode()
-            assert "changed by another action" in body.lower()
-            # The display partial uses the warning class plus icon.
-            assert "text-warning" in body
-            assert "exclamation-triangle" in body
+            assert resp.status_code == 200, resp.data[:200]
 
             db.session.expire_all()
-            acct = db.session.get(Account, acct_id)
-            assert acct.current_anchor_balance == balance_before, (
-                "Stale-form 409 must NOT mutate the anchor balance."
+            account = db.session.get(Account, acct_id)
+            assert cash_ledger.resolve_anchor(account).balance == Decimal(
+                "4242.42",
             )
-            assert acct.version_id == current_version, (
-                "Stale-form 409 must NOT bump the version counter."
-            )
-            assert (
-                db.session.query(AccountAnchorHistory)
-                .filter_by(account_id=acct_id).count()
-            ) == history_count_before, (
-                "Stale-form 409 must NOT write a history row -- the "
-                "audit trail records only the winner."
-            )
-
-    def test_true_up_route_catches_stale_data_error_as_409(
-        self, app, db, auth_client, seed_user, seed_periods_today,
-    ):
-        """A StaleDataError raised at flush time is converted to a 409 response.
-
-        Engineers a true race using a SQLAlchemy mapper event: the
-        route loads the row at version N, mutates it, then begins
-        the flush; the event listener fires during the UPDATE and
-        bumps the row from a separate connection, defeating the
-        version-pinned WHERE clause.  SQLAlchemy raises
-        ``StaleDataError`` and the route's ``except`` clause
-        converts it into the same 409 + conflict partial the form-
-        side check produces.  This exercises the SQLAlchemy-tier
-        of the optimistic lock end-to-end through the HTTP layer.
-        """
-        from sqlalchemy import event  # pylint: disable=import-outside-toplevel
-
-        with app.app_context():
-            acct_id = seed_user["account"].id
-            balance_before = db.session.get(Account, acct_id).current_anchor_balance
-
-            fired = {"flag": False}
-
-            def make_stale(mapper, connection, target):
-                """Bump version_id from a separate connection mid-flush."""
-                if fired["flag"] or target.id != acct_id:
-                    return
-                fired["flag"] = True
-                _bump_account_version_outside_session(acct_id)
-
-            event.listen(Account, "before_update", make_stale)
-            try:
-                response = auth_client.patch(
-                    f"/accounts/{acct_id}/true-up",
-                    data={"anchor_balance": "5555.00"},
-                )
-            finally:
-                event.remove(Account, "before_update", make_stale)
-
-            assert response.status_code == 409, (
-                f"StaleDataError must convert to 409, got "
-                f"{response.status_code}"
-            )
-            body = response.data.decode()
-            assert "changed by another action" in body.lower()
-            assert "exclamation-triangle" in body
-
-            db.session.expire_all()
-            persisted = db.session.get(Account, acct_id)
-            assert persisted.current_anchor_balance == balance_before, (
-                "StaleDataError-on-commit must roll back the pending "
-                "balance change."
-            )
-
-    def test_true_up_omitted_version_falls_through_to_db_check(
-        self, app, auth_client, seed_user, seed_periods_today,
-    ):
-        """Omitting ``version_id`` skips the form-side check.
-
-        Backwards-compat: a future programmatic client that has no
-        way to plumb the version through still validates and reaches
-        the SQLAlchemy-tier check.  In the no-conflict case the
-        update succeeds; in the conflict case StaleDataError fires
-        on flush -- both are tested elsewhere.
-        """
-        with app.app_context():
-            acct_id = seed_user["account"].id
-            v0 = db.session.get(Account, acct_id).version_id
-
-            response = auth_client.patch(
-                f"/accounts/{acct_id}/true-up",
-                data={"anchor_balance": "1400.00"},
-            )
-
-            assert response.status_code == 200
-            db.session.expire_all()
-            acct = db.session.get(Account, acct_id)
-            assert acct.current_anchor_balance == Decimal("1400.00")
-            assert acct.version_id == v0 + 1
 
 
 class TestUpdateAccountStaleForm:
@@ -5088,7 +5051,6 @@ class TestArchiveAndDeleteStaleData:
                     account_type_id=checking_type.id,
                     name="Archive Target",
                     anchor_balance=Decimal("0.00"),
-                    anchor_period_id=seed_user["bootstrap_period"].id,
                 ),
                 is_active=True,
             )
@@ -5143,7 +5105,6 @@ class TestArchiveAndDeleteStaleData:
                     account_type_id=checking_type.id,
                     name="Delete Target",
                     anchor_balance=Decimal("0.00"),
-                    anchor_period_id=seed_user["bootstrap_period"].id,
                 ),
             )
             db.session.add(spare)
@@ -5179,28 +5140,44 @@ class TestArchiveAndDeleteStaleData:
 
 
 class TestAnchorTemplatesEmitVersionPin:
-    """Templates that render anchor edit forms must include a hidden ``version_id`` input."""
+    """Which anchor-related forms carry a hidden ``version_id`` pin, and which must not.
 
-    def test_grid_anchor_form_includes_version_pin(
+    It read "templates that render anchor edit forms MUST include a hidden
+    ``version_id`` input" until plan step X-f1c3c.  Ruling R-EN split that in
+    two: the ANCHOR editor must not ship one (its handler stopped reading it
+    when the true-up stopped writing the ``accounts`` row the counter guards),
+    while the full ACCOUNT edit form still must (it writes real columns).  Both
+    halves are graded here, which is what keeps the deletion from reading as an
+    oversight.
+
+    Three ``*_conflict_cell_retry_opener_*`` cases were DELETED here in the same
+    step: they asserted that a 409 conflict cell's retry opener carried the
+    right ``revert`` token, and there is no 409.  The revert-token routing they
+    shared is still graded by the ``anchor_form`` and ``hx-patch`` cases below,
+    per surface.
+    """
+
+    def test_anchor_form_ships_no_version_pin(
         self, app, auth_client, seed_user,
     ):
-        """GET /accounts/<id>/anchor-form returns a form with the version_id pin."""
+        """GET /accounts/<id>/anchor-form ships NO version_id pin (ruling R-EN).
+
+        The direct inversion of ``test_grid_anchor_form_includes_version_pin``.
+        The pin existed for the C-17 optimistic lock, which the true-up path
+        lost at plan step X-f1c3c when it stopped writing the ``accounts`` row
+        that ``version_id`` guards.  Shipping a pin the handler no longer reads
+        would be a field the form lies about.
+
+        Non-vacuity is the sibling below: the full ACCOUNT edit form must still
+        ship one, because that door does write real columns.
+        """
         with app.app_context():
             acct_id = seed_user["account"].id
-            current_version = db.session.get(Account, acct_id).version_id
 
             response = auth_client.get(f"/accounts/{acct_id}/anchor-form")
 
             assert response.status_code == 200
-            body = response.data.decode()
-            assert 'name="version_id"' in body, (
-                "grid anchor form must ship version_id as a hidden "
-                "input for the optimistic-lock contract."
-            )
-            assert f'value="{current_version}"' in body, (
-                "version_id hidden input must carry the current row's "
-                "version, not a placeholder."
-            )
+            assert 'name="version_id"' not in response.data.decode()
 
     def test_anchor_form_default_revert_is_grid_display(
         self, app, auth_client, seed_user,
@@ -5268,9 +5245,10 @@ class TestAnchorTemplatesEmitVersionPin:
         """M1 (dashboard): the edit form's hx-patch threads ``revert=dashboard``.
 
         Opened from the dashboard balance card, the form's mutation URL
-        must carry the ``revert`` token so a 409 conflict response can
-        re-render the conflict cell with the dashboard retry target rather
-        than stranding the card on the grid display cell.
+        must carry the ``revert`` token so the success re-render lands on the
+        dashboard card rather than stranding it on the grid display cell.
+        The token also routed a 409 conflict cell's retry opener, until ruling
+        R-EN deleted that response (plan step X-f1c3c).
         """
         with app.app_context():
             acct_id = seed_user["account"].id
@@ -5281,67 +5259,6 @@ class TestAnchorTemplatesEmitVersionPin:
             body = response.data.decode()
             assert (
                 f'hx-patch="/accounts/{acct_id}/true-up?revert=dashboard"'
-                in body
-            )
-
-    def test_grid_conflict_cell_retry_opener_carries_no_revert(
-        self, app, auth_client, seed_user, seed_periods_today,
-    ):
-        """M1 (grid conflict): the 409 conflict cell's retry opener is token-free.
-
-        A stale-version PATCH with no ``revert`` token returns the grid
-        conflict cell.  Its retry opener (the click-to-reopen ``hx-get``)
-        must reopen the bare ``anchor-form`` -- no ``revert`` token -- so the
-        grid conflict path is byte-for-byte unchanged.
-        """
-        with app.app_context():
-            acct_id = seed_user["account"].id
-            stale_version = db.session.get(Account, acct_id).version_id
-            _bump_account_version_outside_session(acct_id)
-
-            response = auth_client.patch(
-                f"/accounts/{acct_id}/true-up",
-                data={
-                    "anchor_balance": "1200.00",
-                    "version_id": str(stale_version),
-                },
-            )
-            assert response.status_code == 409
-            body = response.data.decode()
-            # Confirm this is the conflict cell, then pin its retry opener.
-            assert "changed by another action" in body.lower()
-            assert f'hx-get="/accounts/{acct_id}/anchor-form"' in body
-            assert "revert=dashboard" not in body
-
-    def test_dashboard_conflict_cell_retry_opener_carries_revert(
-        self, app, auth_client, seed_user, seed_periods_today,
-    ):
-        """M1 (dashboard conflict): the 409 conflict cell reopens in the dashboard.
-
-        A stale-version PATCH carrying ``?revert=dashboard`` returns the
-        conflict cell whose retry opener must reopen ``anchor-form`` WITH
-        ``revert=dashboard``.  Without this, a conflict raised from the
-        dashboard balance card would strand it on the grid display cell:
-        the retry would reopen with no token, and Cancel would then revert
-        to the grid rather than the dashboard balance section.
-        """
-        with app.app_context():
-            acct_id = seed_user["account"].id
-            stale_version = db.session.get(Account, acct_id).version_id
-            _bump_account_version_outside_session(acct_id)
-
-            response = auth_client.patch(
-                f"/accounts/{acct_id}/true-up?revert=dashboard",
-                data={
-                    "anchor_balance": "1200.00",
-                    "version_id": str(stale_version),
-                },
-            )
-            assert response.status_code == 409
-            body = response.data.decode()
-            assert "changed by another action" in body.lower()
-            assert (
-                f'hx-get="/accounts/{acct_id}/anchor-form?revert=dashboard"'
                 in body
             )
 
@@ -5372,9 +5289,10 @@ class TestAnchorTemplatesEmitVersionPin:
     ):
         """The cockpit edit form's hx-patch threads ``revert=accounts``.
 
-        So a 409 conflict response can re-render the conflict cell with the
-        cockpit retry target rather than stranding the card on the grid
-        display cell.
+        So the success re-render lands on the cockpit card rather than
+        stranding it on the grid display cell.  The token also routed a 409
+        conflict cell's retry opener, until ruling R-EN deleted that response
+        (plan step X-f1c3c).
         """
         with app.app_context():
             acct_id = seed_user["account"].id
@@ -5385,35 +5303,6 @@ class TestAnchorTemplatesEmitVersionPin:
             body = response.data.decode()
             assert (
                 f'hx-patch="/accounts/{acct_id}/true-up?revert=accounts"'
-                in body
-            )
-
-    def test_accounts_conflict_cell_retry_opener_carries_revert(
-        self, app, auth_client, seed_user, seed_periods_today,
-    ):
-        """The cockpit 409 conflict cell reopens in the cockpit surface.
-
-        A stale-version PATCH carrying ``?revert=accounts`` returns the
-        conflict cell whose retry opener must reopen ``anchor-form`` WITH
-        ``revert=accounts``, so the cockpit card never strands on the grid.
-        """
-        with app.app_context():
-            acct_id = seed_user["account"].id
-            stale_version = db.session.get(Account, acct_id).version_id
-            _bump_account_version_outside_session(acct_id)
-
-            response = auth_client.patch(
-                f"/accounts/{acct_id}/true-up?revert=accounts",
-                data={
-                    "anchor_balance": "1200.00",
-                    "version_id": str(stale_version),
-                },
-            )
-            assert response.status_code == 409
-            body = response.data.decode()
-            assert "changed by another action" in body.lower()
-            assert (
-                f'hx-get="/accounts/{acct_id}/anchor-form?revert=accounts"'
                 in body
             )
 
@@ -5458,11 +5347,22 @@ class TestCashDetailClickToEditHero:
     Cash previously had NO on-page anchor recording (P-DT8).  The hero
     reuses the shared anchor editor (accounts.anchor_form /
     accounts.true_up / anchor_service) via a new ``revert=cash``
-    surface: ``accounts.cash_balance_hero`` is the Cancel / Escape /
-    409 revert target, and a save fires ``balanceChanged`` so the
-    page's ``#cash-band-region`` re-fetches ``accounts.cash_band`` --
-    the hero, horizon chips, interest chip, and chart all recompute
-    from the new anchor together.
+    surface: ``accounts.cash_balance_hero`` is the Cancel / Escape
+    revert target (it was a 409-conflict target too, until ruling R-EN
+    deleted the 409 at plan step X-f1c3c), and a save fires
+    ``balanceChanged`` so the page's ``#cash-band-region`` re-fetches
+    ``accounts.cash_band`` -- the hero, horizon chips, interest chip, and
+    chart all recompute from the new anchor together.
+
+    ``test_cash_conflict_cell_retry_opener_carries_revert`` was DELETED here at
+    plan step X-f1c3c, the fourth of the four conflict-cell cases the ruling
+    removed (the other three were in ``TestAnchorTemplatesEmitVersionPin``,
+    which records them).  It asserted that a 409 conflict cell's retry opener
+    carried ``revert=cash``; there is no 409.  What the token still routes --
+    Cancel, Escape and the success re-render -- is graded by
+    ``test_anchor_form_cash_revert_targets_cash_hero`` and
+    ``test_cash_anchor_form_patch_url_threads_revert`` below, so no live
+    behaviour lost its coverage.
     """
 
     def test_page_hero_is_click_to_edit_inside_band_region(
@@ -5555,7 +5455,9 @@ class TestCashDetailClickToEditHero:
         and every horizon chip read a flat $2,500.
         """
         with app.app_context():
-            periods = pay_period_service.generate_pay_periods(
+            # The CALL is the setup: it creates the ten periods the
+            # band's horizon chips read across.
+            pay_period_service.generate_pay_periods(
                 user_id=seed_user["user"].id,
                 start_date=display_today(),
                 num_periods=10,
@@ -5569,7 +5471,6 @@ class TestCashDetailClickToEditHero:
                     account_type_id=checking_type.id,
                     name="Band Checking",
                     anchor_balance=Decimal("2500.00"),
-                    anchor_period_id=periods[0].id,
                 ),
             )
             db.session.flush()
@@ -5649,36 +5550,6 @@ class TestCashDetailClickToEditHero:
             body = response.data.decode()
             assert (
                 f'hx-patch="/accounts/{acct_id}/true-up?revert=cash"'
-                in body
-            )
-
-    def test_cash_conflict_cell_retry_opener_carries_revert(
-        self, app, auth_client, seed_user, seed_periods_today,
-    ):
-        """The cash 409 conflict cell reopens in the cash surface.
-
-        A stale-version PATCH carrying ``?revert=cash`` returns the
-        conflict cell whose retry opener must reopen ``anchor-form``
-        WITH ``revert=cash``, so the cash hero never strands on the
-        grid.
-        """
-        with app.app_context():
-            acct_id = seed_user["account"].id
-            stale_version = db.session.get(Account, acct_id).version_id
-            _bump_account_version_outside_session(acct_id)
-
-            response = auth_client.patch(
-                f"/accounts/{acct_id}/true-up?revert=cash",
-                data={
-                    "anchor_balance": "1200.00",
-                    "version_id": str(stale_version),
-                },
-            )
-            assert response.status_code == 409
-            body = response.data.decode()
-            assert "changed by another action" in body.lower()
-            assert (
-                f'hx-get="/accounts/{acct_id}/anchor-form?revert=cash"'
                 in body
             )
 
@@ -6485,7 +6356,7 @@ class TestAnchorKindGate:
 
         with app.app_context():
             loan = self._loan(seed_user)
-            column_before = loan.current_anchor_balance
+            column_before = cash_ledger.resolve_anchor(loan).balance
             history_before = (
                 db.session.query(AccountAnchorHistory)
                 .filter_by(account_id=loan.id).count()
@@ -6504,7 +6375,7 @@ class TestAnchorKindGate:
             assert b"not a cash anchor" in response.data
 
             refreshed = db.session.get(Account, loan.id)
-            assert refreshed.current_anchor_balance == column_before
+            assert cash_ledger.resolve_anchor(refreshed).balance == column_before
             assert (
                 db.session.query(AccountAnchorHistory)
                 .filter_by(account_id=loan.id).count()
@@ -6532,7 +6403,7 @@ class TestAnchorKindGate:
         """POST /accounts/<id> with a CHANGED anchor on a loan is refused."""
         with app.app_context():
             loan = self._loan(seed_user)
-            column_before = loan.current_anchor_balance
+            column_before = cash_ledger.resolve_anchor(loan).balance
 
             response = auth_client.post(f"/accounts/{loan.id}", data={
                 "name": loan.name,
@@ -6544,7 +6415,7 @@ class TestAnchorKindGate:
             assert b"not a cash anchor" in response.data
 
             refreshed = db.session.get(Account, loan.id)
-            assert refreshed.current_anchor_balance == column_before
+            assert cash_ledger.resolve_anchor(refreshed).balance == column_before
 
     def test_update_form_allows_loan_edit_with_unchanged_anchor(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -6561,7 +6432,7 @@ class TestAnchorKindGate:
             response = auth_client.post(f"/accounts/{loan.id}", data={
                 "name": "Renamed Gate Loan",
                 "account_type_id": loan.account_type_id,
-                "anchor_balance": str(loan.current_anchor_balance),
+                "anchor_balance": str(cash_ledger.resolve_anchor(loan).balance),
             }, follow_redirects=True)
 
             assert response.status_code == 200

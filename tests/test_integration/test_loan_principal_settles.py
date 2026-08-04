@@ -152,7 +152,7 @@ def _create_mortgage(
         seed_user, db.session, name="Principal-Settle Mortgage",
         principal=ORIGINAL_PRINCIPAL, rate=INTEREST_RATE, term=TERM_MONTHS,
         origination_date=ORIGINATION_DATE, payment_day=1,
-        account_type=AcctTypeEnum.MORTGAGE, anchor_period=anchor_period,
+        account_type=AcctTypeEnum.MORTGAGE,
     )
     loan_params = loan_params_for(db.session, account.id)
 

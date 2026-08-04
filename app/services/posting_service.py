@@ -75,6 +75,7 @@ from app.models.transfer import Transfer
 from app.services import ledger_account_service, posting_reads
 from app.services.cash_ledger import settled_cash_leg
 from app.services.posting_reads import PostingError, _ledger_account_for
+from app.services.user_write_lock import lock_every_user_writes
 from app.services._posting_write import (
     _MAX_DESCRIPTION_LENGTH,
     _PostingLeg,
@@ -799,10 +800,20 @@ def resync_all_cash_postings() -> tuple[int, int]:
     back ACROSS a dating change therefore needs this hook re-run under the old
     image, not just a container swap.
 
+    **It is the THIRD multi-owner transaction, and it takes every per-user
+    write lock up front** (plan step X-f1c3c, finding N-193).  It iterates every
+    owner's settled rows in ID order, and each one can reach the anchor
+    self-heal and so ``lock_user_writes(owner)`` -- an unordered multi-key
+    acquisition, which is exactly what two concurrent sweeps deadlock on.  A
+    first version of the lock's docstring called the two backfill functions
+    "the only multi-owner transactions" and missed this one, which is the FIRST
+    of the three deploy hooks to run.
+
     Returns:
         ``(transactions_changed, transfers_changed)`` -- how many settled
         sources this pass actually re-posted, for the deploy log.
     """
+    lock_every_user_writes()
     settled_ids = settled_status_ids()
     transactions = (
         db.session.query(Transaction)

@@ -221,7 +221,7 @@ class TestLoanDashboard:
             seed_user, db.session, name="Broken Mortgage",
             principal=Decimal("240000.00"), rate=Decimal("0.06000"),
             term=360, origination_date=date(2024, 9, 1), payment_day=1,
-            account_type=AcctTypeEnum.MORTGAGE, anchor_period=seed_periods[0],
+            account_type=AcctTypeEnum.MORTGAGE,
         )
         checking = create_account_of_type(
             seed_user, db.session, "Checking", "Chk",

@@ -51,71 +51,6 @@ from app.utils.dates import display_today
 logger = logging.getLogger(__name__)
 
 
-def resolve_anchor_period_id(user_id: int, as_of: date | None = None) -> int:
-    """Return the pay_period_id to anchor an account against.
-
-    Resolution order mirrors the migration cfb15e782f86 backfill rule:
-
-      1. The pay period CONTAINING *as_of* -- the day the balance being
-         anchored was true.  This is the most semantically accurate
-         origin when it exists.
-      2. The user's earliest pay period (lowest ``period_index``).
-         Used when no period contains *as_of* (e.g. the user generated
-         only historical periods, or dated an opening before the
-         schedule starts).
-
-    **The period is DERIVED from the day, not chosen beside it** (ruling
-    R-DH, plan step 2).  An assertion's period and the civil day it was
-    true are two statements of one fact, and the moment they can be set
-    independently they can disagree: an opening dated 2026-03-15 filed
-    into the period containing today would put its correction's journal
-    entry in a period its own ``entry_date`` falls outside.  Passing the
-    day and resolving the period keeps them one fact.
-
-    Two callers share this resolution so an account's anchor period is
-    chosen the same way wherever it is set: :func:`create_account` (a new
-    account, passing its ``observed_on``) and
-    ``pay_period_admin.reset_pay_periods`` (re-anchoring every account
-    onto a freshly rebuilt schedule, where the day is genuinely today --
-    the schedule the accounts are being moved onto is the current one).
-    Public for that second cross-module caller.
-
-    Args:
-        user_id: ``auth.users.id`` of the account owner.
-        as_of: The civil day whose pay period to resolve.  Defaults to
-            today in the DISPLAY timezone -- not ``date.today()``, which
-            is the SERVER's UTC day and lands on tomorrow's period for
-            anything recorded after 8pm Eastern (ruling R-DH (b)).
-
-    Returns:
-        The resolved ``budget.pay_periods.id``.
-
-    Raises:
-        ValidationError: When the user has no pay periods at all.
-            Caller should surface this as a UX prompt to generate
-            pay periods first; production callers must not silently
-            paper over the absence by inserting a synthetic period.
-    """
-    if as_of is None:
-        as_of = display_today()
-    current = pay_period_service.get_current_period(user_id, as_of=as_of)
-    if current is not None:
-        return current.id
-    earliest = (
-        db.session.query(PayPeriod)
-        .filter_by(user_id=user_id)
-        .order_by(PayPeriod.period_index)
-        .first()
-    )
-    if earliest is None:
-        raise ValidationError(
-            f"Cannot create an account for user_id={user_id}: the user "
-            "has no pay periods.  Generate pay periods first so the "
-            "account's anchor has a period to reference."
-        )
-    return earliest.id
-
-
 def earliest_observable_day(user_id: int) -> date:
     """Return the earliest civil day a balance may be asserted for.
 
@@ -159,15 +94,16 @@ def _reject_undatable_observation(user_id: int, observed_on: date) -> None:
     * **Not in the future.**  A balance cannot have been observed on a day the
       user has not seen.
     * **Not before the earlier of the schedule's start and today.**  The
-      assertion has to be filed against a period, its correction's journal
-      entry is dated inside one, and the projection has nothing to say about a
-      day preceding the whole schedule.  The floor takes the EARLIER of the two
-      so a user whose periods are all still in the future can nonetheless
-      assert what they hold today.  Without this bound
-      :func:`resolve_anchor_period_id` silently falls back to the EARLIEST
-      period, which files the row against a period its own ``observed_on``
-      falls outside -- exactly the failure that function's docstring claims
-      resolving-from-the-day prevents.
+      assertion's correction is dated inside a pay period, and the projection
+      has nothing to say about a day preceding the whole schedule.  The floor
+      takes the EARLIER of the two so a user whose periods are all still in
+      the future can nonetheless assert what they hold today.  **It had a
+      second reason that ruling R-EO removed**: without the bound,
+      ``resolve_anchor_period_id`` fell back to the EARLIEST period and FILED
+      the assertion against a period its own ``observed_on`` fell outside.  An
+      assertion is no longer filed against a period at all, so that half is
+      gone with the function; the accrual-window reason above is why the floor
+      stays.
 
     Args:
         user_id: The account owner, whose pay-period schedule sets the floor.
@@ -234,12 +170,6 @@ class AccountSpec:
             ``Decimal`` (the project coding standard rejects float for
             monetary values); zero is a legitimate value per E-12 and
             is preserved rather than treated as "missing".
-        anchor_period_id: Optional ``budget.pay_periods.id`` to anchor
-            against.  When omitted, the service resolves it from
-            ``observed_on`` -- the period containing the day the balance
-            was true -- via :func:`resolve_anchor_period_id`.  Supplying
-            both is legal and the explicit id wins; the resolution
-            exists so the two cannot silently disagree about WHEN.
         observed_on: The civil day the asserted balance was TRUE, in the
             user's timezone (ruling R-DH).  Defaults to today when
             omitted, which is what a user typing their current bank
@@ -259,7 +189,6 @@ class AccountSpec:
     account_type_id: int
     name: str
     anchor_balance: Decimal
-    anchor_period_id: int | None = None
     observed_on: date | None = None
     notes: str = "origination"
 
@@ -268,11 +197,16 @@ def create_account(spec: AccountSpec, **extra_columns) -> Account:
     """Construct an Account row plus its matching AccountAnchorHistory.
 
     Performs the E-19 / CRIT-01 invariant work in one place: resolves
-    the assertion's civil day and the anchor period FROM it (unless the
-    period is supplied), constructs the Account with non-NULL anchor
-    columns, flushes to assign ``account.id``, then inserts the
-    origination history row carrying that day.  The pair is appended to
-    the current session; the caller commits.
+    the assertion's civil day, constructs the Account, flushes to assign
+    ``account.id``, then inserts the origination history row carrying that
+    day.  The pair is appended to the current session; the caller commits.
+
+    **It no longer resolves an anchor PERIOD.**  It used to derive one from
+    ``observed_on`` (``resolve_anchor_period_id``, deleted as callerless in the
+    same commit) for two consumers: the ``accounts.current_anchor_period_id``
+    cache column that ruling R-EH deleted, and the origination assertion's own
+    ``pay_period_id`` that ruling R-EO deleted.  With neither, an account is
+    created from a name, a type, a balance and the day that balance was true.
 
     **The origination row is DATED here, before anything reads it**, and
     that ordering is load-bearing (ruling R-DH, plan step 2).  This
@@ -294,16 +228,16 @@ def create_account(spec: AccountSpec, **extra_columns) -> Account:
             the model constructor.
 
     Returns:
-        The newly added :class:`Account` (already flushed; ``account.id``
-        is set, ``current_anchor_balance`` and ``current_anchor_period_id``
-        are non-NULL, and a matching ``AccountAnchorHistory`` row sits
-        in the session pending commit).
+        The newly added :class:`Account` (already flushed, so ``account.id``
+        is set), with its matching origination ``AccountAnchorHistory`` row in
+        the session pending commit.
 
     Raises:
         ValidationError: When ``observed_on`` is in the future (a balance
-            cannot have been observed on a day that has not happened), or
-            when ``anchor_period_id`` is omitted and the user has no pay
-            periods (re-raised from :func:`resolve_anchor_period_id`).
+            cannot have been observed on a day that has not happened), when it
+            precedes the user's recorded history, or when the user has no pay
+            periods at all -- all three from
+            :func:`_reject_undatable_observation`.
         TypeError: When ``anchor_balance`` is not a ``Decimal``.  The
             project rejects ``float`` in monetary code; passing
             ``int`` or ``str`` is also a caller bug.
@@ -340,18 +274,10 @@ def create_account(spec: AccountSpec, **extra_columns) -> Account:
     # default's clock reading on trust.  A midnight tick between the two makes
     # the default one day stale, never invalid -- the guard's test is ``>``.
 
-    anchor_period_id = spec.anchor_period_id
-    if anchor_period_id is None:
-        anchor_period_id = resolve_anchor_period_id(
-            spec.user_id, as_of=observed_on,
-        )
-
     account = Account(
         user_id=spec.user_id,
         account_type_id=spec.account_type_id,
         name=spec.name,
-        current_anchor_balance=anchor_balance,
-        current_anchor_period_id=anchor_period_id,
         **extra_columns,
     )
     db.session.add(account)
@@ -388,8 +314,8 @@ def create_account(spec: AccountSpec, **extra_columns) -> Account:
     )
 
     logger.info(
-        "Created account %s (id=%d, user_id=%d) anchored to period %d at $%s",
-        spec.name, account.id, spec.user_id, anchor_period_id, anchor_balance,
+        "Created account %s (id=%d, user_id=%d) asserted at $%s on %s",
+        spec.name, account.id, spec.user_id, anchor_balance, observed_on,
     )
     return account
 

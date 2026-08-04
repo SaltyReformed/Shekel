@@ -163,7 +163,6 @@ def _seed_second_user_transfer_assets():
             account_type_id=checking_type.id,
             name="Other Cross Checking",
             anchor_balance=Decimal("100.00"),
-            anchor_period_id=other_periods[0].id,
         ),
     )
     other_savings = account_service.create_account(
@@ -172,7 +171,6 @@ def _seed_second_user_transfer_assets():
             account_type_id=savings_type.id,
             name="Other Cross Savings",
             anchor_balance=Decimal("0"),
-            anchor_period_id=other_periods[0].id,
         ),
     )
 

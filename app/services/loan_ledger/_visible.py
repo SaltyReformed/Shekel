@@ -186,8 +186,14 @@ def resolve_anchor_pay_period(
         target_date: The anchor's date.
 
     Returns:
-        The containing :class:`~app.models.pay_period.PayPeriod`, or the earliest
-        when *target_date* precedes all periods.
+        The containing :class:`~app.models.pay_period.PayPeriod`; else the LATEST
+        period ending before *target_date* (a date past the generated horizon
+        books in the last period, not the first); else -- only when the date
+        precedes every period -- the earliest.  **The middle case was missing
+        from this block** until a neutral claims audit read it against
+        :func:`find_period_containing_date`, which is where that fallback lives:
+        the summary above says "falling back to the user's EARLIEST period when
+        the date precedes all of them", which is true and is not the whole rule.
     """
     containing = find_period_containing_date(periods, target_date)
     return containing if containing is not None else periods[0]

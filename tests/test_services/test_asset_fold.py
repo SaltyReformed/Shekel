@@ -347,34 +347,15 @@ class TestTheAccrualWindow:
             assert columns[period.id].balance == Decimal("10000.00")
         assert columns[seed_periods[3].id].accrual > _ZERO
 
-    def test_the_window_reads_the_dated_source_of_truth_not_the_cache(
-        self, db, seed_user, seed_periods,
-    ):
-        """A divergent ``current_anchor_*`` cache moves nothing.
-
-        The window opens on the latest ``AccountAnchorHistory`` row read off
-        the WALK, not on the denormalized column -- the dated-SoT ruling plan
-        step X-c2c3's trace made (correction (b)), inherited here.  Where the
-        two disagreed, the retired map's anchor-period lookup pivoting on
-        the CACHE and its ``base_balances.get(...)`` misses, projecting the
-        whole investment map from ZERO.  Corrupting the cache here changes
-        nothing at all.
-        """
-        account = create_hysa_account(
-            seed_user, db.session, seed_periods[0], Decimal("10000.00"),
-            apy=Decimal("0.05000"),
-        )
-        ctx = _ctx(seed_user)
-        before = _view(account, ctx, seed_periods[:2])
-
-        account.current_anchor_balance = Decimal("1.00")
-        account.current_anchor_period_id = seed_periods[9].id
-        db.session.commit()
-
-        after = _view(account, ctx, seed_periods[:2])
-        assert [column.balance for column in after.values()] == [
-            column.balance for column in before.values()
-        ]
+    # ``test_the_window_reads_the_dated_source_of_truth_not_the_cache`` was
+    # DELETED at plan step X-f1c3c.  It corrupted ``account.current_anchor_*``
+    # and asserted the accrual window did not move -- proving the window reads
+    # the dated assertion rather than the denormalized column.  Ruling R-EH
+    # deleted that column, so a divergent cache is not expressible and the test
+    # had no subject: what it defended against is now impossible rather than
+    # merely detected.  The window's real source is still graded by the case
+    # below (no assertion -> fail loud) and by every accrual test in this class,
+    # each of which opens its window from an assertion it wrote.
 
     def test_a_modelled_account_with_no_assertion_fails_loud(
         self, db, seed_user, seed_periods,
@@ -1063,7 +1044,6 @@ class TestAnAccountThatModelsNothingIsItsCashFold:
         """A PLAIN account has no modelled tier at all, and folds as cash."""
         account = create_savings_account(
             seed_user, db.session, "Plain", Decimal("4000.00"),
-            anchor_period_id=seed_periods[0].id,
         )
         db.session.commit()
         ctx = _ctx(seed_user)

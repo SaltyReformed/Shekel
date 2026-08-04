@@ -156,7 +156,6 @@ def _add_assertion(account, balance, created_at, pay_period_id=None):
         # with the pinned instant by the shared rule (ruling R-DH, plan step 2).
         observed_on=observed_day_of(created_at),
     )
-    account.current_anchor_balance = Decimal(str(balance))
     _db.session.add(row)
     _db.session.flush()
     return row
@@ -1473,7 +1472,6 @@ class TestSyncEntryPoints:
             outcome = anchor_service.apply_anchor_true_up(
                 account=account,
                 new_balance=Decimal("350.00"),
-                anchor_period=seed_user["bootstrap_period"],
             )
             assert outcome is AnchorTrueUpOutcome.COMMITTED
             assert posting_service.account_posting_total(
@@ -1532,7 +1530,6 @@ class TestSyncEntryPoints:
                     account_type_id=checking_type_id,
                     name="U2 Checking",
                     anchor_balance=Decimal("100.00"),
-                    anchor_period_id=period2.id,
                 ),
             )
             _db.session.commit()

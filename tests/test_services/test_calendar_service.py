@@ -911,13 +911,15 @@ class TestYearOverview:
         """Year overview with 26 periods marks exactly 2 third-paycheck months."""
         with app.app_context():
             from app.services import pay_period_service
-            periods = pay_period_service.generate_pay_periods(
+            # The BINDING went with the ``current_anchor_period_id`` line it
+            # fed (ruling R-EH); the CALL is fixture setup and stays -- these
+            # 26 periods ARE the third-paycheck year under test.
+            pay_period_service.generate_pay_periods(
                 user_id=seed_user["user"].id,
                 start_date=date(2026, 1, 2),
                 num_periods=26,
                 cadence_days=14,
             )
-            seed_user["account"].current_anchor_period_id = periods[0].id
             db.session.commit()
 
             result = calendar_service.get_year_overview(
@@ -1016,7 +1018,6 @@ class TestEdgeCases:
                 cadence_days=14,
             )
             db.session.commit()
-            seed_user["account"].current_anchor_period_id = periods[0].id
             db.session.commit()
 
             _add_transaction(

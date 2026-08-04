@@ -43,7 +43,7 @@ def _loan_and_checking(db, seed_user, seed_periods):
         seed_user, db.session, name="Probe Mortgage",
         principal=Decimal("200000.00"), rate=Decimal("0.05000"),
         term=360, origination_date=ORIGINATION, payment_day=1,
-        account_type=AcctTypeEnum.MORTGAGE, anchor_period=seed_periods[0],
+        account_type=AcctTypeEnum.MORTGAGE,
     )
     checking = create_account_of_type(
         seed_user, db.session, "Checking", "Chk",

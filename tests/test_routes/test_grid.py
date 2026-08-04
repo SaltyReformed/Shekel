@@ -624,7 +624,7 @@ class TestSubtotalRowsEndpoint:
             # Second user's income on the second user's account/period --
             # must NOT leak into the first user's subtotal response.
             db.session.add(Transaction(
-                pay_period_id=seed_second_user["account"].current_anchor_period_id,
+                pay_period_id=seed_second_user["bootstrap_period"].id,
                 scenario_id=seed_second_user["scenario"].id,
                 account_id=seed_second_user["account"].id,
                 status_id=projected.id,
@@ -1784,7 +1784,6 @@ class TestCreateBaseline:
                 principal=Decimal("200000.00"), rate=Decimal("0.05000"),
                 term=360, origination_date=date(2026, 1, 15), payment_day=1,
                 account_type=AcctTypeEnum.MORTGAGE,
-                anchor_period=seed_periods[0],
             )
             loan_id = loan.id
             Scenario.query.filter_by(
@@ -2101,7 +2100,6 @@ class TestAccountScopedGrid:
                 account_type_id=savings_type.id,
                 name="Savings",
                 anchor_balance=Decimal("5000.00"),
-                anchor_period_id=periods[0].id,
             ),
         )
         db.session.add(savings)
@@ -2887,7 +2885,6 @@ class TestPeriodHeaderDateFormat:
             cadence_days=14,
         )
         db.session.flush()
-        seed_user["account"].current_anchor_period_id = periods[0].id
         db.session.commit()
         return periods
 
@@ -8511,7 +8508,6 @@ class TestTheAccrualRowLabelIsPerKind:
             )
             loan = create_loan_account(
                 seed_user, db.session,
-                anchor_period=seed_periods_today[0],
                 principal=Decimal("240000.00"),
             )
 

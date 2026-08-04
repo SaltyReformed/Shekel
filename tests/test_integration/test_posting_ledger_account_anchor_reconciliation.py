@@ -498,7 +498,6 @@ def _assert_balance_at(account, balance, created_at) -> AccountAnchorHistory:
         # with the pinned instant by the shared rule (ruling R-DH, plan step 2).
         observed_on=observed_day_of(created_at),
     )
-    account.current_anchor_balance = Decimal(str(balance))
     _db.session.add(row)
     _db.session.flush()
     return row

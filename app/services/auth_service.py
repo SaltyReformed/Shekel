@@ -727,11 +727,11 @@ def register_user(email, password, display_name):
             account_type_id=checking_type_id,
             name="Checking",
             anchor_balance=Decimal("0.00"),
-            anchor_period_id=bootstrap_period.id,
-            # Day one of the period it is anchored to -- the same clock that
-            # built the period above, so the row's two statements of "when"
-            # agree by construction rather than by both happening to read the
-            # same wall clock in the same second.
+            # Day one of the bootstrap period built just above -- the same
+            # clock that built it, so a signup's opening assertion is dated by
+            # the schedule it is created alongside rather than by a second
+            # reading of the wall clock.  The explicit ``anchor_period_id``
+            # beside it went at plan step X-f1c3c: an assertion carries a DAY.
             observed_on=bootstrap_period.start_date,
             notes="origination (sign-up)",
         ),

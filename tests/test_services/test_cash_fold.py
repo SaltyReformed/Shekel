@@ -171,7 +171,6 @@ class TestTheOpeningMovesIntoTheSeed:
         scenario = seed_user["scenario"]
         account = create_savings_account(
             seed_user, db.session, "Money Market", Decimal("4879.26"),
-            anchor_period_id=seed_periods[8].id,
         )
         _opened_at(account, _instant(2026, 5, 1))
         for amount, day, is_income in (
@@ -213,7 +212,6 @@ class TestTheOpeningMovesIntoTheSeed:
         scenario = seed_user["scenario"]
         account = create_savings_account(
             seed_user, db.session, "Fidelity Savings", Decimal("5363.56"),
-            anchor_period_id=seed_periods[7].id,
         )
         _opened_at(account, _instant(2026, 4, 6))
         create_settled_cash_transaction(
@@ -359,7 +357,6 @@ class TestSettledMoneyRidesOnTheAssertionItFollowed:
         scenario = seed_user["scenario"]
         money_market = create_savings_account(
             seed_user, db.session, "Money Market", Decimal("1000.00"),
-            anchor_period_id=seed_periods[0].id,
         )
         _opened_at(money_market, _instant(2026, 1, 1))
         append_balance_assertion(
@@ -829,7 +826,6 @@ class TestScope:
         _opened_at(account, _instant(2026, 1, 1))
         savings = create_savings_account(
             seed_user, db.session, "Savings", Decimal("50.00"),
-            anchor_period_id=seed_periods[0].id,
         )
         add_txn(
             db.session, seed_user, seed_periods[6], "their bill", "250.00",

@@ -542,7 +542,6 @@ class TestSourceFactValuation:
         _restamp_opening(account, _instant(2026, 1, 1))
         savings = create_savings_account(
             seed_user, db.session, "Savings", Decimal("0.00"),
-            anchor_period_id=period.id,
         )
         create_settled_transfer(
             seed_user, db.session, account, savings, period,
@@ -720,7 +719,6 @@ class TestTheWalkSeesOnlyItsOwnRows:
         _restamp_opening(account, _instant(2026, 1, 1))
         savings = create_savings_account(
             seed_user, db.session, "Savings", Decimal("50.00"),
-            anchor_period_id=period.id,
         )
         create_settled_cash_transaction(
             seed_user, db.session, period, Decimal("25.00"),

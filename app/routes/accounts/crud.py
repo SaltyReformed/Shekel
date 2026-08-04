@@ -60,7 +60,6 @@ from app.services import (
     anchor_service,
     cash_ledger,
     ledger_account_service,
-    pay_period_service,
     transfer_service,
 )
 from app.services.account_projection import AccountProjectionKind, classify_account
@@ -399,53 +398,35 @@ def update_account(account_id):
     # actually changed.  The comparison reads the latest ASSERTION since
     # plan step X-f1c3a -- it was ``account.current_anchor_balance``, the
     # cache column that mirrored it.
+    #
+    # **This is where finding N-134 lived, and it is closed STRUCTURALLY.**
+    # The block used to resolve the pay period containing today and branch on
+    # it: with a period it staged an assertion, and WITHOUT one it moved
+    # ``current_anchor_balance`` and appended no history row -- so the balance
+    # the user typed was silently discarded by the very next read, which takes
+    # the history row.  Both the branch and the column are gone (rulings R-EO
+    # and R-EH): an assertion carries no period, so there is no period to be
+    # missing and nothing to fall back to.  A route that cannot file the
+    # assertion cannot exist.
     new_anchor = data.pop("anchor_balance", None)
     anchor_changed = False
     if new_anchor is not None:
         new_anchor = Decimal(str(new_anchor))
         if new_anchor != cash_ledger.resolve_anchor(account).balance:
             anchor_changed = True
-            # The period and the assertion's day must come off ONE clock.
-            # ``stage_anchor_true_up`` dates the row ``display_today()``; a
-            # bare ``get_current_period`` defaults to ``date.today()``, the
-            # PROCESS-local day, and the two disagree in any process not pinned
-            # to the display zone (CI, a script, the migration host).  A
-            # 21:00 ET true-up on a period's last day would then file the row
-            # in the NEXT period while dating it in this one -- the grid buckets
-            # the correction by ``observed_on`` and the ledger stamps it with
-            # ``pay_period_id``, so the two surfaces disagree by the whole
-            # correction.
-            current_period = pay_period_service.get_current_period(
-                current_user.id, as_of=display_today(),
+            # ONE definition of what an assertion IS, and it lives in
+            # ``anchor_service`` (ruling R-DH, plan step 2).  This route
+            # restated it inline, and the two had already drifted: the
+            # stager takes a ``notes`` label and this did not, and the
+            # assertion's ``observed_on`` -- the civil day the balance is
+            # asserted TRUE for, which the whole anchor/settle partition
+            # turns on -- would have had to be added HERE too, as a third
+            # copy of a rule two writers already state.  A route composes
+            # services; it does not re-implement one.
+            anchor_service.stage_anchor_true_up(
+                account=account,
+                new_balance=new_anchor,
             )
-            if current_period:
-                # ONE definition of "re-point the period + write the balance +
-                # append the dated history row", and it lives in
-                # ``anchor_service`` (ruling R-DH, plan step 2).  This route
-                # restated it inline, and the two had already drifted: the
-                # stager takes a ``notes`` label and this did not, and the
-                # assertion's ``observed_on`` -- the civil day the balance is
-                # asserted TRUE for, which the whole anchor/settle partition
-                # turns on -- would have had to be added HERE too, as a third
-                # copy of a rule two writers already state.  A route composes
-                # services; it does not re-implement one.
-                anchor_service.stage_anchor_true_up(
-                    account=account,
-                    new_balance=new_anchor,
-                    anchor_period=current_period,
-                )
-            else:
-                # No period contains today, so there is no period to file the
-                # assertion against and the balance moves WITHOUT a history
-                # row.  Behaviour preserved verbatim from before the stager
-                # call above replaced this block's inline copy -- but it breaks
-                # E-19's "a matching AccountAnchorHistory row from the moment it
-                # exists", and the cash walk then replays an assertion history
-                # that disagrees with ``current_anchor_balance``
-                # (``cash_ledger._facts`` logs exactly that divergence).
-                # Recorded as finding N-134 in ``anchor_settle_partition.md``
-                # rather than changed under an unrelated ruling.
-                account.current_anchor_balance = new_anchor
 
     old_type_id = account.account_type_id
     for field, value in data.items():

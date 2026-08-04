@@ -35,22 +35,18 @@ def _valid_compounding_frequency_ids() -> set[int]:
 
 
 class AnchorUpdateSchema(BaseSchema):
-    """Validates PATCH data for updating the account anchor balance.
+    """Validates PATCH data for asserting an account's balance.
 
-    ``version_id`` is the optimistic-locking counter from the row at
-    the moment the form was rendered.  The route handler compares
-    the submitted value against ``Account.version_id`` and returns
-    409 Conflict if they differ -- a stale-form check that catches
-    the Tab-1/Tab-2 race even when the two requests are sequential
-    rather than truly concurrent.  Optional so callers that have
-    no way to plumb the version through (e.g. a future programmatic
-    client) still pass validation; in that case only the
-    SQLAlchemy ``version_id_col`` race detection applies, which
-    catches the truly-concurrent case at flush time.
+    **It carried an optional ``version_id`` until plan step X-f1c3c** (ruling
+    R-EN), the C-17 optimistic-locking counter the route compared against
+    ``Account.version_id`` to answer 409 on a stale form.  A true-up no longer
+    writes the ``accounts`` row that counter guards -- it appends an assertion
+    -- so there is nothing for a second tab to overwrite and no conflict to
+    report.  ``AccountUpdateSchema`` below keeps its ``version_id``: that door
+    writes real columns and still has a row to guard.
     """
 
     anchor_balance = fields.Decimal(required=True, places=2, as_string=True)
-    version_id = RowId(validate=validate.Range(min=1))
 
 
 class AccountCreateSchema(BaseSchema):
@@ -78,8 +74,9 @@ class AccountUpdateSchema(BaseSchema):
     ``version_id`` is the optimistic-locking counter from the row at
     the moment the edit form was rendered.  The handler compares
     the submitted value against the current ``Account.version_id``
-    and short-circuits with 409 Conflict on mismatch; see the
-    matching docstring on :class:`AnchorUpdateSchema`.
+    and short-circuits with 409 Conflict on mismatch.  This door writes real
+    ``accounts`` columns, so unlike :class:`AnchorUpdateSchema` -- which stopped
+    writing any at plan step X-f1c3c -- it still has a row to guard.
     """
 
     @pre_load

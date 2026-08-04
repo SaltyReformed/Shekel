@@ -19,7 +19,6 @@ from decimal import Decimal
 from unittest.mock import patch
 
 import pytest
-from sqlalchemy import event, text
 from sqlalchemy.exc import IntegrityError
 
 from app import ref_cache
@@ -47,31 +46,17 @@ from app.services.anchor_service import (
     record_loan_tracking_start,
 )
 from tests._test_helpers import insert_origination_rate
+from app.services import cash_ledger
 
 
-def _bump_account_version_outside_session(account_id):
-    """Simulate a concurrent commit by bumping ``version_id`` directly.
+def _make_checking_account(seed_user, anchor_balance="1000.00"):
+    """Create a fresh Checking account carrying one balance assertion.
 
-    Mirrors the helper of the same name in ``test_accounts.py``;
-    factored to module scope so each test file owns its copy.  Uses a
-    fresh DB connection so the calling session's in-memory identity
-    map is unaffected; commit is essential because READ COMMITTED MVCC
-    would otherwise hide the UPDATE from the test session.
+    It took a ``periods`` argument, to anchor the account at ``periods[0]``,
+    until ruling R-EH deleted ``AccountSpec.anchor_period_id`` (plan step
+    X-f1c3c).  An assertion is a day and a balance now; the caller's periods
+    have nothing to say about it.
     """
-    with db.engine.connect() as conn:
-        conn.execute(
-            text(
-                "UPDATE budget.accounts "
-                "SET version_id = version_id + 1 "
-                "WHERE id = :id"
-            ),
-            {"id": account_id},
-        )
-        conn.commit()
-
-
-def _make_checking_account(seed_user, periods, anchor_balance="1000.00"):
-    """Create a fresh Checking account anchored at ``periods[0]``."""
     checking_type = db.session.query(AccountType).filter_by(
         name="Checking",
     ).one()
@@ -81,13 +66,15 @@ def _make_checking_account(seed_user, periods, anchor_balance="1000.00"):
             account_type_id=checking_type.id,
             name="Helper Checking",
             anchor_balance=Decimal(anchor_balance),
-            anchor_period_id=periods[0].id,
         ),
     )
 
 
-def _make_savings_account(seed_user, periods, anchor_balance="500.00"):
-    """Create a fresh Savings account anchored at ``periods[0]``."""
+def _make_savings_account(seed_user, anchor_balance="500.00"):
+    """Create a fresh Savings account carrying one balance assertion.
+
+    See :func:`_make_checking_account` for why it no longer takes ``periods``.
+    """
     savings_type = db.session.query(AccountType).filter_by(
         name="Savings",
     ).one()
@@ -97,7 +84,6 @@ def _make_savings_account(seed_user, periods, anchor_balance="500.00"):
             account_type_id=savings_type.id,
             name="Helper Savings",
             anchor_balance=Decimal(anchor_balance),
-            anchor_period_id=periods[0].id,
         ),
     )
 
@@ -176,7 +162,7 @@ class TestApplyAnchorTrueUpCommitted:
         """
         with app.app_context():
             savings = _make_savings_account(
-                seed_user, seed_periods_today, anchor_balance="500.00",
+                seed_user, anchor_balance="500.00",
             )
             db.session.commit()
 
@@ -198,15 +184,13 @@ class TestApplyAnchorTrueUpCommitted:
             outcome = apply_anchor_true_up(
                 account=savings,
                 new_balance=Decimal("750.00"),
-                anchor_period=current_period,
             )
 
             assert outcome is AnchorTrueUpOutcome.COMMITTED
 
             db.session.expire_all()
             reloaded = db.session.get(Account, savings.id)
-            assert reloaded.current_anchor_balance == Decimal("750.00")
-            assert reloaded.current_anchor_period_id == current_period.id
+            assert cash_ledger.resolve_anchor(reloaded).balance == Decimal("750.00")
 
             history_count_after = (
                 db.session.query(AccountAnchorHistory)
@@ -283,15 +267,13 @@ class TestApplyAnchorTrueUpCommitted:
             outcome = apply_anchor_true_up(
                 account=account,
                 new_balance=Decimal("2500.00"),
-                anchor_period=current_period,
             )
 
             assert outcome is AnchorTrueUpOutcome.COMMITTED
 
             db.session.expire_all()
             reloaded = db.session.get(Account, account.id)
-            assert reloaded.current_anchor_balance == Decimal("2500.00")
-            assert reloaded.current_anchor_period_id == current_period.id
+            assert cash_ledger.resolve_anchor(reloaded).balance == Decimal("2500.00")
 
             history_count_after = (
                 db.session.query(AccountAnchorHistory)
@@ -305,89 +287,6 @@ class TestApplyAnchorTrueUpCommitted:
                 "A true-up must record NO posting day: whether the bank has "
                 "taken a purchase is not derivable from a balance reading "
                 "(ruling R-DH (d) / plan step S1-c)."
-            )
-
-
-class TestApplyAnchorTrueUpStaleConflict:
-    """STALE_CONFLICT outcome: SQLAlchemy version_id race -> rollback + 409.
-
-    Engineers a true mid-flush race using a SQLAlchemy ``before_update``
-    listener that bumps ``version_id`` from a separate connection at
-    the exact moment SQLAlchemy issues its version-pinned UPDATE.
-    Mirrors the proven route-level test ``test_true_up_route_catches_
-    stale_data_error_as_409`` so the unit test exercises the same code
-    path the routes do, without the HTTP round-trip.
-    """
-
-    def test_helper_returns_stale_conflict_and_rolls_back(
-        self, app, db, seed_user, seed_periods_today,
-    ):
-        """Mid-flush ``version_id`` bump produces ``STALE_CONFLICT`` and
-        rolls back every pending mutation.
-
-        Hand-check: after the helper returns ``STALE_CONFLICT``:
-          * The account's persisted ``current_anchor_balance`` equals
-            the pre-call value (rolled back).
-          * The history-row count for the account equals the pre-call
-            count (no new row).
-          * The account's ``version_id`` has advanced by exactly 1
-            (the OUT-of-session bump applied; the in-session UPDATE
-            did not).
-
-        Account is re-fetched via ``db.session.get`` to attach it to
-        the current scoped session (see
-        ``test_checking_true_up_committed_clears_past_dated_entries``
-        for the rationale).
-        """
-        with app.app_context():
-            account = db.session.get(Account, seed_user["account"].id)
-            current_period = pay_period_service.get_current_period(
-                seed_user["user"].id
-            )
-            balance_before = account.current_anchor_balance
-            version_before = account.version_id
-            history_count_before = (
-                db.session.query(AccountAnchorHistory)
-                .filter_by(account_id=account.id)
-                .count()
-            )
-
-            fired = {"flag": False}
-
-            def make_stale(_mapper, _connection, target):
-                """Bump version_id from a separate connection mid-flush."""
-                if fired["flag"] or target.id != account.id:
-                    return
-                fired["flag"] = True
-                _bump_account_version_outside_session(account.id)
-
-            event.listen(Account, "before_update", make_stale)
-            try:
-                outcome = apply_anchor_true_up(
-                    account=account,
-                    new_balance=Decimal("9999.99"),
-                    anchor_period=current_period,
-                )
-            finally:
-                event.remove(Account, "before_update", make_stale)
-
-            assert outcome is AnchorTrueUpOutcome.STALE_CONFLICT
-
-            db.session.expire_all()
-            reloaded = db.session.get(Account, account.id)
-            assert reloaded.current_anchor_balance == balance_before, (
-                "STALE_CONFLICT must roll back the pending balance write."
-            )
-            assert reloaded.version_id == version_before + 1, (
-                "Only the OUT-of-session version bump survived; the "
-                "in-session UPDATE was rolled back."
-            )
-            assert (
-                db.session.query(AccountAnchorHistory)
-                .filter_by(account_id=account.id)
-                .count()
-            ) == history_count_before, (
-                "STALE_CONFLICT must roll back the pending history INSERT."
             )
 
 
@@ -418,14 +317,10 @@ class TestApplyAnchorTrueUpDuplicateSameDay:
         """
         with app.app_context():
             account = db.session.get(Account, seed_user["account"].id)
-            current_period = pay_period_service.get_current_period(
-                seed_user["user"].id
-            )
 
             outcome_first = apply_anchor_true_up(
                 account=account,
                 new_balance=Decimal("1234.56"),
-                anchor_period=current_period,
             )
             assert outcome_first is AnchorTrueUpOutcome.COMMITTED
 
@@ -435,7 +330,6 @@ class TestApplyAnchorTrueUpDuplicateSameDay:
             outcome_second = apply_anchor_true_up(
                 account=account,
                 new_balance=Decimal("1234.56"),
-                anchor_period=current_period,
             )
             assert outcome_second is AnchorTrueUpOutcome.DUPLICATE_SAME_DAY
 
@@ -469,19 +363,14 @@ class TestApplyAnchorTrueUpDuplicateSameDay:
         """
         with app.app_context():
             account = db.session.get(Account, seed_user["account"].id)
-            current_period = pay_period_service.get_current_period(
-                seed_user["user"].id
-            )
 
             outcome_a = apply_anchor_true_up(
                 account=account,
                 new_balance=Decimal("1000.00"),
-                anchor_period=current_period,
             )
             outcome_b = apply_anchor_true_up(
                 account=account,
                 new_balance=Decimal("1100.00"),
-                anchor_period=current_period,
             )
             assert outcome_a is AnchorTrueUpOutcome.COMMITTED
             assert outcome_b is AnchorTrueUpOutcome.COMMITTED
@@ -525,16 +414,12 @@ class TestApplyAnchorTrueUpReraisesUnknownIntegrityError:
         """
         with app.app_context():
             account = db.session.get(Account, seed_user["account"].id)
-            current_period = pay_period_service.get_current_period(
-                seed_user["user"].id
-            )
 
             # Commit one history row at this balance so the next call
             # WILL produce an IntegrityError from F-103.
             outcome_first = apply_anchor_true_up(
                 account=account,
                 new_balance=Decimal("2222.22"),
-                anchor_period=current_period,
             )
             assert outcome_first is AnchorTrueUpOutcome.COMMITTED
 
@@ -548,22 +433,51 @@ class TestApplyAnchorTrueUpReraisesUnknownIntegrityError:
                     apply_anchor_true_up(
                         account=account,
                         new_balance=Decimal("2222.22"),
-                        anchor_period=current_period,
                     )
 
             # And the session is clean (the helper rolled back before
             # re-raising, so subsequent work is unimpeded).
             db.session.rollback()  # defensive; idempotent.
             reloaded = db.session.get(Account, account.id)
-            assert reloaded.current_anchor_balance == Decimal("2222.22"), (
+            assert cash_ledger.resolve_anchor(reloaded).balance == Decimal("2222.22"), (
                 "First commit's balance survives; the re-raised "
                 "IntegrityError on the second call rolled back its "
                 "own attempted mutation."
             )
 
 
+# ``TestApplyAnchorTrueUpStaleConflict.test_helper_returns_stale_conflict_and_rolls_back``
+# was DELETED at plan step X-f1c3c (ruling R-EN).  It graded
+# ``AnchorTrueUpOutcome.STALE_CONFLICT``, which the enum no longer has: a
+# true-up appends an assertion and never UPDATEs the ``accounts`` row that
+# ``version_id`` guards, so ``StaleDataError`` is structurally unreachable on
+# this path.  The append-only contract that replaced it is graded by
+# ``test_accounts.TestTrueUpIsAppendOnly`` (a stale form still records) and by
+# ``test_race_conditions.TestConcurrentAnchorUpdate`` (both concurrent requests
+# 200, both assertions survive).
+
+
 class TestApplyAnchorTrueUpModuleContract:
     """Pins the public surface of the module so renames are caught."""
+
+    def test_outcome_enum_has_exactly_two_members(self):
+        """The outcome enum is the route's switch discriminant; pin its size.
+
+        Adding a new outcome would require route-side handling for every
+        consumer; this fails loud if the enum grows without a coordinated
+        route update.
+
+        **It pinned THREE members until plan step X-f1c3c** and was briefly
+        deleted there, on the mistaken ground that it graded
+        ``STALE_CONFLICT`` -- which ruling R-EN did delete.  It does not: it
+        grades the member SET, and that contract is fully alive with two
+        members.  Restored after an adversarial review caught the deletion,
+        because "the enum shrank" and "nobody is watching the enum any more"
+        are not distinguishable from a green suite.
+        """
+        assert {m.name for m in AnchorTrueUpOutcome} == {
+            "COMMITTED", "DUPLICATE_SAME_DAY",
+        }
 
     def test_unique_index_constant_matches_model_index_name(self, app):
         """The exported constant must match the live index name.
@@ -586,18 +500,6 @@ class TestApplyAnchorTrueUpModuleContract:
                 if hasattr(idx, "name")
             }
             assert ANCHOR_HISTORY_UNIQUE_INDEX in index_names
-
-    def test_outcome_enum_has_exactly_three_members(self):
-        """The outcome enum is the route's switch discriminant; pin its size.
-
-        Adding a new outcome would require route-side handling for
-        every consumer; the test fails loud if the enum grows without
-        a coordinated route update.
-        """
-        members = {m.name for m in AnchorTrueUpOutcome}
-        assert members == {
-            "COMMITTED", "STALE_CONFLICT", "DUPLICATE_SAME_DAY",
-        }
 
 
 # ── Loan Anchor Trueup ────────────────────────────────────────────────
@@ -1016,10 +918,16 @@ class TestApplyAnchorTrueUpKindGate:
 
         Finding B-15: this entry point wrote
         ``accounts.current_anchor_balance`` for a loan -- a second,
-        stored, never-reconciled loan balance.  The guard fires before
-        ``stage_anchor_true_up``, so the session holds no pending
-        mutation and no history row: the column, the history count, and
-        the session's dirty/new sets are all unchanged.
+        stored, never-reconciled loan balance.  That COLUMN is deleted (ruling
+        R-EH, plan step X-f1c3c) and the sentence above is historical, naming
+        what the guard was written against; a mechanical rename over this file
+        had rewritten it to say the guard prevented writing
+        ``cash_ledger.resolve_anchor(accounts).balance``, which is a read and
+        was never what B-15 was about.
+
+        The guard fires before ``stage_anchor_true_up``, so the session holds
+        no pending mutation and no history row: the RESOLVED balance, the
+        history count, and the session's dirty/new sets are all unchanged.
         """
         with app.app_context():
             mortgage_type = db.session.query(AccountType).filter_by(
@@ -1034,22 +942,18 @@ class TestApplyAnchorTrueUpKindGate:
                 ),
             )
             db.session.commit()
-            column_before = loan.current_anchor_balance
+            resolved_before = cash_ledger.resolve_anchor(loan).balance
             history_before = (
                 db.session.query(AccountAnchorHistory)
                 .filter_by(account_id=loan.id).count()
             )
 
-            current_period = pay_period_service.get_current_period(
-                seed_user["user"].id,
-            )
             with pytest.raises(
                 anchor_service.AmortizingAccountAnchorError,
             ) as excinfo:
                 apply_anchor_true_up(
                     account=loan,
                     new_balance=Decimal("1.00"),
-                    anchor_period=current_period,
                 )
 
             # The message names the correct path for the caller.
@@ -1057,7 +961,7 @@ class TestApplyAnchorTrueUpKindGate:
             # Raised BEFORE staging: session clean, nothing written.
             assert not db.session.dirty
             assert not db.session.new
-            assert loan.current_anchor_balance == column_before
+            assert cash_ledger.resolve_anchor(loan).balance == resolved_before
             assert (
                 db.session.query(AccountAnchorHistory)
                 .filter_by(account_id=loan.id).count()

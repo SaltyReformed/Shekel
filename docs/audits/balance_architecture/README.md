@@ -310,87 +310,108 @@ the OPPOSITE case on a later clock (now derived from `display_today()`).  New fi
 app into TWO day-to-period rules that disagree for a day past the schedule (writer index 0, ledger
 index 60 on the clone's calendar), unreachable on today's data and owned by X-ak with N-168.
 
-> ### X-f1c's COLD-RESUME RECORD (2026-08-04, session end) -- read this before touching the tree
+> ### X-f1c's COLD-RESUME RECORD (2026-08-04, second session) -- read this before touching the tree
 >
-> **READ THESE TWO BLOCKS BEFORE ANYTHING ELSE: a CRITICAL design defect the app-code review
-> found, and a red tree.**
+> **The previous session's record opened with a CRITICAL finding and a red tree.  BOTH ARE
+> CLOSED, and the CRITICAL one closed WIDER than it was written.**  What follows replaces that
+> record; its two blocks are kept below as history because the second one's lesson is the
+> expensive one.
 >
 > ---
 >
-> **CRITICAL -- RULING R-EN's STATED RATIONALE IS PARTLY WRONG, AND X-f1c3c MUST NOT SHIP UNTIL
-> THIS IS RESOLVED.**  R-EN deleted the C-17 lock on the ground that *"an assertion history is
-> APPEND-ONLY, so a second tab overwrites nothing."*  **That is true of `account_anchor_history`
-> and FALSE of the transaction a true-up actually runs.**  `apply_anchor_true_up` also calls
-> `sync_account_anchor_postings_all_scenarios`, which is a reconcile-to-target: read the
-> assertions, read what is posted, compute `target - posted`, INSERT the difference.  That is a
-> read-modify-write against `budget.journal_entries` / `budget.account_postings` with **no unique
-> index and no advisory lock** -- and the deleted `version_id` UPDATE was the only thing
-> serialising it, because it autoflushed and took a row lock *before* the walk.
+> **C1 IS CLOSED, AND THE DEFECT WAS LARGER THAN THE REVIEW FOUND -- finding N-190.**  R-EN
+> deleted the C-17 lock on the ground that *"an assertion history is APPEND-ONLY, so a second tab
+> overwrites nothing."*  That is a property of ONE table in a transaction that mutates three:
+> `apply_anchor_true_up` also runs a RECONCILE-TO-TARGET, a read-modify-write against
+> `budget.journal_entries` / `budget.account_postings` with no unique index behind it, and the
+> deleted `version_id` UPDATE had been serialising it only by accident (it autoflushed and took a
+> row lock before the walk).
 >
-> **Reproduced deterministically by the reviewer** (probe since removed), and it also fired on 2 of
-> the first 2 unmodified `TestConcurrentAnchorUpdate` runs and 0 of the next 13 -- a real
-> scheduler-dependent race, not a test artifact:
+> **Reproduced INDEPENDENTLY this session** with the interleave forced at the reconcile's read
+> (probe since removed), on an account reconciled at `$4,000.00`:
 >
 > ```
+> WARM resolved=4000.00 total=4000.00
 > STATUS a=200 b=200
-> RESOLVED 2000.00   LEDGER TOTAL 3000.00
+> RESOLVED 2000.00   LEDGER TOTAL 1000.00
 > ```
 >
-> Both requests answer 200; the account's linked ledger permanently disagrees with its resolved
-> assertion by the delta.  It breaks `_anchors.py`'s own stated invariant ("the linked ledger sums
-> to an ABSOLUTE balance"), and the balance sheet reads those postings -- both sides wrong, trial
-> balance still `$0.00`, so nothing fails loudly until the account's next anchor sync, which may be
-> never.
+> The arithmetic, which the previous record did not have: both tabs read the same posted
+> `-$1,000.00`; the `$2,000` tab computes it owes `-$3,000` and writes `-$2,000`, the `$3,000` tab
+> computes it owes `-$2,000` and writes `-$1,000`; `5000 - 1000 - 2000 - 1000 = $1,000` against a
+> resolved `$2,000`.  Trial balance still `$0.00`, because the anchor-equity leg carries the
+> mirror-image error -- so nothing fails loudly, ever.
 >
-> **The recommended fix is better than what was deleted:** take a per-account transaction-scoped
-> `pg_advisory_xact_lock` at the top of `apply_anchor_true_up`, the primitive
-> `pay_schedule_service.lock_schedule` already uses per user.  It protects the RECONCILE rather
-> than a column that happened to sit in front of it, and it also closes the same race between
-> `true_up` and `update_account`'s anchor branch -- which the surviving C-17 lock does NOT cover,
-> since `true_up` no longer touches the row that lock guards.  **R-EN's rationale needs rewriting
-> either way: "append-only" is a property of one table in a transaction that mutates three.**
+> **THE LOAN HALF HAS THE SAME RACE AND HAS HAD IT SINCE COMMIT 16.**  `sync_loan_postings` uses
+> the identical `posted_correction_legs` / `emit_correction_deltas` pair, and
+> `apply_loan_anchor_true_up` appends to an append-only event table and UPDATEs no row -- so it
+> never had even the accident the cash half lost.  **R-EN cited that append-only contract as its
+> precedent**, which is how a defect became a rationale.
 >
-> **And the test I rewrote cannot catch it (C2).**  `test_concurrent_true_up` asserts both requests
-> return 200, both assertions exist, and the resolver returns one of them -- all true in the broken
-> state.  The missing assertion is the one the change removed the need for and did not replace:
-> **the linked-ledger posting sum must equal `resolve_anchor(account).balance`.**
+> **The fix is one per-USER advisory lock, and the developer ruled the scope** (*"which option is
+> what I should do if I were building everything from scratch"*).  It is NOT the reviewer's
+> recommendation, which was a per-account lock at the top of `apply_anchor_true_up`:
+>
+> * **Taken INSIDE the reconcile**, at all four entry points (cash per-scenario + all-scenarios,
+>   loan per-scenario + all-scenarios), because the true-up is one of FOUR callers reaching that
+>   window -- the settle self-heal, the direct anchor edit and the pay-period resync reach it too,
+>   and a door-level lock covers none of them.
+> * **Per USER on a correctness argument, not a convenience one.**  The reconcile does not only
+>   read the account's ledger: it derives each correction's period from the OWNER'S calendar
+>   (`resolve_anchor_pay_period`), and `journal_entries.pay_period_id` is `ON DELETE CASCADE`, so a
+>   concurrent truncate can delete the period it is filing under.  The consistency boundary is the
+>   ledger AND the calendar.  **It does NOT make deadlock impossible, and a first version of this
+>   record claimed it did** -- see N-193: an adversarial review reproduced an advisory-vs-ROW-lock
+>   cycle, because a settle takes its row locks before reaching this lock while a truncate takes
+>   this lock before its DELETE cascade.
+> * **It is the SAME lock the pay-period mutations take.**  `pay_schedule_service.lock_schedule`
+>   MOVED to `app/services/user_write_lock.py` as `lock_user_writes`, **namespace value unchanged**
+>   (`0x53484B4C`) so a rolling deploy cannot leave old and new code taking different keys for the
+>   schedule lock.
+> * **The two deploy-wide backfills pre-take every key ascending by user id**
+>   (`lock_every_user_writes`), because they are the only multi-owner transactions and their
+>   account-id enumeration visits owners in no order.  Acquired in PYTHON, one statement per user:
+>   `SELECT pg_advisory_xact_lock(ns, id) FROM users ORDER BY id` orders the RESULT, not the
+>   evaluation.
+>
+> **Sufficiency was verified, not assumed:** READ COMMITTED measured as the default on dev, test
+> AND production with no override anywhere (`SHOW default_transaction_isolation` on all three), so
+> the waiting transaction takes a fresh snapshot after acquiring, sees the winner's postings, and
+> reconciles to the true merged target.  Under REPEATABLE READ the lock alone would NOT have been
+> enough.
+>
+> **C2 is closed with it.**  `test_concurrent_true_up` gained invariant 4 -- the linked-ledger
+> posting sum must equal `resolve_anchor(account).balance` -- which is the one assertion that fails
+> in the broken state while 1, 2 and 3 all pass.  Its own deterministic suite is
+> `tests/test_services/test_user_write_lock.py` (8 tests): the lock is emitted, emitted BEFORE the
+> first ledger read, genuinely blocks a second transaction holding the key (with a non-vacuity
+> control that the same call completes when the key is free), is re-entrant, and is ONE key for two
+> accounts of one owner.  **Three mutants planted, all three killed** -- lock removed (4 tests),
+> lock moved after the read (2 tests, and ONLY the ordering ones, which is why presence and
+> ordering are graded separately), loan lock removed (1 test).
 >
 > ---
 >
-> **THE TREE IS ALSO RED, AND THAT BREAKAGE IS MINE AND KNOWN.  FIX IT FIRST so the suite is a
-> usable instrument again.**
-> `tests/test_routes/test_accounts.py` is missing **5 `pay_period_service.generate_pay_periods(...)`
-> calls** (9 present, 14 at HEAD).  A cleanup pass deleted `periods = generate_pay_periods(...)`
-> statements as "unused locals" -- but the CALL creates the periods the fixtures anchor against, so
-> deleting it removed real setup, not a dead binding.  Three tests fail as a result, all in that one
-> file, all from that one cause:
+> **THE RED TREE IS FIXED.**  The five `pay_period_service.generate_pay_periods(...)` calls are
+> restored in `tests/test_routes/test_accounts.py` (14 = HEAD's 14), as bare CALLS with a comment
+> saying the call is the setup, rather than as dead bindings.  A census of the same deletion class
+> across the whole `tests/` diff came back clean: every other dropped helper call
+> (`_create_investment_account`, `create_hysa_account`, `_make_future_periods`, `_future_periods`,
+> `_count_periods`, and every `db.session.commit` / `flush` / `add`) accompanies a deleted `def
+> test_`, and the three files repaired last session match HEAD exactly.
 >
-> * `TestCheckingDetailCanonicalProducer::test_accounts_checking_zero_anchor_renders_projection`
-> * `TestCashDetailContext::test_interest_next_year_zero_for_zero_apy`
-> * `TestCashDetailClickToEditHero::test_cash_band_renders_full_band`
->
-> **The fix is to restore those five statements verbatim from
-> `git show HEAD:tests/test_routes/test_accounts.py`, bindings included**, and to accept the
-> resulting `W0612 unused-variable` -- `tests/` is not pylint-gated, and a harmless unused binding
-> is a far better trade than silently altering fixture setup in a 6,000-line route suite.  The same
-> deletion was made in three other files and has already been repaired correctly there
-> (`test_analytics.py`, `test_savings.py`, `test_calendar_service.py` -- counts verified equal to
-> HEAD).  **Everything else in the working tree was green before this pass.**
->
-> *The lesson, and the developer said it first: this step should have been decomposed across
-> sessions from the start.*  X-f1c3 is three leaves, two destructive migrations, ~80 changed files
-> and three adversarial reviews; attempting it in one session is what produced a mechanical
-> cleanup pass applied with too little care at the end of it.
+> *The lesson stands and the developer said it first: this step should have been decomposed across
+> sessions from the start.*
 >
 > **BRANCH STATE, re-measured from `git status -sb` / `git ls-remote` / `gh pr list`:**
 >
 > | fact | value |
 > |---|---|
 > | branch | `feat/xf1-settle-day` |
-> | local HEAD | `379ed1af` |
-> | `origin/feat/xf1-settle-day` | `e7f782d6` -- **3 commits BEHIND local; nothing since `e7f782d6` is pushed** |
+> | local HEAD | `44986f88` |
+> | `origin/feat/xf1-settle-day` | `e7f782d6` -- **4 commits BEHIND local; nothing since `e7f782d6` is pushed** |
 > | PR | none |
-> | working tree | ~84 changed files incl. the UNTRACKED migration `c81f0a5b3e27` |
+> | working tree | ~95 changed files incl. the UNTRACKED migration `c81f0a5b3e27` |
 > | production | `d7c1f4a9e603` -- **none of this cluster is deployed** |
 >
 > | commit | step | suite at that commit |
@@ -398,6 +419,7 @@ index 60 on the clone's calendar), unreachable on today's data and owned by X-ak
 > | `6fc17ce6` | rulings R-EM..R-EP + Section 5 re-scope + 10 owner re-points | docs only |
 > | `c16bdb3b` | **X-f1c3a** the asserted balance has one resolver | 7,815 passed |
 > | `379ed1af` | **X-f1c3b** an assertion is a day and a balance | 7,813 passed, both clocks |
+> | `44986f88` | the previous session's cold-resume record | docs only |
 >
 > **X-f1c3c IS BUILT AND UNCOMMITTED.**  It drops both `accounts.current_anchor_*` columns and,
 > because they existed only for those columns, `ck_accounts_anchor_balance_present`, the deferrable
@@ -407,122 +429,113 @@ index 60 on the clone's calendar), unreachable on today's data and owned by X-ak
 > `AccountSpec.anchor_period_id`, and -- ruling **R-EN** -- `AnchorTrueUpOutcome.STALE_CONFLICT`,
 > `_anchor_conflict_response`, the 409 conflict cell, the anchor form's hidden `version_id` and
 > `AnchorUpdateSchema.version_id`.  `update_account`'s `if current_period:` fork goes with them,
-> **closing N-134 at X-f1c3c rather than X-f1c4**.  Migration `c81f0a5b3e27`.
+> **closing N-134 at X-f1c3c rather than X-f1c4**.  Migration `c81f0a5b3e27`.  **It now also carries
+> N-190's lock, H1's severity fix and the three reviews' residue.**
 >
-> **Verified BEFORE the cleanup pass broke the three tests** (so these numbers stand for everything
-> except that one file): full suite **7,790 / 0** under `America/New_York` AND
-> `TZ=Pacific/Kiritimati`; `pylint app/` and `scripts/` 10.00/10 with the full `--fail-on` set;
-> plan gate 17/17; on a production clone the seam baseline (9 accounts, 427 grid cells, 5,978 daily
-> points) **byte-identical across all three leaves**, positive control firing at 868 diff lines;
-> `c81f0a5b3e27` run BOTH directions.  **Re-run all of it after the repair; do not carry these
-> figures forward as if they still describe the tree.**
+> **VERIFICATION, ALL RE-RUN THIS SESSION on the repaired tree -- do not carry the previous
+> record's figures forward:**
 >
-> **A DEFECT R-EN OPENED, found by the concurrency test and fixed in the same diff.**  The C-17 lock
-> had been serialising two concurrent true-ups; without it both reach
-> `ledger_account_service.get_or_create_anchor_equity_account`, a check-then-INSERT, and the loser
-> 500s on `uq_ledger_accounts_account_kind` -- on an operation that in fact succeeded.  Fixed at the
-> CLASS: one `_add_or_reuse` SAVEPOINT helper all three `get_or_create_*` chart resolvers consume.
-> The lock was never what made those correct; the same race is reachable on the category and loan
-> resolvers through any two concurrent settles.  Four tests cover it, two proved by planting the
-> race-unsafe original.
+> | gate | result |
+> |---|---|
+> | full suite, `America/New_York` | **7,811 passed / 0 failed** |
+> | full suite, `TZ=Pacific/Kiritimati` (CI's clock gate) | **7,811 passed / 0 failed** |
+> | `pylint app/` + `scripts/`, full `--fail-on` set | **10.00/10** |
+> | `tools/plan_gate` (NOT in `tests/`; run it by hand) | **17 passed** |
+> | seam baseline, production clone, HEAD vs working tree | **byte-identical** -- 9 accounts, 427 grid cells, 5,978 daily points |
+> | seam baseline positive control (one cent on one assertion) | **3,262 diff lines** |
+> | anchor-SURFACE probe, HEAD vs working tree | **72 diff lines, 72 removals, 0 additions, 72 naming a dropped column**; with those two keys stripped from both sides, **byte-identical** |
+> | anchor-surface positive control (one cent) | **618 diff lines** |
+> | migration `c81f0a5b3e27` both directions on a throwaway | **round-trips**; 8 of 9 accounts restore identically, account 8's period restores as 5 rather than the stored 1 -- **exactly the N-168 repair the docstring documents** |
 >
-> **THREE NEUTRAL ADVERSARIAL REVIEWS RAN AND ALL THREE RETURNED.**  Their residue is worked
-> only partly; what is fixed and what is open is listed per review below.
+> **THE SURFACE PROBE IS NOW IN THE REPOSITORY** -- `tests/manual/verify_anchor_surfaces.py`,
+> beside the seam harness.  It was a scratchpad script every anchor-touching step re-wrote or
+> skipped, which is the N-181 lesson repeating as a process defect.  It covers the seven surfaces
+> `verify_balance_baseline.py` is structurally blind to: the grid header's starting figure and its
+> "as of" caption, the reconcile panel, the dashboard balance section, the pulse hero, the savings
+> dashboard including the ARCHIVED drawer, Property market value / home equity, and the retirement
+> table's seeds.  A producer that raises is RECORDED rather than fatal -- a probe that dies on
+> account 3 has silently stopped covering 4 through 9.  One recorded error is expected on this
+> clone: user 2 has no baseline scenario.
 >
-> * **Test integrity -- returned.**  Four HIGH, seven MEDIUM, a LOW band.  Fixed: the
->   assertion-free `test_anchor_period_set`; the wrongly-deleted enum-size test (it graded the
->   member SET, not the deleted member -- restored at two members); `_add_or_reuse` having no test;
->   no catalog lock on the dropped columns (added to `TestAccountVersionIdColumn`); the concurrency
->   class/method docstrings that still instructed a reader to restore the 409; the
->   `TestAnchorTemplatesEmitVersionPin` docstring contradicting its own first test; the empty
->   `TestApplyAnchorTrueUpStaleConflict` class; two docstrings promising a rule their deleted
->   assertion graded; and prose a global regex had corrupted into
->   "wrote `cash_ledger.resolve_anchor(accounts).balance`".
->   **STILL OPEN:** migration `c81f0a5b3e27`'s downgrade SQL is executed by no test; **M8**
->   `test_a_stale_form_still_records_its_assertion` never actually sends a `version_id`, so the
->   thing R-EN made tolerable is not exercised; **M9** the reset-openings assertion was weakened
->   from "equals the anchor period" to "is in the set of all six live periods" and should resolve
->   the period containing the assertion's own day; **M10** four conflict-cell deletions and the
->   whole `test_anchor_fk_deferrable.py` deletion have no test-side record; three class docstrings
->   (`TestCashDetailClickToEditHero`, `TestInvestmentBalanceHeroTrueUp`, a `test_dashboard.py`
->   comment) still advertise the 409; `test_true_up_records_without_a_current_pay_period` does not
->   assert its own precondition; one line in `test_the_reset_preserves_every_balance_assertion` is
->   trivially true (it checks the PRE-reset snapshot); blank-line residue at four deletion sites.
-> * **Claims audit -- returned.**  Claims 1, 2, 3, 4, 7, 8a verified exactly against production;
->   the `version_id` mechanism verified sound.  **Two claims of mine were FALSE and are corrected
->   in place**: `create_loan_account`'s `anchor_period` did NOT have "zero loads in its body" -- it
->   was LIVE, reaching `AccountSpec.anchor_period_id`, and I measured it only AFTER deleting its
->   use, which is a measurement of a state I had just created; and `a3f7c8e21b64`'s downgrade
->   refuses UNCONDITIONALLY, not "once any row carries a settle day".  Also corrected: a wrong line
->   citation (`_events.py:143-146` -> `:132-134`), a `transfer.py` attribution that presented an
->   inference as a quote, "~30 revisions" (really **53**), "312 references across ~50 test files"
->   (really 273 occurrences / 266 lines / 45 files), "twelve rendering surfaces" (really 24 read
->   sites over 16 modules + 12 template references), and two README bullets that credited X-f1c3b
->   with deletions X-f1c3c makes.  **STILL OPEN:** stale citations inherited by re-pointed findings
->   rows (`_kernel.py:508`, `:440`, `:341`, `_investment.py:127` -- **that file does not exist** --
->   and `_data.py:184`); and `c16bdb3b`'s commit message states the caption drift as "+56 / -55"
->   when the natural reading of new-minus-old is "-56 / +55" (the magnitudes and the two accounts
->   are right; history is not being rewritten for it, so it is recorded here instead).
-> * **App code -- returned after the session had begun writing this record.**  It found **C1**
->   (above), **C2** (above), and **H1**: re-pointing `integrity_check.py`'s BA-01 moved it from
->   `check_referential_integrity` (which stamps every check `critical`) into
->   `check_balance_anomalies` (which stamps every check `warning`), so "an account the resolver
->   cannot answer for" -- a state that makes `resolve_anchor` raise on every page -- now exits 2
->   instead of 1 and `verify_backup.sh` logs it as WARNING.  The comment and the severity
->   contradict each other; give it `critical`.
->   **MEDIUM/LOW, all stale-doc or residue:** `apply_loan_anchor_true_up`'s docstring still calls
->   `STALE_CONFLICT` "part of the enum's contract" (`anchor_service.py:456`, `:497`);
->   `routes/accounts/anchor.py`'s MODULE docstring still names the C-17 contract, the `version_id`
->   pre-flush check and the 409 (`:11-26`, `:100`, `:511`); `_true_up_success_response`'s Args block
->   says `updated_at` dates the snippet while the code two lines down uses `observed_on`;
->   `_sync.py:489` justifies its own caller with `_reanchor_accounts`, deleted;
->   `PeriodLockReason` + two truncate docstrings still promise the ACCOUNT_ANCHOR refusal
->   (`pay_period_admin.py:52`, `:241`, `:336`); `_anchors.py:325` justifies a PostingError with the
->   NOT NULL `pay_period_id` R-EO deleted; `DUPLICATE_SAME_DAY`'s docstring names the pre-re-key
->   4-column tuple; `_add_or_reuse`'s docstring over-claims ("EVERY get-or-create in this module" --
->   `create_ledger_account_for_account` was not converted); two resolvers still log "Created" for a
->   reused row; `_bump_account_version_outside_session` and three imports are orphaned in tests;
->   four test comments still cite the 409 as the reason for the `revert` token; and **L5: a
->   mechanical rename corrupted a HISTORICAL sentence** -- `test_anchor_service.py:933` now reads
->   "wrote ``cash_ledger.resolve_anchor(accounts).balance``" where B-15 was about writing the
->   COLUMN.  *(The two prose corruptions this session already repaired were a different pair; this
->   is a third, plus the still-misnamed `column_before` local beside it.)*
->   **VERIFIED SOUND by that review, so it need not be re-derived:** migration `c81f0a5b3e27`
->   exercised both directions on a throwaway database including the owner-scoping edge case, the
->   `_UNRESOLVED` gate firing and rolling back, and the restored FK's deferrability; the
->   append-only claim at the level of `budget.accounts` (no path writes a column, `version_id`
->   semantics intact for the doors that still write the row); `_add_or_reuse`'s SAVEPOINT mechanics
->   audited against SQLAlchemy 2.0.49 internals AND probed empirically; the four natural-key index
->   names; `AnchorUpdateSchema` dropping `version_id` being backward-compatible under
->   `unknown = EXCLUDE`; and a clean-restart full suite at **7,796 / 0** with `pylint app/` and
->   `scripts/` both 10.00/10.
+> **REVIEW RESIDUE: all three reviews' open items are worked.**  Closed this session -- H1
+> (`integrity_check`'s BA-01 was stamped `warning` by a FAMILY constant, so an account
+> `resolve_anchor` raises for exited 2 instead of 1; severity is per CHECK now, the shape
+> `check_data_consistency` already used, with tests in both directions); the migration downgrade's
+> untested SQL (`_CURRENT_ASSERTION_SQL` is now ONE standalone statement both backfill UPDATEs
+> interpolate, EXECUTED against real rows by `tests/test_models/test_anchor_cache_downgrade.py` and
+> proven by three more mutants -- ordering flipped, tie-break flipped, gate skipped); M8 (the stale
+> form now really SENDS a stale `version_id`, which also pins the `unknown = EXCLUDE`
+> backward-compatibility the deletion rests on); M9 (the reset-openings assertion now names the
+> EXACT expected period with its arithmetic, killed a mutant that filed in the wrong one, where the
+> old "is one of the six live periods" could not); M10 (the fourth conflict-cell deletion and the
+> whole `test_anchor_fk_deferrable.py` deletion both have records now); the trivially-true line
+> (it graded the PRE-reset snapshot); the unasserted precondition in
+> `test_true_up_records_without_a_current_pay_period`; L5's corrupted historical sentence and its
+> misnamed local; every remaining 409 / C-17 / `_reanchor_accounts` / `ACCOUNT_ANCHOR` /
+> `updated_at` / `DUPLICATE_SAME_DAY` stale docstring; `_add_or_reuse`'s over-claim (the fourth
+> get-or-create is NOT converted, and the reason is sound -- its key carries a brand-new account id
+> no other transaction can hold); two resolvers logging "Created" for a reused row; the three
+> imports this branch orphaned; and the blank-line residue.  The stale citations in re-pointed
+> findings rows are marked HISTORICAL in place with the two dead files named, rather than
+> re-pointed line by line -- a census rewritten to today's addresses stops being a record of what
+> was measured.
 >
-> **The seam harness is BLIND to most of this cluster.**  `verify_balance_baseline.py` walks the
-> `balance_at` seam; the grid header, reconcile panel, Property market value, archived drawer,
-> dashboard hero, pulse and retirement table are outside it -- the N-181 lesson repeating.  A
-> surface probe covering exactly those was written and run at each leaf (all identical).  **It is
-> in the session scratchpad, not the repo**, so it must be re-created -- or, better and not yet
-> ruled, moved into `tests/manual/` beside the baseline harness.
+> **DRY improvements taken along the way**: `_capture_statements` / `_took_advisory_lock` moved out
+> of `test_pay_period_topup.py` into `tests/_test_helpers.py` (with a new `advisory_lock_precedes`
+> and `linked_ledger_total`), and the migration's duplicated `DISTINCT ON` subquery collapsed to
+> one constant -- two copies could have restored the balance from one assertion and the period from
+> another.
+>
+> **THREE NEW FINDINGS**, all in Section 6: **N-190** (above), **N-191** (the app's civil day rests
+> on a compose variable at **78** `date.today()` call sites; `$0.00` today because production pins
+> `TZ`, and two sites found in this pass -- `top_up_rolling_window` and `classify_periods_bulk` --
+> decide against the user's CALENDAR and look like the wrong side of the line; owner **X-ak**), and
+> **N-192** (the owner-has-no-pay-periods `PostingError` lost its FK and is now held out of reach by
+> code alone; the raise STAYS and its comment is corrected; owner **X-ak**).
 >
 > **Environment, so a resume does not debug a stale fixture:** the test template
 > (`shekel_test_template`, `shekel-dev-test-db`, port 5433) is REBUILT to `c81f0a5b3e27` and no
 > longer has the dropped columns -- **it does NOT match `origin`, so a session that checks out the
 > pushed tree must re-run `python scripts/build_test_template.py`** with `TEST_DATABASE_URL` /
 > `TEST_ADMIN_DATABASE_URL` exported from `.env` (the script's default admin URL is a unix socket
-> that does not exist here).  The production clone `shekel_xf1c3` is on `shekel-dev-db` (port 5432)
-> at `c81f0a5b3e27`.  A `git worktree` at HEAD may be left under the session scratchpad; remove it
-> with `git worktree prune`.
+> that does not exist here).  This session's clones are `shekel_x3c_before` (HEAD's schema,
+> `b6d1e94c07af`), `shekel_x3c_after` (`c81f0a5b3e27`) and `shekel_x3c_mig` (the round-trip
+> throwaway), all on `shekel-dev-db` (port 5432) and all derived from `shekel_prodbase`.  A `git
+> worktree` at HEAD may be left under the session scratchpad; remove it with `git worktree prune`.
 >
-> **NEXT, in order:** **(1) restore the five `generate_pay_periods` calls and get the suite green
-> again**; **(2) resolve C1 -- the per-account advisory lock, plus C2's ledger-equals-resolver
-> assertion, plus a rewrite of R-EN's rationale in Section 4, this migration docstring and
-> `anchor_service`**; (3) work the rest of the review residue above (H1's severity first);
-> (4) re-run the full verification (both clocks, lint, plan gate, clone baseline, both migration
-> directions); (5) commit X-f1c3c; (6) **X-f1c4** -- now only the statement-date FIELD and its
-> render, because X-f1c3b did its period half and X-f1c3c closed N-134; (7) **X-f1d**, the
-> `anchor_settle_partition.md` archive move (N-175); (8) **push** -- nothing is on the remote yet;
-> (9) tick X-f1c's leaves + re-point every row naming them in ONE pass (rule 2); (10) the PR.
-> **X-an follows X-f1's ship**, not this branch.
+> **THREE NEUTRAL ADVERSARIAL REVIEWS RAN BEFORE THE COMMIT AND ALL THREE FOUND REAL DEFECTS.**
+> Their whole residue is worked; what they found is worth stating, because two of the three found
+> things the step's own verification could not have:
+>
+> * **Concurrency review.**  One CRITICAL: the settle self-heal's SKIP PREDICATE reads *before* the
+>   lock, and a skip is permanent -- a `$70.00` settle dated after the latest assertion correctly
+>   skips while a concurrent true-up walks a ledger that cannot see it, leaving the account
+>   `$70.00` under its own assertion forever.  **The lock closed the double-true-up case and left
+>   the commonest pair of user actions open.**  Fixed by locking at the top of
+>   `self_heal_anchor_corrections`.  Also: a THIRD multi-owner deploy transaction the docstring had
+>   missed (`resync_all_cash_postings`, the first of the three to run); three exported loan
+>   reconcile doors with no lock; a pre-delete reversal that read posted legs unlocked; a
+>   fail-loud raise this step had silently turned into a no-op; and a wrong decimal comment on the
+>   namespace constant carried over from its old home.  **And it REFUTED the deadlock claim** --
+>   see N-193.
+> * **Test-integrity review.**  THREE assertions proven vacuous by planting the broken state:
+>   `test_true_up_records_without_a_current_pay_period` asserted the balance the FIXTURE already
+>   had, so a true-up that wrote nothing passed; the downgrade suite's ordering test could not
+>   exercise `created_at` at all, because `server_default=now()` is `transaction_timestamp()` and
+>   is CONSTANT across a test transaction, so mutants that flipped or deleted that tie-break both
+>   passed; and the one-key test compared statement TEXT while SQLAlchemy binds the key, so it
+>   passed unchanged against a per-ACCOUNT lock.  All three now fail against their mutants.  It
+>   also found the DDL source checks graded call names and not arguments (four simultaneous
+>   mutations passed), and that `_DOWNGRADE_PERIOD`'s owner-scoping had no executing reader at all.
+> * **Claims audit.**  Two of my claims REFUTED: the `date.today()` census was a grep line count
+>   (113) where the AST count is **78**, and an attribution of where a deleted module's work went
+>   was asserted without being checked -- inside the note written to correct stale citations.
+>
+> **NEXT, in order:** (1) commit X-f1c3c; (3) **X-f1c4** -- now only the
+> statement-date FIELD and its render, because X-f1c3b did its period half and X-f1c3c closed
+> N-134; (4) **X-f1d**, the `anchor_settle_partition.md` archive move (N-175); (5) **push** --
+> nothing is on the remote yet; (6) tick X-f1c's leaves + re-point every row naming them in ONE
+> pass (rule 2); (7) the PR.  **X-an follows X-f1's ship**, not this branch.
 >
 > **DO NOT TICK X-f1c3a / X-f1c3b / X-f1c3c YET** -- a gate constraint, not an oversight.  Fourteen
 > Section 6 rows name X-f1c's leaves as their owner (**N-4**, **N-5**, **N-73**, **N-83**,
@@ -537,13 +550,15 @@ index 60 on the clone's calendar), unreachable on today's data and owned by X-ak
 > WORKING downgrades, and **each restores a CORRECTED value rather than the byte-for-byte
 > original** -- both repair finding N-168's mis-filed rows on the way back.  Stated in both
 > migration docstrings, because anyone diffing a pre-drop dump against a post-downgrade dump will
-> see those rows differ.
+> see those rows differ.  **Measured again this session: exactly one of nine accounts differs, and
+> it is the row N-168 names.**
 >
 > **Staging lesson, still current:** `git add -p`, never `git add -A` -- mutation-planting reviews
-> have run in this worktree (Section 8).  `grep -rn "MUTANT" app/ tests/ tools/ scripts/` was clean
-> at session end.  And a bulk mechanical edit over `tests/` needs the same per-change scrutiny as
-> app code: an AST pass that deletes "unused" assignments will happily delete a call whose RETURN
-> was unused but whose SIDE EFFECT was the fixture.
+> have run in this worktree (Section 8), and SIX mutants were planted and reverted this session.
+> `grep -rn "MUTANT" app/ tests/ tools/ scripts/ migrations/` was clean at session end.  And a bulk
+> mechanical edit over `tests/` needs the same per-change scrutiny as app code: an AST pass that
+> deletes "unused" assignments will happily delete a call whose RETURN was unused but whose SIDE
+> EFFECT was the fixture.
 
 **THE ORDER CHANGED 2026-08-03 on ruling R-EB, and this paragraph is the orientation to trust.**
 The anchor half is redesigned from scratch -- the ledger becomes sum-of-postings and an assertion
@@ -2755,6 +2770,33 @@ form keeps its own version check** -- it writes real columns, so its lock still 
 purpose is to keep a lock alive, which is a mechanism with no fact under it; and keeping the
 stale-FORM check alone, which would then fire only when some unrelated edit touched the account
 while telling the user their balance edit collided.
+
+> **THIS RULING'S RATIONALE WAS PARTLY WRONG AND IS CORRECTED HERE, 2026-08-04 (finding N-190).**
+> The ruling STANDS -- the lock really is unreachable, `STALE_CONFLICT` really is dead code, and
+> a second tab really does overwrite no ASSERTION.  What was false is the scope of the sentence
+> *"a second tab overwrites nothing"*: **append-only is a property of ONE table in a transaction
+> that mutates three.**  `apply_anchor_true_up` also runs
+> `sync_account_anchor_postings_all_scenarios`, a reconcile-to-target -- read what is posted,
+> subtract it from the walked target, INSERT the difference -- and that is a read-modify-write with
+> no unique index behind it.  The deleted `version_id` UPDATE had been serialising it BY ACCIDENT,
+> because it autoflushed and took a row lock before the walk.  Deleting the column deleted the
+> accident.
+>
+> Reproduced on an account reconciled at `$4,000.00`: two concurrent true-ups both answer 200, both
+> assertions survive, and the linked ledger settles at `$1,000.00` against a resolved `$2,000.00` --
+> trial balance still `$0.00`, because the anchor-equity leg carries the mirror-image error.
+>
+> **And the precedent this ruling cited carried the same defect.** `apply_loan_anchor_true_up` is
+> fed by an append-only event table and UPDATEs no row, so the LOAN reconcile never had even the
+> accident: it has been unserialised since Commit 16.  Citing an append-only contract as evidence
+> that a reconcile is safe is the mistake, and it was made twice.
+>
+> The replacement is ONE per-user advisory lock taken INSIDE the reconcile
+> (:mod:`app.services.user_write_lock`), covering both ledgers and all four entry points --
+> see N-190 for the ruling on its scope and the reasoning behind per-USER rather than per-account.
+> **The rule that survives: an append-only TABLE never licenses an unserialised read-modify-write
+> in the same transaction.  Name the tables the transaction writes, not the one the ruling is
+> about.**
 
 **R-EO -- `account_anchor_history.pay_period_id` is DELETED.  An assertion is (account, day,
 balance) and nothing else.**  *"Delete the column."*
@@ -5507,6 +5549,25 @@ preconditions cite entries in that file.
   * **The DETECTOR** -- `cash_ledger/_facts.py:188-189`, which finds the divergence and logs it
     (**cash D4**).
 
+  > **Every line number in the four bullets above is HISTORICAL, and the files behind two of them
+  > are gone.**  This is the census as X-e measured it; **X-f1c3a re-pointed every rendered read at
+  > `cash_ledger.resolve_anchor` and X-f1c3c deleted both columns**, so the writers, the reads and
+  > the guards named here no longer exist to cite.  `app/services/balance_at/_investment.py` was
+  > deleted outright at `17c57cde` -- its modelled-asset work went to **`_asset_fold.py`**
+  > (created `17ead4c5` one day earlier, cut over at `560b3339`), and
+  > `investment_growth_since_anchor` was ALREADY live in `_kind_correct.py` while the copy in
+  > `_investment.py` was dead (ruling R-AR).  *A first version of this note credited
+  > `_positions.py`, which is the LOAN producer from plan step C3a/C3b (`df775017`, nine days
+  > BEFORE the deletion) and absorbed none of it -- an attribution asserted without being checked,
+  > inside a note whose whole purpose is correcting stale citations, and caught by a neutral claims
+  > audit.*  Separately,
+  > `savings_dashboard_service/_data.py`'s column read is now
+  > `cash_ledger.resolve_anchor(acct).balance` at `:200`.  The rows that inherited these citations
+  > -- **N-4**, **N-5**, **N-73**, **N-83**, **N-103** and **cash D4** -- carry the QUESTION, not
+  > the address; each states its own current status.  Kept rather than re-pointed line by line: a
+  > census re-written to today's addresses stops being a record of what was measured, and this arc
+  > has paid twice for a paragraph edited into agreeing with the present (Section 8).
+
   **X5 is DECIDED here rather than left as "own arc, if ever"** (ruling R-AO): whether an
   `AccountAnchorHistory` row gains an `effective_date` -- separating "when this was true" from "when
   it was typed", which is what a backdated statement assertion needs -- is a question about the SAME
@@ -6119,7 +6180,11 @@ row, whose owner read `Section 5, Phase E2`; it is now `E2-0 / E2-n`, the phase'
 steps. Every other owner was already live, which is what the three hand-passes above bought and
 what nothing now has to buy again.
 
-**The ledger stands at 100 rows.**  Six (**N-171**..**N-176**) are the from-scratch anchor
+**The ledger stands at 104 rows.**  The four newest are X-f1c3c's: **N-190**, the unserialised
+posting reconcile -- a defect ruling R-EN opened on the cash side and DISCOVERED on the loan side,
+where it had been live and unserialised since Commit 16 -- plus **N-191** (the app's civil day rests
+on a compose variable at 78 call sites) and **N-192** (a `PostingError` that lost its constraint and
+is now held out of reach by code alone) and **N-193**, the advisory-vs-row-lock cycle N-190's own fix opened -- found by the adversarial review that ran before the commit, which is what that review is for.  Six (**N-171**..**N-176**) are the from-scratch anchor
 investigation's, owned by the **X-f1** / **X-f3** / **X-f4** leaves ruling **R-EB** created, and the
 91st is **N-177** -- the dead `Settled` status, opened by X-f1's trace **on the developer's own
 question** and given the new step **X-am** on their ruling -- and the 92nd is **N-178**, a LIVE
@@ -6171,7 +6236,7 @@ done, and is what drifted.
 | FU-3 | Standing overpayment resolves at today for any as-of | -- | latent **RE-VERIFIED 2026-07-27** and it is the X-i class, not a C-phase note: `_resolution.py:294` calls `loan_standing_extra_for_account(account.id)`, which resolves through `recurring_transfer_query.py:72-76` off the CURRENT template row with no as-of, inside a resolution the context pins an `as_of` for. **TRIAGED 2026-07-27 (ruling R-AO): to X-i2.** | X-i2 |
 | N-96 | **`balance_at.interest_by_period_for_account` is a public seam entry with ZERO `app/` callers.** AST-verified 2026-07-27 during X-g4b's review: the account-detail route reads `interest_projection_for_account`, and nothing reads this. `__init__.py` states as fact that it and `debt_schedule_rows` are "the two non-balance seam entries the out-of-cluster consumers (the account-detail route, the savings orchestrator) read" -- true of the second, FALSE of the first. Same class as the `calculate_interest` orphan X-g4b deleted, but it pre-dates that step rather than being created by it, so it was reported and not swept | a public seam entry no screen can reach, described as one two screens read | **OPEN -- found 2026-07-27** by X-g4b's adversarial review, AST-verified, deliberately NOT fixed in that commit (out of its scope, CLAUDE.md rule 6) | X-e |
 | N-97 | **`app/utils/dates.py:314` cites `balance_resolver.daily_cash_balance_series` as a live consumer of `attribution_date`.** That producer was deleted at plan step X-c2b3 (the calendar's per-day line is the fold sampled at every day). The rule the sentence states -- one attribution rule shared by the calendar's day cells and the balance line's steps, so a flow's cell and its step land on the same day -- is STILL TRUE and load-bearing; only its named example is gone. Found 2026-07-27 in X-g4b's sweep, outside that step's 26-site scope | a present-tense claim naming a producer deleted a month earlier, in the docstring of the rule two surfaces share | **OPEN -- found 2026-07-27**, reported not fixed (pre-dates X-g4b) | X-p |
-| N-103 (X-q2 trace + review) | **The archived-accounts drawer renders `current_anchor_balance` as "Last Balance", and for an amortizing loan that column is not a balance.** `_data._load_archived_accounts` (`_data.py:184`) reads the column directly -- by design, since an archived account gets no engine or seam call -- and `savings/dashboard.html` labels it "Last Balance". `anchor_service.AmortizingAccountAnchorError` states the rule in terms ("a loan's balance is never `accounts.current_anchor_balance` -- it is ledger-derived"), and the cash true-up door REFUSES an amortizing account, so nothing keeps the column true for a loan; a loan true-up appends a `LoanAnchorEvent` and never touches it. This is archived finding B-15's shape on the one surface B-15's fix did not reach -- B-15 was the Mortgage column reading `$1.00` against a ledger of `$177,277.97`. **Not live: zero archived loans exist on either database** (the two archived accounts are cash), so nothing is on screen today; a user archiving either real loan sees it immediately. Options are (a) suppress the line for accounts whose balance is ledger-derived, (b) resolve archived loans through the seam -- which also decides N-102's badge, and (c) record `archived_at` and read the ledger at that instant, since "what it owed when you archived it" is a fact the app does not store (`updated_at` moves on every edit) | Mortgage column `$178,103.41` against `$177,277.97` owed; Van Loan column **`$0.00`** against **`$15,663.59`** owed -- the whole balance, because a loan's true-ups never write the column (measured on `shekel` 2026-07-27; `$15,205.63` on `shekel_f3_final`) | **OPEN -- found 2026-07-27** by X-q2's trace while pricing N-102's badge, and sharpened by its adversarial review, which found the anchor service's own sentence. Deliberately NOT fixed there: the developer ruled the badge NO and this figure to X-e, which owns the column's fate and already lists this exact read  **RE-POINTED 2026-08-04 (R-EM):** the four no-current-period fallbacks that made this figure a displayable one move to the seam, and the column it reads is deleted, so the drawer's "Last Balance" becomes the last ASSERTION rather than a cache column.  Whether an archived loan's line should render at all survives as this row's question | X-f1c3a |
+| N-103 (X-q2 trace + review) | **The archived-accounts drawer renders `current_anchor_balance` as "Last Balance", and for an amortizing loan that column is not a balance.** `_data._load_archived_accounts` read the column directly -- by design, since an archived account gets no engine or seam call -- and `savings/dashboard.html` labels it "Last Balance" (the citation was `_data.py:184`; **X-f1c3a re-pointed that read at `cash_ledger.resolve_anchor` and X-f1c3c deleted the column**, so the line now reads the ASSERTION at `_data.py:200`). `anchor_service.AmortizingAccountAnchorError` states the rule in terms ("a loan's balance is never `accounts.current_anchor_balance` -- it is ledger-derived"), and the cash true-up door REFUSES an amortizing account, so nothing keeps the column true for a loan; a loan true-up appends a `LoanAnchorEvent` and never touches it. This is archived finding B-15's shape on the one surface B-15's fix did not reach -- B-15 was the Mortgage column reading `$1.00` against a ledger of `$177,277.97`. **Not live: zero archived loans exist on either database** (the two archived accounts are cash), so nothing is on screen today; a user archiving either real loan sees it immediately. Options are (a) suppress the line for accounts whose balance is ledger-derived, (b) resolve archived loans through the seam -- which also decides N-102's badge, and (c) record `archived_at` and read the ledger at that instant, since "what it owed when you archived it" is a fact the app does not store (`updated_at` moves on every edit) | Mortgage column `$178,103.41` against `$177,277.97` owed; Van Loan column **`$0.00`** against **`$15,663.59`** owed -- the whole balance, because a loan's true-ups never write the column (measured on `shekel` 2026-07-27; `$15,205.63` on `shekel_f3_final`) | **OPEN -- found 2026-07-27** by X-q2's trace while pricing N-102's badge, and sharpened by its adversarial review, which found the anchor service's own sentence. Deliberately NOT fixed there: the developer ruled the badge NO and this figure to X-e, which owns the column's fate and already lists this exact read  **RE-POINTED 2026-08-04 (R-EM):** the four no-current-period fallbacks that made this figure a displayable one move to the seam, and the column it reads is deleted, so the drawer's "Last Balance" becomes the last ASSERTION rather than a cache column.  Whether an archived loan's line should render at all survives as this row's question | X-f1c3a |
 | cash D4 | Anchor column vs history table: divergence detected, only logged | latent | latent  **CLOSED BY DESIGN at X-f1c3a**: there is no column left to diverge from the history table, so the detector and `EVT_ANCHOR_CACHE_RECONCILED` are deleted rather than upgraded to a repair | X-f1c3a |
 | N-4 (A1) | Pay-period reset re-anchors EVERY kind, refreshing loan cash-anchor rows (balance-preserving `stage_anchor_true_up` inside the reset's deferred-FK transaction; same-value, not user-supplied) | -- | **OPEN** -- residue of the archived B-15 (a kind-blind true-up wrote a CASH anchor onto a LOAN; both real loans carried such rows), whose mechanism closed at A1 while these two writers did not  **RE-POINTED 2026-08-04 (R-EO).**  `_reanchor_accounts` -- the writer this row is about -- is DELETED: once an assertion carries no pay period, a schedule rebuild does not need to re-anchor anything, and the reset stops writing a cash anchor onto a loan (or onto anything else) | X-f1c3b |
 | N-5 (A1) | Account-create factory writes an origination cash anchor for every kind -- a loan created with a balance seeds the column at birth (entangled with loan onboarding) | -- | **OPEN** -- residue of the archived B-15, as above: the mechanism that RENDERED the wrong anchor closed at A1, the writers that create one did not  **RE-POINTED 2026-08-04 (R-EH / R-EO).**  The factory stops writing a cash-anchor COLUMN at X-f1c3c; what survives is the origination `AccountAnchorHistory` row it writes for every kind, which is the residue this row is really about once the column is gone | X-f1c3c |
@@ -6262,6 +6327,10 @@ done, and is what drifted.
 | N-186 (X-f1c's own build, 2026-08-03; surfaced by ruling R-EJ's guard, not by a review) | **The R1 regression lock for "early settle, then time passes" encodes a FUTURE-DATED settle, not an early one -- so what it locks is not what it claims.**  `test_posting_ledger_loan_reconciliation.py::test_early_settled_payment_keeps_the_parallel_run_exact` freezes today at `2026-02-10` and settles the P3 payment on P3's own period start (`2026-03-13`), then asserts `seed_periods[_P3].start_date > frozen` and calls that an EARLY settle.  It is a settle dated three weeks in its own future; ruling **R-EJ** now refuses it at the write door.  **And the fixture cannot simply be re-dated**: the parallel run compares `posted_loan_balance_map` (selected by `entry_date <= period.end_date`) against a resolver that replays the SCHEDULED payment from the anchor and discards the cash, so the two agree only while a payment's entry lands in the same period its schedule slot does.  A genuinely early settle puts the cash in an EARLIER period than the schedule, which makes the two producers disagree over the intervening periods BY CONSTRUCTION.  Measured: settling on the frozen today, and again on the start of the period containing it, both give `map 97997.25 != resolver 99001.12` at period 2 -- a difference of one payment's principal | **`$0.00` in production** -- the fixture is the only thing that ever produced this shape, and R-EJ now makes it unreachable.  The cost is that a regression lock the 2026-07-02 review's H2 asked for may be pinning a state the app cannot reach, and the real "early settle, then time passes" case may be unlocked | **ANSWERED and CLOSED at X-f1c** (ruling **R-EK**, 2026-08-04).  The question it forbade re-dating until was answered by tracing the two producers rather than by picking a date: they key on DIFFERENT FACTS -- the ledger on the day the money moved, the resolver on the pay-period start -- and the second is a proxy, so the divergence is a real defect and NOT an expected property.  That defect is **N-187**, owned by the new step **X-an**.  The fixture is re-pointed to the early settle the app actually produces and both producers can see (cash 2026-01-30, booked in the period containing it, paying the 2026-03-01 installment: early against the INSTALLMENT), and its non-vacuity is PROVEN by mutation rather than asserted -- dating the split correction at the due date fails it loud at `walk 1003.87 vs posted 1498.88`.  The case the re-point gives up is carried by N-187, not dropped | X-f1c1 |
 | N-187 (X-f1c's resume trace 2026-08-04, on N-186's own question; REPRODUCED with a control before it was written down) | **The loan resolver decides "has this payment happened yet?" from the pay period, and the posted ledger from the day the money moved -- so an installment paid before its pay period begins is counted TWICE.**  `is_confirmed_payment_eligible` (`rate_period_engine.py:395`) caps the replay on `period_start <= as_of` and `_build_monthly_override:174` excludes on the same field, while `posting_service._entry_date:256` dates the journal entry from the shadow's `settled_on`.  A pay period is a BUDGETING fact the lender never sees.  **Reproduced** at $100,000 @ 6%, today 2026-02-10, the 2026-04-01 installment paid 2026-02-10: ledger `97,997.25` against resolver `99,001.12` -- exactly one payment's principal, `$1,003.87` -- and the rendered schedule carries `2026-04-01` as BOTH a confirmed row and a projected row, with its last row at `2032-10-01` against the control's `2032-12-01`.  **The control moves ONLY the pay period the payment is filed in** (same amount, same cash day, same installment, same posted split), which is what makes this a producer defect and not a fixture artifact.  It PREDATES X-f1: `git show fac90200:.../posting_service.py` already derived the entry date from `paid_at` | **`$0.00` on today's production data and one ordinary click away.**  Measured read-only on `shekel-prod-db` 2026-08-04, over settled rows that CARRY an instant (`paid_at IS NOT NULL`): **0 of 7** settled loan payments carry a settle day outside their pay period, but **19 of 135** settled Checking rows do (9 early, 10 late) -- and **2 of 5** Money Market rows do, so the habit is not Checking's alone.  The excluded rows are N-181's undated ones (1 Auto Loan, 1 Mortgage, 4 Checking, 2 Money Market), which the X-f1b backfill dates to their own period's `start_date` and so lands INSIDE the period by construction -- it is 0 of 9 on the loan side either way.  Only the EARLY direction bites -- a late settle's divergence window is already past at any render; an early settle's CONTAINS today until its pay period begins.  Blast radius: `loan_figures.payoff_date` is MEASURED equal in both columns (`2032-11-01`); the grid's per-period map is a STRUCTURAL read (`positions()`'s future half folds `memoized_plan`, built from PROJECTED shadows only) and the recurrence end date is an INFERENCE from the payoff date -- all three unaffected, but only the first is a number.  The damage is `LoanState.schedule` and the payoff scenarios sharing `_build_forward_inputs` -- the loan detail page's amortization table, payoff / interest summary and band chart | **OPEN, and RULED (R-EK).**  The cut moves onto `settled_on` for a CONFIRMED payment, so both producers share one definition of "already happened"; a PROJECTED payment keeps the pay-period start, because its cash has not moved.  Its own step rather than a leaf of X-f1: the developer declined mixing a loan-resolver change into a step already carrying a destructive migration and two edit doors.  The step owes the complement move, an explicit decision on the shared RATE key (N-36), and the regression lock X-f1c's re-point gave up | X-an |
 | N-189 (X-f1c's app-code review, 2026-08-04; the input REPRODUCED against the schema before it was written down) | **The settle-day correction box was bounded above and not below, and the unbounded end moves money by the mirror of the mechanism the bound end refuses.**  `reject_future_settle_day` refuses a future day because the walk lets it ride on top of every assertion; a day at or BELOW an assertion is ABSORBED into it by `cash_ledger/_walk.py:291-294` and the next line executes `running = anchor.anchor_balance`, discarding the row's delta.  `fields.Date().deserialize("0202-08-04")` returns a real `date`, so a mistyped YEAR reaches `journal_entries.entry_date`.  Worked on a `$1,000` anchor observed three days ago with a `$100` settled expense: the grid reads `$900`, and after the typo `$1,000`, with the `$100` becoming an unexplained plug against Uncategorized at the next re-derive -- the row still reading Paid throughout | **the full amount of any corrected row**, on the account the developer budgets from, by an ordinary typo in a box whose own tooltip invites correction.  `$0.00` on today's data only because the door did not exist until this step | **CLOSED at X-f1c1** (ruling **R-EL**, 2026-08-04, RE-RULED once on evidence).  The bound is `pay_period_service.earliest_recordable_day` -- the SAME floor an anchor's `observed_on` has used since N-133, moved down to a leaf module -- plus `min` on both inputs.  **It lives at the DOOR (`settle_day_for_status`, which all three HTTP doors call), not at the seam**, and the first placement was wrong: at the seam it broke six tests whose scenario is a payment budgeted to a 2026 period whose cash moved in December 2025.  That shape is legitimate -- the absorb is CORRECT for a genuine pre-schedule settle under R-EB, and X-f6's bank import produces it in bulk -- so the floor was never protecting an invariant, only catching a typo.  The ceiling stays at the seam because no caller may record money that has not moved.  Non-vacuity proven by mutation at both levels, and `test_the_service_itself_still_accepts_a_pre_schedule_day` fails if the bound drifts back to the seam | X-f1c1 |
+| N-190 (X-f1c3c's app-code review 2026-08-04, then REPRODUCED INDEPENDENTLY with the interleave forced at the reconcile's read; a positive control ran first) | **Every posting-ledger reconcile is an unserialised read-modify-write, and ruling R-EN removed the accident that had been covering the cash half.** `reconcile_account_anchor_corrections` reads `posted_correction_legs`, subtracts it from the walked target and INSERTs the difference; repeated deltas under one key are the DESIGN, so no unique index can tell a racing duplicate from a legitimate adjustment, and there are no rows to `SELECT FOR UPDATE` when nothing is posted yet. The deleted `version_id` UPDATE had serialised it only because it autoflushed and took a row lock before the walk. **The LOAN half never had even that**: `apply_loan_anchor_true_up` appends to an append-only event table and UPDATEs no row, so `sync_loan_postings` has carried the identical race since Commit 16 -- and R-EN cited that append-only contract as its precedent for deleting the cash lock | On an account reconciled at `$4,000.00`, two concurrent true-ups both answer **200**, both assertions survive, the resolver returns one of them, and the linked ledger settles at **`$1,000.00`** against a resolved **`$2,000.00`**. Trial balance still `$0.00` -- the anchor-equity leg carries the mirror-image error -- so nothing fails loudly until the account's next anchor sync, which may be never | **CLOSED at X-f1c3c.** One per-USER advisory lock, taken INSIDE the reconcile at all four entry points (cash per-scenario + all-scenarios, loan per-scenario + all-scenarios) rather than at any door, because the true-up is one of four callers reaching that window. Per user rather than per account on a CORRECTNESS argument, not a convenience one: the reconcile derives each correction's period from the OWNER'S calendar and `journal_entries.pay_period_id` is `ON DELETE CASCADE`, so a concurrent truncate can delete the period it is filing under -- the consistency boundary is the ledger AND the calendar. One key per user also makes deadlock structurally impossible on every request path; the two deploy-wide backfills, the only multi-owner transactions, pre-take every key ascending by user id. The pay-schedule lock MOVED into `app/services/user_write_lock.py` as that one lock, namespace value unchanged so a rolling deploy cannot split it. Sufficiency verified rather than assumed: READ COMMITTED measured as the default on dev, test AND production, with no override anywhere, so the waiter re-reads and reconciles to the true merged target. Three mutants planted (lock removed / lock after the read / loan lock removed), all three killed, and the ordering mutant was killed ONLY by the ordering assertion -- which is why presence and ordering are graded separately | X-f1c3c |
+| N-191 (X-f1c3c's residue pass 2026-08-04, found while re-justifying a comment ruling R-EO had falsified; census by AST over `app/`, after a neutral claims audit REFUTED the grep count this row first carried) | **The app's civil day rests on a compose environment variable rather than on a rule, at 78 call sites.** `app/utils/dates.display_today()` is the user's civil day; `date.today()` is the PROCESS-local day, and `app/` calls it at **78 sites** -- `ast.Call` nodes over all 299 `app/**/*.py`, 0 parse errors. **A first version of this row said 113, which was a `grep` line count**: 35 of those occurrences are the name written in docstring or comment PROSE, `display_today`'s own included. A census stated as a census must be counted as one. Production pins `TZ: America/New_York`, so the two clocks are equal there and none of the 78 is a live defect -- which is exactly the problem: their correctness is a property of the deployment, not of the code, and finding N-138 already records that neither clock gate can detect a process-vs-display SPLIT. Two sites found in this pass decide something against the user's CALENDAR and so look like the wrong side of the line: `pay_period_admin.top_up_rolling_window` (`as_of` for "keep N periods ahead of today") and `classify_periods_bulk` (`as_of` for whether a period is HISTORICAL, which is a truncate LOCK decision). `display_today`'s own docstring calls `date.today()` the UTC day, which is false in production, where the process clock is Eastern | `$0.00` today and on any TZ-pinned deployment. The exposure is a one-day boundary error in whether a period is historical (a truncate refusal) or whether the rolling window is short, for the hours the two clocks disagree -- reachable the moment a container runs unpinned, which CI already does on purpose | **OPEN.** Not fixed here: 78 sites is a systemic surface far outside a leaf that deletes two columns, and each needs a per-site ruling on which day it means -- the same shape N-142 has for query-string ids. Recorded with the census rather than the two anecdotes | X-ak |
+| N-192 (X-f1c3c's residue pass 2026-08-04) | **A `PostingError` that was referentially unreachable is now held out of reach by code alone, and its comment still cited the deleted constraint.** `reconcile_account_anchor_corrections` raises when an account has anchor corrections to post while its owner has no pay periods. That was impossible under the FK: an assertion carried a NOT NULL `pay_period_id` pointing at one of those periods. Ruling R-EO deleted the column, so what keeps the state out of reach is now three separate code paths -- registration opens a bootstrap period before creating the default account, `truncate_pay_periods` only deletes indices ABOVE the one kept so index 0 survives, and `reset_pay_periods` regenerates before returning | `$0.00`; unreachable through every UI path traced. A 500 on account create or on any true-up for the affected user if it is ever reached | **OPEN, deliberately as a loud failure.** The comment is corrected to state what actually holds it out of reach; the raise STAYS, because this reconcile derives each correction's period from its day and an empty calendar is the one state that could silently mis-file every correction an account has. Worth a schema-level guarantee if one exists that does not re-file a bank fact under a budgeting artifact -- which is what R-EO deleted | X-ak |
+| N-193 (X-f1c3c's concurrency review 2026-08-04; the deadlock REPRODUCED against a real PostgreSQL with its own `DeadlockDetected` DETAIL line, the statement ordering CAPTURED from a real loan-payment settle) | **The per-user write lock closes the reconcile race and opens an advisory-vs-ROW-lock cycle, because it is not the FIRST lock its transaction takes.**  A settle takes row locks first -- `update_transfer` UPDATEs the transfer and both shadows, they flush, and the posting sync reaches `lock_user_writes` only afterwards (measured: statements 2-4 against statement 19) -- while `truncate_pay_periods` / `regenerate` / `reset` take the lock first and then bulk-DELETE pay periods, which CASCADEs to `budget.transactions` and locks exactly the rows the settle may hold.  Same user, opposite orders.  **A first version of this step's docstrings and record called deadlock "structurally impossible on every request path"**, an argument that considered only advisory-vs-advisory ordering | PostgreSQL detects it and aborts one transaction: an unhandled 500 on a money route, **no money corrupted** (the loser rolls back atomically).  Needs a settle and a schedule rebuild for one user to overlap -- two browser tabs.  `$0.00` of ledger divergence, against the silent permanent divergence the lock replaces, which is why the lock ships anyway | **OPEN.**  The fix is the invariant stated in `user_write_lock`'s docstring -- *this lock must be the FIRST lock a transaction takes* -- which means acquiring at the write-SERVICE entry (the status seam, `update_transfer`, the delete/restore paths) rather than inside the reconcile.  Deliberately NOT done in this leaf: it is a different change with its own blast radius and needs its own review, and the decompose-at-the-leaf-boundary lesson is this step's own.  What ships here is the correct claim, not the correct lock placement | X-ak |
 | N-188 (X-f1c's app-code review, 2026-08-04) | **The W9907 checker still describes the seam as the thing that maintains `paid_at`, in the message it shows the developer.**  `tools/pylint/shekel_checkers/status_bypass.py` names `paid_at` at lines 6, 179, 200 and 221, the last inside the user-visible `shekel-transaction-status-bypass` text -- but ruling **R-EC** deleted that column at X-f1b and the seam maintains `settled_on`.  Introduced by `6a06d4c6`, untouched by X-f1c, found by a neutral review of X-f1c's diff | **`$0.00`** -- the checker's BEHAVIOUR is correct and unaffected; the cost is that the fence for one half of the `status_id` / `settled_on` pair tells a developer to protect a column that no longer exists, which is the same invented-citation class this document treats as a defect | **OPEN.**  Not fixed inside X-f1c: X-aj2 DELETES this checker (ruling R-DP replaces its write door with a read-only attribute), so correcting its prose now writes text with a scheduled deletion date.  It is recorded rather than fixed so the stale text cannot be read as current in the window before then, and N-185 already binds the pair to that step | X-aj2 |
 | N-185 (X-f1b's correctness review, 2026-08-03) | **`settled_on` is now exactly as load-bearing as `status_id`, and only one of the two has a fence.**  W9907 (`shekel-transaction-status-bypass`) refuses a `status_id` write outside the seam; nothing refuses a `settled_on` write.  The invariant binds them -- a row is settled iff it carries a day, and the seam writes both in one statement -- so a second writer of EITHER breaks it, which is precisely what N-183 was.  The only thing keeping `routes/transactions/mutations.py`'s `setattr(txn, field, value)` loop (`:340` at HEAD, `:253` in the working tree after the module split) from becoming that second writer is the field's absence from `TransactionUpdateSchema`, **and plan step X-f1c adds it** | **`$0.00` today** and a re-run of N-183 the moment the edit door lands | **OPEN, and X-f1c1 met its condition.**  Do NOT grow W9907 an arm: the developer's standing ruling is that fences become structurally unnecessary, and the scheduled mechanism already exists -- **X-aj2 replaces W9907's write door with a read-only attribute**.  `settled_on` joins `status_id` under THAT mechanism, so the pair gets one structural answer rather than two checkers.  Until X-aj2, the edit doors route through the seam: X-f1c1 names the pair `_SEAM_OWNED_FIELDS` and EXCLUDES both from the PATCH handler's `setattr` loop, and X-f1c2's `Transfer.settled_on` has no setter, so assignment raises.  A test dates a PROJECTED row through the PATCH and asserts it stays undated -- removing `settled_on` from that set kills it | X-aj2 |
 | N-180 (X-f1b's design review, 2026-08-03) | **A de-duplication rationale in `balance_at/_loan_interest.py` was falsified by ruling R-DH and the X-f1 conversion then edited an INVENTED CITATION into it.**  The paragraph argued that `confirmed_shadows_through` is a UTC-visibility subset while the tax `as_of` is a display date, so an evening settle is counted twice.  `payment_visible_on` became display-tz at R-DH (b), and since X-f1 the day is STORED in the user's zone and converted by nothing -- so the premise is doubly false.  The conversion rewrote the citation to `to_utc_civil_date(settled_on)`, **a function that has never existed in `app/`** | **`$0.00`** -- the code was never wrong (the de-dup runs off `_due_slot` over the walk, not off this claim); only the reason written beside it was.  The cost is that the stated rationale for a de-duplication design is false, and a future reader would rely on it | **OPEN.**  The falsified paragraph is REPLACED in place at X-f1b and the invented citation deleted, but **whether the two sets can still differ for any other reason is UNVERIFIED**, so the de-dup stays and this row owns the question.  X-e re-reads this package | X-e |

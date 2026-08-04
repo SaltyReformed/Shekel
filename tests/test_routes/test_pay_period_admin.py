@@ -20,6 +20,7 @@ from app.models.account import Account
 from app.models.pay_period import PayPeriod
 from app.services import pay_period_service, pay_schedule_service
 from tests._test_helpers import add_txn, freeze_today
+from app.services import cash_ledger
 
 
 FROZEN_TODAY = date(2026, 6, 15)
@@ -295,14 +296,13 @@ class TestResetRoute:
     def test_reset_rebuilds_and_reanchors(self, app, db, auth_client, seed_user):
         """A confirmed reset wipes everything and rebuilds from index 0.
 
-        The account's old anchor period (the bootstrap) is deleted and the
-        account re-anchored to a live new period -- the deferred-FK commit
-        path, end to end through HTTP.
+        It proved the DEFERRED-FK commit path end to end through HTTP; rulings
+        R-EH and R-EO deleted the FK, so what it proves now is that the rebuild
+        succeeds over HTTP and the user's asserted balance survives it.
         """
         with app.app_context():
             user_id = seed_user["user"].id
             account_id = seed_user["account"].id
-            old_anchor = seed_user["account"].current_anchor_period_id
             _future_periods(db.session, seed_user, count=4)
             resp = auth_client.post(
                 "/pay-periods/reset",
@@ -318,11 +318,8 @@ class TestResetRoute:
             db.session.expire_all()
             periods = pay_period_service.get_all_periods(user_id)
             assert {p.period_index for p in periods} == {0, 1, 2, 3}
-            live_ids = {p.id for p in periods}
-            assert old_anchor not in live_ids
             account = db.session.get(Account, account_id)
-            assert account.current_anchor_period_id in live_ids
-            assert account.current_anchor_balance == Decimal("1000.00")
+            assert cash_ledger.resolve_anchor(account).balance == Decimal("1000.00")
 
     def test_unconfirmed_reset_refused(self, app, db, auth_client, seed_user):
         """Without the confirm box, reset changes nothing."""

@@ -4,7 +4,6 @@ from datetime import date
 from decimal import Decimal
 
 from app.extensions import db
-from app.models.category import Category
 from app.models.pay_period import PayPeriod
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import RecurrencePattern, Status, TransactionType
@@ -73,23 +72,23 @@ class TestReferentialIntegrity:
         assert all(r.passed for r in results), (
             f"Failed checks: {[r.check_id for r in results if not r.passed]}"
         )
-        assert len(results) == 13
+        # 12 since plan step X-f1c3c: FK-03 ("accounts pointing to a
+        # nonexistent anchor period") went with the column it queried.
+        assert len(results) == 12
 
     def test_fk01_detects_orphaned_account(self, app, db, seed_user):
         """FK-01 detects an account whose user_id references a nonexistent user."""
         # Insert an account with a bogus user_id via raw SQL to bypass FK.
-        # E-19 / Commit 3: current_anchor_period_id is NOT NULL, so
-        # we point the orphan at seed_user's bootstrap period -- the
-        # orphan we're testing is on user_id, not on the anchor.
+        # It needed anchor columns pointed at a real period until plan step
+        # X-f1c3c (ruling R-EH) deleted them; an account row is now just its
+        # owner, type and name, and the orphan under test is the user_id.
         db.session.execute(db.text(
             "SET session_replication_role = 'replica'"
         ))
         db.session.execute(db.text("""
-            INSERT INTO budget.accounts (user_id, account_type_id, name,
-                                         current_anchor_balance,
-                                         current_anchor_period_id)
-            VALUES (99999, 1, 'Orphaned Account', 100.00, :pid)
-        """), {"pid": seed_user["bootstrap_period"].id})
+            INSERT INTO budget.accounts (user_id, account_type_id, name)
+            VALUES (99999, 1, 'Orphaned Account')
+        """))
         db.session.flush()
 
         results = check_referential_integrity(db.session)
@@ -166,14 +165,9 @@ class TestReferentialIntegrity:
             "SET session_replication_role = 'replica'"
         ))
         db.session.execute(db.text("""
-            INSERT INTO budget.accounts
-                (user_id, account_type_id, name, current_anchor_balance,
-                 current_anchor_period_id)
-            VALUES (:uid, 99999, 'Bad Type Account', 100.00, :pid)
-        """), {
-            "uid": seed_user["user"].id,
-            "pid": seed_user["bootstrap_period"].id,
-        })
+            INSERT INTO budget.accounts (user_id, account_type_id, name)
+            VALUES (:uid, 99999, 'Bad Type Account')
+        """), {"uid": seed_user["user"].id})
         db.session.flush()
 
         results = check_referential_integrity(db.session)
@@ -183,31 +177,6 @@ class TestReferentialIntegrity:
         # Verify the detail identifies the offending row.
         assert fk02.details[0]["name"] == "Bad Type Account"
         assert fk02.details[0]["account_type_id"] == 99999
-
-        db.session.execute(db.text(
-            "SET session_replication_role = 'origin'"
-        ))
-
-    def test_fk03_detects_account_with_missing_anchor_period(
-        self, app, db, seed_user
-    ):
-        """FK-03: Accounts pointing to nonexistent anchor period."""
-        db.session.execute(db.text(
-            "SET session_replication_role = 'replica'"
-        ))
-        # Point the seed account to a nonexistent pay period.
-        db.session.execute(db.text("""
-            UPDATE budget.accounts
-            SET current_anchor_period_id = 99999
-            WHERE id = :aid
-        """), {"aid": seed_user["account"].id})
-        db.session.flush()
-
-        results = check_referential_integrity(db.session)
-        fk03 = next(r for r in results if r.check_id == "FK-03")
-        assert not fk03.passed
-        assert fk03.detail_count == 1
-        assert fk03.details[0]["id"] == seed_user["account"].id
 
         db.session.execute(db.text(
             "SET session_replication_role = 'origin'"
@@ -317,21 +286,66 @@ class TestBalanceAnomalies:
     def test_clean_database_no_anomalies(self, app, db, seed_user, seed_periods):
         """No balance anomalies on a properly seeded database."""
         results = check_balance_anomalies(db.session)
-        assert len(results) == 5
-        # BA-01 may flag if seed account has balance but no anchor period set
-        # before seed_periods runs. With seed_periods, it should pass.
+        # 4 since plan step X-f1c3c: BA-02 ("anchor period beyond the user's
+        # last period") went with the column it queried, and BA-01 was
+        # RE-POINTED at "an account with no balance assertion at all" -- the
+        # state that actually breaks a producer.
+        assert len(results) == 4
         ba01 = next(r for r in results if r.check_id == "BA-01")
         assert ba01.passed
 
-    # ``test_ba01_detects_balance_without_period`` deleted (E-19 /
-    # Commit 3): the storage tier (NOT NULL on
-    # ``current_anchor_period_id`` + ``ck_accounts_anchor_balance_present``)
-    # makes the balance-without-period state unreachable, so the BA-01
-    # detection is no longer exercisable through application
-    # constructs.  The BA-01 check itself remains in
-    # ``scripts/integrity_check.py`` as defense-in-depth for raw-SQL
-    # manipulation of the DB; the script's own clean-database test
-    # (``test_clean_database_no_anomalies``) covers the positive case.
+    def test_ba01_detects_account_with_no_assertion(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """BA-01 detects an account carrying no balance assertion at all.
+
+        **The check was RE-POINTED at plan step X-f1c3c and became
+        exercisable again.**  It used to look for "balance set but no anchor
+        period (or vice versa)", a state the storage tier made unreachable --
+        so its detection test was deleted as unexercisable and the check
+        survived as raw-SQL defence only.  What it asks now is the invariant
+        those columns existed to serve: every account carries at least one
+        ``account_anchor_history`` row (E-19 / Commit 3), because an account
+        the resolver cannot answer for breaks every producer downstream.  That
+        state IS reachable -- deleting the assertion is one statement -- so the
+        check has a firing control again.
+        """
+        account_id = seed_user["account"].id
+        db.session.execute(db.text(
+            "DELETE FROM budget.account_anchor_history WHERE account_id = :a"
+        ), {"a": account_id})
+        db.session.flush()
+
+        results = check_balance_anomalies(db.session)
+        ba01 = next(r for r in results if r.check_id == "BA-01")
+        assert not ba01.passed
+        assert ba01.detail_count == 1
+        assert ba01.details[0]["id"] == account_id
+        # The SEVERITY is the operationally load-bearing half, and the
+        # re-pointing nearly lost it: this family used to stamp one
+        # ``"warning"`` across every member, so an account the resolver RAISES
+        # for would have exited 2 rather than 1 and ``verify_backup.sh`` would
+        # have logged a broken restore as a WARNING.
+        assert ba01.severity == "critical", (
+            "an account with no assertion makes resolve_anchor raise on every "
+            "page; it must fail the sweep, not warn"
+        )
+
+    def test_the_other_balance_checks_stay_warnings(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """BA-03/04/05 are warnings; only BA-01 escalated.
+
+        The complement of the assertion above, so "severity is per check"
+        is graded in both directions: an edit that promoted the whole family
+        to critical would pass the BA-01 test alone.
+        """
+        results = check_balance_anomalies(db.session)
+        by_id = {r.check_id: r.severity for r in results}
+        assert by_id["BA-01"] == "critical"
+        assert by_id["BA-03"] == "warning"
+        assert by_id["BA-04"] == "warning"
+        assert by_id["BA-05"] == "warning"
 
     def test_ba03_detects_period_gap(self, app, db, seed_user):
         """BA-03 detects a gap in the pay period index sequence."""
@@ -355,68 +369,6 @@ class TestBalanceAnomalies:
         ba03 = next(r for r in results if r.check_id == "BA-03")
         assert not ba03.passed
         assert ba03.detail_count == 1  # 1 gap at index 3
-
-    def test_ba02_detects_anchor_beyond_last_period(self, app, db, seed_user):
-        """BA-02: Anchor period is beyond the last pay period for the user.
-
-        The check joins accounts -> pay_periods (via anchor_period_id) and
-        compares the anchor period's index to the max period_index for the
-        account's user.  To trigger it, we create a period owned by a
-        different (fake) user with a high index and point the real
-        account's anchor to it -- bypassing FK constraints via replica mode.
-        """
-        user = seed_user["user"]
-        account = seed_user["account"]
-
-        # Create normal periods for this user so max_idx is well-defined.
-        # Indices 1, 2, 3 -- offset past seed_user's bootstrap period
-        # (index 0) so the uq_pay_periods_user_index constraint holds; the
-        # account's max real period_index is 3, well below the fake 999.
-        for idx, (start, end) in enumerate([
-            (date(2026, 1, 2), date(2026, 1, 15)),
-            (date(2026, 1, 16), date(2026, 1, 29)),
-            (date(2026, 1, 30), date(2026, 2, 12)),
-        ]):
-            pp = PayPeriod(
-                user_id=user.id,
-                start_date=start,
-                end_date=end,
-                period_index=idx + 1,
-            )
-            db.session.add(pp)
-        db.session.flush()
-
-        # Use replica mode to bypass FK/CHECK constraints.
-        db.session.execute(db.text(
-            "SET session_replication_role = 'replica'"
-        ))
-        # Create a fake period with a very high index owned by a nonexistent user.
-        db.session.execute(db.text("""
-            INSERT INTO budget.pay_periods
-                (user_id, start_date, end_date, period_index)
-            VALUES (99999, '2030-01-01', '2030-01-14', 999)
-        """))
-        fake_period_id = db.session.execute(
-            db.text("SELECT id FROM budget.pay_periods WHERE period_index = 999")
-        ).scalar()
-
-        # Point the account's anchor to this high-index period.
-        db.session.execute(db.text("""
-            UPDATE budget.accounts
-            SET current_anchor_period_id = :pid
-            WHERE id = :aid
-        """), {"pid": fake_period_id, "aid": account.id})
-        db.session.flush()
-
-        results = check_balance_anomalies(db.session)
-        ba02 = next(r for r in results if r.check_id == "BA-02")
-        assert not ba02.passed
-        assert ba02.detail_count == 1
-        assert ba02.details[0]["id"] == account.id
-
-        db.session.execute(db.text(
-            "SET session_replication_role = 'origin'"
-        ))
 
     def test_ba04_detects_date_overlap(self, app, db, seed_user):
         """BA-04 detects overlapping pay period date ranges."""
@@ -769,7 +721,6 @@ class TestDataConsistency:
         from app.models.salary_profile import SalaryProfile  # pylint: disable=import-outside-toplevel
         from app.models.paycheck_deduction import PaycheckDeduction  # pylint: disable=import-outside-toplevel
         from app.models.user import UserSettings  # pylint: disable=import-outside-toplevel
-        from app.models.account import Account  # pylint: disable=import-outside-toplevel
         from app.models.scenario import Scenario  # pylint: disable=import-outside-toplevel
         from app.models.ref import AccountType  # pylint: disable=import-outside-toplevel
 
@@ -806,7 +757,6 @@ class TestDataConsistency:
                 account_type_id=checking_type.id,
                 name="User2 Checking",
                 anchor_balance=Decimal("0"),
-                anchor_period_id=_bootstrap2.id,
             ),
         )
         db.session.flush()
@@ -860,7 +810,9 @@ class TestRunAllChecks:
         """run_all_checks(categories=['referential']) only runs FK checks."""
         results = run_all_checks(db.session, categories=["referential"])
         assert all(r.category == "referential" for r in results)
-        assert len(results) == 13
+        # 12 since plan step X-f1c3c: FK-03 ("accounts pointing to a
+        # nonexistent anchor period") went with the column it queried.
+        assert len(results) == 12
 
     def test_returns_check_result_objects(
         self, app, db, seed_user, seed_periods
@@ -898,6 +850,8 @@ class TestRunAllChecks:
             f"{[(r.check_id, r.description, r.detail_count) for r in critical_failures]}"
         )
         # Total check count should cover all 4 categories:
-        # 13 FK + 6 OR + 5 BA + 8 DC = 32 checks (DC-01 removed
+        # 12 FK + 6 OR + 4 BA + 8 DC = 30 checks (DC-01 removed
         # 2026-06-11 -- estimated-only settles are a legal state).
-        assert len(results) == 32
+        # 30 since plan step X-f1c3c: FK-03 and BA-02 both queried
+        # ``accounts.current_anchor_*``, deleted with the columns.
+        assert len(results) == 30

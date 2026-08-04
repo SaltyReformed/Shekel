@@ -1988,7 +1988,6 @@ class TestTheOutstandingSet:
                     account_type_id=seed_user["account"].account_type_id,
                     name="Checking 2",
                     anchor_balance=Decimal("2000.00"),
-                    anchor_period_id=seed_periods[0].id,
                 ),
             )
             db.session.flush()

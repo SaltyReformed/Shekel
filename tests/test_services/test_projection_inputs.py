@@ -235,7 +235,6 @@ def _seed_deductions_fixture(app, db, seed_user, seed_second_user):
     scenario_id = seed_user["scenario"].id
     other_scenario_id = seed_second_user["scenario"].id
     bootstrap_period_id = seed_user["bootstrap_period"].id
-    other_bootstrap_id = seed_second_user["bootstrap_period"].id
 
     retire_type_id = ref_cache.acct_type_id(AcctTypeEnum.K401)
     flat_id = ref_cache.calc_method_id(CalcMethodEnum.FLAT)
@@ -248,19 +247,13 @@ def _seed_deductions_fixture(app, db, seed_user, seed_second_user):
 
     acct_a = Account(
         user_id=user_id, name="Acct A", account_type_id=retire_type_id,
-        current_anchor_balance=Decimal("0.00"),
-        current_anchor_period_id=bootstrap_period_id,
     )
     acct_b = Account(
         user_id=user_id, name="Acct B", account_type_id=retire_type_id,
-        current_anchor_balance=Decimal("0.00"),
-        current_anchor_period_id=bootstrap_period_id,
     )
     other_acct = Account(
         user_id=other_user_id, name="Other Acct",
         account_type_id=retire_type_id,
-        current_anchor_balance=Decimal("0.00"),
-        current_anchor_period_id=other_bootstrap_id,
     )
     db.session.add_all([acct_a, acct_b, other_acct])
     db.session.flush()
@@ -419,8 +412,6 @@ class TestLoadActiveDeductionsHelpers:
             bare_acct = Account(
                 user_id=ctx["user_id"], name="Bare",
                 account_type_id=retire_type_id,
-                current_anchor_balance=Decimal("0.00"),
-                current_anchor_period_id=ctx["bootstrap_period_id"],
             )
             db.session.add(bare_acct)
             db.session.flush()
@@ -469,27 +460,20 @@ class TestLoadInvestmentParamsForAccounts:
         from app.models.investment_params import InvestmentParams
         with app.app_context():
             user_id = seed_user["user"].id
-            bootstrap_period_id = seed_user["bootstrap_period"].id
             k401_type_id = ref_cache.acct_type_id(AcctTypeEnum.K401)
             checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
 
             inv_with_params = Account(
                 user_id=user_id, name="401k With Params",
                 account_type_id=k401_type_id,
-                current_anchor_balance=Decimal("0.00"),
-                current_anchor_period_id=bootstrap_period_id,
             )
             checking = Account(
                 user_id=user_id, name="Everyday Checking",
                 account_type_id=checking_type_id,
-                current_anchor_balance=Decimal("0.00"),
-                current_anchor_period_id=bootstrap_period_id,
             )
             inv_without_params = Account(
                 user_id=user_id, name="401k No Params",
                 account_type_id=k401_type_id,
-                current_anchor_balance=Decimal("0.00"),
-                current_anchor_period_id=bootstrap_period_id,
             )
             db.session.add_all(
                 [inv_with_params, checking, inv_without_params],

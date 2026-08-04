@@ -11,18 +11,26 @@ the grid editor below, so only that family remains.
 ``true_up`` routes the actual mutation, history-row append,
 conditional entries reconcile, and commit through
 :func:`app.services.anchor_service.apply_anchor_true_up`, so the
-C-17 / F-009 optimistic-lock contract and the F-103 / C-22 same-day
-same-balance idempotency rules live in exactly one place.  This
-module is therefore deliberately thin: it owns the HTTP-shaped
-concerns (form validation, version_id pre-flush check, HTMX-fragment
-rendering, HX-Trigger header composition) and delegates the database
-mutation to the shared service.
+F-103 / C-22 same-day same-balance idempotency rule and the
+concurrency contract live in exactly one place.  This module is
+therefore deliberately thin: it owns the HTTP-shaped concerns (form
+validation, HTMX-fragment rendering, HX-Trigger header composition)
+and delegates the database mutation to the shared service.
+
+**The C-17 / F-009 optimistic lock is no longer part of that contract**
+(ruling R-EN, plan step X-f1c3c): a true-up UPDATEs no column on
+``accounts``, so ``version_id`` cannot fire, and this module no longer
+carries a pre-flush version check or a 409.  What serialises two
+concurrent true-ups is the per-owner write lock the reconcile itself
+takes (:mod:`app.services.user_write_lock`) -- the reconcile is the
+read-modify-write, so the lock belongs to it rather than to any one of
+its callers.
 
 The editor opens from five surfaces -- the grid cell, the dashboard
 balance card, the cockpit per-card cell, the investment / retirement
 detail page's balance hero, and the cash detail page's balance hero --
 each threaded through as a normalized ``revert`` token so Cancel /
-Escape and a 409 conflict re-render the correct opener (see
+Escape re-render the correct opener (see
 :func:`_normalize_revert_context`).
 """
 
@@ -39,12 +47,10 @@ from app.services import (
     anchor_service,
     cash_ledger,
     entry_service,
-    pay_period_service,
 )
 from app.services.anchor_service import AnchorTrueUpOutcome
 from app.utils.account_validation import _anchor_schema
 from app.utils.auth_helpers import get_or_404, require_owner
-from app.utils.dates import display_today
 from app.utils.digit_strings import parse_row_ids
 
 logger = logging.getLogger(__name__)
@@ -98,10 +104,11 @@ def _normalize_revert_context(raw_revert: str | None) -> str | None:
     collapses to ``None`` so the grid's default revert target is used.
     Centralizing the allowlist here means the token is validated against
     :data:`_REVERT_SURFACES` in exactly one place -- :func:`_anchor_revert_url`
-    (the Cancel / Escape target), the edit form's ``hx-patch`` round-trip
-    token, and the conflict cell's retry opener all consume this normalized
-    value rather than re-checking the raw string -- so the token is never
-    interpolated unvalidated into a URL or template.
+    (the Cancel / Escape target) and the edit form's ``hx-patch`` round-trip
+    token both consume this normalized value rather than re-checking the raw
+    string -- so the token is never interpolated unvalidated into a URL or
+    template.  A third consumer, the 409 conflict cell's retry opener, left
+    with ruling R-EN (plan step X-f1c3c).
 
     Args:
         raw_revert: The ``revert`` query token as received, or ``None``.
@@ -111,37 +118,6 @@ def _normalize_revert_context(raw_revert: str | None) -> str | None:
         surface; otherwise ``None`` (the grid default).
     """
     return raw_revert if raw_revert in _REVERT_SURFACES else None
-
-
-def _anchor_conflict_response(
-    account: Account, revert_context: str | None = None,
-) -> tuple[str, int]:
-    """Render the grid anchor-edit cell in conflict mode (HTTP 409).
-
-    Shared by ``true_up``'s pre-flush version-mismatch guard and its
-    post-service ``StaleDataError`` outcome so the C-17 / F-009
-    optimistic-lock conflict UX is identical for the stale-form and the
-    truly-concurrent cases.
-
-    ``revert_context`` carries the surface that opened the editor (the
-    normalized token from :func:`_normalize_revert_context`) through the
-    409 so the conflict cell's retry opener re-opens ``anchor_form`` with
-    the same ``revert`` token.  Without it, a conflict raised from the
-    dashboard balance card (or the investment detail hero) would strand the
-    card on the grid display cell (the editor's retry would reopen with no
-    ``revert``).  ``None`` (the grid default) keeps the conflict cell
-    byte-for-byte unchanged.
-    """
-    return (
-        render_template(
-            "grid/_anchor_edit.html",
-            account=account,
-            anchor_balance=cash_ledger.resolve_anchor(account).balance,
-            editing=False, conflict=True,
-            revert_context=revert_context,
-        ),
-        409,
-    )
 
 
 def reconcile_context(account: Account, panel_id: str) -> dict:
@@ -332,8 +308,10 @@ def _true_up_success_response(
     orphan-target (htmx:oobErrorNoTarget) -- it is skipped.
 
     Args:
-        account: The post-commit account (its ``updated_at`` dates the
-            "as of" snippet).
+        account: The post-commit account.  The "as of" snippet is dated from
+            the ASSERTION this resolves for it (``observed_on``), never from
+            the row's ``updated_at`` -- see the comment at that line for why
+            the two are different facts (ruling R-EP).
         revert_context: The normalized surface token, or ``None``.
 
     Returns:
@@ -367,8 +345,8 @@ def _true_up_success_response(
 
 
 def _true_up_request_gates(
-    account: Account, revert_context: str | None,
-) -> tuple[Decimal | None, object, tuple | None]:
+    account: Account,
+) -> tuple[Decimal | None, tuple | None]:
     """Run every pre-mutation gate for ``true_up`` in one place.
 
     The route grew a fifth early-return gate when the amortizing-kind
@@ -377,49 +355,39 @@ def _true_up_request_gates(
     ``(values, failure)`` helper mirrors ``_validate_update_account``'s
     established shape.  Gate order: kind refusal first (a loan is
     rejected before its form is even validated -- the KIND of edit is
-    wrong, not the payload), then schema validation, the C-17 stale-form
-    check, and the current-period resolution.
+    wrong, not the payload), then schema validation.
+
+    **Two gates left at plan step X-f1c3c and neither was weakened.**  The
+    C-17 stale-form check went with ruling R-EN: an assertion history is
+    APPEND-ONLY, so a second tab overwrites no ASSERTION and there is no
+    conflict to REPORT -- two assertions are two facts and the later-observed
+    one is current.  What that check was incidentally serialising, the posting
+    reconcile, is serialised explicitly now
+    (:mod:`app.services.user_write_lock`); a door-level gate was never the
+    right home for it, since three other doors reach the same window.
+    The "No current pay period found" 400 went with ruling R-EO:
+    an assertion carries no pay period, so there is no period to resolve and
+    nothing this door can fail to find.  That 400 was the true-up half of
+    finding N-134's shape -- a balance the user typed, refused for want of a
+    budgeting artifact that has nothing to do with what their bank holds.
 
     Args:
         account: The owned, attached :class:`Account` under edit.
-        revert_context: The normalized opener-surface token, threaded
-            into the 409 conflict response so its retry reopens the
-            correct surface.
 
     Returns:
-        ``(new_balance, current_period, failure)``.  On success,
-        ``failure`` is ``None`` and the first two carry the validated
-        values.  On rejection, ``failure`` is the ready-to-return Flask
-        response and the values are ``None``.
+        ``(new_balance, failure)``.  On success ``failure`` is ``None`` and
+        ``new_balance`` carries the validated value; on rejection ``failure``
+        is the ready-to-return Flask response and ``new_balance`` is ``None``.
     """
     if _is_amortizing(account):
-        return None, None, (_LOAN_ANCHOR_REFUSAL, 422)
+        return None, (_LOAN_ANCHOR_REFUSAL, 422)
 
     errors = _anchor_schema.validate(request.form)
     if errors:
-        return None, None, (jsonify(errors=errors), 400)
+        return None, (jsonify(errors=errors), 400)
 
     data = _anchor_schema.load(request.form)
-    new_balance = Decimal(str(data["anchor_balance"]))
-
-    submitted_version = data.get("version_id")
-    if submitted_version is not None and submitted_version != account.version_id:
-        logger.info(
-            "Stale-form conflict on true_up id=%d "
-            "(submitted=%d, current=%d)",
-            account.id, submitted_version, account.version_id,
-        )
-        return None, None, _anchor_conflict_response(account, revert_context)
-
-    # One clock for the period and for the assertion's day -- see the
-    # matching comment in ``accounts.crud.update_account``.
-    current_period = pay_period_service.get_current_period(
-        current_user.id, as_of=display_today(),
-    )
-    if current_period is None:
-        return None, None, ("No current pay period found", 400)
-
-    return new_balance, current_period, None
+    return Decimal(str(data["anchor_balance"])), None
 
 
 @accounts_bp.route("/accounts/<int:account_id>/true-up", methods=["PATCH"])
@@ -435,41 +403,43 @@ def true_up(account_id):
     finding B-15): a loan's balance is ledger-derived and is asserted
     through the loan page's own true-up, never as a cash anchor.
 
-    Optimistic locking (commit C-17 / F-009): the grid edit form
-    submits ``version_id`` as a hidden input.  When the value no
-    longer matches ``Account.version_id`` (because another tab,
-    window, or concurrent request advanced the row), the handler
-    returns the ``grid/_anchor_edit.html`` partial in conflict mode
-    with HTTP 409 and DOES NOT write either the balance or a
-    history row -- the audit trail captures only the winner.  The
-    same conflict UX is rendered when SQLAlchemy raises
-    ``StaleDataError`` at flush time for the truly-concurrent
-    interleaving the form-side check cannot see.
+    **It carries no optimistic lock, and that is ruling R-EN** (plan step
+    X-f1c3c).  The form used to submit ``version_id`` and a mismatch answered
+    409 with the editor in conflict mode; the service used to translate a
+    flush-time ``StaleDataError`` into the same response.  Both are gone,
+    because a true-up no longer writes the ``accounts`` row that
+    ``version_id`` guards -- it appends an assertion.  **No ASSERTION is
+    overwritten by a second tab**: two assertions of different balances are
+    two facts, the later-observed one is current, and neither is lost.  Two
+    tabs submitting the SAME balance for the same day are still idempotent --
+    the F-103 unique index catches those and the route reports success.  The
+    LEDGER those assertions reconcile into is a different question, answered a
+    layer down by the per-owner write lock
+    (:mod:`app.services.user_write_lock`) rather than here: a lock at this door
+    would leave the settle self-heal, the direct anchor edit and the
+    pay-period resync reaching the same window unguarded.
     """
     account = get_or_404(Account, account_id)
     if account is None:
         return "Account not found", 404
 
-    # The opener (dashboard balance card or grid cell) threads its surface
-    # on the PATCH query so a 409 conflict response can re-render the
-    # conflict cell with the correct retry-reopen target.  Normalized
-    # against the allowlist so the token is never interpolated unvalidated.
+    # The opener (dashboard balance card, cockpit cell, detail hero) threads
+    # its surface on the PATCH query so the success re-render matches the
+    # surface that opened the editor.  Normalized against the allowlist so the
+    # token is never interpolated unvalidated.
     revert_context = _normalize_revert_context(request.args.get("revert"))
 
-    # Every pre-mutation gate (the D4/A1 amortizing-kind refusal, schema
-    # validation, the C-17 stale-form check, current-period resolution)
-    # lives in ``_true_up_request_gates``; a failure is returned as-is.
-    new_balance, current_period, failure = _true_up_request_gates(
-        account, revert_context,
-    )
+    # Both pre-mutation gates (the D4/A1 amortizing-kind refusal and schema
+    # validation) live in ``_true_up_request_gates``; a failure is returned
+    # as-is.
+    new_balance, failure = _true_up_request_gates(account)
     if failure is not None:
         return failure
 
-    # Canonical anchor true-up path: route the mutation, history-row
-    # append, conditional entries reconcile, and commit through the
-    # single authoritative helper (``anchor_service.apply_anchor_true_up``)
-    # so the C-17 optimistic lock and the F-103 / C-22 same-day
-    # same-balance idempotency rules cannot drift.  The route pre-gates
+    # Canonical anchor true-up path: route the assertion append, the posting
+    # re-base and the commit through the single authoritative helper
+    # (``anchor_service.apply_anchor_true_up``) so the F-103 / C-22 same-day
+    # same-balance idempotency rule cannot drift.  The route pre-gates
     # the amortizing kind, so the service's
     # ``AmortizingAccountAnchorError`` backstop is unreachable here (a
     # bypassing caller correctly surfaces it as a 500).  The
@@ -479,28 +449,20 @@ def true_up(account_id):
     outcome = anchor_service.apply_anchor_true_up(
         account=account,
         new_balance=new_balance,
-        anchor_period=current_period,
     )
-
-    if outcome is AnchorTrueUpOutcome.STALE_CONFLICT:
-        account = db.session.get(Account, account_id)
-        return _anchor_conflict_response(account, revert_context)
 
     # DUPLICATE_SAME_DAY and COMMITTED share the success response (the
     # updated cell + an OOB "as of" snippet + the HX-Trigger that
     # recomputes other grid cells), so they converge on one return.
     if outcome is AnchorTrueUpOutcome.DUPLICATE_SAME_DAY:
-        # F-103 idempotent success: re-fetch the already-current row so
-        # the partial renders the committed balance.
-        account = db.session.get(Account, account_id)
+        # F-103 idempotent success: the staged row was rolled back, so expire
+        # the session's view of the account and let the partial re-read the
+        # assertion that did commit.
+        db.session.expire(account)
     else:
-        # COMMITTED: refresh the in-memory account so the partial shows
-        # the post-commit state (notably ``updated_at``, refreshed by the
-        # audit trigger server-side).
         db.session.refresh(account)
         logger.info(
-            "True-up: account %d set to $%s at period %d",
-            account.id, new_balance, current_period.id,
+            "True-up: account %d asserted at $%s", account.id, new_balance,
         )
 
     return _true_up_success_response(account, revert_context)
@@ -567,9 +529,11 @@ def anchor_form(account_id):
 
     The normalized token is also passed to the template as
     ``revert_context`` so the edit form's ``hx-patch`` carries the surface
-    through the mutation round-trip: a 409 conflict response can then
-    re-render the conflict cell with the same retry-reopen target rather
-    than stranding the dashboard card on the grid display cell.
+    through the mutation round-trip, keeping the success re-render on the
+    surface that opened the editor rather than stranding the dashboard card
+    on the grid display cell.  It carried a second job -- letting a 409
+    conflict response re-render the conflict cell with the same retry-reopen
+    target -- until ruling R-EN deleted that response (plan step X-f1c3c).
     """
     account = get_or_404(Account, account_id)
     if account is None:

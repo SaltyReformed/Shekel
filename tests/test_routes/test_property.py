@@ -66,7 +66,6 @@ def _make_property(
             account_type_id=_property_type_id(db),
             name=name,
             anchor_balance=anchor_balance,
-            anchor_period_id=periods[0].id,
         ),
     )
     db.session.add(acct)

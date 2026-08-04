@@ -371,7 +371,6 @@ class TestRecordingAPurchaseDoesNotMoveTheProjection:
             anchor_service.apply_anchor_true_up(
                 account=account,
                 new_balance=_ANCHOR_AFTER,
-                anchor_period=period,
             )
 
             # The true-up alone reconciles NOTHING (ruling R-DH (d)), so the
@@ -425,7 +424,6 @@ class TestRecordingAPurchaseDoesNotMoveTheProjection:
             anchor_service.apply_anchor_true_up(
                 account=account,
                 new_balance=_ANCHOR_AFTER,
-                anchor_period=period,
             )
             add_entry(
                 _db.session, seed_user, envelope, _PURCHASE, display_today(),

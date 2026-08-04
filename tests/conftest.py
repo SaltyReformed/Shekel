@@ -1047,7 +1047,6 @@ def seed_user(app, db):
             account_type_id=checking_type.id,
             name="Checking",
             anchor_balance=Decimal("1000.00"),
-            anchor_period_id=bootstrap_period.id,
             # Day one of the period the account is anchored to -- the
             # production shape, an account opened on day one of its own period
             # (ruling R-DH, plan step 2).  Without it the origination asserts a
@@ -1173,7 +1172,6 @@ def _drop_seed_user_bootstrap(db, seed_user, account, new_anchor_period):
     # nested commits below.
     bootstrap_id = bootstrap.id
     # Step 1: repoint the account anchor.
-    account.current_anchor_period_id = new_anchor_period.id
     # Restamp any assertion the factory wrote against the bootstrap period.
     # It no longer has to SURVIVE anything -- ruling R-EO deleted
     # ``AccountAnchorHistory.pay_period_id`` and its CASCADE FK, so a period
@@ -2142,7 +2140,6 @@ def second_user(app, db):
             account_type_id=checking_type.id,
             name="Other Checking",
             anchor_balance=Decimal("500.00"),
-            anchor_period_id=bootstrap_period.id,
             # Day one of its own period -- see ``seed_user`` above for why
             # the origination must not share a civil day with the settles.
             observed_on=bootstrap_period.start_date,
@@ -2270,7 +2267,6 @@ def seed_second_user(app, db):
             account_type_id=checking_type.id,
             name="Checking",
             anchor_balance=Decimal("2000.00"),
-            anchor_period_id=bootstrap_period.id,
             # Day one of its own period -- see ``seed_user`` above for why
             # the origination must not share a civil day with the settles.
             observed_on=bootstrap_period.start_date,
@@ -2443,7 +2439,6 @@ def _build_full_user_data(db, seed_user, periods):
             account_type_id=savings_acct_type.id,
             name="Savings",
             anchor_balance=Decimal("500.00"),
-            anchor_period_id=periods[0].id,
             notes="_build_full_user_data savings origination",
         ),
     )
@@ -2605,7 +2600,6 @@ def seed_full_second_user_data(app, db, seed_second_user, seed_second_periods):
             account_type_id=savings_acct_type.id,
             name="Savings",
             anchor_balance=Decimal("300.00"),
-            anchor_period_id=periods[0].id,
             notes="seed_full_second_user_data savings origination",
         ),
     )

@@ -79,6 +79,14 @@ _ACCOUNT_TYPE_ICON_CHOICES = (
 # rides the accent chip; Settled / Posted mean hands-off because money
 # moved (the D11 caution role, amber); the remaining lock reasons are
 # informational and stay neutral.  Labels, not color, tell rows apart.
+#
+# It carried an "Anchor" chip until plan step X-f1c3c (ruling R-EO): a period
+# an account's balance anchor pointed at.  Neither an account nor a balance
+# ASSERTION references a pay period any more, so the reason is unreachable and
+# is deleted rather than left as a chip nothing can render.  The map is TOTAL
+# over the enum and subscripted, so a member added without a chip fails the
+# render rather than showing a blank badge -- which is what makes deleting the
+# member and the chip together the only safe order.
 _PP_LOCK_BADGES = {
     pay_period_admin.PeriodLockReason.HISTORICAL: (
         "Past", "flag-chip flag-chip--neutral",
@@ -88,9 +96,6 @@ _PP_LOCK_BADGES = {
     ),
     pay_period_admin.PeriodLockReason.LEDGER_POSTINGS: (
         "Posted", "flag-chip flag-chip--warning",
-    ),
-    pay_period_admin.PeriodLockReason.ACCOUNT_ANCHOR: (
-        "Anchor", "flag-chip flag-chip--neutral",
     ),
     pay_period_admin.PeriodLockReason.RECURRENCE_ANCHOR: (
         "Rule start", "flag-chip flag-chip--neutral",

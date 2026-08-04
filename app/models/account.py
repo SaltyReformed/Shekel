@@ -46,15 +46,6 @@ class Account(
             "version_id > 0",
             name="ck_accounts_version_id_positive",
         ),
-        # Anchor balance presence (E-19, Commit 3).  Redundant with the
-        # NOT NULL on the column itself, but named so a future schema
-        # audit can match it to the Marshmallow contract by name.  The
-        # canonical balance resolver (Commit 4) relies on this guarantee
-        # to delete the four NULL-anchor forks documented in CRIT-01.
-        db.CheckConstraint(
-            "current_anchor_balance IS NOT NULL",
-            name="ck_accounts_anchor_balance_present",
-        ),
         # Collateral self-link guard (home-equity mini-sprint): an
         # account may not secure itself.  Belt-and-suspenders with the
         # route validator's no-self-link check.
@@ -71,34 +62,23 @@ class Account(
         nullable=False,
     )
     name = db.Column(db.String(100), nullable=False)
-    # Anchor columns are the storage-tier half of E-19: the
-    # canonical balance producer (Commit 4) assumes both are non-NULL
-    # on every account row, so CRIT-01's four NULL-anchor forks
-    # (blank/projection/omit) become unreachable.  See migration
-    # cfb15e782f86 for the backfill rule and the rationale.
+    # An account carries NO anchor columns, and that is ruling R-EH (plan step
+    # X-f1c3c).  ``current_anchor_balance`` / ``current_anchor_period_id`` were
+    # a denormalized copy of the newest ``AccountAnchorHistory`` row --
+    # ``cash_ledger/_facts`` said so in those words, and when they disagreed the
+    # history row already won while the copy was logged and left wrong.  Twelve
+    # surfaces read the copy instead of the fact.  What the account has been
+    # asserted to hold is now asked of
+    # :func:`app.services.cash_ledger.resolve_anchor`, the one resolver, and the
+    # divergence this pair could express is not detected-and-logged, it is
+    # inexpressible.  Measured before the drop: the copy agreed with the latest
+    # assertion on 9 of 9 production accounts, so nothing moved.
     #
-    # FK action note: ``current_anchor_period_id`` is ``ON DELETE NO
-    # ACTION DEFERRABLE INITIALLY IMMEDIATE`` (migration d410f6b9caa3,
-    # pay-period CRUD Phase 0).  The column is ``NOT NULL``, so deleting
-    # the referenced pay period is refused immediately -- the database
-    # backstop behind the application-level anchor lock in
-    # ``pay_period_admin``.  ``NO ACTION`` (not ``RESTRICT``) is chosen
-    # because only ``NO ACTION`` can be deferred: the full-reset path
-    # (``reset_pay_periods``, Phase 3) deletes the old anchor period and
-    # re-points each account to a fresh one inside one transaction via
-    # ``SET CONSTRAINTS ... DEFERRED``, so the FK validates at commit.
-    # Every other path keeps the fail-fast immediate check.
-    current_anchor_balance = db.Column(db.Numeric(12, 2), nullable=False)
-    current_anchor_period_id = db.Column(
-        db.Integer,
-        db.ForeignKey(
-            "budget.pay_periods.id",
-            ondelete="NO ACTION",
-            deferrable=True,
-            initially="IMMEDIATE",
-        ),
-        nullable=False,
-    )
+    # Their FK to ``pay_periods`` went with them, and it took real machinery:
+    # ``ON DELETE NO ACTION DEFERRABLE INITIALLY IMMEDIATE`` existed so
+    # ``reset_pay_periods`` could delete the old anchor period and re-point
+    # every account inside one transaction via ``SET CONSTRAINTS ... DEFERRED``.
+    # With no column to re-point there is nothing to defer.
     # Collateral link (home-equity mini-sprint): a secured liability
     # (mortgage / HELOC / auto loan) points at the Asset account it is
     # secured by, so a Property and its loans can be grouped and equity
@@ -121,7 +101,6 @@ class Account(
 
     # Relationships
     account_type = db.relationship("AccountType", lazy="joined")
-    anchor_period = db.relationship("PayPeriod", foreign_keys=[current_anchor_period_id])
     anchor_history = db.relationship(
         "AccountAnchorHistory",
         back_populates="account",

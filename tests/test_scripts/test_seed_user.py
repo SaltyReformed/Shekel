@@ -402,7 +402,6 @@ class TestSeedUserProvisioning:
                 db.session.query(Account).filter_by(user_id=user.id).one()
             )
             assert account.name == "Checking"
-            assert account.current_anchor_period_id == periods[0].id
 
             scenario = (
                 db.session.query(Scenario).filter_by(user_id=user.id).one()

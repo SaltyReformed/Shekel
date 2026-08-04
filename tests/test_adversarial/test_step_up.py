@@ -70,6 +70,7 @@ from app.utils.session_helpers import (
     SESSION_CREATED_AT_KEY,
     SESSION_LAST_ACTIVITY_KEY,
 )
+from app.services import cash_ledger
 
 
 _KNOWN_TOTP_SECRET = "JBSWY3DPEHPK3PXP"
@@ -1095,7 +1096,7 @@ class TestUpdateAccountIsNotStepUpGated:
             # The edit went through despite the stale step-up stamp.
             acct = db.session.get(Account, account_id)
             assert acct.name == "Renamed Checking"
-            assert acct.current_anchor_balance == Decimal("9999.99")
+            assert cash_ledger.resolve_anchor(acct).balance == Decimal("9999.99")
 
     def test_fresh_session_succeeds(
         self, app, auth_client, seed_user,

@@ -12,7 +12,6 @@ from app import ref_cache
 from app.enums import StatusEnum
 from app.extensions import db
 from app.models.journal_entry import JournalEntry
-from app.models.account import Account
 from app.models.category import Category
 from app.models.transaction import Transaction
 from app.models.transfer_template import TransferTemplate
@@ -31,6 +30,7 @@ from tests._test_helpers import (
     create_loan_account,
     field_is_disabled,
     net_posted_by_day,
+    override_anchor,
 )
 
 
@@ -2803,8 +2803,11 @@ class TestOneTimeTransfer:
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
-            savings.current_anchor_period_id = seed_periods_today[0].id
-            savings.current_anchor_balance = Decimal("0.00")
+            # Asserted rather than assigned (ruling R-EH deleted the column).
+            override_anchor(
+                db.session, savings, seed_periods_today[0], Decimal("0.00"),
+                notes="zero-balance transfer fixture",
+            )
             db.session.commit()
 
             once = db.session.query(RecurrencePattern).filter_by(

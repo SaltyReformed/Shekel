@@ -142,7 +142,7 @@ def _make_mortgage(
         seed_user, db.session, name=name, principal=balance,
         rate=Decimal("0.06500"), term=360,
         origination_date=origination_date, payment_day=1,
-        account_type=AcctTypeEnum.MORTGAGE, anchor_period=anchor_period,
+        account_type=AcctTypeEnum.MORTGAGE,
     )
     return acct, loan_params_for(db.session, acct.id)
 
@@ -186,7 +186,7 @@ def _paid_then_trued_loan(seed_user, db_session, periods):
         seed_user, db_session, name="Paid Then Trued",
         principal=Decimal("250000.00"), rate=Decimal("0.06000"),
         term=360, origination_date=date(2025, 1, 1), payment_day=1,
-        account_type=AcctTypeEnum.MORTGAGE, anchor_period=periods[0],
+        account_type=AcctTypeEnum.MORTGAGE,
     )
     # Settled payments due 2026-02-01 (period 1) and 2026-03-01 (period 3);
     # both pay periods have begun by the frozen 2026-03-20, so the replay
@@ -384,7 +384,6 @@ class TestInterestBeginsAtTheLatestAssertion:
             anchor_service.stage_anchor_true_up(
                 account=hysa,
                 new_balance=Decimal("10000.00"),
-                anchor_period=periods[2],
                 notes="test true-up",
             )
             restamp_latest_assertion(
@@ -1929,7 +1928,6 @@ class TestBalanceAtDegrade:
             acct = account_service.create_account(account_service.AccountSpec(
                 user_id=user_id, account_type_id=mortgage_type.id,
                 name="Unconfigured Loan", anchor_balance=Decimal("5000.00"),
-                anchor_period_id=periods[0].id,
             ))
             db.session.add(acct)
             add_txn(
@@ -4055,7 +4053,7 @@ class TestLoanNotYetOriginated:
             seed_user, db_session, name="Closing In April",
             principal=self.OPENING, rate=Decimal("0.05000"),
             term=360, origination_date=self.ORIGINATION, payment_day=1,
-            account_type=AcctTypeEnum.MORTGAGE, anchor_period=periods[0],
+            account_type=AcctTypeEnum.MORTGAGE,
         )
 
     def test_scalar_owes_nothing_before_origination_then_its_opening(
@@ -4147,7 +4145,7 @@ class TestLoanNotYetOriginated:
                 seed_user, db.session, name="Closing Friday",
                 principal=self.OPENING, rate=Decimal("0.05000"),
                 term=360, origination_date=date(2026, 3, 25), payment_day=1,
-                account_type=AcctTypeEnum.MORTGAGE, anchor_period=periods[0],
+                account_type=AcctTypeEnum.MORTGAGE,
             )
             bctx = BalanceContext.build(seed_user["user"].id)
             current = next(
@@ -4379,13 +4377,13 @@ class TestUpcomingLoanDoesNotCorruptTheSurfaces:
             seed_user, db_session, name="Auto",
             principal=self.AUTO, rate=Decimal("0.06000"),
             term=60, origination_date=date(2026, 1, 5), payment_day=5,
-            account_type=AcctTypeEnum.AUTO_LOAN, anchor_period=periods[0],
+            account_type=AcctTypeEnum.AUTO_LOAN,
         )
         mortgage = create_loan_account(
             seed_user, db_session, name="Closing In April",
             principal=self.MORTGAGE, rate=Decimal("0.05000"),
             term=360, origination_date=self.ORIGINATION, payment_day=1,
-            account_type=AcctTypeEnum.MORTGAGE, anchor_period=periods[0],
+            account_type=AcctTypeEnum.MORTGAGE,
         )
         return auto, mortgage
 
@@ -4550,7 +4548,7 @@ class TestBrokenLoanFailsLoud:
             seed_user, db_session, name="Broken",
             principal=Decimal("240000.00"), rate=Decimal("0.06000"),
             term=360, origination_date=date(2024, 9, 1), payment_day=1,
-            account_type=AcctTypeEnum.MORTGAGE, anchor_period=periods[0],
+            account_type=AcctTypeEnum.MORTGAGE,
         )
         # The ONE way to build a ledger-less loan: production cannot make one.
         # It clears only the POSTINGS; the source facts (LoanParams + shadows) that
@@ -4826,14 +4824,14 @@ class TestScalarAndMapAgree:
                 seed_user, db.session, name="Never Paid",
                 principal=Decimal("240000.00"), rate=Decimal("0.06000"),
                 term=360, origination_date=date(2024, 9, 1), payment_day=1,
-                account_type=AcctTypeEnum.MORTGAGE, anchor_period=periods[0],
+                account_type=AcctTypeEnum.MORTGAGE,
             )
             # 2. Trued up (the operator asserted a balance).
             trued_up = create_loan_account(
                 seed_user, db.session, name="Trued Up",
                 principal=Decimal("100000.00"), rate=Decimal("0.05000"),
                 term=120, origination_date=date(2025, 2, 1), payment_day=1,
-                account_type=AcctTypeEnum.AUTO_LOAN, anchor_period=periods[0],
+                account_type=AcctTypeEnum.AUTO_LOAN,
             )
             insert_trueup_event(
                 loan_params_for(db.session, trued_up.id),
@@ -4844,7 +4842,7 @@ class TestScalarAndMapAgree:
                 seed_user, db.session, name="Mid Life",
                 principal=Decimal("300000.00"), rate=Decimal("0.04500"),
                 term=360, origination_date=date(2019, 6, 1), payment_day=1,
-                account_type=AcctTypeEnum.MORTGAGE, anchor_period=periods[0],
+                account_type=AcctTypeEnum.MORTGAGE,
             )
             insert_tracking_start_event(
                 loan_params_for(db.session, mid_life.id),
@@ -4855,7 +4853,7 @@ class TestScalarAndMapAgree:
                 seed_user, db.session, name="Paid Off",
                 principal=Decimal("15000.00"), rate=Decimal("0.07000"),
                 term=48, origination_date=date(2025, 1, 1), payment_day=1,
-                account_type=AcctTypeEnum.AUTO_LOAN, anchor_period=periods[0],
+                account_type=AcctTypeEnum.AUTO_LOAN,
             )
             insert_trueup_event(
                 loan_params_for(db.session, paid_off.id),
@@ -4866,14 +4864,14 @@ class TestScalarAndMapAgree:
                 seed_user, db.session, name="Upcoming",
                 principal=Decimal("200000.00"), rate=Decimal("0.05000"),
                 term=360, origination_date=date(2026, 4, 15), payment_day=1,
-                account_type=AcctTypeEnum.MORTGAGE, anchor_period=periods[0],
+                account_type=AcctTypeEnum.MORTGAGE,
             )
             # 6. Originating INSIDE the current pay period -- the keying trap.
             closing_now = create_loan_account(
                 seed_user, db.session, name="Closing Now",
                 principal=Decimal("180000.00"), rate=Decimal("0.05500"),
                 term=360, origination_date=date(2026, 3, 25), payment_day=1,
-                account_type=AcctTypeEnum.MORTGAGE, anchor_period=periods[0],
+                account_type=AcctTypeEnum.MORTGAGE,
             )
             db.session.commit()
             # 7. PAID, then trued up -- the shape the forward producers exist
@@ -4998,7 +4996,6 @@ class TestLoanTermsAreScenarioIndependent:
             seed_user, db.session, name="Terms Loan",
             principal=Decimal("12000.00"), rate=Decimal("0.05000"), term=24,
             origination_date=date(2026, 1, 1),
-            anchor_period=periods[0],
         )
 
     def _drop_baseline(self, db, seed_user):

@@ -1,13 +1,14 @@
-"""Tests for the E-19 / Commit 3 account-anchor NOT NULL invariant.
+"""Tests for the E-19 / Commit 3 account-anchor invariant.
 
-Migration ``cfb15e782f86`` makes ``budget.accounts.current_anchor_balance``
+Migration ``cfb15e782f86`` made ``budget.accounts.current_anchor_balance``
 and ``budget.accounts.current_anchor_period_id`` NOT NULL after
-backfilling existing rows from the account's earliest transaction's
-pay period (else the user's earliest period) and seeding a matching
-``budget.account_anchor_history`` row.  The downstream balance
-resolver (Commit 4) and the canonical entries-aware producer
-(Commits 5-8) depend on this invariant to delete the four
-NULL-anchor forks documented in CRIT-01.
+backfilling existing rows, and seeded a matching
+``budget.account_anchor_history`` row for each.  **Ruling R-EH deleted both
+columns at plan step X-f1c3c** -- they were a denormalized copy of that
+history row -- so what remains of E-19 is the half that was always the fact:
+every account carries an origination ASSERTION from the moment it exists, and
+:func:`app.services.cash_ledger.resolve_anchor` can answer for it.  That is
+what deletes CRIT-01's four NULL-anchor forks now.
 
 The tests exercise three layers of the contract:
 
@@ -33,18 +34,39 @@ The tests exercise three layers of the contract:
      it is a larger reconstruction than the ``DROP NOT NULL`` the deleted
      fixture performed.
 
-  2. **Model rejection** (C3-6) -- attempting to flush an ``Account``
-     with NULL anchor columns raises ``IntegrityError``.  Locks the
-     storage-tier guarantee.
+  2. **Model rejection** (C3-6) -- DELETED at plan step X-f1c3c.  It flushed
+     an ``Account`` with NULL anchor columns and asserted ``IntegrityError``;
+     ruling R-EH deleted the columns, so the state it refused is not
+     expressible and the ``NOT NULL`` it graded does not exist.  The invariant
+     that survives -- every account has a resolvable balance -- is now the
+     ORIGINATION ASSERTION, graded by the creation-path cases below and by
+     ``scripts/integrity_check.py``'s re-pointed BA-01.
 
   3. **Creation paths** (C3-5) -- the ``auth_service.register_user``
      signup path and the ``/accounts`` POST route both write the
-     ``current_anchor_balance``, ``current_anchor_period_id``, and a
-     matching ``AccountAnchorHistory`` row at the moment the account
+     origination ``AccountAnchorHistory`` row at the moment the account
      exists.  Locks the spec contract "always create the origination
-     ``AccountAnchorHistory`` and set the anchor columns at creation."
-     Since ruling R-EO the history row carries a DAY rather than a period, so
-     these assert ``observed_on`` and read the period off the account.
+     assertion".  It also asserted the ``current_anchor_*`` columns until
+     ruling R-EH deleted them, and the assertion's own pay period until ruling
+     R-EO deleted that; what is asserted now is the balance and the DAY.
+
+**A WHOLE SUITE was deleted at plan step X-f1c3c and the record belongs here**,
+because this file owns what remains of the contract it graded.
+``tests/test_models/test_anchor_fk_deferrable.py`` (264 lines) asserted that
+``accounts.current_anchor_period_id``'s foreign key was
+``NO ACTION DEFERRABLE INITIALLY IMMEDIATE`` -- the catalog state, the mapper
+declaration, the ``SET CONSTRAINTS ... DEFERRED`` round-trip, and the
+``IntegrityError`` a period delete raised while an account still pointed at it.
+**Every one of those is a property of a column that no longer exists.**  The FK,
+its deferrability and the ``_DEFER_ANCHOR_FK_SQL`` the pay-period reset used are
+deleted with it (rulings R-EH and R-EO), so there is nothing left to assert: not
+a weakened rule, an absent one.  What the deferral existed to PROTECT -- a
+balance surviving a schedule rebuild -- is graded by
+``tests/test_services/test_pay_period_reset.py``'s
+``test_wipes_all_and_the_balance_survives`` and
+``test_the_reset_preserves_every_balance_assertion``, and the migration's own
+restore of the FK is graded by
+``tests/test_models/test_anchor_cache_downgrade.py``.
 """
 # pylint: disable=redefined-outer-name
 # Rationale: ``redefined-outer-name`` is the canonical pytest fixture
@@ -56,8 +78,6 @@ import pathlib
 from datetime import timedelta
 from decimal import Decimal
 
-import pytest
-from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db as _db
 from app.models.account import Account, AccountAnchorHistory
@@ -65,6 +85,7 @@ from app.models.pay_period import PayPeriod
 from app.models.ref import AccountType
 from app.models.scenario import Scenario
 from app.models.user import User, UserSettings
+from app.services import cash_ledger
 from app.services.auth_service import hash_password
 from app.utils.dates import display_today
 
@@ -118,75 +139,6 @@ _M_ANCHOR_BACKFILL = _load_migration(
 # ---------------------------------------------------------------------------
 
 
-class TestModelRejectsNullAnchor:
-    """C3-6: storage-tier rejects NULL anchor columns.
-
-    Uses raw ``INSERT`` statements rather than ORM constructions
-    because the conftest's E-19 ``before_insert`` event listener
-    (a test-only safety net for legacy helpers) would otherwise
-    auto-fill ``current_anchor_period_id`` from the user's earliest
-    pay period and prevent the constraint from firing.  Raw SQL
-    bypasses the listener and goes straight to the database,
-    proving the storage-tier guarantee holds independently of any
-    ORM scaffolding.
-    """
-
-    def test_insert_with_null_anchor_period_raises_integrity_error(
-        self, app, db, bare_user
-    ):
-        """Raw INSERT with NULL anchor_period_id trips the NOT NULL.
-
-        ``bare_user`` has no pay periods, so even if the autofill
-        listener ran it would have nothing to fill from.  The DB
-        raises ``IntegrityError`` at INSERT time.
-        """
-        with app.app_context():
-            checking_type = (
-                db.session.query(AccountType).filter_by(name="Checking").one()
-            )
-            with pytest.raises(IntegrityError):
-                db.session.execute(_db.text(
-                    "INSERT INTO budget.accounts "
-                    "(user_id, account_type_id, name, "
-                    " current_anchor_balance, current_anchor_period_id, "
-                    " sort_order, is_active, version_id) "
-                    "VALUES (:u, :t, 'Bad NULL period', 100.00, NULL, "
-                    " 0, TRUE, 1)"
-                ), {"u": bare_user["user"].id, "t": checking_type.id})
-                db.session.flush()
-            db.session.rollback()
-
-    def test_insert_with_null_anchor_balance_raises_integrity_error(
-        self, app, db, seed_user
-    ):
-        """Raw INSERT with NULL anchor_balance trips NOT NULL + CHECK.
-
-        ``ck_accounts_anchor_balance_present`` is named explicitly
-        for the schema audit; either it or the underlying NOT NULL
-        fires on this insert.  Both produce ``IntegrityError``.
-        """
-        with app.app_context():
-            checking_type = (
-                db.session.query(AccountType).filter_by(name="Checking").one()
-            )
-            bootstrap = seed_user["bootstrap_period"]
-            with pytest.raises(IntegrityError):
-                db.session.execute(_db.text(
-                    "INSERT INTO budget.accounts "
-                    "(user_id, account_type_id, name, "
-                    " current_anchor_balance, current_anchor_period_id, "
-                    " sort_order, is_active, version_id) "
-                    "VALUES (:u, :t, 'Bad NULL balance', NULL, :p, "
-                    " 0, TRUE, 1)"
-                ), {
-                    "u": seed_user["user"].id,
-                    "t": checking_type.id,
-                    "p": bootstrap.id,
-                })
-                db.session.flush()
-            db.session.rollback()
-
-
 # ---------------------------------------------------------------------------
 # C3-1 / C3-2 / C3-3 -- Migration backfill behaviour.  These tests
 # re-widen the columns to nullable, insert engineered rows with NULL
@@ -213,6 +165,10 @@ class TestMigrationBackfill:
         sql = _M_ANCHOR_BACKFILL.DIAGNOSTIC_SELECT
         assert "account_id" in sql
         assert "user_id" in sql
+        # The migration's frozen SQL names the columns it ran against; the
+        # columns are gone (ruling R-EH) and a historical migration is never
+        # edited to match a newer schema, so this asserts the DIAGNOSTIC still
+        # names what an operator needed at the time.
         assert "current_anchor_balance" in sql
         assert "current_anchor_period_id" in sql
         assert "IS NULL" in sql
@@ -235,10 +191,10 @@ class TestCreationPathsWriteAnchor:
 
         Arithmetic: the user has no prior periods, so the bootstrap
         period takes period_index=0 with start_date=today.  The
-        Checking account is created with
-        ``current_anchor_balance=Decimal("0.00")`` and
-        ``current_anchor_period_id`` equal to the bootstrap.id.  The
-        history row mirrors the column cache.
+        Checking account's origination ASSERTION carries
+        ``anchor_balance=Decimal("0.00")`` observed on that same day.  It
+        asserted the ``accounts.current_anchor_*`` columns beside it until
+        ruling R-EH deleted them -- they were a copy of this row.
 
         **"Today" here is the USER's, not the process's** (finding R2,
         ``anchor_settle_partition.md`` Section 9).  ``register_user`` builds the
@@ -263,17 +219,13 @@ class TestCreationPathsWriteAnchor:
             account = db.session.query(Account).filter_by(
                 user_id=user.id, name="Checking",
             ).one()
-            assert account.current_anchor_balance == Decimal("0.00")
-            assert account.current_anchor_period_id is not None
-
             # The bootstrap period covers today (cadence 14 days from
             # today).  The signup path picks period_index 0 because
             # this is the user's first period.
             signup_day = display_today()
-            period = db.session.get(PayPeriod, account.current_anchor_period_id)
-            assert period is not None
-            assert period.user_id == user.id
-            assert period.period_index == 0
+            period = db.session.query(PayPeriod).filter_by(
+                user_id=user.id, period_index=0,
+            ).one()
             assert period.start_date == signup_day
             assert period.end_date == signup_day + timedelta(days=13)
 
@@ -281,12 +233,15 @@ class TestCreationPathsWriteAnchor:
                 account_id=account.id,
             ).all()
             assert len(histories) == 1
-            # The assertion carries no pay period since ruling R-EO -- what it
-            # carries is the DAY, which the account's cache column resolves its
-            # period from.  Signup day is inside the period asserted above.
+            # The account's whole anchor state IS this row (rulings R-EH and
+            # R-EO): a balance and the day it was true, with no period beside
+            # it and no column mirroring it.  Signup day falls inside the
+            # bootstrap period asserted above, which is what ties the two
+            # halves of the signup path to one clock.
             assert histories[0].observed_on == signup_day
             assert histories[0].anchor_balance == Decimal("0.00")
             assert "origination" in (histories[0].notes or "")
+            assert cash_ledger.resolve_anchor(account).balance == Decimal("0.00")
 
     def test_create_account_route_writes_anchor_and_history(
         self, app, db, auth_client, seed_user, seed_periods_today
@@ -323,8 +278,7 @@ class TestCreationPathsWriteAnchor:
             account = db.session.query(Account).filter_by(
                 user_id=seed_user["user"].id, name="C3-5 Savings",
             ).one()
-            assert account.current_anchor_balance == Decimal("1500.00")
-            assert account.current_anchor_period_id == current_period.id
+            assert cash_ledger.resolve_anchor(account).balance == Decimal("1500.00")
 
             history = db.session.query(AccountAnchorHistory).filter_by(
                 account_id=account.id,

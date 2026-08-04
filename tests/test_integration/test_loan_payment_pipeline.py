@@ -65,7 +65,6 @@ class TestLoanPaymentPipeline:
                 principal=Decimal("250000.00"), rate=Decimal("0.06500"),
                 term=360, origination_date=periods[0].start_date,
                 payment_day=1, account_type=AcctTypeEnum.MORTGAGE,
-                anchor_period=periods[0],
             )
 
             # Step 2: Create recurring transfer via the route.

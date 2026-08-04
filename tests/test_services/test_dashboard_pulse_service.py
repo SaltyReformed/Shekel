@@ -711,7 +711,6 @@ class TestPulseStillDue:
                     account_type_id=savings_type.id,
                     name="Sweep Target",
                     anchor_balance=Decimal("0.00"),
-                    anchor_period_id=seed_periods[0].id,
                 ),
             )
             db.session.add(savings)
@@ -1364,7 +1363,7 @@ class TestTracksGoals:
         with app.app_context():
             acct = create_savings_account(
                 seed_user, db.session, "Goal Account",
-                Decimal("2500.00"), anchor_period_id=seed_periods[0].id,
+                Decimal("2500.00"),
             )
             goal = SavingsGoal(
                 user_id=seed_user["user"].id,
@@ -1409,7 +1408,7 @@ class TestTracksGoals:
         with app.app_context():
             acct = create_savings_account(
                 seed_user, db.session, "Trajectory Account",
-                Decimal("3000.00"), anchor_period_id=seed_periods[0].id,
+                Decimal("3000.00"),
             )
             goal = SavingsGoal(
                 user_id=seed_user["user"].id,
@@ -1617,7 +1616,7 @@ class TestTracksIncomeRelativeGoal:
             make_salary_profile(seed_user, db.session, name="Track Salary")
             acct = create_savings_account(
                 seed_user, db.session, "IR Goal Account",
-                Decimal("4000.00"), anchor_period_id=seed_periods[0].id,
+                Decimal("4000.00"),
             )
 
             ir_id = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)

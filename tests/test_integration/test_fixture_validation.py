@@ -14,6 +14,7 @@ from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.user import User, UserSettings
+from app.services import cash_ledger
 
 
 class TestSeedSecondUser:
@@ -41,7 +42,9 @@ class TestSeedSecondUser:
         assert seed_user["account"].id != seed_second_user["account"].id
         assert seed_user["account"].account_type.name == "Checking"
         assert seed_second_user["account"].account_type.name == "Checking"
-        assert seed_second_user["account"].current_anchor_balance == Decimal("2000.00")
+        assert cash_ledger.resolve_anchor(
+            seed_second_user["account"],
+        ).balance == Decimal("2000.00")
 
     def test_has_own_scenario(self, seed_user, seed_second_user):
         """Second user has a distinct baseline scenario."""
@@ -95,10 +98,21 @@ class TestSeedSecondPeriods:
         user_b_ids = {p.id for p in seed_second_periods}
         assert user_a_ids.isdisjoint(user_b_ids)
 
-    def test_anchor_period_set(self, db, seed_second_user, seed_second_periods):
-        """The second user's account anchor points to the first period."""
+    def test_anchor_assertion_falls_in_the_first_period(
+        self, db, seed_second_user, seed_second_periods,
+    ):
+        """The second user's account is asserted on a day its first period holds.
+
+        It read ``account.current_anchor_period_id == seed_second_periods[0].id``
+        until plan step X-f1c3c deleted that column.  The fixture property it
+        was really pinning survives and is what the producers now key on: the
+        account's origination ASSERTION is dated inside the first period, so a
+        read scoped to that period finds it.
+        """
         account = db.session.get(Account, seed_second_user["account"].id)
-        assert account.current_anchor_period_id == seed_second_periods[0].id
+        observed_on = cash_ledger.resolve_anchor(account).observed_on
+        first = seed_second_periods[0]
+        assert first.start_date <= observed_on <= first.end_date
 
 
 class TestSecondAuthClient:
@@ -200,7 +214,9 @@ class TestSeedFullUserData:
         assert isinstance(data["savings_goal"].target_amount, Decimal)
         assert isinstance(data["transfer_template"].default_amount, Decimal)
         assert isinstance(data["salary_profile"].annual_salary, Decimal)
-        assert isinstance(data["account"].current_anchor_balance, Decimal)
+        assert isinstance(
+            cash_ledger.resolve_anchor(data["account"]).balance, Decimal,
+        )
 
 
 class TestSeedFullSecondUserData:
@@ -262,7 +278,10 @@ class TestSeedFullSecondUserData:
         assert a["template"].default_amount != b["template"].default_amount
         assert a["transaction"].estimated_amount != b["transaction"].estimated_amount
         assert a["savings_goal"].target_amount != b["savings_goal"].target_amount
-        assert a["account"].current_anchor_balance != b["account"].current_anchor_balance
+        assert (
+            cash_ledger.resolve_anchor(a["account"]).balance
+            != cash_ledger.resolve_anchor(b["account"]).balance
+        )
 
 
 class TestBothFullFixturesTogether:

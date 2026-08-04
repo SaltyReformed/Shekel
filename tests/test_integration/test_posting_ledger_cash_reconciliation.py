@@ -126,6 +126,7 @@ from tests._test_helpers import (
     create_settled_transfer,
     linked_ledger_account,
 )
+from app.services import cash_ledger
 
 
 # ---------------------------------------------------------------------------
@@ -196,11 +197,12 @@ def _opening_anchor(account_id: int) -> Decimal:
     it), so the absolute reconciliation is ``linked ledger == anchor +
     settled source effect``.
     """
-    return Decimal(str(
-        _db.session.query(Account.current_anchor_balance)
-        .filter(Account.id == account_id)
-        .scalar()
-    ))
+    # The account's asserted balance, read from the assertion itself: ruling
+    # R-EH deleted the ``accounts.current_anchor_balance`` column this queried,
+    # which was a copy of the same row.
+    return cash_ledger.resolve_anchor(
+        _db.session.get(Account, account_id),
+    ).balance
 
 
 def _ledger_account_sum(ledger_account_id: int, scenario_id: int) -> Decimal:

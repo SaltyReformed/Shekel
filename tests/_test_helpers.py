@@ -995,7 +995,7 @@ def create_loan_account(
     seed_user, db_session, name="Test Loan",
     principal=None, rate=None, term=24,
     origination_date=None, payment_day=1,
-    *, account_type=None, anchor_period=None, anchor_balance=None,
+    *, account_type=None, anchor_balance=None,
 ):
     """Create a loan account with LoanParams, origination event, and rate.
 
@@ -1047,10 +1047,18 @@ def create_loan_account(
             for logic, name strings for display only, so this takes the enum and
             never a name string.  Any amortizing type works (``MORTGAGE`` is the
             other one the suite uses).
-        anchor_period: The :class:`~app.models.pay_period.PayPeriod` to anchor the
-            ACCOUNT to; defaults to the factory's own choice.  Keyword-only.  Pass
-            it when the test's assertions depend on which period the account's
-            origination anchor lands in.
+        (It took an ``anchor_period`` until plan step X-f1c3c.  **It was LIVE,
+        not vestigial** -- it reached ``AccountSpec.anchor_period_id``, which
+        ``account_service.create_account`` wrote to BOTH
+        ``accounts.current_anchor_period_id`` and the origination assertion's
+        own ``pay_period_id``.  Rulings R-EH and R-EO deleted both
+        destinations, so the parameter had nowhere left to reach.  A loan's
+        balance is ledger-derived from dated ``LoanAnchorEvent`` rows
+        regardless, which is why no caller loses an assertion by dropping it.
+        *A first version of this note said the parameter had "zero loads in its
+        body", which was measured AFTER its use had already been deleted in the
+        same pass -- a measurement of a state the author had just created, and
+        the reason a claims audit caught it.*)
         anchor_balance: The ACCOUNT's anchor balance, when it must differ from the
             loan's ``principal``; defaults to *principal*.  Keyword-only.  These
             are genuinely two different facts, and production can set them apart:
@@ -1090,9 +1098,6 @@ def create_loan_account(
             account_type_id=ref_cache.acct_type_id(account_type),
             name=name,
             anchor_balance=anchor_balance,
-            anchor_period_id=(
-                anchor_period.id if anchor_period is not None else None
-            ),
             # ``observed_on`` is left to the factory (today).  A loan's balance
             # is ledger-derived from dated ``LoanAnchorEvent`` rows, not from
             # this cash assertion, so the civil-day partition R-DH governs does
@@ -1265,9 +1270,7 @@ def create_loan_with_trueup(
     return loan
 
 
-def create_savings_account(
-    seed_user, db_session, name, anchor_balance, anchor_period_id=None,
-):
+def create_savings_account(seed_user, db_session, name, anchor_balance):
     """Create a Savings account via the canonical factory (flushed, uncommitted).
 
     The shared liquid-account builder for goal-track / savings tests, so
@@ -1280,8 +1283,10 @@ def create_savings_account(
         db_session: The test ``db.session``.
         name: The account name.
         anchor_balance: The opening anchor balance (Decimal).
-        anchor_period_id: Optional anchor period id (defaults to the
-            factory's resolution when omitted).
+
+    **It took an ``anchor_period_id`` until plan step X-f1c3c** (ruling R-EH):
+    an account no longer references a pay period at all, so callers that pinned
+    one now pin the assertion's DAY or take the factory's default (today).
 
     Returns:
         The created Savings :class:`~app.models.account.Account`.
@@ -1303,8 +1308,6 @@ def create_savings_account(
         # ``create_loan_account`` for why this helper does not take
         # ``create_account_of_type``'s day-before default.
     }
-    if anchor_period_id is not None:
-        spec_kwargs["anchor_period_id"] = anchor_period_id
     account = account_service.create_account(
         account_service.AccountSpec(**spec_kwargs),
     )
@@ -1391,7 +1394,6 @@ def create_hysa_account(  # pylint: disable=too-many-arguments,too-many-position
             account_type_id=hysa_type.id,
             name=name,
             anchor_balance=balance,
-            anchor_period_id=anchor_period.id,
         ),
     )
     db_session.add(account)
@@ -3124,9 +3126,11 @@ def add_anchor_history(db_session, account, period, balance, days_ago=0):
 def override_anchor(db_session, account, period, balance, *, notes, at=None):
     """Replace ``account``'s current anchor with ``balance`` on ``period``.
 
-    Appends an :class:`AccountAnchorHistory` row (the dated source of truth)
-    AND syncs the ``current_anchor_*`` cache columns, so the resolver's
-    cache-reconciliation log does not fire.  The shared form of the
+    Appends an :class:`AccountAnchorHistory` row -- the source of truth, and
+    since ruling R-EH the ONLY place an asserted balance lives.  It used to
+    sync the ``accounts.current_anchor_*`` cache columns alongside, so the
+    resolver's cache-reconciliation log would not fire; there is no cache and
+    no such log.  The shared form of the
     ``_override_anchor`` helper five suites had each written for themselves --
     a duplicate-code cluster that mattered once the fold made the row's INSTANT
     load-bearing, because a fix applied to one copy would have left the other
@@ -3188,9 +3192,6 @@ def override_anchor(db_session, account, period, balance, *, notes, at=None):
         observed_on=observed_day_of(asserted_at),
     )
     db_session.add(history)
-    db_session.flush()
-    account.current_anchor_balance = balance
-    account.current_anchor_period_id = period.id
     db_session.flush()
     return history
 
@@ -3425,7 +3426,7 @@ def assert_pay_period_invariants(db_session, user_id):
     # symbols at top level (its collection-time-safety convention); load
     # the models lazily, the same way every helper above does.
     # pylint: disable=import-outside-toplevel
-    from app.models.account import Account
+    from app.models.account import Account, AccountAnchorHistory
     from app.models.pay_period import PayPeriod
     from app.models.transaction import Transaction
     from app.models.transfer import Transfer
@@ -3440,12 +3441,19 @@ def assert_pay_period_invariants(db_session, user_id):
 
     period_ids = {p.id for p in periods}
 
-    # 4. Anchor integrity: every account anchors to one of the user's
-    #    live periods.
+    # 4. Anchor integrity: every account carries at least one balance
+    #    ASSERTION (E-19 / Commit 3).  It used to assert that the account's
+    #    ``current_anchor_period_id`` named one of the user's live periods;
+    #    rulings R-EH and R-EO deleted both that column and the assertion's own
+    #    pay period, so what survives is the invariant those columns existed to
+    #    serve -- an account the resolver can answer for.  A period wipe can no
+    #    longer strand an anchor, which is the whole point of the deletion.
     for account in db_session.query(Account).filter_by(user_id=user_id):
-        assert account.current_anchor_period_id in period_ids, (
-            f"user {user_id}: account {account.id} anchor points at period "
-            f"{account.current_anchor_period_id}, not among the user's periods"
+        assert db_session.query(AccountAnchorHistory).filter_by(
+            account_id=account.id,
+        ).count() > 0, (
+            f"user {user_id}: account {account.id} carries no balance "
+            "assertion, so no producer can resolve a balance for it"
         )
 
     # 5. Transfer invariant: exactly two shadows, both in the transfer's
@@ -3617,7 +3625,6 @@ def make_appreciating_account(seed_user, db_session, anchor_period, balance, rat
             account_type_id=property_type.id,
             name="House",
             anchor_balance=balance,
-            anchor_period_id=anchor_period.id,
         ),
     )
     db_session.add(account)
@@ -3690,7 +3697,6 @@ def make_investment_account(
             account_type_id=inv_type.id,
             name=name,
             anchor_balance=balance,
-            anchor_period_id=anchor_period.id,
         ),
     )
     db_session.add(account)
@@ -3858,3 +3864,189 @@ def net_posted_by_day(filter_clause):
         residue = abs(Decimal(str(total)))
         net[entry_date] = max(net.get(entry_date, Decimal("0.00")), residue)
     return {day: amount for day, amount in net.items() if amount != 0}
+
+
+def capture_sql_statements(fn):
+    """Run ``fn`` while recording every SQL statement the engine emits.
+
+    The statement-capture idiom the advisory-lock suites grade against: it is
+    the only way to assert, at the unit level, that a given path DOES or does
+    NOT take a lock, and -- since plan step X-f1c3c -- that it takes it BEFORE
+    the read it protects.  Ordering is the half a presence check cannot see: a
+    lock taken after the reconcile has already read what is posted serialises
+    nothing.
+
+    It lived as a private ``_capture_statements`` in
+    ``tests/test_services/test_pay_period_topup.py`` until the ledger reconciles
+    needed the same assertion; ``tests/`` is outside R0801's reach, so a second
+    copy would not have been flagged.
+
+    **It captures PARAMETERS as well as text, and that is load-bearing.**
+    SQLAlchemy BINDS the lock key, so every acquisition emits the byte-identical
+    string ``SELECT pg_advisory_xact_lock(%(pg_advisory_xact_lock_2)s,
+    %(pg_advisory_xact_lock_3)s)`` whatever it is locking.  A test that graded
+    statement text alone could not tell a per-user lock from a per-account one,
+    a per-scenario one, or a constant -- which is exactly what two independent
+    adversarial reviews caught it doing.  See :func:`advisory_lock_keys`.
+
+    Args:
+        fn: A zero-argument callable to run under capture.
+
+    Returns:
+        ``(result, statements)`` -- *fn*'s return value and a list of
+        ``(statement, parameters)`` pairs in emission order.
+    """
+    # Imported here rather than at module scope: this helper module is imported
+    # before the app's extensions are configured in some collection orders.
+    from app.extensions import db  # pylint: disable=import-outside-toplevel
+    from sqlalchemy import event  # pylint: disable=import-outside-toplevel
+
+    statements: list[tuple] = []
+
+    def _cap(_conn, _cursor, statement, parameters, *_args, **_kwargs):
+        statements.append((statement, parameters))
+
+    event.listen(db.engine, "before_cursor_execute", _cap)
+    try:
+        result = fn()
+    finally:
+        event.remove(db.engine, "before_cursor_execute", _cap)
+    return result, statements
+
+
+def took_advisory_lock(statements):
+    """Return whether any captured statement acquired the per-user write lock.
+
+    Args:
+        statements: The ``(statement, parameters)`` list from
+            :func:`capture_sql_statements`.
+
+    Returns:
+        ``True`` when at least one statement called ``pg_advisory_xact_lock``.
+    """
+    return any("pg_advisory_xact_lock" in text for text, _params in statements)
+
+
+def advisory_lock_keys(statements):
+    """Return the ``(namespace, key)`` pairs the captured run actually locked.
+
+    The half :func:`took_advisory_lock` cannot see.  The two-argument
+    ``pg_advisory_xact_lock(namespace, key)`` form binds BOTH arguments, so the
+    emitted SQL is identical for every key and only the parameters distinguish
+    "this locked user 7" from "this locked account 7" or "this locked a
+    constant".  Every assertion about WHAT is locked has to come through here.
+
+    The bind names carry SQLAlchemy's positional suffixes
+    (``pg_advisory_xact_lock_2`` / ``_3``), so the two values are ordered by
+    that trailing integer rather than by dict iteration order.
+
+    Args:
+        statements: The ``(statement, parameters)`` list from
+            :func:`capture_sql_statements`.
+
+    Returns:
+        A list of ``(namespace, key)`` tuples, one per acquisition, in
+        emission order (duplicates kept -- a re-entrant double-take is two
+        entries, which is itself worth asserting).
+    """
+    def _suffix(name):
+        tail = str(name).rsplit("_", 1)[-1]
+        return int(tail) if tail.isdigit() else 0
+
+    keys = []
+    for text, params in statements:
+        if "pg_advisory_xact_lock" not in text:
+            continue
+        if isinstance(params, dict):
+            values = [params[name] for name in sorted(params, key=_suffix)]
+        else:
+            values = list(params or ())
+        keys.append(tuple(values))
+    return keys
+
+
+def advisory_lock_precedes(statements, *table_names):
+    """Return whether the write lock was taken BEFORE any of *table_names* was read.
+
+    The ordering half of the lock assertion.  A reconcile that takes its lock
+    after reading what is posted has serialised nothing: the second transaction
+    has already read the same pre-state and will compute the same delta against
+    it.  Grading presence alone would pass such a build.
+
+    Args:
+        statements: The statement list from :func:`capture_sql_statements`.
+        *table_names: Substrings identifying the tables whose first read must
+            come after the lock, e.g. ``"journal_entries"``.  Matched as
+            substrings of the emitted SQL, so a bare table name is enough and a
+            schema-qualified one also works.
+
+    Returns:
+        ``True`` when a ``pg_advisory_xact_lock`` statement is emitted and every
+        named table's FIRST appearance is at a later index; ``False`` when the
+        lock is absent, or when any named table was read first.  A table that
+        is never read does not falsify the ordering -- there is nothing to
+        order against -- so callers assert the read happened separately.
+    """
+    texts = [text for text, _params in statements]
+    lock_at = next(
+        (i for i, text in enumerate(texts) if "pg_advisory_xact_lock" in text),
+        None,
+    )
+    if lock_at is None:
+        return False
+    for table in table_names:
+        read_at = next(
+            (i for i, text in enumerate(texts) if table in text), None,
+        )
+        if read_at is not None and read_at < lock_at:
+            return False
+    return True
+
+
+def linked_ledger_total(account_id):
+    """Return the summed posting amount on one account's LINKED ledger account.
+
+    The account's ledger-native balance as the double-entry ledger holds it:
+    the anchor reconcile's whole job is to keep this equal to the account's
+    resolved balance assertion plus the settled movements recorded after it.
+    Two concurrent reconciles that both computed their delta against the same
+    posted state leave the two permanently apart, and this is the left-hand
+    side of the assertion that catches it.
+
+    **NOT scenario-scoped, and its one caller depends on that being harmless.**
+    It sums every posting on the linked ledger across ALL scenarios, so the
+    invariant "linked ledger total == resolved assertion" holds only while the
+    database has a single scenario -- which is true today (production creates
+    baselines only) and stops being true the moment scenario clone ships.  Said
+    here rather than discovered later, because the failure would look like a
+    concurrency regression and would not be one.
+
+    Args:
+        account_id: The account whose linked ledger to total.
+
+    Returns:
+        The sum of every posting on that ledger account as a
+        :class:`~decimal.Decimal` (``Decimal("0.00")`` when nothing is posted).
+
+    Raises:
+        PostingError: When the account has no linked ledger account.
+    """
+    from app.extensions import db  # pylint: disable=import-outside-toplevel
+    from app.models.journal_entry import (  # pylint: disable=import-outside-toplevel
+        Posting,
+    )
+    from app.services.posting_reads import (  # pylint: disable=import-outside-toplevel
+        _ledger_account_for,
+    )
+
+    # ``_ledger_account_for`` RAISES ``PostingError`` for an unpaired account;
+    # it never returns ``None``.  An earlier version of this helper guarded for
+    # ``None`` and returned ``$0.00``, which was dead code that would also have
+    # reported "nothing posted" for a broken chart of accounts.
+    linked = _ledger_account_for(account_id)
+    rows = (
+        db.session.query(Posting.amount)
+        .filter(Posting.ledger_account_id == linked.id)
+        .all()
+    )
+    return sum((amount for (amount,) in rows), Decimal("0.00"))

@@ -52,7 +52,6 @@ def _make_property(db, seed_user, periods, anchor_period, balance, rate=None):
             account_type_id=property_type.id,
             name="House",
             anchor_balance=balance,
-            anchor_period_id=anchor_period.id,
         ),
     )
     db.session.add(acct)
