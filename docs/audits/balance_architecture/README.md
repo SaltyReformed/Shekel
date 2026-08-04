@@ -310,13 +310,104 @@ the OPPOSITE case on a later clock (now derived from `display_today()`).  New fi
 app into TWO day-to-period rules that disagree for a day past the schedule (writer index 0, ledger
 index 60 on the clone's calendar), unreachable on today's data and owned by X-ak with N-168.
 
+> ### X-f1c's COLD-RESUME RECORD (2026-08-03 evening) -- read this before touching the tree
+>
+> **X-f1c1 and X-f1c2 are BUILT and UNCOMMITTED.**  Branch `feat/xf1-settle-day`, HEAD
+> `21c41b82`.  **The branch IS on the remote and the two head commits are not** -- `git ls-remote`
+> answers `578a9136` and `git status -sb` reads `[ahead 2]`, so `51679384` and `21c41b82` are
+> local while `1ca63972`, `70ba87f6` and `578a9136` are published; `gh pr list --head
+> feat/xf1-settle-day --state all` is empty, so nothing is PR'd.  **A knowingly-RED commit is
+> therefore already on the remote** (`70ba87f6`, subject `[WIP -- RED, NOT FOR MERGE]`).  An
+> earlier draft of this line said "nothing pushed", which was false and is exactly the sentence a
+> cold-resuming session would act on.  The working tree carries **26 modified files plus one untracked**
+> (`app/routes/transactions/_shadow_mutations.py`).  Do not `git add -A`: two adversarial reviews
+> ran in this worktree planting mutants, and one was found still sitting in `transfer_service.py`
+> (Section 8 carries that lesson).  `grep -rn "MUTANT" app/ tests/` first -- it is clean as of this
+> record -- and stage with `git add -p`.
+>
+> **The suite is GREEN at 7,818 / 0 under BOTH clocks (2026-08-04), and everything below is
+> re-verified rather than carried forward.**  `pylint app/` and `scripts/` 10.00/10 with the full
+> `--fail-on` set; full suite 7,818 passed under `America/New_York` AND `TZ=Pacific/Kiritimati`; the
+> **plan gate 17/17** -- which lives in `tools/plan_gate`, NOT `tests/`, so `./scripts/test.sh` does
+> not run it and a green suite will hide a Section 9 rule 6 violation (it hid one this session).
+> The touched date-sensitive files also pass a calendar sweep at `SHEKEL_FAKE_TODAY` = 2026-06-01 /
+> 2026-12-31 / 2027-02-28.
+>
+> **The one parked failure is RULED and gone.**  It was
+> `test_early_settled_payment_keeps_the_parallel_run_exact` (finding **N-186**); answering the
+> question it forbade re-dating until produced ruling **R-EK** and finding **N-187** (the ledger and
+> the resolver key on different facts), the fixture was re-pointed to the early settle both producers
+> can see, and the producer defect underneath went to the new step **X-an**.
+>
+> **THREE neutral adversarial reviews then ran against the finished tree and all three found
+> something** (ruling **R-EL**'s block in Section 4 carries the detail).  The app-code review found a
+> live defect this step opened -- the settle-day box was bounded above and not below (**N-189**).
+> The test-integrity review found two tests that could not fail, proving one by running it under a
+> shifted calendar.  The claims audit found two false statements in this document and four
+> overclaims.  **All repaired in this pass**, each repair re-proved by mutation where it was a test.
+>
+> **What is DONE, so it is not re-derived:**
+>
+> * **Five rulings, R-EF..R-EJ**, in Section 4.  Three came from MEASUREMENT during the build, not
+>   from the plan: the transaction door alone corrects 0 of N-181's 8 rows (R-EF), the field as
+>   scoped would 400 the only unlock path on every settled row (R-EG), and the statement date
+>   stales the anchor cache (R-EH).  R-EJ is a hole X-f1c itself opened.
+> * **Both edit doors**, `status_seam.settle_day_for_status` as the one shared rule, `settled_on`
+>   into `_POSTING_RELEVANT_FIELDS` and out of the `setattr` loop via `_SEAM_OWNED_FIELDS`,
+>   `Transfer.settled_on` as a read-only SCOPED QUERY (not a backref walk -- see below), N-184's
+>   dead `dump_only` arm deleted, and the `_shadow_mutations.py` split the 1000-line ceiling forced
+>   (which is what **N-152** predicted for the next change to that module).
+> * **14 mutants planted, 14 killed.**  Including both survivors the reviews found: the shadow
+>   PATCH door had ZERO coverage anywhere in 7,803 tests, and the income-shadow test graded
+>   POSITION rather than account.  The second was fixed in the CODE -- the property names the row
+>   in SQL, so a positional read is no longer expressible.
+> * **Driven end to end in a throwaway clone** (its own container and database, both destroyed;
+>   dev untouched, 999 transactions, original password hash).  A transaction corrected 07/31 ->
+>   07/28 and a transfer 07/31 -> 07/27 through the real popovers, then a revert to Projected with
+>   the day still in the form: **no 400**.  Ledger followed -- transfer 57 nets `-1910.95` /
+>   `+1910.95` entirely at the corrected day, the reverted transaction nets `$0.00` at both days,
+>   trial balance `$0.00`.  Locked/unlocked contrast confirmed by attribute: amount, period, due
+>   date and category `disabled=True`; settle day and status `disabled=False`.
+> * **Six test modules re-clocked**, each of which encoded a settle in its own future and only
+>   compiled because no guard existed -- the fixture-clock defect class N-131 / N-132 / R8 belong
+>   to.  **One** `2099` suite freezes its own clock into its own calendar (`test_posting_ledger_statements`:
+>   opening at `_FIXTURE_OPENING`, today at `_FIXTURE_TODAY` -- measured, those two names exist in
+>   that module and nowhere else, and an earlier draft of this line said "the two `2099` suites",
+>   which was false); `test_ledger_report_service` moved its "rides on top" day into an EMPTY PAST
+>   year (2025) with the account opened before it; and four others (`test_loan`, `test_cash_fold`,
+>   `test_loan_plan_assembly`, `test_posting_service`) move their frozen today past their own history
+>   rather than moving the money.
+>
+> **The one thing a restore already ate once, so check it is present:**
+> `status_seam.reject_future_settle_day` plus its call in `apply_status_change`, `max="{{
+> today.isoformat() }}"` on both settle-day inputs, `today=display_today()` passed by all three
+> render sites, and the `gate_error` consolidation + `try`/`except ValidationError` around the seam
+> call in `_apply_regular_update`.  A reviewer's `cp` restore reverted exactly those mid-session.
+>
+> **NEXT, in order:** ~~rule **N-186**~~ and ~~the three reviews~~ (both DONE -- rulings R-EK and
+> R-EL, 2026-08-04); commit as the leaves in Section 5 (`X-f1c1`, `X-f1c2`, plus the rulings doc
+> commit FIRST, per the X-u lesson); then **X-f1c3** (delete the anchor cache -- and note the
+> pay-period anchor LOCK has to be re-founded on `account_anchor_history`, whose FK is
+> `ON DELETE CASCADE`); then **X-f1c4** (the statement date); then **X-f1d** and the PR.  **X-an
+> follows X-f1's ship**, not this branch.
+>
+> **Staging note that survived the session:** `git add -p`, never `git add -A`.  Two mutation-planting
+> reviews ran in this worktree earlier; `grep -rn "MUTANT" app/ tests/ tools/` is clean as of this
+> record, and every mutant planted THIS session was reverted and the revert verified with
+> `git diff --stat` on the file.
+
 **THE ORDER CHANGED 2026-08-03 on ruling R-EB, and this paragraph is the orientation to trust.**
 The anchor half is redesigned from scratch -- the ledger becomes sum-of-postings and an assertion
 becomes a RECONCILIATION rather than a reset -- so the steps that served the OLD model are re-ranked
 against it rather than run first.
 
-**NEXT, in order: X-f1, X-f2, X-f3 (the cutover -- MOVES MONEY, own PR), X-f4, X-f5, then X-f6**
-(bank import, the ruled follow-on).  **X-f1b is GREEN and COMMITTED on branch
+**NEXT, in order: X-f1, X-an, X-f2, X-f3 (the cutover -- MOVES MONEY, own PR), X-f4, X-f5, then
+X-f6** (bank import, the ruled follow-on).  **X-an is new (ruling R-EK, 2026-08-04)** and sits
+immediately behind X-f1 because X-f1 is what gives the app the stored day it keys on: the loan
+resolver still decides "has this payment happened yet?" from the PAY PERIOD while the posted ledger
+uses the day the money moved, so an installment paid before its pay period begins renders twice on
+the loan detail page (**N-187**, `$1,003.87` in the reproduction, `$0.00` on today's production data
+and one click away).  **X-f1b is GREEN and COMMITTED on branch
 `feat/xf1-settle-day`** (`51679384`, four commits on `fac90200`) -- **not pushed, not PR'd**.  The
 suite is 7,786 / 0 under both timezones, all three test locations run, and the real-data baseline is
 byte-identical with a firing positive control.  **The head-but-two commit's subject still reads
@@ -327,7 +418,23 @@ the 22 deleted migration tests really cost.  **X-f1c and X-f1d remain, and X-f1 
 them**: ruling N-175 binds the `anchor_settle_partition.md` archive move to this step so the
 superseded plan and the plan that supersedes it land together, which is Section 9 rule 1 (one live
 planning document).  X-f1b alone would also leave finding **N-181**'s eight fabricated timeliness
-days in production with no door to correct them -- X-f1c IS that door.  **X-ai-s (the migration) is HELD pending X-f3**: it buys
+days in production with no door to correct them.
+
+**X-f1c WAS RE-SCOPED INTO FOUR LEAVES on 2026-08-03 (rulings R-EF..R-EI), and the re-scope is the
+finding.**  Its one-sentence plan entry -- *"`settled_on` on the full-edit form... and the true-up
+form's statement date"* -- was measured wrong in three ways by the build trace.  **N-181's eight rows
+are ALL transfer shadows** (transactions 1457/1458/1823/1824/1826/1827/2161/2162, four pairs), and a
+shadow's full-edit popover is the TRANSFER form, so the transaction door corrects **0 of 8** and
+"X-f1c IS that door" was false as written (R-EF adds the transfer door).  The field as specified
+would have **400'd the documented unlock path** on every settled row, because both forms re-submit
+the row's own settle day when the user sets Status to Projected to unlock the amounts, and the seam
+refuses that pair (R-EG drops it at the door instead, while the SERVICE guard still fails loud).  And
+the statement date makes a **back-dated assertion** reachable, which stales the
+`accounts.current_anchor_*` cache that the grid header, the dashboard card, the cockpit cards, the
+Property market value and the retirement seeds all render from -- measured: Checking carries 55
+assertions from 2026-03-27 to 2026-08-03 against a schedule floor of 2026-03-26, so almost any
+back-date lands before the latest one.  **R-EH deletes those two columns rather than guarding the
+write**, and that leaf runs BEFORE the statement date so back-dating never meets a cache.  **X-ai-s (the migration) is HELD pending X-f3**: it buys
 per-ASSERTION attribution for the correction family X-f3 deletes, and running it first would ship a
 migration and a backfill for something about to be removed.  **X-ai-r is DONE** (`c518d2e4` /
 `8281e82c`, PR #81) and its LOAN half survives untouched.  After X-f: **X-ai-a, X-ai-b, X-ai-c,
@@ -2103,6 +2210,334 @@ FALSE: `alembic upgrade base -> <that revision>` gives exactly that schema.  The
 the harness has no per-revision template fixture.  Both corrections are written into the modules and
 migrations themselves, where the next reader of that SQL will be.
 
+### Answered (developer ruling, 2026-08-03: X-f1c's four forks -- and the third is the ROOT CAUSE option)
+
+Taken after being shown each fork with its measured facts and a stated recommendation, under the
+standing instruction *"I want root cause solutions only"* / *"I want to make the fences structurally
+unnecessary."*  Three of the four were opened by MEASUREMENT during the build trace, not by the plan:
+X-f1c as scoped would have closed **N-181** on zero rows, broken the only unlock path on every
+settled row, and shipped a stale cache the moment its own new field was used.
+
+**R-EF -- the settle-day door ships on BOTH forms, because the transaction door alone corrects
+NOTHING.**  *"Both doors."*
+
+The plan step says *"`settled_on` on the full-edit form"* and names X-f1c as the door that corrects
+finding **N-181**'s eight fabricated timeliness days.  Measured on the production database
+2026-08-03: those eight rows are transactions **1457, 1458, 1823, 1824, 1826, 1827, 2161, 2162** --
+**all eight are transfer SHADOWS** (four pairs, transfers 54 / 154 / 155 / 322).  A shadow never
+renders the transaction popover: `routes/transactions/forms.py:70-97` redirects it to
+`transfers/_transfer_full_edit.html`, which PATCHes `transfers.update_transfer`.  So the transaction
+door alone corrects **0 of 8**, and the claim that X-f1c IS N-181's door would have been false.
+Separately, `_transfer_status.apply_settle_day_correction` -- built at X-f1b -- had **no production
+caller at all**; `update_transfer`'s `settled_on` kwarg was reachable only from tests.  This ruling
+gives it its first one.  *Rejected:* the transaction door alone (closes N-181 on no rows); the
+transfer door alone (leaves the other 148 settled rows uncorrectable, which is the main case R-ED
+was ruled for).
+
+**R-EG -- a settle day submitted alongside a REVERT is dropped, not refused.**  *"Revert wins;
+ignore the day."*
+
+Both full-edit forms submit every enabled field on Save, and the documented way to unlock a finalised
+row is to set Status to Projected **in that same form** -- so a revert arrives as
+`{status_id: Projected, settled_on: <the day the row already carried>}`.  The seam's
+`reject_settle_day_without_settled_status` refuses that pair with a 400, and
+`_transfer_status.apply_settle_day_correction:215-219` does the same, so shipping the field without
+this ruling would have made **the only unlock path fail on every settled row** -- a defect the step
+would have introduced, not found.
+
+The day is a stale ECHO of the state being left: the user picked Projected, which says the money did
+not move.  The rule is `status_seam.settle_day_for_status`, ONE function both route doors consume,
+placed beside the refusal it defers to for the same reason
+`reject_settle_day_without_settled_status` is module-level -- a caller has to ask before the seam
+can.  **It does NOT weaken the service guard**: a day handed to `apply_status_change` for an
+unsettled status still raises, because a SERVICE caller asserting both facts is asserting them on
+purpose.  Forgiving at the form door, fail-loud at the service door.  *Rejected:* the 400 (breaks
+the unlock path); a JavaScript rule that blanks the input on status change (a financial invariant in
+a place a disabled script or a crafted POST bypasses, and the server still needs one of the other
+two answers underneath).
+
+**R-EH -- `accounts.current_anchor_balance` and `current_anchor_period_id` are DELETED.**  *"Delete
+the two columns now, inside X-f1c."*
+
+R-EE gives the true-up form a statement date, which makes a BACK-DATED assertion reachable.  Those
+two columns are a denormalized cache of the LATEST `account_anchor_history` row --
+`cash_ledger/_facts.py:116-118` says so in those words, and `resolve_anchor` logs
+`EVT_ANCHOR_CACHE_RECONCILED` when they disagree and lets the history row win.  `stage_anchor_true_up`
+writes the cache UNCONDITIONALLY, so a back-dated true-up would leave it holding a balance the ledger
+does not consider current.  **Measured: Checking carries 55 assertions from 2026-03-27 to 2026-08-03
+and the schedule floor is 2026-03-26**, so essentially ANY back-dated statement entry on the account
+the developer budgets from lands before the latest assertion.  The grid header, the dashboard card,
+the cockpit cards, the Property market value and the retirement seeds all read that cache, so the
+wrong number would RENDER while the projection used the right one.
+
+The developer took the root-cause option over the offered guard.  *Rejected:* writing the cache only
+when the new assertion is the latest (correct, ~5 lines, but it maintains a denormalization this
+arc's own root cause 1 names); and bounding the new field so it cannot precede the newest assertion
+(throws away the correction the field exists for -- a statement that arrives late for a superseded
+day could never be recorded).
+
+**The measured cost, stated because the ruling was taken before all of it was known and the
+question's cost estimate UNDERSTATED it.**  Re-measured 2026-08-04 by
+`grep -rln 'current_anchor_balance\|current_anchor_period_id'`: **24 `app/**/*.py` files** (not the
+12 first stated -- that number was wrong, and it is the sizing the ruling was taken against) and
+**5 templates**, of which **3 carry a real read** (`accounts/form.html:49`, `loan/setup.html:38`,
+`grid/_anchor_edit.html:56,90,92`) and 2 mention the column only in comments
+(`savings/dashboard.html`, `savings/_cockpit_balance.html`).  The file count includes docstring
+mentions, so the true read-SITE count is lower than 24; the MODULE count is the one that was
+understated.  Two sites are not merely reads:
+
+* `pay_period_admin._period_ids_that_are_account_anchors` uses the COLUMN as the anchor lock that
+  refuses deleting a pay period, backed by a deferrable `ON DELETE NO ACTION` FK.  Its replacement
+  is a query over `account_anchor_history.pay_period_id` -- whose FK is `ON DELETE CASCADE`, so a
+  deleted period would take balance ASSERTIONS with it.  The replacement set is a strict SUPERSET of
+  today's (it locks any period holding an assertion, not only the latest), which is more correct,
+  but it is a behaviour change to a destructive operation and needs its own gate.
+* `retirement_projection` and `investment_dashboard_service` read the column as a FALLBACK for an
+  account the seam omitted -- a state `current_anchor_period_id IS NULL` produces, which the schema
+  forbids.  Those fallbacks are dead defence and go with the column; the ones that are NOT dead
+  (the no-current-period arms in `dashboard_service`, `_projections`, `retirement_projection`) each
+  need a stated replacement rather than a mechanical substitution.
+
+**It is therefore its own leaf and its own commit(s), and it runs BEFORE R-EE's statement date** --
+so back-dating never lands on a codebase that still has a cache to stale, and so a settle-day defect
+and an anchor-cache defect cannot arrive in one unrevertable change.
+
+**R-EJ -- a settle day in the FUTURE is refused, at the seam.**  *"Refuse it at the seam."*
+
+A hole X-f1c OPENS, found by its own build trace rather than by a review, and reachable by an
+ordinary user typing in the new box -- not only by a crafted POST.  Worked on a `$120` expense
+settled today against a `$1,000` checking balance: correcting its day to a month out leaves the row
+Paid and re-dates its ledger entry, and `cash_ledger/_walk.py:290-300` absorbs a settled source only
+into an assertion dated **on or after** it -- so the `$120` rides on top of every assertion until
+that day arrives.  **The grid would show `$1,000` today and `$880` a month from now: money already
+spent, still sitting in the balance.**
+
+**A neutral adversarial review found the same defect INDEPENDENTLY and measured it end to end
+through the live routes**, which is the strongest form this record takes -- two derivations, one
+number.  On a `$1,000` anchor: a `$100` expense settled three days ago reads `$900`; PATCH its day to
+`today + 400` and the route answers **200** and the balance reads **`$1,000`** again.  The transfer
+side is identical at `$200`.  The review also named the trap the tooltip sets: the box says
+*"Correct it if your statement shows a different day"*, and **a statement's most common disagreement
+is a PENDING item with a future posting date** -- so the single most likely thing a user types here
+is the thing that silently inflates their balance.
+
+The rule lives on `status_seam.apply_status_change`, beside the `datetime` refusal, for the reason
+that one is there: ONE door, every write path, a type of value the seam does not accept rather than
+a check each caller remembers.  Both date inputs also carry `max` = today, so the browser refuses
+first and the server is the backstop -- the layering `accounts/form.html` already uses for
+`observed_on`.
+
+*The precedent that was weighed and NOT followed, and the review sharpened WHY.*
+`TransactionEntry.settled_on` -- a purchase's posting day, the closest analogue -- deliberately
+carries no `max` (`_transaction_entries.html`: *"I bought this and my bank has not taken it yet is a
+true statement"*) and `entry_service` bounds it only from below.  The difference is not merely that
+one is status-bound: **the two point in opposite directions.**  A future ENTRY posting day is the
+CONSERVATIVE side -- `ReconciledThrough.covers` answers False, so the debit stays reserved and the
+balance stays low.  A future `Transaction.settled_on` is the other side: it takes settled money OUT
+of the balance.  The entries door's rationale therefore does not carry over and must not be cited
+here.  `Transaction`'s own class docstring already specified the rule: *"a 'not in the future' rule
+is not expressible in a CHECK (it is not immutable) and lives at the write door instead."*  X-f1c is
+that write door, and it is the first one where a USER supplies the day.
+
+*Rejected:* a browser `max` with no server rule (leaves the balance error reachable by the replayed
+/ stale-page / second-tab class this arc has twice ruled a live defect -- N-146 and N-178); allowing
+it to match the entries door; and adding a PAST floor as well, which is more guard than the measured
+defect -- a very old day rewrites the opening assertion's correction, which is strange but not wrong.
+
+**R-EI -- the true-up editor's statement date goes on a SECOND LINE.**  *"Second line inside the
+form."*
+
+`grid/_anchor_edit.html` is ONE partial rendered on five surfaces (grid header, dashboard balance
+card, each cockpit card's balance cell, the investment/retirement hero, the cash hero), currently a
+compact `d-inline-flex` row.  A labelled "as of" date input on its own line below the amount leaves
+the amount row's width untouched, so the cockpit card and the mobile grid header cannot reflow.
+*Rejected:* inline beside the amount (roughly doubles the row's width on the tightest surface); and
+hiding it behind an "as of today (change)" link (preserves one-click, but costs discoverability on
+exactly the case the ruling exists to serve).
+
+### Answered (developer ruling, 2026-08-04: N-186's question -- the two producers key on DIFFERENT facts, and the fix is its own step)
+
+**R-EK -- the resolver's history/projection cut is a PROXY for the day the money moved, and
+replacing it is X-an, not X-f1.**  *"Its own step, right after X-f1."*
+
+N-186 asked what the parallel run should assert for a payment whose cash moved in an earlier period
+than its installment, and forbade re-dating the fixture until that was answered.  The trace answered
+a question underneath it: the two producers do not merely SAMPLE differently, they key on different
+facts, and one of them is a proxy.
+
+* The posted ledger dates a payment's journal entry by **the day the money moved** --
+  `posting_service._entry_date` (`posting_service.py:256`) reads the income shadow's `settled_on`.
+* The resolver's replay/projection cut keys on the payment's **pay-period start** --
+  `is_confirmed_payment_eligible`'s `period_start <= as_of` (`rate_period_engine.py:395`), with
+  `_build_monthly_override`'s complement on the same field (`_payoff.py:174`) so the two partitions
+  stay exact.
+
+A pay period is a BUDGETING fact -- which paycheck funds the outlay -- and the lender never sees it.
+When the cash moves before its pay period begins, the ledger has booked the payment while the
+resolver still calls it a projection, so **the same installment is counted twice**: once as
+confirmed history from the ledger, once as a forward planned outlay from the override map.
+
+**REPRODUCED 2026-08-04 with a CONTROL that moves ONLY the pay period the payment is filed in** --
+same amount, same cash day, same installment, same posted split -- which is what makes this a
+producer defect rather than a fixture artifact.  *What was compared is the ledger's own balance at
+today (equal in both columns), not the two ledgers row by row; an earlier draft said
+"byte-identical", which asserts a whole-ledger diff that was never run.*  Loan $100,000
+@ 6%, today frozen 2026-02-10, the 2026-04-01 installment paid on 2026-02-10:
+
+| | pay period AFTER the cash day | control: pay period CONTAINS the cash day |
+|---|---|---|
+| ledger balance at today | `97,997.25` | `97,997.25` |
+| resolver balance at today | **`99,001.12`** | `97,997.25` |
+| schedule rows | 02-01 conf, 04-01 conf, 03-01 proj, **04-01 proj** | 02-01 conf, 04-01 conf, 05-01 proj |
+| last schedule row | `2032-10-01` | `2032-12-01` |
+
+The producers differ by exactly **one payment's principal, `$1,003.87`**, and installment 2026-04-01
+renders as both confirmed history and a future payment.
+
+**What it does NOT touch, MEASURED rather than assumed** -- the first draft of this ruling asserted
+a persisted cash-flow consequence and the control refuted it.  The grid's per-period loan balance map
+is correct (it folds `balance_at._plan`'s materialized shadows, not the resolver's projected rows);
+`loan_figures.payoff_date` is `2032-11-01` in BOTH columns; and therefore the recurrence end date
+`loan_recurrence_sync` WRITES (`loan_recurrence_sync.py:284`, derived at `:277-278`) is unaffected.
+**Only the middle one of those three is a measured number**; the first is a structural read of
+`positions()` (its future half folds `memoized_plan`, built from `loan_loaders.projected_income_shadows`
+-- PROJECTED shadows only, so a confirmed early settle cannot enter it) and the third is an inference
+from the second.  Both were re-derived independently by a neutral review and hold; the word
+"measured" applied to all three, and does not.  The damage is confined
+to `LoanState.schedule` and the payoff scenarios sharing `_build_forward_inputs`: the loan detail
+page's amortization table, its payoff / interest summary, and its band chart.
+
+**It PREDATES X-f1 and X-f1 explicitly scoped it out.**  `git show
+fac90200:app/services/posting_service.py` shows `_entry_date` already returning
+`_civil_settle_date(paid_at, xfer.pay_period)`, so marking a future-period loan payment paid has
+always produced this; R-EJ's write-door guard did not create it, it merely stopped the fixture from
+HIDING it behind a settle dated in its own future.  And this document's own scope sentence for X-f1
+reads *"It gives a settle a day the user owns; what that day is compared against is unchanged"* --
+which is precisely what X-an changes.
+
+**Reachability: `$0.00` on today's production data, one ordinary click away.**  Measured read-only on
+`shekel-prod-db` 2026-08-04, counting settled rows that CARRY an instant (`paid_at IS NOT NULL`;
+the denominator matters and an earlier draft left it unstated):
+
+| account type | settled | undated | with instant | early | late |
+|---|---|---|---|---|---|
+| Auto Loan | 4 | 1 | 3 | 0 | 0 |
+| Mortgage | 5 | 1 | 4 | 0 | 0 |
+| Checking | 139 | 4 | 135 | **9** | **10** |
+| Money Market | 7 | 2 | 5 | **2** | 0 |
+| HYSA | 1 | 0 | 1 | 0 | 0 |
+
+So **0 of 7** loan payments carry the shape and **19 of 135** Checking rows do -- **and 2 of 5 Money
+Market rows do, so this is not a Checking habit**, which the first draft's framing implied.  The
+excluded undated rows are N-181's; the X-f1b backfill dates them to their own period's `start_date`,
+which is inside the period by construction, so the loan side is 0 of 9 either way.
+
+Only the EARLY direction is harmful -- a late settle's divergence window `[period_start, settle_day)`
+is already in the past at any render, while an early settle's window `[settle_day, period_start)`
+CONTAINS today until the pay period begins.  Rule 7 applies verbatim: a finding that costs `$0.00`
+today is a defect waiting for the data to change.
+
+*Rejected:* **fixing it inside X-f1** (correct, and declined -- it grows a step already carrying a
+destructive migration and two edit doors into the loan resolver, which is the mixing this arc splits
+commits to avoid); and **accepting two bases and narrowing the parallel run to a window** (declined
+as the band-aid it is -- it would ship the duplicated installment knowingly and blind the oracle in
+exactly the region where dating bugs live).
+
+**What X-f1c does instead, and the coverage it honestly loses.**  The fixture is re-pointed to the
+early settle the app actually produces and both producers can see: cash out 2026-01-30, booked in the
+pay period CONTAINING that day, paying the 2026-03-01 installment -- early against the INSTALLMENT,
+which is what a borrower means by paying early.  **Non-vacuity PROVEN by mutation**: dating the split
+correction at the due date instead of the settle day (the pre-R1 shape) makes it fail loud with
+`walk 1003.87 vs posted 1498.88` at the settle day and a stranded `-495.01` at 2026-03-01.  What is
+genuinely no longer covered is the cash-before-its-own-pay-period case, and that is N-187's, owned by
+X-an -- recorded rather than left implicit, because a re-pointed fixture that quietly drops a case is
+how N-182 happened.
+
+### Answered (developer ruling, 2026-08-04: X-f1c's three adversarial reviews -- and the settle-day bound was half a rule)
+
+Three neutral reviews ran against the finished tree before the commit: one on the app code, one on
+test integrity, one auditing every factual claim in this document's own new prose.  **All three found
+something, and the app-code review found a live defect the step itself opened.**
+
+**R-EL -- a settle day BELOW the schedule is refused, at the same seam and by the same bound an
+anchor observation already uses.**  *"Floor at earliest pay period."*
+
+R-EJ bounded the correction box ABOVE and stated its money consequence carefully.  **Nothing bounded
+it below**, and the review showed the other direction moves the same money by the mirror mechanism:
+`cash_ledger/_walk.py:291-300` ABSORBS a source dated at or before an assertion into it and then
+executes `running = anchor.anchor_balance`, discarding the row's delta -- so the projection RISES by
+the row's amount while the row still reads Paid on the grid.  `fields.Date()` deserializes
+`"0202-08-04"` to a real `date`, so the input is an ordinary year typo, not a crafted request.
+Worked on a `$1,000` anchor observed three days ago carrying a `$100` settled expense: the grid reads
+`$900`, and after the typo it reads `$1,000` with the `$100` becoming an unexplained plug against
+Uncategorized at the next anchor re-derive.
+
+**The floor is not a new rule and that is the point.**
+`account_service.earliest_observable_day` -- `min(the user's earliest pay period start, today)` --
+has enforced exactly this bound on an anchor's `observed_on` since finding **N-133**, for the same
+reason.  It MOVES to `pay_period_service.earliest_recordable_day` (a leaf module the caller can
+import without inverting any dependency rule) and both doors now call the one function; the
+account-facing name stays as a delegating alias so its callers are untouched.  Both settle-day inputs
+carry `min` = that day, the layering `accounts/form.html` already uses.
+
+**Measured on the production database before the ruling**, over the 148 settled rows carrying an
+instant: the floor would have refused **0** of them (oldest settle day `2026-03-27`, schedule floor
+`2026-03-26`).  *Rejected:* the account's earliest ASSERTION, which is tighter and sits exactly on the
+absorb boundary but would have refused **4 of 148** -- a shape the developer's own data proves
+legitimate; and leaving it to its own step, which R-EJ's own precedent forbids (a hole X-f1c OPENS is
+closed inside X-f1c).  **Stated so it is not read as more than it is: an in-range typo stays
+expressible and nothing can prevent that.**  What the floor removes is the catastrophic class.
+
+**R-EL WAS RULED TWICE, and the first placement was WRONG -- the suite proved it.**  Built at the
+SEAM beside the future-day ceiling, it broke **six** existing tests whose scenario is a loan payment
+budgeted to a 2026 pay period whose cash moved on 2025-12-20 or 2025-12-31: the year-boundary
+attribution rule (L9), with the seeded schedule starting 2026-01-02.  **That shape is legitimate**,
+and two things were wrong with the case put to the developer for the first ruling, both stated here
+because the correction is the finding:
+
+* **the measurement covered only EXISTING rows** (0 of 148 refused), not the shapes the app must
+  still permit -- recording money that moved before you started budgeting is one, and step **X-f6**'s
+  bank import produces it in bulk; and
+* **the absorb behaviour is CORRECT for a genuine pre-schedule settle**, by ruling R-EB's own model:
+  an assertion RECONCILES, so anything dated before it is already inside the asserted balance.  The
+  floor was therefore never protecting an invariant -- it exists solely to catch a typo, and at the
+  seam it did that by refusing a shape that is sometimes real.
+
+**Re-ruled: the floor is a DOOR rule.**  It moves into `status_seam.settle_day_for_status` -- which
+this same step already established as the edit doors' rule, and which all three HTTP doors call --
+so a crafted or stale POST is bounded while service, import and backfill callers are not.  The
+CEILING stays at the seam and the asymmetry is principled: no caller can legitimately record money
+that has not moved, but plenty can legitimately record money that moved before the schedule began.
+Only a FORWARDED day is bounded; a day dropped beside a revert writes nothing, so bounding it would
+break the unlock path R-EG exists to keep open.  All six tests pass untouched, which is the point --
+they call the service.  `TestTheSettleDayFloor.test_the_service_itself_still_accepts_a_pre_schedule_day`
+fails if the bound ever drifts back to the seam.
+
+**What the other two reviews found, all repaired in this pass.**  The test-integrity review found
+**two tests that could not fail** and proved one by running it: `TestTransferSettleDay` hard-coded
+`date(2026, 7, 14)` as a settle day in a module with no clock freeze, so R-EJ's brand-new guard made
+it fail under `SHEKEL_FAKE_TODAY=2026-06-01` -- the N-131 / N-132 / R8 fixture-clock class, armed by
+this step's own guard and invisible until the weekly sweep ran AFTER merge.  The other asserted the
+correction input was pre-filled by testing `txn.settled_on.isoformat() in body`, on a row settled
+TODAY, against a template that also renders `max="<today>"` -- the same string twice, so `value=""`
+passed it.  Both repaired and both re-proved by mutation.  It also found a dead `if submitted_day is
+None` branch in `settle_day_for_status` (finding **N-184**'s shape re-introduced one file over,
+deleted), an asymmetric ledger assertion whose sibling's docstring claimed the asymmetry was already
+fixed, two untested render rules -- including the undated-settled-transfer repair box that is the
+whole reason the transfer door exists -- a duplicate test now grading the door/service
+COMPLEMENTARITY across every status instead, and two docstring overclaims.
+
+The claims audit checked every citation in this document's new prose against the code, the git
+history and the production database.  **The measurements held exactly** (0 of 7 loan payments, 19 of
+135 Checking, N-181's eight row ids, the `ON DELETE CASCADE` FK, `git show fac90200`'s `paid_at`
+derivation).  **Two claims were false and are corrected in place**: this document said "nothing
+pushed" when `git ls-remote` answers `578a9136` and a `[WIP -- RED, NOT FOR MERGE]` commit is already
+published, and the N-186 row's owner `closed (X-f1c)` is outside Section 9 rule 6's vocabulary --
+which the rule's OWN GATE caught (`tools/plan_gate`, 16/17) once it was finally run.  **That gate is
+not in `tests/`, so `./scripts/test.sh` never ran it and a green suite hid the violation.**  Four
+overclaims were narrowed ("byte-identical", "MEASURED not assumed" over two inferences, an unstated
+denominator, "the two 2099 suites" where there is one) and four stale citations re-pointed.
+
 ## 5. The steps
 
 Each commit is independently green (full suite + `pylint app/` with the full `--fail-on` set) and
@@ -3667,6 +4102,42 @@ preconditions cite entries in that file.
   re-entry case once `Paid -> Settled` is gone (see N-177's row -- that rule is what stops archiving
   a payment from re-dating its money, and X-f1 depends on it).
 
+- [ ] **X-an** `fix(loan): a payment is history from the day its money moved` -- closes **N-187**.
+  Ruled **R-EK** (2026-08-04), sequenced immediately behind X-f1 because X-f1 is what gives the app a
+  stored, user-correctable day to key on.
+
+  **The resolver's replay/projection cut is the last place in the loan half that PROXIES the day the
+  money moved.**  `is_confirmed_payment_eligible`'s upper bound is `period_start <= as_of` on
+  `PaymentRecord.payment_date`, which `loan_payment_service` fills from the shadow's
+  `pay_period.start_date`; the posted ledger dates the same payment's entry from the shadow's
+  `settled_on`.  The step moves the CUT onto `settled_on` for a CONFIRMED payment -- the identical
+  fact `posting_service._entry_date` writes -- so the two producers share ONE definition of "already
+  happened" and the parallel run can assert at every boundary again.  A PROJECTED payment keeps the
+  pay-period start: its cash has not moved, so the pay period IS the plan.
+
+  **It deletes a proxy rather than adding a guard**, which is the standing instruction, and it does
+  not make the resolver read the ledger: `settled_on` is a column on the transaction row, so the
+  parallel run stays two independent producers rather than collapsing into a tautology.
+
+  Three things its trace owes before a line is written:
+
+  * **The complement must move with the cut.**  `_build_monthly_override:174` excludes a confirmed
+    payment on the SAME field so replay and projection are exact complements (in XOR, never both and
+    never neither).  Changing one without the other double-counts or drops a payment outright -- the
+    very defect this step exists to close, re-introduced by the fix.
+  * **The RATE key rides on the same field** (`replay_schedule`'s
+    `period_for_date(periods, payment.period_start)`), deliberately NOT the due date -- finding
+    **N-36**, because `_redistribute_to_distinct_months` INVENTS a due date for a biweekly collision
+    and a rate keyed on an invented date would move a replayed balance.  `settled_on` is a fact by
+    the same standard, so moving it is defensible; it changes a figure only for an ARM whose rate
+    changes between the cash day and the pay-period start.  **Measure that set before deciding, and
+    decide it explicitly** -- carrying a third date on `PaymentRecord` is the alternative and is
+    worse (three dates for two facts, this arc's own root cause 1).
+  * **The regression lock the re-point gave up.**  X-f1c's fixture now exercises early-against-the-
+    INSTALLMENT; this step owes the early-against-the-PAY-PERIOD case as a parallel run that holds at
+    every boundary, plus a schedule assertion that no installment date appears twice.  The
+    reproduction and its control are recorded in ruling R-EK and are the acceptance criteria.
+
 - [ ] **X-al** `fix(pylint): a duplicate-code disable that suppresses nothing is a finding` --
   closes **N-154**. `useless-suppression` is enabled in `.pylintrc` exactly so a stale disable is
   itself reported, and it is BLIND to a `duplicate-code` one. Measured both directions at X-d
@@ -4881,9 +5352,51 @@ preconditions cite entries in that file.
   fail" is itself a control, and needs the same mutation.**  Two of the four above are repairs that
   did not fire until they were planted against.
 
-  * [ ] **X-f1c** the two edit doors (R-ED, R-EE): `settled_on` on the full-edit form, out of
-    `_LOCKED_EDIT_FIELDS` and INTO `_POSTING_RELEVANT_FIELDS`; and the true-up form's statement date,
-    with the anchor period derived from it.
+  * [ ] **X-f1c** the edit doors -- **RE-SCOPED 2026-08-03 by rulings R-EF..R-EI into FOUR leaves, and
+    the re-scope is itself the finding.**  As written it was one leaf ("`settled_on` on the full-edit
+    form... and the true-up form's statement date"), and the build trace measured three things that
+    sentence got wrong: the transaction door corrects **0 of the 8 rows** N-181 names (all eight are
+    transfer shadows, and a shadow's popover is the TRANSFER form); the field as specified would
+    **400 the only unlock path** on every settled row; and the statement date makes a back-dated
+    assertion reachable, which **stales the anchor cache** the grid header and five other surfaces
+    render from.  The order below is load-bearing: **c3 runs BEFORE c4** so back-dating never meets a
+    cache.
+
+    * [ ] **X-f1c1** `feat(transactions): the settle day is editable on a settled row` -- ruling
+      **R-ED**.  `settled_on` on `TransactionUpdateSchema` and the full-edit popover (rendered only
+      for a settled row), OUT of `_LOCKED_EDIT_FIELDS` (a budget decision locks; an observed fact
+      gets corrected) and INTO `_POSTING_RELEVANT_FIELDS`, routed through the seam in ONE call with
+      `status_id` so the generic `setattr` loop is not a second writer (finding **N-185**).  Carries
+      ruling **R-EG**'s shared `settle_day_for_status`.  Closes **N-184** -- the `dump_only` arm in
+      `_normalize_empty_inputs` has had no instance since R-EC deleted `paid_at` and is
+      unfalsifiable through `load()`, so it and its test go.  Preceded by the module split its own
+      1000-line ceiling forced (the three transfer-shadow branches to `_shadow_mutations.py`,
+      `_finalised_edit_response` + `_LOCKED_EDIT_FIELDS` to `_helpers.py`), which is what **N-152**
+      predicted for the next change to a module at the gate.
+    * [ ] **X-f1c2** `feat(transfers): the settle day is editable on a settled transfer` -- ruling
+      **R-EF**.  The door **N-181**'s eight rows are actually reached through, and
+      `apply_settle_day_correction`'s first production caller.  Adds `Transfer.settled_on`, a
+      read-only property returning the INCOME shadow's day (the row `posting_service._entry_date`
+      dates the journal entry from), so the popover -- rendered from two blueprints -- asks one
+      question.  No setter: assignment raises, which keeps the seam the single writer structurally
+      rather than by review.  Closes **N-181**.
+    * [ ] **X-f1c3** `refactor(accounts): the anchor balance has one home` -- ruling **R-EH**.
+      DELETES `accounts.current_anchor_balance` and `current_anchor_period_id`, a denormalized cache
+      of the latest `account_anchor_history` row.  Destructive migration (a `Review:` line, a
+      refusing downgrade), ~20 read sites over 12 modules and four templates, and two that are not
+      simple reads: the pay-period anchor LOCK (its FK is the backstop, and the replacement over
+      `account_anchor_history.pay_period_id` is a strict superset on a CASCADE FK) and the
+      dead `current_anchor_period_id IS NULL` fallbacks in the retirement / investment producers.
+      **Runs BEFORE X-f1c4.**
+    * [ ] **X-f1c4** `feat(accounts): a true-up carries the statement day it was read from` --
+      rulings **R-EE** / **R-EI**.  `observed_on` on `AnchorUpdateSchema` and a second line in
+      `grid/_anchor_edit.html`; `stage_anchor_true_up` takes a DAY and DERIVES the period from it via
+      `account_service.resolve_anchor_period_id`, so a period can no longer be chosen beside a day
+      (R-EA / R-DH verbatim).  That derivation is also what closes **N-134** structurally: the
+      `if current_period:` arm in `routes/accounts/crud.py:415-442` -- which moves the balance with
+      NO history row when no period contains today -- has nothing left to guard, because
+      `resolve_anchor_period_id` falls back to the earliest period rather than returning `None`.
+      Closes **N-134**, **N-173**.
   * [ ] **X-f1d** the archive move (**N-175**).
 
   **The invariant this step establishes, and how it is enforced.**  A row is settled if and only if
@@ -5239,12 +5752,14 @@ row, whose owner read `Section 5, Phase E2`; it is now `E2-0 / E2-n`, the phase'
 steps. Every other owner was already live, which is what the three hand-passes above bought and
 what nothing now has to buy again.
 
-**The ledger stands at 96 rows.**  Six (**N-171**..**N-176**) are the from-scratch anchor
+**The ledger stands at 100 rows.**  Six (**N-171**..**N-176**) are the from-scratch anchor
 investigation's, owned by the **X-f1** / **X-f3** / **X-f4** leaves ruling **R-EB** created, and the
 91st is **N-177** -- the dead `Settled` status, opened by X-f1's trace **on the developer's own
 question** and given the new step **X-am** on their ruling -- and the 92nd is **N-178**, a LIVE
-re-dating defect the same trace found and REPRODUCED, owned by **X-f1b0**.  **N-179..N-183 were X-f1b's THREE adversarial reviews**, which refuted three of the step's own claims; **N-179, N-182 and N-183 CLOSED when the step shipped** and their resolutions are in the X-f1b as-built entry, leaving N-180 (X-e) and N-181 (X-f1c).  **N-184 and N-185 are the same step's SECOND pair of reviews**, run against the finished tree: one found a control that could not fail inside the repair for a control that could not fail, the other found that the two halves of this step's own invariant are fenced unequally.  That is the third time in this arc a
-developer question has opened a finding no review did (N-119 at X-aa, N-174 at X-f, this one). **X-f's build opened N-130 (the production defect), N-131 / N-132
+re-dating defect the same trace found and REPRODUCED, owned by **X-f1b0**.  **N-179..N-183 were X-f1b's THREE adversarial reviews**, which refuted three of the step's own claims; **N-179, N-182 and N-183 CLOSED when the step shipped** and their resolutions are in the X-f1b as-built entry, leaving N-180 (X-e) and N-181 (X-f1c).  **N-184 and N-185 are the same step's SECOND pair of reviews**, run against the finished tree: one found a control that could not fail inside the repair for a control that could not fail, the other found that the two halves of this step's own invariant are fenced unequally.  **N-186 is X-f1c's, and nothing reviewed it into existence** -- ruling R-EJ's write-door guard refused a test fixture, and the refusal turned out to be the finding: the R1 regression lock for "early settle, then time passes" encodes a settle dated three weeks in its own FUTURE, which is not an early settle at all.  **It CLOSED at X-f1c by opening N-187, which is the more serious row**: answering N-186's question meant tracing the two producers, and they turned out to key on different facts -- the ledger on the day the money moved, the resolver on the pay-period start -- so an installment paid before its pay period begins renders TWICE on the loan detail page.  A fixture refusal that would have been settled silently by moving a date instead surfaced a `$1,003.87` producer divergence that predates X-f1, and ruling **R-EK** gave it the new step **X-an**.  **N-177 above is the third time in this arc a
+developer question has opened a finding no review did** (N-119 at X-aa, N-174 at X-f, N-177 here) --
+named rather than written as "this one", because the N-186 / N-187 paragraph now sits between the
+claim and its referent and neither of those came from a developer question. **X-f's build opened N-130 (the production defect), N-131 / N-132
 (both CLOSED at the step), and its adversarial review then opened N-133 -- the one row in this arc
 that a MEASUREMENT contradicted a ruling on**: R-DH (a)'s opening amendment, made mid-build on a
 hypothetical and never re-scored, was 3.2x worse on the net plug than the rule the ruling's own table
@@ -5331,7 +5846,7 @@ done, and is what drifted.
 | N-125 (X-x2) | **The salary cockpit is the SEVENTH answer to "no pay period covers today", and it is the one plan step X-x2 did not reach.**  `routes/salary/cockpit.py:264` blocks on `not periods or (current_period is None and requested_period_id is None)` and renders the cockpit with `_EMPTY_NO_PERIODS`, a page-specific generate-periods empty state; `routes/salary/views.py:61` redirects into it for the same state.  X-x2 collapsed the other six into ruling R-CY's one card -- `/grid`'s, `/dashboard`'s `_no_period.html` CTA, `/savings`' anchor-cache net worth, `/retirement`'s anchor-cache balances, the investment tile's, and the pulse fragment's -- and left this one because it is genuinely a different SHAPE: the cockpit legitimately renders a PAST period when `?period=` names one, so the precondition is "no period requested AND none current", not "no current period".  That is a real distinction and it is why the collapse is not mechanical.  **It publishes no fabricated figure** (the blocked render carries no money at all, measured on the gapped clone: `/salary` renders 12,807 bytes with zero currency strings), which is why it is a finding rather than a defect in the same class as the six | `$0.00` -- the state renders an empty page rather than a wrong number.  The cost is one more answer to keep in step: a change to the repair story lands on the card and not here | **OPEN**, opened 2026-07-31 by plan step X-x2, which measured it and deliberately did not widen into it.  Born with an owner (rule 6) | X-x |
 | N-126 (X-x2) | **A public contribution producer has no caller in `app/`, and its whole body is a fabrication the trace was about to fix.**  `investment_projection.current_period_transfer_contribution:529` is reached by NOTHING in `app/` -- measured by an AST call-graph pass AND a grep, which agree -- and the only in-tree mention is a `retirement_projection:515` docstring saying the subtraction it performed "used to" happen.  Four tests import it, so it is alive only in its own coverage.  **It is recorded rather than deleted inside X-x2 because the deletion is not X-x's question**: this is the callerless-public-surface class findings N-85 / N-96 record, and the module also exports `_average_transfer_contribution` and the `InvestmentInputs` cluster around it, so the right unit is a look at what that module still owes anyone rather than one function removed mid-step.  **The trace nearly fixed its `ZERO` return as a live fabrication before the call-graph pass showed there is no caller to fabricate for** -- Section 8's "count the call graph, not the call sites", paying out in the opposite direction for once | `$0.00`: no `app/` path reaches it, so it renders nothing anywhere.  The cost is a public function whose tests read as coverage of a live surface | **OPEN**, opened 2026-07-31 by plan step X-x2's call-graph pass.  Born with an owner (rule 6) | X-x |
 | N-133 (X-f adversarial review, 2026-07-31) | **CLOSED 2026-07-31 on `fix/n133-review-residue` -- ten of twelve items fixed, F3 obsolete, F11 the one still open.**  The OPENING amendment was never scored, and it was the only ruling in this arc that a measurement contradicted.  R-DH (a)'s EXCEPT clause was added mid-build on a hypothetical ("assert an opening of `$100`, record a `$100` transfer the same day") and the Section 3 table was not re-run against it.  Re-run: net plug **`-$2,997.48`** as shipped against **`-$940.06`** un-amended, gross `$17,282.84` against `$15,367.94`, worst single `$1,986.16` against `$1,853.92` -- on a method that reproduces the R0 / R2 / R3 rows to the cent.  Concretely, Checking's opening asserts `$2,746.58` on 2026-03-27 and FOUR settled rows carry that same civil day netting **`+$2,057.42`**, every one of them clicked 33 seconds to 1.6 hours AFTER the opening was typed, so the opening was read off a bank that already showed them; stacking them on top makes the walk read **`$4,804.00`** for a day the bank showed `$2,746.58`, and the next assertion books **`-$1,986.16`** instead of `+$71.26`.  **The amendment's motivating case has never occurred**: account 1 is the only account with ANY settled row on its opening's day, and there the amendment is wrong.  **And the case it protects is R-DH (a)'s own accepted residual pointed the other way** -- an opening's residual is bounded by the next assertion exactly as a true-up's is.  **Eleven more items** in `anchor_settle_partition.md` Section 8, of which four are structural: a FOURTH implementation of the partition untouched by the fix (`account_posting_service/_sync.py:304`, sound only because the display zone is WEST of UTC -- east of it, it silently UNDER-fires and strands a stale correction); the amendment is stated TWICE by hand, as a sort key and as a date boundary, so the two walks are held in step by convention; `dated_deltas`' tie-break was not moved with it and its docstring now claims a chronology it does not have; and the posting walk's monotonic source pointer assumes `observed_on` is non-decreasing in `created_at` order, which **step 2 breaks** the moment the column is user-supplied.  Plus: **ZERO net new tests** in `9c2c3130` (`def test_` counts identical in all 8 changed files, 7,675 collected at both commits), the two tests written for the amendment **cannot fail** (proven by reverting it), R-DH (c)'s two envelope invariants absent, and `resync_all_cash_postings` -- which rewrites the whole production ledger on every deploy -- untested.  **F2's blind tests were REPAIRED 2026-07-31**: the root cause was that `_origin_instant` is the ambient WALL CLOCK, so an hour offset genuinely can cross midnight and a smaller offset would have been flaky rather than blind -- the fix is a PINNED opening at 12:00 EDT plus an asserted same-civil-day precondition, the opening case parametrized BOTH directions, and `test_same_instant_settle_is_absorbed` renamed to `test_a_trueup_absorbs_a_settle_the_opening_rode_on_top_of`.  Negative-controlled: all three FAIL with the amendment reverted, where the opening test previously PASSED | **`$2,057.42`** on period 0's "Timing & true-ups" and on three days of March history; `$0.00` on the current period, which reads `-$19.95` under both variants because the walk resets at every later assertion.  The rest is `$0.00` today and latent: the zone-sign dependency cannot fire while the display zone is `America/New_York`, and the step-2 landmine cannot fire until step 2 | **RULED and APPLIED 2026-07-31: "Revert + date the opening now".**  The EXCEPT clause is deleted from R-DH (a) and from both walks; `account_anchor_history.observed_on` is a stored user-supplied `DATE` (migration `c4a19e7b2d80`, backfilled from the derivation it replaces so **0 of 15,682 seam figures moved**), the account-create form offers "Balance as of", and the anchor PERIOD is resolved FROM that day.  **F6 and F12 had to ship with it** -- the monotonic source pointer and the UTC-day dedupe index both assumed a DERIVED `observed_on`.  F4 closed (the self-heal skip compares days; `utc_day_start_instant` deleted as callerless), F5 closed by construction, F7 closed wider than scoped, F8 closed (counts CHANGED, one-way risk stated), F9 closed, F12 closed (and `AnchorPoint.as_of_date` deleted -- a UTC-day field with no production reader whose justification was that index).  **F2 closed**: `tests/test_services/test_anchor_settle_partition.py` holds R-DH (c)'s two envelope invariants, order-independence at projected-balance grain, and two `resync_all_cash_postings` tests, each negative-controlled by a distinct mutant.  Cost of the revert, re-measured: **30 failures on a 0-failure baseline and NOT ONE a financial re-ruling** -- the suite freezes today, so `seed_user`'s origination shared a civil day with its own settles and every "an account existed, then money moved" fixture had silently stopped saying so (N-132's shape one layer up).  **F11 was the last one open and it CLOSED 2026-08-01** -- measured on a clone, R-DH (d) STANDS AS RULED (Sections 10 and 11), and S1-c then shipped it as a re-ruling rather than as written (Section 12), so nothing here gates any longer; F3 is obsolete (PR #66).  **A SECOND adversarial review then ran against the residue itself (`anchor_settle_partition.md` Section 9) and found EIGHT more, four High -- all fixed.**  The largest was structural and two reviewers found it independently: `is_opening` was still derived in RECORDING order while every consumer read BUSINESS-DATE order, and it fired in this branch's own new test (a `$1,307.66` TRUE-UP posted tagged `account_opening`); fixed at the loader, which also deleted the two downstream re-sorts.  Also: both true-up writers picked the PERIOD on `date.today()` while dating the row `display_today()`; `observed_on` had NO lower bound (a year-1 date enumerates 740,560 accrual days per render and fabricates contribution history); the help text steered the user into the very case the ruling relies on the field to answer (measured: `$0.00` shown for an account holding `$500.00`); two captions dated the anchor from the keystroke; a SEVENTH UTC-day derivation F7 missed; the migration's two missing refusals; and **the fix RECREATED N-132's shape** -- `create_account_of_type`'s new day-before default made two existing tests stop testing the strictly-earlier arm they name.  Verified: standards 1, 2, 3, 5, 6 all PASS, `pylint app/ scripts/` 10.00/10 with zero messages, **7,687 passed / 0 failed**, 0 of 15,682 seam figures moved from the ruled reference | X-f |
-| N-134 (N-133 residue review, 2026-08-01) | **An anchor balance can move with NO history row, and the cash walk then replays a history that disagrees with it.**  `routes/accounts/crud.py`'s `update_account` writes `current_anchor_balance` and appends an `AccountAnchorHistory` row only `if current_period` -- when no period contains today the balance moves and the row does not.  That breaks E-19's "a matching `AccountAnchorHistory` row from the moment it exists": the fold replays the OLD assertion while the cache says something else, which is exactly the divergence `cash_ledger._facts.resolve_anchor` logs as `EVT_ANCHOR_CACHE_RECONCILED` -- and the history row wins, so the user's edit silently does not take.  Found while routing that inline block through `anchor_service.stage_anchor_true_up` (the two had already drifted: the stager takes a `notes` label and the route did not, and `observed_on` would have become a THIRD hand-written copy).  Behaviour preserved VERBATIM through that refactor rather than changed under an unrelated ruling | `$0.00` today: it needs a user whose pay-period schedule has no period covering today, which the rolling-window generator makes rare.  The cost when it fires is a silently-discarded balance edit, not a wrong arithmetic result | **OPEN.**  Two shapes to choose between: refuse the edit loudly (no period, no assertion), or fall back the way `account_service.resolve_anchor_period_id` does (earliest period) so the row is always written.  The second matches the create path and is probably right, but it changes an error path under a ruling that was not about it | X-f |
+| N-134 (N-133 residue review, 2026-08-01) | **An anchor balance can move with NO history row, and the cash walk then replays a history that disagrees with it.**  `routes/accounts/crud.py`'s `update_account` writes `current_anchor_balance` and appends an `AccountAnchorHistory` row only `if current_period` -- when no period contains today the balance moves and the row does not.  That breaks E-19's "a matching `AccountAnchorHistory` row from the moment it exists": the fold replays the OLD assertion while the cache says something else, which is exactly the divergence `cash_ledger._facts.resolve_anchor` logs as `EVT_ANCHOR_CACHE_RECONCILED` -- and the history row wins, so the user's edit silently does not take.  Found while routing that inline block through `anchor_service.stage_anchor_true_up` (the two had already drifted: the stager takes a `notes` label and the route did not, and `observed_on` would have become a THIRD hand-written copy).  Behaviour preserved VERBATIM through that refactor rather than changed under an unrelated ruling | `$0.00` today: it needs a user whose pay-period schedule has no period covering today, which the rolling-window generator makes rare.  The cost when it fires is a silently-discarded balance edit, not a wrong arithmetic result | **OPEN, and RULED 2026-08-03 (R-EE's consequence).**  Of the two shapes -- refuse loudly, or fall back the way `account_service.resolve_anchor_period_id` does (earliest period) -- the second is taken, because X-f1c4 makes `stage_anchor_true_up` take a DAY and derive the period from it.  `resolve_anchor_period_id` never returns `None` (it falls back to the earliest period and raises only for a user with no periods at all), so the `if current_period:` arm this row is about has nothing left to guard and is DELETED rather than re-shaped.  The fix is structural: a period can no longer be chosen beside a day, which is ruling R-EA verbatim | X-f1c4 |
 | N-135 (step 3's three adversarial reviews, 2026-08-01) | **The partition's fence covers the derived boundary and NOT the two bare fact fields, so the line step 3 deleted still compiles.**  `cash_ledger.ReconciledThrough` defines no ordering against a civil day, so `settled_on <= boundary` raises `TypeError` -- but `CashAnchorFact.observed_on` and `CashSourceFact.settled_on` are still plain `date`s (they have to be: they key a day, sort a stream and date a journal entry), so `x <= fact.observed_on` -- verbatim the restatement step 3 removed from `account_posting_service._walk` -- is writable in any new module with nothing to flag it.  **Step 3's own claim that a lint checker "could not have worked" was WITHDRAWN on this**: a checker over the assertion-day vocabulary sees exactly this shape and the type does not, so the two fences are COMPLEMENTARY rather than substitutes.  The escape hatch is the same shape one level down -- `boundary.observed_day` unboxes in one token, and a reviewer confirmed the whole suite stays green when the converged self-heal site is unboxed back to a bare `<=` | `$0.00` today: every remaining read of both fields is a legitimate raw-date use (period bucketing x2, day-keying x3, the journal entry's `entry_date` column, the loader's sort key), and the seventh implementation the reviews DID find is converged.  The cost when it fires is a fifth answer to the question that cost production `$4,001.42` | **OPEN, OWNED, and RULED 2026-08-01: wrap both fields, at X-d.**  Ruled sequenced rather than done at step 3 on a measurement -- the wrap needs TWO distinct types (one shared type would still compare a settled day against an observed one), it unwraps at ~8 raw-date sites, and X-d DELETES one of the two consumers, so doing it there wraps a settled surface once instead of wrapping and re-cutting.  X-d's entry carries it as an explicit obligation.  **CLOSED at X-d (ruling R-DJ), 2026-08-03**: `CashAnchorFact.observed_on` is an `ObservedOn` and `CashSourceFact.settled_on` a `MovedOn`, both frozen single-field records ordered against their OWN kind only, in the new `cash_ledger/_days.py` package FLOOR beside `ReconciledThrough`; `covers` narrows to the event kind.  Both `x <= fact.observed_on` and `fact.settled_on <= fact.observed_on` are now `TypeError`s.  The fence bit TWICE during the build -- the deleted walk's bare-`date` call, and a test comparing the two kinds by hand -- and `test_anchor_settle_partition.py` gained two controls for it (`test_a_bare_day_cannot_reach_the_rule_at_all` and `test_the_two_kinds_of_day_carry_no_ordering_against_each_other`).  Open until X-d ships it | X-d |
 | N-131 / N-132 (X-f build, 2026-07-31) | **Two test-instrument findings the step produced, both in `anchor_settle_partition.md` Section 7.1.**  **N-131**: the cross-page locks were a month-end TIME BOMB, red on `main` at the unmodified shipping commit and firing ~12 days a year -- CLOSED by `fix/cross-page-month-end-clock` (`92879e86`), which warrants its own PR because it carries no application change and unblocks the merge gate.  **N-132**: fixtures separated their events by HOURS against a partition that now reads civil days, so they collapsed onto one day and stopped discriminating the case they named; and four fixtures built midnight-UTC instants to MEAN a civil day, which is the previous evening in Eastern | `$0.00` in production figures; the cost is a merge gate red 12 days a year and a set of controls that had quietly stopped controlling | **CLOSED** at the step (N-131 by the cherry-picked fix, N-132 by day-offset conversion with the reason recorded at each site) | X-f |
 | N-130 (production, 2026-07-31) | **The anchor/settle partition is decided by CLICK ORDER, and it cost `$4,001.42` on production.**  An ordinary bookkeeping session -- read the bank, enter the anchor, tick off what cleared -- rendered the grid's projected end balance at **-$4,021.37** against a hand-computed **-$19.95**, because `cash_ledger/_events.py:391-398` partitions assertions against settled rows on the INSTANT and three rows recorded in the nine seconds AFTER the anchor (`-$1,958.87`, `-$131.60`, `-$1,910.95`) were subtracted from a bank balance that already contained them.  Neither clock measures when money moved: `paid_at` is `db.func.now()` at the click (`status_seam.py:105`) and a cash anchor carries no date at all, only `created_at` -- while the LOAN anchor beside it has taken a user-supplied `anchor_date` since Commit 16.  **One question, FOUR implementations**: the read fold (instant, settle wins ties), the posting walk (`account_posting_service/_walk.py:434`, instant, assertion wins), the envelope entry reconcile (`entry_service.py:799`, DATE-granular, inclusive, and comparing against `today` rather than against the anchor at all) -- the last two running inside ONE `apply_anchor_true_up` call and disagreeing -- and, found 2026-07-31 by the adversarial review and untouched by the fix, the self-heal skip (`account_posting_service/_sync.py:304`, a civil date pushed back through midnight UTC and compared against a raw instant), which is sound only because the display zone is WEST of UTC (N-133).  A SECOND live instance: `TransactionEntry.is_cleared` is a stored flag written as a side effect of the anchor save, so entry-then-anchor sets it and anchor-then-entry does not (three such rows in production on 2026-07-31), and its manual override exists because the auto-rule is wrong.  Measured: **65 of 139** settled Checking rows (**47%**, `$19,602.13` gross) are within an hour of an assertion; **32 of 48** anchor-days carry rows recorded after that day's last anchor (`$22,357.52`); the historical smoking gun is 2026-04-01/02, where the same `$804.06` was entered twice and the engine booked a `+$1,910.95` true-up to undo its own double count.  **This is ruling R-N's cost estimate inverted**: R-N recorded "the reconciliation row's size, not its correctness", and it is the projected end balance | **`$4,001.42`** live on production 2026-07-31; `$40,554.34` gross plug over four months against **`$15,367.94`** under the rule that SHIPS, `-$6,998.90` net against `-$940.06`, over 53 true-ups.  **The `$14,286.82` this row first quoted was never reachable by any variant (N-133); the OPENING amendment, reverted by the F1 ruling, would have booked `-$2,997.48` net.**  The `$4,001.42` and the `-$4,021.37 -> -$19.95` are unaffected: both variants fix production identically | **RULED 2026-07-31 (R-DH); S1-a + S1-b SHIPPED TO PRODUCTION 2026-07-31 (PR #67, merge `fd0ddfab`).**  Verified against a fresh production clone: current period `-$19.95`, all nine past period ends land on an asserted balance, R-K's identity holds on 60 period pairs, the fold and the posted ledger agree on every date once the deploy hooks run, and of 15,682 captured seam figures only Checking and ONE loan column (`-$276.72`, the single payment whose visible day moves) move.  S1-c DEFERRED; the review's 12 open items are N-133.  Plan, trace, measurements, verification and the four steps: `anchor_settle_partition.md` | X-f (widened) |
@@ -5376,10 +5891,14 @@ done, and is what drifted.
 | N-176 (same investigation; a POSITIVE CONTROL, recorded because it is the only production exercise of the path) | **Five posted correction days on Checking carry no surviving anchor history row, and all five self-healed to `$0.00`.**  Entry dates 2026-04-29, 2026-05-06, 2026-05-15, 2026-06-16 and 2026-07-07 appear in the posted corrections but not in `account_anchor_history` (55 rows on 51 distinct days; the posted side carries 56 days).  Each nets to exactly zero, which means `_posted_only_key_period_id`'s defensive branch -- the one its own docstring calls unreachable through the linear lifecycle -- has in fact run in production and reversed correctly | **`$0.00`**, by construction and by measurement | **OPEN as a RECORD, not a defect.**  It matters to R-EB because X-f4 deletes that branch with the rest of the correction machinery, and deleting a path that has demonstrably fired in production should be a stated deletion rather than an unnoticed one | X-f4 |
 | N-177 (X-f1's trace 2026-08-03, on the developer's own question -- *"I don't manually change a status from paid to settled so how does a transaction receive the status settled now?"*; measured read-only on a fresh PRODUCTION clone) | **The `Settled` status has no writer, no reader that distinguishes it, and zero rows.**  Measured: **0 of 897 non-deleted transactions and 0 of 120 non-deleted transfers** carry it (transactions are Projected 710 / Paid 134 / Received 22 / Credit 10 / Cancelled 21; transfers Projected 98 / Paid 17 / Cancelled 5), and **0 of 1,110 transaction + transfer audit rows have ever written `status_id = 6`** across the audit table's whole retention window (2026-05-06 to 2026-08-03, 2,712 rows -- so this is "never in three months", not "never ever").  `StatusEnum.SETTLED` has exactly four `app/` references and NONE assigns it to a row; the only door is the status `<select>` in the two full-edit popovers.  The balance engine cannot tell it from `Paid`: every consumer reads the SET `settled_status_ids()`, never the member, and `is_immutable` is already true for `Paid` and `Received`.  Its entire distinct behaviour is one transition-map line -- `settled: {settled}`, terminal | **`$0.00` today, and the cost is a THIRD member in the predicate every balance rule in this arc is written against.**  It is also a live trap for X-f1: `Paid -> Settled` is a RE-ENTRY into the settled band, and the seam preserves the settle instant on re-entry (`status_seam.py:157`) precisely so archiving does not re-date the money -- the N-146 defect class.  A stored `settled_on` must inherit that rule verbatim, so the dead status still constrains the new column's design | **OPEN.**  Developer ruled 2026-08-03 that it *"probably doesn't need to exist"* and directed it be recorded for later rather than taken inside X-f1 -- which is rule 7's own remedy (its OWN step, not a deferral).  **X-f1 does NOT wait on it**: the preserve-on-re-entry rule is required whether or not the third member survives, and X-f1 pins it with a test | X-am |
 | N-178 (X-f1's conversion trace 2026-08-03; REPRODUCED against real requests before it was written down, with a positive control) | **Re-POSTing mark-done on an already-settled TRANSFER moves its money to today -- finding N-146 through a door N-146's fix did not close.**  X-aj1 fixed the re-dating at the SEAM (`status_seam.py:157` preserves an existing instant on re-entry into the settled band), but `transfer_service.update_transfer` carries an explicit `paid_at` kwarg whose branch (`:658-661`) writes both shadows VERBATIM after `_apply_pair_status` has already preserved -- and **both mark-done doors pass `paid_at=db.func.now()` unconditionally** (`routes/transfers/mutations.py:386`, `routes/transactions/mutations.py:594`).  `done -> done` is a legal transition, and neither route gates on status.  **Reproduced**: a transfer settled 7 days earlier, back-dated THROUGH the service so the ledger followed, then re-POSTed -- `paid_at` moved 7.00 days and the ledger gained a reversal at `2026-07-27` plus a fresh posting at `2026-08-03`.  **Positive control: the ORDINARY transaction path does NOT re-date** (it passes no explicit instant, so the seam preserves), which localises the defect to the kwarg rather than to the route pattern | **the whole amount of any re-POSTed settled transfer, moved by however long ago it really settled** -- on the rows this arc records as carrying the largest cash movements.  Not reachable by a normal click (both buttons render only for Projected), so the doors are a stale page, a second tab, a replayed POST or a back-button resubmit -- which is the same reachability class N-146 had and was ruled a live defect on | **OPEN.**  Root fix, not a route guard: the explicit kwarg exists so a caller can say "the user TYPED this day", and neither mark-done door is that caller -- the seam already stamps on first entry and preserves on re-entry, so both passes are redundant and one is harmful.  The revert-side `svc_kwargs["paid_at"] = None` (`routes/transactions/mutations.py:169`) is redundant too: the seam clears on leaving the settled band.  The kwarg SURVIVES for X-f1c's edit door, which is its only legitimate caller | X-f1b0 |
-| N-184 (X-f1b's test-integrity review, 2026-08-03; PROVEN by deleting the branch and watching the suite stay green) | **`_normalize_empty_inputs`'s `dump_only` arm has no production instance left, and it is INVISIBLE downstream of `load()`.**  `TransactionUpdateSchema.paid_at` was the only `dump_only` field in the whole validation package and ruling R-EC deleted it with the column, so `app/schemas/validation/_helpers.py:95`'s `and not field.dump_only` now guards a shape nothing declares.  Worse for the test: marshmallow discards a `dump_only` key on load either way, so a case routed through `load()` passes identically with the arm deleted -- which the FIRST repair of this row did, and a mutation caught | **`$0.00`** -- the branch is correct and inert.  The cost is a live line of code whose only test could not fail, in the package the arc reads most | **PARTLY CLOSED at X-f1b**: the case is asserted against the HELPER now, where the arm IS observable, and a planted deletion kills it.  **What is still open is whether the arm should exist**: plan step X-f1c puts `settled_on` on the full-edit form and decides whether it loads or is `dump_only`.  If it loads, this branch has had no instance for two steps and goes | X-f1c |
-| N-185 (X-f1b's correctness review, 2026-08-03) | **`settled_on` is now exactly as load-bearing as `status_id`, and only one of the two has a fence.**  W9907 (`shekel-transaction-status-bypass`) refuses a `status_id` write outside the seam; nothing refuses a `settled_on` write.  The invariant binds them -- a row is settled iff it carries a day, and the seam writes both in one statement -- so a second writer of EITHER breaks it, which is precisely what N-183 was.  The only thing keeping `routes/transactions/mutations.py:340`'s `setattr(txn, field, value)` loop from becoming that second writer is the field's absence from `TransactionUpdateSchema`, **and plan step X-f1c adds it** | **`$0.00` today** and a re-run of N-183 the moment the edit door lands | **OPEN.**  Do NOT grow W9907 an arm: the developer's standing ruling is that fences become structurally unnecessary, and the scheduled mechanism already exists -- **X-aj2 replaces W9907's write door with a read-only attribute**.  `settled_on` joins `status_id` under THAT mechanism, so the pair gets one structural answer rather than two checkers.  Until X-aj2, X-f1c must route its new edit door through the seam as `update_transfer` now does | X-aj2 |
+| N-184 (X-f1b's test-integrity review, 2026-08-03; PROVEN by deleting the branch and watching the suite stay green) | **`_normalize_empty_inputs`'s `dump_only` arm has no production instance left, and it is INVISIBLE downstream of `load()`.**  `TransactionUpdateSchema.paid_at` was the only `dump_only` field in the whole validation package and ruling R-EC deleted it with the column, so `app/schemas/validation/_helpers.py:95`'s `and not field.dump_only` guarded a shape nothing declares (that line number is HEAD's; the arm is deleted in the working tree, and `dump_only` now survives in `app/` only as prose in that module's docstring).  Worse for the test: marshmallow discards a `dump_only` key on load either way, so a case routed through `load()` passes identically with the arm deleted -- which the FIRST repair of this row did, and a mutation caught | **`$0.00`** -- the branch is correct and inert.  The cost is a live line of code whose only test could not fail, in the package the arc reads most | **ANSWERED and BUILT, closes when X-f1c1 ships** (2026-08-03).  The settle-day field LOADS -- it is an edit door -- and an AST census finds **no `dump_only` field anywhere in `app/`**, so the arm has had no instance for two steps.  Both the arm and its test go; the surviving case asserts the `allow_none` arm against the helper (falsifiable on its own) plus the new load-bearing rule that an EMPTY settle-day input DROPS rather than clearing, on both update schemas | X-f1c1 |
+| N-186 (X-f1c's own build, 2026-08-03; surfaced by ruling R-EJ's guard, not by a review) | **The R1 regression lock for "early settle, then time passes" encodes a FUTURE-DATED settle, not an early one -- so what it locks is not what it claims.**  `test_posting_ledger_loan_reconciliation.py::test_early_settled_payment_keeps_the_parallel_run_exact` freezes today at `2026-02-10` and settles the P3 payment on P3's own period start (`2026-03-13`), then asserts `seed_periods[_P3].start_date > frozen` and calls that an EARLY settle.  It is a settle dated three weeks in its own future; ruling **R-EJ** now refuses it at the write door.  **And the fixture cannot simply be re-dated**: the parallel run compares `posted_loan_balance_map` (selected by `entry_date <= period.end_date`) against a resolver that replays the SCHEDULED payment from the anchor and discards the cash, so the two agree only while a payment's entry lands in the same period its schedule slot does.  A genuinely early settle puts the cash in an EARLIER period than the schedule, which makes the two producers disagree over the intervening periods BY CONSTRUCTION.  Measured: settling on the frozen today, and again on the start of the period containing it, both give `map 97997.25 != resolver 99001.12` at period 2 -- a difference of one payment's principal | **`$0.00` in production** -- the fixture is the only thing that ever produced this shape, and R-EJ now makes it unreachable.  The cost is that a regression lock the 2026-07-02 review's H2 asked for may be pinning a state the app cannot reach, and the real "early settle, then time passes" case may be unlocked | **ANSWERED and CLOSED at X-f1c** (ruling **R-EK**, 2026-08-04).  The question it forbade re-dating until was answered by tracing the two producers rather than by picking a date: they key on DIFFERENT FACTS -- the ledger on the day the money moved, the resolver on the pay-period start -- and the second is a proxy, so the divergence is a real defect and NOT an expected property.  That defect is **N-187**, owned by the new step **X-an**.  The fixture is re-pointed to the early settle the app actually produces and both producers can see (cash 2026-01-30, booked in the period containing it, paying the 2026-03-01 installment: early against the INSTALLMENT), and its non-vacuity is PROVEN by mutation rather than asserted -- dating the split correction at the due date fails it loud at `walk 1003.87 vs posted 1498.88`.  The case the re-point gives up is carried by N-187, not dropped | X-f1c1 |
+| N-187 (X-f1c's resume trace 2026-08-04, on N-186's own question; REPRODUCED with a control before it was written down) | **The loan resolver decides "has this payment happened yet?" from the pay period, and the posted ledger from the day the money moved -- so an installment paid before its pay period begins is counted TWICE.**  `is_confirmed_payment_eligible` (`rate_period_engine.py:395`) caps the replay on `period_start <= as_of` and `_build_monthly_override:174` excludes on the same field, while `posting_service._entry_date:256` dates the journal entry from the shadow's `settled_on`.  A pay period is a BUDGETING fact the lender never sees.  **Reproduced** at $100,000 @ 6%, today 2026-02-10, the 2026-04-01 installment paid 2026-02-10: ledger `97,997.25` against resolver `99,001.12` -- exactly one payment's principal, `$1,003.87` -- and the rendered schedule carries `2026-04-01` as BOTH a confirmed row and a projected row, with its last row at `2032-10-01` against the control's `2032-12-01`.  **The control moves ONLY the pay period the payment is filed in** (same amount, same cash day, same installment, same posted split), which is what makes this a producer defect and not a fixture artifact.  It PREDATES X-f1: `git show fac90200:.../posting_service.py` already derived the entry date from `paid_at` | **`$0.00` on today's production data and one ordinary click away.**  Measured read-only on `shekel-prod-db` 2026-08-04, over settled rows that CARRY an instant (`paid_at IS NOT NULL`): **0 of 7** settled loan payments carry a settle day outside their pay period, but **19 of 135** settled Checking rows do (9 early, 10 late) -- and **2 of 5** Money Market rows do, so the habit is not Checking's alone.  The excluded rows are N-181's undated ones (1 Auto Loan, 1 Mortgage, 4 Checking, 2 Money Market), which the X-f1b backfill dates to their own period's `start_date` and so lands INSIDE the period by construction -- it is 0 of 9 on the loan side either way.  Only the EARLY direction bites -- a late settle's divergence window is already past at any render; an early settle's CONTAINS today until its pay period begins.  Blast radius: `loan_figures.payoff_date` is MEASURED equal in both columns (`2032-11-01`); the grid's per-period map is a STRUCTURAL read (`positions()`'s future half folds `memoized_plan`, built from PROJECTED shadows only) and the recurrence end date is an INFERENCE from the payoff date -- all three unaffected, but only the first is a number.  The damage is `LoanState.schedule` and the payoff scenarios sharing `_build_forward_inputs` -- the loan detail page's amortization table, payoff / interest summary and band chart | **OPEN, and RULED (R-EK).**  The cut moves onto `settled_on` for a CONFIRMED payment, so both producers share one definition of "already happened"; a PROJECTED payment keeps the pay-period start, because its cash has not moved.  Its own step rather than a leaf of X-f1: the developer declined mixing a loan-resolver change into a step already carrying a destructive migration and two edit doors.  The step owes the complement move, an explicit decision on the shared RATE key (N-36), and the regression lock X-f1c's re-point gave up | X-an |
+| N-189 (X-f1c's app-code review, 2026-08-04; the input REPRODUCED against the schema before it was written down) | **The settle-day correction box was bounded above and not below, and the unbounded end moves money by the mirror of the mechanism the bound end refuses.**  `reject_future_settle_day` refuses a future day because the walk lets it ride on top of every assertion; a day at or BELOW an assertion is ABSORBED into it by `cash_ledger/_walk.py:291-294` and the next line executes `running = anchor.anchor_balance`, discarding the row's delta.  `fields.Date().deserialize("0202-08-04")` returns a real `date`, so a mistyped YEAR reaches `journal_entries.entry_date`.  Worked on a `$1,000` anchor observed three days ago with a `$100` settled expense: the grid reads `$900`, and after the typo `$1,000`, with the `$100` becoming an unexplained plug against Uncategorized at the next re-derive -- the row still reading Paid throughout | **the full amount of any corrected row**, on the account the developer budgets from, by an ordinary typo in a box whose own tooltip invites correction.  `$0.00` on today's data only because the door did not exist until this step | **CLOSED at X-f1c1** (ruling **R-EL**, 2026-08-04, RE-RULED once on evidence).  The bound is `pay_period_service.earliest_recordable_day` -- the SAME floor an anchor's `observed_on` has used since N-133, moved down to a leaf module -- plus `min` on both inputs.  **It lives at the DOOR (`settle_day_for_status`, which all three HTTP doors call), not at the seam**, and the first placement was wrong: at the seam it broke six tests whose scenario is a payment budgeted to a 2026 period whose cash moved in December 2025.  That shape is legitimate -- the absorb is CORRECT for a genuine pre-schedule settle under R-EB, and X-f6's bank import produces it in bulk -- so the floor was never protecting an invariant, only catching a typo.  The ceiling stays at the seam because no caller may record money that has not moved.  Non-vacuity proven by mutation at both levels, and `test_the_service_itself_still_accepts_a_pre_schedule_day` fails if the bound drifts back to the seam | X-f1c1 |
+| N-188 (X-f1c's app-code review, 2026-08-04) | **The W9907 checker still describes the seam as the thing that maintains `paid_at`, in the message it shows the developer.**  `tools/pylint/shekel_checkers/status_bypass.py` names `paid_at` at lines 6, 179, 200 and 221, the last inside the user-visible `shekel-transaction-status-bypass` text -- but ruling **R-EC** deleted that column at X-f1b and the seam maintains `settled_on`.  Introduced by `6a06d4c6`, untouched by X-f1c, found by a neutral review of X-f1c's diff | **`$0.00`** -- the checker's BEHAVIOUR is correct and unaffected; the cost is that the fence for one half of the `status_id` / `settled_on` pair tells a developer to protect a column that no longer exists, which is the same invented-citation class this document treats as a defect | **OPEN.**  Not fixed inside X-f1c: X-aj2 DELETES this checker (ruling R-DP replaces its write door with a read-only attribute), so correcting its prose now writes text with a scheduled deletion date.  It is recorded rather than fixed so the stale text cannot be read as current in the window before then, and N-185 already binds the pair to that step | X-aj2 |
+| N-185 (X-f1b's correctness review, 2026-08-03) | **`settled_on` is now exactly as load-bearing as `status_id`, and only one of the two has a fence.**  W9907 (`shekel-transaction-status-bypass`) refuses a `status_id` write outside the seam; nothing refuses a `settled_on` write.  The invariant binds them -- a row is settled iff it carries a day, and the seam writes both in one statement -- so a second writer of EITHER breaks it, which is precisely what N-183 was.  The only thing keeping `routes/transactions/mutations.py`'s `setattr(txn, field, value)` loop (`:340` at HEAD, `:253` in the working tree after the module split) from becoming that second writer is the field's absence from `TransactionUpdateSchema`, **and plan step X-f1c adds it** | **`$0.00` today** and a re-run of N-183 the moment the edit door lands | **OPEN, and X-f1c1 met its condition.**  Do NOT grow W9907 an arm: the developer's standing ruling is that fences become structurally unnecessary, and the scheduled mechanism already exists -- **X-aj2 replaces W9907's write door with a read-only attribute**.  `settled_on` joins `status_id` under THAT mechanism, so the pair gets one structural answer rather than two checkers.  Until X-aj2, the edit doors route through the seam: X-f1c1 names the pair `_SEAM_OWNED_FIELDS` and EXCLUDES both from the PATCH handler's `setattr` loop, and X-f1c2's `Transfer.settled_on` has no setter, so assignment raises.  A test dates a PROJECTED row through the PATCH and asserts it stays undated -- removing `settled_on` from that set kills it | X-aj2 |
 | N-180 (X-f1b's design review, 2026-08-03) | **A de-duplication rationale in `balance_at/_loan_interest.py` was falsified by ruling R-DH and the X-f1 conversion then edited an INVENTED CITATION into it.**  The paragraph argued that `confirmed_shadows_through` is a UTC-visibility subset while the tax `as_of` is a display date, so an evening settle is counted twice.  `payment_visible_on` became display-tz at R-DH (b), and since X-f1 the day is STORED in the user's zone and converted by nothing -- so the premise is doubly false.  The conversion rewrote the citation to `to_utc_civil_date(settled_on)`, **a function that has never existed in `app/`** | **`$0.00`** -- the code was never wrong (the de-dup runs off `_due_slot` over the walk, not off this claim); only the reason written beside it was.  The cost is that the stated rationale for a de-duplication design is false, and a future reader would rely on it | **OPEN.**  The falsified paragraph is REPLACED in place at X-f1b and the invented citation deleted, but **whether the two sets can still differ for any other reason is UNVERIFIED**, so the de-dup stays and this row owns the question.  X-e re-reads this package | X-e |
-| N-181 (X-f1b's app-code review, 2026-08-03; MEASURED on the production clone) | **The backfill moves one figure, and `verify_balance_baseline.py` structurally cannot see it because it is not a balance.**  `Transaction.days_paid_before_due` gated on "was an instant recorded" and now gates on "is the row settled".  The 8 legacy settled rows whose `paid_at` was NULL take their pay period's `start_date` -- exactly what every reader already derived, so no BALANCE moves -- but they now enter `spending_analysis.payment_timeliness_from_txns` for the first time, dated by a day nothing observed.  All 8 carry a `due_date` and `spending_report_service` applies no transfer-shadow filter, so they reach the metric: the four expense legs report **8 days early, on time, on time, 1 day late** | **a soft metric on `/analytics`**, not a balance.  The claim "no figure moves" was FALSE as stated and is corrected in the migration docstring, the model docstring and this document | **OPEN.**  Narrowing the backfill to `paid_at IS NOT NULL` was REJECTED -- it leaves 8 settled rows undated, which the balance walk now REFUSES, trading a soft metric for a 500 on the grid.  The resolution is **X-f1c's edit door**, which is what lets those 8 legacy days be corrected to what the bank actually did | X-f1c |
+| N-181 (X-f1b's app-code review, 2026-08-03; MEASURED on the production clone) | **The backfill moves one figure, and `verify_balance_baseline.py` structurally cannot see it because it is not a balance.**  `Transaction.days_paid_before_due` gated on "was an instant recorded" and now gates on "is the row settled".  The 8 legacy settled rows whose `paid_at` was NULL take their pay period's `start_date` -- exactly what every reader already derived, so no BALANCE moves -- but they now enter `spending_analysis.payment_timeliness_from_txns` for the first time, dated by a day nothing observed.  All 8 carry a `due_date` and `spending_report_service` applies no transfer-shadow filter, so they reach the metric: the four expense legs report **8 days early, on time, on time, 1 day late** | **a soft metric on `/analytics`**, not a balance.  The claim "no figure moves" was FALSE as stated and is corrected in the migration docstring, the model docstring and this document | **OPEN.**  Narrowing the backfill to `paid_at IS NOT NULL` was REJECTED -- it leaves 8 settled rows undated, which the balance walk now REFUSES, trading a soft metric for a 500 on the grid.  The resolution is the edit door -- **and it is the TRANSFER one, not the transaction one** (ruling **R-EF**, 2026-08-03).  Measured on the production database: the eight rows are transactions **1457, 1458, 1823, 1824, 1826, 1827, 2161, 2162**, ALL EIGHT transfer shadows (four pairs, transfers 54 / 154 / 155 / 322), and `routes/transactions/forms.get_full_edit` redirects a shadow to the TRANSFER popover -- so the transaction door corrects **0 of 8** and the plan's own claim that X-f1c is this row's door was false as scoped | X-f1c2 |
 | N-139 (X-ae's build 2026-08-02; REFRAMED the same day when two adversarial reviews refuted its first statement) | **Nothing prevents a submitted digit string being parsed laxly again, and a checker on the method NAME does not prevent it -- which is what the first version of this row proposed.**  X-ae removed every Unicode-wide digit predicate from `app/` and `scripts/` (AST: exactly ONE call site remains, `digit_strings.py:91`, the implementation of the replacement), converted the URL converter and 73 schema declarations, and the reviews then showed the proposed gate would still report clean over the very defect it was written for: **a future author writing a bare `try: int(raw) / except ValueError` passes a `isdigit`/`isdecimal`/`isnumeric` matcher and reintroduces the many-spellings defect** -- and this step's own record proves that form insufficient, because it is what the 2026-08-01 ruling specified and what measurement rejected.  `re.fullmatch(r"\\d+", "١٠٦")` matches for the same reason.  **The signal is not a method name; it is Unicode-wide digit ACCEPTANCE, and it has at least four spellings** | `$0.00` today and no reachable crash: every surface X-ae covers is fixed and measured.  The exposure is the NEXT id parse written, which on this arc's history is a matter of when rather than whether -- four `isdigit()` sites accumulated with nothing watching, and the reviews found two more surfaces this step's own census had missed | **OPEN, and the INSTRUMENT is undecided, which is why this is a step and not a line.**  A checker is the only available shape -- the receiver is `str`, a builtin nobody can give a narrower type, so there is no `ReconciledThrough` to write and the developer's *structural-over-detector* ruling has nothing to prefer; `anchor_settle_partition.md` 14.5 is the precedent (a type and a checker fence COMPLEMENTARY holes).  But X-ag's trace must first answer what the checker MATCHES, given that the method name is measurably the wrong signal.  **A second draft of this row argued that step 3 proved a checker would be blind at a bare-local site; that claim was REFUTED by step 3's own review and withdrawn in 14.1**, and restating it was the stale-citation class this arc keeps paying for | X-ag |
 
 ## 7. Verification standard (what "done" means for every step)
@@ -5421,6 +5940,16 @@ done, and is what drifted.
 
 ## 8. Process lessons (paid for repeatedly; do not pay again)
 
+* **A mutation-planting reviewer and an editor cannot share a worktree** (X-f1c, 2026-08-03).  The
+  adversarial test-integrity review works by writing a defect into `app/`, running the suite, and
+  restoring from its own backup.  Editing the same tree meanwhile is not merely racy -- it is
+  SILENTLY LOSSY in both directions: a restore reverted four lines of this step's own settle-day
+  mapping in `_shadow_mutations.py` (caught only because the Stop hook flagged the now-unused import
+  it left behind), and the OTHER review found a live `# MUTANT` still sitting in
+  `transfer_service.py` -- a revert that leaves the settled effect posted, i.e. the balance keeping
+  money the user just said was never spent -- which `git add -A` would have committed.  The rule:
+  while a mutation review is running, edit DOCS only; before any commit, `grep -rn "MUTANT" app/
+  tests/` and stage with `git add -p`, never `-A`.
 * Probe before you design; the 60-line probe has repeatedly beaten the 1,500-line plan.
 * Two wrong implementations agreeing is not a proof.
 * **A shared primitive reached through a private import is telling you the package boundary is
