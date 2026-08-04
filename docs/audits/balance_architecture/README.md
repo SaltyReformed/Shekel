@@ -413,7 +413,7 @@ index 60 on the clone's calendar), unreachable on today's data and owned by X-ak
 > |---|---|
 > | branch | `feat/xf1-settle-day` |
 > | last CODE commit | `4b0af18b` (X-f1c3c) -- **HEAD is this or a later DOCS-ONLY commit; re-measure, do not read a hash out of this table** |
-> | `origin/feat/xf1-settle-day` | `e7f782d6` -- **nothing since `e7f782d6` is pushed** |
+> | `origin/feat/xf1-settle-day` | **PUSHED through `9a7c40af` on 2026-08-04** -- X-f1c3a, X-f1c3b and X-f1c3c are all on the remote, and local was in sync at that moment |
 > | PR | none |
 > | working tree | CLEAN at `4b0af18b`; 99 files landed there, migration `c81f0a5b3e27` included |
 > | production | `d7c1f4a9e603` -- **none of this cluster is deployed** |
@@ -549,8 +549,9 @@ index 60 on the clone's calendar), unreachable on today's data and owned by X-ak
 > `AnchorUpdateSchema`, one line in `grid/_anchor_edit.html`; rulings R-EE / R-EI, closes N-173),
 > because X-f1c3b did its period half and X-f1c3c closed N-134.  Its full scope is its own Section 5
 > entry -- read that, not this summary; (2) **X-f1d**, the `anchor_settle_partition.md` archive move
-> (N-175); (3) **push** -- nothing is on the remote yet; (4) tick X-f1c's leaves + re-point every row
-> naming them in ONE pass (rule 2); (5) the PR.  **X-an follows X-f1's ship**, not this branch.
+> (N-175); (3) tick X-f1c's leaves + re-point every row naming them in ONE pass (rule 2); (4) the
+> PR.  **The push already happened** -- the branch was published through `9a7c40af` ahead of
+> X-f1c4 on the developer's instruction, so it is no longer a step, just a habit to keep.  **X-an follows X-f1's ship**, not this branch.
 >
 > **Nothing X-f1c3c opened blocks X-f1c4.**  N-190 is CLOSED; N-191, N-192 and N-193 are OPEN and
 > owned by **X-ak**, none of them on X-f1c4's path.  N-193 in particular is a known, stated,
