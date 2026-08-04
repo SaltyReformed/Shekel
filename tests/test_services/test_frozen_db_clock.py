@@ -101,7 +101,6 @@ class TestTheDatabaseClockIsTheTestClock:
             account = seed_user["account"]
             row = AccountAnchorHistory(
                 account_id=account.id,
-                pay_period_id=seed_periods[5].id,
                 anchor_balance=Decimal("1234.56"),
                 notes="N-65: no explicit instant",
                 observed_on=display_today(),
@@ -308,7 +307,6 @@ class TestTheDatabaseClockIsTheTestClock:
             )
             second = AccountAnchorHistory(
                 account_id=account.id,
-                pay_period_id=seed_periods[5].id,
                 anchor_balance=Decimal("200.00"),
                 notes="N-65 ordering: second",
                 observed_on=display_today(),
@@ -317,7 +315,6 @@ class TestTheDatabaseClockIsTheTestClock:
             db.session.commit()
             third = AccountAnchorHistory(
                 account_id=account.id,
-                pay_period_id=seed_periods[5].id,
                 anchor_balance=Decimal("300.00"),
                 notes="N-65 ordering: third",
                 observed_on=display_today(),

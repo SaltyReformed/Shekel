@@ -3112,7 +3112,6 @@ def add_anchor_history(db_session, account, period, balance, days_ago=0):
     created = datetime.now(timezone.utc) - timedelta(days=days_ago)
     entry = AccountAnchorHistory(
         account_id=account.id,
-        pay_period_id=period.id,
         anchor_balance=Decimal(str(balance)),
         created_at=created,
         observed_on=observed_day_of(created),
@@ -3183,7 +3182,6 @@ def override_anchor(db_session, account, period, balance, *, notes, at=None):
     ).astimezone(timezone.utc)
     history = AccountAnchorHistory(
         account_id=account.id,
-        pay_period_id=period.id,
         anchor_balance=balance,
         notes=notes,
         created_at=asserted_at,
@@ -3339,7 +3337,6 @@ def append_balance_assertion(
     require_assertion_instant(at if recorded_at is None else recorded_at)
     row = AccountAnchorHistory(
         account_id=account.id,
-        pay_period_id=period.id,
         anchor_balance=Decimal(str(balance)),
         notes="test assertion",
         observed_on=observed_day_of(at),

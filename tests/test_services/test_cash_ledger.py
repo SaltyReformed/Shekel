@@ -51,7 +51,6 @@ import pytest
 
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
-from app.models.pay_period import PayPeriod
 from app.services.cash_ledger import (
     AnchorPoint,
     reconciled_through,
@@ -63,7 +62,6 @@ from app.utils.dates import display_today
 def _make_anchor_history(
     *,
     account_id: int,
-    pay_period_id: int,
     anchor_balance: Decimal,
     notes: str,
 ) -> AccountAnchorHistory:
@@ -76,7 +74,6 @@ def _make_anchor_history(
     """
     history = AccountAnchorHistory(
         account_id=account_id,
-        pay_period_id=pay_period_id,
         anchor_balance=anchor_balance,
         notes=notes,
         # No explicit instant: the row means "asserted now", so its business
@@ -98,31 +95,24 @@ class TestResolveAnchor:
     ):
         """C4-1: with two history rows, the resolver returns the newest.
 
-        Setup: seed_user gives one origination row (anchor 1000.00 on
-        the bootstrap period).  We add a second pay period and a
-        second history row (anchor 1234.56 on the new period).
+        Setup: seed_user gives one origination row (anchor 1000.00, observed
+        on a day inside the bootstrap period).  We add a second history row
+        asserting 1234.56 today.
 
         Expected: ``resolve_anchor`` returns the 1234.56 row.
         Arithmetic: the latest row is the dated SoT; 1234.56 is the
-        most recent ``anchor_balance`` and its ``pay_period_id`` is
-        the new period's id.
+        most recent ``anchor_balance`` and its ``observed_on`` is today.
+
+        **It no longer creates a second PAY PERIOD**, and the deletion is the
+        point: that period existed only to give the second assertion a
+        different ``pay_period_id`` to be resolved to, and ruling R-EO deleted
+        the column -- an assertion is a day and a balance.
         """
         with app.app_context():
             account = seed_user["account"]
-
-            second_period = PayPeriod(
-                user_id=seed_user["user"].id,
-                start_date=seed_user["bootstrap_period"].end_date,
-                end_date=seed_user["bootstrap_period"].end_date.replace(day=28),
-                period_index=1,
-            )
-            db.session.add(second_period)
-            db.session.flush()
-
             new_balance = Decimal("1234.56")
             _make_anchor_history(
                 account_id=account.id,
-                pay_period_id=second_period.id,
                 anchor_balance=new_balance,
                 notes="true-up #2",
             )
@@ -134,7 +124,7 @@ class TestResolveAnchor:
             # 1234.56: the most recent AccountAnchorHistory row's
             # anchor_balance.  Hand-computed equality, not "> 0".
             assert result.balance == Decimal("1234.56")
-            assert result.period.id == second_period.id
+            assert result.observed_on == display_today()
 
     # ── C4-2 -----------------------------------------------------------
 
@@ -167,14 +157,12 @@ class TestResolveAnchor:
 
             current = _make_anchor_history(
                 account_id=account.id,
-                pay_period_id=period_id,
                 anchor_balance=Decimal("2500.00"),
                 notes="observed today",
             )
             current.observed_on = today
             superseded = _make_anchor_history(
                 account_id=account.id,
-                pay_period_id=period_id,
                 anchor_balance=Decimal("4444.44"),
                 notes="a statement that arrived late, for an older day",
             )
@@ -212,7 +200,6 @@ class TestResolveAnchor:
             assert isinstance(result, AnchorPoint)
             # 1000.00: seed_user fixture's origination anchor.
             assert result.balance == Decimal("1000.00")
-            assert result.period.id == seed_user["bootstrap_period"].id
 
     # ── C4-4 -----------------------------------------------------------
 
@@ -246,14 +233,12 @@ class TestResolveAnchor:
 
             newer = _make_anchor_history(
                 account_id=account.id,
-                pay_period_id=period_id,
                 anchor_balance=Decimal("2500.00"),
                 notes="observed today",
             )
             newer.observed_on = today
             older = _make_anchor_history(
                 account_id=account.id,
-                pay_period_id=period_id,
                 anchor_balance=Decimal("4444.44"),
                 notes="recorded later, for an older day",
             )
@@ -311,7 +296,6 @@ class TestResolveAnchor:
 
             _make_anchor_history(
                 account_id=account.id,
-                pay_period_id=bootstrap_period_id,
                 anchor_balance=Decimal("0.00"),
                 notes="true-up to zero",
             )
@@ -370,19 +354,13 @@ class TestAnchorPointDataclass:
         Frozen dataclasses are the project's chosen shape for
         canonical-producer return values: a consumer cannot mutate
         the resolver's output and have that mutation silently affect
-        a sibling consumer.  ``PayPeriod`` here is a transient ORM
-        instance not attached to a session; the dataclass does not
-        re-load relationships, so this stays a pure-Python test.
+        a sibling consumer.  It needed a transient ``PayPeriod`` instance
+        until ruling R-EO deleted :attr:`AnchorPoint.period`; every field is
+        now a plain value, so this stays a pure-Python test for a simpler
+        reason than before.
         """
-        period = PayPeriod(
-            user_id=1,
-            start_date=_date(2026, 1, 1),
-            end_date=_date(2026, 1, 14),
-            period_index=0,
-        )
         anchor = AnchorPoint(
             balance=Decimal("100.00"),
-            period=period,
             observed_on=_date(2026, 1, 1),
             created_at=_datetime(2026, 1, 1, 12, tzinfo=_timezone.utc),
         )

@@ -150,7 +150,6 @@ def _add_assertion(account, balance, created_at, pay_period_id=None):
     """
     row = AccountAnchorHistory(
         account_id=account.id,
-        pay_period_id=pay_period_id or account.current_anchor_period_id,
         anchor_balance=Decimal(str(balance)),
         created_at=created_at,
         # The civil day this assertion is the closing balance FOR, kept in step
@@ -173,6 +172,31 @@ def _ledger_of_kind(account_id, kind):
         )
         .one_or_none()
     )
+
+
+def _period_containing(user_id, day):
+    """Return the id of the period a correction observed on ``day`` books in.
+
+    The derivation ``account_posting_service._anchors`` makes
+    (:func:`app.services.loan_ledger.resolve_anchor_pay_period`), asked here
+    rather than read off the assertion row.  These tests compared a journal
+    entry's ``pay_period_id`` against ``AccountAnchorHistory.pay_period_id``
+    until ruling R-EO deleted that column -- a comparison that graded the
+    entry against a CACHE of this same derivation, and which would have
+    passed on production's two rows whose stored period does not contain
+    their own day (finding N-168).  Asking the derivation is what the
+    producer is actually contracted to do.
+    """
+    # Pylint: import-outside-toplevel -- deferred import is the file-wide
+    # test convention.
+    from app.services.loan_ledger import resolve_anchor_pay_period  # pylint: disable=import-outside-toplevel
+    periods = (
+        _db.session.query(PayPeriod)
+        .filter_by(user_id=user_id)
+        .order_by(PayPeriod.period_index)
+        .all()
+    )
+    return resolve_anchor_pay_period(periods, day).id
 
 
 def _correction_entries(account_id, scenario_id, source_enum):
@@ -669,7 +693,9 @@ class TestSyncAccountAnchorPostings:
                 .filter_by(account_id=account.id)
                 .one()
             )
-            assert entry.pay_period_id == history_row.pay_period_id
+            assert entry.pay_period_id == _period_containing(
+                account.user_id, history_row.observed_on,
+            )
             # The correction is dated the day the assertion is the CLOSING
             # BALANCE for -- the stored ``observed_on``, read rather than
             # re-derived from ``created_at`` (ruling R-DH, plan step 2).  The
@@ -888,8 +914,11 @@ class TestSyncAccountAnchorPostings:
                 account.id, scenario_id, PostingSourceEnum.ACCOUNT_TRUEUP,
             )
             assert len(trueups) == 3
+            expected_period_id = _period_containing(
+                account.user_id, trueup_row.observed_on,
+            )
             assert all(
-                entry.pay_period_id == trueup_row.pay_period_id
+                entry.pay_period_id == expected_period_id
                 for entry in trueups
             )
             assert sum(
@@ -927,7 +956,9 @@ class TestSyncAccountAnchorPostings:
                 account.id, scenario_id,
             )
             _db.session.commit()
-            original_period_id = trueup_row.pay_period_id
+            original_period_id = _period_containing(
+                account.user_id, trueup_row.observed_on,
+            )
 
             _db.session.delete(trueup_row)
             _db.session.flush()

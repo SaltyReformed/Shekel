@@ -638,7 +638,6 @@ class TestAccountHardDelete:
             )
             history = AccountAnchorHistory(
                 account_id=savings.id,
-                pay_period_id=seed_periods_today[0].id,
                 anchor_balance=Decimal("5000.00"),
                 observed_on=display_today(),
             )

@@ -11,15 +11,27 @@ NULL-anchor forks documented in CRIT-01.
 
 The tests exercise three layers of the contract:
 
-  1. **Migration backfill** (C3-1 through C3-4) -- load the migration
-     module dynamically and run the embedded SQL constants
-     (``BACKFILL_BALANCE_SQL``, ``BACKFILL_PERIOD_SQL``,
-     ``INSERT_HISTORY_SQL``) against the test database, exercising
-     the same text strings the production migration uses.  A small
-     fixture temporarily re-widens the columns to nullable so a row
-     with NULL anchor columns can be inserted, then the test asserts
-     the backfill resolves it (or raises with the diagnostic SELECT
-     when unresolvable).
+  1. **Migration backfill** (C3-4) -- load the migration module dynamically
+     and assert its ``DIAGNOSTIC_SELECT`` names the columns an operator needs
+     when the backfill cannot resolve a row.
+
+     **The two DATA-PATH cases (C3-1 / C3-2) were DELETED at plan step
+     X-f1c3b**, under the precedent the developer set on 2026-08-03 for the 22
+     historical-migration tests that migration ``a3f7c8e21b64`` stranded.  They
+     ran ``cfb15e782f86``'s frozen ``INSERT_HISTORY_SQL`` verbatim against a
+     database at HEAD, and that string inserts
+     ``account_anchor_history.pay_period_id``, which ruling R-EO deletes.  The
+     same three measured facts carry the deletion here: a real ``base -> head``
+     upgrade is unaffected (``cfb15e782f86`` runs ~30 revisions before the
+     drop, against a schema that still has the column -- verified by a clean
+     template rebuild); on any database already past it the migration never
+     runs again; and rewinding to it requires downgrading through
+     ``a3f7c8e21b64``, whose downgrade REFUSES once any row carries a settle
+     day.  **The backfill's data path is unreachable with data, permanently.**
+     The alternative -- a fixture that ADDS the dropped column back to
+     reconstruct a historical schema -- is the shape that ruling declined, and
+     it is a larger reconstruction than the ``DROP NOT NULL`` the deleted
+     fixture performed.
 
   2. **Model rejection** (C3-6) -- attempting to flush an ``Account``
      with NULL anchor columns raises ``IntegrityError``.  Locks the
@@ -31,6 +43,8 @@ The tests exercise three layers of the contract:
      matching ``AccountAnchorHistory`` row at the moment the account
      exists.  Locks the spec contract "always create the origination
      ``AccountAnchorHistory`` and set the anchor columns at creation."
+     Since ruling R-EO the history row carries a DAY rather than a period, so
+     these assert ``observed_on`` and read the period off the account.
 """
 # pylint: disable=redefined-outer-name
 # Rationale: ``redefined-outer-name`` is the canonical pytest fixture
@@ -95,105 +109,6 @@ _M_ANCHOR_BACKFILL = _load_migration(
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture()
-def nullable_anchor_columns(db):
-    """Temporarily relax NOT NULL on accounts' anchor columns.
-
-    Drops the ``ck_accounts_anchor_balance_present`` CHECK constraint
-    and widens both ``current_anchor_balance`` and
-    ``current_anchor_period_id`` to nullable so the test can insert a
-    legacy-shaped row.  The teardown reverses both changes so the
-    next test sees the production-tightened schema.  The fixture's
-    yielded value is unused; the test depends on the side effect.
-
-    **It also widens ``account_anchor_history.observed_on``**, added by a LATER
-    revision (``c4a19e7b2d80``, ruling R-DH's plan step 2).  These tests run
-    ``cfb15e782f86``'s own ``INSERT_HISTORY_SQL`` text verbatim against a
-    database at HEAD -- that is the point of them, exercising the production
-    string rather than a paraphrase -- so the schema has to be relaxed to the
-    shape that revision actually ran against.  On a real upgrade the ordering
-    does this for free: ``cfb15e782f86`` runs, and only later does
-    ``c4a19e7b2d80`` add the column and backfill every row it finds.  A
-    historical migration is never edited to satisfy a newer schema.
-    """
-    db.session.commit()  # close any open transaction
-    _db.session.execute(_db.text(
-        "ALTER TABLE budget.accounts "
-        "DROP CONSTRAINT IF EXISTS ck_accounts_anchor_balance_present"
-    ))
-    _db.session.execute(_db.text(
-        "ALTER TABLE budget.accounts "
-        "ALTER COLUMN current_anchor_balance DROP NOT NULL"
-    ))
-    _db.session.execute(_db.text(
-        "ALTER TABLE budget.accounts "
-        "ALTER COLUMN current_anchor_period_id DROP NOT NULL"
-    ))
-    _db.session.execute(_db.text(
-        "ALTER TABLE budget.account_anchor_history "
-        "ALTER COLUMN observed_on DROP NOT NULL"
-    ))
-    _db.session.commit()
-    try:
-        yield
-    finally:
-        # First clear any rows the test inserted with NULL anchors
-        # (they would block re-tightening) then restore the schema.
-        _db.session.rollback()
-        _db.session.execute(_db.text(
-            "UPDATE budget.accounts SET current_anchor_balance = 0.00 "
-            "WHERE current_anchor_balance IS NULL"
-        ))
-        # NULL anchor_period rows would block tightening; resolve via
-        # the user's earliest period or delete the row.  Tests that
-        # rely on this fixture create their own pay periods.
-        unresolved = _db.session.execute(_db.text(
-            "SELECT a.id FROM budget.accounts a "
-            "WHERE a.current_anchor_period_id IS NULL"
-        )).fetchall()
-        for (acct_id,) in unresolved:
-            earliest = _db.session.execute(_db.text(
-                "SELECT pp.id FROM budget.pay_periods pp "
-                "JOIN budget.accounts a ON a.user_id = pp.user_id "
-                "WHERE a.id = :a "
-                "ORDER BY pp.period_index ASC LIMIT 1"
-            ), {"a": acct_id}).scalar()
-            if earliest is None:
-                _db.session.execute(_db.text(
-                    "DELETE FROM budget.accounts WHERE id = :a"
-                ), {"a": acct_id})
-            else:
-                _db.session.execute(_db.text(
-                    "UPDATE budget.accounts "
-                    "SET current_anchor_period_id = :p WHERE id = :a"
-                ), {"p": earliest, "a": acct_id})
-        _db.session.execute(_db.text(
-            "ALTER TABLE budget.accounts "
-            "ALTER COLUMN current_anchor_balance SET NOT NULL"
-        ))
-        _db.session.execute(_db.text(
-            "ALTER TABLE budget.accounts "
-            "ALTER COLUMN current_anchor_period_id SET NOT NULL"
-        ))
-        _db.session.execute(_db.text(
-            "ALTER TABLE budget.accounts "
-            "ADD CONSTRAINT ck_accounts_anchor_balance_present "
-            "CHECK (current_anchor_balance IS NOT NULL)"
-        ))
-        # Re-tighten the history column the same way ``c4a19e7b2d80`` does:
-        # backfill the rows the historical INSERT left NULL from the derivation
-        # that revision uses, then restore NOT NULL.  Deleting them instead
-        # would hide a row a test asserted on.
-        _db.session.execute(_db.text(
-            "UPDATE budget.account_anchor_history "
-            "SET observed_on = (created_at AT TIME ZONE 'America/New_York')::date "
-            "WHERE observed_on IS NULL"
-        ))
-        _db.session.execute(_db.text(
-            "ALTER TABLE budget.account_anchor_history "
-            "ALTER COLUMN observed_on SET NOT NULL"
-        ))
-        _db.session.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -283,170 +198,7 @@ class TestModelRejectsNullAnchor:
 class TestMigrationBackfill:
     """C3-1/2/3: migration backfill resolves NULLs or raises clearly."""
 
-    def test_backfill_resolves_null_anchor_from_earliest_transaction(
-        self, app, db, seed_user, seed_periods, nullable_anchor_columns
-    ):
-        """C3-1: an account with NULL anchor and one transaction is
-        backfilled to the transaction's pay_period and a 0.00 balance,
-        and a matching AccountAnchorHistory row is inserted.
 
-        Arithmetic: the derivation rule picks the earliest non-deleted
-        transaction's pay_period.  With the transaction sitting in
-        ``seed_periods[3]`` (an arbitrary period from the seed set),
-        the backfill must resolve to exactly that period_id.  The
-        ``BACKFILL_BALANCE_SQL`` sets NULL -> ``Decimal("0.00")``;
-        the ``INSERT_HISTORY_SQL`` creates one history row tagged with
-        the same (account_id, pay_period_id, anchor_balance).
-        """
-        from app.models.transaction import Transaction
-        from app.models.ref import Status, TransactionType
-
-        with app.app_context():
-            user = seed_user["user"]
-            checking_type = (
-                db.session.query(AccountType).filter_by(name="Checking").one()
-            )
-
-            # Insert an account with NULL anchor (allowed under the
-            # nullable_anchor_columns fixture).
-            db.session.execute(_db.text(
-                "INSERT INTO budget.accounts "
-                "(user_id, account_type_id, name, current_anchor_balance, "
-                " current_anchor_period_id, sort_order, is_active, "
-                " version_id) "
-                "VALUES (:u, :t, 'LegacyNullAnchor', NULL, NULL, 0, TRUE, 1)"
-            ), {"u": user.id, "t": checking_type.id})
-            db.session.flush()
-            account_id = db.session.execute(_db.text(
-                "SELECT id FROM budget.accounts "
-                "WHERE user_id = :u AND name = 'LegacyNullAnchor'"
-            ), {"u": user.id}).scalar()
-
-            # Insert one transaction tied to seed_periods[3] for the
-            # legacy account.  The backfill should pick this period as
-            # the anchor (tier 1 of the COALESCE).
-            projected = (
-                db.session.query(Status).filter_by(name="Projected").one()
-            )
-            expense = (
-                db.session.query(TransactionType).filter_by(name="Expense").one()
-            )
-            txn = Transaction(
-                account_id=account_id,
-                pay_period_id=seed_periods[3].id,
-                scenario_id=seed_user["scenario"].id,
-                status_id=projected.id,
-                name="Driving txn",
-                transaction_type_id=expense.id,
-                estimated_amount=Decimal("100.00"),
-            )
-            db.session.add(txn)
-            db.session.flush()
-
-            # Run the migration's two backfill statements verbatim, then
-            # the history materialisation.
-            db.session.execute(_db.text(_M_ANCHOR_BACKFILL.BACKFILL_BALANCE_SQL))
-            db.session.execute(_db.text(_M_ANCHOR_BACKFILL.BACKFILL_PERIOD_SQL))
-            db.session.execute(_db.text(_M_ANCHOR_BACKFILL.INSERT_HISTORY_SQL))
-            db.session.flush()
-
-            resolved = db.session.execute(_db.text(
-                "SELECT current_anchor_balance, current_anchor_period_id "
-                "FROM budget.accounts WHERE id = :a"
-            ), {"a": account_id}).first()
-            # 0.00 anchor balance (E-12 zero-is-a-value) + the
-            # transaction's pay_period as the anchor period.
-            assert resolved.current_anchor_balance == Decimal("0.00")
-            assert resolved.current_anchor_period_id == seed_periods[3].id
-
-            history_count = db.session.execute(_db.text(
-                "SELECT count(*) FROM budget.account_anchor_history "
-                "WHERE account_id = :a"
-            ), {"a": account_id}).scalar()
-            assert history_count == 1
-
-            history = db.session.execute(_db.text(
-                "SELECT pay_period_id, anchor_balance, notes "
-                "FROM budget.account_anchor_history WHERE account_id = :a"
-            ), {"a": account_id}).first()
-            assert history.pay_period_id == seed_periods[3].id
-            assert history.anchor_balance == Decimal("0.00")
-            assert "origination backfill" in history.notes
-
-    def test_backfill_leaves_existing_anchor_untouched(
-        self, app, db, seed_user, seed_periods, nullable_anchor_columns
-    ):
-        """C3-2: an account with a populated anchor + matching
-        AccountAnchorHistory row is not modified by the backfill.
-        Re-running the migration on an already-backfilled database
-        is a strict no-op: the columns are unchanged and the
-        INSERT_HISTORY_SQL's NOT EXISTS guard skips the duplicate.
-
-        Arithmetic: starting state is anchor_balance = $1234.56,
-        anchor_period_id = seed_periods[2].id, with a matching
-        history row already seeded.  After two consecutive backfill
-        runs, the columns equal exactly that pair and the matching
-        history-row count stays at 1 (no duplicate).
-        """
-        with app.app_context():
-            # Set up the row state and a matching history row via
-            # raw SQL so the assertion is decoupled from any ORM
-            # session interactions with the nullable_anchor_columns
-            # fixture's ALTER TABLE/COMMIT cycle.
-            account_id = seed_user["account"].id
-            period_id = seed_periods[2].id
-            db.session.execute(_db.text(
-                "UPDATE budget.accounts "
-                "SET current_anchor_balance = 1234.56, "
-                "    current_anchor_period_id = :p "
-                "WHERE id = :a"
-            ), {"p": period_id, "a": account_id})
-            db.session.execute(_db.text(
-                "INSERT INTO budget.account_anchor_history "
-                "(account_id, pay_period_id, anchor_balance, notes) "
-                "VALUES (:a, :p, 1234.56, 'pre-existing match')"
-            ), {"a": account_id, "p": period_id})
-            db.session.commit()
-
-            pre_balance = Decimal("1234.56")
-            pre_history_count = db.session.execute(_db.text(
-                "SELECT count(*) FROM budget.account_anchor_history "
-                "WHERE account_id = :a AND pay_period_id = :p "
-                "  AND anchor_balance = :b"
-            ), {"a": account_id, "p": period_id, "b": str(pre_balance)}).scalar()
-            assert pre_history_count == 1, (
-                f"setup invariant: expected 1 matching history row, "
-                f"got {pre_history_count}"
-            )
-
-            # First backfill run.
-            db.session.execute(_db.text(_M_ANCHOR_BACKFILL.BACKFILL_BALANCE_SQL))
-            db.session.execute(_db.text(_M_ANCHOR_BACKFILL.BACKFILL_PERIOD_SQL))
-            db.session.execute(_db.text(_M_ANCHOR_BACKFILL.INSERT_HISTORY_SQL))
-            db.session.commit()
-
-            # Second backfill run -- the idempotency test.
-            db.session.execute(_db.text(_M_ANCHOR_BACKFILL.BACKFILL_BALANCE_SQL))
-            db.session.execute(_db.text(_M_ANCHOR_BACKFILL.BACKFILL_PERIOD_SQL))
-            db.session.execute(_db.text(_M_ANCHOR_BACKFILL.INSERT_HISTORY_SQL))
-            db.session.commit()
-
-            # Columns unchanged byte-for-byte.
-            post = db.session.execute(_db.text(
-                "SELECT current_anchor_balance, current_anchor_period_id "
-                "FROM budget.accounts WHERE id = :a"
-            ), {"a": account_id}).first()
-            assert post.current_anchor_balance == pre_balance
-            assert post.current_anchor_period_id == period_id
-
-            # Idempotent: matching history-row count is still 1, no
-            # duplicate inserted by the NOT EXISTS guard.
-            post_history_count = db.session.execute(_db.text(
-                "SELECT count(*) FROM budget.account_anchor_history "
-                "WHERE account_id = :a AND pay_period_id = :p "
-                "  AND anchor_balance = :b"
-            ), {"a": account_id, "p": period_id, "b": str(pre_balance)}).scalar()
-            assert post_history_count == pre_history_count == 1
 
     def test_diagnostic_select_contains_unresolved_columns(self):
         """C3-3: DIAGNOSTIC_SELECT names the offending account columns.
@@ -529,7 +281,10 @@ class TestCreationPathsWriteAnchor:
                 account_id=account.id,
             ).all()
             assert len(histories) == 1
-            assert histories[0].pay_period_id == period.id
+            # The assertion carries no pay period since ruling R-EO -- what it
+            # carries is the DAY, which the account's cache column resolves its
+            # period from.  Signup day is inside the period asserted above.
+            assert histories[0].observed_on == signup_day
             assert histories[0].anchor_balance == Decimal("0.00")
             assert "origination" in (histories[0].notes or "")
 
@@ -574,6 +329,12 @@ class TestCreationPathsWriteAnchor:
             history = db.session.query(AccountAnchorHistory).filter_by(
                 account_id=account.id,
             ).one()
-            assert history.pay_period_id == current_period.id
+            # The assertion is a DAY and a balance (ruling R-EO); the period
+            # asserted above is the account's cache column, resolved from it.
+            assert (
+                current_period.start_date
+                <= history.observed_on
+                <= current_period.end_date
+            )
             assert history.anchor_balance == Decimal("1500.00")
             assert history.notes == "origination"

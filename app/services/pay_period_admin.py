@@ -38,7 +38,6 @@ from app.models.transfer import Transfer
 from app.services import (
     account_posting_service,
     account_service,
-    anchor_service,
     loan_posting_service,
     pay_period_service,
     pay_schedule_service,
@@ -264,10 +263,14 @@ def truncate_pay_periods(user_id, keep_through_index, confirm_discard=False):
          :class:`PayPeriodDiscardRequired` and delete nothing.
 
     Deletion is a single bulk ``DELETE`` so PostgreSQL performs the whole
-    cascade in one pass: transactions, transfers (and both shadows,
-    preserving the transfer invariant), and anchor history all go, with
+    cascade in one pass: transactions and transfers (and both shadows,
+    preserving the transfer invariant) go, with
     ``recurrence_rules.start_period_id`` set NULL; DB-level audit triggers
-    still fire.  Per-object ``session.delete()`` would instead trip
+    still fire.  **Balance ASSERTIONS do NOT go** -- ruling R-EO deleted
+    ``account_anchor_history.pay_period_id``, so a schedule operation can
+    no longer destroy the record of what the bank said.
+
+    Per-object ``session.delete()`` would instead trip
     SQLAlchemy's nullify-on-disassociate against the NOT NULL
     ``transactions.pay_period_id`` and raise before the DB cascade fires.
     ``expire_all`` then drops the now-stale identity map.
@@ -446,18 +449,22 @@ def reset_pay_periods(user_id, new_start_date, num_periods, cadence_days):
       2. Take the per-user advisory lock (a structural mutation, like
          extend / truncate / regenerate).
       3. Defer the anchor FK for this transaction.
-      4. Capture each account's anchor balance and the recurrence rules
-         that carry an explicit start period (the cascade NULLs those).
+      4. Capture the recurrence rules that carry an explicit start period
+         (the cascade NULLs those).  There is no balance to capture: since
+         ruling R-EO the assertions do not reference a pay period and survive
+         the wipe untouched.
       5. Bulk-DELETE every pay period.  PostgreSQL cascades it in one
-         pass: transactions, transfers (+ both shadows, preserving the
-         transfer invariant), and anchor history all go, and the rules'
-         ``start_period_id`` is set NULL; audit triggers still fire.
+         pass: transactions and transfers (+ both shadows, preserving the
+         transfer invariant) go and the rules' ``start_period_id`` is set
+         NULL; audit triggers still fire.  Anchor history is NOT in that
+         cascade any more (ruling R-EO).
       6. Generate the fresh schedule from ``new_start_date``.
-      7. Re-anchor each account onto the new schedule's resolved anchor
-         period through ``anchor_service.stage_anchor_true_up`` (balance
-         preserved, fresh origination history row); re-point the captured
-         rules to the new first period; repopulate the new periods from
-         the active templates.
+      7. Re-point each account's anchor CACHE column at the new schedule's
+         resolved anchor period; re-point the captured rules to the new first
+         period; repopulate the new periods from the active templates.  This
+         step used to write a fresh origination assertion per account to
+         replace the ones the cascade had just destroyed; there is nothing to
+         replace now.
       8. Re-sync each of the user's loans' genesis postings onto the
          rebuilt schedule (:func:`loan_posting_service.resync_user_loan_postings`).
          A loan's opening / true-up ledger entries carry a ``pay_period_id``
@@ -468,9 +475,10 @@ def reset_pay_periods(user_id, new_start_date, num_periods, cadence_days):
          and re-posts them attributed to the new periods.  Then the same for
          the non-loan accounts' anchor corrections (Build-Order Step 5,
          :func:`account_posting_service.resync_user_account_anchor_postings`):
-         the wipe took their correction entries AND history rows, and step 7
-         staged one fresh origination row per account, so each account's
-         opening re-posts onto the rebuilt schedule at its preserved balance.
+         the wipe took their correction ENTRIES, which are keyed on a pay
+         period, but not the assertions those entries derive from -- so this
+         re-derives every one of the user's real assertions onto the rebuilt
+         schedule rather than one fabricated opening per account.
       9. Persist the new cadence.  The route's commit then validates the
          deferred FK.
 
@@ -517,8 +525,6 @@ def reset_pay_periods(user_id, new_start_date, num_periods, cadence_days):
     # Defer the anchor FK so the wipe-then-re-point validates at COMMIT.
     db.session.execute(text(_DEFER_ANCHOR_FK_SQL))
 
-    accounts = db.session.query(Account).filter_by(user_id=user_id).all()
-    preserved_balances = {a.id: a.current_anchor_balance for a in accounts}
     anchored_rule_ids = _rule_ids_with_start_period(user_id)
 
     # Wipe ALL the user's periods (cascade handles the dependents); drop
@@ -531,7 +537,7 @@ def reset_pay_periods(user_id, new_start_date, num_periods, cadence_days):
     new_periods = pay_period_service.generate_pay_periods(
         user_id, new_start_date, num_periods, cadence_days,
     )
-    _reanchor_accounts(user_id, preserved_balances)
+    _reanchor_accounts(user_id)
     _repoint_recurrence_rules(anchored_rule_ids, new_periods[0])
     populate_periods_from_active_templates(user_id, new_periods)
     # Re-post the loan genesis (opening / true-up) corrections the period
@@ -539,12 +545,12 @@ def reset_pay_periods(user_id, new_start_date, num_periods, cadence_days):
     # onto the rebuilt schedule inside this transaction (review M2 / R7).
     loan_posting_service.resync_user_loan_postings(user_id)
     # Same for the NON-loan accounts' anchor corrections (Build-Order Step
-    # 5): the wipe CASCADEd their opening / true-up entries with the old
-    # periods AND their history rows, and ``_reanchor_accounts`` staged one
-    # fresh origination row per account, so this re-derives each opening
-    # onto the rebuilt schedule.  Post-reset is clean by construction: the
-    # zero-settled gate guarantees no posted source effects survive, so
-    # each account walks to exactly its preserved anchor balance.
+    # 5): the wipe CASCADEd their opening / true-up ENTRIES with the old
+    # periods, but no longer their assertions (ruling R-EO), so this re-derives
+    # every real assertion's correction onto the rebuilt schedule.  Post-reset
+    # is clean by construction: the zero-settled gate guarantees no posted
+    # source effects survive, so each account walks to exactly the balance its
+    # latest assertion declares.
     account_posting_service.resync_user_account_anchor_postings(user_id)
 
     pay_schedule_service.upsert_schedule(user_id, cadence_days)
@@ -766,35 +772,40 @@ def _rule_ids_with_start_period(user_id: int) -> list[int]:
     return [row[0] for row in rows]
 
 
-def _reanchor_accounts(user_id: int, preserved_balances: dict[int, object]) -> None:
-    """Re-point every account onto the rebuilt schedule, preserving balance.
+def _reanchor_accounts(user_id: int) -> None:
+    """Re-point every account's anchor CACHE column onto the rebuilt schedule.
 
     Resolves the new anchor period the SAME way account creation does
     (``account_service.resolve_anchor_period_id`` -- the new period
-    containing today, else the earliest) and re-anchors each account to it
-    through ``anchor_service.stage_anchor_true_up``, restoring the balance
-    captured before the wipe and writing a fresh origination history row.
-    A user with no accounts is a no-op (and the anchor period is not even
-    resolved, so a brand-new not-yet-anchored user resets cleanly).
+    containing today, else the earliest) and points each account at it.  A
+    user with no accounts is a no-op, and the anchor period is not resolved
+    at all in that case, so a brand-new not-yet-anchored user resets cleanly.
+
+    **It used to DESTROY the user's balance history and fabricate a
+    replacement, and stopping that is ruling R-EO** (plan step X-f1c3b).
+    ``account_anchor_history.pay_period_id`` was ``ON DELETE CASCADE``, so the
+    period wipe above took every assertion with it -- measured on the
+    developer's production data: **all 78, replaced by 9 synthetic
+    ``"origination (pay-period reset)"`` rows carrying only the last
+    balance**.  This function existed to write those 9.  The column is gone,
+    so the assertions simply survive a schedule rebuild, and
+    ``account_posting_service.resync_user_account_anchor_postings`` re-derives
+    their corrections onto the new periods from the facts themselves.  A
+    balance the user declared is not the schedule's to delete.
+
+    What remains is the ``accounts.current_anchor_*`` cache re-point, and it
+    remains only until X-f1c3c deletes those columns -- at which point this
+    function has nothing left to do and goes with them.
 
     Args:
         user_id: The owning user's id.
-        preserved_balances: ``{account_id: anchor_balance}`` captured
-            before the wipe (the reset never changes a user's real money,
-            only the schedule, so each account keeps its existing
-            balance).
     """
-    if not preserved_balances:
+    accounts = db.session.query(Account).filter_by(user_id=user_id).all()
+    if not accounts:
         return
     anchor_period_id = account_service.resolve_anchor_period_id(user_id)
-    anchor_period = db.session.get(PayPeriod, anchor_period_id)
-    for account in db.session.query(Account).filter_by(user_id=user_id):
-        anchor_service.stage_anchor_true_up(
-            account=account,
-            new_balance=preserved_balances[account.id],
-            anchor_period=anchor_period,
-            notes="origination (pay-period reset)",
-        )
+    for account in accounts:
+        account.current_anchor_period_id = anchor_period_id
     db.session.flush()
 
 

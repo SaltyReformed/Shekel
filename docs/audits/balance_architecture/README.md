@@ -5610,16 +5610,26 @@ preconditions cite entries in that file.
         observed_on)` -- strictly tighter, **0 of 78 production rows rejected**.  Deletes
         `AnchorPoint.period`, `CashAnchorFact.pay_period_id`, `PeriodLockReason.ACCOUNT_ANCHOR` +
         `_period_ids_that_are_account_anchors`, and `account_service.resolve_anchor_period_id` with
-        `AccountSpec.anchor_period_id` (both callerless once the row and the column stop needing a
-        period).  **`reset_pay_periods` stops destroying and fabricating the user's assertion
-        history**: `_reanchor_accounts` and `preserved_balances` go, and 69 real observations
-        survive a schedule rebuild that deletes them today.  Closes **N-168**, **N-169**'s cash
-        half, **N-170**.
+        `AccountSpec.anchor_period_id`.  **`reset_pay_periods` stops destroying and fabricating the
+        user's assertion history**: with no FK to the wiped periods, 69 real observations survive a
+        schedule rebuild that deletes them today, and `_reanchor_accounts` shrinks from "restore the
+        balance by writing a fresh origination row" to re-pointing one column.  Closes **N-168**,
+        **N-169**'s cash half, **N-170**.
+
+        *The build trace moved two deletions from this leaf to the next, and the reason is worth
+        stating:* `_reanchor_accounts`, `preserved_balances`, `resolve_anchor_period_id` and
+        `AccountSpec.anchor_period_id` cannot go HERE, because `accounts.current_anchor_period_id`
+        still exists at this point and a schedule rebuild must still re-point it.  They die with
+        that column in X-f1c3c.  The leaf order (b then c) is unchanged and correct: freeing the
+        assertion FIRST is what lets the reset stop fabricating.
       * [ ] **X-f1c3c** `refactor(accounts): drop the anchor cache columns` -- ruling **R-EH**'s
         original scope, now the last leaf.  Destructive migration (`Review:` line): drops
         `current_anchor_balance`, `current_anchor_period_id`, `ck_accounts_anchor_balance_present`
         and the deferrable `NO ACTION` FK, taking `_DEFER_ANCHOR_FK_SQL` and the deferral apparatus
-        with them.  The three writers stop writing.  Carries **R-EN** -- the C-17 lock, the
+        with them, plus `_reanchor_accounts`, `preserved_balances`,
+        `account_service.resolve_anchor_period_id` and `AccountSpec.anchor_period_id` (all
+        callerless once no row and no column needs a pay period).  The three writers stop writing.
+        Carries **R-EN** -- the C-17 lock, the
         `STALE_CONFLICT` outcome and the 409 conflict cell leave the true-up path, because an
         append-only assertion overwrites nothing (**measured**: a history INSERT leaves
         `Account.version_id` at 33, the column write takes it to 34).  **Working downgrade**, not a

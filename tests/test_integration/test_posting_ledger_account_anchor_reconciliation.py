@@ -492,7 +492,6 @@ def _assert_balance_at(account, balance, created_at) -> AccountAnchorHistory:
     """
     row = AccountAnchorHistory(
         account_id=account.id,
-        pay_period_id=account.current_anchor_period_id,
         anchor_balance=Decimal(str(balance)),
         created_at=created_at,
         # The civil day this assertion is the closing balance FOR, kept in step

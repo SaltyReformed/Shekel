@@ -241,8 +241,11 @@ class TestAccountCreate:
             # Non-vacuity: the submitted day is genuinely not today, so this
             # cannot pass by the default coinciding with the assertion.
             assert observed != display_today()
-            # The period is the one CONTAINING that day, not today's.
-            assert row.pay_period_id == earlier.id
+            # The ASSERTION carries no period since ruling R-EO -- a fact about
+            # a bank is not filed under a budgeting artifact.  The account's
+            # cache column still resolves the period CONTAINING that day, not
+            # today's, which is the rule this case exists for.
+            assert not hasattr(row, "pay_period_id")
             assert acct.current_anchor_period_id == earlier.id
 
     def test_create_account_refuses_a_future_observed_on(
@@ -4300,7 +4303,11 @@ class TestCashDetailContext:
 
             anchor = cash_ledger.resolve_anchor(acct)
             # Non-vacuity: the event date and the period start genuinely differ.
-            assert to_display_date(anchor.created_at) != anchor.period.start_date
+            # The period comes off the FIXTURE now, not off the AnchorPoint --
+            # ruling R-EO deleted ``AnchorPoint.period``, because an assertion
+            # is a day and a balance.
+            anchor_period_start = seed_periods_today[0].start_date
+            assert to_display_date(anchor.created_at) != anchor_period_start
 
             context = _capture_cash_detail_context(app, auth_client, acct.id)
             # The context carries the day the balance was TRUE
@@ -4309,7 +4316,7 @@ class TestCashDetailContext:
             # became a stored, user-supplied column (ruling R-DH, plan step 2);
             # a caption reading ``created_at`` would name the keystroke.
             assert context["anchor_as_of"] == anchor.observed_on
-            assert context["anchor_as_of"] != anchor.period.start_date
+            assert context["anchor_as_of"] != anchor_period_start
 
     def test_interest_next_year_zero_for_zero_apy(
         self, app, auth_client, seed_user, db,

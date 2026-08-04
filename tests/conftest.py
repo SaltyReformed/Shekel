@@ -1174,9 +1174,12 @@ def _drop_seed_user_bootstrap(db, seed_user, account, new_anchor_period):
     bootstrap_id = bootstrap.id
     # Step 1: repoint the account anchor.
     account.current_anchor_period_id = new_anchor_period.id
-    # Repoint any history rows that referenced the bootstrap so they
-    # survive the cascade-delete (the rows would otherwise be wiped
-    # by the AccountAnchorHistory.pay_period_id CASCADE FK).
+    # Restamp any assertion the factory wrote against the bootstrap period.
+    # It no longer has to SURVIVE anything -- ruling R-EO deleted
+    # ``AccountAnchorHistory.pay_period_id`` and its CASCADE FK, so a period
+    # delete cannot take an assertion with it -- but its INSTANT and its
+    # business DAY still have to move onto the new anchor period, for the
+    # reason below.
     from app.models.account import AccountAnchorHistory  # pylint: disable=import-outside-toplevel
     # The row's INSTANT moves with its period, not just its FK.  The account
     # factory stamps the opening with the WALL CLOCK, while the suites freeze
@@ -1187,9 +1190,8 @@ def _drop_seed_user_bootstrap(db, seed_user, account, new_anchor_period):
     # Pinning it to the new anchor period's first day is the production shape:
     # an account opened on day one of the period it is anchored to.
     db.session.query(AccountAnchorHistory).filter_by(
-        account_id=account.id, pay_period_id=bootstrap_id,
+        account_id=account.id,
     ).update({
-        "pay_period_id": new_anchor_period.id,
         # The BUSINESS day moves with the period and the instant.  Leaving it
         # behind is the "two clocks on one row" shape ``seed_user`` states it
         # is eliminating, recreated one layer down: the row would assert a

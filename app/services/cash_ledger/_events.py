@@ -121,6 +121,16 @@ class CashAnchorFact:
     user-supplied and the two orders could differ -- which is how a
     ``$1,307.66`` true-up once posted to the ledger tagged as the OPENING.
 
+    **It carried the row's stored ``pay_period_id`` until plan step X-f1c3b**
+    (ruling R-EO), which deleted the COLUMN.  Finding N-169 had already
+    measured the field to have ZERO consumers in ``app/``; what the ruling
+    added is that the column behind it was a cache of a derivation both
+    posting reconciles make from ``observed_on``, was wrong on 2 of 78
+    production rows, and carried an ``ON DELETE CASCADE`` that let a
+    pay-period reset destroy the user's balance record.  A reader wanting
+    "which period does this assertion book in" derives it from the day
+    (:func:`app.services.loan_ledger.resolve_anchor_pay_period`).
+
     Attributes:
         account_id: The ``budget.accounts`` id the assertion belongs to.
         anchor_balance: The asserted balance, LEDGER-NATIVE sign: an
@@ -128,29 +138,6 @@ class CashAnchorFact:
             branches on account class (ruling R-J), and neither does the fold
             above it; classifying asset vs liability belongs to the net-worth
             consumers.
-        pay_period_id: The history row's stored pay period (NOT NULL).
-            **It is a CACHE of a derivation, not an independent fact, and no
-            reader of THIS FIELD survives in ``app/`` as of plan step
-            X-ai-r, and NONE has since plan step X-f1c3a**, which deleted
-            the one exception: ``resolve_anchor`` used to read it to compare
-            against the ``Account.current_anchor_period_id`` cache, a question
-            about the ROW rather than about which period a correction books in,
-            and both that comparison and that column are gone.  It is
-            written by ``account_service.resolve_anchor_period_id`` from the
-            same civil day :attr:`observed_on` records, so the two are two
-            statements of one fact -- and a clock split between the two
-            writers made them disagree on real data (a true-up recorded 21:28
-            Eastern on a period's LAST day, stored against the NEXT period).
-            It used to be "the period a correction derived from this assertion
-            is attributed to"; it is not, because projecting it put the posted
-            ledger at odds with the grid's "Book vs bank" row by the whole
-            correction.  Both ledgers now DERIVE a correction's period from
-            the assertion's day
-            (:func:`app.services.loan_ledger.resolve_anchor_pay_period`), which
-            is what ruling R-DH states.  A reader wanting "which period does
-            this assertion book in" must derive it the same way; this field
-            answers only "which period is the row filed under", which is the
-            CASCADE grouping and the F-103 unique index (finding N-169).
         observed_on: The civil day this balance was TRUE (ruling R-DH) -- the
             business date the whole partition turns on.  A source whose
             :attr:`CashSourceFact.settled_on` is at or before it is already
@@ -186,7 +173,6 @@ class CashAnchorFact:
 
     account_id: int
     anchor_balance: Decimal
-    pay_period_id: int
     observed_on: date
     asserted_at: datetime
     is_opening: bool
@@ -373,7 +359,6 @@ def cash_anchor_facts(account_id: int) -> list[CashAnchorFact]:
         CashAnchorFact(
             account_id=account_id,
             anchor_balance=Decimal(str(row.anchor_balance)),
-            pay_period_id=row.pay_period_id,
             # The business date the partition turns on, READ rather than
             # derived (ruling R-DH, plan step 2), beside the recording instant
             # that only breaks a same-day tie.  ``observed_on`` was

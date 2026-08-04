@@ -207,33 +207,54 @@ class TestResetHappyPath:
             assert all(r.passed for r in check_balance_anomalies(db.session))
             assert all(r.passed for r in check_referential_integrity(db.session))
 
-    def test_fresh_origination_history_row_written(self, app, db, seed_user):
-        """The wipe clears old anchor history; reset writes one fresh row.
+    def test_the_reset_preserves_every_balance_assertion(
+        self, app, db, seed_user,
+    ):
+        """A schedule rebuild does not touch what the user said their bank held.
 
-        The cascade deletes the old ``AccountAnchorHistory`` rows along
-        with their pay periods, so after reset the account has exactly one
-        history row -- the new origination, against the new anchor period.
+        **This test asserted the OPPOSITE until ruling R-EO** (plan step
+        X-f1c3b), and the inversion is the finding.  It read: "the cascade
+        deletes the old ``AccountAnchorHistory`` rows along with their pay
+        periods, so after reset the account has exactly one history row -- the
+        new origination".  That was a true description of a defect.  A balance
+        assertion is a fact about a BANK -- "on day D this account held $B" --
+        and it stays true however the user re-schedules their paychecks;
+        ``account_anchor_history.pay_period_id`` filed it under a budgeting
+        artifact on an ``ON DELETE CASCADE`` FK, so a reset destroyed it.
+        Measured on the developer's production data before the column was
+        dropped: **all 78 assertions deleted, 9 fabricated
+        ``"origination (pay-period reset)"`` rows written in their place.**
+
+        The row-for-row comparison is what makes this falsifiable: asserting
+        only a COUNT would pass against a reset that deleted every real
+        assertion and wrote the same number of synthetic ones, which is very
+        nearly what the old behaviour did.
         """
         with app.app_context():
             user_id = seed_user["user"].id
             _seed_old_schedule(db.session, seed_user)
             account = seed_user["account"]
 
-            new_periods = pay_period_admin.reset_pay_periods(
+            def _assertions():
+                return sorted(
+                    (row.id, row.anchor_balance, row.observed_on, row.notes)
+                    for row in db.session.query(AccountAnchorHistory)
+                    .filter_by(account_id=account.id)
+                )
+
+            before = _assertions()
+            assert before, "fixture must write at least one assertion"
+
+            pay_period_admin.reset_pay_periods(
                 user_id, new_start_date=_NEW_START, num_periods=4,
                 cadence_days=14,
             )
             db.session.commit()
 
-            rows = (
-                db.session.query(AccountAnchorHistory)
-                .filter_by(account_id=account.id)
-                .all()
-            )
-            assert len(rows) == 1
-            assert rows[0].pay_period_id == new_periods[0].id
-            assert rows[0].anchor_balance == Decimal("1000.00")
-            assert rows[0].notes == "origination (pay-period reset)"
+            assert _assertions() == before
+            assert not any(
+                row[3] == "origination (pay-period reset)" for row in before
+            ), "the reset must not have fabricated an assertion"
 
     def test_balance_preserved_and_correct_after_reset(self, app, db, seed_user):
         """Disciplines 2 + 3: anchor balance preserved, balances recompute.

@@ -161,10 +161,25 @@ class AccountAnchorHistory(AccountScopedMixin, CreatedAtMixin, db.Model):
     derivation is what let an ordinary bookkeeping session subtract
     ``$4,001.42`` of already-cleared payments a second time (finding N-130).
 
+    **It carries no pay period, and that is ruling R-EO** (plan step X-f1c3b).
+    An assertion is a fact about a BANK -- "on day D, account A held $B" -- and
+    it is true whatever the user's paychecks are scheduled to do.  A
+    ``pay_period_id`` filed it under a BUDGETING artifact, on an
+    ``ON DELETE CASCADE`` FK, so a pay-period operation could destroy the
+    record of what the bank said: a schedule reset wiped all 78 of the
+    developer's production assertions and wrote 9 fabricated replacements.  The
+    column was also a CACHE of a derivation rather than a fact -- both posting
+    reconciles derive a correction's period from ``observed_on`` and
+    ``account_posting_service._anchors`` refuses this column BY NAME -- and it
+    was already WRONG on 2 of those 78 rows, whose stored period does not
+    contain their own ``observed_on`` (finding N-168).  A reader wanting the
+    period an assertion books in derives it from the day, which is ruling
+    R-EA verbatim.
+
     Same-day duplicate prevention (F-103 / C-22): the unique index
     ``uq_anchor_history_account_period_balance_day`` on ``(account_id,
-    pay_period_id, anchor_balance, observed_on)`` rejects a second row
-    with identical values asserting the same business day.  This
+    anchor_balance, observed_on)`` rejects a second row with identical values
+    asserting the same business day.  This
     is the database-level backstop for ``true_up`` double-submits:
     a network retry, a double-click on the Save button, or the
     back-and-resubmit pattern would otherwise create two consecutive
@@ -172,11 +187,20 @@ class AccountAnchorHistory(AccountScopedMixin, CreatedAtMixin, db.Model):
     trail with entries that record nothing the prior row did not
     already record.
 
+    **Its key lost ``pay_period_id`` with the column, and the guard got
+    STRICTLY TIGHTER rather than looser** (measured: 0 of the 78 production
+    rows are rejected by the narrower key).  The period was derived from the
+    day, so two rows sharing a day shared a period -- except across a schedule
+    rebuild, which is the one case the narrower key now also catches.  The
+    index NAME is deliberately unchanged: renaming it would touch
+    ``anchor_service.ANCHOR_HISTORY_UNIQUE_INDEX`` and every migration that
+    references it, for a word.
+
     The index intentionally includes ``anchor_balance`` so two
     legitimate true-ups on the same day -- the user noticed an
     arithmetic error and corrected the balance twice -- are still
     allowed; only literal duplicate rows (same balance, same
-    period, same day, same account) are rejected.
+    day, same account) are rejected.
 
     **Its last column was ``((created_at AT TIME ZONE 'UTC')::date)`` until
     ``observed_on`` existed** (finding N-133 / F12).  That keyed the guard to a
@@ -200,17 +224,13 @@ class AccountAnchorHistory(AccountScopedMixin, CreatedAtMixin, db.Model):
         ),
         db.Index(
             "uq_anchor_history_account_period_balance_day",
-            "account_id", "pay_period_id", "anchor_balance", "observed_on",
+            "account_id", "anchor_balance", "observed_on",
             unique=True,
         ),
         {"schema": "budget"},
     )
 
     id = db.Column(db.Integer, primary_key=True)
-    pay_period_id = db.Column(
-        db.Integer, db.ForeignKey("budget.pay_periods.id", ondelete="CASCADE"),
-        nullable=False,
-    )
     anchor_balance = db.Column(db.Numeric(12, 2), nullable=False)
     # The civil day the asserted balance was TRUE, in the user's timezone --
     # the business date the whole anchor/settle partition turns on (ruling
@@ -224,7 +244,6 @@ class AccountAnchorHistory(AccountScopedMixin, CreatedAtMixin, db.Model):
 
     # Relationships
     account = db.relationship("Account", back_populates="anchor_history")
-    pay_period = db.relationship("PayPeriod")
 
     def __repr__(self):
         return f"<AnchorHistory account={self.account_id} balance={self.anchor_balance}>"

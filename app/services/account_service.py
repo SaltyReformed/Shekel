@@ -363,7 +363,6 @@ def create_account(spec: AccountSpec, **extra_columns) -> Account:
     # column cache and the event stream agree from t0.
     db.session.add(AccountAnchorHistory(
         account_id=account.id,
-        pay_period_id=anchor_period_id,
         anchor_balance=anchor_balance,
         observed_on=observed_on,
         notes=spec.notes,

@@ -65,7 +65,7 @@ Two failure modes are part of the contract:
 
   * **F-103 / C-22 same-day same-balance idempotency.** The unique
     index ``uq_anchor_history_account_period_balance_day`` on
-    ``(account_id, pay_period_id, anchor_balance, observed_on)``
+    ``(account_id, anchor_balance, observed_on)``
     rejects a second history INSERT asserting the same balance for the
     same BUSINESS day -- a network retry, a double-click on Save, or a
     back-and-resubmit.
@@ -136,8 +136,10 @@ logger = logging.getLogger(__name__)
 
 
 # Name of the unique index that backstops the F-103 / C-22 same-day
-# same-balance idempotency rule.  It keys ``(account_id, pay_period_id,
-# anchor_balance, observed_on)`` -- the BUSINESS day; it was a PARTIAL
+# same-balance idempotency rule.  It keys ``(account_id, anchor_balance,
+# observed_on)`` -- the BUSINESS day.  ``pay_period_id`` left the key with the
+# COLUMN at plan step X-f1c3b (ruling R-EO), which made the guard strictly
+# tighter and rejected 0 of the 78 production rows.  It was a PARTIAL
 # EXPRESSION index on a UTC-day truncation of ``created_at`` until plan step 2
 # gave the row a stored day (finding N-133 / F12).  Mirrors the literal in
 # ``app/models/account.py:AccountAnchorHistory.__table_args__``, its creating
@@ -244,7 +246,11 @@ def stage_anchor_true_up(
             ownership check.
         new_balance: The validated :class:`Decimal` anchor balance to
             write.
-        anchor_period: The :class:`PayPeriod` to anchor against.
+        anchor_period: The :class:`PayPeriod` to anchor against.  **It reaches
+            the ``accounts`` CACHE COLUMN only** since plan step X-f1c3b
+            (ruling R-EO): the assertion itself carries no pay period, because
+            a fact about a bank is not filed under a budgeting artifact.  The
+            parameter dies with that column at X-f1c3c.
         notes: Optional free-text note for the history row's ``notes``
             column (e.g. ``"origination (pay-period reset)"`` so the audit
             trail names the originating path).  ``None`` leaves it NULL,
@@ -255,7 +261,6 @@ def stage_anchor_true_up(
 
     db.session.add(AccountAnchorHistory(
         account_id=account.id,
-        pay_period_id=anchor_period.id,
         anchor_balance=new_balance,
         # The civil day this balance is asserted TRUE for (ruling R-DH).  A
         # true-up is the user reading their bank NOW, so it is today in the

@@ -41,7 +41,6 @@ from sqlalchemy.orm import joinedload, selectinload
 
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
-from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.utils.balance_predicates import (
     balance_contributing_clause,
@@ -59,11 +58,6 @@ class AnchorPoint:
         balance: The real-money anchor balance as a ``Decimal``.  Zero
             is a legitimate value per E-12 and is preserved verbatim;
             consumers MUST NOT treat ``Decimal("0.00")`` as "missing".
-        period: The :class:`~app.models.pay_period.PayPeriod` the
-            anchor is anchored against.  The pay-period row is
-            authoritative; the resolver returns the relationship-loaded
-            object so callers can read ``period.id``, ``period.start_date``,
-            ``period.end_date``, etc. without re-querying.
         observed_on: The civil day the asserted balance was TRUE -- the
             stored ``AccountAnchorHistory.observed_on`` (ruling R-DH, plan
             step 2).  **This is the "as of" a caption means.**  It was the same
@@ -93,7 +87,6 @@ class AnchorPoint:
     """
 
     balance: Decimal
-    period: PayPeriod
     observed_on: date
     created_at: datetime
 
@@ -146,8 +139,12 @@ def resolve_anchor(account: Account) -> AnchorPoint:
             reads via the session).
 
     Returns:
-        :class:`AnchorPoint` -- balance, period, the day the balance was true,
-        and the recording instant.
+        :class:`AnchorPoint` -- the asserted balance, the day it was true, and
+        the recording instant.  **It carried the anchor PERIOD until plan step
+        X-f1c3b** (ruling R-EO), which deleted
+        ``account_anchor_history.pay_period_id``: an assertion is a fact about
+        a bank and is not filed under a budgeting artifact.  No reader in
+        ``app/`` had ever taken that field.
 
     **"Latest" is the latest BUSINESS day, and the tie-breaks are the WALK's,
     key for key.**  The order here is ``(observed_on, created_at, id)``
@@ -192,7 +189,6 @@ def resolve_anchor(account: Account) -> AnchorPoint:
 
     return AnchorPoint(
         balance=Decimal(str(latest.anchor_balance)),
-        period=latest.pay_period,
         observed_on=latest.observed_on,
         created_at=latest.created_at,
     )
