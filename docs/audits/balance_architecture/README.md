@@ -312,18 +312,38 @@ index 60 on the clone's calendar), unreachable on today's data and owned by X-ak
 
 > ### X-f1c's COLD-RESUME RECORD (2026-08-03 evening) -- read this before touching the tree
 >
-> **X-f1c1 and X-f1c2 are BUILT and UNCOMMITTED.**  Branch `feat/xf1-settle-day`, HEAD
-> `21c41b82`.  **The branch IS on the remote and the two head commits are not** -- `git ls-remote`
-> answers `578a9136` and `git status -sb` reads `[ahead 2]`, so `51679384` and `21c41b82` are
-> local while `1ca63972`, `70ba87f6` and `578a9136` are published; `gh pr list --head
-> feat/xf1-settle-day --state all` is empty, so nothing is PR'd.  **A knowingly-RED commit is
-> therefore already on the remote** (`70ba87f6`, subject `[WIP -- RED, NOT FOR MERGE]`).  An
-> earlier draft of this line said "nothing pushed", which was false and is exactly the sentence a
-> cold-resuming session would act on.  The working tree carries **26 modified files plus one untracked**
-> (`app/routes/transactions/_shadow_mutations.py`).  Do not `git add -A`: two adversarial reviews
-> ran in this worktree planting mutants, and one was found still sitting in `transfer_service.py`
-> (Section 8 carries that lesson).  `grep -rn "MUTANT" app/ tests/` first -- it is clean as of this
-> record -- and stage with `git add -p`.
+> **X-f1c1 AND X-f1c2 ARE COMMITTED AND PUSHED.  The working tree is CLEAN.**  Branch
+> `feat/xf1-settle-day`, HEAD `7e9f261a`, `origin/feat/xf1-settle-day` == HEAD, **no PR open**
+> (`gh pr list --head feat/xf1-settle-day --state all` is empty).  Three commits landed
+> 2026-08-04, and **each was verified independently green in its own worktree** rather than only
+> at the tip:
+>
+> | commit | step | suite at that commit |
+> |---|---|---|
+> | `eff69763` | the rulings doc (R-EK, R-EL; the X-u lesson puts it first) | 7,786 passed |
+> | `0b04f255` | **X-f1c1** the transaction door + the three shared rules | 7,805 passed |
+> | `7e9f261a` | **X-f1c2** the transfer door | 7,818 passed |
+>
+> **The boxes are deliberately NOT ticked yet, and that is a gate constraint rather than an
+> oversight.**  Rule 2 ticks a step and re-points every row that named it; four rows still name
+> these leaves (**N-181**, **N-184**, **N-186**, **N-189**), and `tools/plan_gate` FAILS on a row
+> whose owner is ticked.  X-f1c is a decomposed header whose leaves ship together, and c3/c4
+> remain -- so the tick, the hashes and the four re-points all happen in one pass when X-f1c
+> completes.
+>
+> *An earlier version of this block said "BUILT and UNCOMMITTED" and, before that, "nothing
+> pushed" -- the second was false when written (`git ls-remote` answered `578a9136`) and is exactly
+> the sentence a cold-resuming session acts on.  Re-measure this block from `git status -sb` and
+> `git ls-remote` at each edit rather than carrying it forward.*  **A knowingly-RED commit is on
+> the remote in this branch's history** (`70ba87f6`, subject `[WIP -- RED, NOT FOR MERGE]`); it is
+> true of that commit and of nothing since, and the squash-or-merge choice at the PR should account
+> for it.
+>
+> **Staging lesson, kept because it cost a re-split:** `git add -p`, never `git add -A` -- two
+> mutation-planting reviews ran in this worktree earlier (Section 8).  And a per-commit greenness
+> check is not optional here: the first attempt at this split put the both-doors empty-input test
+> in c1, where `TransferUpdateSchema.settled_on` did not yet exist, and only the worktree run
+> caught it.
 >
 > **The suite is GREEN at 7,818 / 0 under BOTH clocks (2026-08-04), and everything below is
 > re-verified rather than carried forward.**  `pylint app/` and `scripts/` 10.00/10 with the full
@@ -384,17 +404,24 @@ index 60 on the clone's calendar), unreachable on today's data and owned by X-ak
 > render sites, and the `gate_error` consolidation + `try`/`except ValidationError` around the seam
 > call in `_apply_regular_update`.  A reviewer's `cp` restore reverted exactly those mid-session.
 >
-> **NEXT, in order:** ~~rule **N-186**~~ and ~~the three reviews~~ (both DONE -- rulings R-EK and
-> R-EL, 2026-08-04); commit as the leaves in Section 5 (`X-f1c1`, `X-f1c2`, plus the rulings doc
-> commit FIRST, per the X-u lesson); then **X-f1c3** (delete the anchor cache -- and note the
-> pay-period anchor LOCK has to be re-founded on `account_anchor_history`, whose FK is
-> `ON DELETE CASCADE`); then **X-f1c4** (the statement date); then **X-f1d** and the PR.  **X-an
-> follows X-f1's ship**, not this branch.
+> **NEXT, in order:** ~~rule **N-186**~~, ~~the three reviews~~, ~~commit the leaves~~ (all DONE
+> 2026-08-04); then **X-f1c3** (`refactor(accounts): the anchor balance has one home` -- deletes
+> `accounts.current_anchor_balance` / `current_anchor_period_id`; a DESTRUCTIVE migration needing a
+> `Review:` line and a refusing downgrade; the pay-period anchor LOCK has to be re-founded on
+> `account_anchor_history`, whose FK is `ON DELETE CASCADE`, and that is a behaviour change to a
+> destructive operation needing its own gate); then **X-f1c4** (the statement date); then **X-f1d**
+> (the `anchor_settle_partition.md` archive move, N-175); then tick X-f1c's leaves + re-point
+> N-181 / N-184 / N-186 / N-189 in ONE pass (rule 2); then the PR.  **X-an follows X-f1's ship**,
+> not this branch.
 >
-> **Staging note that survived the session:** `git add -p`, never `git add -A`.  Two mutation-planting
-> reviews ran in this worktree earlier; `grep -rn "MUTANT" app/ tests/ tools/` is clean as of this
-> record, and every mutant planted THIS session was reverted and the revert verified with
-> `git diff --stat` on the file.
+> **The ship carries a MIGRATION**, so a prod rollback is NOT a pure digest revert the way X-ae,
+> X-aj1 and X-ai-r were.  `a3f7c8e21b64` (X-f1b) drops `transactions.paid_at` and its downgrade
+> REFUSES once any row carries a settle day; X-f1c3 adds a second destructive one.  Plan the deploy
+> note accordingly -- this is the first ship in this cluster where "revert the digest" is
+> insufficient.
+>
+> **`grep -rn "MUTANT" app/ tests/ tools/` is clean as of this record**, and every mutant planted
+> this session was reverted with the revert verified by `git diff --stat` on the file.
 
 **THE ORDER CHANGED 2026-08-03 on ruling R-EB, and this paragraph is the orientation to trust.**
 The anchor half is redesigned from scratch -- the ledger becomes sum-of-postings and an assertion
