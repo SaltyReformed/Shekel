@@ -124,6 +124,30 @@ _DATED_RX = re.compile(r"\d{4}-\d{2}-\d{2}")
 #: Number of columns in the Section 6 table.
 _LEDGER_COLUMNS = 5
 
+#: Section 9 rule 4's hard cap on the whole document, in lines.
+#:
+#: The rule this replaces was a ~500-line prose TARGET that exempted "growth
+#: from marking work COMPLETED" -- ticking boxes, as-built step detail, moving
+#: findings to closed.  Every one of those is a real record, and the exemption
+#: is nonetheless how the file reached **6,688 lines**: the exempt category has
+#: no ceiling and it is the category that grows every step.  The cap is
+#: therefore on the WHOLE file with no exemption, and rule 5 names the only
+#: legal remedy -- archive a completed span, condensed to one line per step.
+#: Shrink the record of what is DONE, never the specification of what remains.
+#:
+#: **The number is measured, not chosen.**  At the 2026-08-04 trim the document
+#: was reduced to its live content -- Section 5's remaining-step
+#: specifications, the 96-row findings ledger, the one-line ruling index, the
+#: 19-line signpost and Sections 1-3 and 7-9 -- and landed at 976, from 6,688.
+#: A 1,000-line cap would have left roughly twenty lines of headroom and failed
+#: within a step or two, which is how a gate gets uninstalled rather than fixed
+#: (this file's own thesis, and the reason its parser is strict about false
+#: positives).  1,200 is that measured floor plus room to work.  **Raising it
+#: again is not the answer when it binds**: the floor moves DOWN as steps ship,
+#: because a shipped step's specification becomes one line in an as-built
+#: record.  If it is not moving down, the archive move is overdue.
+_MAX_LINES = 1200
+
 #: The sentence Section 6 uses to state its own size, e.g.
 #: ``**The ledger stands at 38 rows**``.  Optional, because a document that
 #: simply does not claim a count is not lying about one; but a claim that IS
@@ -337,6 +361,98 @@ def stated_count_violation(text: str) -> str | None:
     )
 
 
+#: The orientation section, and the cap that keeps it an orientation.
+#:
+#: **This section is the document's measured worst failure mode.**  It is meant
+#: to tell the next session where to pick up; it had instead become an
+#: append-only log: **1,019 of the file's 6,688 lines, measured 2026-08-04**,
+#: and that is AFTER an extraction had already emptied it once.  Every session
+#: appended "X-n is DONE" with its measurements underneath the last one, so the
+#: reader had to scroll a month of history to find the branch they were on.
+#: The developer named the shape and the rule: *"a short section to orient a
+#: reader to where to find information -- what just landed, what is in flight,
+#: and what is next, with pointers to the more detailed information"*, and
+#: *"replace, not add on to."*
+#:
+#: A cap is what makes REPLACE the cheap option.  Under one, a session that
+#: wants to add a paragraph has to decide what leaves -- and the answer is
+#: almost always that the outgoing paragraph belonged in a step entry, a
+#: finding row or a standing rule, which is where the next reader would
+#: actually look for it.  Without one, appending is free and nothing ever
+#: leaves.  Measured at 20 lines when the section was rebuilt as a signpost;
+#: 30 is that plus room, and it is deliberately too small to hold a narrative
+#: -- a paragraph of detail does not fit, which is the enforcement.
+_ARC_STATE_HEADING = "## Where the arc stands"
+_MAX_ARC_STATE_LINES = 30
+
+
+def arc_state_violation(text: str) -> str | None:
+    """Return the violation when the orientation section has grown into a log.
+
+    Unlike :func:`line_count_violation`, whose remedy is archiving, this one's
+    remedy is nearly always RELOCATION: the paragraph that pushed the section
+    over is durable content, and durable content in a section defined as
+    disposable is content the next session will not find.
+
+    Args:
+        text: The whole document.
+
+    Returns:
+        The violation message, or ``None`` when the section is within its cap.
+
+    Raises:
+        AssertionError: The section is missing, via :func:`_section` -- a
+            document that dropped it would otherwise pass this arm vacuously.
+    """
+    lines = len(_section(text, _ARC_STATE_HEADING).splitlines())
+    if lines <= _MAX_ARC_STATE_LINES:
+        return None
+    return (
+        f"{_ARC_STATE_HEADING!r} is {lines} lines against a "
+        f"{_MAX_ARC_STATE_LINES}-line cap. It is REPLACED each session, never "
+        "appended to. Move what outlived this session to where the next one "
+        "will look for it: a constraint on a step -> that step's Section 5 "
+        "entry; a defect -> a Section 6 row with an owner; a standing rule -> "
+        "Sections 7-9. Then overwrite what is left."
+    )
+
+
+def line_count_violation(text: str) -> str | None:
+    """Return the violation when the plan document is over rule 4's cap.
+
+    Rule 4 caps the whole file at :data:`_MAX_LINES`.  A prose target did not
+    hold it: the previous rule asked for ~500 lines and exempted the record of
+    completed work, and the file was measured at 6,688 lines on 2026-08-04 --
+    an as-built extraction, three months of narrative and a findings ledger
+    averaging 2,077 characters a row.  The document's own Section 8 says a
+    static gate must be exercised rather than read, and its Section 9 rule 6
+    makes the same argument for owners: prose does not enforce itself.
+
+    **The message names the remedy, because the wrong remedy is the danger
+    here.**  A cap invites trimming whatever is nearest, and what is nearest
+    when this fires is the step you are writing -- the specification of work
+    that has NOT happened.  Rule 5's archive move is the only legal answer:
+    condense a span that is DONE, where the commits still hold the detail.
+
+    Args:
+        text: The whole document.
+
+    Returns:
+        The violation message, or ``None`` when the document is within the cap.
+    """
+    lines = len(text.splitlines())
+    if lines <= _MAX_LINES:
+        return None
+    return (
+        f"the plan document is {lines} lines against Section 9 rule 4's "
+        f"{_MAX_LINES}-line cap (over by {lines - _MAX_LINES}). Archive a "
+        "COMPLETED span to an as-built record under rule 5 -- one line per "
+        "step, its hash and what it closed. Do not trim a live step's "
+        "specification to fit; shrink the record of what is done, never the "
+        "specification of what remains."
+    )
+
+
 def _vocabulary_violations(
     finding: str, owner: str, note: str | None,
 ) -> list[str]:
@@ -467,6 +583,28 @@ class TestTheBalancePlanLedgerHasNoUnownedRows:
         violation = stated_count_violation(
             PLAN_PATH.read_text(encoding="utf-8"),
         )
+        assert violation is None, violation
+
+    def test_the_document_is_within_its_line_cap(self):
+        """Section 9 rule 4's cap, as a predicate rather than a target.
+
+        Added 2026-08-04, when the file was 6,688 lines against a ~500-line
+        prose target it had never been graded on.  The remedy the message
+        names is rule 5's archive move; see :func:`line_count_violation` for
+        why it names one at all.
+        """
+        violation = line_count_violation(PLAN_PATH.read_text(encoding="utf-8"))
+        assert violation is None, violation
+
+    def test_the_orientation_section_is_still_an_orientation(self):
+        """The section the next session reads first has not become a log again.
+
+        Added 2026-08-04 with the section's rebuild.  This is the arm most
+        likely to fire in ordinary use, and that is the point: it fires on the
+        commit that would have started the next running narrative, when moving
+        the paragraph to its real home is still one edit.
+        """
+        violation = arc_state_violation(PLAN_PATH.read_text(encoding="utf-8"))
         assert violation is None, violation
 
 
@@ -665,6 +803,56 @@ class TestTheGateItselfFires:
         violations = owner_violations(undated)
         assert len(violations) == 1, violations
         assert "is not DATED" in violations[0]
+
+    def test_a_document_over_the_line_cap_is_caught(self):
+        """The cap arm bites, and only past the boundary.
+
+        Three cases, because an off-by-one here is the difference between a
+        gate that fires on the commit that breaks the rule and one that fires
+        on the commit after: exactly at the cap is clean, one over is caught,
+        and the message states both numbers so the reader knows how much has
+        to move rather than only that something does.
+        """
+        assert line_count_violation("x\n" * _MAX_LINES) is None
+        assert line_count_violation("x\n" * (_MAX_LINES - 1)) is None
+
+        violation = line_count_violation("x\n" * (_MAX_LINES + 1))
+        assert violation is not None
+        assert str(_MAX_LINES + 1) in violation and str(_MAX_LINES) in violation
+        assert "Archive" in violation
+
+    def test_an_orientation_section_that_became_a_log_is_caught(self):
+        """The append-only failure mode, planted as one more shipped-step note.
+
+        The synthetic document has no orientation section, so this builds one
+        at exactly the cap and then grows it the way the real one grew -- by
+        appending, which is the only way it ever grew.
+        """
+        at_cap = (
+            f"{_ARC_STATE_HEADING}\n"
+            + "an orientation line\n" * (_MAX_ARC_STATE_LINES - 1)
+            + self._DOC
+        )
+        assert arc_state_violation(at_cap) is None
+
+        over = (
+            f"{_ARC_STATE_HEADING}\n"
+            + "an orientation line\n" * (_MAX_ARC_STATE_LINES - 1)
+            + "**X-zz is DONE**, in three commits, and its two reviews found...\n"
+            + self._DOC
+        )
+        violation = arc_state_violation(over)
+        assert violation is not None
+        assert "REPLACED" in violation and "Section 6" in violation
+
+    def test_a_missing_orientation_section_is_not_a_silent_pass(self):
+        """Deleting the section must fail loudly, not read as "within cap"."""
+        try:
+            arc_state_violation(self._DOC)
+        except AssertionError as exc:
+            assert _ARC_STATE_HEADING in str(exc)
+        else:
+            raise AssertionError("a missing orientation section was not reported")
 
     def test_a_slash_inside_an_annotation_is_not_a_second_owner(self):
         """``X-b (display / cache)`` is ONE annotated owner, not two broken ones.

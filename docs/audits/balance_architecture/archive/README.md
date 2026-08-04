@@ -1,19 +1,25 @@
 # Archive: superseded balance-architecture documents
 
 **Read-only history. Nothing in this folder governs work.** The single live document is
-`../README.md` -- which since 2026-07-26 is the CASH plan of record. Every file here is either a
-completed as-built record, a superseded plan, or an audit whose surviving findings were absorbed
-into the plan of record's findings ledger. Archived 2026-07-16, extended 2026-07-26.
+`../README.md`, the CASH plan of record since 2026-07-26 -- and since 2026-08-04 "single" is
+literally true again: `anchor_settle_partition.md` had become a second one, which Section 9 rule 1
+prohibits, and it is now in this folder. Every file here is either a completed as-built record, a
+superseded plan, or an audit whose surviving findings were absorbed into the plan of record's
+findings ledger. Archived 2026-07-16, extended 2026-07-26 and 2026-08-04.
 
-**Start here for the CASH half:** `cash_arc_as_built_2026-07-27.md`. It is the as-built record of
-Phase X as far as it had shipped when it was extracted -- X-a through X-g3b. **It is in
-production as of 2026-07-28** (PR #65, merge `69a527cd`), together with every Phase X step after
-it through X-u. Holding
-the plan of record's whole running-state narrative, every shipped step's measurements and firing
-controls, and the 10 findings they closed. It differs from the loan record in one way that matters:
-the loan half was archived because it was COMPLETE, while Phase X is still IN FLIGHT, so this is a
-shipped-so-far record and the remaining steps (X-g4, X-c2c4 and thirteen more) are still live in
-`../README.md`.
+**The 2026-08-04 extraction changed what an as-built record IS, and the two earlier ones do not
+follow the new rule.** `phase_x_as_built_2026-08-04.md` is CONDENSED -- one line per step, its
+verified commit hash, and what it closed -- because this arc repeatedly carried a claim into an
+as-built that the code later contradicted. The two records before it are verbatim moves of the plan
+document's prose (211 KB and 252 KB), and the two standing warnings at the foot of this file apply
+to them with full force. Section 9 rule 5 of the live document now requires the condensed form.
+
+**Start here for the CASH half:** `phase_x_as_built_2026-08-04.md` for anything from X-c2c4
+onward, and `cash_arc_as_built_2026-07-27.md` for X-a through X-g3b before it. Both cover work that
+is in production (PR #65, merge `69a527cd`, and the per-step PRs the later record names). **Phase X
+is still IN FLIGHT**, so these are shipped-so-far records; the remaining steps are live in
+`../README.md`. The earlier record also holds the plan of record's whole running-state narrative
+from that span -- read it as history, and re-verify any figure in it against the code.
 
 **Start here for the loan half:** `loan_arc_as_built_2026-07-26.md`. It is the as-built record of
 Phases A-F -- the whole loan arc, shipped to production in PR #64 -- extracted verbatim from the
@@ -23,6 +29,8 @@ in the live findings ledger, because unfinished work belongs where work is plann
 
 | file | what it was | why archived |
 |---|---|---|
+| `anchor_settle_partition.md` | The anchor/settle partition arc, and for a while a SECOND live planning document for this arc (finding N-175, which rule 1 prohibits): ruling R-DH's six parts, steps 1-4 and S1-c as built, the F1-F12 adversarial-review register, F11's measurement, and the from-scratch redesign that was measured and REJECTED because it re-opens `-$4,001.42` by another route | Superseded 2026-08-04. Everything in it had shipped (PRs #67, #75, #76), been absorbed (S2-b into X-f1), or was already a row in the live ledger -- **except three obligations with no home there, which were carried into `../README.md` FIRST**: the uniqueness-index re-key at X-f1c4, and X-d's already-measured ship gate plus the `_attribution.py` loaders it inherits. Read it for how the day partition was decided; do not read it as instructions |
+| `phase_x_as_built_2026-08-04.md` | Phase X from **X-c2c4** to **X-f1b**, CONDENSED: one row per step (id, verified commit hash, the commit's own subject, findings closed), the six findings closed outside a step, and the 79 rulings whose work has shipped | Extracted 2026-08-04, when the live document stood at **6,688 lines**. Section 9 rule 4 became a hard 1,000-line cap with a gate behind it, and rule 5 became "archived whole and CONDENSED, not moved verbatim". Read it to find WHICH COMMIT shipped a behaviour; read the commit for why |
 | `cash_arc_as_built_2026-07-27.md` | The CASH half as far as it has shipped: the plan of record's entire preamble (its running state narrative), Phase X steps X-a .. X-c2c3 and X-g1 .. X-g3b as built, and the 10-row closed-findings register | Extracted 2026-07-27 on the developer's instruction, at 2,982 lines, so the plan of record carries the work that REMAINS rather than the log of work that is done. **Phase X is NOT complete and none of it is in production** -- read this for how a shipped cash behaviour was decided and which commit shipped it; the remaining steps are live in `../README.md` |
 | `loan_arc_as_built_2026-07-26.md` | The LOAN half of the plan of record: its running state narrative, the loan problem and root causes, the loan fold's target shape, rulings D1-D5 / R-A / R-C / R-D / R-E, Phases A-E and F2/F3 as built, and the 75-row closed-findings register | The loan arc is COMPLETE and in production (PR #64, merge `88c79857`, 2026-07-25). Extracted 2026-07-26 so the live document could shrink from 2,713 lines to the cash work that remains. Read it for how a shipped loan behaviour was decided and which commit shipped it; do NOT read it as instructions |
 | `recurring_loan_balance_root_cause.md` | The original 2026-06-26 diagnosis | Superseded by the deeper root cause (partial balance function) |
