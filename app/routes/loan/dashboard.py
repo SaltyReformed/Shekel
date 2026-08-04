@@ -36,7 +36,7 @@ from app.routes.loan._helpers import (
     build_band_chart,
     build_baseline_scenarios,
 )
-from app.services import balance_at, escrow_calculator
+from app.services import balance_at, cash_ledger, escrow_calculator
 from app.services.loan_posting_service import (
     confirmed_loan_payment_history,
     loan_balance_anchor_history,
@@ -563,6 +563,7 @@ def dashboard(account_id):
             "loan/setup.html",
             account=account,
             account_type=account_type,
+            anchor_balance=cash_ledger.resolve_anchor(account).balance,
         )
 
     ctx = _load_route_context(account, params)

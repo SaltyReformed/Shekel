@@ -239,8 +239,10 @@ class AccountProjection:  # pylint: disable=too-many-instance-attributes
             but the seam's map omits it, e.g. a cash account anchored after it"
             was already FALSE -- a future-anchored account carries every period
             in its map since the plan step X-c2b2 cutover, verified by probe.
-            The seam's only remaining empty map needs
-            ``current_anchor_period_id IS NULL``, which the schema forbids.
+            The seam's only remaining empty map needed
+            ``current_anchor_period_id IS NULL``, which the schema forbade and
+            which plan step X-f1c3a deleted the column for -- so the map is
+            unconditionally total and this key is INDEXED.
         balances: The account's DENSE period balance map
             (``period_id -> Decimal``) over the user's whole pay-period
             calendar, from :func:`app.services.balance_at.build_maps`.  What
@@ -376,28 +378,30 @@ class ArchivedAccount:
     N-114).  It was an untyped ``{account, current_balance}`` dict, and
     ``current_balance`` is what :class:`AccountProjection` calls the
     SEAM-DERIVED balance every live tile renders.  This is not that: it is the
-    :attr:`~app.models.account.Account.current_anchor_balance` COLUMN, read
-    directly, and for an amortizing loan it is not a balance at all --
+    account's latest balance ASSERTION, read straight from
+    ``account_anchor_history`` via
+    :func:`app.services.cash_ledger.resolve_anchor`, and for an amortizing loan
+    it is not a balance at all --
     :class:`~app.services.anchor_service.AmortizingAccountAnchorError` says so in
-    terms ("a loan's balance is never ``accounts.current_anchor_balance`` -- it
-    is ledger-derived") and a loan true-up appends a ledger event without ever
-    touching the column.  Two different facts under one key on one page is the
-    shape this arc keeps finding; the key now says which one this is.
+    terms (a loan's balance is ledger-derived) and a loan true-up appends a
+    ledger event that never becomes a cash assertion.  Two different facts under
+    one key on one page is the shape this arc keeps finding; the key now says
+    which one this is.
 
     **Whether the line should be RENDERED for such an account is finding
-    N-103's question and belongs to plan step X-e**, which already owns it and
-    its three options.  Measured there, and re-verified at X-w's trace: no
-    archived loan exists on either database (both archived accounts are cash),
-    while the ACTIVE Van Loan carries ``current_anchor_balance`` of ``$0.00``
-    against ``$15,663.59`` owed -- so the column is already wrong for a loan
-    today, and archiving one is all it takes to put that on screen.
+    N-103's question**, re-pointed to plan step X-f1c3a when the column this
+    line used to read was deleted.  Measured at X-w's trace: no archived loan
+    exists on either database (both archived accounts are cash), while the
+    ACTIVE Van Loan's latest cash assertion is ``$0.00`` against ``$15,663.59``
+    owed -- so the figure is already wrong for a loan today, and archiving one
+    is all it takes to put that on screen.  Deleting the cache column did not
+    change that: the assertion it mirrored says the same thing.
 
     Attributes:
         account: The archived :class:`~app.models.account.Account`.
-        last_anchor_balance: The account's ``current_anchor_balance`` column --
-            the last balance the user asserted for it, NOT a seam-derived
-            balance.  A ``NOT NULL`` column (``account.py:91``, with the
-            redundant ``ck_accounts_anchor_balance_present`` CHECK beside it), so
+        last_anchor_balance: The account's latest balance ASSERTION -- the last
+            balance the user declared for it, NOT a seam-derived balance.  Every
+            account carries at least an origination assertion (E-19), so
             it is always a real figure; the ``or Decimal("0.00")`` the loader
             used to apply could fire only on a genuine ``$0.00`` and return
             ``$0.00``, and it is the truthiness-on-money shape ruling R-CA
@@ -445,8 +449,9 @@ class _SeamBatches:
             and the liability band do, and excluding the loans here is what
             forced a second per-account container to exist beside
             :class:`AccountProjection`.  The map is TOTAL over the projected
-            accounts -- the seam omits an account only when
-            ``current_anchor_period_id IS NULL``, which the schema forbids -- so
+            accounts -- the seam omitted an account only when
+            ``current_anchor_period_id IS NULL``, a state the schema forbade and
+            whose column plan step X-f1c3a deleted -- so
             :func:`.._projections._project_one_account` INDEXES it.
         loan_results: ``{account_id: _LoanAccountResult}`` for the accounts that
             resolved as configured loans.  Membership IS "this account is a

@@ -381,8 +381,9 @@ def build_property_equity_chart(
         secured_loans: The property's secured loans' fold-derived debt maps (each a
             :class:`~app.services.balance_at.SecuredLoanSeries`, assembled by the
             balance-at seam).  Empty, or all-retired, drives the fallback.
-        market_value: The Property's ``current_anchor_balance`` -- today's
-            honest valuation, the anchor the value line compounds from.
+        market_value: The Property's latest asserted valuation (resolved by
+            ``home_equity_service`` from ``account_anchor_history``) -- today's
+            honest value, the anchor the value line compounds from.
         appreciation_rate: The Property's annual appreciation rate (decimal
             fraction; ``AssetAppreciationParams.annual_appreciation_rate``).
         today: The as-of / compounding-origin date (``date.today()``).

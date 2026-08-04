@@ -58,6 +58,7 @@ from app.services import (
     account_posting_service,
     account_service,
     anchor_service,
+    cash_ledger,
     ledger_account_service,
     pay_period_service,
     transfer_service,
@@ -115,6 +116,9 @@ def new_account():
     return render_template(
         "accounts/form.html",
         account=None,
+        # No account yet, so no assertion to prefill; the template offers
+        # ``'0'`` for the create form.
+        anchor_balance=None,
         account_types=_visible_account_types(current_user.id),
         # The "balance as of" field's default and its two bounds, mirroring
         # ``account_service._reject_undatable_observation`` so the browser
@@ -337,6 +341,7 @@ def edit_account(account_id):
     return render_template(
         "accounts/form.html",
         account=account,
+        anchor_balance=cash_ledger.resolve_anchor(account).balance,
         account_types=_visible_account_types(current_user.id),
     )
 
@@ -388,16 +393,17 @@ def update_account(account_id):
 
     # Handle anchor balance update with audit trail.  Tracking
     # ``anchor_changed`` separately from ``new_anchor`` is necessary
-    # because the in-place ``account.current_anchor_balance =
-    # new_anchor`` mutates the field used for the equality check;
-    # a later ``new_anchor != account.current_anchor_balance`` would
-    # always be False and skip the reconcile call.  The flag is set
-    # exactly when the balance actually changed.
+    # because the staging below appends a new assertion, which becomes the
+    # one this comparison reads; a later re-test would always be False and
+    # skip the reconcile call.  The flag is set exactly when the balance
+    # actually changed.  The comparison reads the latest ASSERTION since
+    # plan step X-f1c3a -- it was ``account.current_anchor_balance``, the
+    # cache column that mirrored it.
     new_anchor = data.pop("anchor_balance", None)
     anchor_changed = False
     if new_anchor is not None:
         new_anchor = Decimal(str(new_anchor))
-        if new_anchor != account.current_anchor_balance:
+        if new_anchor != cash_ledger.resolve_anchor(account).balance:
             anchor_changed = True
             # The period and the assertion's day must come off ONE clock.
             # ``stage_anchor_true_up`` dates the row ``display_today()``; a

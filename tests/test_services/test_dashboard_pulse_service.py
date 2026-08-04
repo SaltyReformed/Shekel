@@ -36,7 +36,8 @@ from app.models.account import AccountAnchorHistory
 from app.models.ref import AccountType
 from app.models.savings_goal import SavingsGoal
 from app.models.transaction import Transaction
-from app.services import account_service, dashboard_pulse_service, transfer_service
+from app.services import account_service, cash_ledger, dashboard_pulse_service
+from app.services import transfer_service
 from app.services import balance_at, pay_period_service, savings_dashboard_service
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
@@ -236,10 +237,17 @@ class TestPulseHero:
         The Commit-3 invariant guarantees every account has an origination
         anchor row, so the truly-empty-history state hard-raises in the
         resolver and cannot reach the hero's balance call in production.
-        The never-set staleness branch is therefore exercised at the
-        helper level: with the origination row deleted,
-        ``_last_anchor_update_date`` returns None, and ``_anchor_is_stale``
-        treats None as stale (the user must set the balance).
+        The never-set staleness branch is therefore exercised one call below
+        the hero: with the origination row deleted,
+        ``cash_ledger.reconciled_through`` answers ``None`` and
+        ``_anchor_is_stale`` treats that as stale (the user must set the
+        balance).
+
+        **It grades the PRODUCTION accessor since plan step X-f1c3a.**  It
+        used to call ``_last_anchor_update_date``, a private wrapper with no
+        production caller at all -- so the branch it pinned was reached by
+        nothing, and the ``created_at``-keyed helper underneath it (ruling
+        R-EP deleted that too) was never exercised on this path.
         """
         with app.app_context():
             db.session.query(AccountAnchorHistory).filter_by(
@@ -247,12 +255,12 @@ class TestPulseHero:
             ).delete()
             db.session.commit()
 
-            last_updated = dashboard_pulse_service._last_anchor_update_date(
+            last_observed = cash_ledger.reconciled_through(
                 seed_user["account"].id,
-            )
-            assert last_updated is None
+            ).observed_day
+            assert last_observed is None
             assert dashboard_pulse_service._anchor_is_stale(
-                last_updated, seed_user["settings"],
+                last_observed, seed_user["settings"],
             ) is True
 
 

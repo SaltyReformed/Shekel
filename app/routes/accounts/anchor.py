@@ -44,7 +44,7 @@ from app.services import (
 from app.services.anchor_service import AnchorTrueUpOutcome
 from app.utils.account_validation import _anchor_schema
 from app.utils.auth_helpers import get_or_404, require_owner
-from app.utils.dates import display_today, to_display_tz
+from app.utils.dates import display_today
 from app.utils.digit_strings import parse_row_ids
 
 logger = logging.getLogger(__name__)
@@ -135,7 +135,9 @@ def _anchor_conflict_response(
     return (
         render_template(
             "grid/_anchor_edit.html",
-            account=account, editing=False, conflict=True,
+            account=account,
+            anchor_balance=cash_ledger.resolve_anchor(account).balance,
+            editing=False, conflict=True,
             revert_context=revert_context,
         ),
         409,
@@ -179,7 +181,7 @@ def reconcile_context(account: Account, panel_id: str) -> dict:
             (entry.amount for entry in outstanding), Decimal("0.00"),
         ),
         "reconciled_through": observed_on,
-        "anchor_balance": account.current_anchor_balance,
+        "anchor_balance": cash_ledger.resolve_anchor(account).balance,
         "panel_id": panel_id,
     }
 
@@ -338,8 +340,10 @@ def _true_up_success_response(
         The ``(body, status, headers)`` tuple Flask returns, carrying the
         ``HX-Trigger: balanceChanged`` header.
     """
+    anchor = cash_ledger.resolve_anchor(account)
     html = render_template(
-        "grid/_anchor_edit.html", account=account, editing=False,
+        "grid/_anchor_edit.html", account=account,
+        anchor_balance=anchor.balance, editing=False,
     )
     # The reconcile prompt rides along on EVERY surface, unlike the "as of"
     # snippet below: its mount is in ``base.html`` rather than being a
@@ -350,9 +354,13 @@ def _true_up_success_response(
     prompt = _reconcile_prompt_fragment(account)
     if revert_context in ("accounts", "investment", "cash"):
         return html + prompt, 200, {"HX-Trigger": "balanceChanged"}
+    # The day the balance was asserted TRUE, from the assertion itself
+    # (ruling R-EP).  It was ``account.updated_at`` -- the row's last-touched
+    # instant -- which named a different fact, moved on any account edit, and
+    # stops moving at all once a true-up no longer writes the account row.
     as_of_html = (
         f'<small class="text-muted" id="anchor-as-of" hx-swap-oob="true">'
-        f'as of {to_display_tz(account.updated_at).strftime("%b %-d, %Y")}'
+        f'as of {anchor.observed_on.strftime("%b %-d, %Y")}'
         f'</small>'
     )
     return html + as_of_html + prompt, 200, {"HX-Trigger": "balanceChanged"}
@@ -579,6 +587,7 @@ def anchor_form(account_id):
     return render_template(
         "grid/_anchor_edit.html",
         account=account,
+        anchor_balance=cash_ledger.resolve_anchor(account).balance,
         editing=True,
         revert_url=revert_url,
         revert_context=revert_context,
@@ -597,5 +606,6 @@ def anchor_display(account_id):
     return render_template(
         "grid/_anchor_edit.html",
         account=account,
+        anchor_balance=cash_ledger.resolve_anchor(account).balance,
         editing=False,
     )

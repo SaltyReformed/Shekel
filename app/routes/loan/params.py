@@ -29,6 +29,7 @@ from app.routes.loan._helpers import (
 )
 from app.services import (
     anchor_service,
+    cash_ledger,
     loan_loaders,
     loan_posting_service,
     loan_recurrence_sync,
@@ -70,6 +71,7 @@ def create_params(account_id):
         flash("Please correct the highlighted errors and try again.", "danger")
         return render_template(
             "loan/setup.html", account=account, account_type=account_type,
+            anchor_balance=cash_ledger.resolve_anchor(account).balance,
         )
 
     data = _create_schema.load(request.form)
@@ -83,6 +85,7 @@ def create_params(account_id):
         )
         return render_template(
             "loan/setup.html", account=account, account_type=account_type,
+            anchor_balance=cash_ledger.resolve_anchor(account).balance,
         )
 
     # DH-#56: ``interest_rate`` is no longer a LoanParams column -- it

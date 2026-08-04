@@ -20,7 +20,7 @@ Flask imports.  All money is :class:`~decimal.Decimal`.
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 
-from app.services import balance_at
+from app.services import balance_at, cash_ledger
 from app.services.balance_at import BalanceContext
 
 ZERO = Decimal("0")
@@ -93,9 +93,14 @@ def resolve_home_equity(
 ) -> HomeEquity:
     """Resolve a Property account's equity from its secured loans.
 
-    Market value is the Property's ``current_anchor_balance`` (the user's
-    last-set valuation, the honest "as of today" figure -- the appreciation
-    projection is a forward estimate, not a known present value).  Each loan in
+    Market value is the Property's latest balance ASSERTION
+    (:func:`app.services.cash_ledger.resolve_anchor`) -- the user's last-set
+    valuation, the honest "as of today" figure, since the appreciation
+    projection is a forward estimate and not a known present value.  It read
+    the ``current_anchor_balance`` cache column until plan step X-f1c3a
+    (finding N-83's CACHE half); the figure is identical and the ``or ZERO``
+    reducer beside it is gone with the column, since an asserted ``$0.00`` is a
+    real valuation and was never "missing".  Each loan in
     ``property_account.secured_loans`` is valued through the balance-at seam off
     the read pass's :class:`~app.services.balance_at.BalanceContext`, so
     its contribution is the SAME figure the debt card and the net-worth liability
@@ -134,7 +139,7 @@ def resolve_home_equity(
             exactly as before" with no baseline; that has been false since
             ``7b7c909b``, when the balance moved to the seam.
     """
-    market_value = property_account.current_anchor_balance or ZERO
+    market_value = cash_ledger.resolve_anchor(property_account).balance
     balances: list[Decimal] = []
     for loan in property_account.secured_loans:
         if balance_at.loan_figures(loan, ctx) is None:

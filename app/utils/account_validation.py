@@ -60,6 +60,7 @@ from app.schemas.validation import (
     AppreciationParamsUpdateSchema,
     InterestParamsUpdateSchema,
 )
+from app.services import cash_ledger
 from app.services.ledger_account_service import ledger_class_id_for_category
 from app.utils import archive_helpers
 
@@ -427,19 +428,21 @@ def _validate_update_account(account, form, user_id):
 
     # Amortizing-kind anchor gate (ruling D4 / step A1, finding B-15):
     # a loan's balance is ledger-derived and asserted through the loan
-    # page's own true-up; the cash anchor column must not become a
-    # second stored loan balance through the full-form edit.  Gated on
-    # the CURRENT type (the anchor branch in ``update_account`` writes
-    # before any re-type applies) and only on a CHANGED value -- the
-    # form round-trips the current balance on every edit, and an
-    # unchanged echo is not an assertion.
+    # page's own true-up; a cash anchor must not become a second stored
+    # loan balance through the full-form edit.  Gated on the CURRENT type
+    # (the anchor branch in ``update_account`` writes before any re-type
+    # applies) and only on a CHANGED value -- the form round-trips the
+    # current balance on every edit, and an unchanged echo is not an
+    # assertion.  "Current" is the latest ASSERTION since plan step
+    # X-f1c3a; it was the ``current_anchor_balance`` cache column, which
+    # held the same figure and no longer exists.
     if "anchor_balance" in data:
         acct_type = account.account_type
         submitted_anchor = Decimal(str(data["anchor_balance"]))
         if (
             acct_type is not None
             and acct_type.has_amortization
-            and submitted_anchor != account.current_anchor_balance
+            and submitted_anchor != cash_ledger.resolve_anchor(account).balance
         ):
             return {}, (
                 "A loan's balance is not a cash anchor. Record a "

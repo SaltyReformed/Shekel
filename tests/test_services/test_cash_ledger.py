@@ -17,30 +17,33 @@ the three bucket flags those tests need, so neither suite carries a private
 entry builder.  This file is the FACTS file, and only that.
 
 The resolver reads the most recent ``AccountAnchorHistory`` row as the
-dated source of truth for E-19; the ``Account.current_anchor_*``
-columns are treated as a denormalized cache of that latest row.  These
-tests lock the contract:
+dated source of truth for E-19.  It is the ONE answer to "what balance has
+this account been asserted to hold" since plan step X-f1c3a, which deleted
+the ``Account.current_anchor_*`` cache columns it used to be reconciled
+against.  These tests lock the contract:
 
   * the latest history row wins, even when more than one exists;
-  * the history row wins over the cache when they disagree, with a
-    ``EVT_ANCHOR_CACHE_RECONCILED`` log emitted;
+  * "latest" is the latest BUSINESS day -- an assertion observed EARLIER but
+    RECORDED later is not the current one (the ordering the whole partition
+    turns on, and which nothing pinned until X-f1c3a);
+  * the day it reports is the SAME day
+    :func:`~app.services.cash_ledger.reconciled_through` reports, which three
+    "as of" captions depend on since ruling R-EP;
   * the resolver never returns ``None`` for a factory-built account
     (Commit 3 invariant);
-  * the ``scenario_id`` parameter is accepted but does not currently
-    affect the returned anchor (anchors are per-account at the storage
-    tier);
   * the returned ``balance`` is a 2-decimal-place ``Decimal``;
   * a zero anchor balance is preserved verbatim per E-12 (zero is a
     value, not "missing").
 
 Test IDs match the remediation plan's Commit 4 specification (C4-1
-through C4-6).
+through C4-6); C4-2 and C4-4 were re-pointed at X-f1c3a when the cache they
+graded and the ``scenario_id`` parameter they exercised were deleted.
 """
 
-import logging
 from dataclasses import FrozenInstanceError
 from datetime import date as _date
 from datetime import datetime as _datetime
+from datetime import timedelta
 from datetime import timezone as _timezone
 from decimal import Decimal
 
@@ -49,32 +52,12 @@ import pytest
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
 from app.models.pay_period import PayPeriod
-from app.models.scenario import Scenario
-from app.services.cash_ledger import AnchorPoint, resolve_anchor
+from app.services.cash_ledger import (
+    AnchorPoint,
+    reconciled_through,
+    resolve_anchor,
+)
 from app.utils.dates import display_today
-
-
-class _LogCapture:
-    """Context manager that captures log records on a named logger.
-
-    Mirrors the helper in ``tests/test_utils/test_log_events.py`` so
-    the reconciliation-log assertion does not have to depend on
-    ``caplog`` fixture quirks under xdist parallelisation.
-    """
-
-    def __init__(self, logger: logging.Logger) -> None:
-        self._logger = logger
-        self.records: list[logging.LogRecord] = []
-        self._handler = logging.Handler()
-        self._handler.emit = self.records.append  # type: ignore[assignment]
-
-    def __enter__(self) -> "_LogCapture":
-        self._logger.addHandler(self._handler)
-        self._logger.setLevel(logging.DEBUG)
-        return self
-
-    def __exit__(self, *exc) -> None:
-        self._logger.removeHandler(self._handler)
 
 
 def _make_anchor_history(
@@ -126,7 +109,6 @@ class TestResolveAnchor:
         """
         with app.app_context():
             account = seed_user["account"]
-            scenario = seed_user["scenario"]
 
             second_period = PayPeriod(
                 user_id=seed_user["user"].id,
@@ -144,13 +126,9 @@ class TestResolveAnchor:
                 anchor_balance=new_balance,
                 notes="true-up #2",
             )
-            # Bring the cache in line so this test exercises only the
-            # latest-wins path, not the cache-mismatch path.
-            account.current_anchor_balance = new_balance
-            account.current_anchor_period_id = second_period.id
             db.session.commit()
 
-            result = resolve_anchor(account, scenario.id)
+            result = resolve_anchor(account)
 
             assert isinstance(result, AnchorPoint)
             # 1234.56: the most recent AccountAnchorHistory row's
@@ -160,58 +138,58 @@ class TestResolveAnchor:
 
     # ── C4-2 -----------------------------------------------------------
 
-    def test_resolve_anchor_history_wins_over_stale_column(
+    def test_the_latest_assertion_is_the_latest_BUSINESS_day(
         self, app, db, seed_user,  # pylint: disable=unused-argument,redefined-outer-name
     ):
-        """C4-2: when the cache disagrees with the latest history row,
-        the history row wins and the divergence is logged.
+        """C4-2: an assertion observed EARLIER but RECORDED later is NOT current.
 
-        Setup: seed_user origination history row is 1000.00 on the
-        bootstrap period.  We engineer the cache columns to a
-        deliberately-wrong value (777.77 on a non-existent period_id
-        would violate the FK; instead we use the legitimate bootstrap
-        period but a wrong balance).
+        The rule the whole anchor/settle partition turns on, and which nothing
+        pinned until plan step X-f1c3a made this resolver the single answer for
+        twelve surfaces.  ``resolve_anchor`` orders
+        ``(observed_on, created_at, id)`` descending -- BUSINESS day first --
+        so it names the row the walk replays LAST.  Ordering on ``created_at``
+        alone (which ``dashboard_service._get_last_anchor_date`` did until
+        ruling R-EP deleted it) names the other row.
 
-        Expected: returned balance is 1000.00 (history wins);
-        ``EVT_ANCHOR_CACHE_RECONCILED`` is emitted at WARNING level.
-        Arithmetic: 1000.00 is the seed_user fixture's origination
-        history-row balance; the cache value 777.77 is stale and is
-        ignored by the resolver.
+        Setup: the seed origination row asserts 1000.00 for its own day.  We add
+        an assertion of 2500.00 observed TODAY, then a LATER-RECORDED assertion
+        of 4444.44 observed a week BEFORE it.
+
+        Expected: 2500.00.  Hand-computed: today > today - 7, so the row with
+        the later BUSINESS day is current even though the 4444.44 row was
+        written second.  This test fails with ``created_at``-first ordering,
+        which is exactly the mutation it exists to kill.
         """
         with app.app_context():
             account = seed_user["account"]
-            scenario = seed_user["scenario"]
-            # Stale the cache: keep period_id legal but mis-set
-            # balance to a value the history row does not carry.
-            account.current_anchor_balance = Decimal("777.77")
+            period_id = seed_user["bootstrap_period"].id
+            today = display_today()
+
+            current = _make_anchor_history(
+                account_id=account.id,
+                pay_period_id=period_id,
+                anchor_balance=Decimal("2500.00"),
+                notes="observed today",
+            )
+            current.observed_on = today
+            superseded = _make_anchor_history(
+                account_id=account.id,
+                pay_period_id=period_id,
+                anchor_balance=Decimal("4444.44"),
+                notes="a statement that arrived late, for an older day",
+            )
+            superseded.observed_on = today - timedelta(days=7)
             db.session.commit()
 
-            with _LogCapture(logging.getLogger(
-                "app.services.cash_ledger",
-            )) as cap:
-                result = resolve_anchor(account, scenario.id)
+            # The later-recorded row has the HIGHER id, so id-descending alone
+            # would also name it -- which is what makes this control fire.
+            assert superseded.id > current.id
 
-            # 1000.00: seed_user origination row's anchor_balance.
-            # Hand-computed: the cache value of 777.77 is what we
-            # wrote into the column; the history row predates that
-            # write and stays at 1000.00; history wins.
-            assert result.balance == Decimal("1000.00")
+            result = resolve_anchor(account)
 
-            reconciliation_records = [
-                r for r in cap.records
-                if getattr(r, "event", None) == "anchor_cache_reconciled"
-            ]
-            assert len(reconciliation_records) == 1, (
-                "Expected exactly one anchor_cache_reconciled event; "
-                f"saw {len(reconciliation_records)}."
-            )
-            rec = reconciliation_records[0]
-            assert rec.levelno == logging.WARNING
-            assert rec.category == "business"
-            assert rec.account_id == account.id
-            assert rec.scenario_id == scenario.id
-            assert rec.cached_balance == "777.77"
-            assert rec.history_balance == "1000.00"
+            # 2500.00: the assertion with the latest BUSINESS day.
+            assert result.balance == Decimal("2500.00")
+            assert result.observed_on == today
 
     # ── C4-3 -----------------------------------------------------------
 
@@ -229,8 +207,7 @@ class TestResolveAnchor:
         """
         with app.app_context():
             account = seed_user["account"]
-            scenario = seed_user["scenario"]
-            result = resolve_anchor(account, scenario.id)
+            result = resolve_anchor(account)
             assert result is not None
             assert isinstance(result, AnchorPoint)
             # 1000.00: seed_user fixture's origination anchor.
@@ -239,53 +216,56 @@ class TestResolveAnchor:
 
     # ── C4-4 -----------------------------------------------------------
 
-    def test_resolve_anchor_scenario_scoped(
+    def test_resolve_anchor_agrees_with_reconciled_through(
         self, app, db, seed_user,  # pylint: disable=unused-argument,redefined-outer-name
     ):
-        """C4-4: ``resolve_anchor`` returns the account's anchor and
-        does not leak data from a sibling scenario.
+        """C4-4: the resolver's day IS ``reconciled_through``'s day.
 
-        The current data model is per-account: ``AccountAnchorHistory``
-        carries no ``scenario_id`` column, so two scenarios for the
-        same user share the same per-account anchor.  This test
-        proves that calling the resolver with either scenario's id
-        returns the same per-account anchor -- i.e. no cross-account
-        leakage and no scenario-id confusion.  When E-NN eventually
-        adds per-scenario anchors, this test will need to be
-        re-pinned to assert "scenario 2's anchor" rather than
-        "account's anchor regardless of scenario"; until then, the
-        contract is "no leakage between scenarios" and that is what
-        is locked here.
+        Two statements of "when was this balance last asserted": the resolver
+        takes the first row of a ``(observed_on, created_at, id)`` DESC ordering,
+        and :func:`~app.services.cash_ledger.reconciled_through` takes
+        ``MAX(observed_on)``.  Ruling R-EP puts three "as of" captions on them --
+        the grid header and the account/investment heroes read the resolver, the
+        dashboard pulse reads ``reconciled_through`` because it must answer
+        ``None`` rather than raise -- so the equality is load-bearing rather than
+        incidental, and this pins it.
 
-        Arithmetic: 1000.00 is the seed_user origination anchor; it
-        belongs to ``seed_user["account"]``, not to any specific
-        scenario.  Both scenario ids resolve to the same value
-        because the anchor is per-account.
+        It replaced C4-4 (``resolve_anchor``'s ``scenario_id`` parameter is not
+        scenario-scoping) at plan step X-f1c3a, which deleted the parameter: a
+        contract nothing can express no longer needs a test.
+
+        Arithmetic: with assertions on two different business days the MAX and
+        the DESC-first must both name the LATER one; a resolver that ordered on
+        the recording instant would disagree here, which is the mutation that
+        kills this test.
         """
         with app.app_context():
-            user_id = seed_user["user"].id
             account = seed_user["account"]
-            baseline = seed_user["scenario"]
-            sibling = Scenario(
-                user_id=user_id,
-                name="What-If",
-                is_baseline=False,
+            period_id = seed_user["bootstrap_period"].id
+            today = display_today()
+
+            newer = _make_anchor_history(
+                account_id=account.id,
+                pay_period_id=period_id,
+                anchor_balance=Decimal("2500.00"),
+                notes="observed today",
             )
-            db.session.add(sibling)
+            newer.observed_on = today
+            older = _make_anchor_history(
+                account_id=account.id,
+                pay_period_id=period_id,
+                anchor_balance=Decimal("4444.44"),
+                notes="recorded later, for an older day",
+            )
+            older.observed_on = today - timedelta(days=7)
             db.session.commit()
 
-            from_baseline = resolve_anchor(account, baseline.id)
-            from_sibling = resolve_anchor(account, sibling.id)
-
-            # 1000.00: per-account anchor; consistent across scenarios.
-            assert from_baseline.balance == Decimal("1000.00")
-            assert from_sibling.balance == Decimal("1000.00")
-            assert from_baseline.period.id == from_sibling.period.id
-            # Per-account invariant: distinct scenarios cannot return
-            # one another's data because anchors are not scenario-
-            # scoped at the storage tier today.  The equality below
-            # is the load-bearing guarantee.
-            assert from_baseline.period.id == account.current_anchor_period_id
+            assert resolve_anchor(account).observed_on == today
+            assert reconciled_through(account.id).observed_day == today
+            assert (
+                resolve_anchor(account).observed_on
+                == reconciled_through(account.id).observed_day
+            )
 
     # ── C4-5 -----------------------------------------------------------
 
@@ -304,8 +284,7 @@ class TestResolveAnchor:
         """
         with app.app_context():
             account = seed_user["account"]
-            scenario = seed_user["scenario"]
-            result = resolve_anchor(account, scenario.id)
+            result = resolve_anchor(account)
             assert isinstance(result.balance, Decimal)
             # Exponent of -2 means two digits after the decimal point.
             assert result.balance.as_tuple().exponent == -2
@@ -319,7 +298,7 @@ class TestResolveAnchor:
         value, not coerced to a default or treated as "missing".
 
         Setup: appending a true-up history row with anchor 0.00 on
-        the bootstrap period and aligning the cache columns.  The
+        the bootstrap period.  The
         coding-standard rule (E-12 / CLAUDE.md "do not rely on
         truthiness for business logic") is the regression lock: code
         that wrote ``or Decimal("0.00")`` or ``if not balance:`` would
@@ -328,7 +307,6 @@ class TestResolveAnchor:
         """
         with app.app_context():
             account = seed_user["account"]
-            scenario = seed_user["scenario"]
             bootstrap_period_id = seed_user["bootstrap_period"].id
 
             _make_anchor_history(
@@ -337,11 +315,9 @@ class TestResolveAnchor:
                 anchor_balance=Decimal("0.00"),
                 notes="true-up to zero",
             )
-            account.current_anchor_balance = Decimal("0.00")
-            account.current_anchor_period_id = bootstrap_period_id
             db.session.commit()
 
-            result = resolve_anchor(account, scenario.id)
+            result = resolve_anchor(account)
 
             # 0.00 (E-12): zero is a value; the resolver returns it
             # verbatim instead of falling back to a non-zero default.
@@ -374,7 +350,6 @@ class TestResolveAnchorMissingHistory:
         """
         with app.app_context():
             account = seed_user["account"]
-            scenario = seed_user["scenario"]
             (
                 db.session.query(AccountAnchorHistory)
                 .filter_by(account_id=account.id)
@@ -383,7 +358,7 @@ class TestResolveAnchorMissingHistory:
             db.session.commit()
 
             with pytest.raises(RuntimeError, match=str(account.id)):
-                resolve_anchor(account, scenario.id)
+                resolve_anchor(account)
 
 
 class TestAnchorPointDataclass:

@@ -25,16 +25,14 @@ in, frozen dataclass out; no ``flask`` / ``request`` / ``session`` /
 
 Decimal discipline (``docs/coding-standards.md``).  :attr:`AnchorPoint.balance`
 is constructed via ``Decimal(str(...))`` from the storage value.
-``Account.current_anchor_balance`` and ``AccountAnchorHistory.anchor_balance``
-are ``Numeric(12,2)`` columns, so the SQLAlchemy adapter already returns
-``Decimal`` -- but routing through ``str`` is the project convention and is the
-cheap insurance against a future column-type change silently coercing through
-float.
+``AccountAnchorHistory.anchor_balance`` is a ``Numeric(12,2)`` column, so the
+SQLAlchemy adapter already returns ``Decimal`` -- but routing through ``str`` is
+the project convention and is the cheap insurance against a future column-type
+change silently coercing through float.
 """
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
@@ -49,16 +47,8 @@ from app.utils.balance_predicates import (
     balance_contributing_clause,
     is_projected_clause,
 )
-from app.utils.log_events import (
-    BUSINESS,
-    EVT_ANCHOR_CACHE_RECONCILED,
-    log_event,
-)
 
 from ._amounts import ReconciledThrough
-
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -108,24 +98,23 @@ class AnchorPoint:
     created_at: datetime
 
 
-def resolve_anchor(account: Account, scenario_id: int) -> AnchorPoint:
+def resolve_anchor(account: Account) -> AnchorPoint:
     """Return the canonical :class:`AnchorPoint` for ``account``.
 
-    Reads the most recent ``AccountAnchorHistory`` row for the account
-    (by ``created_at`` descending) as the dated source of truth (E-19).
-    ``Account.current_anchor_balance`` and
-    ``Account.current_anchor_period_id`` are treated as a denormalized
-    cache of that latest event:
+    Reads the most recent ``AccountAnchorHistory`` row for the account as the
+    dated source of truth (E-19).  **It is the ONE answer to "what balance has
+    this account been asserted to hold", for every consumer** -- the grid
+    header, the reconcile panel, the Property's market value, the archived
+    drawer's last balance, and the write doors' did-this-change test all ask
+    here (plan step X-f1c3a).
 
-      * Cache matches latest event -- the canonical state.  Return the
-        history row's values.
-      * Cache disagrees -- the history row wins (E-19 dated SoT) and
-        the divergence is logged via
-        ``EVT_ANCHOR_CACHE_RECONCILED`` so the regression that wrote
-        the cache without appending the matching event is detectable
-        in observability.  The cache is NOT mutated here -- this
-        resolver is read-only; correcting the cache is the
-        responsibility of the next legitimate true-up path.
+    **It used to be the second-best answer**, because ``accounts`` carried a
+    denormalized copy of this same row and most readers took that instead.
+    This function compared the two and logged ``EVT_ANCHOR_CACHE_RECONCILED``
+    when they disagreed, letting the history row win without repairing the copy
+    (finding cash D4).  Ruling **R-EH** deleted the columns, so there is no
+    second answer to reconcile against and no detector to run: the divergence
+    is not detected-and-logged, it is inexpressible.
 
     The Decimal balance is constructed via ``Decimal(str(...))`` to
     obey the project's "construct Decimal from strings" rule
@@ -142,25 +131,19 @@ def resolve_anchor(account: Account, scenario_id: int) -> AnchorPoint:
     here rather than silently returning a wrong number to every
     downstream consumer.
 
+    **It takes no ``scenario_id``, and dropping it is part of the same ruling.**
+    The parameter never scoped the query -- ``AccountAnchorHistory`` carries no
+    scenario column and accounts are not scenario-scoped at the storage tier --
+    and its only remaining use was the reconciliation log payload deleted above.
+    Keeping it for "API symmetry" with the row loaders beside it would have
+    forced a ``BalanceContext`` into the write doors and the account-edit
+    validator, none of which hold one: an argument a caller must fabricate is
+    the shape this plan's Section 8 rules a defect rather than a contract.
+
     Args:
         account: The :class:`~app.models.account.Account` to resolve.
             Must be attached to ``db.session`` (the history-row query
             reads via the session).
-        scenario_id: The scenario the caller is operating under.  The
-            current data model is per-account -- ``AccountAnchorHistory``
-            carries no ``scenario_id`` column and accounts are not
-            scenario-scoped at the storage tier -- so the anchor
-            returned is identical across scenarios for the same
-            account.  The parameter is kept in the signature for two
-            reasons: API symmetry with the row loaders beside it
-            (``planned_cash_rows`` / ``settled_cash_facts``), which DO
-            need the scenario to filter transactions, and forward
-            compatibility with a possible future per-scenario anchor
-            override.  It cited the anchor-forward ``balances_for``
-            producer until plan step X-g4b deleted it; the symmetry
-            argument is unchanged, only its example is.  The value is included in the
-            reconciliation log payload so a future scenario-scoped
-            divergence is traceable.
 
     Returns:
         :class:`AnchorPoint` -- balance, period, the day the balance was true,
@@ -207,37 +190,8 @@ def resolve_anchor(account: Account, scenario_id: int) -> AnchorPoint:
             "canonical factory."
         )
 
-    history_balance = Decimal(str(latest.anchor_balance))
-    history_period_id = latest.pay_period_id
-
-    cached_balance = account.current_anchor_balance
-    cached_period_id = account.current_anchor_period_id
-    cache_disagrees = (
-        cached_balance is None
-        or Decimal(str(cached_balance)) != history_balance
-        or cached_period_id != history_period_id
-    )
-    if cache_disagrees:
-        log_event(
-            logger,
-            logging.WARNING,
-            EVT_ANCHOR_CACHE_RECONCILED,
-            BUSINESS,
-            "Account.current_anchor_* cache disagreed with the latest "
-            "AccountAnchorHistory row; history row wins (E-19 SoT).",
-            account_id=account.id,
-            scenario_id=scenario_id,
-            cached_balance=(
-                str(cached_balance) if cached_balance is not None else None
-            ),
-            cached_period_id=cached_period_id,
-            history_balance=str(history_balance),
-            history_period_id=history_period_id,
-            history_created_at=latest.created_at.isoformat(),
-        )
-
     return AnchorPoint(
-        balance=history_balance,
+        balance=Decimal(str(latest.anchor_balance)),
         period=latest.pay_period,
         observed_on=latest.observed_on,
         created_at=latest.created_at,

@@ -46,7 +46,12 @@
           <span class="input-group-text">$</span>
           <input type="number" step="0.01" id="anchor_balance" name="anchor_balance"
                  class="form-control"
-                 value="{{ account.current_anchor_balance if account and account.current_anchor_balance is not none else '0' }}"
+                 {# The account's latest balance ASSERTION, resolved by the route
+                    (``cash_ledger.resolve_anchor``) rather than read off a
+                    denormalized column this template used to reach through the
+                    ORM for -- plan step X-f1c3a.  ``'0'`` is the CREATE form,
+                    which has no account and therefore no assertion. #}
+                 value="{{ anchor_balance if anchor_balance is not none else '0' }}"
                  aria-describedby="anchor-help">
         </div>
         <div id="anchor-help" class="form-text">

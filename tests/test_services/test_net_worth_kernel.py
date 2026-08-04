@@ -68,28 +68,6 @@ class TestBuildAccountBalanceMap:
             assert balances[all_periods[0].id] == Decimal("1000.00")
             assert balances[all_periods[-1].id] == Decimal("1000.00")
 
-    def test_no_anchor_period_returns_none(self, app, db, seed_user):
-        """An account with no anchor period yields None (no dense map).
-
-        A stand-in object with ``current_anchor_period_id = None`` short-
-        circuits before any engine call, matching the year-end section's
-        ``balances is None`` skip for un-anchored accounts.
-        """
-        # Pylint: import-outside-toplevel -- deferred so the stand-in
-        # type is built only inside the test (the file-wide convention).
-        from types import SimpleNamespace  # pylint: disable=import-outside-toplevel
-        with app.app_context():
-            account = SimpleNamespace(current_anchor_period_id=None)
-            assert net_worth_kernel.build_account_balance_map(
-                account, object(), [],
-                ContributionInputs(
-                    investment_params=None,
-                    deductions=[],
-                    salary_gross_biweekly=Decimal("0.00"),
-                ),
-            ) is None
-
-
 class TestInterestByPeriodForAccount:
     """Tests for ``interest_by_period_for_account`` (interest-earned accessor).
 
@@ -98,24 +76,37 @@ class TestInterestByPeriodForAccount:
     ``test_balance_at.py`` and the account-detail route tests in
     ``test_accounts.py`` -- the accessor's only consumer is that page's
     "Interest, next 12 mo" chip.  (It was the year-end savings-progress
-    section until plan step F2 deleted that package.)  This pins the
-    contract those tests cannot reach: the no-anchor short-circuit that
-    returns the empty map.
+    section until plan step F2 deleted that package.)
+
+    **Its two no-anchor short-circuit tests were DELETED at plan step
+    X-f1c3a, not re-pointed.**  Both handed in a ``SimpleNamespace`` stand-in
+    with ``current_anchor_period_id=None`` -- a state the schema forbade with
+    a ``NOT NULL`` column and a CHECK beside it, and which ruling R-EH deleted
+    the column for.  They graded a branch no account could reach; keeping them
+    would have meant keeping the branch (finding N-73).  What survives is the
+    accessor's REAL contract, that it is the interest half of the same single
+    walk the balance half comes from, pinned by the tests named above.
     """
 
-    def test_no_anchor_period_returns_empty(self, app, db, seed_user):
-        """An account with no anchor period earns no projectable interest.
+    def test_it_is_the_interest_half_of_the_same_walk(self, app, db, seed_user):
+        """The accessor's map IS ``interest_projection_for_account``'s second half.
 
-        A stand-in with ``current_anchor_period_id = None`` short-circuits
-        before any engine call to the empty map, so the consumer's windowed
-        sum is ``Decimal("0")`` -- the prior inline
-        ``current_anchor_period_id is None -> ZERO`` early-out, preserved.
+        The whole reason the accessor exists is that a consumer wanting only
+        the accrual must not pay a SECOND fold for it (finding N-47, ruling
+        R-L: the balance a screen renders and the accrual figure beside it
+        have to be one walk).  Asserting the delegation is what keeps that
+        structural -- a re-implementation here would pass every VALUE test in
+        the suite while re-introducing the second walk.
         """
-        # Pylint: import-outside-toplevel -- deferred so the stand-in type
-        # is built only inside the test (the file-wide convention).
-        from types import SimpleNamespace  # pylint: disable=import-outside-toplevel
         with app.app_context():
-            account = SimpleNamespace(current_anchor_period_id=None)
+            user_id = seed_user["user"].id
+            ctx = BalanceContext.build(user_id)
+            all_periods = pay_period_service.get_all_periods(user_id)
+            account = seed_user["account"]
+
+            _, from_projection = net_worth_kernel.interest_projection_for_account(
+                account, ctx, all_periods,
+            )
             assert net_worth_kernel.interest_by_period_for_account(
-                account, object(), [],
-            ) == {}
+                account, ctx, all_periods,
+            ) == from_projection

@@ -314,11 +314,12 @@ def interest_projection_for_account(
 
     Returns:
         ``(balances, interest_by_period)`` -- the interest-accrued end balance
-        per period id and the interest earned in each.  ``(OrderedDict(), {})``
-        when the account has no anchor period.
+        per period id and the interest earned in each.  **Never the empty pair
+        as a degradation**: it answered ``(OrderedDict(), {})`` for an account
+        with ``current_anchor_period_id IS NULL``, a state the schema forbade
+        and the column no longer exists to express (finding N-73, plan step
+        X-f1c3a).
     """
-    if account.current_anchor_period_id is None:
-        return OrderedDict(), {}
     columns = _modelled_columns(
         account, ctx, periods, ContributionInputs.absent(),
     )
@@ -368,7 +369,11 @@ def interest_by_period_for_account(
 
     Returns:
         ``dict`` mapping period_id to the ``Decimal`` interest earned in
-        that period; ``{}`` when the account has no anchor period.
+        that period, one entry per requested period.  **Never ``{}`` as a
+        degradation**: it short-circuited for an account with
+        ``current_anchor_period_id IS NULL``, a state the schema forbade and
+        the column no longer exists to express (finding N-73, plan step
+        X-f1c3a).
     """
     _, interest_by_period = interest_projection_for_account(
         account, ctx, periods,
@@ -381,7 +386,7 @@ def build_account_balance_map(
     ctx: "BalanceContext",
     periods: list,
     inputs: ContributionInputs,
-) -> "OrderedDict[int, Decimal] | None":
+) -> "OrderedDict[int, Decimal]":
     """Compute period_id -> balance for one NON-loan account.
 
     The net-worth path for every kind EXCEPT amortizing loans, and since plan
@@ -426,11 +431,11 @@ def build_account_balance_map(
             that cannot have a contribution feed.
 
     Returns:
-        OrderedDict mapping period_id to Decimal balance, or None if the
-        account has no anchor period.
+        OrderedDict mapping period_id to Decimal balance.  **Never ``None``**:
+        it answered ``None`` for an account with ``current_anchor_period_id IS
+        NULL``, a state the schema forbade and the column no longer exists to
+        express (finding N-73, plan step X-f1c3a).
     """
-    if account.current_anchor_period_id is None:
-        return None
     return OrderedDict(
         (period_id, column.balance)
         for period_id, column in _modelled_columns(

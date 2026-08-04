@@ -5221,21 +5221,22 @@ class TestGridMatchedByRowPeriod:
             )
 
     def test_no_balance_resolver_reads(self):
-        """C2-4: no NEW direct reads of canonical-producer source columns.
+        """C2-4: NO direct reads of canonical-producer source columns.
 
         Plan Section 1 rule 2 ("Canonical producers only for monetary
-        values"): the precomputation Commit 2 introduces must not read
+        values"): the route must not read
         ``Account.current_anchor_balance`` /
         ``Account.current_anchor_period_id`` /
-        ``LoanParams.current_principal`` / ``LoanParams.interest_rate``
-        beyond the baseline that already exists in the route.
+        ``LoanParams.current_principal`` / ``LoanParams.interest_rate``.
 
-        Baseline (pre-commit): exactly one read of
-        ``account.current_anchor_balance`` at the ``anchor_balance``
-        local in ``index()`` -- this is the existing display value
-        and is NOT a bypass of ``balance_resolver``.  After this
-        commit, that count must still be exactly one and the other
-        three symbols must still be zero.
+        **The baseline is ZERO since plan step X-f1c3a**, and that is the
+        finding rather than a tightening.  It was ONE -- the header's
+        ``anchor_balance = account.current_anchor_balance`` -- carried as a
+        legitimate exception because the header's starting figure is a display
+        value rather than a projection.  Ruling R-EH deleted the column: the
+        header now reads the account's latest ASSERTION through
+        ``cash_ledger.resolve_anchor``, which is a canonical producer, so the
+        exception has nothing left to except and every count here is zero.
 
         Complements the existing
         ``test_grid_balance_computation_routed_through_resolver``
@@ -5259,14 +5260,13 @@ class TestGridMatchedByRowPeriod:
             re.findall(r"\.interest_rate\b", grid_source),
         )
 
-        assert current_anchor_balance_reads == 1, (
+        assert current_anchor_balance_reads == 0, (
             "app/routes/grid.py contains "
             f"{current_anchor_balance_reads} reads of "
-            "``.current_anchor_balance`` (expected 1 baseline read at "
-            "``anchor_balance = account.current_anchor_balance ...``); "
-            "Commit 2 of mobile-first v3 must not add NEW direct reads "
-            "of canonical-producer source columns -- route all monetary "
-            "values through ``balance_resolver``"
+            "``.current_anchor_balance`` (expected 0 -- ruling R-EH deleted "
+            "the column, and the header reads the account's latest assertion "
+            "through ``cash_ledger.resolve_anchor``); route all monetary "
+            "values through a canonical producer"
         )
         assert current_anchor_period_id_reads == 0, (
             "app/routes/grid.py reads "

@@ -1313,34 +1313,37 @@ class TestBuildMaps:
                     loan, bctx, periods,
                 )
 
-    def test_omits_account_with_no_anchor(
+    def test_build_maps_is_total_over_the_accounts_it_is_handed(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """An account with no anchor period is omitted from build_maps.
+        """EVERY account handed to build_maps gets a map -- none is dropped.
 
-        Mirrors the kernel's ``build_account_balance_map`` returning None
-        for a no-anchor account and the net-worth section's ``balances is
-        None`` skip.  A stand-in with ``current_anchor_period_id=None`` (and
-        no account type, so it classifies PLAIN and the loaders skip it) is
-        dropped while the real checking account is kept.
+        **This replaced an OMISSION test at plan step X-f1c3a.**  That test
+        handed in a ``SimpleNamespace`` stand-in with
+        ``current_anchor_period_id=None`` and asserted it was dropped -- a
+        state the schema forbade (the column was ``NOT NULL`` with a CHECK
+        beside it) and which ruling R-EH deleted the column for, so it graded a
+        branch no real account could reach while teaching every consumer to
+        carry a ``balances is None`` arm for it (finding N-73).
+
+        Totality is what the consumers actually depend on: four producers
+        INDEX this map rather than ``.get``-defaulting it, and a silently
+        dropped account would surface as a ``KeyError`` in one of them rather
+        than as a wrong figure -- which is the disposition ruling R-CA chose.
+        Asserting it here is what makes that safe.
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
-            checking = seed_user["account"]
-            no_anchor = SimpleNamespace(
-                id=-1, user_id=user_id, account_type=None,
-                current_anchor_period_id=None,
-            )
+            accounts = account_service.list_active_accounts(user_id)
+            assert accounts, "fixture must supply at least one account"
 
-            seam_maps = balance_at.build_maps(
-                [checking, no_anchor], bctx, periods,
-            )
+            seam_maps = balance_at.build_maps(accounts, bctx, periods)
 
-            assert checking.id in seam_maps
-            assert no_anchor.id not in seam_maps
+            assert set(seam_maps) == {acct.id for acct in accounts}
+            for acct in accounts:
+                assert set(seam_maps[acct.id]) == {p.id for p in periods}
 
 
 class TestBalanceAt:
@@ -1965,7 +1968,7 @@ class TestBalanceAtDegrade:
 
             seam = balance_at.balance_at(inv, bctx, date(2000, 1, 1))
             expected = round_money(
-                cash_ledger.resolve_anchor(inv, scenario.id).balance,
+                cash_ledger.resolve_anchor(inv).balance,
             )
             assert seam == expected
             assert seam == Decimal("10000.00")  # the 401k's anchor balance
@@ -2153,22 +2156,6 @@ class TestBalanceMapEdgeCases:
             result = balance_at.balance_map(account, bctx, [])
             assert result is not None
             assert len(result) == 0
-
-    def test_balance_map_no_anchor_account_is_none(
-        self, app, db, seed_user, seed_periods_today,
-    ):
-        """A no-anchor account yields None directly from balance_map."""
-        with app.app_context():
-            user_id = seed_user["user"].id
-            scenario = get_baseline_scenario(user_id)
-            bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
-            no_anchor = SimpleNamespace(
-                id=-1, user_id=user_id, account_type=None,
-                current_anchor_period_id=None,
-            )
-            assert balance_at.balance_map(no_anchor, bctx, periods) is None
-
 
 class TestCashFlowView:
     """``cash_balance_map`` / ``cash_balance_at`` -- the pure-cash view.

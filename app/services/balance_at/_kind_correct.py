@@ -43,7 +43,7 @@ from ._resolution import configured_loan
 
 def balance_map(
     account: Account, ctx: BalanceContext, periods: list,
-) -> "OrderedDict[int, Decimal] | None":
+) -> "OrderedDict[int, Decimal]":
     """Return one account's period_id -> balance map across *periods*.
 
     The single-account per-period producer.  Loads THIS account's
@@ -73,8 +73,10 @@ def balance_map(
             ``period_index``.
 
     Returns:
-        The OrderedDict period_id -> Decimal balance, or ``None`` when the
-        account has no anchor period.
+        The OrderedDict period_id -> Decimal balance.  **Never ``None``**: it
+        answered ``None`` for an account with ``current_anchor_period_id IS
+        NULL``, a state the schema forbade and the column no longer exists to
+        express (finding N-73, plan step X-f1c3a).
 
     Raises:
         BaselineMissingError: When ``scenario`` is None (a ``ValueError``
@@ -114,8 +116,11 @@ def build_maps(
     and ``.get(..., absent())`` would render it as an account whose payroll
     funds nothing -- a wrong figure wearing a plausible shape.
 
-    Accounts whose map is ``None`` (no anchor period) are omitted from the
-    result, matching the net-worth section's ``balances is None`` skip.
+    **It is TOTAL over *accounts*.**  It used to omit an account whose map came
+    back ``None`` -- the no-anchor-period state, which the schema forbade and
+    which the column no longer exists to express (finding N-73, plan step
+    X-f1c3a) -- so consumers indexing this map can do so without a membership
+    test, and one that finds a key missing has found a defect in the loader.
 
     Args:
         accounts: The accounts to project (the same user's active set).
@@ -126,7 +131,7 @@ def build_maps(
 
     Returns:
         A dict mapping ``account.id`` to its OrderedDict period_id ->
-        Decimal balance map, for every account that has a map.
+        Decimal balance map, for EVERY account in *accounts*.
 
     Raises:
         BaselineMissingError: When ``scenario`` is None.  A ``ValueError``
@@ -135,15 +140,12 @@ def build_maps(
     """
     _require_scenario(ctx)
     feeds = _contribution_inputs_for_accounts(accounts)
-    result: "dict[int, OrderedDict[int, Decimal]]" = {}
-    for account in accounts:
-        balances = _account_balance_map(
+    return {
+        account.id: _account_balance_map(
             account, ctx, periods, feeds[account.id],
         )
-        if balances is None:
-            continue
-        result[account.id] = balances
-    return result
+        for account in accounts
+    }
 
 
 def _modelled_scalar(

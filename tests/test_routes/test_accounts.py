@@ -3489,9 +3489,7 @@ class TestCheckingDetail:
 
             # The caption shows the anchor event's DISPLAY-timezone civil date,
             # computed here from the same ``created_at`` the caption renders.
-            anchor = cash_ledger.resolve_anchor(
-                acct, seed_user["scenario"].id,
-            )
+            anchor = cash_ledger.resolve_anchor(acct)
             anchor_date_str = to_display_date(anchor.created_at).strftime(
                 "%b %-d, %Y",
             )
@@ -4300,9 +4298,7 @@ class TestCashDetailContext:
             db.session.add(acct)
             db.session.commit()
 
-            anchor = cash_ledger.resolve_anchor(
-                acct, seed_user["scenario"].id,
-            )
+            anchor = cash_ledger.resolve_anchor(acct)
             # Non-vacuity: the event date and the period start genuinely differ.
             assert to_display_date(anchor.created_at) != anchor.period.start_date
 

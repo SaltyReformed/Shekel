@@ -131,11 +131,11 @@ class CashAnchorFact:
         pay_period_id: The history row's stored pay period (NOT NULL).
             **It is a CACHE of a derivation, not an independent fact, and no
             reader of THIS FIELD survives in ``app/`` as of plan step
-            X-ai-r.**  (The same datum is still read off the ORM row in
-            :func:`app.services.cash_ledger.resolve_anchor`, which compares it
-            against ``Account.current_anchor_period_id`` to log a cache
-            divergence -- a question about the ROW, not about which period a
-            correction books in.)  It is
+            X-ai-r, and NONE has since plan step X-f1c3a**, which deleted
+            the one exception: ``resolve_anchor`` used to read it to compare
+            against the ``Account.current_anchor_period_id`` cache, a question
+            about the ROW rather than about which period a correction books in,
+            and both that comparison and that column are gone.  It is
             written by ``account_service.resolve_anchor_period_id`` from the
             same civil day :attr:`observed_on` records, so the two are two
             statements of one fact -- and a clock split between the two
