@@ -74,6 +74,39 @@ class TestEmptyInputNormalization:
         data = PensionProfileUpdateSchema().load({"csrf_token": ""})
         assert data == {}
 
+    def test_empty_settle_day_is_dropped_not_cleared(self):
+        """An empty settle-day input means "leave the day alone", not "clear it".
+
+        The load-bearing case for plan step X-f1c's two settle-day edit doors.
+        ``settled_on`` is declared WITHOUT ``allow_none`` on both update
+        schemas precisely so an untouched or blanked input lands in the
+        non-nullable arm above and DROPS: a settled row always carries the day
+        its money moved (the balance walk refuses one that does not), and the
+        way to remove the day is to move the row out of the settled band, which
+        the status seam does.  Were the field nullable, blanking the box on a
+        settled transfer would post ``settled_on=None`` and
+        ``apply_settle_day_correction`` would reject the save.
+
+        Asserted on BOTH doors, because the rule is only true if the two agree:
+        the transaction popover and the transfer popover are two forms onto one
+        column-level invariant.
+        """
+        assert "settled_on" not in TransferUpdateSchema().load(
+            {"settled_on": ""},
+        )
+        assert "settled_on" not in TransactionUpdateSchema().load(
+            {"settled_on": ""},
+        )
+        # The positive control: a real day still arrives, so the assertions
+        # above are about the EMPTY value and not about the field being absent
+        # from the schema altogether.
+        assert TransferUpdateSchema().load(
+            {"settled_on": "2026-07-14"},
+        ) == {"settled_on": date(2026, 7, 14)}
+        assert TransactionUpdateSchema().load(
+            {"settled_on": "2026-07-14"},
+        ) == {"settled_on": date(2026, 7, 14)}
+
     def test_nullable_arm_is_reached_through_the_helper(self):
         """The allow_none arm maps an empty submit to an explicit ``None``.
 

@@ -15,6 +15,7 @@ from app.services import category_service, pay_period_service
 from app.services.account_resolver import resolve_grid_account
 from app.services.state_machine import allowed_transitions
 from app.utils.auth_helpers import require_owner
+from app.utils.dates import display_today
 from app.routes.transfers._bp import transfers_bp
 from app.routes.transfers._helpers import _get_owned_transfer
 
@@ -64,6 +65,16 @@ def get_full_edit(xfer_id):
     return render_template(
         "transfers/_transfer_full_edit.html",
         xfer=xfer, statuses=statuses, categories=categories, periods=periods,
+        # The settle-day correction's bounds -- ``max`` from ruling R-EJ,
+        # ``min`` from ruling R-EL.  The USER's today via ``display_today()``,
+        # never the process's UTC day: the input must not refuse a day
+        # ``status_seam.reject_future_settle_day`` accepts.  The floor calls the
+        # SAME function ``reject_settle_day_before_the_schedule`` refuses below,
+        # so the browser bound and the server bound cannot drift.
+        today=display_today(),
+        settle_day_min=pay_period_service.earliest_recordable_day(
+            current_user.id,
+        ),
         # Pre-hint (grid audit D2): the status dropdown disables
         # transitions the state machine would reject.
         allowed_status_ids=allowed_transitions(xfer),

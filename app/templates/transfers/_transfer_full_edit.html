@@ -139,6 +139,59 @@
              {{ 'disabled' if locked else '' }}>
     </div>
 
+    {# Settled on -- the civil day the money actually moved (ruling R-ED).
+       Rendered ONLY for a settled transfer, because that is exactly when the
+       fact exists.  Deliberately NOT disabled on a finalised transfer, unlike
+       the amount / period / category / due-date above: those are BUDGET
+       DECISIONS the #26 lock protects, and this is an OBSERVED FACT about the
+       bank, corrected when the statement disagrees.
+
+       This is the ONLY correction door for the eight legacy settled rows whose
+       day had to be invented from a pay period's start (finding N-181) -- all
+       eight are transfer shadows, and a shadow's full-edit popover is this
+       form.
+
+       Changing it MOVES MONEY: the day is the ``entry_date`` both shadows'
+       ledger postings are filed under, and the service re-dates them plus both
+       endpoint accounts' anchor corrections in the same request.
+
+       ``xfer.settled_on`` is the model's read of the pair's shared day (it is
+       not a column).  The box renders for ANY settled transfer, INCLUDING one
+       whose pair carries no day -- and the condition excluded that case until a
+       neutral review named the consequence: an undated settled transfer is
+       exactly the shape that makes ``posting_service._entry_date`` raise
+       ``UndatedSettleError``, i.e. a 500 on the grid, and hiding the box left
+       that row with no way to state the day it ACTUALLY moved.  A second review
+       corrected the first's wording: a repair path did already exist, because an
+       identity-status Save falls back to ``display_today()``
+       (``_transfer_status.apply_status_to_all_three``) -- but it repairs to
+       TODAY, inventing a day, which is the one thing this whole step exists to
+       stop.  Typing the real day into the empty box is the repair that records a
+       fact.  The two doors must not disagree about this.
+
+       An empty submit means "leave the day alone", not "clear it": the schema
+       field is not ``allow_none``, so an empty value is dropped.  Set Status to
+       Projected to remove the day -- reverting is what says the money did not
+       move, and the ``title`` says so where it will be read.
+
+       ``max`` is TODAY (ruling R-EJ): a settled transfer's money has already
+       moved.  The browser refuses first; ``status_seam.reject_future_settle_day``
+       is the backstop.  No ``min`` -- a settle legitimately falls before its own
+       pay period. #}
+    {% if xfer.status and xfer.status.is_settled %}
+    <div class="mb-2">
+      <label class="form-label mb-0 small" for="settled-on-{{ xfer.id }}">
+        Money moved on
+      </label>
+      <input type="date" name="settled_on" id="settled-on-{{ xfer.id }}"
+             value="{{ xfer.settled_on.isoformat() if xfer.settled_on is not none else '' }}"
+             min="{{ settle_day_min.isoformat() }}"
+             max="{{ today.isoformat() }}"
+             class="form-control form-control-sm"
+             title="The day your bank actually moved this. Correct it if your statement shows a different day. Clearing it does nothing. Setting Status to Projected says the money did not move, and discards any day typed here.">
+    </div>
+    {% endif %}
+
     {# Save / Cancel buttons #}
     <div class="d-flex gap-1 mb-2">
       <button type="submit" class="btn btn-sm btn-primary flex-grow-1">
