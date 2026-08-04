@@ -403,15 +403,19 @@ index 60 on the clone's calendar), unreachable on today's data and owned by X-ak
 > *The lesson stands and the developer said it first: this step should have been decomposed across
 > sessions from the start.*
 >
-> **BRANCH STATE, re-measured from `git status -sb` / `git ls-remote` / `gh pr list`:**
+> **BRANCH STATE.**  *Naming the local HEAD hash here is a trap this record fell into twice, most
+> recently within an hour: the commit that WRITES this table moves HEAD past the hash it just wrote,
+> so the row is false the moment it lands.  What is stable is the last CODE commit and the remote,
+> and those are what the table carries.*  Re-measure the rest with
+> `git status -sb` / `git ls-remote` / `gh pr list`:
 >
 > | fact | value |
 > |---|---|
 > | branch | `feat/xf1-settle-day` |
-> | local HEAD | `4b0af18b` |
-> | `origin/feat/xf1-settle-day` | `e7f782d6` -- **5 commits BEHIND local; nothing since `e7f782d6` is pushed** |
+> | last CODE commit | `4b0af18b` (X-f1c3c) -- **HEAD is this or a later DOCS-ONLY commit; re-measure, do not read a hash out of this table** |
+> | `origin/feat/xf1-settle-day` | `e7f782d6` -- **nothing since `e7f782d6` is pushed** |
 > | PR | none |
-> | working tree | CLEAN -- 99 files landed in `4b0af18b`, migration `c81f0a5b3e27` included |
+> | working tree | CLEAN at `4b0af18b`; 99 files landed there, migration `c81f0a5b3e27` included |
 > | production | `d7c1f4a9e603` -- **none of this cluster is deployed** |
 >
 > | commit | step | suite at that commit |
@@ -501,10 +505,16 @@ index 60 on the clone's calendar), unreachable on today's data and owned by X-ak
 > longer has the dropped columns -- **it does NOT match `origin`, so a session that checks out the
 > pushed tree must re-run `python scripts/build_test_template.py`** with `TEST_DATABASE_URL` /
 > `TEST_ADMIN_DATABASE_URL` exported from `.env` (the script's default admin URL is a unix socket
-> that does not exist here).  This session's clones are `shekel_x3c_before` (HEAD's schema,
-> `b6d1e94c07af`), `shekel_x3c_after` (`c81f0a5b3e27`) and `shekel_x3c_mig` (the round-trip
-> throwaway), all on `shekel-dev-db` (port 5432) and all derived from `shekel_prodbase`.  A `git
-> worktree` at HEAD may be left under the session scratchpad; remove it with `git worktree prune`.
+> that does not exist here).  **Two clones are left in place deliberately, both on `shekel-dev-db`
+> (port 5432) and both derived from `shekel_prodbase`**, so X-f1c4's baseline needs no setup:
+> `shekel_x3c_before` at `b6d1e94c07af` (the pre-X-f1c3c schema, for a HEAD-side capture) and
+> `shekel_x3c_after2` at `c81f0a5b3e27` (the post side).  The throwaways this session made
+> (`shekel_x3c_after`, `_mig`, `_mig2`) are dropped.
+>
+> **A `git worktree` at `379ed1af` under `/tmp/.../8ca9f049-.../wt_base` belongs to a DIFFERENT
+> session and must be left alone.**  This session's own worktree is already removed.  `git worktree
+> prune` only clears entries whose directory is gone, so it is safe -- but do not remove that one by
+> hand.
 >
 > **THREE NEUTRAL ADVERSARIAL REVIEWS RAN BEFORE THE COMMIT AND ALL THREE FOUND REAL DEFECTS.**
 > Their whole residue is worked; what they found is worth stating, because two of the three found
@@ -534,11 +544,18 @@ index 60 on the clone's calendar), unreachable on today's data and owned by X-ak
 >   (113) where the AST count is **78**, and an attribution of where a deleted module's work went
 >   was asserted without being checked -- inside the note written to correct stale citations.
 >
-> **NEXT, in order:** (1) commit X-f1c3c; (3) **X-f1c4** -- now only the
-> statement-date FIELD and its render, because X-f1c3b did its period half and X-f1c3c closed
-> N-134; (4) **X-f1d**, the `anchor_settle_partition.md` archive move (N-175); (5) **push** --
-> nothing is on the remote yet; (6) tick X-f1c's leaves + re-point every row naming them in ONE
-> pass (rule 2); (7) the PR.  **X-an follows X-f1's ship**, not this branch.
+> **NEXT, in order, and X-f1c3c IS DONE so the list starts at (1) for a fresh session:**
+> **(1) X-f1c4** -- now only the statement-date FIELD and its render (`observed_on` on
+> `AnchorUpdateSchema`, one line in `grid/_anchor_edit.html`; rulings R-EE / R-EI, closes N-173),
+> because X-f1c3b did its period half and X-f1c3c closed N-134.  Its full scope is its own Section 5
+> entry -- read that, not this summary; (2) **X-f1d**, the `anchor_settle_partition.md` archive move
+> (N-175); (3) **push** -- nothing is on the remote yet; (4) tick X-f1c's leaves + re-point every row
+> naming them in ONE pass (rule 2); (5) the PR.  **X-an follows X-f1's ship**, not this branch.
+>
+> **Nothing X-f1c3c opened blocks X-f1c4.**  N-190 is CLOSED; N-191, N-192 and N-193 are OPEN and
+> owned by **X-ak**, none of them on X-f1c4's path.  N-193 in particular is a known, stated,
+> detected-and-rolled-back deadlock -- read its row before touching the lock, and do NOT "fix" it by
+> moving `lock_user_writes` without the write-service-entry change it actually needs.
 >
 > **DO NOT TICK X-f1c3a / X-f1c3b / X-f1c3c YET** -- a gate constraint, not an oversight.  Fourteen
 > Section 6 rows name X-f1c's leaves as their owner (**N-4**, **N-5**, **N-73**, **N-83**,
