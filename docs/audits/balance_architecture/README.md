@@ -228,6 +228,39 @@ Section 5 entry restates it inline (rule 5).
 
 ## 5. The steps
 
+### 5.0 The order of execution
+
+**A SCHEDULE, and every position is forced by a stated fact rather than a preference.** A block
+starts when its gate clears, not when the block above finishes. The phase headings below group the
+same steps by SUBJECT; this groups them by TIME. **The blocks PARTITION Section 6**: all 89 open
+findings are owned by a step in exactly ONE block, save the three the closed owner vocabulary sends
+outside the schedule (one `operator`, two `developer-decision`). Measured, not asserted.
+
+| # | block | the fact that forces its position | cost |
+|---|---|---|---|
+| 1 | **the anchor half** -- X-f1e, X-f1 ticks, X-an, X-f2, **X-f3**, X-f4, X-f5 | The only remaining work that moves a figure the developer reads: **N-171**'s `$15,065.08` gross / `-$1,495.10` net stays invisible on the income statement until X-f3, which is its OWN PR and MOVES MONEY | 28-35 h |
+| 2 | **X-ad then X-x, shipped as ONE PR** | Gated on `feat/xf1-settle-day` MERGING, not on block 1 finishing: X-ad's trace must replace the guarantee `accounts.current_anchor_period_id` gave, and X-f1c3c deletes that column. X-x is HELD behind X-ad (**R-DE**), so shipping the pair DISSOLVES the hold instead of maintaining a branch | 12-16 h |
+| 3 | **the posting restructure** -- X-ai-a/b/c/g, X-d re-land, X-ai-s, X-aj2, X-am, X-ak | **X-ai-s is HELD pending X-f3**; X-d is PARKED on **N-155**, whose fix is X-ai's placement; X-ak carries **N-193**, a reproducible unhandled 500 on a money route. **29 of Section 6's 89 rows live here** -- a third of the whole ledger (X-ai 13, X-ak 9, X-aj2 4, X-aj 1, X-d 1, X-am 1) | 31-42 h |
+| 4 | **the credit-card arc** (own document) | `CC1b`'s fold is specified against the reset semantics **R-EB deletes at X-f3**, and `CC3b` derives a settle from `paid_at`, **deleted at X-f1b**. Earliest correct start is after X-f4 and X-am | 74-104 h |
+| 5 | **X-f6, the bank import** (own document) | Consumes X-f2's outstanding set and X-f3's residual path (**R-EB**). After block 4 so ONE matching rule covers checking and card rows rather than being widened into them later | 22-31 h |
+| 6 | **the read-path residue** -- X-y, X-i1, X-i2, X-j, X-k, X-l, X-m, X-n, X-e, X-p, X-ab, X-ac | Nothing blocks on it and its footprint is disjoint from the write path (tag `xd-attempt-1-parked-n155`'s 30 `app/` files against `wip/x-x-held`'s 26: **zero overlap**, measured) | 50-70 h |
+| 7 | **the gate and vocabulary residue** -- X-ag, X-ah, X-al | Shares files with nothing; interleaves anywhere | 11-15 h |
+| 8 | **E2 and G** | Runs LAST by ruling; G2 must not begin before the boundary it rests on is proven | 28-44 h |
+
+**Two blocks leave this document and keep only their row here**:
+`docs/plans/implementation_plan_bank_import.md` (X-f6, not yet written) and the existing
+`docs/plans/implementation_plan_credit_card.md`. Both are FEATURES consuming this arc's output, not
+correctness fixes inside it, so rule 1 is not weakened. **The card plan's ratified sequencing is
+DISCHARGED, not pending, and its order must never be re-read as a live gate**: every balance-arc
+step it names has SHIPPED -- `C8`/`C9`, `D1`-`D3` and old `X1`-`X3` all resolve in archived records
+(the last closed by X-c2b2), and old `X4` survives here as X-e. What blocks the card arc is NEW and
+post-dates that 2026-07-19 ruling: R-EB. The row above is the gate.
+
+**The costs are measured against this arc's own history, not estimated** -- X-a (`929b3a72`,
+07-25) to X-f1c4c (`5fc22bba`, 08-04) is **98 in-session hours over 10 working days** and ~55 steps.
+**They assume Section 6 stops growing.** It grew 41 -> 104 between 07-27 and 08-04, then fell to
+**89** in the X-f1 tick pass -- the first fall of the arc, and the number to watch.
+
 **How to read the step IDs.** A suffix is a DECOMPOSITION of the step before it, appended when a
 step splits. **IDs are append-only and nothing is renumbered for readability** -- they are cited in
 commit messages, in code comments and in Section 6's owner column, and the gate reads this section
@@ -528,8 +561,12 @@ live step or a live finding still reads against them.
   `ledger_report_service/_attribution.py`'s two duplicate date loaders**, whose `duplicate-code`
   disable named the shipped step 3 as its resolver: X-d deletes their twin rather than extracting a
   third shared home, which is why extracting one now would be scaffolding for a caller X-d removes.
-  Both carried from `anchor_settle_partition.md` at its archive move. **PARKED on `feat/xd-checked-projection`**
-  (five commits, one deliberately RED, off PR #80) **and nothing there is for merge.** The park is
+  Both carried from `anchor_settle_partition.md` at its archive move. **PARKED at tag
+  `xd-attempt-1-parked-n155`** (six commits, one deliberately RED, off PR #80; the branch
+  `feat/xd-checked-projection` was deleted 2026-08-04 once the tag was pushed, because X-f4 deletes
+  `account_posting_service/_anchors.py` and the correction machinery that branch conflicted in, so
+  the code is a REFERENCE for the re-land and never a rebase candidate) **and nothing there is for
+  merge.** The park is
   **N-155**, the step's own assert: it compares an account's WHOLE ledger against its WHOLE
   source-row walk but rides on the PER-ROW write path, so any operation settling N rows one at a
   time grades a half-finished state and REFUSES the write -- three confirmed production defects,
