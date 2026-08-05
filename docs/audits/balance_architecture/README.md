@@ -31,12 +31,12 @@ from `git status -sb` when you edit this.
 
 | | | detail |
 |---|---|---|
-| **just landed** | **X-f1c4a** (`380d44dd`, ruling R-EQ) and **X-f1c4b** (`22e472e6`, the duplicate rule + migration `a3f6c1d84b90`), on top of X-f1c3's three leaves. The last CODE commit on `feat/xf1-settle-day` is `22e472e6`; it is pushed, there is **no PR**, and any doc commits after it are why you re-measure `git status -sb` rather than trusting a count here. Production still runs merge `e5f27154`, migration head `d7c1f4a9e603` -- none of this cluster is deployed | their Section 5 entries |
-| **in flight** | **X-f1c4c**, the last leaf: `observed_on` on the true-up form. Nothing is built for it yet | X-f1c4c's Section 5 entry |
-| **next** | X-f1c4c -> **X-f1e** (one door for a balance) -> X-f1 ticks -> X-an -> X-f2 -> **X-f3** (moves money, own PR) -> X-f4 -> X-f5 -> X-f6 | Section 5, in execution order |
-| **why this shape** | the anchor half was redesigned from scratch by ruling **R-EB**; R-EQ then designed the duplicate rule that had only ever been re-keyed | Section 3.3, and R-EB / R-EQ in Section 4 |
-| **before you run tests** | the local test template was rebuilt to `a3f6c1d84b90` and **no longer matches `origin`** -- re-run `scripts/build_test_template.py` after checking out the pushed tree | -- |
-| **hands off** | a `git worktree` at `379ed1af` under `/tmp/.../8ca9f049-.../wt_base` belongs to a THIRD session -- `git worktree prune` is safe, removing that one by hand is not | -- |
+| **just landed** | **X-f1c4c** (`5fc22bba`), the last leaf of X-f1c4: the true-up carries the statement day it was read from. No migration. Production still runs merge `e5f27154`, migration head `d7c1f4a9e603` -- **none of the X-f1 cluster is deployed** | its Section 5 entry, and the commit |
+| **in flight** | nothing. `feat/xf1-settle-day` carries the whole cluster and has **no PR** -- re-measure `git status -sb` rather than trusting a hash here | -- |
+| **next** | **X-f1e** (one door for a balance -- it owns N-195, N-198 and N-199) -> X-f1 ticks -> X-an -> X-f2 -> **X-f3** (moves money, own PR) -> X-f4 -> X-f5 -> X-f6 | Section 5, in execution order |
+| **why this shape** | the anchor half was redesigned from scratch by ruling **R-EB**; R-EQ then designed the duplicate rule that had only ever been re-keyed, and R-ER put the day rule in the module that owns what an assertion is | Section 3.3, and R-EB / R-EQ / R-ER in Section 4 |
+| **the live lesson** | X-f1c4c introduced a `$120.00` money defect by making user-supplied a field whose value had ALWAYS equalled another by construction | Section 8's first two bullets |
+| **before you run tests** | the local test template was rebuilt to `a3f6c1d84b90` and **no longer matches `origin`** -- re-run `scripts/build_test_template.py` after checking out the pushed tree. The old advice to override `IDLE_TIMEOUT_MINUTES` is DEAD: `TestingConfig` pins 720 itself, measured 7,851 green with the dev `.env`'s 10080 in effect | `app/config.py:447` |
 
 Section 5 is the work that remains, Section 6 every open defect with an owner, Section 4 the
 rulings that govern them, and `archive/` what already shipped.
@@ -392,30 +392,27 @@ live step or a live finding still reads against them.
           migration's own downgrade, the back-dated test against the pre-fix predicate, and each
           of the three lock tests against its own mutant -- five mutants, five kills, where the
           same four had survived the whole suite before these tests existed.
-        * [ ] **X-f1c4c** `feat(accounts): a true-up carries the statement day it was read from` --
-          rulings **R-EE** / **R-EI** / **R-ER**. `observed_on` on `AnchorUpdateSchema`, a second
-          line in `grid/_anchor_edit.html`, and the day threaded into `stage_anchor_true_up`. The
-          bound is `_reject_undatable_observation` REUSED, not restated: it already refuses a future
-          day and a day below `pay_period_service.earliest_recordable_day`, which is the same floor
-          R-EL gave the settle door. **Runs AFTER b**, so a user-typed day never meets the
-          content-keyed rule. Also deletes the now-false paragraph in
-          `models/loan_anchor_event.py` that schedules the re-key R-EQ replaced.
-          **Three forks the trace opened and the developer ruled, none of them in the one-line
-          plan** (2026-08-04). (1) Reuse needed the bound PUBLIC, and a cross-module private-name
-          import is finding **N-33**'s class, so R-ER moves it to `anchor_service`. (2) Reusing it
-          WHOLE would have answered a true-up with `"Cannot create an account for user_id=N"` and
-          re-introduced the refusal R-EO deleted from this exact door, so its schedule arm splits
-          out -- and the reason it gave was already false. (3) The editor's only rejection path
-          returned `jsonify(errors=...)` with no `Shekel-Designed-Fragment` header against a
-          `swap:false` 4xx config, so **clearing the balance box and pressing Save did nothing
-          visible**; the whole gate becomes a designed fragment rather than only the new date arm.
-          Consequential and stated rather than smuggled: `account_service.earliest_observable_day`
-          is DELETED as a behaviourless pass-through once the guard leaves, and both date inputs
-          take `pay_period_service.earliest_recordable_day` directly, as
-          `routes/transactions/forms.py` already did. **Its baseline
-          needs no setup**: `shekel_x3c_before` (`b6d1e94c07af`) and `shekel_x3c_after2`
-          (`c81f0a5b3e27`) are left in place on `shekel-dev-db` (5432), plus `shekel_req_after`
-          at this leaf's own head.
+        * [x] **X-f1c4c** `feat(accounts): a true-up carries the statement day it was read from`
+          -- rulings **R-EE** / **R-EI** / **R-ER**, committed `5fc22bba`. `observed_on` on
+          `AnchorUpdateSchema` and on a second line of `grid/_anchor_edit.html`, threaded into
+          `stage_anchor_true_up`; the day rule moves to `anchor_service.resolve_observation_day`
+          (R-ER) with the schedule arm split out as account creation's own precondition, and
+          `account_service.earliest_observable_day` deleted as a behaviourless pass-through.
+          **The `models/loan_anchor_event.py` deletion this entry carried was already discharged at
+          X-f1c4b**; the file is untouched.
+          **It fixed TWO live defects the plan had not named**: the editor's only rejection rendered
+          NOTHING (no designed-fragment header against a `swap:false` 4xx config), and back-dating
+          decoupled the reconcile prompt from the coverage boundary, offering purchases a
+          back-dated statement cannot show -- `$120.00` of projected checking released on money that
+          never left the bank. The prompt follows the BOUNDARY now, not the click.
+          **Four neutral adversarial reviews**, the fourth attacking the fixes; between them they
+          refuted two of this step's own claims, and one of theirs was refuted by reading the
+          migration. Developer ruling: back-dating below an account's opening is ALLOWED and graded
+          (a loan's origination is contractual, a cash account's opening is merely its earliest
+          record). **Verified**: pylint 10.00/10, gates 168, suite **7,851** under both clock
+          zones, baselines byte-identical on a production clone with the loan baseline unmoved,
+          **16 mutants planted and killed** -- six of which had survived the entire suite before
+          these tests existed. No migration; no figure moves. Opened **N-197**, **N-198**, **N-199**.
   * [x] **X-f1d** the archive move (**N-175**) -- **DONE at the 2026-08-04 trim.**
     `anchor_settle_partition.md` is in `archive/`. **Ruling R-EB had bound this to X-f1's ship** so
     the superseded plan and its successor would land together; the developer decoupled it on
@@ -814,7 +811,7 @@ both columns, and `balance_at/_investment.py` was deleted outright at `17c57cde`
 rather than re-pointed line by line, because a census rewritten to today's addresses stops being a
 record of what was measured.
 
-**The ledger stands at 102 rows.**
+**The ledger stands at 104 rows.**
 
 | id | finding (one line) | worst measured | status | closed by |
 |---|---|---|---|---|
@@ -918,6 +915,8 @@ record of what was measured.
 | N-193 (X-f1c3c's concurrency review 2026-08-04; the deadlock REPRODUCED against a real PostgreSQL with its own `DeadlockDetected` DETAIL line, the statement ordering CAPTURED from a real loan-payment settle) | **The per-user write lock closes the reconcile race and opens an advisory-vs-ROW-lock cycle, because it is not the FIRST lock its transaction takes.**  A settle takes row locks first -- `update_transfer` UPDATEs the transfer and both shadows, they flush, and the posting sync reaches `lock_user_writes` only afterwards (measured: statements 2-4 against statement 19) -- while `truncate_pay_periods` / `regenerate` / `reset` take the lock first and then bulk-DELETE pay periods, which CASCADEs to `budget.transactions` and locks exactly the rows the settle may hold.  Same user, opposite orders.  **A first version of this step's docstrings and record called deadlock "structurally impossible on every request path"**, an argument that considered only advisory-vs-advisory ordering | PostgreSQL detects it and aborts one transaction: an unhandled 500 on a money route, **no money corrupted** (the loser rolls back atomically).  Needs a settle and a schedule rebuild for one user to overlap -- two browser tabs.  `$0.00` of ledger divergence, against the silent permanent divergence the lock replaces, which is why the lock ships anyway | **OPEN.**  The fix is the invariant stated in `user_write_lock`'s docstring -- *this lock must be the FIRST lock a transaction takes* -- which means acquiring at the write-SERVICE entry (the status seam, `update_transfer`, the delete/restore paths) rather than inside the reconcile.  Deliberately NOT done in this leaf: it is a different change with its own blast radius and needs its own review, and the decompose-at-the-leaf-boundary lesson is this step's own.  What ships here is the correct claim, not the correct lock placement.  **NARROWED at X-f1c4b**, which moves acquisition to the TOP of both anchor doors so those two satisfy the invariant; the settle paths still do not, and they are what this row is now about | X-ak |
 | N-194 (X-f1c4's trace 2026-08-04, measured on the `shekel_x3c_after2` production clone) | **The anchor duplicate-submit guard is CONTENT-KEYED, so it cannot tell a transport retry from a deliberate re-assertion, and it resolves that ambiguity in the direction that shows a wrong balance.** Both anchor tables carry a unique index over the row's own values (`(account_id, anchor_balance, observed_on)` on checking, `(account_id, anchor_date, anchor_balance, utc_day(created_at))` on loans) and both write doors translate the violation into "idempotent success". A retry and a deliberate re-assertion are byte-identical by construction, so the index must mis-classify one of them; today it refuses the re-assertion, tells the user it saved, and leaves the superseded figure rendering. The plan's inherited remedy was to add `utc_day(created_at)` to the checking key, which narrows the window to one recording day rather than removing the guess | Account 1 carries 2-3 assertions on **3 of its 50** assertion days, every cluster inside ONE recording day, so the refusal is reachable in the developer's ordinary workflow the moment X-f1c4c lets the day be typed. The LOAN door already lets it be typed, so its exposure is live today. The whole amount of any corrected balance, for as long as the wrong one stands | **FIXED at X-f1c4b** (`22e472e6`, pushed, no PR): the rule compares against the assertion governing THE DAY THE SUBMISSION ASSERTS, in the write door under the lock it already takes, and both indexes are deleted. Chosen over the re-key on an asymmetry that was measured rather than argued -- a false refusal renders a wrong balance, while the surplus row the index prevents posts `$0.00` (zero-delta correction, no legs, `_anchors.py:200`). Two corrections the reviews forced: the horizon is the submitted DAY, not the latest assertion, or every back-dated retry appends a permanent row; and the surplus row DOES render on the loan dashboard's drift card, so "renders nowhere" was only ever true of cash | X-f1c4b |
 | N-195 (X-f1c4b's adversarial reviews 2026-08-04, found independently by two of three) | **The account EDIT page and the one-click editor answer the SAME balance submission differently.** `update_account` gates on `new_anchor != resolve_anchor(account).balance` -- balance only -- while the write door asks whether the submission changes what governs, which includes the DAY. With a governing assertion of `$500` observed last week, submitting `$500` through the grid editor appends (moving `reconciled_through` forward, which changes which purchases the walk absorbs) and through the edit page writes nothing. Both reviews recommended deleting the route's gate; **that would be worse**, because the edit form PRE-FILLS the balance, so a rename would silently assert today's balance and absorb unreconciled purchases | `$0.00` of stored divergence -- the two doors write different histories from the same click, and only one of them is a balance reading | **OPEN, deliberately not fixed here.** The gate is the right rule for a form that is not a balance-reading surface; the defect is that the surface exists at all. X-f1e deletes the field and the branch, which removes the second door rather than aligning it | X-f1e |
+| N-198 (X-f1c4c's test-quality review 2026-08-04, mutant `drop_notes` survived the suite) | **`anchor_service.stage_anchor_true_up`'s `notes` parameter has no production caller.** `routes/accounts/crud.update_account` omits it and `account_service.create_account` writes the origination row's `notes` directly rather than through the stager, so the only caller passing it is one test, which asserts nothing about it. Deleting the parameter left the suite green. It is the shape findings **N-96** / **N-85** record one tier up -- a public surface kept alive by its own tests | `$0.00`: an unused keyword writes no wrong figure. The cost is that the audit trail's "which door wrote this assertion" label is available and unused, so an assertion's provenance is recoverable only from its balance and day | **OPEN.** Not deleted in X-f1c4c: the parameter is one of the two things that would let the remaining write doors be told apart in the audit trail, and X-f1e is the step that decides how many doors there are. Delete it there, or start using it | X-f1e |
+| N-199 (X-f1c4c's design + test reviews 2026-08-04; the dashboard half CORRECTED by the re-review, which read the template rather than the claim) | **The back-dated acknowledgement reaches ONE of the five surfaces the anchor editor opens from.** It rides on the out-of-band `#anchor-as-of` snippet. The cockpit, the investment hero and the cash hero (`revert=accounts` / `investment` / `cash`) carry no such element and are skipped outright. **The DASHBOARD carries one but destroys it**: `dashboard/_pulse.html` puts `#anchor-as-of` inside `#pulse-section`, which is `hx-trigger="balanceChanged from:body"` -- and the true-up's own response fires that trigger, so the pulse re-fetches and wipes the snippet within one round-trip. Only the grid's, which sits outside any refresh target, survives. A first version of this row claimed the dashboard was covered. Separately the amortizing-kind refusal is the one rejection on this door still returning a raw 422 rather than a designed fragment | `$0.00`: no figure is wrong, and the kind refusal is unreachable through the UI because `anchor_form` refuses to OPEN the editor for a loan. The exposure is a user on four of five surfaces believing a back-dated correction did not save and entering it again | **OPEN.** The acknowledgement needs a mount no `balanceChanged` region owns, which is a per-surface rendering decision rather than a one-line addition. The grid -- the developer's own highest-stakes surface -- is the one that works, so this is recorded rather than rushed | X-f1e |
 | N-197 (X-f1c4c's trace 2026-08-04, read off the two doors) | **The app's two anchor doors bound "not in the future" on two DIFFERENT clocks, and one of them also sets a form's `max`.** The cash door refuses through `display_today()` (the user's civil day); the loan door refuses through `date.today()` in BOTH its schema (`schemas/validation/loans.py:161`) and the input bound its form renders (`routes/loan/dashboard.py:548`), which is the process day. One question -- "has this day happened for this user" -- with two answers, on the two surfaces that ask it about a balance assertion. A specific instance of **N-191**'s 113-site census, kept as its own row because it is a DIVERGENCE between two doors rather than one site's choice, and because X-f1c4c is what puts the cash clock on a user-visible form | `$0.00` on any TZ-pinned deployment, and production pins `TZ: America/New_York`, so the two are equal there. Unpinned (CI does this on purpose), the loan door accepts and pre-fills a day the user has not seen, for the hours the clocks disagree | **OPEN.** Not fixed in X-f1c4c: it is the LOAN door, and moving its refusal boundary is a behaviour change on a write path that needs its own measurement rather than riding a cash-form commit | X-ak |
 | N-196 (X-f1c4b's design review 2026-08-04, verified against the tree) | **The loan resolver and the loan write door break an anchor tie two different ways.** `loan_resolver._periods.select_latest_anchor` takes `max(key=(anchor_date, created_at))` -- first-maximal-wins, no `id` term, and `LoanAnchorFact` carries no `id` to add -- while `anchor_service._governing_loan_anchor` orders `(anchor_date, created_at, id)` DESC, last-wins. `CreatedAtMixin.created_at` is `server_default=func.now()`, which PostgreSQL evaluates at TRANSACTION START, so every row written in one transaction shares an instant and a tie between two DIFFERENT balances is producible by any backfill, migration or fixture that writes two anchors at once | `$0.00` on today's data: production carries 6 loan anchor events with no same-date pair. Reachable by a future backfill, and the consequence is that the door compares against a row the dashboard is not showing -- N-194's shape, one table over | **OPEN.** Not fixed in X-f1c4b: adding the `id` tie-break changes which anchor a loan RESOLVES to, which is a read-path behaviour change on the balance the loan pages render, and it needs its own measurement rather than riding a write-door commit. The false claim that the two orderings agree was deleted in the same commit that found it | X-an |
 
@@ -984,6 +983,15 @@ One line each; the evidence is in the commits of the step that paid for it.
   mis-classify one of them. Ask which way it errs and what each error costs: here a false refusal
   rendered a wrong balance while a surplus append-only row posted `$0.00`, and the two are not the
   same size (R-EQ).
+* **WHEN TWO VALUES HAVE ALWAYS BEEN EQUAL BY CONSTRUCTION, THE CODE THAT COUPLES THEM DOES NOT
+  EXIST.** Making one of them user-supplied does not break a rule you can go and read -- it breaks
+  an assumption nothing ever had to write down. Before changing what a field can hold, ask which
+  values it has silently equalled: the reconcile prompt keyed on `MAX(observed_on)` was correct for
+  as long as every true-up stamped today, and nothing in it named that dependency (X-f1c4c).
+* **A SUCCESS RESPONSE THAT RENDERS THE PRE-SUBMISSION STATE IS INDISTINGUISHABLE FROM A NO-OP.**
+  The same defect as an unrenderable refusal, on the other side, and it hides better -- a 200 looks
+  like it worked. A write whose whole point is invisible on the surface that made it will be made
+  twice.
 * **A REFUSAL THE SUBMITTING SURFACE CANNOT RENDER IS NOT A REFUSAL.** Before adding a rule that a
   user can trip, press the button and watch: this app's htmx config leaves 4xx non-swapping, so a
   correct 400 with a correct message was invisible and the form simply sat there. Ask what the
