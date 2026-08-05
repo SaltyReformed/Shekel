@@ -501,6 +501,43 @@ class TestAccountUpdate:
             assert response.status_code == 200
             assert b"Checking" in response.data
 
+    def test_edit_form_offers_no_balance_field(
+        self, app, auth_client, seed_user,
+    ):
+        """The EDIT form has no way to assert a balance (X-f1e, N-195).
+
+        The surface half of the deletion, and it is tested separately from the
+        route half because the two fail independently: a route that ignores the
+        field while the form still renders it shows the user a control that
+        silently does nothing, and a form that drops it while the route still
+        accepts it leaves the second door reachable by a forged POST.
+
+        Paired with the CREATE form below, which must KEEP both inputs -- an
+        account's opening balance is a different fact from a later reading, and
+        a deletion that took the opening with it would be a regression wearing
+        this step's clothes.
+        """
+        with app.app_context():
+            account_id = seed_user["account"].id
+
+            html = auth_client.get(f"/accounts/{account_id}/edit").data.decode()
+
+            assert 'name="anchor_balance"' not in html
+            assert 'name="observed_on"' not in html
+            # The fields this door DOES own are still there.
+            assert 'name="name"' in html
+            assert 'name="account_type_id"' in html
+
+    def test_create_form_keeps_the_opening_assertion(
+        self, app, auth_client, seed_user,
+    ):
+        """The CREATE form keeps the balance AND the day it was true."""
+        with app.app_context():
+            html = auth_client.get("/accounts/new").data.decode()
+
+            assert 'name="anchor_balance"' in html
+            assert 'name="observed_on"' in html
+
     def test_update_account(self, app, auth_client, seed_user):
         """POST /accounts/<id> updates the account and redirects."""
         with app.app_context():
@@ -890,15 +927,22 @@ class TestTypeChangeBoundaryGuard:
                 LedgerAccountClassEnum.LIABILITY,
             )
 
-    def test_update_account_anchor_edit_posts_trueup(
+    def test_update_account_anchor_edit_books_nothing(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """The direct anchor edit books its true-up correction (C6 point 3).
+        """The account EDIT door asserts no balance (plan step X-f1e, N-195).
 
-        POSTing a new ``anchor_balance`` through the account edit form runs
-        the guarded reconcile: the history row lands AND the Step-5 sync
-        books the true-up delta in the same transaction, so the Checking
-        total moves from its $1000.00 opening to the asserted $1500.00.
+        The inverse of the test this replaces, which asserted that POSTing an
+        ``anchor_balance`` here booked a true-up correction and moved the
+        Checking total from $1000.00 to $1500.00.  That door was the app's
+        SECOND balance-assertion surface and it answered the same submission
+        differently from the first, so it was deleted rather than aligned.
+
+        Three things are checked because the deletion has three layers and any
+        one of them alone would be a fence: the schema DISCARDS the field, so a
+        forged submission cannot reach a writer; no assertion row is appended;
+        and the posted ledger does not move.  The rest of the edit still
+        applies, which is what says the route was narrowed rather than broken.
         """
         # Pylint: ``import-outside-toplevel`` -- localized to the one test
         # that needs this reader, matching the file's convention.
@@ -907,22 +951,42 @@ class TestTypeChangeBoundaryGuard:
 
         with app.app_context():
             checking = seed_user["account"]
+            checking_id = checking.id
             scenario_id = seed_user["scenario"].id
+            checking_type = (
+                db.session.query(AccountType).filter_by(name="Checking").one()
+            )
+            assertions_before = (
+                db.session.query(AccountAnchorHistory)
+                .filter_by(account_id=checking_id).count()
+            )
             assert posting_service.account_posting_total(
-                checking.id, scenario_id,
+                checking_id, scenario_id,
             ) == Decimal("1000.00")
 
             response = auth_client.post(
-                f"/accounts/{checking.id}",
-                data={"anchor_balance": "1500.00"},
+                f"/accounts/{checking_id}",
+                data={
+                    "name": "Renamed Checking",
+                    "account_type_id": str(checking_type.id),
+                    "anchor_balance": "1500.00",
+                },
                 follow_redirects=True,
             )
 
             assert response.status_code == 200
             assert b"updated" in response.data
+            db.session.expire_all()
+            # The balance the form submitted reached nothing.
             assert posting_service.account_posting_total(
-                checking.id, scenario_id,
-            ) == Decimal("1500.00")
+                checking_id, scenario_id,
+            ) == Decimal("1000.00")
+            assert (
+                db.session.query(AccountAnchorHistory)
+                .filter_by(account_id=checking_id).count()
+            ) == assertions_before
+            # ...and the edit this door DOES own still landed.
+            assert db.session.get(Account, checking_id).name == "Renamed Checking"
 
 
 class TestHardDeletePostingLedgerGuard:
@@ -1507,56 +1571,68 @@ class TestTrueUpStatementDay:
                 account_id=acct_id,
             ).count() == before
 
-    def test_the_account_edit_door_files_its_assertion_under_today(
+    def test_a_rename_through_the_edit_door_moves_no_coverage_boundary(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """The SECOND anchor write door's day, which nothing graded.
+        """A rename is not a balance reading (plan step X-f1e, finding N-195).
 
-        ``routes/accounts/crud.update_account`` calls ``stage_anchor_true_up``
-        with no ``observed_on``, so it relies entirely on
-        ``resolve_observation_day``'s ``None`` default.  A neutral review shimmed
-        that door to back-date every assertion it writes and **5,742 tests stayed
-        green**.
+        This is the defect the deleted door made reachable, tested at the level
+        that matters rather than at the field: the edit form PRE-FILLED the
+        current balance, so an ordinary rename re-submitted it, and the two
+        doors disagreed about whether that is an assertion.  The route's own
+        gate ("did the FIELD change") said no; ruling R-EQ's rule in
+        ``stage_anchor_true_up`` ("does this change what GOVERNS", the day
+        included) said yes -- and the day is what moves ``reconciled_through``,
+        which decides which outstanding purchases the walk treats as already
+        inside the asserted balance.
 
-        The day matters on this door specifically: it is what moves
-        ``reconciled_through``, and the comment defending this door's separate
-        change-detection gate turns on the claim that a rename must not move it.
-        That argument was carried by a comment and by nothing else.
+        Aligning the route on the service's rule would have made a rename
+        absorb purchases the user never reconciled.  Deleting the surface makes
+        the question unaskable, and that is what this asserts: after an edit
+        through this door, the coverage boundary is exactly where it was.
 
-        Plan step **X-f1e** deletes this door; until it does, this is what says
-        the door behaves.
+        It replaces a test that pinned the OLD door's day, whose own docstring
+        said it existed only until this step landed.
+
+        **The submitted balance is CHANGED, deliberately.**  An unchanged echo
+        -- what the form actually pre-filled -- is the one input the deleted
+        route gate short-circuited, so a test built on it passes against the old
+        code too and grades nothing.  Measured: a first version of this test did
+        exactly that and survived a revert.  A CHANGED balance is what the old
+        door staged an assertion from, dated today, which is what moved the
+        boundary; so this fails on revert, which is the only reason it is here.
         """
         with app.app_context():
             acct_id = seed_user["account"].id
             account = db.session.get(Account, acct_id)
             governing_before = cash_ledger.resolve_anchor(account)
+            boundary_before = cash_ledger.reconciled_through(acct_id).observed_day
             checking_type = (
                 db.session.query(AccountType).filter_by(name="Checking").one()
             )
 
             response = auth_client.post(f"/accounts/{acct_id}", data={
-                "name": account.name,
+                "name": "Renamed By Hand",
                 "account_type_id": str(checking_type.id),
-                "anchor_balance": "4321.00",
+                "anchor_balance": str(governing_before.balance + Decimal("250.00")),
                 "version_id": str(account.version_id),
             }, follow_redirects=True)
 
             assert response.status_code == 200
             db.session.expire_all()
-            appended = (
-                db.session.query(AccountAnchorHistory)
-                .filter_by(account_id=acct_id, anchor_balance=Decimal("4321.00"))
-                .one()
+            assert cash_ledger.reconciled_through(acct_id).observed_day == (
+                boundary_before
+            ), (
+                "a rename must not move the coverage boundary -- doing so "
+                "silently absorbs purchases the user never reconciled"
             )
-            assert appended.observed_on == display_today(), (
-                "the edit door files under the USER's today; a back-dated one "
-                "would silently leave reconciled_through where it was"
+            governing_after = cash_ledger.resolve_anchor(
+                db.session.get(Account, acct_id),
             )
-            # The prior assertion is untouched -- this door APPENDS, it does not
-            # rewrite what was already asserted.
-            assert cash_ledger.governing_anchor_on(
-                acct_id, governing_before.observed_on,
-            ).balance == governing_before.balance
+            assert (governing_after.balance, governing_after.observed_on) == (
+                governing_before.balance, governing_before.observed_on,
+            )
+            assert db.session.get(Account, acct_id).name == "Renamed By Hand"
 
     def test_a_refusal_keeps_the_surface_that_opened_the_editor(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -6903,34 +6979,72 @@ class TestAnchorKindGate:
             assert response.status_code == 422
             assert b"not a cash anchor" in response.data
 
-    def test_update_form_rejects_loan_anchor_change(
+    def test_update_form_cannot_assert_a_loan_balance_at_all(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """POST /accounts/<id> with a CHANGED anchor on a loan is refused."""
+        """A loan anchor through the edit door is unreachable, not refused.
+
+        This door used to need its OWN copy of the amortizing-kind gate: it
+        reached ``stage_anchor_true_up`` without passing
+        ``apply_anchor_true_up``'s :class:`AmortizingAccountAnchorError`, so
+        without the copy a forged POST could write a cash assertion onto a loan
+        -- finding B-15, where the real Mortgage's balance was set to $1.00 with
+        an HTTP 200 while the ledger said $177,277.97.
+
+        Plan step X-f1e deleted the door, so the gate is not needed here and was
+        deleted with it.  The predecessor of this test asserted the REFUSAL
+        ("not a cash anchor" in the response); refusing is now the wrong thing
+        to assert, because there is nothing to refuse -- the schema discards the
+        field.
+
+        **What separates the two worlds is whether the REST of the edit
+        applied**, and that is the assertion this test turns on.  "200, balance
+        unmoved, nothing appended" was true under the old gate as well: it
+        flashed and redirected, which ``follow_redirects`` renders as a 200, and
+        it wrote nothing -- including the rename the user also asked for.  So
+        the rename is CHANGED here and asserted: the old door threw the whole
+        edit away, the new one ignores one field and applies the rest.  Without
+        that line this test passes against a revert, which a neutral review
+        measured before it was added.
+        """
         with app.app_context():
             loan = self._loan(seed_user)
-            column_before = cash_ledger.resolve_anchor(loan).balance
+            loan_id = loan.id
+            balance_before = cash_ledger.resolve_anchor(loan).balance
+            assertions_before = (
+                db.session.query(AccountAnchorHistory)
+                .filter_by(account_id=loan_id).count()
+            )
 
-            response = auth_client.post(f"/accounts/{loan.id}", data={
-                "name": loan.name,
+            response = auth_client.post(f"/accounts/{loan_id}", data={
+                "name": "Renamed Gate Loan Two",
                 "account_type_id": loan.account_type_id,
                 "anchor_balance": "1.00",
             }, follow_redirects=True)
 
             assert response.status_code == 200
-            assert b"not a cash anchor" in response.data
-
-            refreshed = db.session.get(Account, loan.id)
-            assert cash_ledger.resolve_anchor(refreshed).balance == column_before
+            db.session.expire_all()
+            refreshed = db.session.get(Account, loan_id)
+            # The loan's balance is untouched -- finding B-15's $1.00.
+            assert cash_ledger.resolve_anchor(refreshed).balance == balance_before
+            assert (
+                db.session.query(AccountAnchorHistory)
+                .filter_by(account_id=loan_id).count()
+            ) == assertions_before
+            # ...and the edit this door DOES own still landed, which the old
+            # gate's flash-and-redirect refusal would have discarded.
+            assert refreshed.name == "Renamed Gate Loan Two"
 
     def test_update_form_allows_loan_edit_with_unchanged_anchor(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
         """A loan rename with the form's unchanged anchor echo succeeds.
 
-        The edit form round-trips ``current_anchor_balance`` on every
-        submit; an unchanged echo is not an assertion, so gating it
-        would break every ordinary loan edit.
+        The edit form used to round-trip the asserted balance on every submit,
+        and an unchanged echo is not an assertion, so gating it would have
+        broken every ordinary loan edit.  Plan step X-f1e removed the field, so
+        a stale client still sending it must not break the edit either -- which
+        is what this now pins.
         """
         with app.app_context():
             loan = self._loan(seed_user)

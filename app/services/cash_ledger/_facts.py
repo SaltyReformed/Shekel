@@ -205,9 +205,10 @@ def resolve_anchor(account: Account) -> AnchorPoint:
     scenario column and accounts are not scenario-scoped at the storage tier --
     and its only remaining use was the reconciliation log payload deleted above.
     Keeping it for "API symmetry" with the row loaders beside it would have
-    forced a ``BalanceContext`` into the write doors and the account-edit
-    validator, none of which hold one: an argument a caller must fabricate is
-    the shape this plan's Section 8 rules a defect rather than a contract.
+    forced a ``BalanceContext`` into the write doors, none of which hold one: an
+    argument a caller must fabricate is the shape this plan's Section 8 rules a
+    defect rather than a contract.  (The account-edit validator was the other
+    caller named here; plan step X-f1e deleted its read entirely.)
 
     Args:
         account: The :class:`~app.models.account.Account` to resolve.

@@ -112,8 +112,9 @@ def sync_account_anchor_postings(account_id: int, scenario_id: int) -> None:
     state, so the second silently under-posts by the first's amount.  The lock
     is taken HERE, at the one per-(account, scenario) chokepoint every door
     funnels through, rather than at any single door: the true-up is not the
-    only caller, and the settle self-heal, the direct anchor edit and the
-    pay-period resync reach the identical window.  See
+    only caller, and the settle self-heal, the account-type change (the *direct
+    anchor edit* until plan step X-f1e deleted it) and the pay-period resync
+    reach the identical window.  See
     :mod:`app.services.user_write_lock` for the reproduction and for why the
     lock is per USER rather than per account.
 

@@ -97,6 +97,16 @@ class AccountUpdateSchema(BaseSchema):
     and short-circuits with 409 Conflict on mismatch.  This door writes real
     ``accounts`` columns, so unlike :class:`AnchorUpdateSchema` -- which stopped
     writing any at plan step X-f1c3c -- it still has a row to guard.
+
+    **It carried ``anchor_balance`` until plan step X-f1e** (finding **N-195**),
+    which made this the app's second balance-assertion door.  Dropping the field
+    is what makes the deletion structural rather than cosmetic: a forged POST
+    carrying ``anchor_balance`` is now DISCARDED by the schema, so the route
+    cannot assert a balance even if a later edit reintroduced a branch that
+    tried to.  :class:`AnchorUpdateSchema` is the one schema that accepts an
+    asserted balance, and it is reached only through ``accounts.true_up``.
+    ``AccountCreateSchema`` keeps its own, which is the account's OPENING and a
+    different fact from a later reading.
     """
 
     @pre_load
@@ -107,7 +117,6 @@ class AccountUpdateSchema(BaseSchema):
     name = fields.String(validate=validate.Length(min=1, max=100))
     account_type_id = RowId()
     is_active = fields.Boolean()
-    anchor_balance = fields.Decimal(places=2, as_string=True)
     version_id = RowId(validate=validate.Range(min=1))
 
 

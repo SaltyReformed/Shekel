@@ -673,9 +673,12 @@ def true_up(account_id):
     #
     # The DAY's bounds are the seam's, not this route's (ruling R-ER): a future
     # day and a day below the owner's schedule are refused by
-    # ``anchor_service.resolve_observation_day``, which the two anchor write
-    # doors share, so the account-edit door and this one cannot come to disagree
-    # about which days are assertable.  Raised BEFORE anything is staged and
+    # ``anchor_service.resolve_observation_day``, shared with
+    # ``account_service.create_account`` so an account's OPENING assertion and
+    # every later one agree about which days are assertable.  (It was shared
+    # with the account-edit door too, until plan step X-f1e deleted that door --
+    # this is now the only place a balance is RE-asserted.)  Raised BEFORE
+    # anything is staged and
     # before the owner's write lock is taken, so there is no transaction to roll
     # back here -- and it is a 400 rather than a 500 because the date box makes
     # it ordinary user input.

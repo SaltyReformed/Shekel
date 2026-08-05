@@ -70,7 +70,6 @@ from app.utils.session_helpers import (
     SESSION_CREATED_AT_KEY,
     SESSION_LAST_ACTIVITY_KEY,
 )
-from app.services import cash_ledger
 
 
 _KNOWN_TOTP_SECRET = "JBSWY3DPEHPK3PXP"
@@ -1065,8 +1064,13 @@ class TestUpdateAccountIsNotStepUpGated:
 
         A session whose last password entry is well past the old
         5-minute window must update the account normally, NOT bounce
-        to /reauth.  The anchor-balance write the form accepts goes
-        through with it.
+        to /reauth.
+
+        **The anchor half of this test left with the field** (plan step X-f1e,
+        finding N-195): the payload used to carry an ``anchor_balance`` and the
+        assertion used to check it was written, because this route accepted one.
+        It no longer does -- a balance is asserted at ``accounts.true_up`` -- so
+        the subject is the name edit, which is what this route still owns.
         """
         with app.app_context():
             account_id = seed_user["account"].id
@@ -1085,7 +1089,6 @@ class TestUpdateAccountIsNotStepUpGated:
                 data={
                     "name": "Renamed Checking",
                     "account_type_id": checking_type.id,
-                    "anchor_balance": "9999.99",
                 },
                 follow_redirects=False,
             )
@@ -1096,7 +1099,6 @@ class TestUpdateAccountIsNotStepUpGated:
             # The edit went through despite the stale step-up stamp.
             acct = db.session.get(Account, account_id)
             assert acct.name == "Renamed Checking"
-            assert cash_ledger.resolve_anchor(acct).balance == Decimal("9999.99")
 
     def test_fresh_session_succeeds(
         self, app, auth_client, seed_user,

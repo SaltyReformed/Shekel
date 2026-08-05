@@ -109,12 +109,13 @@ Two consequences worth stating, both measured before the indexes were dropped:
     already taken a row lock -- and ``lock_user_writes`` runs through
     ``db.session.execute``, which AUTOFLUSHES, so a caller that assigns to an ORM
     row before calling here emits that ``UPDATE`` first and inverts the order
-    silently.  The three HTMX/loan doors do only reads beforehand;
-    ``routes/accounts/crud.update_account`` takes the lock itself, at the top,
-    because two of its own branches would otherwise order the advisory lock and
-    the ``accounts`` row lock oppositely (a deadlock reproduced against a real
-    database while reviewing this step).  **None of that closes finding N-193**,
-    whose cycle is settle-versus-truncate and is untouched.
+    silently.  The three HTMX/loan doors do only reads beforehand.
+    ``routes/accounts/crud.update_account`` took the lock at its own top for the
+    same reason, against a deadlock between two of its OWN branches reproduced
+    against a real database; **plan step X-f1e deleted the branch that raced**,
+    so that route no longer reaches this module at all and keeps the lock purely
+    to hold the invariant on its type-change path.  **None of that closes
+    finding N-193**, whose cycle is settle-versus-truncate and is untouched.
 
 Pre-Commit-16 this consolidation eliminates two byte-identical
 ``try/except`` blocks in ``app/routes/accounts.py``; the loan
@@ -129,15 +130,25 @@ SQLAlchemy ``db.session`` proxy, which IS Flask-bound -- consistent
 with every other service in ``app/services/`` (e.g. ``entry_service``,
 ``balance_resolver``).
 
-``update_account`` (the full-form POST handler in
-``app/routes/accounts/crud.py``) deliberately does NOT route through
-:func:`apply_anchor_true_up`.  Its mutation set is multi-field and its conflict
-UX is flash+redirect rather than a partial swap, so folding it in would require
-optional-parameter shapes that re-grow the helper.  It DOES share
-:func:`stage_anchor_true_up`, so the two doors cannot drift on what an
-assertion is.  Its own C-17 lock survives and is not this ruling's business:
-that door writes real ``accounts`` columns (name, type, sort order), so it
-still has a row to guard.
+**A cash balance is asserted at exactly ONE door, and that is plan step X-f1e**
+(finding **N-195**).  ``routes/accounts/crud.update_account`` -- the full-form
+account edit -- used to be a second one: it accepted an ``anchor_balance`` and
+staged an assertion through :func:`stage_anchor_true_up`, sharing the definition
+but not the DECISION.  The two answered the same submission differently, because
+that form PRE-FILLS the current balance: saving a rename re-submitted it
+unchanged, which the route read as "no change" while ruling R-EQ's rule here
+reads a submission as new when it changes what GOVERNS, the day included.
+Aligning the route on this module's rule would have been worse -- a rename would
+then assert today's balance and absorb purchases the user never reconciled -- so
+the SURFACE was deleted rather than the gate.  What remains is
+:func:`apply_anchor_true_up`, reached from ``accounts.true_up`` on every screen
+that shows a balance.
+
+One consequence is worth stating where the rule lives: **the amortizing-kind
+refusal is no longer duplicated at a route validator.**
+``_validate_update_account`` carried its own copy because that door reached the
+stager without passing :func:`apply_anchor_true_up`'s gate; with the door gone,
+:class:`AmortizingAccountAnchorError` is raised in one place.
 """
 
 from __future__ import annotations
@@ -332,10 +343,19 @@ def stage_anchor_true_up(
 ) -> bool:
     """Append a dated balance ASSERTION for ``account`` without committing.
 
-    The flush-only in-memory core of :func:`apply_anchor_true_up`, shared with
-    the full-form account edit (``routes/accounts/crud.update_account``) so the
-    two write doors cannot drift on what an assertion IS.  It does NOT clear
-    past-dated entries and does NOT commit -- the caller owns the transaction.
+    The flush-only in-memory core of :func:`apply_anchor_true_up`.  It does NOT
+    clear past-dated entries and does NOT commit -- the caller owns the
+    transaction.
+
+    **It existed as a separate name to be SHARED, and since plan step X-f1e it
+    has one caller.**  The full-form account edit
+    (``routes/accounts/crud.update_account``) was the second, and deleting that
+    door -- finding **N-195** -- left this function called only from the
+    ``apply`` wrapper immediately below it.  The split still earns its keep as
+    the transaction boundary (stage vs. stage-reconcile-commit), but its
+    "two doors cannot drift" justification is spent, and the ``notes`` parameter
+    it grew for the other caller now reaches no production writer at all
+    (finding **N-198**).
 
     **It decides whether there is anything to append, and that decision is
     ruling R-EQ.**  It takes the owner's write lock, asks
@@ -345,14 +365,15 @@ def stage_anchor_true_up(
 
     * **The lock precedes the read.**  A compare-then-append is a
       read-modify-write, so an unserialised one lets two concurrent submissions
-      each read the pre-state and both append.  It is taken here rather than at
-      a door because BOTH doors reach this function.  It is NOT a guarantee that
-      the advisory lock is the transaction's FIRST lock: ``lock_user_writes``
+      each read the pre-state and both append.  It is taken here, with the read
+      it protects, rather than at the door.  It is NOT a guarantee that the
+      advisory lock is the transaction's FIRST lock: ``lock_user_writes``
       executes a statement and therefore AUTOFLUSHES, so a caller holding a
       dirty ORM row emits that ``UPDATE`` -- and takes its row lock -- before
-      this line.  That ordering is the caller's to keep, which is why
-      ``routes/accounts/crud.update_account`` takes the same re-entrant lock at
-      its own top rather than relying on this one.
+      this line.  That ordering is the CALLER's to keep (finding **N-193**), and
+      it is why ``routes/accounts/crud.update_account`` still takes the same
+      re-entrant lock at its own top even though plan step X-f1e stopped it
+      reaching this function at all.
     * **The governing assertion is asked for, never re-derived.**
       :func:`app.services.cash_ledger.governing_anchor_on` shares ONE query with
       ``resolve_anchor`` -- same tie-breaks, ``(observed_on, created_at, id)``
@@ -391,9 +412,11 @@ def stage_anchor_true_up(
     balance, and the day it was true.
 
     The amortizing-kind gate (:class:`AmortizingAccountAnchorError`) lives on
-    :func:`apply_anchor_true_up`, deliberately NOT here, so a caller that is
-    not asserting a CASH balance (the account-edit door, which refuses the kind
-    at its own validator) is not gated twice.
+    :func:`apply_anchor_true_up`, deliberately NOT here.  It was placed there so
+    the second door -- which refused the kind at its own route validator -- was
+    not gated twice; plan step X-f1e deleted that door and its duplicate gate,
+    so the rule is now stated exactly once, on the only public entry point that
+    asserts a cash balance.
 
     Args:
         account: An attached :class:`Account` row.  Caller owns the
@@ -401,20 +424,22 @@ def stage_anchor_true_up(
         new_balance: The validated :class:`Decimal` balance being asserted.
         observed_on: The civil day the balance is asserted TRUE for (ruling
             **R-DH**), or ``None`` for the user's today -- which is what a
-            true-up means when the form's date box is left at its default and
-            what the account-edit door, which offers no such box, always means.
+            true-up means when the form's date box is left at its default.
             Bounded by :func:`resolve_observation_day`, never trusted raw.
         notes: Optional free-text note for the history row's ``notes``
             column, so the audit trail names the originating path.  ``None``
-            leaves it NULL, matching the true-up route path.
+            leaves it NULL, which is what every production caller now passes:
+            the only writer that labels its row is
+            ``account_service.create_account`` (``"origination"``), and it
+            constructs the row itself rather than coming through here (finding
+            **N-198**).
 
     Returns:
         ``True`` when an assertion was appended to the session; ``False`` when
         the submission matched the governing assertion and nothing was staged.
         The caller decides what an unchanged submission means for ITS
-        transaction -- :func:`apply_anchor_true_up` rolls back and reports
-        ``UNCHANGED``, while the account-edit door has other pending work and
-        must not.
+        transaction: :func:`apply_anchor_true_up` rolls back and reports
+        ``UNCHANGED``.
 
     Raises:
         ValidationError: When *observed_on* is in the future or precedes the
