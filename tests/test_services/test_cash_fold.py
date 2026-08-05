@@ -1153,7 +1153,6 @@ def _build_drift_shape(db_session, seed_user, periods):
     override_anchor(
         db_session, seed_user["account"], periods[_DRIFT_REASSERTION_INDEX],
         _DRIFT_REASSERTION,
-        notes="X-g4a drift oracle re-assertion",
         at=_DRIFT_REASSERTION_AT,
     )
 

@@ -42,7 +42,7 @@ from app import ref_cache
 from app.enums import AcctCategoryEnum
 from app.extensions import db
 from app.exceptions import ValidationError
-from app.models.account import Account, AccountAnchorHistory
+from app.models.account import Account
 from app.models.pay_period import PayPeriod
 from app.models.ref import AccountType
 from app.services import (
@@ -101,16 +101,18 @@ def _require_pay_period_schedule(user_id: int) -> None:
 class AccountSpec:
     """The canonical inputs for creating an account.
 
-    Bundles the six fields every :func:`create_account` call site
+    Bundles the five fields every :func:`create_account` call site
     supplies into one cohesive value object so the factory takes a
     single argument instead of a long keyword list.  The clump is what
     every caller co-loads: a new account is always created from an
-    owner, a type, a name, and a real-money anchor (with the civil day
-    that anchor was true and an audit-trail note).  **It carried an
-    optional explicit anchor PERIOD until ruling R-EO** (plan step
-    X-f1c3b), which deleted the column the field fed.  Open-ended
-    ``Account`` columns are NOT part of this concept -- they pass
-    through :func:`create_account`'s ``**extra_columns`` instead.
+    owner, a type, a name, and a real-money anchor with the civil day
+    that anchor was true.  **It shed two fields to two rulings**: an
+    optional explicit anchor PERIOD at **R-EO** (plan step X-f1c3b),
+    which deleted the column it fed, and the audit-trail ``notes``
+    string at **R-ES** (plan step X-f1e2), which deleted the column
+    ``AccountAnchorHistory`` held it in.  Open-ended ``Account``
+    columns are NOT part of this concept -- they pass through
+    :func:`create_account`'s ``**extra_columns`` instead.
 
     Frozen so a constructed spec is an immutable record of one
     creation request.
@@ -135,11 +137,6 @@ class AccountSpec:
             one funded after its opening was typed, is stated rather
             than guessed at.  A FUTURE day is rejected -- a balance
             cannot have been observed on a day that has not happened.
-        notes: Free-text label written into the origination
-            ``AccountAnchorHistory`` row's ``notes`` column so the
-            audit trail names the originating path.  Defaults to
-            ``"origination"``; callers like the seed scripts override
-            to e.g. ``"origination (seed_user.py)"``.
     """
 
     user_id: int
@@ -147,7 +144,6 @@ class AccountSpec:
     name: str
     anchor_balance: Decimal
     observed_on: date | None = None
-    notes: str = "origination"
 
 
 def create_account(spec: AccountSpec, **extra_columns) -> Account:
@@ -155,8 +151,30 @@ def create_account(spec: AccountSpec, **extra_columns) -> Account:
 
     Performs the E-19 / CRIT-01 invariant work in one place: resolves
     the assertion's civil day, constructs the Account, flushes to assign
-    ``account.id``, then inserts the origination history row carrying that
-    day.  The pair is appended to the current session; the caller commits.
+    ``account.id``, then appends the origination assertion carrying that
+    day.  The pair is added to the current session; the caller commits.
+
+    **The assertion is appended through
+    :func:`app.services.anchor_service.stage_anchor_true_up`, not constructed
+    here, and that is ruling R-ES** (plan step X-f1e2).  This function built the
+    ``AccountAnchorHistory`` row itself until then, which made it the table's
+    SECOND writer -- and the two differed in every rule that is not the row's
+    columns: the stager takes the owner's write lock, applies ruling R-EQ's
+    did-this-change compare, and logs the resolved day in the one line both
+    doors share.  With one writer those rules cannot be true on one path and
+    absent on the other.  The order is also better than it was, and the
+    improvement is MEASURED rather than argued: the advisory lock used to appear
+    at statement 7, five statements after the assertion INSERT at statement 2;
+    it is now at statement 3 with the INSERT at 5.  **That does not put this
+    path outside finding N-193's class** -- ``INSERT INTO budget.accounts``
+    still runs first and takes an index lock on ``uq_accounts_user_name``, so
+    the advisory lock is not the transaction's FIRST lock.  An adversarial
+    review traced the cycles: none exists against N-193's named antagonists
+    (a pay-period truncate / reset / regenerate CASCADEs to
+    ``journal_entries``, ``transfers``, ``transactions`` and
+    ``recurrence_rules``, never to ``accounts``), and the one it did reproduce
+    -- create versus a same-name rename -- is pre-existing and made LESS likely
+    by this change.  Recorded as finding **N-202**.
 
     **It no longer resolves an anchor PERIOD.**  It used to derive one from
     ``observed_on`` (``resolve_anchor_period_id``, deleted as callerless in the
@@ -177,8 +195,7 @@ def create_account(spec: AccountSpec, **extra_columns) -> Account:
 
     Args:
         spec: The :class:`AccountSpec` carrying the owner, type, name,
-            anchor balance, the day that balance was true, and the audit
-            note for the account to create.
+            anchor balance and the day that balance was true.
         **extra_columns: Additional ``Account`` columns (e.g.
             ``sort_order``, ``is_active``).  Forwarded verbatim to
             the model constructor.
@@ -201,6 +218,14 @@ def create_account(spec: AccountSpec, **extra_columns) -> Account:
         TypeError: When ``anchor_balance`` is not a ``Decimal``.  The
             project rejects ``float`` in monetary code; passing
             ``int`` or ``str`` is also a caller bug.
+        RuntimeError: When the write door declines to append the origination
+            assertion.  Structurally unreachable -- the stager declines only
+            when an assertion already governs the submitted day, and an account
+            flushed two lines earlier carries none -- and raised rather than
+            ignored because this function IS the E-19 / CRIT-01 invariant.  The
+            same fail-loud placement
+            :func:`app.services.cash_ledger.resolve_anchor` documents for the
+            READ side, moved to the write that establishes the state.
     """
     # ``Decimal`` is the canonical type for monetary values per
     # ``docs/coding-standards.md``.  ``int`` is exact when converted to
@@ -231,10 +256,11 @@ def create_account(spec: AccountSpec, **extra_columns) -> Account:
     _require_pay_period_schedule(spec.user_id)
     # The day the asserted balance was TRUE (ruling R-DH), defaulted and bounded
     # in ONE call by the module that owns what an assertion is (ruling R-ER).
-    # It was defaulted here and then handed to a separate guard that read the
-    # clock again -- two readings, and a midnight tick between them could refuse
-    # this function's own default (the floor arm; the note that used to sit here
-    # considered only the future arm, whose ``>`` test is forgiving).
+    # ONE call is the whole point and it is load-bearing twice over: the floor
+    # moves with the clock, so a second application can refuse what this one
+    # produced, and this one runs BEFORE the account row exists so a refusal
+    # leaves nothing behind.  ``ObservationDay`` is what carries "already
+    # bounded" to the writer instead of a convention.
     observed_on = anchor_service.resolve_observation_day(
         spec.user_id, spec.observed_on,
     )
@@ -248,16 +274,28 @@ def create_account(spec: AccountSpec, **extra_columns) -> Account:
     db.session.add(account)
     db.session.flush()
 
-    # Origination history row -- the resolver in Commit 4 reads the
-    # most recent AccountAnchorHistory entry as the date-anchored
-    # source of truth, so writing this row at creation guarantees the
-    # column cache and the event stream agree from t0.
-    db.session.add(AccountAnchorHistory(
-        account_id=account.id,
-        anchor_balance=anchor_balance,
+    # The origination assertion goes through the ONE write door (ruling R-ES,
+    # plan step X-f1e2).  This function constructed the row itself until then,
+    # which made it the table's second writer: it took no owner write lock, ran
+    # no did-this-change compare and logged a different line, so "one door
+    # writes an assertion" held by convention rather than by construction.
+    #
+    # The return is CHECKED.  The stager declines only when an assertion already
+    # governs the submitted day, and a just-flushed account carries none, so a
+    # decline means the E-19 / CRIT-01 invariant this module exists to enforce
+    # has broken.  The alternative is an anchorless account whose first READER
+    # raises out of ``cash_ledger.resolve_anchor``, far from the cause.
+    if not anchor_service.stage_anchor_true_up(
+        account=account,
+        new_balance=anchor_balance,
         observed_on=observed_on,
-        notes=spec.notes,
-    ))
+    ):
+        raise RuntimeError(
+            f"create_account: no origination assertion was appended for "
+            f"account id={account.id} (${anchor_balance} on {observed_on.civil_day}) "
+            "-- an assertion already governs that day on a just-created "
+            "account, which breaks the E-19 / CRIT-01 invariant."
+        )
 
     # Pair the account with its chart-of-accounts ledger account
     # (Build-Order Step 2): exactly one Asset/Liability ledger account per
@@ -280,7 +318,7 @@ def create_account(spec: AccountSpec, **extra_columns) -> Account:
 
     logger.info(
         "Created account %s (id=%d, user_id=%d) asserted at $%s on %s",
-        spec.name, account.id, spec.user_id, anchor_balance, observed_on,
+        spec.name, account.id, spec.user_id, anchor_balance, observed_on.civil_day,
     )
     return account
 

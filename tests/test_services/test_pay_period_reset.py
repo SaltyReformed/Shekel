@@ -248,7 +248,7 @@ class TestResetHappyPath:
 
             def _assertions():
                 return sorted(
-                    (row.id, row.anchor_balance, row.observed_on, row.notes)
+                    (row.id, row.anchor_balance, row.observed_on)
                     for row in db.session.query(AccountAnchorHistory)
                     .filter_by(account_id=account.id)
                 )
@@ -263,18 +263,27 @@ class TestResetHappyPath:
             db.session.commit()
 
             after = _assertions()
-            assert after == before
-            # Graded on the POST-reset snapshot.  A first version of this line
-            # read ``for row in before`` -- the PRE-reset list, which cannot
-            # contain a row the reset had not yet written, so it was true
-            # whatever the reset did.  It is a named DIAGNOSTIC rather than an
-            # independent grader: the row-for-row equality above already fails
-            # for any fabricated row, and fails first.  It survives because the
-            # failure message names the exact defect (finding N-181's class),
-            # which ``after == before`` does not.
-            assert not any(
-                row[3] == "origination (pay-period reset)" for row in after
-            ), "the reset must not have fabricated an assertion"
+            # **The named diagnostic MOVED ONTO this assertion at plan step
+            # X-f1e2**, and nothing is ungraded by the move.  A second line
+            # used to scan the post-reset snapshot for a row whose ``notes``
+            # read ``"origination (pay-period reset)"`` -- the exact string the
+            # old behaviour fabricated -- purely so a failure would NAME the
+            # defect; its own comment recorded that it was a diagnostic and not
+            # an independent grader, because the row-for-row equality here
+            # already fails for any fabricated row and fails first.  Ruling
+            # R-ES deleted the ``notes`` column, so the string cannot be
+            # searched for; the message it carried is stated here instead.
+            # What is lost is the ability to distinguish "fabricated by the
+            # reset" from "fabricated by something else", which no assertion
+            # in this test ever made use of.
+            assert after == before, (
+                "the reset changed this account's assertion history.  Measured "
+                "on production before ruling R-EO: a reset deleted all 78 "
+                "assertions and wrote 9 fabricated replacements, because the "
+                "row was filed under a pay period on a CASCADE FK.  A balance "
+                "assertion is a fact about a BANK and survives any schedule "
+                f"rebuild.\nbefore={before}\nafter ={after}"
+            )
 
     def test_balance_preserved_and_correct_after_reset(self, app, db, seed_user):
         """Disciplines 2 + 3: anchor balance preserved, balances recompute.

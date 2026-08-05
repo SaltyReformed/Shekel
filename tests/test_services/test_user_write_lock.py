@@ -23,9 +23,14 @@ Three properties, because each can hold while another fails:
 2. **It really serialises.**  A second transaction holding the same key blocks
    the reconcile, and releasing it lets the reconcile through.  This is the
    only property that grades PostgreSQL's behaviour rather than our SQL.
-3. **It is keyed on the OWNER**, so it is one key per user and never two --
-   which is what makes deadlock structurally impossible on every request path
-   (:mod:`app.services.user_write_lock`).
+3. **It is keyed on the OWNER**, so a transaction takes one advisory key and
+   never two, and no pair of advisory acquisitions can be ordered differently
+   by two transactions (:mod:`app.services.user_write_lock`).  **That is NOT
+   "deadlock is structurally impossible on every request path", which this
+   docstring claimed until plan step X-f1e2**: the advisory lock is not always a
+   transaction's FIRST lock, so an advisory-versus-ROW-lock cycle remains
+   reachable -- finding **N-193**, reproduced against a real PostgreSQL, and
+   the module's own docstring retracts the stronger claim in the same words.
 """
 
 from __future__ import annotations
@@ -38,7 +43,7 @@ from sqlalchemy.exc import OperationalError
 
 from app.extensions import db
 from app.models.ref import AccountType
-from app.models.account import Account
+from app.models.account import Account, AccountAnchorHistory
 from app.services import (
     account_posting_service,
     account_service,
@@ -515,3 +520,94 @@ class TestTheAnchorDoorsTakeTheLockBeforeTheyRead:
             "this branch, while its anchor branch takes them the other way "
             "round -- two tabs, one of each, deadlock"
         )
+
+    def test_account_creation_locks_before_it_writes_the_origination(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """``create_account`` locks the owner before the assertion INSERT.
+
+        **The control for plan step X-f1e2 / ruling R-ES, and it FAILS on the
+        revert.**  The factory used to construct the origination
+        ``AccountAnchorHistory`` row itself, so the app's first assertion about
+        an account was the one assertion written with no advisory lock at all --
+        the lock did not appear until two lines later, inside
+        ``sync_account_anchor_postings_all_scenarios``, by which time the row
+        was already in.  Routing the write through
+        ``anchor_service.stage_anchor_true_up`` moves the lock in front of it.
+
+        Graded on ORDER rather than presence, because presence was already true
+        before the change and would have passed either build.
+        """
+        assert seed_periods_today
+        with app.app_context():
+            checking_type_id = db.session.query(AccountType).filter_by(
+                name="Checking",
+            ).one().id
+
+            _account, statements = capture_sql_statements(
+                lambda: account_service.create_account(
+                    account_service.AccountSpec(
+                        user_id=seed_user["user"].id,
+                        account_type_id=checking_type_id,
+                        name="R-ES Origination Probe",
+                        anchor_balance=Decimal("2500.00"),
+                    ),
+                ),
+            )
+
+            assert took_advisory_lock(statements), (
+                "account creation emitted no advisory lock at all"
+            )
+            # The KEY, not merely the presence.  ``pg_advisory_xact_lock`` binds
+            # both arguments, so every acquisition emits identical SQL and only
+            # the parameters say WHAT was locked -- an adversarial review
+            # mutated this call to ``lock_user_writes(account.id)`` and the
+            # whole 693-test control set still passed.  Two different keys in
+            # one transaction is the unordered-acquisition hazard the single
+            # per-owner key exists to remove.
+            owner_id = seed_user["user"].id
+            assert _account.id != owner_id, (
+                "this control cannot tell an owner key from an ACCOUNT key "
+                f"while both are {owner_id} -- the fixture must not make them "
+                "equal, or the mutation it exists to catch passes"
+            )
+            assert set(advisory_lock_keys(statements)) == {
+                (_USER_WRITE_LOCK_NAMESPACE, owner_id),
+            }, (
+                "every advisory lock on the create path must be keyed on the "
+                f"OWNER ({owner_id}); the run took "
+                f"{advisory_lock_keys(statements)}.  More than one DISTINCT "
+                "key in one transaction is the unordered-acquisition hazard "
+                "the single per-owner key exists to remove (the repeats are "
+                "the same re-entrant key and are harmless)"
+            )
+            # The INSERT specifically.  ``governing_anchor_on``'s SELECT names
+            # the same table and comes first, so a build whose stager read the
+            # table and returned without appending would satisfy a bare
+            # "touched the table" check while writing nothing.
+            assert any(
+                text.strip().upper().startswith(
+                    "INSERT INTO BUDGET.ACCOUNT_ANCHOR_HISTORY",
+                )
+                for text, _params in statements
+            ), (
+                "the factory INSERTed no anchor history -- the test graded "
+                "nothing, and the E-19 invariant is broken besides"
+            )
+            assert advisory_lock_precedes(
+                statements, "account_anchor_history",
+            ), (
+                "the origination assertion was written BEFORE the owner's "
+                "write lock was taken, which is the second-writer shape "
+                "ruling R-ES deleted"
+            )
+
+            # And the row the whole path exists to produce.  Ordering is not
+            # correctness on its own: a build that locked correctly and wrote
+            # the wrong day or balance passes every assertion above.
+            written = db.session.query(AccountAnchorHistory).filter_by(
+                account_id=_account.id,
+            ).all()
+            assert len(written) == 1
+            assert written[0].anchor_balance == Decimal("2500.00")
+            assert written[0].observed_on == display_today()

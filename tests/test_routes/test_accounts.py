@@ -84,7 +84,6 @@ def _create_other_user_account():
             account_type_id=checking_type.id,
             name="Other Checking",
             anchor_balance=Decimal("500.00"),
-            notes="_create_other_user_account fixture",
         ),
     )
     db.session.commit()
@@ -4151,7 +4150,6 @@ def _override_account_anchor(db_session, account, pay_period, anchor_balance):
 
     override_anchor(
         db_session, account, pay_period, anchor_balance,
-        notes="C7 symptom #5 test: anchor override",
     )
     db_session.commit()
 

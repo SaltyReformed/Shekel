@@ -3123,7 +3123,7 @@ def add_anchor_history(db_session, account, period, balance, days_ago=0):
     return entry
 
 
-def override_anchor(db_session, account, period, balance, *, notes, at=None):
+def override_anchor(db_session, account, period, balance, *, at=None):
     """Replace ``account``'s current anchor with ``balance`` on ``period``.
 
     Appends an :class:`AccountAnchorHistory` row -- the source of truth, and
@@ -3160,10 +3160,15 @@ def override_anchor(db_session, account, period, balance, *, notes, at=None):
         period: The :class:`~app.models.pay_period.PayPeriod` the new anchor is
             recorded against; its ``start_date`` is the default instant.
         balance: The new anchor balance (Decimal -- construct from a string).
-        notes: The row's ``notes`` text, so a failing suite can tell which
-            fixture wrote the assertion it is looking at.
         at: Optional aware-UTC instant to stamp the row with, overriding the
             period-start default.
+
+    **It took a required ``notes`` label until ruling R-ES** (plan step
+    X-f1e2), so a failing suite could tell which fixture wrote the assertion it
+    was looking at.  The column is deleted -- nothing in ``app/`` read it -- and
+    the diagnostic it served is answered better by the row's own ``id``,
+    ``observed_on`` and ``created_at``, which the fixture controls and the
+    engine actually orders on.
 
     Returns:
         The created :class:`AccountAnchorHistory` row (flushed, not committed
@@ -3187,7 +3192,6 @@ def override_anchor(db_session, account, period, balance, *, notes, at=None):
     history = AccountAnchorHistory(
         account_id=account.id,
         anchor_balance=balance,
-        notes=notes,
         created_at=asserted_at,
         observed_on=observed_day_of(asserted_at),
     )
@@ -3339,7 +3343,6 @@ def append_balance_assertion(
     row = AccountAnchorHistory(
         account_id=account.id,
         anchor_balance=Decimal(str(balance)),
-        notes="test assertion",
         observed_on=observed_day_of(at),
     )
     db_session.add(row)

@@ -276,8 +276,7 @@ class TestAnchorTrueUpBalance:
             )
             override_anchor(
                 db.session, seed_user["account"], seed_periods[0],
-                Decimal("2000.00"), notes="workflow true-up 2k",
-                at=settle_instant_on(seed_periods[0].start_date),
+                Decimal("2000.00"), at=settle_instant_on(seed_periods[0].start_date),
             )
             db.session.commit()
             balances_2k = balance_at.cash_balance_map(
@@ -286,8 +285,7 @@ class TestAnchorTrueUpBalance:
 
             override_anchor(
                 db.session, seed_user["account"], seed_periods[0],
-                Decimal("3000.00"), notes="workflow true-up 3k",
-                at=settle_instant_on(
+                Decimal("3000.00"), at=settle_instant_on(
                     seed_periods[0].start_date + timedelta(days=1),
                 ),
             )

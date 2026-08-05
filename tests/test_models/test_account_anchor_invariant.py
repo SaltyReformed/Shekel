@@ -240,7 +240,13 @@ class TestCreationPathsWriteAnchor:
             # halves of the signup path to one clock.
             assert histories[0].observed_on == signup_day
             assert histories[0].anchor_balance == Decimal("0.00")
-            assert "origination" in (histories[0].notes or "")
+            # Nothing about PROVENANCE is asserted on the row: ruling R-ES
+            # deleted the ``notes`` column this line used to read
+            # (``"origination" in histories[0].notes``).  The assertion is
+            # (account, day, balance); which door wrote it is
+            # ``system.audit_log``'s to answer, and that this path writes it
+            # through the one door is graded structurally by
+            # ``TestTheAssertionTableHasOneWriter`` below.
             assert cash_ledger.resolve_anchor(account).balance == Decimal("0.00")
 
     def test_create_account_route_writes_anchor_and_history(
@@ -291,4 +297,340 @@ class TestCreationPathsWriteAnchor:
                 <= current_period.end_date
             )
             assert history.anchor_balance == Decimal("1500.00")
-            assert history.notes == "origination"
+
+
+# ---------------------------------------------------------------------------
+# X-f1e2 / ruling R-ES -- the assertion table has ONE writer, and the row
+# carries no provenance label.
+# ---------------------------------------------------------------------------
+
+
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+#: The trees a production writer could live in.  ``scripts/`` is in scope
+#: because those run against the real database.
+_PRODUCTION_TREES = ("app", "scripts")
+
+#: The one module and function permitted to write an ``AccountAnchorHistory``
+#: row, as ``(path relative to the repository root, enclosing def)``.
+_SOLE_WRITER = ("app/services/anchor_service.py", "stage_anchor_true_up")
+
+_MODEL = "AccountAnchorHistory"
+_TABLE = "account_anchor_history"
+
+#: SQLAlchemy helpers that write rows without constructing the ORM object.
+_BULK_WRITERS = frozenset({"bulk_insert_mappings", "bulk_save_objects"})
+
+#: SQL verbs that MUTATE.  A literal naming the table under one of these is a
+#: write the ORM census cannot see.
+_SQL_WRITE_VERBS = ("insert into", "update ", "delete from")
+
+
+def _enclosing_defs(tree) -> dict[int, str]:
+    """Map each AST node's id to the name of its INNERMOST enclosing ``def``.
+
+    Recursive descent rather than :func:`ast.walk` + ``setdefault``.  ``walk``
+    is breadth-first, so an outer function is visited before the inner one it
+    contains and ``setdefault`` keeps the OUTER name -- a construction hidden in
+    a nested helper would then be reported at the enclosing function, which is
+    the wrong address to send a reader to.  Caught by an adversarial review of
+    this gate's first draft.
+
+    Args:
+        tree: A parsed module.
+
+    Returns:
+        ``{id(node): enclosing def name}`` for every node inside some ``def``.
+    """
+    import ast  # pylint: disable=import-outside-toplevel
+
+    owner: dict[int, str] = {}
+
+    def descend(node, current: str | None):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                descend(child, child.name)
+            else:
+                if current is not None:
+                    owner[id(child)] = current
+                descend(child, current)
+
+    descend(tree, None)
+    return owner
+
+
+def _anchor_history_writers(root: pathlib.Path) -> list[tuple[str, str, int]]:
+    """Return every site under *root* that could WRITE an assertion row.
+
+    An AST walk rather than a grep, because a grep cannot tell a construction
+    from a docstring naming the class -- and the modules involved name it dozens
+    of times in prose.  It catches four shapes, because an adversarial review
+    planted each one against the first draft and the draft saw none of them:
+
+    * the ORM constructor, **through an import alias too** -- ``from ... import
+      AccountAnchorHistory as AAH`` then ``AAH(...)``.  The alias is resolved
+      per module from its own ``ImportFrom`` nodes;
+    * ``insert(AccountAnchorHistory)`` / ``insert(AccountAnchorHistory.__table__)``
+      in any Core statement;
+    * ``bulk_insert_mappings`` / ``bulk_save_objects`` naming the model;
+    * a raw-SQL string literal that names the TABLE under a write verb.
+
+    A ``SELECT`` literal naming the table is NOT a writer and is not reported
+    (``scripts/integrity_check.py`` has two, legitimately).
+
+    Args:
+        root: The directory to census.  Parameterised so the negative control
+            can point this exact function at a planted tree -- a control that
+            re-implements the census grades a copy, which is what the first
+            draft did.
+
+    Returns:
+        ``(path relative to the repository root when it is inside it, enclosing
+        def, line)`` for each writing site, sorted.  ``"<module>"`` is the
+        enclosing name for module scope.
+    """
+    import ast  # pylint: disable=import-outside-toplevel
+
+    def label(path: pathlib.Path) -> str:
+        try:
+            return str(path.relative_to(_REPO_ROOT))
+        except ValueError:
+            return path.name
+
+    found: list[tuple[str, str, int]] = []
+    for path in sorted(root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        owner = _enclosing_defs(tree)
+        names = {_MODEL}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    if alias.name == _MODEL and alias.asname:
+                        names.add(alias.asname)
+
+        def mentions_model(node, local_names=names) -> bool:
+            import ast as _ast  # pylint: disable=import-outside-toplevel
+
+            return any(
+                (isinstance(inner, _ast.Name) and inner.id in local_names)
+                or (
+                    isinstance(inner, _ast.Attribute)
+                    and inner.attr in local_names
+                )
+                for inner in _ast.walk(node)
+            )
+
+        for node in ast.walk(tree):
+            hit = False
+            if isinstance(node, ast.Call):
+                called = (
+                    node.func.id if isinstance(node.func, ast.Name)
+                    else getattr(node.func, "attr", None)
+                )
+                if called in names:
+                    hit = True
+                elif called in _BULK_WRITERS and mentions_model(node):
+                    hit = True
+                elif called in {"insert", "Insert"} and mentions_model(node):
+                    hit = True
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                lowered = node.value.lower()
+                hit = _TABLE in lowered and any(
+                    verb in lowered for verb in _SQL_WRITE_VERBS
+                )
+            if hit:
+                found.append((
+                    label(path), owner.get(id(node), "<module>"), node.lineno,
+                ))
+    return sorted(found)
+
+
+class TestTheAssertionTableHasOneWriter:
+    """X-f1e2 / ruling R-ES: one function appends an assertion, and no other.
+
+    **A structural gate, not a style preference.**  Until this step
+    ``account_service.create_account`` constructed the origination row itself,
+    which meant that one assertion in the whole app was written with no owner
+    write lock, no ruling R-EQ did-this-change compare and no shared log line.
+    Nothing in the code said so -- the two constructions simply looked alike --
+    and this is what says it.
+    """
+
+    def test_exactly_one_place_writes_an_assertion(self):
+        """One function in ``app/`` + ``scripts/`` writes the assertion table.
+
+        Fails the moment a second writer appears, naming it and its line, which
+        is the failure mode the ruling exists to prevent rather than a count for
+        its own sake.
+        """
+        writers_found: list[tuple[str, str, int]] = []
+        for tree in _PRODUCTION_TREES:
+            writers_found.extend(_anchor_history_writers(_REPO_ROOT / tree))
+        assert writers_found, (
+            "the AST census found NO writer of the assertion table in "
+            f"{list(_PRODUCTION_TREES)} -- the census is broken, not the code "
+            "(an assertion has to be written somewhere)"
+        )
+        writers = {(path, func) for path, func, _line in writers_found}
+        assert writers == {_SOLE_WRITER}, (
+            "budget.account_anchor_history must have exactly one writer "
+            f"({_SOLE_WRITER[0]}::{_SOLE_WRITER[1]}, ruling R-ES).  Found: "
+            + ", ".join(
+                f"{path}:{line} in {func}()"
+                for path, func, line in writers_found
+            )
+        )
+
+    def test_the_census_sees_every_write_shape_it_claims_to(self, tmp_path):
+        """The census's negative control, run against the census itself.
+
+        **Five shapes, because an adversarial review planted each one against
+        the first draft and the draft reported CLEAN on four of them** -- an
+        import alias, a Core ``insert()``, ``bulk_insert_mappings``, and raw
+        SQL.  A gate that sees only the canonical constructor claims "one
+        writer" while proving "one use of one spelling".
+
+        It calls :func:`_anchor_history_writers` rather than re-implementing
+        it, which the first draft did: a control that grades a copy leaves the
+        real function's alias arm, SQL arm and enclosing-``def`` attribution
+        ungraded.
+        """
+        (tmp_path / "prose_only.py").write_text(
+            '"""Mentions AccountAnchorHistory and account_anchor_history."""\n'
+            "def reads_it():\n"
+            '    """SELECT id FROM budget.account_anchor_history."""\n'
+            '    return "SELECT id FROM budget.account_anchor_history"\n',
+            encoding="utf-8",
+        )
+        (tmp_path / "writers.py").write_text(
+            "from app.models.account import AccountAnchorHistory as AAH\n"
+            "from sqlalchemy import insert\n"
+            "def by_alias():\n"
+            "    return AAH(account_id=1)\n"
+            "def by_core_insert(session):\n"
+            "    session.execute(insert(AAH.__table__), [{}])\n"
+            "def by_bulk(session):\n"
+            "    session.bulk_insert_mappings(AAH, [{}])\n"
+            "def by_raw_sql(session):\n"
+            '    session.execute("INSERT INTO budget.account_anchor_history "\n'
+            '                    "(account_id) VALUES (1)")\n'
+            "def outer():\n"
+            "    def nested_writer():\n"
+            "        return AAH(account_id=2)\n"
+            "    return nested_writer\n",
+            encoding="utf-8",
+        )
+
+        found = _anchor_history_writers(tmp_path)
+        by_function = {func for _path, func, _line in found}
+
+        assert by_function == {
+            "by_alias", "by_core_insert", "by_bulk", "by_raw_sql",
+            "nested_writer",
+        }, (
+            "the census must report all five planted write shapes and neither "
+            f"prose mention nor the SELECT; it reported {sorted(by_function)}"
+        )
+        assert not any(path == "prose_only.py" for path, _f, _l in found), (
+            "the census reported a prose mention or a SELECT as a writer"
+        )
+        assert "outer" not in by_function, (
+            "a construction inside a NESTED def was attributed to the outer "
+            "function, which sends a reader to the wrong address"
+        )
+
+
+class TestAnAssertionCarriesNoProvenanceColumn:
+    """X-f1e2 / ruling R-ES: ``account_anchor_history.notes`` is gone.
+
+    Graded against the live catalog rather than the model, so it is the
+    MIGRATION under test.  A model attribute deleted without the migration
+    leaves a column the ORM cannot see and a downgrade cannot round-trip.
+    """
+
+    def test_the_notes_column_does_not_exist(self, app):
+        """``information_schema`` shows no ``notes`` on the assertion table.
+
+        And it still shows the three columns an assertion IS, so a probe that
+        silently pointed at the wrong table (and therefore found no ``notes``
+        for the wrong reason) fails here instead of passing.
+        """
+        from sqlalchemy import text  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            columns = {
+                row[0] for row in _db.session.execute(text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = 'budget' "
+                    "AND table_name = 'account_anchor_history'"
+                ))
+            }
+        assert "notes" not in columns, (
+            "budget.account_anchor_history.notes still exists; ruling R-ES "
+            "drops it in migration b5e3d9c1a7f2"
+        )
+        assert {"account_id", "anchor_balance", "observed_on"} <= columns, (
+            "the probe found no assertion columns at all, so its absence of "
+            f"'notes' proves nothing.  Saw: {sorted(columns)}"
+        )
+
+
+class TestTheFactoryRefusesToLeaveAnAccountAnchorless:
+    """X-f1e2: ``create_account`` raises when the write door declines.
+
+    **An adversarial review's surviving mutant.**  Swallowing
+    :func:`~app.services.anchor_service.stage_anchor_true_up`'s ``False`` passed
+    a 693-test control set, so the branch that upholds this module's whole
+    reason for existing -- E-19 / CRIT-01, "every account carries an assertion
+    from the moment it exists" -- shipped ungraded.  The state is structurally
+    unreachable today (a just-flushed account has no assertion for the door to
+    find), which is exactly why nothing else reaches it and why this test has to
+    manufacture it.
+    """
+
+    def test_a_declining_write_door_raises_instead_of_returning(
+        self, app, db, monkeypatch, seed_user, seed_periods_today,
+    ):
+        """A ``False`` from the stager is a refusal, not a silent success.
+
+        Forces the decline by patching the write door, which is the only way in:
+        the compare it makes cannot find a governing assertion for an account
+        created two statements earlier.  Asserts the raise AND that no account
+        row survives the caller's rollback, because a raise that left a
+        committed anchorless account would be the defect wearing an exception.
+        """
+        import pytest  # pylint: disable=import-outside-toplevel
+
+        from app.services import account_service  # pylint: disable=import-outside-toplevel
+        from app.services import anchor_service  # pylint: disable=import-outside-toplevel
+
+        assert seed_periods_today
+        with app.app_context():
+            monkeypatch.setattr(
+                anchor_service, "stage_anchor_true_up",
+                lambda **_kwargs: False,
+            )
+            checking_type_id = _db.session.query(AccountType).filter_by(
+                name="Checking",
+            ).one().id
+
+            with pytest.raises(RuntimeError) as exc:
+                account_service.create_account(
+                    account_service.AccountSpec(
+                        user_id=seed_user["user"].id,
+                        account_type_id=checking_type_id,
+                        name="Anchorless Probe",
+                        anchor_balance=Decimal("1234.56"),
+                    ),
+                )
+
+            assert "E-19 / CRIT-01" in str(exc.value), (
+                "the refusal must name the invariant it protects, or a reader "
+                f"cannot tell what broke: {exc.value}"
+            )
+            _db.session.rollback()
+            assert _db.session.query(Account).filter_by(
+                user_id=seed_user["user"].id, name="Anchorless Probe",
+            ).one_or_none() is None, (
+                "an account with no assertion survived the refusal"
+            )

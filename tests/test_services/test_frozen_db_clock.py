@@ -102,7 +102,6 @@ class TestTheDatabaseClockIsTheTestClock:
             row = AccountAnchorHistory(
                 account_id=account.id,
                 anchor_balance=Decimal("1234.56"),
-                notes="N-65: no explicit instant",
                 observed_on=display_today(),
             )
             db.session.add(row)
@@ -302,13 +301,11 @@ class TestTheDatabaseClockIsTheTestClock:
             account = seed_user["account"]
             first = override_anchor(
                 db.session, account, seed_periods[4], Decimal("100.00"),
-                notes="N-65 ordering: first",
                 at=None,
             )
             second = AccountAnchorHistory(
                 account_id=account.id,
                 anchor_balance=Decimal("200.00"),
-                notes="N-65 ordering: second",
                 observed_on=display_today(),
             )
             db.session.add(second)
@@ -316,7 +313,6 @@ class TestTheDatabaseClockIsTheTestClock:
             third = AccountAnchorHistory(
                 account_id=account.id,
                 anchor_balance=Decimal("300.00"),
-                notes="N-65 ordering: third",
                 observed_on=display_today(),
             )
             db.session.add(third)

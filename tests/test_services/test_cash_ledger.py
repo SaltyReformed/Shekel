@@ -63,7 +63,6 @@ def _make_anchor_history(
     *,
     account_id: int,
     anchor_balance: Decimal,
-    notes: str,
 ) -> AccountAnchorHistory:
     """Insert and flush an ``AccountAnchorHistory`` row.
 
@@ -75,7 +74,6 @@ def _make_anchor_history(
     history = AccountAnchorHistory(
         account_id=account_id,
         anchor_balance=anchor_balance,
-        notes=notes,
         # No explicit instant: the row means "asserted now", so its business
         # day is today in the USER's zone (ruling R-DH (b)).
         observed_on=display_today(),
@@ -114,7 +112,6 @@ class TestResolveAnchor:
             _make_anchor_history(
                 account_id=account.id,
                 anchor_balance=new_balance,
-                notes="true-up #2",
             )
             db.session.commit()
 
@@ -158,13 +155,11 @@ class TestResolveAnchor:
             current = _make_anchor_history(
                 account_id=account.id,
                 anchor_balance=Decimal("2500.00"),
-                notes="observed today",
             )
             current.observed_on = today
             superseded = _make_anchor_history(
                 account_id=account.id,
                 anchor_balance=Decimal("4444.44"),
-                notes="a statement that arrived late, for an older day",
             )
             superseded.observed_on = today - timedelta(days=7)
             db.session.commit()
@@ -234,13 +229,11 @@ class TestResolveAnchor:
             newer = _make_anchor_history(
                 account_id=account.id,
                 anchor_balance=Decimal("2500.00"),
-                notes="observed today",
             )
             newer.observed_on = today
             older = _make_anchor_history(
                 account_id=account.id,
                 anchor_balance=Decimal("4444.44"),
-                notes="recorded later, for an older day",
             )
             older.observed_on = today - timedelta(days=7)
             db.session.commit()
@@ -297,7 +290,6 @@ class TestResolveAnchor:
             _make_anchor_history(
                 account_id=account.id,
                 anchor_balance=Decimal("0.00"),
-                notes="true-up to zero",
             )
             db.session.commit()
 

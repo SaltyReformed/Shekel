@@ -565,7 +565,7 @@ class TestResolveObservationDay:
         with app.app_context():
             assert anchor_service.resolve_observation_day(
                 seed_user["user"].id, None,
-            ) == display_today()
+            ).civil_day == display_today()
 
     def test_the_default_day_is_the_DISPLAY_clock_not_the_process_clock(
         self, app, db, monkeypatch, seed_user, seed_periods_today,
@@ -600,7 +600,7 @@ class TestResolveObservationDay:
 
             assert anchor_service.resolve_observation_day(
                 seed_user["user"].id, None,
-            ) == split_day - timedelta(days=1)
+            ).civil_day == split_day - timedelta(days=1)
 
     def test_a_future_day_is_judged_on_the_DISPLAY_clock(
         self, app, db, monkeypatch, seed_user, seed_periods_today,
@@ -622,7 +622,7 @@ class TestResolveObservationDay:
             # The user's own civil day is accepted...
             assert anchor_service.resolve_observation_day(
                 seed_user["user"].id, users_today,
-            ) == users_today
+            ).civil_day == users_today
             # ...and the PROCESS day, which is already tomorrow for them, is not.
             with pytest.raises(ValidationError) as exc:
                 anchor_service.resolve_observation_day(
@@ -651,7 +651,7 @@ class TestResolveObservationDay:
 
             assert anchor_service.resolve_observation_day(
                 seed_user["user"].id, typed,
-            ) == typed
+            ).civil_day == typed
 
     def test_a_future_day_is_refused(
         self, app, db, seed_user, seed_periods_today,
@@ -699,7 +699,7 @@ class TestResolveObservationDay:
             # refuse the first day the user has a schedule for.
             assert anchor_service.resolve_observation_day(
                 seed_user["user"].id, floor,
-            ) == floor
+            ).civil_day == floor
 
     def test_an_owner_with_no_pay_periods_can_still_assert_today(
         self, app, db, seed_user,
@@ -730,10 +730,10 @@ class TestResolveObservationDay:
             # comes back, and it is not silently something else.
             assert anchor_service.resolve_observation_day(
                 user_id, None,
-            ) == display_today()
+            ).civil_day == display_today()
             assert anchor_service.resolve_observation_day(
                 user_id, display_today(),
-            ) == display_today()
+            ).civil_day == display_today()
 
 
 class TestBackDatedCashTrueUp:

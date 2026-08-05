@@ -1069,7 +1069,6 @@ def seed_user(app, db):
             # keyed on this day: a later re-stamp would leave the ledger
             # holding a stale key plus its reversal in every seeded database.
             observed_on=bootstrap_period.start_date,
-            notes="seed_user fixture origination",
         ),
     )
 
@@ -1448,7 +1447,6 @@ def _neutralize_seed_checking(db, seed_user, anchor_period):
     _pin_opening_to(db, account, anchor_period)
     override_anchor(
         db.session, account, anchor_period, Decimal("0.00"),
-        notes="per-kind cross-page fixture: neutralize seed checking to $0",
     )
 
 
@@ -1564,7 +1562,6 @@ def seed_cross_page_account(app, db, seed_user):
         _pin_opening_to(db, account, anchor_period)
         override_anchor(
             db.session, account, anchor_period, anchor_balance,
-            notes="seed_cross_page_account: HIGH-01 lock anchor override",
         )
 
         # Single Projected envelope expense in the anchor period.
@@ -2143,7 +2140,6 @@ def second_user(app, db):
             # Day one of its own period -- see ``seed_user`` above for why
             # the origination must not share a civil day with the settles.
             observed_on=bootstrap_period.start_date,
-            notes="second_user fixture origination",
         ),
     )
 
@@ -2270,7 +2266,6 @@ def seed_second_user(app, db):
             # Day one of its own period -- see ``seed_user`` above for why
             # the origination must not share a civil day with the settles.
             observed_on=bootstrap_period.start_date,
-            notes="seed_second_user fixture origination",
         ),
     )
 
@@ -2439,7 +2434,6 @@ def _build_full_user_data(db, seed_user, periods):
             account_type_id=savings_acct_type.id,
             name="Savings",
             anchor_balance=Decimal("500.00"),
-            notes="_build_full_user_data savings origination",
         ),
     )
 
@@ -2600,7 +2594,6 @@ def seed_full_second_user_data(app, db, seed_second_user, seed_second_periods):
             account_type_id=savings_acct_type.id,
             name="Savings",
             anchor_balance=Decimal("300.00"),
-            notes="seed_full_second_user_data savings origination",
         ),
     )
 

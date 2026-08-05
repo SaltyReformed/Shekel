@@ -2637,7 +2637,6 @@ def _override_anchor(db_session, account, pay_period, anchor_balance):
 
     override_anchor(
         db_session, account, pay_period, anchor_balance,
-        notes="C6 symptom-#1 test: anchor override",
     )
     db_session.commit()
 

@@ -287,7 +287,6 @@ def create_account():
                 name=name,
                 anchor_balance=anchor_balance,
                 observed_on=observed_on,
-                notes="origination",
             ),
             **data,
         )
@@ -422,12 +421,18 @@ def update_account(account_id):
     # the two locks oppositely -- the anchor branch reached ``lock_user_writes``
     # inside ``stage_anchor_true_up`` before the ``setattr`` flush, a type-only
     # edit reached it after -- and that deadlock was reproduced against a real
-    # database.  X-f1e deleted the anchor branch, so the reproduced cycle is
-    # gone and what remains is the invariant above rather than a second measured
-    # antagonist: no other ``lock_user_writes`` caller is known to take a
-    # ``budget.accounts`` row lock, so naming one here would be a claim nobody
-    # has tested.  Deleting the lock along with the branch that motivated it
-    # would nonetheless have put this route back in N-193's class.
+    # database.  X-f1e deleted the anchor branch, so THAT cycle is gone -- but
+    # the sentence that replaced it ("no other ``lock_user_writes`` caller is
+    # known to take a ``budget.accounts`` row lock, so naming one here would be
+    # a claim nobody has tested") was FALSE, and plan step X-f1e2's concurrency
+    # review tested it.  ``account_service.create_account`` INSERTs
+    # ``budget.accounts`` before it reaches the advisory lock, taking an index
+    # lock on ``uq_accounts_user_name``; this route takes the advisory lock
+    # first and then UPDATEs that table.  Two tabs, one creating and one
+    # renaming to the same name, deadlock -- reproduced against a real
+    # PostgreSQL (finding **N-202**).  So the second measured antagonist exists,
+    # this line is not merely an invariant-holder, and deleting it would put the
+    # route back in N-193's class outright.
     #
     # It is re-entrant and transaction-scoped, so the nested acquisition inside
     # the re-sync is free.  On a rename-only edit this acquisition is the only

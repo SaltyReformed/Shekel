@@ -186,6 +186,32 @@ class AccountAnchorHistory(AccountScopedMixin, CreatedAtMixin, db.Model):
     ``idx_anchor_history_account`` survives and is not a uniqueness guard: it
     serves the per-account lookups (:func:`app.services.cash_ledger.resolve_anchor`
     and :func:`~app.services.cash_ledger.cash_anchor_facts`).
+
+    **An assertion is (account, day, balance) and NOTHING else, and that is
+    ruling R-ES** (plan step X-f1e2).  The row carried a free-text ``notes``
+    column for the audit trail's "which door wrote this", and it answered
+    nobody: no code in ``app/`` ever read it (an AST census of every ``.notes``
+    attribute access finds a transfer and a salary tax checkpoint, and no
+    anchor), 76 of production's 78 rows were NULL, and the 2 labelled rows were
+    the only assertion their account carried.  Worse, it was a SECOND definition
+    of a word the engine already owns --
+    :func:`app.services.cash_ledger.cash_anchor_facts` marks the OPENING
+    positionally (``is_opening = index == 0`` over
+    ``(observed_on, created_at, id)``) and
+    ``account_posting_service._anchors`` maps that to the typed
+    ``account_opening`` / ``account_trueup`` posting kinds, so a back-dated
+    assertion could make the label and the flag name different rows.  What the
+    column held is not lost: this table is in
+    ``app.audit_infrastructure.AUDITED_TABLES``, so an INSERT's whole row --
+    ``notes`` included -- is in ``system.audit_log`` wherever an audit row
+    exists.  The migration states that record's two measured limits.
+
+    The LOAN twin keeps its provenance and that is not a drift.
+    :class:`~app.models.loan_anchor_event.LoanAnchorEvent` carries a typed
+    ``source_id`` FK because it is READ -- ``loan_loaders`` tells a
+    ``tracking_start`` from a ``user_trueup``, the write door scopes its
+    duplicate compare per source, and the dashboard renders the label.  This
+    table carries one kind of fact and needs no such split.
     """
 
     __tablename__ = "account_anchor_history"
@@ -208,7 +234,6 @@ class AccountAnchorHistory(AccountScopedMixin, CreatedAtMixin, db.Model):
     # ``(created_at AT TIME ZONE 'America/New_York')::date``, the derivation it
     # replaces, so no rendered figure moved on the day the column shipped.
     observed_on = db.Column(db.Date, nullable=False)
-    notes = db.Column(db.Text)
 
     # Relationships
     account = db.relationship("Account", back_populates="anchor_history")

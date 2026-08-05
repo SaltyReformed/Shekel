@@ -283,7 +283,6 @@ class TestRecordingAPurchaseDoesNotMoveTheProjection:
         account = seed_user["account"]
         override_anchor(
             _db.session, account, period, _ANCHOR,
-            notes="R-DH (c) worked example",
         )
         envelope = create_envelope_txn(
             seed_user, _db.session, period, "Groceries", _ENVELOPE_BUDGET,
@@ -502,7 +501,7 @@ class TestTheProjectionIgnoresTheOrderOfABookkeepingSession:
             # ORDER A: the anchor is recorded BEFORE the payments are ticked.
             override_anchor(
                 _db.session, anchor_first, period, _ANCHOR,
-                notes="order A: anchor first", at=noon,
+                at=noon,
             )
             _db.session.flush()
             for index, amount in enumerate(cleared):
@@ -521,7 +520,7 @@ class TestTheProjectionIgnoresTheOrderOfABookkeepingSession:
                 )
             override_anchor(
                 _db.session, settles_first, period, _ANCHOR,
-                notes="order B: anchor last", at=noon + timedelta(hours=3),
+                at=noon + timedelta(hours=3),
             )
 
             for account in (anchor_first, settles_first):

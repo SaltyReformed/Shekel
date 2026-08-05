@@ -384,7 +384,12 @@ class TestInterestBeginsAtTheLatestAssertion:
             anchor_service.stage_anchor_true_up(
                 account=hysa,
                 new_balance=Decimal("10000.00"),
-                notes="test true-up",
+                # The stager takes a BOUNDED day (plan step X-f1e2): only
+                # ``resolve_observation_day`` mints one, so the fixture asks
+                # for it the same way both production doors do.
+                observed_on=anchor_service.resolve_observation_day(
+                    user_id, None,
+                ),
             )
             restamp_latest_assertion(
                 db.session, hysa,

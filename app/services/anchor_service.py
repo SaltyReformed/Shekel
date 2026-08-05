@@ -144,6 +144,17 @@ the SURFACE was deleted rather than the gate.  What remains is
 :func:`apply_anchor_true_up`, reached from ``accounts.true_up`` on every screen
 that shows a balance.
 
+**And the TABLE now has one writer too, which is a different claim** (ruling
+**R-ES**, plan step X-f1e2).  One door means one place a USER asserts a balance;
+one writer means one place a ROW is appended, and until X-f1e2
+``account_service.create_account`` was the second -- it constructed the
+origination assertion itself, so that one row was written with no owner write
+lock, no ruling R-EQ compare and no shared log line.  It calls
+:func:`stage_anchor_true_up` now.  The ``notes`` column those two writers
+existed to be told apart in went with the ruling: nothing in ``app/`` read it,
+and it was a second definition of "the opening" beside the positional one
+:func:`app.services.cash_ledger.cash_anchor_facts` sets.
+
 One consequence is worth stating where the rule lives: **the amortizing-kind
 refusal is no longer duplicated at a route validator.**
 ``_validate_update_account`` carried its own copy because that door reached the
@@ -155,6 +166,7 @@ from __future__ import annotations
 
 import enum
 import logging
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
@@ -218,7 +230,38 @@ class AnchorTrueUpOutcome(enum.Enum):
     UNCHANGED = "unchanged"
 
 
-def resolve_observation_day(user_id: int, observed_on: date | None) -> date:
+@dataclass(frozen=True)
+class ObservationDay:
+    """A civil day that has passed both of an assertion's bounds.
+
+    **The bound is applied ONCE per write, and this type is what makes "once"
+    structural** (plan step X-f1e2, ``ReconciledThrough``'s precedent one
+    question over).  :func:`resolve_observation_day` alone mints one and
+    :func:`stage_anchor_true_up` accepts nothing else.
+
+    **Twice is not free, because the rule is CLOCK-DEPENDENT.**  The floor is
+    ``min(earliest pay period start, today)``, so for an owner whose schedule is
+    entirely in the future it moves FORWARD at midnight and a second application
+    refuses the day the first produced -- and its refusal landed after the
+    account row was flushed.  That is ``resolve then guard`` reading the clock
+    twice, the defect ruling **R-ER** deletes, one layer up.
+
+    **The attribute is NOT called ``day``, and that is not cosmetic.**
+    ``datetime.date`` already has a ``.day`` -- the day of the MONTH -- so a raw
+    date slipping past the annotation would satisfy the accessor and put an
+    integer into an SQL bound.  A name a ``date`` cannot answer makes that an
+    ``AttributeError`` at the first access instead.
+
+    Attributes:
+        civil_day: The bounded civil day, in the user's timezone (R-DH (b)).
+    """
+
+    civil_day: date
+
+
+def resolve_observation_day(
+    user_id: int, observed_on: date | None,
+) -> ObservationDay:
     """Return the civil day an assertion is dated at, refusing an undatable one.
 
     **The ONE rule both writers of :class:`AccountAnchorHistory` ask** (ruling
@@ -306,8 +349,11 @@ def resolve_observation_day(user_id: int, observed_on: date | None) -> date:
             both mean: "the balance I am asserting is true now".
 
     Returns:
-        The civil day the assertion carries -- *observed_on* when one was
-        supplied and passed both bounds, else the user's today.
+        The :class:`ObservationDay` the assertion carries -- *observed_on* when
+        one was supplied and passed both bounds, else the user's today.  **A
+        TYPE rather than a bare date, so the bound cannot be applied twice**:
+        see :class:`ObservationDay` for the clock-roll and concurrent-rebuild
+        windows a second application opens.
 
     Raises:
         ValidationError: When the day is in the future or precedes the owner's
@@ -317,7 +363,7 @@ def resolve_observation_day(user_id: int, observed_on: date | None) -> date:
     """
     today = display_today()
     if observed_on is None:
-        return today
+        return ObservationDay(today)
     if observed_on > today:
         raise ValidationError(
             f"Cannot assert a balance for {observed_on.isoformat()}: that day "
@@ -331,15 +377,14 @@ def resolve_observation_day(user_id: int, observed_on: date | None) -> date:
             f"recorded history starts on {floor.isoformat()}.  Use a day on or "
             "after that, or generate earlier pay periods first."
         )
-    return observed_on
+    return ObservationDay(observed_on)
 
 
 def stage_anchor_true_up(
     *,
     account: Account,
     new_balance: Decimal,
-    observed_on: date | None = None,
-    notes: str | None = None,
+    observed_on: ObservationDay,
 ) -> bool:
     """Append a dated balance ASSERTION for ``account`` without committing.
 
@@ -347,15 +392,25 @@ def stage_anchor_true_up(
     clear past-dated entries and does NOT commit -- the caller owns the
     transaction.
 
-    **It existed as a separate name to be SHARED, and since plan step X-f1e it
-    has one caller.**  The full-form account edit
-    (``routes/accounts/crud.update_account``) was the second, and deleting that
-    door -- finding **N-195** -- left this function called only from the
-    ``apply`` wrapper immediately below it.  The split still earns its keep as
-    the transaction boundary (stage vs. stage-reconcile-commit), but its
-    "two doors cannot drift" justification is spent, and the ``notes`` parameter
-    it grew for the other caller now reaches no production writer at all
-    (finding **N-198**).
+    **It is the ONE writer of :class:`AccountAnchorHistory`, and that is ruling
+    R-ES** (plan step X-f1e2).  Its two callers are the ``apply`` wrapper
+    immediately below (every later assertion, from every screen that shows a
+    balance) and :func:`app.services.account_service.create_account` (the
+    origination).  The account factory used to construct the row itself, which
+    made the origination the one assertion in the app written without the
+    owner's write lock, without ruling R-EQ's did-this-change compare and
+    without the shared log line; routing it here is what makes those rules
+    properties of the TABLE rather than of whichever function did the INSERT.
+
+    *The history is worth one sentence because it inverts twice.*  The split
+    existed to be SHARED with ``routes/accounts/crud.update_account``; plan step
+    X-f1e1 deleted that door (finding **N-195**) and left this function with a
+    single caller and a callerless ``notes`` parameter (finding **N-198**).
+    Ruling R-ES then deleted the ``notes`` COLUMN -- unread by anything in
+    ``app/``, and a second definition of "the opening" beside the positional one
+    :func:`app.services.cash_ledger.cash_anchor_facts` already sets -- and gave
+    the function its second caller back on better ground: not two SURFACES
+    sharing a definition, but two EVENTS sharing a write door.
 
     **It decides whether there is anything to append, and that decision is
     ruling R-EQ.**  It takes the owner's write lock, asks
@@ -394,13 +449,19 @@ def stage_anchor_true_up(
       installed one leaf earlier, deliberately, so a user-typed day never met the
       content-keyed index it replaced.
 
-    **The day is an INPUT now, and resolving it is not this function's rule**
-    (ruling **R-ER**, plan step X-f1c4c).  :func:`resolve_observation_day`
-    supplies the default and enforces both bounds, so the same two rules govern
-    the origination assertion ``account_service.create_account`` writes and every
-    later one written here.  It runs BEFORE the lock on purpose: a refused
-    submission must not take the owner's write lock, and the resolver takes no
-    lock of its own (its only statement is an aggregate SELECT over pay periods).
+    **The day arrives ALREADY BOUNDED, and it is a TYPE that says so** (ruling
+    **R-ER** for the rule, plan step X-f1e2 for the type).
+    :func:`resolve_observation_day` supplies the default and enforces both
+    bounds, so the same two rules govern the origination assertion
+    ``account_service.create_account`` writes and every later one written here.
+    This function took a raw ``date | None`` and re-resolved it, which read as a
+    writer declining to trust its caller and was really the clock being read
+    twice: the floor is time-dependent, so a midnight roll -- or a schedule
+    rebuild committing -- between a caller's resolve and this one refuses the day
+    the caller just produced.  Both doors resolve exactly once now, each BEFORE
+    the lock, because a refused submission must not take the owner's write lock
+    and the resolver takes none of its own (one aggregate SELECT over pay
+    periods).
 
     **What it stages shrank twice, and both shrinks are the same ruling
     applied one table apart.**  It used to re-point ``current_anchor_period_id``
@@ -422,17 +483,9 @@ def stage_anchor_true_up(
         account: An attached :class:`Account` row.  Caller owns the
             ownership check.
         new_balance: The validated :class:`Decimal` balance being asserted.
-        observed_on: The civil day the balance is asserted TRUE for (ruling
-            **R-DH**), or ``None`` for the user's today -- which is what a
-            true-up means when the form's date box is left at its default.
-            Bounded by :func:`resolve_observation_day`, never trusted raw.
-        notes: Optional free-text note for the history row's ``notes``
-            column, so the audit trail names the originating path.  ``None``
-            leaves it NULL, which is what every production caller now passes:
-            the only writer that labels its row is
-            ``account_service.create_account`` (``"origination"``), and it
-            constructs the row itself rather than coming through here (finding
-            **N-198**).
+        observed_on: The :class:`ObservationDay` the balance is asserted TRUE
+            for (ruling **R-DH**).  Only :func:`resolve_observation_day` mints
+            one, so an unbounded day cannot reach this line.
 
     Returns:
         ``True`` when an assertion was appended to the session; ``False`` when
@@ -441,41 +494,40 @@ def stage_anchor_true_up(
         transaction: :func:`apply_anchor_true_up` rolls back and reports
         ``UNCHANGED``.
 
-    Raises:
-        ValidationError: When *observed_on* is in the future or precedes the
-            owner's recorded history, from :func:`resolve_observation_day`.
-            Raised BEFORE the lock and before anything is staged, so the session
-            is clean and no lock is held on a refusal.
-        RuntimeError: When the account carries no assertion at all, from
-            :func:`app.services.cash_ledger.resolve_anchor`.  Unreachable for a
-            real account (``account_service.create_account`` writes the
-            origination assertion in the same flush as the row), and the same
-            loud failure every reader of that account would already get.
+    **It raises NOTHING, and saying so is a correction.**  It documented a
+    ``RuntimeError`` "when the account carries no assertion at all, from
+    ``cash_ledger.resolve_anchor``" -- but it does not call ``resolve_anchor``.
+    It calls :func:`app.services.cash_ledger.governing_anchor_on`, which returns
+    ``None`` on an account with no history precisely because that is an honest
+    answer to a WRITER where it is a broken invariant to a reader.  The claim
+    was true of an earlier draft and load-bearing in the wrong direction: an
+    account with no assertions is exactly the state
+    ``account_service.create_account`` is in when it calls here.  The
+    ``ValidationError`` the day bounds raise now belongs to each door's own
+    :func:`resolve_observation_day` call, above this function.
     """
-    observed_on = resolve_observation_day(account.user_id, observed_on)
+    day = observed_on.civil_day
     # Ruling R-EQ: the lock comes before the READ the decision below is made
     # from.  See the function docstring for why it is here and not at either
-    # door, and why the day is resolved above it rather than under it.
+    # door.
     lock_user_writes(account.user_id)
-    governing = cash_ledger.governing_anchor_on(account.id, observed_on)
+    governing = cash_ledger.governing_anchor_on(account.id, day)
     if governing is not None and (
-        (governing.observed_on, governing.balance) == (observed_on, new_balance)
+        (governing.observed_on, governing.balance) == (day, new_balance)
     ):
         return False
 
     db.session.add(AccountAnchorHistory(
         account_id=account.id,
         anchor_balance=new_balance,
-        observed_on=observed_on,
-        notes=notes,
+        observed_on=day,
     ))
-    # The RESOLVED day is logged here because here is the only layer that knows
-    # it: a caller passing ``None`` never learns which civil day its assertion
-    # was filed under, and the day is the fact plan step X-f1c4c exists to
-    # record.  Both write doors reach this line, so the audit trail is uniform.
+    # Both write doors reach this line, so the audit trail is uniform whichever
+    # event wrote the assertion -- an origination or a later true-up.  The day
+    # is the fact plan step X-f1c4c exists to record.
     logger.info(
         "Anchor assertion staged: account %d at $%s as of %s",
-        account.id, new_balance, observed_on.isoformat(),
+        account.id, new_balance, day.isoformat(),
     )
     return True
 
@@ -570,10 +622,14 @@ def apply_anchor_true_up(
             Caller is responsible for constructing this from
             schema-validated form data via ``Decimal(str(...))``.
         observed_on: The civil day the balance is asserted TRUE for, or ``None``
-            for the user's today.  Forwarded verbatim to
-            :func:`stage_anchor_true_up`, which bounds it -- this function adds
-            no rule of its own about the day and must not, or the two write
-            doors would answer a back-dated submission differently.
+            for the user's today.  Bounded HERE, by the shared
+            :func:`resolve_observation_day` -- this function adds no rule of its
+            own about the day and must not, or the two write doors would answer
+            a back-dated submission differently.  It bounded it inside
+            :func:`stage_anchor_true_up` until plan step X-f1e2; the resolve
+            moved out to the doors so the account factory, which must refuse
+            before it creates a row, does not make it the second application of
+            a clock-dependent rule.
 
     Returns:
         AnchorTrueUpOutcome -- which response the route should render.
@@ -583,10 +639,10 @@ def apply_anchor_true_up(
 
     Raises:
         ValidationError: When *observed_on* is in the future or precedes the
-            owner's recorded history (:func:`resolve_observation_day`, via the
-            stager).  Raised before anything is staged and before the owner's
-            write lock is taken, so the session is clean; the route renders it
-            as a designed 400 fragment.
+            owner's recorded history (:func:`resolve_observation_day`).  Raised
+            before anything is staged and before the owner's write lock is
+            taken, so the session is clean; the route renders it as a designed
+            400 fragment.
         AmortizingAccountAnchorError: When ``account`` is an amortizing
             loan (``account_type.has_amortization``).  A loan's balance
             is ledger-derived and asserted through
@@ -608,8 +664,13 @@ def apply_anchor_true_up(
             "cash anchor"
         )
 
+    # Bounded ONCE, here, above the lock (plan step X-f1e2).  The kind gate runs
+    # first so an amortizing account is refused for what it IS before its day is
+    # judged.
+    day = resolve_observation_day(account.user_id, observed_on)
+
     if not stage_anchor_true_up(
-        account=account, new_balance=new_balance, observed_on=observed_on,
+        account=account, new_balance=new_balance, observed_on=day,
     ):
         # Ruling R-EQ: the submission IS the governing assertion, so there is
         # nothing to append and nothing for the reconcile to move.  Roll back

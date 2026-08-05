@@ -680,9 +680,14 @@ def register_user(email, password, display_name):
     settings = UserSettings(user_id=user.id)
     db.session.add(settings)
 
-    # Bootstrap pay period (E-19, Commit 3).  The default Checking
-    # account's anchor columns are NOT NULL (migration cfb15e782f86),
-    # so an account cannot exist without a pay period to point at.
+    # Bootstrap pay period (E-19, Commit 3).  ``create_account`` refuses an
+    # owner with no pay periods (``_require_pay_period_schedule``), because the
+    # opening balance posts a correction into the period containing the day it
+    # asserts.  This comment read "the account's anchor columns are NOT NULL
+    # (migration cfb15e782f86), so an account cannot exist without a pay period
+    # to point at" until plan step X-f1e2 -- ruling R-EH deleted those columns
+    # and R-EO deleted the assertion's own period, so there is nothing left to
+    # point AT; the live reason is the opening's posting reconcile.
     # The user's actual pay schedule is captured later via
     # /pay-periods/generate, which appends additional periods starting
     # at ``max(period_index) + 1``; this bootstrap takes period_index 0
@@ -714,11 +719,13 @@ def register_user(email, password, display_name):
     scenario = Scenario(user_id=user.id, name="Baseline", is_baseline=True)
     db.session.add(scenario)
 
-    # Default Checking account via the canonical factory (E-19): the
-    # service writes both anchor columns + a matching origination
-    # AccountAnchorHistory row in one call, so the contract is
-    # enforced in exactly one place across every Account-creating
-    # path (this service, the /accounts route, scripts, fixtures).
+    # Default Checking account via the canonical factory (E-19): the service
+    # writes the Account row and its matching origination
+    # AccountAnchorHistory assertion in one call, so the contract is enforced
+    # in exactly one place across every Account-creating path (this service,
+    # the /accounts route, scripts, fixtures).  It said "both anchor columns"
+    # until plan step X-f1e2 -- ruling R-EH deleted those columns two steps
+    # earlier and the sentence outlived them.
     # Decimal("0.00") is a real value per E-12, not "missing".
     checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
     account_service.create_account(
@@ -730,10 +737,12 @@ def register_user(email, password, display_name):
             # Day one of the bootstrap period built just above -- the same
             # clock that built it, so a signup's opening assertion is dated by
             # the schedule it is created alongside rather than by a second
-            # reading of the wall clock.  The explicit ``anchor_period_id``
-            # beside it went at plan step X-f1c3c: an assertion carries a DAY.
+            # reading of the wall clock.  Two fields have left this call: the
+            # explicit ``anchor_period_id`` at plan step X-f1c3c (an assertion
+            # carries a DAY) and the ``notes="origination (sign-up)"`` label at
+            # X-f1e2 (ruling R-ES -- nothing read it, and the registration
+            # INSERT is in ``system.audit_log`` either way).
             observed_on=bootstrap_period.start_date,
-            notes="origination (sign-up)",
         ),
     )
 

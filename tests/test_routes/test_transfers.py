@@ -2806,7 +2806,6 @@ class TestOneTimeTransfer:
             # Asserted rather than assigned (ruling R-EH deleted the column).
             override_anchor(
                 db.session, savings, seed_periods_today[0], Decimal("0.00"),
-                notes="zero-balance transfer fixture",
             )
             db.session.commit()
 

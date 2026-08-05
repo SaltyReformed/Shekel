@@ -99,7 +99,7 @@ class TestTheDowngradeResolvesTheSameAssertionTheAppDoes:
             # it every ordering agrees and this test grades only the mapping.
             db.session.add(AccountAnchorHistory(
                 account_id=second.id, anchor_balance=Decimal("4321.00"),
-                observed_on=display_today(), notes="the later assertion",
+                observed_on=display_today(),
             ))
             db.session.flush()
 
@@ -156,20 +156,17 @@ class TestTheDowngradeResolvesTheSameAssertionTheAppDoes:
             # WINNER is inserted FIRST (lowest id) and stamped LATEST.
             winner = AccountAnchorHistory(
                 account_id=account.id, anchor_balance=Decimal("100.00"),
-                observed_on=today, notes="today, latest created_at, LOWEST id",
-                created_at=noon + timedelta(hours=2),
+                observed_on=today, created_at=noon + timedelta(hours=2),
             )
             db.session.add(winner)
             db.session.flush()
             db.session.add(AccountAnchorHistory(
                 account_id=account.id, anchor_balance=Decimal("900.00"),
-                observed_on=today, notes="today, earlier created_at, higher id",
-                created_at=noon,
+                observed_on=today, created_at=noon,
             ))
             db.session.add(AccountAnchorHistory(
                 account_id=account.id, anchor_balance=Decimal("5000.00"),
-                observed_on=yesterday, notes="yesterday, latest created_at",
-                created_at=noon + timedelta(hours=9),
+                observed_on=yesterday, created_at=noon + timedelta(hours=9),
             ))
             db.session.flush()
 
