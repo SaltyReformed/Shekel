@@ -296,6 +296,12 @@ def update_recurrence_rule_from_form(
     is taken verbatim from the payload.  This preserves the
     pre-extraction inline behaviour exactly.
 
+    ``interval_n`` is the ONE field taken conditionally: it belongs to
+    the ``EVERY_N_PERIODS`` pattern and, since plan step R2b, doubles as
+    the two-axis interval for the calendar patterns.  See the inline
+    comment on the write for why an unconditional assignment silently
+    destroys a Quarterly rule's cadence.
+
     Args:
         rule: The existing :class:`RecurrenceRule` to mutate in place.
             The caller guarantees it is non-``None`` (the branch guard
@@ -325,7 +331,21 @@ def update_recurrence_rule_from_form(
         return ctx.redirect.to_response()
 
     rule.pattern_id = pattern.id
-    rule.interval_n = data.pop("interval_n", 1)
+    # ``interval_n`` is PATTERN-SCOPED, and since plan step R2b it carries the
+    # two-axis interval as well: 3 on a Quarterly rule, 6 on a Semi-Annual one.
+    # This form collects it only for EVERY_N_PERIODS -- the input is hidden
+    # with ``d-none`` for every other pattern, but a hidden input still
+    # SUBMITS -- so writing the submitted value unconditionally would overwrite
+    # a backfilled interval with this input's default on any ordinary edit.
+    # At step R4 a Quarterly rule reading ``(interval_n=1, unit=month)`` IS a
+    # monthly rule: three times the projected spend, with nothing left in the
+    # row to detect the loss by.  Popped either way, so the caller's
+    # downstream ``setattr`` loop still never sees a stray kwarg.
+    submitted_interval = data.pop("interval_n", 1)
+    if pattern.id == ref_cache.recurrence_pattern_id(
+        RecurrencePatternEnum.EVERY_N_PERIODS,
+    ):
+        rule.interval_n = submitted_interval
     rule.offset_periods = data.pop("offset_periods", 0)
     rule.day_of_month = data.pop("day_of_month", None)
     if ctx.include_due_day_of_month:

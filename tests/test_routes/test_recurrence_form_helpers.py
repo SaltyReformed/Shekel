@@ -654,3 +654,102 @@ class TestApplyConflictDecisions:
         assert keep["ids"] == [10]              # only the in-set "keep"
         assert 999 not in update["ids"]
         assert 999 not in keep["ids"]
+
+
+class TestUpdateDoesNotClobberTheTwoAxisInterval:
+    """``interval_n`` is written only for the pattern that collects it.
+
+    **This is a regression guard for a defect an adversarial review caught
+    before it shipped** (plan step R2b).  ``interval_n`` carries a SECOND
+    meaning since R2b backfilled the two-axis model: 3 on a Quarterly rule,
+    6 on a Semi-Annual one.  The edit form's ``interval_n`` input is hidden
+    with ``d-none`` for every other pattern -- but a hidden input still
+    SUBMITS, and it renders the pattern-scoped default of 1.
+
+    An unconditional ``rule.interval_n = data.pop("interval_n", 1)`` therefore
+    reset a Quarterly rule to 1 on any edit at all, including a rename.  At
+    plan step R4 a rule reading ``(interval_n=1, unit=month)`` IS a monthly
+    rule, so a quarterly bill would project three times its real cost and a
+    semi-annual one six times, with nothing left in the row to detect the
+    loss by.  Nothing else guards this: the value looks valid, the column is
+    already NOT NULL, and R2c's re-derivation cannot tell a clobbered 1 from
+    an authentic one.
+    """
+
+    def _edit(self, app, seed_user, pattern, stored_interval, submitted):
+        """Run one update through the helper and return the resulting rule."""
+        with app.test_request_context():
+            rule = RecurrenceRule(
+                user_id=seed_user["user"].id,
+                pattern_id=ref_cache.recurrence_pattern_id(pattern),
+                interval_n=stored_interval,
+                offset_periods=0,
+                day_of_month=21,
+            )
+            data = {
+                "recurrence_pattern": str(
+                    ref_cache.recurrence_pattern_id(pattern),
+                ),
+                "interval_n": submitted,
+                "offset_periods": 0,
+                "day_of_month": 21,
+                "month_of_year": 4,
+                "due_day_of_month": None,
+            }
+            result = update_recurrence_rule_from_form(
+                rule, data,
+                ctx=RecurrenceFormContext(
+                    end_date_value=None,
+                    redirect=RedirectTarget(
+                        "templates.edit_template", {"template_id": 1},
+                    ),
+                    include_due_day_of_month=True,
+                ),
+            )
+            assert result is None
+            assert "interval_n" not in data, (
+                "interval_n must be popped whether or not it is written, so "
+                "the caller's setattr loop never sees a stray kwarg"
+            )
+            return rule
+
+    def test_a_quarterly_edit_keeps_its_backfilled_interval(
+        self, app, auth_client, seed_user,  # pylint: disable=unused-argument
+    ):
+        """Quarterly stored at 3, form submits 1 -> the rule stays at 3."""
+        rule = self._edit(
+            app, seed_user, RecurrencePatternEnum.QUARTERLY,
+            stored_interval=3, submitted=1,
+        )
+        assert rule.interval_n == 3, (
+            "the hidden form default overwrote a Quarterly rule's two-axis "
+            "interval; at step R4 that bill generates MONTHLY -- 3x the spend"
+        )
+
+    def test_a_semi_annual_edit_keeps_its_backfilled_interval(
+        self, app, auth_client, seed_user,  # pylint: disable=unused-argument
+    ):
+        """Semi-Annual stored at 6, form submits 1 -> the rule stays at 6."""
+        rule = self._edit(
+            app, seed_user, RecurrencePatternEnum.SEMI_ANNUAL,
+            stored_interval=6, submitted=1,
+        )
+        assert rule.interval_n == 6, "6x the spend if this regresses"
+
+    def test_every_n_periods_still_takes_the_submitted_value(
+        self, app, auth_client, seed_user,  # pylint: disable=unused-argument
+    ):
+        """The pattern that OWNS the field is unaffected by the guard.
+
+        The neighbouring case, and the one a too-broad fix would break: for
+        EVERY_N_PERIODS the input is visible, labelled, and the user's choice,
+        so the submitted 5 must land on the rule.
+        """
+        rule = self._edit(
+            app, seed_user, RecurrencePatternEnum.EVERY_N_PERIODS,
+            stored_interval=2, submitted=5,
+        )
+        assert rule.interval_n == 5, (
+            "the guard swallowed the user's own choice for the one pattern "
+            "whose form field is visible"
+        )

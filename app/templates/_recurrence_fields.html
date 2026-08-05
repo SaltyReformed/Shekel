@@ -61,8 +61,19 @@
 {% macro recurrence_detail_fields(template, include_due_day) %}
 <div class="mb-3 d-none" id="field-interval">
   <label for="interval_n" class="form-label">Repeat every N paychecks</label>
+  {# Prefilled from the rule ONLY for the pattern this input belongs to.
+     The div is d-none by default and recurrence_form.js toggles it on for
+     EVERY_N_PERIODS, but the input submits either way.  Since plan step R2b
+     backfilled the two-axis interval, ``interval_n`` carries 3 on a Quarterly
+     rule and 6 on a Semi-Annual one, so an unconditional prefill would put
+     "3" into a field labelled "every N paychecks" the moment such a
+     template's pattern is switched.  Reading a column whose validity depends
+     on the pattern is the exact defect the redesign exists to remove. #}
   <input type="number" id="interval_n" name="interval_n" class="form-control" min="1"
-         value="{{ template.recurrence_rule.interval_n if template and template.recurrence_rule else 1 }}">
+         value="{{ template.recurrence_rule.interval_n
+                   if template and template.recurrence_rule
+                      and template.recurrence_rule.pattern_id == REC_EVERY_N_PERIODS
+                   else 1 }}">
 </div>
 <div class="row mb-3">
   <div class="col d-none" id="field-dom">
