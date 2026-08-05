@@ -1,7 +1,7 @@
 """
 Shekel Budget App -- Dashboard Shared Helpers
 
-The shared query / bill-builder / anchor-date helpers behind the Terminal
+The shared query / bill-builder helpers behind the Terminal
 Road dashboard's pulse region (``dashboard_pulse_service``).  After the
 Loop B B-3 rebuild this module no longer assembles a full page dict: the
 retired summary cards (alerts, cash runway, payday, savings-goal /
@@ -18,21 +18,20 @@ the canonical, reused machinery:
     due-soon list renders.
   * :func:`compute_balance_section` -- the hero-shaped balance fragment
     the anchor editor's Cancel / Escape reverts to (``revert=dashboard``).
-  * the settings / anchor-date helpers (:func:`_get_user_settings`,
-    :func:`_get_last_anchor_date`) the pulse producer reuses.
+  * :func:`_get_user_settings` -- the settings load the pulse producer
+    reuses.
 
 Pure aggregation service -- no Flask imports, no database writes.
 """
 
 from datetime import date
-from decimal import Decimal
 
 from sqlalchemy.orm import joinedload, selectinload
 
 from app import ref_cache
 from app.enums import TxnTypeEnum
 from app.extensions import db
-from app.models.account import Account, AccountAnchorHistory
+from app.models.account import Account
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.user import UserSettings
@@ -41,8 +40,6 @@ from app.services.account_resolver import resolve_grid_account
 from app.services.entry_service import compute_entry_sums, compute_remaining
 from app.services.balance_at import BalanceContext
 from app.utils.balance_predicates import is_projected_clause
-
-_ZERO = Decimal("0")
 
 # Anchor-staleness fallback when the user has no settings row.  Shared
 # with ``dashboard_pulse_service._anchor_is_stale`` (the rebuild surfaces
@@ -92,9 +89,18 @@ def compute_balance_section(user_id: int) -> dict:
     against the DEFAULT ``/grid``.  The divergence is RECORDED, not fixed:
     whether this page's runway question should read a modelled balance is its
     own ruling with its own measurement, and it is not made inside a render
-    cutover.  When no period contains today the seam cannot project to today, so
-    the raw anchor balance is used (the editor is only reachable with a
-    current period in practice; this keeps the helper total).
+    cutover.
+
+    **With no period containing today it reads the seam at TODAY, not a stored
+    balance** (ruling R-EM, plan step X-f1c3a).  This arm used to answer
+    ``account.current_anchor_balance`` on the stated ground that "the seam
+    cannot project to today" -- which was never true of the seam, only of this
+    call: ``cash_balance_at`` takes a DATE and a period was being used to supply
+    one.  The old arm rendered the last balance the user ASSERTED under a label
+    that says "End of this period", so every settled movement since that
+    assertion was silently missing from the runway figure.  Reading
+    ``ctx.as_of`` is the same producer answering the same question one day
+    earlier, which is the honest figure when there is no period end to name.
 
     Args:
         user_id: The current user's id.
@@ -107,13 +113,12 @@ def compute_balance_section(user_id: int) -> dict:
     if account is None:
         return {"hero": None}
 
-    if current_period is not None:
-        balance = balance_at.cash_balance_at(
-            account, balance_ctx, current_period.end_date,
-        )
-    else:
-        balance = account.current_anchor_balance or _ZERO
-
+    balance = balance_at.cash_balance_at(
+        account,
+        balance_ctx,
+        current_period.end_date if current_period is not None
+        else balance_ctx.as_of,
+    )
     return {"hero": {"balance": balance, "account_id": account.id}}
 
 
@@ -354,7 +359,18 @@ def _entry_progress_fields(txn: Transaction) -> dict:
     }
 
 
-# ── Shared settings / anchor-date helpers ──────────────────────────
+# ── Shared settings helper ─────────────────────────────────────────
+#
+# ``_get_last_anchor_date`` used to live here and is DELETED (ruling R-EP,
+# plan step X-f1c3a).  It was a THIRD statement of "which assertion is the
+# latest one", ordering by ``created_at`` alone -- so once ``observed_on``
+# became user-supplied it named a different row than
+# ``cash_ledger.resolve_anchor``'s ``(observed_on, created_at, id)`` for any
+# back-dated assertion, on a caption sitting next to a balance the resolver
+# produced.  Its one consumer (the pulse hero's "last updated") now reads
+# ``cash_ledger.reconciled_through(...).observed_day``: the day the balance was
+# TRUE, from the accessor that already answers that question for the reconcile
+# panel and the entry list.
 
 
 def _get_user_settings(user_id: int) -> UserSettings | None:
@@ -364,17 +380,3 @@ def _get_user_settings(user_id: int) -> UserSettings | None:
         .filter_by(user_id=user_id)
         .first()
     )
-
-
-def _get_last_anchor_date(account_id: int):
-    """Return the created_at of the most recent anchor history entry.
-
-    Returns None if no anchor history exists.
-    """
-    entry = (
-        db.session.query(AccountAnchorHistory.created_at)
-        .filter_by(account_id=account_id)
-        .order_by(AccountAnchorHistory.created_at.desc())
-        .first()
-    )
-    return entry[0] if entry else None

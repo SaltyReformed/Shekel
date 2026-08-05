@@ -6,19 +6,62 @@ assigned to a specific pay period and scenario, with estimated and
 actual amounts plus a status workflow.
 """
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
+
+from sqlalchemy.orm import validates
 
 from app.extensions import db
 from app import ref_cache
 from app.enums import TxnTypeEnum
-from app.utils.dates import to_display_date
 from app.models.mixins import (
     OptimisticLockMixin,
     SoftDeleteOverridableMixin,
     TimestampMixin,
     TrackingVisibilityMixin,
 )
+
+
+def reject_settle_instant(value: date | None) -> date | None:
+    """Return *value*, refusing a ``datetime`` where a civil DAY is required.
+
+    **The ONE statement of finding N-179's rule**, consumed by the column's own
+    ORM validator below and by ``status_seam.apply_status_change`` -- which
+    calls it BEFORE it assigns anything, so a rejected settle leaves the row
+    entirely untouched rather than status-changed and undated.
+
+    ``datetime`` subclasses ``date``, so a type annotation catches nothing and
+    the value flows all the way to PostgreSQL, which coerces it into the
+    ``DATE`` column on the SESSION clock -- UTC.  An instant at
+    2026-03-04 04:30 UTC is 2026-03-03 23:30 Eastern, so the row stores
+    2026-03-04: one day later than the user's civil day, silently, which is
+    exactly the UTC-vs-display split ruling **R-DH (b)** exists to delete,
+    reintroduced one layer down.  Measured during the X-f1 conversion: 16 test
+    sites handed the seam an instant and 8 of them stayed GREEN while doing it,
+    one writing a journal entry whose ``DATE`` column held
+    ``2026-03-20T13:00:00+00:00``.
+
+    Args:
+        value: The candidate settle day, or ``None``.
+
+    Returns:
+        *value* unchanged, so the function composes into an assignment.
+
+    Raises:
+        TypeError: When *value* is a ``datetime``.  A programming error at the
+            call site rather than user input -- no form can submit an instant
+            into a date field -- so it is not a ``ValidationError``.
+    """
+    if isinstance(value, datetime):
+        raise TypeError(
+            f"settled_on must be a date, got datetime {value!r}.  A "
+            "settle records the CIVIL DAY its money moved, and an instant "
+            "handed here is truncated by PostgreSQL on the session clock "
+            "(UTC), so an evening-Eastern settle would be filed on the "
+            "following day.  Pass the user's civil day -- display_today(), or "
+            "the day the bank showed."
+        )
+    return value
 
 
 class Transaction(
@@ -29,6 +72,44 @@ class Transaction(
     db.Model,
 ):
     """A single income or expense entry within a pay period.
+
+    **A transaction carries TWO clocks, and the second one is not decoration.**
+    ``pay_period_id`` (with ``due_date``) is the BUDGET clock -- which column
+    the user planned this in -- and :attr:`settled_on` is the CASH clock, the
+    civil day the money actually moved.  They are the same period for most rows
+    and different for 21 of the 156 settled rows on the 2026-08-03 production
+    clone, and that difference IS the grid's timing row: a row settled outside
+    its own pay period moves the balance in one column while its income /
+    expense subtotal sits in another.  The same split is stated on
+    ``TransactionEntry`` (``purchased_on`` beside its own ``settled_on``), on
+    ``cash_ledger.CashSourceFact``, and on a loan payment (``due_date`` beside
+    its pay period).
+
+    **``settled_on`` REPLACED a ``paid_at`` instant at plan step X-f1** (ruling
+    R-EC, migration ``a3f7c8e21b64``).  That column stored ``db.func.now()`` at
+    the moment the user clicked, and eleven read sites across eight modules
+    converted it to a display-timezone civil day to get the fact they wanted --
+    while nothing read the instant itself and nothing ordered two of them.  On
+    real data 65.2% of settled Checking rows shared a click-minute with another
+    row, so its precision described a bookkeeping session rather than money.
+    Storing the day directly leaves one clock, converted once at the write door.
+
+    **The settled-iff-dated invariant is structural, not a constraint.**  A
+    CHECK cannot express it: the predicate is ``ref.statuses.is_settled`` and a
+    constraint cannot join, while hardcoding the settled ids would be a magic
+    number that breaks when a status is added or removed.  Instead
+    ``status_seam.apply_status_change`` is the ONE door that writes
+    ``status_id``, and it writes ``settled_on`` in the same call.  A reader that
+    finds a settled row with no day must FAIL LOUD rather than fall back --
+    dropping such a row from a fold is silent money loss.
+
+    **``settled_on`` has no bounds, and that is deliberate.**  A settle
+    legitimately falls outside its budget period on EITHER side (measured on the
+    2026-08-03 production clone: 11 of 156 settled rows before their period's
+    start, 10 after its end), so neither bound exists; a "not in
+    the future" rule is not expressible in a CHECK (it is not immutable) and
+    lives at the write door instead, exactly as ruling R-M's purchase-date guard
+    does for an entry.
 
     Optimistic locking: ``version_id`` is the SQLAlchemy
     ``version_id_col`` for the row.  Every ORM-emitted UPDATE or
@@ -190,7 +271,46 @@ class Transaction(
     )
     notes = db.Column(db.Text)
     due_date = db.Column(db.Date, nullable=True)
-    paid_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    # The CASH clock.  Nullable, and the NULL is the invariant rather than a
+    # gap: a row carries a settle day if and only if it is in a settled status
+    # (Paid / Received / Settled).  Both halves are written by ONE statement --
+    # ``status_seam.apply_status_change``, the single door that assigns
+    # ``status_id`` -- so they cannot diverge.  See the class docstring for why
+    # this is not a CHECK constraint and why it has no bounds.
+    settled_on = db.Column(db.Date)
+
+    @validates("settled_on")
+    def _refuse_a_settle_instant(self, _key, value):
+        """Refuse a ``datetime`` written to :attr:`settled_on`, on ANY path.
+
+        The type guard lives on the COLUMN rather than only at the write door,
+        and that placement is the point (finding **N-179**).  The seam refuses
+        an instant it is handed, but nothing stopped a caller -- or a fixture --
+        assigning the attribute directly, and PostgreSQL then truncates the
+        instant on the UTC session clock in silence.  A validator fires for the
+        constructor, for a plain ``txn.settled_on = ...``, and for every ORM
+        write path, so the wrong type is a loud ``TypeError`` wherever it is
+        written instead of a day that is wrong by one.
+
+        It is not a fence with an allowlist and it hunts no call sites: the
+        column simply does not accept the type.  The residual, stated because
+        an unstated limit reads as stronger than it is: a bulk
+        ``query.update({"settled_on": ...})`` bypasses the ORM attribute layer
+        and is not seen here, the same boundary
+        ``LoanAnchorEvent``'s append-only guard states for itself.
+
+        Args:
+            value: The candidate settle day.  (SQLAlchemy also passes the
+            attribute name, always ``settled_on``, which this ignores.)
+
+        Returns:
+            *value* unchanged when it is a civil ``date`` or ``None``.
+
+        Raises:
+            TypeError: When *value* is a ``datetime`` (from
+                :func:`reject_settle_instant`).
+        """
+        return reject_settle_instant(value)
     # is_envelope and companion_visible are provided by
     # TrackingVisibilityMixin.  On an ad-hoc (template_id IS NULL) row
     # they carry the row's own setting; on a template-generated row they
@@ -311,15 +431,37 @@ class Transaction(
         """Days between due date and payment, or None.
 
         Positive means paid early, negative means paid late, zero means
-        paid on the due date.  Returns None when either field is missing.
-        ``paid_at`` is converted to the user's DISPLAY timezone before it is
-        truncated to a day (the app-wide "store UTC, display Eastern" rule),
-        so an 8:05pm-Eastern settle on the due date counts as ON TIME, not a
-        day late by UTC drift.  ``due_date`` is already a civil date.
+        paid on the due date.  Returns None when either field is missing --
+        which for :attr:`settled_on` means the row is not settled, so its
+        timeliness is not yet a question.
+
+        **Both operands are civil dates, and no timezone enters this.**  It
+        subtracted ``to_display_date(paid_at)`` until plan step X-f1: an instant
+        converted to a day and subtracted from a ``DATE`` column, which was one
+        of the eleven statements of the same "which civil day did this settle
+        on" derivation the seam now makes once at the write door.  The
+        arithmetic is now exact rather than zone-dependent.
+
+        **The behaviour is unchanged for every row that recorded an instant, and
+        CHANGED for eight rows that did not** (finding **N-181**, found by a
+        neutral review).  This gate used to be "was a settle instant recorded";
+        it is now "is the row settled", because the migration backfilled a day
+        onto every settled row -- including 8 legacy transfer shadows whose
+        ``paid_at`` was NULL and which took their pay period's ``start_date``.
+        Those 8 were EXCLUDED from
+        ``spending_analysis.payment_timeliness_from_txns`` and are now included,
+        dated by a day nothing observed: measured on production, the four
+        expense legs report 8 days early, on time, on time and 1 day late.  The
+        balance was always computed from that same fallback day, so no balance
+        moves; what moved is a timeliness metric that used the NULL as its
+        "unknown" signal.  Narrowing the backfill instead was REJECTED -- it
+        would leave 8 settled rows undated, which the balance walk now refuses,
+        trading a soft metric for a 500 on the grid.  The resolution is plan step
+        X-f1c's edit door, which lets those 8 legacy days be corrected.
         """
-        if self.due_date is None or self.paid_at is None:
+        if self.due_date is None or self.settled_on is None:
             return None
-        return (self.due_date - to_display_date(self.paid_at)).days
+        return (self.due_date - self.settled_on).days
 
     def __repr__(self):
         return f"<Transaction '{self.name}' ${self.estimated_amount} ({self.id})>"

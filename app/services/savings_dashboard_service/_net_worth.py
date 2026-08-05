@@ -260,7 +260,7 @@ def compute_net_worth_today(
 
     Reduces over each account's ``current_balance`` -- the entries-aware
     resolver figure already in ``account_data`` (E-25), NOT the raw
-    ``current_anchor_balance`` cache -- so this hero agrees with the
+    ``current_anchor_balance`` cache (deleted at plan step X-f1c3a) -- so this hero agrees with the
     per-tile balances the same page renders.  Assets add their balance;
     liabilities accumulate their POSITIVE magnitude into
     ``total_liabilities``.  Net worth is ``total_assets - total_liabilities``.

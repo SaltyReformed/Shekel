@@ -390,7 +390,7 @@ class TestTransferTransitions:
         """The transfer map must stay a SUBSET of the transaction map.
 
         Two shipped docstrings rest on this and neither could see it before:
-        ``transfer_service._apply_status_to_all_three`` says the shadow
+        ``_transfer_status.apply_status_to_all_three`` says the shadow
         verifications "pass by construction for any transfer whose own
         transition was legal", and ``restore_transfer``'s repair says its
         transition check "cannot raise here".  Both are true only while every

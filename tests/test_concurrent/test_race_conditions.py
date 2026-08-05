@@ -22,7 +22,7 @@ from decimal import Decimal
 import pytest
 
 from app.extensions import db
-from app.models.account import Account
+from app.models.account import Account, AccountAnchorHistory
 from app.models.category import Category
 from app.models.pay_period import PayPeriod
 from app.models.ref import AccountType, Status, TransactionType
@@ -31,7 +31,8 @@ from app.models.transaction import Transaction
 from app.models.user import User, UserSettings
 from app.services.auth_service import hash_password
 from app.services import account_service, pay_period_admin, pay_schedule_service
-from tests._test_helpers import assert_pay_period_invariants
+from tests._test_helpers import assert_pay_period_invariants, linked_ledger_total
+from app.services import cash_ledger
 
 
 # ---------------------------------------------------------------------------
@@ -162,7 +163,6 @@ def _create_user_with_data(db_session):
             account_type_id=checking_type.id,
             name="Checking",
             anchor_balance=Decimal("5000.00"),
-            anchor_period_id=past_period.id,
         ),
     )
 
@@ -391,43 +391,64 @@ class TestConcurrentCarryForwardAndEdit:
 
 
 class TestConcurrentAnchorUpdate:
-    """Verify concurrent anchor balance updates produce consistent state.
+    """Verify concurrent balance ASSERTIONS produce consistent state.
 
     Two threads simultaneously PATCH /accounts/<id>/true-up with
     different balance values.  The invariants:
 
       1. Neither request produces a 500.
-      2. The final committed balance is exactly one of the two
-         submitted values -- not the original 5000.00, not a sum,
-         not any other value.
-      3. After commit C-17 (anchor balance optimistic locking /
-         audit finding F-009) the route is no longer "last-write-
-         wins."  The Account model carries a ``version_id_col``;
-         the loser of the race detects a stale ``version_id`` at
-         flush time and the route translates SQLAlchemy's
-         ``StaleDataError`` into a 409 Conflict response.  At
-         least one request returns 200; any non-200 response
-         must be a 409 Conflict (never a 500 or other status).
+      2. BOTH return 200, and BOTH assertions are recorded.
+      3. The resolved balance is one of the two submitted values.
 
-    Tolerance for serialised-without-contention runs: if the OS
-    scheduler happens to fully drain one request before the other
-    starts its UPDATE, both get 200 and the second simply overrides
-    the first (the original "last-write-wins" semantics).  The
-    barrier makes this rare but not impossible, so the assertion
-    accepts either {200, 200} (rare, scheduler-dependent) or
-    {200, 409} (the typical concurrent case).
+      4. The account's LINKED LEDGER sums to the resolved assertion.
+
+    **Invariant 2 was the opposite until plan step X-f1c3c** (ruling R-EN),
+    and this docstring is rewritten rather than annotated because the old
+    text read as instructions to restore the deleted behaviour.  It said:
+    after commit C-17 the route is no longer last-write-wins, the loser
+    detects a stale ``version_id`` at flush time, and the route answers 409 --
+    so at least one request returns 200 and any non-200 must be a 409.
+
+    None of that survives, because the true-up stopped writing the row the
+    lock guarded.  A true-up APPENDS an assertion, so there is nothing to
+    contend for: two assertions of different balances are two FACTS, the
+    later-observed one is current, and neither is lost.  **A 409 here is now a
+    regression, not a contract.**  Two threads asserting the SAME balance on
+    the same day are still idempotent -- since ruling R-EQ the write door
+    compares against the governing assertion under the owner's write lock, so
+    the waiter sees the winner's row, writes nothing and reports success.
+
+    **Invariant 4 is the one this class was missing, and it is the reason the
+    409's deletion was not free.**  "Append-only" is true of
+    ``account_anchor_history`` and FALSE of the transaction a true-up runs: it
+    also RECONCILES the account's posted corrections, which reads what is
+    posted, subtracts it from what the assertions say, and writes the
+    difference.  The deleted ``version_id`` UPDATE had been serialising that
+    read-modify-write by accident, because it autoflushed and took a row lock
+    before the walk.  Measured with the interleave forced at the reconcile's
+    read: both requests answer 200, both assertions are recorded, and the
+    resolver returns one of them -- every invariant above HELD -- while the
+    account's linked ledger settled at ``$1,000.00`` against a resolved
+    ``$2,000.00``.  Invariants 1-3 cannot see that, and the trial balance
+    cannot either, because the anchor-equity leg mirrors the error exactly.
+    The serialisation is now explicit and per-owner
+    (:mod:`app.services.user_write_lock`), and its own deterministic tests are
+    in ``tests/test_services/test_user_write_lock.py``; invariant 4 is what
+    grades the MONEY rule those tests protect.
+
+    The old "tolerance for serialised-without-contention runs" paragraph is
+    gone with the branch it excused: {200, 200} is no longer the rare
+    scheduler-dependent outcome, it is the only correct one, so this no longer
+    passes for two different reasons depending on the OS scheduler.
     """
 
     def test_concurrent_true_up(self, app, db):
-        """Two threads update anchor balance to different values simultaneously.
+        """Two threads assert different balances simultaneously; both are kept.
 
-        See class docstring for the full invariant set.  This test was
-        originally authored as a pre-C-17 invariant check ("both
-        succeed, last-write-wins"); commit C-17 introduced
-        optimistic locking on Account so the loser now correctly
-        receives a 409.  The test was not updated at the time and
-        regressed to a hard failure -- this revision restores it to
-        a green state that asserts the new, correct contract.
+        See the class docstring for the invariant set and for what ruling
+        R-EN changed.  Non-vacuity: the two asserted values are read back out
+        of ``account_anchor_history``, so a pair of 200s that recorded nothing
+        fails here.
         """
         data = _create_user_with_data(db.session)
         account_id = data["account"].id
@@ -455,39 +476,53 @@ class TestConcurrentAnchorUpdate:
         assert resp_a.status_code != 500, f"Thread A got 500: {resp_a.data[:200]}"
         assert resp_b.status_code != 500, f"Thread B got 500: {resp_b.data[:200]}"
 
-        # Invariant 3: at least one request returns 200, and any
-        # non-200 response is a 409 Conflict (the optimistic-locking
-        # contract from commit C-17).  No other status codes are
-        # acceptable here.
-        statuses = (resp_a.status_code, resp_b.status_code)
-        assert 200 in statuses, (
-            f"At least one thread must succeed (200); got A={resp_a.status_code}, "
-            f"B={resp_b.status_code}"
-        )
-        for label, status, resp in (
-            ("A", resp_a.status_code, resp_a),
-            ("B", resp_b.status_code, resp_b),
-        ):
-            assert status in (200, 409), (
-                f"Thread {label} returned {status}; "
-                f"expected 200 (winner) or 409 (loser).  "
-                f"Body: {resp.data[:200]}"
+        # Invariant 3: BOTH requests succeed, and that is ruling R-EN.
+        # This used to require "200 for the winner, 409 for the loser" -- the
+        # C-17 optimistic lock, which fired because a true-up UPDATEd the
+        # ``accounts`` row.  It appends an ASSERTION now, so there is no row
+        # to contend for and nothing for a loser to have overwritten: two
+        # assertions of different balances are two facts, and the later-observed
+        # one is current.  A 409 here would be a regression, not a contract.
+        for label, resp in (("A", resp_a), ("B", resp_b)):
+            assert resp.status_code == 200, (
+                f"Thread {label} returned {resp.status_code}; an append-only "
+                f"assertion has no conflict to report.  Body: {resp.data[:200]}"
             )
 
-        # Invariant 2: final committed balance is exactly one of the
-        # two submitted values, never the original 5000.00.
+        # Invariant 2: BOTH assertions are recorded -- neither is lost -- and
+        # the resolved balance is whichever of them is current.  The original
+        # 5000.00 is superseded by both.
         db.session.expire_all()
         final = db.session.get(Account, account_id)
         assert final is not None
-        assert final.current_anchor_balance in (
-            Decimal("2000.00"), Decimal("3000.00"),
-        ), (
-            f"Anchor balance is {final.current_anchor_balance}, "
-            f"expected 2000.00 or 3000.00"
+        asserted = {
+            row.anchor_balance
+            for row in db.session.query(AccountAnchorHistory).filter_by(
+                account_id=account_id,
+            )
+        }
+        assert {Decimal("2000.00"), Decimal("3000.00")} <= asserted, (
+            f"Both concurrent assertions must survive; recorded: {asserted}"
         )
-        # Anchor period must be set (whichever thread won set it
-        # to the current period).
-        assert final.current_anchor_period_id is not None
+        resolved = cash_ledger.resolve_anchor(final).balance
+        assert resolved in (Decimal("2000.00"), Decimal("3000.00")), (
+            f"Resolved balance is {resolved}, "
+            f"expected one of the two concurrently asserted values"
+        )
+
+        # Invariant 4: the posted ledger AGREES with the resolved assertion.
+        # This account has no settled movements, so its linked ledger must sum
+        # to exactly the balance the resolver reports.  Two reconciles that
+        # both computed their delta against the same posted state leave these
+        # permanently apart -- with every assertion above still passing, and
+        # with the trial balance still at $0.00 because the anchor-equity leg
+        # carries the mirror-image error.  See the class docstring for the
+        # measured broken state.
+        assert linked_ledger_total(account_id) == resolved, (
+            f"the account's linked ledger sums to "
+            f"{linked_ledger_total(account_id)} while its resolved assertion "
+            f"is {resolved}; two anchor reconciles interleaved"
+        )
 
 
 # ---------------------------------------------------------------------------

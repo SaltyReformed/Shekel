@@ -374,7 +374,7 @@ class TestStateMachineViolations:
         to ``Paid`` skips the projected step the audit log relies on
         and is refused with a 400.  The user is expected to revert to
         Projected first and then mark the row as Paid via the
-        mark-done endpoint -- which writes ``paid_at`` and (on
+        mark-done endpoint -- which writes the settle day and (on
         envelope rows) settles entries -- preserving the workflow
         guarantees the dashboard depends on.
 

@@ -30,7 +30,7 @@ All money is ``Decimal`` from strings.
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date
 from decimal import Decimal
 
 import pytest
@@ -77,7 +77,6 @@ from tests._test_helpers import (
     loan_income_shadow,
     posted_loan_balance_at,
     posted_loan_balance_map,
-    settle_instant_on,
     SPLIT_LOAN,
 )
 
@@ -141,14 +140,14 @@ def _settle_payment(seed_user, loan, period, cash, actual=None, settled_on=None)
     Step-2 cash entry auto-posts), then returns the loan-side income shadow the
     Step-4 correction books under.
 
-    ``settled_on`` (a civil date) pins the payment's ``paid_at``, so a test
+    ``settled_on`` (a civil date) pins the payment's settle day, so a test
     reading a PAST balance can place the payment on a known day -- balance step
     C2 keys a payment's visibility on its SETTLED date.  Left ``None`` it keeps
-    the fixture's realistic ``db.func.now()`` default.
+    the fixture's realistic "settled today" default.
     """
     kwargs = {"amount": cash, "actual_amount": actual}
     if settled_on is not None:
-        kwargs["paid_at"] = settle_instant_on(settled_on)
+        kwargs["settled_on"] = settled_on
     xfer = create_settled_transfer(
         seed_user, _db.session, seed_user["account"], loan, period, **kwargs,
     )
@@ -796,12 +795,12 @@ class TestTrackingStartOpening:
             )
             db.session.commit()
 
-            # Explicit paid_at in 2026 so the Schedule-A year attribution does
+            # An explicit 2026 settle day so the Schedule-A year attribution does
             # not depend on the wall clock (CI runs in any year).
             create_settled_transfer(
                 seed_user, db.session, seed_user["account"], loan,
                 seed_periods[_P1], amount=Decimal("1000.00"),
-                paid_at=datetime(2026, 2, 1, 12, 0, tzinfo=timezone.utc),
+                settled_on=date(2026, 2, 1),
             )
             db.session.commit()
 
@@ -2024,7 +2023,7 @@ class TestPostedLoanBalanceSums:
 
         **The "no assertion depends on the wall clock" this docstring used to
         claim was FALSE, and finding N-65's structural fix is what proved it.**
-        Six tests here settled their payment with no explicit date, so ``paid_at``
+        Six tests here settled their payment with no explicit date, so the day
         came from the DATABASE clock -- untouched by ``freeze_today``, which
         patches Python only.  The real clock happens to fall before ``_AS_OF``,
         so the payment landed inside the window and the assertions held.  Under a
@@ -2035,7 +2034,7 @@ class TestPostedLoanBalanceSums:
 
         Every settle in this class therefore passes ``settled_on=`` explicitly,
         stating the date the test always meant.  No expected figure moved --
-        ``paid_at`` bounds a posting's VISIBILITY (``entry_date <= as_of``) and
+        the settle day bounds a posting's VISIBILITY (``entry_date <= as_of``) and
         never its split, which the pay period decides.
         """
         freeze_today(monkeypatch, _FROZEN_TODAY)
@@ -2612,7 +2611,7 @@ class TestPrePeriodAnchor:
 # ---------------------------------------------------------------------------
 # The checked projection (plan step E1a): sum(postings) == fold(events),
 # asserted per visible date at every write, and the date-aware reconcile
-# (finding N-13) that makes the assert safe on a legitimate paid_at edit.
+# (finding N-13) that makes the assert safe on a legitimate settle-day edit.
 # ---------------------------------------------------------------------------
 
 
@@ -2649,7 +2648,7 @@ class TestCheckedProjection:
     the linked ledger's per-``entry_date`` nets exactly.  These tests prove the
     assert has teeth (a forced $1.00 walk-invisible posting fires it) and that
     the date-aware reconcile keeps it from firing on the one legitimate edit
-    that moves a date without moving an amount -- a settled ``paid_at`` edit
+    that moves a date without moving an amount -- a settled settle-day edit
     (finding N-13) -- converging in ONE pass in both directions.
     """
 
@@ -2712,15 +2711,15 @@ class TestCheckedProjection:
                 loan_posting_service.sync_loan_postings(loan.id, scenario_id)
             db.session.rollback()
 
-    def test_paid_at_edit_redates_the_postings(
+    def test_settle_day_edit_redates_the_postings(
         self, app, db, seed_user, seed_periods,
     ):
-        """A settled ``paid_at`` edit moves every posting to the new settle date.
+        """A settled settle-day edit moves every posting to the new settle date.
 
         The N-13 regression.  P1's $1,000.00 payment settles 2026-01-20:
         interest 100000 * 0.06 / 12 = 500.00, principal 500.00, so the linked
         ledger nets +1000.00 (cash) - 500.00 (correction) = +500.00 on 01-20.
-        A PURE ``paid_at`` edit to 2026-02-05 changes no amount, so the
+        A PURE settle-day edit to 2026-02-05 changes no amount, so the
         pre-E1a reconcile wrote nothing and the entries kept the old date --
         while the fold moved to 02-05, a divergence the checked-projection
         assert now refuses.  After the edit: 01-20 nets 0.00 (reversed at its
@@ -2740,12 +2739,12 @@ class TestCheckedProjection:
                 date(2026, 1, 20)
             ] == Decimal("500.00")
 
-            # The pure paid_at edit -- no amount, status, or period change.
+            # The pure settle-day edit -- no amount, status, or period change.
             # update_transfer runs the (now date-aware) reconciles + the
             # checked-projection assert; a raise here IS the N-13 regression.
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
-                paid_at=settle_instant_on(date(2026, 2, 5)),
+                settled_on=date(2026, 2, 5),
             )
             db.session.commit()
 
@@ -2762,10 +2761,10 @@ class TestCheckedProjection:
             db.session.flush()
             assert _source_entry_count(xfer.id, shadow.id) == before
 
-    def test_backward_paid_at_move_converges(
+    def test_backward_settle_day_move_converges(
         self, app, db, seed_user, seed_periods,
     ):
-        """Moving ``paid_at`` EARLIER re-dates and converges in one pass too.
+        """Moving the settle day EARLIER re-dates and converges in one pass too.
 
         The churn control: a latest-entry-date staleness heuristic would see
         the old-dated reversal as "the latest posting" after a BACKWARD move
@@ -2786,7 +2785,7 @@ class TestCheckedProjection:
 
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
-                paid_at=settle_instant_on(date(2026, 1, 20)),
+                settled_on=date(2026, 1, 20),
             )
             db.session.commit()
 

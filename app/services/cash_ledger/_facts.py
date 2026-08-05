@@ -25,16 +25,14 @@ in, frozen dataclass out; no ``flask`` / ``request`` / ``session`` /
 
 Decimal discipline (``docs/coding-standards.md``).  :attr:`AnchorPoint.balance`
 is constructed via ``Decimal(str(...))`` from the storage value.
-``Account.current_anchor_balance`` and ``AccountAnchorHistory.anchor_balance``
-are ``Numeric(12,2)`` columns, so the SQLAlchemy adapter already returns
-``Decimal`` -- but routing through ``str`` is the project convention and is the
-cheap insurance against a future column-type change silently coercing through
-float.
+``AccountAnchorHistory.anchor_balance`` is a ``Numeric(12,2)`` column, so the
+SQLAlchemy adapter already returns ``Decimal`` -- but routing through ``str`` is
+the project convention and is the cheap insurance against a future column-type
+change silently coercing through float.
 """
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
@@ -43,22 +41,13 @@ from sqlalchemy.orm import joinedload, selectinload
 
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
-from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.utils.balance_predicates import (
     balance_contributing_clause,
     is_projected_clause,
 )
-from app.utils.log_events import (
-    BUSINESS,
-    EVT_ANCHOR_CACHE_RECONCILED,
-    log_event,
-)
 
 from ._amounts import ReconciledThrough
-
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -69,11 +58,6 @@ class AnchorPoint:
         balance: The real-money anchor balance as a ``Decimal``.  Zero
             is a legitimate value per E-12 and is preserved verbatim;
             consumers MUST NOT treat ``Decimal("0.00")`` as "missing".
-        period: The :class:`~app.models.pay_period.PayPeriod` the
-            anchor is anchored against.  The pay-period row is
-            authoritative; the resolver returns the relationship-loaded
-            object so callers can read ``period.id``, ``period.start_date``,
-            ``period.end_date``, etc. without re-querying.
         observed_on: The civil day the asserted balance was TRUE -- the
             stored ``AccountAnchorHistory.observed_on`` (ruling R-DH, plan
             step 2).  **This is the "as of" a caption means.**  It was the same
@@ -93,7 +77,9 @@ class AnchorPoint:
     finding N-133 / F12's other half.**  That field was ``created_at``
     truncated to a UTC day, justified in its own docstring by matching the
     ``uq_anchor_history_account_period_balance_day`` index -- which now keys
-    on the stored ``observed_on`` instead, so the justification was gone.
+    on the stored ``observed_on`` instead, so the justification was gone.  That
+    index is itself deleted now (ruling R-EQ, plan step X-f1c4b): the duplicate
+    rule is a write-door comparison against the governing assertion.
     No production code read it: the account-detail route deliberately reads
     ``created_at`` and says why (a UTC day renders a late-evening Eastern
     anchor on the wrong day), and its only reader in the repository was one
@@ -103,29 +89,101 @@ class AnchorPoint:
     """
 
     balance: Decimal
-    period: PayPeriod
     observed_on: date
     created_at: datetime
 
 
-def resolve_anchor(account: Account, scenario_id: int) -> AnchorPoint:
+def _governing_row(
+    account_id: int, on_or_before: date | None,
+) -> AccountAnchorHistory | None:
+    """Return the assertion that GOVERNS, optionally as of a civil day.
+
+    The ONE query behind both :func:`resolve_anchor` (``on_or_before=None`` --
+    which assertion governs now) and :func:`governing_anchor_on`
+    (``on_or_before=D`` -- which governed on day D).  They are the same question
+    with the same tie-breaks and only the horizon differs, so they are one
+    implementation: two queries that "agree by reading" is the defect this
+    package's own history is made of.
+
+    Args:
+        account_id: The account whose assertions to search.
+        on_or_before: The civil day to answer as of, or ``None`` for the
+            account's latest assertion at any date.
+
+    Returns:
+        The governing :class:`AccountAnchorHistory` row, or ``None`` when the
+        account has no assertion at or before the horizon.
+    """
+    query = db.session.query(AccountAnchorHistory).filter(
+        AccountAnchorHistory.account_id == account_id,
+    )
+    if on_or_before is not None:
+        query = query.filter(AccountAnchorHistory.observed_on <= on_or_before)
+    return query.order_by(
+        AccountAnchorHistory.observed_on.desc(),
+        AccountAnchorHistory.created_at.desc(),
+        AccountAnchorHistory.id.desc(),
+    ).first()
+
+
+def governing_anchor_on(
+    account_id: int, observed_on: date,
+) -> AnchorPoint | None:
+    """Return the assertion that governed ``account_id`` on ``observed_on``.
+
+    **The WRITE doors' question** (ruling **R-EQ**, plan step X-f1c4b): before
+    appending an assertion for a civil day, does it change what is already true
+    on that day?  It differs from :func:`resolve_anchor` only when the day being
+    asserted is not the newest one the account carries -- a BACK-DATED
+    assertion, which is what plan step X-f1c4c makes reachable on the cash door
+    and what the loan door has allowed since Commit 16.
+
+    **Asking ``resolve_anchor`` instead is a measured defect, not a shortcut.**
+    A submission for an earlier day compared against the LATEST assertion can
+    never match, so a double-click on a back-dated correction appends a
+    duplicate every time -- reproduced on the loan door by two independent
+    reviews of X-f1c4b before this function existed.  A submission for day D can
+    only change what is true at or after D, so D is the horizon the comparison
+    belongs at.
+
+    Args:
+        account_id: The account being asserted about.
+        observed_on: The civil day the submission asserts a balance for.
+
+    Returns:
+        The governing :class:`AnchorPoint`, or ``None`` when the account has no
+        assertion at or before *observed_on* -- in which case the submission is
+        necessarily new.  Unlike :func:`resolve_anchor` this does NOT raise on
+        an account with no history: "nothing governs this day yet" is an honest
+        answer to a writer, where it is a broken invariant to a reader.
+    """
+    governing = _governing_row(account_id, on_or_before=observed_on)
+    if governing is None:
+        return None
+    return AnchorPoint(
+        balance=Decimal(str(governing.anchor_balance)),
+        observed_on=governing.observed_on,
+        created_at=governing.created_at,
+    )
+
+
+def resolve_anchor(account: Account) -> AnchorPoint:
     """Return the canonical :class:`AnchorPoint` for ``account``.
 
-    Reads the most recent ``AccountAnchorHistory`` row for the account
-    (by ``created_at`` descending) as the dated source of truth (E-19).
-    ``Account.current_anchor_balance`` and
-    ``Account.current_anchor_period_id`` are treated as a denormalized
-    cache of that latest event:
+    Reads the most recent ``AccountAnchorHistory`` row for the account as the
+    dated source of truth (E-19).  **It is the ONE answer to "what balance has
+    this account been asserted to hold", for every consumer** -- the grid
+    header, the reconcile panel, the Property's market value, the archived
+    drawer's last balance, and the write doors' did-this-change test all ask
+    here (plan step X-f1c3a).
 
-      * Cache matches latest event -- the canonical state.  Return the
-        history row's values.
-      * Cache disagrees -- the history row wins (E-19 dated SoT) and
-        the divergence is logged via
-        ``EVT_ANCHOR_CACHE_RECONCILED`` so the regression that wrote
-        the cache without appending the matching event is detectable
-        in observability.  The cache is NOT mutated here -- this
-        resolver is read-only; correcting the cache is the
-        responsibility of the next legitimate true-up path.
+    **It used to be the second-best answer**, because ``accounts`` carried a
+    denormalized copy of this same row and most readers took that instead.
+    This function compared the two and logged ``EVT_ANCHOR_CACHE_RECONCILED``
+    when they disagreed, letting the history row win without repairing the copy
+    (finding cash D4).  Ruling **R-EH** deleted the columns, so there is no
+    second answer to reconcile against and no detector to run: the divergence
+    is not detected-and-logged, it is inexpressible.
 
     The Decimal balance is constructed via ``Decimal(str(...))`` to
     obey the project's "construct Decimal from strings" rule
@@ -142,29 +200,28 @@ def resolve_anchor(account: Account, scenario_id: int) -> AnchorPoint:
     here rather than silently returning a wrong number to every
     downstream consumer.
 
+    **It takes no ``scenario_id``, and dropping it is part of the same ruling.**
+    The parameter never scoped the query -- ``AccountAnchorHistory`` carries no
+    scenario column and accounts are not scenario-scoped at the storage tier --
+    and its only remaining use was the reconciliation log payload deleted above.
+    Keeping it for "API symmetry" with the row loaders beside it would have
+    forced a ``BalanceContext`` into the write doors, none of which hold one: an
+    argument a caller must fabricate is the shape this plan's Section 8 rules a
+    defect rather than a contract.  (The account-edit validator was the other
+    caller named here; plan step X-f1e deleted its read entirely.)
+
     Args:
         account: The :class:`~app.models.account.Account` to resolve.
             Must be attached to ``db.session`` (the history-row query
             reads via the session).
-        scenario_id: The scenario the caller is operating under.  The
-            current data model is per-account -- ``AccountAnchorHistory``
-            carries no ``scenario_id`` column and accounts are not
-            scenario-scoped at the storage tier -- so the anchor
-            returned is identical across scenarios for the same
-            account.  The parameter is kept in the signature for two
-            reasons: API symmetry with the row loaders beside it
-            (``planned_cash_rows`` / ``settled_cash_facts``), which DO
-            need the scenario to filter transactions, and forward
-            compatibility with a possible future per-scenario anchor
-            override.  It cited the anchor-forward ``balances_for``
-            producer until plan step X-g4b deleted it; the symmetry
-            argument is unchanged, only its example is.  The value is included in the
-            reconciliation log payload so a future scenario-scoped
-            divergence is traceable.
 
     Returns:
-        :class:`AnchorPoint` -- balance, period, the day the balance was true,
-        and the recording instant.
+        :class:`AnchorPoint` -- the asserted balance, the day it was true, and
+        the recording instant.  **It carried the anchor PERIOD until plan step
+        X-f1c3b** (ruling R-EO), which deleted
+        ``account_anchor_history.pay_period_id``: an assertion is a fact about
+        a bank and is not filed under a budgeting artifact.  No reader in
+        ``app/`` had ever taken that field.
 
     **"Latest" is the latest BUSINESS day, and the tie-breaks are the WALK's,
     key for key.**  The order here is ``(observed_on, created_at, id)``
@@ -187,16 +244,7 @@ def resolve_anchor(account: Account, scenario_id: int) -> AnchorPoint:
             see the function docstring above for the regression-trap
             rationale.
     """
-    latest: AccountAnchorHistory | None = (
-        db.session.query(AccountAnchorHistory)
-        .filter_by(account_id=account.id)
-        .order_by(
-            AccountAnchorHistory.observed_on.desc(),
-            AccountAnchorHistory.created_at.desc(),
-            AccountAnchorHistory.id.desc(),
-        )
-        .first()
-    )
+    latest = _governing_row(account.id, on_or_before=None)
     if latest is None:
         raise RuntimeError(
             f"resolve_anchor: account id={account.id} has zero "
@@ -207,38 +255,8 @@ def resolve_anchor(account: Account, scenario_id: int) -> AnchorPoint:
             "canonical factory."
         )
 
-    history_balance = Decimal(str(latest.anchor_balance))
-    history_period_id = latest.pay_period_id
-
-    cached_balance = account.current_anchor_balance
-    cached_period_id = account.current_anchor_period_id
-    cache_disagrees = (
-        cached_balance is None
-        or Decimal(str(cached_balance)) != history_balance
-        or cached_period_id != history_period_id
-    )
-    if cache_disagrees:
-        log_event(
-            logger,
-            logging.WARNING,
-            EVT_ANCHOR_CACHE_RECONCILED,
-            BUSINESS,
-            "Account.current_anchor_* cache disagreed with the latest "
-            "AccountAnchorHistory row; history row wins (E-19 SoT).",
-            account_id=account.id,
-            scenario_id=scenario_id,
-            cached_balance=(
-                str(cached_balance) if cached_balance is not None else None
-            ),
-            cached_period_id=cached_period_id,
-            history_balance=str(history_balance),
-            history_period_id=history_period_id,
-            history_created_at=latest.created_at.isoformat(),
-        )
-
     return AnchorPoint(
-        balance=history_balance,
-        period=latest.pay_period,
+        balance=Decimal(str(latest.anchor_balance)),
         observed_on=latest.observed_on,
         created_at=latest.created_at,
     )
@@ -299,9 +317,10 @@ def planned_cash_rows(
     Projected here) and in what they RETURN, and that second difference is the
     ruling:
 
-    * a SETTLED row can be dated by this leaf -- its instant is
-      ``COALESCE(paid_at, period start)``, a stored fact -- so ``_events`` returns
-      it valued and dated, as a
+    * a SETTLED row can be dated by this leaf -- its ``settled_on`` is a
+      STORED fact and nothing derives it (plan step X-f1, ruling R-EC; it was
+      ``COALESCE(paid_at, period start)`` until then) -- so ``_events``
+      returns it valued and dated, as a
       :class:`~app.services.cash_ledger.CashSourceFact`;
     * a PROJECTED row cannot.  Its effective date is
       ``max(its attribution date, as_of + 1 day)`` (ruling R-G: "a plan cannot

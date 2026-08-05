@@ -429,7 +429,7 @@ def grid_balance_view(
     between two independently computed balance maps, which meant any
     disagreement between those maps rendered as interest EARNED: measured on the
     real Money Market, folding the cash map while the accrual still seeded off
-    the ``current_anchor_balance`` cache would have shown ``$2,007.01`` of
+    the retired ``current_anchor_balance`` cache would have shown ``$2,007.01`` of
     interest in the current column -- the ``$2,000.00`` of settled money the
     cache never saw, relabelled (finding N-49).  Both halves now come off ONE
     resolved step list, so the row is the accrual map itself.

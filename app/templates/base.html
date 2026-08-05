@@ -227,6 +227,26 @@
     {% endfor %}
     {% endif %}
     {% endwith %}
+    {# The ONE body-level swap target for a toast an HTMX response raises,
+       and the toast twin of ``#modal-mount`` below (plan step X-f1e3).
+       A flash message above is a property of a FULL page render and cannot
+       reach a partial response; a write made through HTMX needs a mount that
+       already exists on the page it was made from.
+
+       It is INSIDE the live region rather than beside it so an appended toast
+       is announced by the same ``aria-live="polite"`` container the flash
+       toasts use, and inherits its fixed position and z-index.
+
+       **Its placement is load-bearing: it must never sit inside a region that
+       re-fetches itself.**  The acknowledgement it carries used to ride the
+       per-surface ``#anchor-as-of`` caption, and on the dashboard that caption
+       lives inside ``#pulse-section`` (``hx-trigger="balanceChanged
+       from:body"``) -- which the same response's own trigger re-fetched,
+       wiping the message within one round-trip (finding N-199).  A mount in
+       ``base.html`` outside every refresh target is what makes reaching all
+       five anchor-editor surfaces a property of the STRUCTURE rather than of
+       each surface remembering to host an element. #}
+    <div id="anchor-ack-mount"></div>
   </div>
 
   {# --- Security-event "was this you?" Banner ---

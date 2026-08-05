@@ -27,7 +27,7 @@ from app.models.transfer import Transfer
 from app.models.ref import Status
 from app import ref_cache
 from app.enums import StatusEnum
-from app.services import transfer_service
+from app.services import status_seam, transfer_service
 from app.services.account_resolver import resolve_grid_account
 from app.services.state_machine import finalised_edit_rejection
 from app.exceptions import NotFoundError, ValidationError as ShekelValidationError
@@ -193,11 +193,14 @@ def update_transfer(xfer_id):
     if xfer.transfer_template_id and ("amount" in data or "pay_period_id" in data):
         data["is_override"] = True
 
-    # The finalised-row edit lock (#26) and the service call share one
-    # error exit so adding the lock does not push the handler past
-    # pylint's too-many-returns threshold.
+    # The settle-day grading, the finalised-row edit lock (#26) and the service
+    # call share ONE error exit so none of them pushes the handler past pylint's
+    # too-many-returns threshold.  ``or`` preserves precedence: a settle day the
+    # schedule cannot hold is reported before the lock speaks, because the day
+    # is not one of the fields the lock protects.
     error_response = (
-        _reject_finalised_transfer_edit(xfer, data)
+        _grade_submitted_settle_day(xfer, data)
+        or _reject_finalised_transfer_edit(xfer, data)
         or _execute_transfer_update(xfer, data)
     )
     if error_response is not None:
@@ -371,19 +374,22 @@ def mark_done(xfer_id):
 
     done_id = ref_cache.status_id(StatusEnum.DONE)
     try:
-        # ``paid_at`` parity with ``transactions.mark_done``: settling
-        # a transfer must record *when* it was settled.  Without this
-        # kwarg the shadow transactions reach Paid with NULL
-        # ``paid_at``, breaking ``Transaction.days_paid_before_due``
-        # analytics, the dashboard's "paid on time" indicator, and any
-        # downstream report that joins on the timestamp.  The transfer
-        # service mirrors the same default (see ``update_transfer``)
-        # so any future caller that forgets the kwarg still produces
-        # a well-formed settled transfer.  Audit reference: F-048 /
-        # commit C-22 of the 2026-04-15 security remediation plan.
+        # NO explicit ``paid_at``, and its absence is finding N-178's fix.
+        # The instant is still recorded -- ``transfer_service`` resolves ONE
+        # instant for the pair and hands it to the status seam, which stamps
+        # ``now()`` on the first entry into a settled status (F-048 / C-22's
+        # requirement, now met by the seam rather than by this call site).
+        # Passing one HERE defeated that: ``update_transfer``'s explicit-
+        # explicit-day branch writes both shadows verbatim AFTER the seam has
+        # preserved, and ``done -> done`` is a legal transition this route does
+        # not gate -- so a replayed or stale-page POST on an already-settled
+        # transfer re-stamped today, and since plan step E1a that day IS the
+        # posted ``entry_date``.  Measured: a transfer settled 7 days earlier
+        # moved 7.00 days, the ledger gaining a reversal at its real settle day
+        # and a fresh posting at today.  That is finding N-146 through a second
+        # door; the seam's preserve rule closes both once nothing overrides it.
         transfer_service.update_transfer(
-            xfer.id, current_user.id,
-            status_id=done_id, paid_at=db.func.now(),
+            xfer.id, current_user.id, status_id=done_id,
         )
         db.session.commit()
     except StaleDataError:
@@ -450,6 +456,49 @@ def cancel_transfer(xfer_id):
     return _render_post_mutation_cell(
         xfer, shadow_trigger="gridRefresh", cell_trigger="balanceChanged",
     )
+
+
+def _grade_submitted_settle_day(xfer, data):
+    """Resolve a submitted ``settled_on`` against the status the PATCH leaves.
+
+    Ruling **R-ED**'s correction door, graded by the ONE shared rule
+    :func:`app.services.status_seam.settle_day_for_status` so this door and the
+    two transaction-side doors cannot answer differently.  Mutates *data* in
+    place: a day the rule DROPS has its key removed, so the service never sees
+    it and the seam clears the column as part of the status change.
+
+    **Why a drop rather than a refusal** (ruling **R-EG**): both full-edit forms
+    re-submit the row's whole state, and the documented way to unlock a
+    finalised transfer is to set Status to Projected in that same form -- so a
+    revert arrives carrying the day the row already had.  Keeping it would make
+    ``_transfer_status.apply_settle_day_correction`` raise and break the unlock
+    path on every settled transfer.
+
+    Args:
+        xfer: The transfer being PATCHed, for its current status (the fallback
+            when the form submitted none) and its id (for the error fragment).
+        data: The schema-loaded payload, mutated in place.
+
+    Returns:
+        A designed 400 error-fragment response when the submitted day precedes
+        the budget's schedule (ruling **R-EL**), or ``None`` when the edit may
+        proceed -- the shape this handler's other gates use, so they can share
+        one error exit.
+    """
+    if "settled_on" not in data:
+        return None
+    try:
+        settle_day = status_seam.settle_day_for_status(
+            current_user.id,
+            data.get("status_id", xfer.status_id), data["settled_on"],
+        )
+    except ShekelValidationError as exc:
+        return _error_transfer_response(xfer.id, str(exc))
+    if settle_day is None:
+        del data["settled_on"]
+    else:
+        data["settled_on"] = settle_day
+    return None
 
 
 def _execute_transfer_update(xfer, data):

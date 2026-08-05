@@ -36,7 +36,8 @@ from app.models.account import AccountAnchorHistory
 from app.models.ref import AccountType
 from app.models.savings_goal import SavingsGoal
 from app.models.transaction import Transaction
-from app.services import account_service, dashboard_pulse_service, transfer_service
+from app.services import account_service, cash_ledger, dashboard_pulse_service
+from app.services import transfer_service
 from app.services import balance_at, pay_period_service, savings_dashboard_service
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
@@ -46,6 +47,7 @@ from tests._test_helpers import (
     create_hysa_account,
     create_loan_account,
     create_savings_account,
+    default_settle_day,
     make_investment_account,
     make_salary_profile,
     set_default_grid_account,
@@ -67,16 +69,20 @@ def _add_expense(
 
     Returns the created Transaction (flushed).
     """
+    status_id = ref_cache.status_id(status_enum)
     txn = Transaction(
         account_id=seed_user["account"].id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
-        status_id=ref_cache.status_id(status_enum),
+        status_id=status_id,
         name=name,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
         estimated_amount=Decimal(str(amount)),
         due_date=due_date,
         is_deleted=is_deleted,
+        # A settled row must carry the day its money moved; the rule for a
+        # BARE-built fixture row is shared rather than restated (X-f1).
+        settled_on=default_settle_day(period, status_id),
     )
     db_session.add(txn)
     db_session.flush()
@@ -231,10 +237,17 @@ class TestPulseHero:
         The Commit-3 invariant guarantees every account has an origination
         anchor row, so the truly-empty-history state hard-raises in the
         resolver and cannot reach the hero's balance call in production.
-        The never-set staleness branch is therefore exercised at the
-        helper level: with the origination row deleted,
-        ``_last_anchor_update_date`` returns None, and ``_anchor_is_stale``
-        treats None as stale (the user must set the balance).
+        The never-set staleness branch is therefore exercised one call below
+        the hero: with the origination row deleted,
+        ``cash_ledger.reconciled_through`` answers ``None`` and
+        ``_anchor_is_stale`` treats that as stale (the user must set the
+        balance).
+
+        **It grades the PRODUCTION accessor since plan step X-f1c3a.**  It
+        used to call ``_last_anchor_update_date``, a private wrapper with no
+        production caller at all -- so the branch it pinned was reached by
+        nothing, and the ``created_at``-keyed helper underneath it (ruling
+        R-EP deleted that too) was never exercised on this path.
         """
         with app.app_context():
             db.session.query(AccountAnchorHistory).filter_by(
@@ -242,12 +255,12 @@ class TestPulseHero:
             ).delete()
             db.session.commit()
 
-            last_updated = dashboard_pulse_service._last_anchor_update_date(
+            last_observed = cash_ledger.reconciled_through(
                 seed_user["account"].id,
-            )
-            assert last_updated is None
+            ).observed_day
+            assert last_observed is None
             assert dashboard_pulse_service._anchor_is_stale(
-                last_updated, seed_user["settings"],
+                last_observed, seed_user["settings"],
             ) is True
 
 
@@ -698,7 +711,6 @@ class TestPulseStillDue:
                     account_type_id=savings_type.id,
                     name="Sweep Target",
                     anchor_balance=Decimal("0.00"),
-                    anchor_period_id=seed_periods[0].id,
                 ),
             )
             db.session.add(savings)
@@ -1351,7 +1363,7 @@ class TestTracksGoals:
         with app.app_context():
             acct = create_savings_account(
                 seed_user, db.session, "Goal Account",
-                Decimal("2500.00"), anchor_period_id=seed_periods[0].id,
+                Decimal("2500.00"),
             )
             goal = SavingsGoal(
                 user_id=seed_user["user"].id,
@@ -1396,7 +1408,7 @@ class TestTracksGoals:
         with app.app_context():
             acct = create_savings_account(
                 seed_user, db.session, "Trajectory Account",
-                Decimal("3000.00"), anchor_period_id=seed_periods[0].id,
+                Decimal("3000.00"),
             )
             goal = SavingsGoal(
                 user_id=seed_user["user"].id,
@@ -1604,7 +1616,7 @@ class TestTracksIncomeRelativeGoal:
             make_salary_profile(seed_user, db.session, name="Track Salary")
             acct = create_savings_account(
                 seed_user, db.session, "IR Goal Account",
-                Decimal("4000.00"), anchor_period_id=seed_periods[0].id,
+                Decimal("4000.00"),
             )
 
             ir_id = ref_cache.goal_mode_id(GoalModeEnum.INCOME_RELATIVE)

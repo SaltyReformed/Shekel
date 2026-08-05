@@ -23,6 +23,7 @@ from app.models.ref import Status, TransactionType
 from app.services import (
     balance_at,
     baseline_service,
+    cash_ledger,
     grid_view_service,
     pay_period_admin,
     pay_period_service,
@@ -241,7 +242,7 @@ def _load_grid_transactions(account, balance_ctx, all_periods):
 
 
 def _build_grid_view(account, balance_ctx, all_periods):
-    """Compute the grid's per-period column set and the anchor balance.
+    """Compute the grid's per-period column set and its latest anchor assertion.
 
     Routes through the balance-at seam's kind-aware grid view
     :func:`app.services.balance_at.grid_balance_view`, which returns ONE
@@ -285,18 +286,22 @@ def _build_grid_view(account, balance_ctx, all_periods):
             re-based projection.
 
     Returns:
-        ``(grid_view, anchor_balance)`` -- the
+        ``(grid_view, anchor)`` -- the
         :class:`~app.services.balance_at.GridBalanceView` and the account's
-        anchor balance (a separate concern: the header's starting figure, not
-        part of the projection).  No-account state returns the seam's empty
-        view and a zero anchor, and the grid template renders empty cells
-        cleanly.
+        latest balance ASSERTION (a separate concern: the header's starting
+        figure and the day it was true for, not part of the projection).
+        No-account state returns the seam's empty view and ``None``, and the
+        grid template renders empty cells cleanly.  **The header's figure and
+        its "as of" caption come off ONE object** (rulings R-EH / R-EP): they
+        were ``current_anchor_balance`` and ``updated_at``, two different facts
+        -- the caption moved on any account edit and stopped moving entirely
+        once a true-up no longer wrote the row.  An AnchorPoint cannot split.
     """
     if account is None:
-        return balance_at.empty_grid_view(), Decimal("0.00")
+        return balance_at.empty_grid_view(), None
     return (
         balance_at.grid_balance_view(account, balance_ctx, all_periods),
-        account.current_anchor_balance,
+        cash_ledger.resolve_anchor(account),
     )
 
 
@@ -574,7 +579,7 @@ def index():
     all_transactions = _load_grid_transactions(
         ctx.account, ctx.balance_ctx, ctx.all_periods,
     )
-    grid_view, anchor_balance = _build_grid_view(
+    grid_view, anchor = _build_grid_view(
         ctx.account, ctx.balance_ctx, ctx.all_periods,
     )
     # Workstream B: annotate each row with the live display amount, read back
@@ -653,7 +658,8 @@ def index():
             else "medium" if ctx.num_periods <= 13
             else "compact"
         ),
-        anchor_balance=anchor_balance,
+        anchor_balance=anchor.balance if anchor is not None else Decimal("0.00"),
+        anchor_as_of=anchor.observed_on if anchor is not None else None,
         # The USER's today, not the server's UTC one: it drives the
         # past-period column styling AND the add-entry form's hidden
         # ``entry_date`` default, which the entry service refuses on that same

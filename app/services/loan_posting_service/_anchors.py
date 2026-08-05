@@ -93,6 +93,7 @@ from app.services._posting_reconcile import (
     merge_target_legs,
     posted_correction_legs,
 )
+from app.services.user_write_lock import lock_user_writes
 from app.services.loan_ledger import (
     LoanAnchorCorrection,
     owner_pay_periods,
@@ -329,6 +330,13 @@ def sync_loan_anchor_corrections(
         PostingError: If the loan has anchor corrections to post but its owner has
             no pay periods (a broken invariant -- a correction needs a period).
     """
+    # Locked like every other reconcile door (plan step X-f1c3c): this one has
+    # no ``app/`` caller today, only tests -- and it is in ``__all__``, so the
+    # next caller would otherwise bypass the serialisation silently.  A neutral
+    # review found it and its payment twin exactly that way.
+    owner_id = account_owner_id(loan_account_id)
+    if owner_id is not None:
+        lock_user_writes(owner_id)
     reconcile_loan_anchor_corrections(
         loan_account_id, scenario_id,
         walk_loan_ledger(loan_account_id, scenario_id).anchor_corrections,

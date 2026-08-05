@@ -1,0 +1,63 @@
+{% from "_money_macros.html" import money %}
+{# The BACK-DATED balance acknowledgement (plan step X-f1e3, finding N-199).
+
+   Swapped out-of-band into ``#anchor-ack-mount`` (``base.html``) by the anchor
+   true-up's success response and auto-shown by the ``data-toast-auto-show``
+   handler in ``app/static/js/app.js``.  The mount is the toast twin of
+   ``#modal-mount``, and it exists for the same stated reason: the anchor editor
+   opens from FIVE surfaces (the grid cell, the dashboard hero, the cockpit card
+   cell, the investment hero, the cash hero) and an out-of-band swap needs a
+   target that exists on all of them.
+
+   **Why an acknowledgement exists at all.**  A back-dated assertion by
+   definition does NOT govern -- a later reading still does -- so the cell
+   re-renders from ``cash_ledger.resolve_anchor`` to the same figure it already
+   showed.  Without a message the response is indistinguishable from having done
+   nothing, and the user's next move is to enter it again.  That is the same
+   defect ``_anchor_editor_error`` prevents on the failure side.
+
+   **Why it is not the ``#anchor-as-of`` caption it used to ride.**  Two
+   different facts were sharing one element: "as of <day>" captions the
+   assertion that governs NOW (durable, per-surface), while this acknowledges
+   the REQUEST just made (transient, and about a day that deliberately is not
+   the governing one).  Riding the caption gave the transient fact the durable
+   one's mounting problem -- skipped outright on three surfaces, and destroyed
+   on the dashboard by the very ``balanceChanged`` refresh this response
+   triggers (finding N-199).
+
+   It can never collide with the reconcile prompt: the two are the opposite
+   branches of ``_submission_is_the_coverage_boundary``, chosen in ONE if/else
+   in ``_true_up_success_response`` so the exclusion is structural rather than
+   two independent conditionals that could drift into both or neither.
+
+   Expected context: account (Account), balance (Decimal -- the balance this
+   submission ASSERTED, not the one that governs), observed_on (date -- the
+   civil day it was asserted for; never None, because a blank date box means
+   "today", which IS the coverage boundary and so takes the prompt branch). #}
+<div id="anchor-ack-mount" hx-swap-oob="true">
+  {# ``role="status"`` rather than the flash toasts' ``role="alert"``: this is a
+     confirmation, not an interruption, and the enclosing container is already
+     ``aria-live="polite"`` -- an assertive role nested in a polite region
+     states two different urgencies for one announcement.
+     ``text-bg-success`` is the theme's sanctioned toast treatment in BOTH
+     themes: theme-steel-ink.css deliberately leaves ``--bs-success-rgb``
+     unmapped so this utility keeps Bootstrap's contrast-checked hue against
+     the ``color: #fff`` it compiles. #}
+  <div class="toast text-bg-success" role="status" aria-atomic="true"
+       data-bs-delay="8000" data-toast-auto-show>
+    <div class="d-flex">
+      <div class="toast-body">
+        <div class="fw-semibold">
+          <i class="bi bi-check-circle" aria-hidden="true"></i> Balance recorded
+        </div>
+        <div>
+          {{ account.name }} &middot;
+          <span class="font-mono">{{ money(balance) }}</span>
+        </div>
+        <div>as of {{ observed_on.strftime('%b %-d, %Y') }}</div>
+      </div>
+      <button type="button" class="btn-close btn-close-white me-2 m-auto"
+              data-bs-dismiss="toast" aria-label="Close"></button>
+    </div>
+  </div>
+</div>

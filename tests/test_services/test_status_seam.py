@@ -4,7 +4,7 @@ Shekel Budget App -- Transaction Status Seam Tests
 Tests for ``app.services.status_seam.apply_status_change`` -- the single
 status-mechanics primitive every non-transfer status change routes through
 (Build-Order Step 3, Commit 5).  The seam does the transition check, the
-``status_id`` assignment, the ``paid_at`` maintenance, and the ``status``
+``status_id`` assignment, the ``settled_on`` maintenance, and the ``status``
 relationship refresh; it does NOT post to the ledger (that is Commit 6) and does
 NOT flush or commit (the caller owns the session boundary).
 
@@ -12,7 +12,7 @@ Each test verifies one contract with explicit values so a regression surfaces
 with a precise message.
 """
 
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -22,7 +22,19 @@ from app.enums import StatusEnum, TxnTypeEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.transaction import Transaction
-from app.services import status_seam
+from app.services import balance_at, pay_period_service, status_seam
+from app.services.balance_at import BalanceContext
+from app.utils.balance_predicates import settled_status_ids
+from app.utils.dates import display_today
+
+from tests._test_helpers import freeze_today
+
+#: A civil day whose EVENING in ``America/New_York`` falls on the PREVIOUS UTC
+#: day's successor -- i.e. an instant where the two calendars disagree.  Frozen
+#: at 01:00 UTC, which is 20:00 EST / 21:00 EDT the day before, so it separates
+#: the two rules on either side of every DST transition.
+_UTC_DAY_AT_AN_EASTERN_EVENING = date(2026, 3, 4)
+_EASTERN_EVENING_UTC_TIME = time(1, 0)
 
 
 def _make_txn(seed_user, period, *, status):
@@ -47,19 +59,27 @@ def _make_txn(seed_user, period, *, status):
     return txn
 
 
-class TestApplyStatusChangePaidAt:
-    """paid_at is derived from the new status unless explicitly supplied."""
+class TestApplyStatusChangeSettleDay:
+    """settled_on is derived from the new status unless explicitly supplied."""
 
-    def test_enter_settled_stamps_paid_at(
+    def test_enter_settled_stamps_the_users_today(
         self, app, db, seed_user, seed_periods,
     ):
-        """Projected -> Paid with no explicit paid_at stamps a real timestamp."""
+        """Projected -> Paid with no explicit day stamps the user's civil today.
+
+        A ``date``, not an instant: since plan step X-f1 the column stores the
+        civil DAY the money moved, and ``display_today()`` is the accessor for
+        "what day is it on the user's clock".  The sibling test below is what
+        distinguishes that from the process's UTC day; this one pins the type
+        and the value on a day where the two agree.
+        """
         with app.app_context():
             txn = _make_txn(
                 seed_user, seed_periods[0], status=StatusEnum.PROJECTED,
             )
-            assert txn.paid_at is None
+            assert txn.settled_on is None
 
+            expected = display_today()
             status_seam.apply_status_change(
                 txn, ref_cache.status_id(StatusEnum.DONE),
             )
@@ -67,58 +87,182 @@ class TestApplyStatusChangePaidAt:
 
             db.session.refresh(txn)
             assert txn.status_id == ref_cache.status_id(StatusEnum.DONE)
-            assert isinstance(txn.paid_at, datetime)
+            assert txn.settled_on == expected
+            assert not isinstance(txn.settled_on, datetime), (
+                "settled_on must be a civil date, never an instant -- an "
+                "instant here is truncated by PostgreSQL on the UTC session "
+                "clock (finding N-179)."
+            )
 
-    def test_explicit_paid_at_written_verbatim(
-        self, app, db, seed_user, seed_periods,
+    def test_the_stamped_day_is_the_users_day_not_the_process_utc_day(
+        self, app, db, seed_user, seed_periods, monkeypatch,
     ):
-        """A caller-supplied paid_at (carry-forward back-dating) is used as-is."""
+        """An evening-Eastern settle is filed on the EASTERN day (ruling R-DH (b)).
+
+        **The only test in the suite that can tell the two rules apart, and it
+        exists because nothing could** (finding **N-182**).  ``freeze_today``
+        defaults to NOON UTC, which is the same civil day in both calendars, so
+        every clock-freezing test in the suite passes identically whether the
+        seam reads ``display_today()`` or ``date.today()`` -- measured: swapping
+        them shipped a GREEN suite.  Freezing at 01:00 UTC puts the user's clock
+        at 20:00 the PREVIOUS evening, where the two answers differ by a day.
+
+        This is the L9 / R-DH (b) / F3 rule three rulings closed, and the day it
+        decides is not cosmetic: since plan step E1a it IS the ``entry_date``
+        the row's postings are filed under, so a UTC read moves an evening
+        payment's money into the next day -- and, for a payment near a period
+        boundary, into the next pay period.
+        """
         with app.app_context():
             txn = _make_txn(
                 seed_user, seed_periods[0], status=StatusEnum.PROJECTED,
             )
-            explicit = datetime(2026, 3, 15, 12, 0, 0, tzinfo=timezone.utc)
+            freeze_today(
+                monkeypatch,
+                _UTC_DAY_AT_AN_EASTERN_EVENING,
+                at_time=_EASTERN_EVENING_UTC_TIME,
+            )
+            eastern_day = _UTC_DAY_AT_AN_EASTERN_EVENING - timedelta(days=1)
+            # The freeze is only a control if the two rules really disagree
+            # under it; assert that before asserting which one the seam took.
+            assert display_today() == eastern_day
+            assert date.today() == _UTC_DAY_AT_AN_EASTERN_EVENING
 
             status_seam.apply_status_change(
-                txn, ref_cache.status_id(StatusEnum.DONE), paid_at=explicit,
+                txn, ref_cache.status_id(StatusEnum.DONE),
             )
             db.session.commit()
 
             db.session.refresh(txn)
-            assert txn.paid_at == explicit
+            assert txn.settled_on == eastern_day, (
+                "The seam stamped the process's UTC day rather than the user's "
+                f"civil day: {txn.settled_on} != {eastern_day}.  A settle at "
+                "8pm Eastern belongs to that evening, not to tomorrow "
+                "(ruling R-DH (b))."
+            )
 
-    def test_re_settle_preserves_existing_paid_at(
+    def test_explicit_day_written_verbatim(
         self, app, db, seed_user, seed_periods,
     ):
-        """An idempotent re-settle (Paid -> Paid) does NOT churn paid_at.
+        """A caller-supplied day (the correction door) is used as-is."""
+        with app.app_context():
+            txn = _make_txn(
+                seed_user, seed_periods[0], status=StatusEnum.PROJECTED,
+            )
+            explicit = date(2026, 3, 15)
 
-        ``apply_status_change`` only stamps now() when entering a settled status
-        with no timestamp yet; a row that already carries one keeps it, so
-        editing a Paid row (which re-submits its unchanged status) never rewrites
-        the original payment time.
+            status_seam.apply_status_change(
+                txn, ref_cache.status_id(StatusEnum.DONE), settled_on=explicit,
+            )
+            db.session.commit()
+
+            db.session.refresh(txn)
+            assert txn.settled_on == explicit
+
+    def test_an_instant_is_refused_not_truncated(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A ``datetime`` raises ``TypeError`` before the row is touched.
+
+        Finding **N-179**, and it is a refusal rather than a conversion because
+        the conversion is the defect: ``datetime`` subclasses ``date``, so the
+        annotation catches nothing, and PostgreSQL coerces the value into the
+        ``DATE`` column on the SESSION clock (UTC) -- filing an evening-Eastern
+        settle on the following day, silently.  The instant below is
+        2026-03-03 23:30 Eastern, which UTC calls 2026-03-04.
         """
         with app.app_context():
             txn = _make_txn(
                 seed_user, seed_periods[0], status=StatusEnum.PROJECTED,
             )
             done_id = ref_cache.status_id(StatusEnum.DONE)
-            status_seam.apply_status_change(txn, done_id)
-            db.session.commit()
-            db.session.refresh(txn)
-            first_paid_at = txn.paid_at
-            assert first_paid_at is not None
+            instant = datetime(2026, 3, 4, 4, 30, tzinfo=timezone.utc)
 
-            # Re-settle (identity transition, allowed).
-            status_seam.apply_status_change(txn, done_id)
-            db.session.commit()
-            db.session.refresh(txn)
-            # Unchanged -- the seam left the existing stamp untouched.
-            assert txn.paid_at == first_paid_at
+            with pytest.raises(TypeError) as exc:
+                status_seam.apply_status_change(
+                    txn, done_id, settled_on=instant,
+                )
+            assert "must be a date" in str(exc.value)
+            # Refused BEFORE any mutation: the check runs ahead of the
+            # transition gate, so a rejected call leaves the row untouched.
+            assert txn.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
+            assert txn.settled_on is None
 
-    def test_leave_settled_clears_paid_at(
+    def test_a_day_for_a_non_settled_status_is_refused(
         self, app, db, seed_user, seed_periods,
     ):
-        """Paid -> Projected (a revert) clears paid_at."""
+        """Supplying a day while moving OUT of the settled band raises.
+
+        Finding **N-183**.  The invariant this step establishes is that a row
+        carries a settle day if and only if it is settled, and the seam is the
+        one door that writes both -- so the explicit arm must not be able to
+        date a Projected row.  It could until this check landed, and
+        ``transfer_service.update_transfer`` was a live caller that reached it.
+        """
+        with app.app_context():
+            txn = _make_txn(
+                seed_user, seed_periods[0], status=StatusEnum.PROJECTED,
+            )
+            projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+
+            with pytest.raises(ValidationError) as exc:
+                status_seam.apply_status_change(
+                    txn, projected_id, settled_on=date(2026, 3, 15),
+                )
+            assert "not a settled status" in str(exc.value)
+            assert txn.settled_on is None
+
+    def test_re_settle_preserves_an_existing_day(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """An idempotent re-settle (Paid -> Paid) does NOT churn settled_on.
+
+        ``apply_status_change`` stamps the user's today only when entering a
+        settled status with no day yet; a row that already carries one keeps it,
+        so editing a Paid row (which re-submits its unchanged status) never
+        rewrites the day its money moved.
+
+        **The row is back-dated THROUGH the seam first, and that is what makes
+        this control able to fail** (finding **N-182**).  Settling twice under
+        one clock leaves both calls returning the same ``display_today()``, so
+        the assertion held for a row that was re-stamped as surely as for one
+        that was preserved -- the same shape as the transfer-side pin for
+        finding N-178, which back-dates before it replays.  Deleting the
+        preserve arm now moves the day by 30, which is finding **N-146**'s whole
+        class: since plan step E1a this day IS the posted ``entry_date``, so a
+        re-stamp moves the money.
+        """
+        with app.app_context():
+            txn = _make_txn(
+                seed_user, seed_periods[0], status=StatusEnum.PROJECTED,
+            )
+            done_id = ref_cache.status_id(StatusEnum.DONE)
+            settled_a_month_ago = display_today() - timedelta(days=30)
+            status_seam.apply_status_change(
+                txn, done_id, settled_on=settled_a_month_ago,
+            )
+            db.session.commit()
+            db.session.refresh(txn)
+            assert txn.settled_on == settled_a_month_ago
+            assert txn.settled_on != display_today(), (
+                "the back-date must differ from today or the assertion below "
+                "cannot distinguish a preserved day from a re-stamped one"
+            )
+
+            # Re-settle (identity transition, allowed) with NO explicit day --
+            # the shape an edit form's unchanged-status re-submit produces.
+            status_seam.apply_status_change(txn, done_id)
+            db.session.commit()
+            db.session.refresh(txn)
+            assert txn.settled_on == settled_a_month_ago, (
+                "A re-settle re-dated the money: "
+                f"{settled_a_month_ago} -> {txn.settled_on} (finding N-146)."
+            )
+
+    def test_leave_settled_clears_the_day(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Paid -> Projected (a revert) clears settled_on."""
         with app.app_context():
             txn = _make_txn(
                 seed_user, seed_periods[0], status=StatusEnum.PROJECTED,
@@ -128,7 +272,7 @@ class TestApplyStatusChangePaidAt:
             )
             db.session.commit()
             db.session.refresh(txn)
-            assert txn.paid_at is not None
+            assert txn.settled_on is not None
 
             status_seam.apply_status_change(
                 txn, ref_cache.status_id(StatusEnum.PROJECTED),
@@ -136,12 +280,12 @@ class TestApplyStatusChangePaidAt:
             db.session.commit()
             db.session.refresh(txn)
             assert txn.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
-            assert txn.paid_at is None
+            assert txn.settled_on is None
 
-    def test_enter_non_settled_leaves_paid_at_none(
+    def test_enter_non_settled_leaves_the_day_none(
         self, app, db, seed_user, seed_periods,
     ):
-        """Projected -> Cancelled (non-settled) leaves paid_at None."""
+        """Projected -> Cancelled (non-settled) leaves settled_on None."""
         with app.app_context():
             txn = _make_txn(
                 seed_user, seed_periods[0], status=StatusEnum.PROJECTED,
@@ -152,7 +296,7 @@ class TestApplyStatusChangePaidAt:
             db.session.commit()
             db.session.refresh(txn)
             assert txn.status_id == ref_cache.status_id(StatusEnum.CANCELLED)
-            assert txn.paid_at is None
+            assert txn.settled_on is None
 
 
 class TestApplyStatusChangeTransition:
@@ -224,4 +368,368 @@ class TestApplyStatusChangeTransition:
             db.session.expire_all()
             reloaded = db.session.get(Transaction, txn_id)
             assert reloaded.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
-            assert reloaded.paid_at is None
+            assert reloaded.settled_on is None
+
+
+class TestSettleDayForStatus:
+    """``settle_day_for_status`` -- the EDIT DOORS' half of the invariant.
+
+    Ruling **R-EG** (plan step X-f1c).  Both full-edit forms submit the row's
+    whole state on Save, and the documented way to unlock a finalised row is to
+    set Status to Projected in that same form -- so a revert arrives carrying
+    the day the row already had.  This function is the one place that decides
+    what a form submission MEANS, so the transaction PATCH and the transfer
+    PATCH cannot answer it differently.
+    """
+
+    def test_a_day_for_a_settled_status_is_kept(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Moving into (or staying in) the settled band keeps the typed day.
+
+        The correction case ruling R-ED exists for: the user read their
+        statement and typed the day the bank really moved the money.
+
+        **The band is DERIVED from ``settled_status_ids()``, not listed**, and
+        the difference is the guarantee: a hardcoded ``(DONE, RECEIVED,
+        SETTLED)`` is correct today and says nothing about a fourth settled
+        status, which is exactly the silent fall-through this test claims to
+        prevent.  Reading the predicate the function itself reads makes the
+        claim true rather than currently-accurate.
+        """
+        with app.app_context():
+            # Derived from the schedule, not written as a literal: a forwarded
+            # day is bounded below by ruling R-EL, so a hard-coded date would
+            # make this a test of the FLOOR on whatever calendar it ran.
+            user_id = seed_user["user"].id
+            typed = pay_period_service.earliest_recordable_day(user_id)
+            settled_ids = settled_status_ids()
+            assert settled_ids, "the settled band is empty; nothing is graded"
+            for status_id in settled_ids:
+                assert status_seam.settle_day_for_status(
+                    user_id, status_id, typed,
+                ) == typed, f"status {status_id} dropped a legitimate correction"
+
+    def test_a_day_beside_a_revert_is_dropped(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A day submitted alongside a non-settled status is dropped, not kept.
+
+        The stale-echo case.  Handing the day on to the seam would raise
+        ``ValidationError`` (``reject_settle_day_without_settled_status``) and
+        break the only unlock path on every settled row; writing it would date a
+        row whose money has not moved.  Dropping it lets the seam CLEAR the
+        column, which is what picking Projected means.
+
+        **The complement is DERIVED too** -- every ``StatusEnum`` member NOT in
+        ``settled_status_ids()`` -- so a new non-settled status is covered the
+        day it is added, and the two halves of this pair provably partition the
+        vocabulary rather than sampling it.
+        """
+        with app.app_context():
+            settled_ids = settled_status_ids()
+            unsettled = [
+                ref_cache.status_id(member) for member in StatusEnum
+                if ref_cache.status_id(member) not in settled_ids
+            ]
+            assert unsettled, "no non-settled status exists; nothing is graded"
+            for status_id in unsettled:
+                # A day BELOW the schedule on purpose: a dropped day is never
+                # bounded (ruling R-EL bounds only a FORWARDED one), because
+                # dropping writes nothing.  Refusing here would break the unlock
+                # path the drop exists to keep open.
+                assert status_seam.settle_day_for_status(
+                    seed_user["user"].id, status_id, date(1999, 1, 1),
+                ) is None, (
+                    f"status {status_id} kept a day for a row with no movement"
+                )
+
+    def test_no_submitted_day_is_none_for_every_status(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """An absent day yields ``None``, which the seam reads as "derive it".
+
+        The everyday path: a form that carries no settle day at all (the
+        quick-edit, a notes-only save, a mark-done) must leave the seam free to
+        preserve an existing day or stamp today.  Returning anything else here
+        would make every ordinary edit an assertion about when money moved.
+        """
+        with app.app_context():
+            for member in StatusEnum:
+                assert status_seam.settle_day_for_status(
+                    seed_user['user'].id, ref_cache.status_id(member), None,
+                ) is None
+
+    def test_the_door_drops_exactly_what_the_service_guard_refuses(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The two halves are exact complements, across EVERY status.
+
+        The pair is the ruling: :func:`settle_day_for_status` makes a FORM
+        submission forgiving, while a SERVICE caller passing a day for an
+        unsettled status is asserting both facts on purpose and must still fail
+        loud.  Were the refusal relaxed instead of the door made specific,
+        ``update_transfer`` could date a Projected row again -- finding
+        **N-183**.
+
+        **What this grades is the COMPLEMENTARITY, not either half.**  Asserting
+        only that the service refuses a Projected row duplicates
+        ``test_a_day_for_a_non_settled_status_is_refused`` above -- same fixture,
+        same call, same assertions, different date literal -- and one mutation
+        would kill both, which a neutral review caught.  Iterating every
+        ``StatusEnum`` member and requiring "the door passed the day through" and
+        "the service accepted it" to agree on ALL of them is falsifiable on its
+        own: widen the door and a status appears that the door forwards and the
+        service rejects; narrow the refusal and one appears that the door drops
+        while the service takes it.
+        """
+        with app.app_context():
+            day = display_today() - timedelta(days=3)
+            for member in StatusEnum:
+                status_id = ref_cache.status_id(member)
+                door_forwards = status_seam.settle_day_for_status(
+                    seed_user["user"].id, status_id, day,
+                ) is not None
+
+                txn = _make_txn(
+                    seed_user, seed_periods[0], status=StatusEnum.PROJECTED,
+                )
+                try:
+                    status_seam.apply_status_change(
+                        txn, status_id, settled_on=day,
+                    )
+                except ValidationError as exc:
+                    # The seam raises ``ValidationError`` for BOTH the day rule
+                    # and an illegal transition, and only the first is evidence
+                    # here.  The day refusal runs FIRST (it precedes
+                    # ``verify_transition`` so a rejected call leaves the row
+                    # untouched), so its message distinguishes them.
+                    if "not a settled status" not in str(exc):
+                        continue
+                    service_accepts = False
+                    assert txn.settled_on is None
+                else:
+                    service_accepts = True
+
+                assert door_forwards == service_accepts, (
+                    f"{member.name}: the form door "
+                    f"{'forwards' if door_forwards else 'drops'} a settle day "
+                    f"that the service "
+                    f"{'accepts' if service_accepts else 'refuses'} -- the two "
+                    "halves of ruling R-EG have stopped being complements"
+                )
+
+
+class TestRejectFutureSettleDay:
+    """``reject_future_settle_day`` -- ruling **R-EJ**, at the one write door.
+
+    A row carries a settle day if and only if it is settled, and settled means
+    the money HAS moved -- so a day that has not happened is not a fact about
+    money.  The guard lives on the seam rather than in each route because the
+    seam is the single writer of the column; both edit doors also carry ``max``
+    = today so the browser refuses first.
+    """
+
+    def test_a_future_day_is_refused(self, app, db, seed_user, seed_periods):
+        """Tomorrow is refused, and the row is left entirely untouched.
+
+        The untouched half matters as much as the refusal: the guard is ordered
+        ahead of ``verify_transition`` and the ``status_id`` assignment, so a
+        rejected call cannot leave a row status-changed and undated -- the state
+        the balance walk REFUSES.
+        """
+        with app.app_context():
+            txn = _make_txn(
+                seed_user, seed_periods[0], status=StatusEnum.PROJECTED,
+            )
+            with pytest.raises(ValidationError) as exc:
+                status_seam.apply_status_change(
+                    txn,
+                    ref_cache.status_id(StatusEnum.DONE),
+                    settled_on=display_today() + timedelta(days=1),
+                )
+            assert "has not happened yet" in str(exc.value)
+            assert txn.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
+            assert txn.settled_on is None
+
+    def test_today_and_the_past_are_accepted(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Today is on the allowed side, and so is any day back to the floor.
+
+        The boundary control: the comparison is ``>`` today, not ``>=``, because
+        a one-click settle stamps exactly today.  A settle legitimately falls
+        well before its own pay period, so a day months back is a legal
+        correction rather than a suspicious one -- **down to the schedule's own
+        start**, which is where ruling R-EL puts the floor (its own class
+        below).  The deepest day tested is derived from that floor rather than
+        written as an offset literal, so this stays a test of the CEILING and
+        cannot start failing on the floor when the fixture's calendar moves.
+        """
+        with app.app_context():
+            floor = pay_period_service.earliest_recordable_day(
+                seed_user["user"].id,
+            )
+            today = display_today()
+            for day in (today, today - timedelta(days=1), floor):
+                txn = _make_txn(
+                    seed_user, seed_periods[0], status=StatusEnum.PROJECTED,
+                )
+                status_seam.apply_status_change(
+                    txn, ref_cache.status_id(StatusEnum.DONE), settled_on=day,
+                )
+                assert txn.settled_on == day
+
+    def test_the_refusal_reads_the_DISPLAY_clock(
+        self, app, db, monkeypatch, seed_user, seed_periods,
+    ):
+        """The bound is the USER's today, not the process's UTC day.
+
+        Ruling R-DH (b), one layer down.  Frozen at 01:00 UTC -- 20:00 EST /
+        21:00 EDT the previous evening -- the two calendars disagree: the
+        process is already on the NEXT day.  A guard written against
+        ``date.today()`` would therefore ACCEPT a day the user has not reached,
+        which is the whole defect, so the Eastern day must be the ceiling and
+        the UTC day must be refused.
+        """
+        with app.app_context():
+            freeze_today(
+                monkeypatch,
+                _UTC_DAY_AT_AN_EASTERN_EVENING,
+                at_time=_EASTERN_EVENING_UTC_TIME,
+            )
+            eastern_day = _UTC_DAY_AT_AN_EASTERN_EVENING - timedelta(days=1)
+            # The freeze is only a control if the two rules really disagree
+            # under it; assert that before asserting which one the guard took.
+            assert display_today() == eastern_day
+            assert date.today() == _UTC_DAY_AT_AN_EASTERN_EVENING
+
+            txn = _make_txn(
+                seed_user, seed_periods[0], status=StatusEnum.PROJECTED,
+            )
+            # The UTC calendar's day, which is the Eastern day PLUS one at this
+            # instant -- the exact value a ``date.today()`` guard would allow.
+            with pytest.raises(ValidationError) as exc:
+                status_seam.apply_status_change(
+                    txn,
+                    ref_cache.status_id(StatusEnum.DONE),
+                    settled_on=_UTC_DAY_AT_AN_EASTERN_EVENING,
+                )
+            assert "has not happened yet" in str(exc.value)
+
+    def test_no_day_supplied_is_always_accepted(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """``None`` passes: it means "derive the day", the everyday path.
+
+        Every mark-done, cancel and notes-only edit reaches the seam with no
+        day.  A guard that treated ``None`` as a value would break all of them.
+        """
+        with app.app_context():
+            status_seam.reject_future_settle_day(None)
+            txn = _make_txn(
+                seed_user, seed_periods[0], status=StatusEnum.PROJECTED,
+            )
+            status_seam.apply_status_change(
+                txn, ref_cache.status_id(StatusEnum.DONE),
+            )
+            assert txn.settled_on == display_today()
+
+
+class TestTheSettleDayFloor:
+    """The FLOOR on a submitted settle day -- ruling **R-EL**, at the DOOR.
+
+    ``reject_future_settle_day`` refuses a future day from ANY caller, because
+    no caller can legitimately record money that has not moved.  **The floor is
+    deliberately not like that.**  A day at or before an assertion is absorbed
+    into it by ``cash_ledger._walk``, which then resets the running total to the
+    asserted balance -- and for a GENUINE pre-schedule settle that is CORRECT
+    (ruling R-EB: an assertion reconciles, so anything before it is already
+    inside the asserted balance).  Recording money that moved before you started
+    budgeting is a real thing to do, and a bank import would do it in bulk.
+
+    So the bound lives in :func:`status_seam.settle_day_for_status`, the edit
+    doors' rule, and NOT in ``apply_status_change``.  Enforcing it at the seam
+    was tried first and refused SIX existing tests whose scenario is a payment
+    budgeted to a 2026 pay period whose cash moved in December 2025 -- the
+    year-boundary attribution rule, and exactly the shape an import produces.
+
+    The bound itself is ``pay_period_service.earliest_recordable_day``, the same
+    floor an anchor's ``observed_on`` has used since finding **N-133**.
+    """
+
+    def test_a_day_before_the_schedule_is_refused(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """One day below the floor raises.
+
+        Asserted at the boundary rather than at an arbitrary depth, so the
+        comparison direction is pinned: a ``<`` where the code has ``<=`` (or
+        the reverse) moves exactly this day across the line.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            floor = pay_period_service.earliest_recordable_day(user_id)
+            with pytest.raises(ValidationError) as exc:
+                status_seam.settle_day_for_status(
+                    user_id, ref_cache.status_id(StatusEnum.DONE),
+                    floor - timedelta(days=1),
+                )
+            assert "before this budget's schedule starts" in str(exc.value)
+
+    def test_the_floor_itself_is_accepted(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The floor day is legal -- the bound is inclusive.
+
+        Paired with the case above so neither can pass while the comparison is
+        off by one day in either direction.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            floor = pay_period_service.earliest_recordable_day(user_id)
+            assert status_seam.settle_day_for_status(
+                user_id, ref_cache.status_id(StatusEnum.DONE), floor,
+            ) == floor
+
+    def test_a_dropped_day_is_never_bounded(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A day beside a REVERT is dropped without being graded.
+
+        The interaction ruling R-EG and ruling R-EL have with each other, and it
+        only goes one way: a dropped day writes nothing, so bounding it would
+        refuse the unlock path on a settled row whose own day happens to precede
+        the schedule -- breaking the path the drop exists to keep open.
+        """
+        with app.app_context():
+            assert status_seam.settle_day_for_status(
+                seed_user["user"].id,
+                ref_cache.status_id(StatusEnum.PROJECTED),
+                date(1999, 1, 1),
+            ) is None
+
+    def test_the_service_itself_still_accepts_a_pre_schedule_day(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """``apply_status_change`` does NOT enforce the floor, on purpose.
+
+        The load-bearing half of ruling R-EL's placement, and the reason it is a
+        separate test rather than a sentence in a docstring: a future step's bank
+        import writes settles for money that moved before the schedule began, and
+        a seam-level floor would refuse them.  Moving the bound onto the seam
+        makes this test fail, which is what stops it drifting back there.
+        """
+        with app.app_context():
+            floor = pay_period_service.earliest_recordable_day(
+                seed_user["user"].id,
+            )
+            txn = _make_txn(
+                seed_user, seed_periods[0], status=StatusEnum.PROJECTED,
+            )
+            before_the_schedule = floor - timedelta(days=45)
+            status_seam.apply_status_change(
+                txn, ref_cache.status_id(StatusEnum.DONE),
+                settled_on=before_the_schedule,
+            )
+            assert txn.settled_on == before_the_schedule

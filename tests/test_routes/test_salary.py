@@ -138,7 +138,6 @@ def _create_other_user_profile():
             account_type_id=checking_type.id,
             name="Other Checking",
             anchor_balance=Decimal("500.00"),
-            anchor_period_id=_bootstrap.id,
         ),
     )
 

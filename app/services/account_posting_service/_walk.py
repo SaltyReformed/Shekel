@@ -62,8 +62,8 @@ from app.services.posting_reads import PostingError, _ledger_account_for
 from app.services.cash_ledger import (
     CashAnchorFact,
     cash_anchor_facts,
-    settled_civil_day,
 )
+from app.utils.balance_predicates import settled_day
 
 _ZERO_MONEY = Decimal("0.00")
 
@@ -136,11 +136,13 @@ def _transaction_source_days(
     entries by ``transaction_id`` (any source kind -- the ``transaction``
     entries Step 3 posts today, and any future transaction-linked kind, by
     construction) and attributes each nonzero net to the civil day the
-    transaction's cash moved -- the SHARED
-    :func:`app.services.cash_ledger.settled_civil_day`, so this walk and the
-    read fold partition on one rule rather than two that agree (ruling R-DH).
+    transaction's cash moved -- the STORED ``transactions.settled_on``, read
+    through the shared :func:`app.utils.balance_predicates.settled_day`, so this
+    walk and the read fold partition on one FACT rather than on two derivations
+    that agree (ruling R-DH, and plan step X-f1 which removed the derivation).
     A reverted source nets to zero and is dropped before any date is
-    resolved.
+    resolved.  The pay-period join this used to carry is gone with the
+    NULL-instant fallback it fed.
 
     The ``transfer_id IS NULL`` filter makes the three source loaders a
     provable PARTITION of the linked ledger: no writer produces a
@@ -179,16 +181,13 @@ def _transaction_source_days(
     if not nets:
         return []
     dated = (
-        db.session.query(
-            Transaction.id, Transaction.paid_at, PayPeriod.start_date,
-        )
-        .join(PayPeriod, Transaction.pay_period_id == PayPeriod.id)
+        db.session.query(Transaction.id, Transaction.settled_on)
         .filter(Transaction.id.in_(nets))
         .all()
     )
     days = {
-        transaction_id: settled_civil_day(paid_at, start_date)
-        for transaction_id, paid_at, start_date in dated
+        transaction_id: settled_day(transaction_id, stored_day)
+        for transaction_id, stored_day in dated
     }
     missing = set(nets) - set(days)
     if missing:
@@ -207,15 +206,16 @@ def _transfer_source_days(
 
     Groups the linked ledger's postings under transfer-linked journal
     entries by ``transfer_id`` and attributes each nonzero net to the
-    transfer's INCOME shadow's CURRENT ``paid_at`` (Transfer Invariant 3
-    mirrors ``paid_at`` onto both shadows, and
-    ``posting_service._entry_date`` already dates transfer entries off
-    exactly this shadow), through the SHARED
-    :func:`app.services.cash_ledger.settled_civil_day` -- so it falls back to
-    the shadow's pay period start UNCONVERTED (== the transfer's period,
-    Invariant 3 again) when ``paid_at`` is NULL.  A reverted or
-    reversed-before-delete transfer nets to zero and is dropped before the
-    shadow is resolved.
+    transfer's INCOME shadow's CURRENT ``settled_on`` (Transfer Invariant 3
+    mirrors the day onto both shadows, and ``posting_service._entry_date``
+    already dates transfer entries off exactly this shadow), through the SHARED
+    :func:`app.utils.balance_predicates.settled_day` -- which REFUSES a shadow
+    carrying no day rather than falling back to its pay-period start, because
+    the day is a stored fact now and its absence is a broken invariant.  A
+    reverted or reversed-before-delete transfer nets to zero and is dropped
+    before the shadow is resolved, so only a shadow with live posted effect is
+    ever dated.  The shadow's own id is passed to the accessor (not the
+    transfer's) so a refusal names the row that is actually broken.
 
     Args:
         linked_ledger_id: The account's LINKED ledger account id.
@@ -230,7 +230,7 @@ def _transfer_source_days(
             effect is settled, and a settled transfer has exactly its two
             shadows (Transfer Invariant 1); a miss or a duplicate is a
             broken invariant that must fail loudly rather than silently
-            mis-partition real money on an arbitrary shadow's ``paid_at``.
+            mis-partition real money on an arbitrary shadow's ``settled_on``.
     """
     nets = {
         transfer_id: net
@@ -244,8 +244,7 @@ def _transfer_source_days(
         return []
     dated = (
         db.session.query(
-            Transaction.transfer_id, Transaction.paid_at,
-            PayPeriod.start_date,
+            Transaction.transfer_id, Transaction.id, Transaction.settled_on,
         )
         .join(
             Transfer,
@@ -254,7 +253,6 @@ def _transfer_source_days(
                 Transaction.account_id == Transfer.to_account_id,
             ),
         )
-        .join(PayPeriod, Transaction.pay_period_id == PayPeriod.id)
         .filter(
             Transaction.transfer_id.in_(nets),
             Transaction.is_deleted.is_(False),
@@ -262,8 +260,8 @@ def _transfer_source_days(
         .all()
     )
     days = {
-        transfer_id: settled_civil_day(paid_at, start_date)
-        for transfer_id, paid_at, start_date in dated
+        transfer_id: settled_day(shadow_id, stored_day)
+        for transfer_id, shadow_id, stored_day in dated
     }
     if len(dated) != len(days):
         raise PostingError(
@@ -292,8 +290,7 @@ def _residue_source_days(
     ``transfer_id`` were SET-NULLed when the source row was deleted.  Each
     period's residue is attributed at that period's ``start_date`` -- a civil
     date used AS a civil date, never routed through an instant, which is the
-    same discipline :func:`app.services.cash_ledger.settled_civil_day` keeps
-    for its own NULL-``paid_at`` fallback (ruling R-DH):
+    same discipline the settled-source loaders keep (ruling R-DH):
     the reverse-before-delete discipline nets residue to zero per account
     AND per period (R2 stamps a reversal into the period of the postings
     it reverses), so every group here sums to zero and is dropped -- but
@@ -392,7 +389,7 @@ def walk_account_ledger(
 
     **The partition is the READ FOLD's, and it is the same rule rather than
     a copy** (ruling R-DH).  Both consume
-    :func:`app.services.cash_ledger.settled_civil_day` for a source's day and
+    :func:`app.utils.balance_predicates.settled_day` for a source's day and
     :attr:`~app.services.cash_ledger.CashAnchorFact.observed_on` for an
     assertion's, so the posted ledger and the projection cannot disagree
     about which settles an assertion already covers -- the divergence Phase X

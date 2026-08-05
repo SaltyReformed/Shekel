@@ -265,6 +265,8 @@ class TestEffectiveAmount:
                 transaction_type_id=expense_type.id,
                 estimated_amount=Decimal("500.00"),
                 actual_amount=Decimal("487.00"),
+                # A settled row carries the day its money moved.
+                settled_on=seed_periods[0].start_date,
             )
             db.session.add(txn)
             db.session.flush()

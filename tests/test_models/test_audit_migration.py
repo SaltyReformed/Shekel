@@ -472,24 +472,21 @@ class TestLeastPrivilegeRole:
             db.session.execute(db.text(f"SET ROLE {shekel_app_role}"))
 
             # INSERT.  E-19 / Commit 3 makes current_anchor_period_id
-            # NOT NULL; supply ``seed_user``'s bootstrap period so the
-            # raw INSERT satisfies the constraint.
+            # The anchor columns this INSERT used to supply went with
+            # ruling R-EH; an account row is its owner, type and name.
             checking_type_id = db.session.execute(db.text(
                 "SELECT id FROM ref.account_types WHERE name = 'Checking'"
             )).scalar()
             db.session.execute(
                 db.text(
                     "INSERT INTO budget.accounts "
-                    "(user_id, account_type_id, name, "
-                    " current_anchor_balance, current_anchor_period_id) "
-                    "VALUES (:uid, :tid, :name, :bal, :pid)"
+                    "(user_id, account_type_id, name) "
+                    "VALUES (:uid, :tid, :name)"
                 ),
                 {
                     "uid": seed_user["user"].id,
                     "tid": checking_type_id,
                     "name": "App Role Test Account",
-                    "bal": Decimal("100.00"),
-                    "pid": seed_user["bootstrap_period"].id,
                 },
             )
 

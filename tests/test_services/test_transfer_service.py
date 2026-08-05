@@ -6,7 +6,7 @@ delete_transfer.  Covers all five core invariants, validation rules,
 edge cases, and cross-user isolation.
 """
 
-from datetime import date, datetime, timezone
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -20,6 +20,7 @@ from app.models.ref import AccountType, Status, TransactionType
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import transfer_service
+from app.utils.dates import display_today
 from app.exceptions import NotFoundError, ValidationError
 from tests._test_helpers import create_loan_account
 
@@ -647,15 +648,15 @@ class TestUpdateTransfer:
             for s in shadows:
                 assert s.actual_amount is None
 
-    def test_paid_at_defaults_to_now_on_settle_when_omitted(
+    def test_settle_day_defaults_to_today_when_omitted(
         self, app, db, transfer_data
     ):
-        """F-048 / C-22: settling without explicit paid_at defaults to now().
+        """F-048 / C-22: settling with no explicit day defaults to the user's today.
 
         Defense-in-depth for the route layer: any caller that
-        forgets to pass ``paid_at`` when transitioning to a settled
+        forgets to pass a settle day when transitioning to a settled
         status (Paid/Received/Settled) still produces shadows with
-        a non-NULL ``paid_at`` timestamp -- the dashboard's "paid
+        a recorded ``settled_on`` day -- the dashboard's "paid
         on time" indicator and ``Transaction.days_paid_before_due``
         analytics rely on it.
         """
@@ -677,34 +678,40 @@ class TestUpdateTransfer:
             )
             assert len(shadows) == 2
             for s in shadows:
-                assert s.paid_at is not None, (
-                    f"Shadow {s.id} has NULL paid_at after settle "
+                assert s.settled_on is not None, (
+                    f"Shadow {s.id} has no settled_on after settle "
                     f"without explicit kwarg; defense-in-depth failed."
                 )
 
-    def test_paid_at_explicit_kwarg_wins_over_default(
+    def test_an_explicit_day_wins_over_the_default_on_a_settle(
         self, app, db, transfer_data
     ):
-        """F-048 / C-22: explicit paid_at takes precedence over the default.
+        """F-048 / C-22: an explicit settle DAY takes precedence over today.
 
-        The defense-in-depth must never overwrite an explicit caller
-        value -- including ``paid_at=None``, which the
-        ``transactions.update_transaction`` shadow path passes when
-        reverting from a settled status to Projected.
+        **This test asserted that ``settled_on=None`` could settle a transfer
+        with NO day, and it pinned the defect** (finding **N-183**).  That is
+        precisely the row ``balance_predicates.settled_day`` refuses -- a
+        settled row whose money moved on no recorded day -- so the assertion
+        was defending a 500 on every balance surface that folds the pair.  The
+        caller it named is gone too: ``_apply_shadow_update`` passed an explicit
+        ``None`` on a revert until plan step X-f1b0, and that was a second
+        statement of the seam's own clear-on-leaving-the-band rule (finding
+        **N-178**'s other half), not a value anything needed.
+
+        What the rule really is, and what is pinned here: an explicit day wins
+        over the default, and the default is the user's today.
         """
         with app.app_context():
             td = transfer_data
             xfer = _create_basic_transfer(td)
             done_status = db.session.query(Status).filter_by(name="Paid").one()
-            projected_status = (
-                db.session.query(Status).filter_by(name="Projected").one()
-            )
 
-            # Step 1: settle with explicit paid_at=None.  The default
-            # would have set now(); the explicit None must win.
+            # Settle and correct in one call: the explicit day must survive
+            # the seam's "stamp today on first entry" default.
+            explicit = display_today() - timedelta(days=5)
             transfer_service.update_transfer(
                 xfer.id, td["user"].id,
-                status_id=done_status.id, paid_at=None,
+                status_id=done_status.id, settled_on=explicit,
             )
             db.session.flush()
             shadows = (
@@ -712,28 +719,21 @@ class TestUpdateTransfer:
                 .filter_by(transfer_id=xfer.id, is_deleted=False)
                 .all()
             )
+            assert len(shadows) == 2
             for s in shadows:
-                assert s.paid_at is None, (
-                    "Explicit paid_at=None was overwritten by "
-                    "defense-in-depth default."
+                assert s.settled_on == explicit, (
+                    f"Shadow {s.id} took the default day {s.settled_on} "
+                    f"instead of the explicit {explicit}."
                 )
 
-            # Step 2: revert to Projected without explicit paid_at.
-            # The defense-in-depth should clear the (already-None)
-            # timestamp on both shadows -- a no-op here, but the
-            # state must remain coherent.
-            #
-            # We need to first set paid_at to a value so we can
-            # observe the clear: skip the revert if no value exists.
-
-    def test_paid_at_cleared_on_revert_to_non_settled(
+    def test_settle_day_cleared_on_revert_to_non_settled(
         self, app, db, transfer_data
     ):
-        """F-048 / C-22: reverting to non-settled clears stale paid_at.
+        """F-048 / C-22: reverting to non-settled clears the stale settle day.
 
-        Maintains the "paid_at iff settled" invariant: a Paid
-        transfer reverted to Projected without an explicit paid_at
-        kwarg must have its shadows' paid_at cleared, otherwise a
+        Maintains the settled-iff-dated invariant: a Paid
+        transfer reverted to Projected must have its shadows'
+        settle day cleared, otherwise a
         future settle would silently inherit the stale timestamp.
         """
         with app.app_context():
@@ -744,7 +744,7 @@ class TestUpdateTransfer:
                 db.session.query(Status).filter_by(name="Projected").one()
             )
 
-            # Settle (defense-in-depth sets paid_at to now()).
+            # Settle (the seam records the user's today).
             transfer_service.update_transfer(
                 xfer.id, td["user"].id, status_id=done_status.id,
             )
@@ -755,9 +755,9 @@ class TestUpdateTransfer:
                 .all()
             )
             for s in shadows:
-                assert s.paid_at is not None
+                assert s.settled_on is not None
 
-            # Revert to Projected with no explicit paid_at.
+            # Revert to Projected with no explicit day.
             transfer_service.update_transfer(
                 xfer.id, td["user"].id, status_id=projected_status.id,
             )
@@ -768,8 +768,8 @@ class TestUpdateTransfer:
                 .all()
             )
             for s in shadows:
-                assert s.paid_at is None, (
-                    f"Shadow {s.id} retained stale paid_at after "
+                assert s.settled_on is None, (
+                    f"Shadow {s.id} retained a stale settled_on after "
                     f"revert to Projected; the F-048 invariant is "
                     f"violated."
                 )
@@ -1179,7 +1179,7 @@ class TestRestoreTransfer:
         """A drift repair must not INVENT a settle day.
 
         Routing the repair through the status seam (ruling R-DN) brought the
-        seam's ``paid_at`` maintenance with it, and the seam's per-row rule is
+        seam's settle-day maintenance with it, and the seam's per-row rule is
         "preserve an instant, else stamp ``now()``".  For a PAIR that rule is
         wrong: the sibling shadow already records when the money moved, and
         since plan step E1a that civil day is the ``entry_date`` the re-posted
@@ -1195,9 +1195,9 @@ class TestRestoreTransfer:
             xfer = _create_basic_transfer(td)
             xfer_id = xfer.id
             paid_id = ref_cache.status_id(StatusEnum.DONE)
-            real_settle = datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc)
+            real_settle = date(2026, 3, 20)
             transfer_service.update_transfer(
-                xfer_id, td["user"].id, status_id=paid_id, paid_at=real_settle,
+                xfer_id, td["user"].id, status_id=paid_id, settled_on=real_settle,
             )
             transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
             db.session.flush()
@@ -1209,16 +1209,16 @@ class TestRestoreTransfer:
                 .filter_by(transfer_id=xfer_id).order_by(Transaction.id).all()
             )
             drifted.status_id = ref_cache.status_id(StatusEnum.PROJECTED)
-            drifted.paid_at = None
+            drifted.settled_on = None
             db.session.flush()
-            assert sibling.paid_at == real_settle
+            assert sibling.settled_on == real_settle
 
             transfer_service.restore_transfer(xfer_id, td["user"].id)
             db.session.flush()
             db.session.refresh(drifted)
 
-            assert drifted.paid_at == real_settle, (
-                f"the repair invented a settle day: {drifted.paid_at} "
+            assert drifted.settled_on == real_settle, (
+                f"the repair invented a settle day: {drifted.settled_on} "
                 f"instead of the sibling's {real_settle}"
             )
 
@@ -1230,7 +1230,7 @@ class TestRestoreTransfer:
         The other half of the rule above: a row that is not settled must not
         carry a settle instant, or ``days_paid_before_due`` and the paid-on-time
         indicator read a payment that has not happened.  Together the two pin
-        both directions of the seam's ``paid_at`` maintenance on the repair
+        both directions of the seam's settle-day maintenance on the repair
         path, which had none before ruling R-DO routed it through the seam.
         """
         with app.app_context():
@@ -1246,7 +1246,7 @@ class TestRestoreTransfer:
                 .filter_by(transfer_id=xfer_id).order_by(Transaction.id).first()
             )
             drifted.status_id = ref_cache.status_id(StatusEnum.DONE)
-            drifted.paid_at = datetime(2026, 3, 20, 12, 0, tzinfo=timezone.utc)
+            drifted.settled_on = date(2026, 3, 20)
             db.session.flush()
 
             transfer_service.restore_transfer(xfer_id, td["user"].id)
@@ -1254,8 +1254,8 @@ class TestRestoreTransfer:
             db.session.refresh(drifted)
 
             assert drifted.status_id == xfer.status_id
-            assert drifted.paid_at is None, (
-                f"a Projected shadow kept a payment time: {drifted.paid_at}"
+            assert drifted.settled_on is None, (
+                f"a Projected shadow kept a payment time: {drifted.settled_on}"
             )
 
     def test_unrepairable_status_drift_is_refused(
@@ -1287,6 +1287,9 @@ class TestRestoreTransfer:
                 .filter_by(transfer_id=xfer_id).first()
             )
             drifted.status_id = ref_cache.status_id(StatusEnum.SETTLED)
+            # The drift under test is the STATUS; the day comes with it so the
+            # fixture expresses exactly one defect rather than two.
+            drifted.settled_on = display_today()
             db.session.flush()
 
             with pytest.raises(ValidationError, match="cannot legally"):
@@ -1697,8 +1700,8 @@ class TestRestoreTransfer:
                 assert shadow.is_deleted is False
 
 
-class TestDueDateAndPaidAtShadows:
-    """Tests for due_date and paid_at propagation to shadow transactions."""
+class TestDueDateAndSettleDayShadows:
+    """Tests for due_date and settled_on propagation to shadow transactions."""
 
     def test_shadow_due_date_propagation(self, app, db, transfer_data):
         """create_transfer with due_date sets the parent and both shadows."""
@@ -1788,18 +1791,30 @@ class TestDueDateAndPaidAtShadows:
             for s in shadows:
                 assert s.due_date == date(2026, 2, 1)
 
-    def test_paid_at_transfer_shadow_both_set(self, app, db, transfer_data):
-        """update_transfer with paid_at sets paid_at on both shadows."""
-        from datetime import datetime, timezone
+    def test_a_settle_day_correction_lands_on_both_shadows(
+        self, app, db, transfer_data,
+    ):
+        """A corrected settle day is mirrored to both shadows (Invariant 3).
 
+        The ``settled_on`` edit door (ruling **R-ED**): the user read their
+        statement and the money moved on a day other than the one the settle
+        was recorded on.  Both shadows take the SAME day, which
+        ``posting_service._entry_date`` depends on -- it reads the income
+        shadow's day for the pair.
+        """
         with app.app_context():
             td = transfer_data
             xfer = _create_basic_transfer(td)
             db.session.flush()
-
-            now = datetime.now(timezone.utc)
+            done_status = db.session.query(Status).filter_by(name="Paid").one()
             transfer_service.update_transfer(
-                xfer.id, td["user"].id, paid_at=now
+                xfer.id, td["user"].id, status_id=done_status.id,
+            )
+            db.session.flush()
+
+            corrected = display_today() - timedelta(days=3)
+            transfer_service.update_transfer(
+                xfer.id, td["user"].id, settled_on=corrected,
             )
             db.session.flush()
 
@@ -1810,56 +1825,104 @@ class TestDueDateAndPaidAtShadows:
             )
             assert len(shadows) == 2
             for s in shadows:
-                assert s.paid_at is not None
+                assert s.settled_on == corrected
 
-    def test_paid_at_transfer_shadow_revert(self, app, db, transfer_data):
-        """Setting paid_at then reverting to None clears paid_at on both shadows."""
-        from datetime import datetime, timezone
+    def test_a_day_on_an_UNSETTLED_transfer_is_refused(
+        self, app, db, transfer_data,
+    ):
+        """Dating a Projected transfer raises instead of recording it.
 
+        **This test asserted the OPPOSITE until plan step X-f1b** -- it settled
+        a Projected transfer's shadows with an instant and checked the column
+        was non-NULL.  That is finding **N-183**: ``update_transfer`` assigned
+        the column directly, so it could date a row no money had moved for,
+        breaking the settled-iff-dated invariant this step establishes and
+        leaving a fold that would read a settle day off an unsettled row.  The
+        write goes through the status seam now, which refuses it.
+        """
         with app.app_context():
             td = transfer_data
             xfer = _create_basic_transfer(td)
             db.session.flush()
 
-            # Set paid_at.
-            now = datetime.now(timezone.utc)
-            transfer_service.update_transfer(
-                xfer.id, td["user"].id, paid_at=now
-            )
-            db.session.flush()
+            with pytest.raises(ValidationError) as exc:
+                transfer_service.update_transfer(
+                    xfer.id, td["user"].id, settled_on=display_today(),
+                )
+            assert "not a settled status" in str(exc.value)
 
-            # Verify it was set.
-            shadows = (
+            for s in (
                 db.session.query(Transaction)
                 .filter_by(transfer_id=xfer.id)
                 .all()
-            )
-            for s in shadows:
-                assert s.paid_at is not None
+            ):
+                assert s.settled_on is None
 
-            # Revert to None.
+    def test_a_settled_transfer_refuses_to_have_its_day_CLEARED(
+        self, app, db, transfer_data,
+    ):
+        """Clearing a settled transfer's day raises; reverting it is the way.
+
+        The other half of finding **N-183**.  A settled row with no day is the
+        state ``balance_predicates.settled_day`` REFUSES, so letting an edit
+        produce one would turn a form submission into a 500 on every balance
+        surface that folds the row.  The legitimate way to remove the day is to
+        move the transfer out of the settled band, which the seam does as part
+        of the status change -- asserted below so the refusal is not mistaken
+        for "the day can never be removed".
+        """
+        with app.app_context():
+            td = transfer_data
+            xfer = _create_basic_transfer(td)
+            db.session.flush()
+            done_status = db.session.query(Status).filter_by(name="Paid").one()
             transfer_service.update_transfer(
-                xfer.id, td["user"].id, paid_at=None
+                xfer.id, td["user"].id, status_id=done_status.id,
             )
             db.session.flush()
 
-            shadows = (
+            with pytest.raises(ValidationError) as exc:
+                transfer_service.update_transfer(
+                    xfer.id, td["user"].id, settled_on=None,
+                )
+            assert "cannot be cleared" in str(exc.value)
+
+            # The day survived the refusal.
+            for s in (
                 db.session.query(Transaction)
                 .filter_by(transfer_id=xfer.id)
                 .all()
-            )
-            for s in shadows:
-                assert s.paid_at is None
+            ):
+                assert s.settled_on == display_today()
 
-    def test_shadow_paid_at_null_propagation(self, app, db, transfer_data):
-        """update_transfer with paid_at=None sets both shadows to None."""
+            # And the supported route out clears it on both shadows.
+            transfer_service.update_transfer(
+                xfer.id, td["user"].id,
+                status_id=td["projected_status"].id,
+            )
+            db.session.flush()
+            for s in (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id)
+                .all()
+            ):
+                assert s.settled_on is None
+
+    def test_an_undated_projected_transfer_stays_undated(self, app, db, transfer_data):
+        """``settled_on=None`` on a PROJECTED transfer leaves both shadows None.
+
+        A no-op rather than a refusal: the submitted value agrees with the row's
+        state (no money has moved, so there is no day), and refusing an edit
+        that asks for what is already true would reject an ordinary form
+        round-trip that carried an empty date field.
+        """
         with app.app_context():
             td = transfer_data
             xfer = _create_basic_transfer(td)
             db.session.flush()
 
             transfer_service.update_transfer(
-                xfer.id, td["user"].id, paid_at=None
+                xfer.id, td["user"].id, settled_on=None
             )
             db.session.flush()
 
@@ -1870,7 +1933,7 @@ class TestDueDateAndPaidAtShadows:
             )
             assert len(shadows) == 2
             for s in shadows:
-                assert s.paid_at is None
+                assert s.settled_on is None
 
 
 class TestTheStatusMirrorIsAtomic:
@@ -1881,7 +1944,7 @@ class TestTheStatusMirrorIsAtomic:
     ):
         """The pre-verify pass exists for a drifted shadow, and this is it.
 
-        ``_apply_status_to_all_three`` verifies all three rows before the seam
+        ``apply_status_to_all_three`` verifies all three rows before the seam
         assigns any.  The input that needs it: the INCOME shadow drifted to
         Settled (terminal) under a Projected parent being moved to Paid.  The
         transfer's move is legal (Projected -> Paid) and the income shadow's is
@@ -1914,6 +1977,8 @@ class TestTheStatusMirrorIsAtomic:
             )
             income_shadow = next(s for s in shadows if s is not expense_shadow)
             income_shadow.status_id = ref_cache.status_id(StatusEnum.SETTLED)
+            # As above: the drift under test is the STATUS alone.
+            income_shadow.settled_on = display_today()
             db.session.flush()
 
             with pytest.raises(ValidationError):

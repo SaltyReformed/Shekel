@@ -161,7 +161,6 @@ def _create_concurrent_user(db_session):
             account_type_id=checking_type.id,
             name="Checking",
             anchor_balance=Decimal("5000.00"),
-            anchor_period_id=_bootstrap.id,
         ),
     )
 
@@ -202,7 +201,6 @@ def _create_concurrent_user(db_session):
         db_session.add(period)
         periods.append(period)
     db_session.flush()
-    account.current_anchor_period_id = periods[0].id
     db_session.commit()
 
     return {

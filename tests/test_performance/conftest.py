@@ -85,8 +85,6 @@ def perf_periods(app, db, perf_user):
     )
     _db.session.flush()
 
-    account = perf_user["account"]
-    account.current_anchor_period_id = periods[0].id
     _db.session.commit()
 
     return periods

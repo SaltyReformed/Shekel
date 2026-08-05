@@ -6,6 +6,28 @@ Create Date: 2026-05-19
 
 Review: solo developer, 2026-05-19 (audit financial_calculations CRIT-01/E-19, Commit 3)
 
+**ITS DATA PATH IS UNREACHABLE WITH DATA, PERMANENTLY** (recorded 2026-08-04 at
+plan step X-f1c3b, ruling R-EO, per the precedent the developer set on
+2026-08-03 for the migrations ``a3f7c8e21b64`` stranded).  ``INSERT_HISTORY_SQL``
+below writes ``budget.account_anchor_history.pay_period_id``, and migration
+``b6d1e94c07af`` DROPS that column: a balance assertion is a fact about a bank
+and is no longer filed under a pay period.  Three facts make this safe rather
+than latent.  A real ``base -> head`` upgrade is unaffected -- this revision runs
+**53 revisions** below ``b6d1e94c07af`` (measured over the ``down_revision``
+chain; a first draft said "~30" and was wrong by 75%), against a schema that
+still has the column, verified by a clean template rebuild on 2026-08-04.  On
+any database already past this revision it never runs again.  And rewinding to
+it requires downgrading through ``a3f7c8e21b64``, whose ``downgrade`` refuses
+**UNCONDITIONALLY** -- its own docstring says "the refusal is unconditional",
+and a first draft here wrote "once any row carries a settle day", which
+misdescribes the gate a future reader would rely on.  The only future execution is a fresh template build over
+an empty table, where these statements match no rows.  The two tests that ran
+this SQL verbatim against a HEAD schema
+(``tests/test_models/test_account_anchor_invariant.py``, C3-1 / C3-2) were
+deleted in the same commit; the source-level ``DIAGNOSTIC_SELECT`` case
+survives.  **Do not edit the frozen SQL below to match the newer schema** -- a
+historical migration records what ran.
+
 CRIT-01 / F-001 SCOPE_DRIFT eliminates the ``current_anchor_period_id
 IS NULL`` and ``current_anchor_balance IS NULL`` states.  Before this
 migration the five balance producers (grid, /accounts, /savings,

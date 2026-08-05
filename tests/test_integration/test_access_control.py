@@ -23,6 +23,7 @@ from app.models.category import Category
 from app.models.pension_profile import PensionProfile
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
+from app.services import cash_ledger
 
 
 def _assert_not_found(response, msg=""):
@@ -925,7 +926,9 @@ class TestDataIntegrityAfterBlockedAccess:
             target_id = seed_full_user_data["account"].id
             original_name = seed_full_user_data["account"].name
             original_anchor = (
-                seed_full_user_data["account"].current_anchor_balance
+                cash_ledger.resolve_anchor(
+                    seed_full_user_data["account"],
+                ).balance
             )
 
             response = second_auth_client.post(
@@ -940,7 +943,7 @@ class TestDataIntegrityAfterBlockedAccess:
                 f"Account name changed from '{original_name}' "
                 f"to '{account.name}' after blocked update"
             )
-            assert account.current_anchor_balance == original_anchor, (
+            assert cash_ledger.resolve_anchor(account).balance == original_anchor, (
                 "Anchor balance changed after blocked update"
             )
 

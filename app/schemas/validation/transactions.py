@@ -50,6 +50,20 @@ class TransactionUpdateSchema(BaseSchema):
     category_id = RowId()
     notes = fields.String(allow_none=True, validate=validate.Length(max=500))
     due_date = fields.Date(allow_none=True)
+    # The civil day the money moved (ruling R-ED, plan step X-f1c).  Editable on
+    # a FINALISED row, unlike every other money field: the locked set protects
+    # BUDGET DECISIONS the user made (amount, period, category, due date) from
+    # being rewritten after the fact, and this is not one -- it is an OBSERVED
+    # FACT about their bank, which gets corrected when the statement disagrees.
+    # The same line ``TransactionEntry`` draws one table over, where
+    # ``purchased_on`` is guarded and ``settled_on`` is freely editable.
+    #
+    # Deliberately NOT ``allow_none``: an empty input loads as ABSENT (see
+    # ``_normalize_empty_inputs``), i.e. "leave the day alone", never as a
+    # request to clear it.  A settled row always carries the day its money
+    # moved -- the way to remove one is to move the row out of the settled
+    # band, which the status seam does as part of the same write.
+    settled_on = fields.Date()
     # Ad-hoc tracking / visibility flags.  Deliberately NO load_default:
     # this schema is shared across the quick-edit, full-edit, and inline
     # PATCH forms, and only the full-edit popover renders these controls
@@ -60,7 +74,6 @@ class TransactionUpdateSchema(BaseSchema):
     # the controls are present.
     is_envelope = fields.Boolean()
     companion_visible = fields.Boolean()
-    paid_at = fields.DateTime(allow_none=True, dump_only=True)
     version_id = RowId(validate=validate.Range(min=1))
 
 
@@ -85,7 +98,7 @@ class TransactionCreateSchema(BaseSchema):
     # unconditionally).  The only path to a settled status is the status seam
     # (``status_seam.apply_status_change``), so a submitted status is dropped by
     # ``unknown=EXCLUDE`` rather than minting a born-settled row that
-    # would have a NULL ``paid_at``, bypass ``verify_transition``, and post
+    # would have no settle day, bypass ``verify_transition``, and post
     # nothing to the ledger.  Record an already-paid item by creating it
     # Projected, then marking it done.
     notes = fields.String(allow_none=True, validate=validate.Length(max=500))

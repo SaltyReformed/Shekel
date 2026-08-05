@@ -5,16 +5,17 @@ Every state-changing transaction route on a single row: the PATCH inline
 edit save, the DELETE soft/hard delete, and the status workflow
 (mark-done, mark/unmark credit, cancel).  Shadow transactions
 (``transfer_id IS NOT NULL``) route through the transfer service so both
-shadows and the parent transfer stay in sync (design doc invariants 3-5).
+shadows and the parent transfer stay in sync (design doc invariants 3-5);
+those three branches live in :mod:`._shadow_mutations`, which carries why
+they were split out and why they moved TOGETHER.
 
 The edit and status concerns share this one module deliberately: their
-transfer-shadow helpers (``_apply_shadow_update`` / ``_mark_done_shadow`` /
-``_cancel_shadow``) and the mark_done shadow/regular paths are near-identical
-parallel code (``update_transfer`` + commit + StaleDataError preambles,
-refresh/render tails, the ``_RenderTarget`` stale + IntegrityError response
-handling).  Splitting them across modules would re-surface the intra-file
-duplication the monolith hid (R0801 is cross-file only); co-locating the
-whole mutation concern keeps that intentional parallel code in one file.
+REGULAR (non-shadow) paths are near-identical parallel code (the apply +
+posting reconcile + commit body, the ``StaleDataError`` / ``IntegrityError``
+tails, the ``_RenderTarget`` response handling).  Splitting those across
+modules would re-surface the intra-file duplication the monolith hid (R0801
+is cross-file only); co-locating them keeps that intentional parallel code in
+one file.
 """
 
 import logging
@@ -28,16 +29,13 @@ from sqlalchemy.orm.exc import StaleDataError
 from app import ref_cache
 from app.enums import StatusEnum
 from app.extensions import db
-from app.models.ref import Status
 from app.services import (
     credit_workflow,
-    loan_payment_service,
     posting_service,
     status_seam,
     transaction_service,
-    transfer_service,
 )
-from app.services.state_machine import finalised_edit_rejection, verify_transition
+from app.services.state_machine import verify_transition
 from app.exceptions import NotFoundError, ValidationError
 from app.utils.auth_helpers import get_accessible_transaction, require_owner
 from app.utils.balance_predicates import is_credit
@@ -46,6 +44,7 @@ from app.routes._render_helpers import render_transaction_cell
 from app.routes.transactions._helpers import (
     _credit_payback_idempotent_response,
     _error_transaction_response,
+    _finalised_edit_response,
     _get_owned_transaction,
     _INVALID_REFERENCE_MSG,
     _mark_done_schema,
@@ -55,20 +54,14 @@ from app.routes.transactions._helpers import (
     _update_schema,
     _verify_owned_fks_in_update,
 )
+from app.routes.transactions._shadow_mutations import (
+    _apply_shadow_update,
+    _cancel_shadow,
+    _mark_done_shadow,
+)
 from app.utils.error_fragments import flatten_schema_errors
 
 logger = logging.getLogger(__name__)
-
-# Money / period / category / due-date fields that the finalised-row edit
-# lock (#26) protects.  Names match :class:`TransactionUpdateSchema` (the
-# loaded ``data`` dict for both the regular and the transfer-shadow PATCH
-# paths).  Display fields (``notes``, ``name``) and the ad-hoc visibility
-# flags stay editable on a finalised row; the ``status_id`` transition is
-# guarded separately by :func:`verify_transition`.
-_LOCKED_EDIT_FIELDS = frozenset({
-    "estimated_amount", "actual_amount", "category_id",
-    "pay_period_id", "due_date",
-})
 
 # The PATCH fields whose change can alter a transaction's posted double-entry
 # ledger effect, so a change to any triggers a posting reconcile (Build-Order
@@ -77,7 +70,20 @@ _LOCKED_EDIT_FIELDS = frozenset({
 # ``actual_amount`` together set ``effective_amount``
 # (``COALESCE(actual, estimated)``) -- the magnitude posted; ``category_id``
 # moves which counter (category) ledger account the expense/income leg books
-# into.  The other PATCH fields (``notes`` / ``name`` / ``due_date`` /
+# into.
+#
+# ``settled_on`` IS here, and its inclusion is ruling **R-ED**'s second half:
+# since plan step E1a a settle's civil day IS the ``entry_date`` its postings
+# are filed under, so moving the day moves the day every posting counts from.
+# ``sync_transaction_postings`` reconciles per ``(period, entry_date)``, so the
+# entry at the OLD day reverses at that day and the effect re-posts at the new
+# one (finding **N-13**), and its tail re-derives the account's anchor
+# corrections that the moved delta staled.  Without it the rendered balance
+# would move while the posted ledger kept the stale date -- the books silently
+# out of step with the screen, on the one surface this arc exists to keep in
+# step.
+#
+# The other PATCH fields (``notes`` / ``name`` / ``due_date`` /
 # ``pay_period_id`` / ``is_envelope`` / the visibility flags) move none of
 # those, so a metadata-only edit raises no reconcile -- and a settled row's
 # period / due-date cannot move anyway (the finalised-edit lock blocks editing
@@ -87,120 +93,21 @@ _LOCKED_EDIT_FIELDS = frozenset({
 # pure metadata edit.
 _POSTING_RELEVANT_FIELDS = frozenset({
     "status_id", "estimated_amount", "actual_amount", "category_id",
+    "settled_on",
 })
 
-
-def _finalised_edit_response(txn, data):
-    """Reject locked-field edits on a finalised (is_immutable) transaction.
-
-    Looks up the current and (if the PATCH transitions status) the new
-    :class:`Status` BEFORE the caller's ``setattr`` loop dirties the
-    session -- matching :func:`_resolve_status_change`'s autoflush-safe
-    ordering -- and defers the policy decision to
-    :func:`finalised_edit_rejection`.  Applies to the regular edit path
-    and the transfer-shadow path (the shadow's status mirrors its
-    parent transfer's, Invariant 3), the two user edit entry points;
-    the system mutation paths (recurrence, carry-forward, mark-done,
-    cancel) deliberately bypass this lock.
-
-    Args:
-        txn: The Transaction (or transfer shadow) being edited.
-        data: The schema-loaded PATCH payload (``version_id`` already
-            popped by the caller).
-
-    Returns:
-        A designed 400 error-fragment response when a locked field is
-        edited on a finalised row not being reverted to a mutable
-        status, or ``None`` when the edit may proceed.
-    """
-    if not _LOCKED_EDIT_FIELDS & data.keys():
-        return None
-    current_status = db.session.get(Status, txn.status_id)
-    new_status = (
-        db.session.get(Status, data["status_id"])
-        if "status_id" in data else None
-    )
-    message = finalised_edit_rejection(
-        current_status, new_status, context="transaction",
-    )
-    if message is None:
-        return None
-    return _error_transaction_response(txn.id, message)
-
-
-def _apply_shadow_update(txn, txn_id, data):
-    """Apply a PATCH update to a transfer shadow via the transfer service.
-
-    Shadow transactions (``transfer_id IS NOT NULL``) cannot be mutated
-    directly -- the parent transfer and both shadows must move together
-    (design doc invariants 3-5).  Maps the submitted transaction fields
-    onto :func:`transfer_service.update_transfer` kwargs, commits, and
-    renders the refreshed cell.  Reverting to a non-settled status nulls
-    ``paid_at`` so a re-opened shadow stops showing a paid timestamp.
-
-    Args:
-        txn: The shadow Transaction being edited.
-        txn_id: The shadow's id, used for stale-conflict logging and the
-            conflict re-fetch.
-        data: The schema-loaded PATCH payload (``version_id`` already
-            popped by the caller).
-
-    Returns:
-        A Flask response tuple: the updated cell + ``balanceChanged`` on
-        success, a 409 conflict cell on a concurrent commit, or a 400
-        when the transfer service rejects the change or the shadow's
-        parent transfer is finalised (#26).
-    """
-    finalised_error = _finalised_edit_response(txn, data)
-    if finalised_error is not None:
-        return finalised_error
-
-    # Map transaction field names to transfer service kwargs.
-    svc_kwargs = {}
-    if "estimated_amount" in data:
-        svc_kwargs["amount"] = data["estimated_amount"]
-    if "actual_amount" in data:
-        svc_kwargs["actual_amount"] = data["actual_amount"]
-    if "status_id" in data:
-        svc_kwargs["status_id"] = data["status_id"]
-        # Null paid_at when reverting to a non-settled status.
-        new_status = db.session.get(Status, data["status_id"])
-        if new_status and not new_status.is_settled:
-            svc_kwargs["paid_at"] = None
-    if "notes" in data:
-        svc_kwargs["notes"] = data["notes"]
-    if "category_id" in data:
-        svc_kwargs["category_id"] = data["category_id"]
-    if "due_date" in data:
-        svc_kwargs["due_date"] = data["due_date"]
-
-    try:
-        transfer_service.update_transfer(
-            txn.transfer_id, current_user.id, **svc_kwargs
-        )
-        db.session.commit()
-    except StaleDataError:
-        logger.info(
-            "Stale-data conflict on update_transaction shadow id=%d", txn_id,
-        )
-        return _stale_transaction_response(txn_id)
-    except (NotFoundError, ValidationError) as exc:
-        # transfer_service.update_transfer mutates xfer.amount and both
-        # shadows' estimated_amount in-memory BEFORE running the status
-        # transition through the state machine, so a rejected
-        # amount+illegal-status PATCH leaves dirty mutations staged on
-        # the session.  The error helper rolls back so they cannot
-        # reach the DB, matching the sibling shadow handlers
-        # (_mark_done_shadow, _cancel_shadow).
-        return _error_transaction_response(txn_id, str(exc))
-
-    db.session.refresh(txn)
-    logger.info(
-        "user_id=%d updated shadow transaction %d (transfer %d)",
-        current_user.id, txn_id, txn.transfer_id,
-    )
-    response = render_transaction_cell(txn)
-    return response, 200, {"HX-Trigger": "balanceChanged"}
+# The PATCH fields the status seam writes, so the generic ``setattr`` loop in
+# :func:`_apply_regular_update` must NOT.  They are one fact -- a row is settled
+# if and only if it carries the day its money moved -- and
+# ``status_seam.apply_status_change`` writes them in a single statement after
+# verifying the transition and expiring the ``status`` relationship.  A bare
+# ``setattr`` would skip all of that, and for ``settled_on`` it would make the
+# loop a SECOND writer of the column the seam is the single door to: exactly
+# finding **N-183** (which ``update_transfer`` shipped and X-f1b closed), about
+# to be re-run on the transaction side by this step's own edit door (finding
+# **N-185**).  Naming the pair here is what keeps the loop from growing a third
+# member silently.
+_SEAM_OWNED_FIELDS = frozenset({"status_id", "settled_on"})
 
 
 def _resolve_status_change(txn, data):
@@ -212,7 +119,7 @@ def _resolve_status_change(txn, data):
     and blocks the Credit status on purchase-tracking transactions (credit is
     per-entry, scope doc 5.2).  Doing it here gives the precise 400 precedence
     (an illegal transition reports before a finalised-field lock or an FK error)
-    and leaves the row untouched on rejection.  ``paid_at`` is NOT decided here:
+    and leaves the row untouched on rejection.  ``settled_on`` is NOT decided here:
     the status seam (:func:`status_seam.apply_status_change`, invoked
     once the field is applied) owns the stamp/clear and re-runs this same
     verification as the single source of truth -- this early call exists purely
@@ -279,18 +186,24 @@ def _apply_regular_update(txn, txn_id, data):
         change, a locked-field edit of a finalised row (#26), the income
         purchase-tracking guard, or a bad FK.
     """
-    status_error = _resolve_status_change(txn, data)
-    if status_error is not None:
-        return status_error
-
-    # Finalised-row edit lock (#26): a Paid/Received/Settled/Credit/
-    # Cancelled row's money/period/category/due-date fields cannot be
-    # rewritten unless this same request reverts it to Projected.  Runs
-    # after the transition guard (so an illegal status change reports its
-    # own message first) and before the setattr loop.
-    finalised_error = _finalised_edit_response(txn, data)
-    if finalised_error is not None:
-        return finalised_error
+    # The two pre-mutation gates share ONE error exit, the shape
+    # ``transfers.update_transfer`` already uses, so the settle-day refusal
+    # ruling R-EJ added below does not push this handler past pylint's
+    # too-many-returns threshold.  ``or`` preserves the precedence the guards
+    # depend on: an illegal status change reports its own message BEFORE the
+    # finalised-field lock speaks, and each returns ``None`` when it passes.
+    #
+    # Gate 1, ``_resolve_status_change``: the state-machine transition check,
+    # run before any column is mutated so a rejection leaves the row untouched.
+    # Gate 2, the finalised-row edit lock (#26): a Paid/Received/Settled/
+    # Credit/Cancelled row's money/period/category/due-date fields cannot be
+    # rewritten unless this same request reverts it to Projected.
+    gate_error = (
+        _resolve_status_change(txn, data)
+        or _finalised_edit_response(txn, data)
+    )
+    if gate_error is not None:
+        return gate_error
 
     # Purchase tracking is expense-only.  The popover only renders the
     # is_envelope checkbox for ad-hoc expense rows, but guard the route
@@ -327,23 +240,55 @@ def _apply_regular_update(txn, txn_id, data):
         and data["status_id"] != ref_cache.status_id(StatusEnum.CREDIT)
     )
 
-    # Apply non-status updates (regular transactions only).  ``status_id`` is
+    # Apply the remaining updates.  ``status_id`` and ``settled_on`` are BOTH
     # excluded here and routed through the status seam below: a bare setattr
-    # would assign the column but skip the transition check, the paid_at
-    # stamp/clear, and the status-relationship expire that the seam owns.
+    # would assign the column but skip the transition check, the settle-day
+    # stamp/clear, and the status-relationship expire that the seam owns -- and
+    # for ``settled_on`` it would make this loop a SECOND writer of a column the
+    # seam is the single door to (finding **N-185**, the re-run of N-183 on the
+    # transaction side).
     for field, value in data.items():
-        if field == "status_id":
+        if field in _SEAM_OWNED_FIELDS:
             continue
         setattr(txn, field, value)
 
-    # Apply the status change through the single seam (verify + status_id +
-    # paid_at + expire).  ``_resolve_status_change`` already pre-verified this
-    # exact transition for error precedence, so the seam's re-verification never
-    # raises here; the seam owns paid_at -- stamping now() on a settle and
-    # clearing it on a revert to a non-settled status -- which replaces the old
-    # bespoke revert-paid_at handling.
-    if "status_id" in data:
-        status_seam.apply_status_change(txn, data["status_id"])
+    # Apply the status and the settle day through the single seam, in ONE call,
+    # because they are ONE fact: a row is settled if and only if it carries the
+    # day its money moved, and the seam writes both in the same statement.  The
+    # status is the SUBMITTED one when the PATCH carried one, else the row's own
+    # -- a day-only edit is an identity transition, exactly as the transfer
+    # side's :func:`_transfer_status.apply_settle_day_to_pair` does it.
+    # ``settle_day_for_status`` drops a day submitted alongside a revert out of
+    # the settled band (ruling **R-EG**), so the documented unlock path (set
+    # Status to Projected to edit the amounts) is not broken by the form
+    # re-submitting the day the row already carried.
+    #
+    # ``_resolve_status_change`` already pre-verified a SUBMITTED transition for
+    # error precedence, and the identity transition a day-only edit performs is
+    # always legal (``state_machine``'s module docstring) -- so the TRANSITION
+    # arm never raises here for a recognised status.  The DAY arm can: ruling
+    # **R-EJ** refuses a settle day that has not happened yet, and that is
+    # ordinary user input from the correction box.  A day-only PATCH also
+    # reaches the seam with NO prior ``verify_transition`` (that gate returns
+    # early when no status was submitted), so a corrupt ``status_id`` surfaces
+    # here too.  ``_error_transaction_response`` rolls the session back, which
+    # discards the ``setattr`` loop's already-staged mutations above.
+    #
+    # ``settle_day_for_status`` itself can refuse too (ruling **R-EL** bounds a
+    # forwarded day below at the schedule's start), so it shares the same
+    # ``except``: both are ordinary input from the correction box, and both must
+    # render as a designed 400 with the staged ``setattr`` mutations rolled back.
+    new_status_id = data.get("status_id", txn.status_id)
+    try:
+        settle_day = status_seam.settle_day_for_status(
+            current_user.id, new_status_id, data.get("settled_on"),
+        )
+        if "status_id" in data or settle_day is not None:
+            status_seam.apply_status_change(
+                txn, new_status_id, settled_on=settle_day,
+            )
+    except ValidationError as exc:
+        return _error_transaction_response(txn_id, str(exc))
 
     # If the user changed amount or period on a template-generated item,
     # flag as override.
@@ -564,80 +509,6 @@ def delete_transaction(txn_id):
     return "", 200, {"HX-Trigger": "balanceChanged"}
 
 
-def _mark_done_shadow(txn, txn_id, actual_amount, target):
-    """Settle a transfer shadow through the transfer service.
-
-    Marks both shadows and the parent transfer done atomically (the
-    transfer service owns the shadow invariants).  Uses the DONE status
-    for the service -- the 'done'/'received' split is a display
-    convention for regular transactions only -- and forwards an optional
-    manual ``actual_amount``.
-
-    Args:
-        txn: The shadow Transaction being settled.
-        txn_id: The shadow's id, for stale-conflict logging / re-fetch.
-        actual_amount: Optional manual actual amount from the form, or
-            ``None`` to leave it to the service.
-        target: The :class:`_RenderTarget` describing the response
-            surface (mobile card vs desktop cell).
-
-    Returns:
-        A Flask response tuple: the refreshed cell + ``gridRefresh`` on
-        success, a 409 conflict surface on a concurrent commit, or a 400
-        on a bad FK or a state-machine rejection.
-    """
-    # Use 'done' for the transfer service -- it sets the same status on
-    # both shadows.  The 'done'/'received' distinction is a display
-    # convention for regular transactions.
-    svc_kwargs = {
-        "status_id": ref_cache.status_id(StatusEnum.DONE),
-        "paid_at": db.func.now(),
-    }
-
-    # Capture-on-settle (escrow redesign, Option A): when the operator settles
-    # an auto-derived loan payment with a one-click "mark paid" (no typed
-    # actual), freeze the LIVE payment-date amount (P&I + escrow-as-of) as the
-    # actual cash instead of letting ``effective_amount`` fall back to the
-    # stale template ``estimated_amount`` (the creation-time escrow).  This is
-    # what makes ``cash == split`` hold for a plain settle after an escrow
-    # change: the frozen cash and the genesis split read the same
-    # ``escrow_monthly_as_of`` on the shadow's DUE date.  Returns None for any
-    # shadow that is not an auto-derived loan payment (or when the operator
-    # typed an actual, handled above), leaving the estimate / typed value
-    # untouched.
-    if actual_amount is None:
-        actual_amount = loan_payment_service.live_loan_payment_amount(
-            txn, txn.scenario_id,
-        )
-
-    if actual_amount is not None:
-        svc_kwargs["actual_amount"] = actual_amount
-
-    try:
-        transfer_service.update_transfer(
-            txn.transfer_id, current_user.id, **svc_kwargs
-        )
-        db.session.commit()
-    except StaleDataError:
-        logger.info(
-            "Stale-data conflict on mark_done shadow id=%d", txn_id,
-        )
-        return _stale_transaction_response(txn_id, target)
-    except IntegrityError:
-        return _error_transaction_response(
-            txn_id, _INVALID_REFERENCE_MSG, target,
-        )
-    except ValidationError as exc:
-        # transfer_service.update_transfer runs the transition through
-        # the state machine (commit C-21).  A mark-done request against
-        # a Cancelled or Settled transfer shadow surfaces here as a
-        # designed 400 fragment instead of crashing the request.
-        return _error_transaction_response(txn_id, str(exc), target)
-    db.session.refresh(txn)
-    response = render_transaction_cell(txn)
-    return response, 200, {"HX-Trigger": "gridRefresh"}
-
-
 def _mark_done_regular(txn, txn_id, status_id, actual_amount, target):
     """Settle a regular (non-shadow) transaction.
 
@@ -676,7 +547,7 @@ def _mark_done_regular(txn, txn_id, status_id, actual_amount, target):
     # ``transaction_service.settle_from_entries`` so the manual mark-done
     # path and the carry-forward envelope branch (Phase 4) share a single
     # source of truth for "settle a tracked row at sum(entries)."  The
-    # helper writes ``status_id``, ``paid_at``, and ``actual_amount``
+    # helper writes ``status_id``, ``settled_on``, and ``actual_amount``
     # together; the route does not need to set them itself in this branch.
     if txn.tracks_purchases and txn.entries:
         try:
@@ -685,7 +556,7 @@ def _mark_done_regular(txn, txn_id, status_id, actual_amount, target):
             return _error_transaction_response(txn_id, str(exc), target)
     else:
         # Manual settle: route the status flip through the single status seam
-        # (state-machine check + status_id + paid_at stamp + status expire).  The
+        # (state-machine check + status_id + settled_on stamp + status expire).  The
         # envelope branch above reaches the same seam via
         # ``settle_from_entries``.  Only Projected (or the identity edge from
         # Paid/Received) can transition into Paid/Received; an illegal move
@@ -893,47 +764,6 @@ def unmark_credit(txn_id):
     return response, 200, {"HX-Trigger": "gridRefresh"}
 
 
-def _cancel_shadow(txn, txn_id, cancelled_id):
-    """Cancel a transfer shadow through the transfer service.
-
-    Cancels the parent transfer and both shadows atomically (the
-    transfer service owns the shadow invariants); the route never
-    mutates a shadow directly.
-
-    Args:
-        txn: The shadow Transaction being cancelled.
-        txn_id: The shadow's id, for stale-conflict logging.
-        cancelled_id: The Cancelled status id.
-
-    Returns:
-        A Flask response tuple: the refreshed cell + ``gridRefresh`` on
-        success, a 409 conflict cell on a concurrent commit, or a 400
-        when the state machine rejects cancelling a settled transfer.
-    """
-    try:
-        transfer_service.update_transfer(
-            txn.transfer_id, current_user.id,
-            status_id=cancelled_id,
-        )
-        db.session.commit()
-    except StaleDataError:
-        logger.info(
-            "Stale-data conflict on cancel_transaction shadow id=%d",
-            txn_id,
-        )
-        return _stale_transaction_response(txn_id)
-    except ValidationError as exc:
-        # transfer_service runs the transition through the state
-        # machine.  An attempt to cancel a Paid/Received/Settled
-        # transfer surfaces here as a designed 400 fragment instead of
-        # crashing the request -- the transfer-service path was wired
-        # by commit C-21; this clause is the route's translation.
-        return _error_transaction_response(txn_id, str(exc))
-    db.session.refresh(txn)
-    response = render_transaction_cell(txn)
-    return response, 200, {"HX-Trigger": "gridRefresh"}
-
-
 @transactions_bp.route("/transactions/<int:txn_id>/cancel", methods=["POST"])
 @login_required
 @require_owner
@@ -957,11 +787,11 @@ def cancel_transaction(txn_id):
     # --- End guard ---
 
     # Route the cancel through the single status seam (state-machine check +
-    # status_id + paid_at).  Cancelled is reachable only from Projected (or the
+    # status_id + settled_on).  Cancelled is reachable only from Projected (or the
     # Cancelled identity edge for idempotent re-submits); a direct done ->
     # cancelled or settled -> cancelled would erase the paid/archived audit
     # trail and raises ValidationError -> 400.  Cancelled is non-settled, so the
-    # seam leaves paid_at clear.  Audit reference: F-047 / F-161 follow-up to
+    # seam leaves settled_on clear.  Audit reference: F-047 / F-161 follow-up to
     # commit C-21.
     try:
         status_seam.apply_status_change(txn, cancelled_id)

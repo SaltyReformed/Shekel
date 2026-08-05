@@ -1,12 +1,18 @@
 """Tests for pay-period CRUD slice (a): the bounded full reset.
 
 ``reset_pay_periods`` is the highest-risk operation in the feature: it
-deletes the user's ENTIRE schedule -- including the account anchor period
-and every historical period, which regenerate can never touch -- and
-rebuilds it from a corrected start, re-anchoring each account onto the new
-schedule.  It clears the anchor FK landmine by deferring the FK to commit
-(``SET CONSTRAINTS ... DEFERRED``): the old anchor period is deleted and
-each account re-pointed inside ONE transaction, validated only at commit.
+deletes the user's ENTIRE schedule -- including every historical period,
+which regenerate can never touch -- and rebuilds it from a corrected start.
+
+**It no longer re-anchors anything, and the FK it used to defer is gone**
+(rulings R-EH and R-EO, plan step X-f1c3c).  This docstring described the
+old machinery: the account carried a ``current_anchor_period_id`` and the
+assertion a ``pay_period_id``, so the reset had to delete the anchor period
+and re-point every account inside ONE transaction with the FK deferred to
+commit (``SET CONSTRAINTS ... DEFERRED``).  Both columns are deleted.  A
+balance assertion is now untouchable by a schedule operation, so the reset
+deletes periods, rebuilds, and re-derives the postings -- there is no window
+in which the schema is inconsistent and nothing to defer.
 
 Bounded for safety: it refuses if the user has ANY settled transaction.
 
@@ -64,6 +70,7 @@ from tests._test_helpers import (
     make_transfer_template,
     seam_cash_balance_at,
 )
+from app.services import cash_ledger
 
 
 # Pinned "today".  The rebuilt schedules below start 2026-06-05 at a 14-day
@@ -169,19 +176,26 @@ def _make_every_n_template(db_session, seed_user, start_period, interval_n=2):
 class TestResetHappyPath:
     """Reset wipes everything (incl. the anchor period) and rebuilds."""
 
-    def test_wipes_all_including_anchor_and_reanchors(self, app, db, seed_user):
-        """The old anchor period is deleted; the account re-anchors anew.
+    def test_wipes_all_and_the_balance_survives(self, app, db, seed_user):
+        """Every old period is deleted and the asserted balance is untouched.
 
-        Proves the deferred-FK path end to end: the account's anchor
-        period (the 2024 bootstrap) is among the deleted rows, yet the
-        commit succeeds because the FK is validated only after the account
-        has been re-pointed at a live new period.
+        It proved the DEFERRED-FK path end to end: the account's anchor period
+        was among the deleted rows, and the commit succeeded only because the
+        FK was validated after the account had been re-pointed.  Rulings R-EH
+        and R-EO deleted both the account's anchor column and the assertion's
+        pay period, so there is no FK to defer, nothing to re-point, and no
+        window in which the schema is inconsistent.  What is worth proving is
+        what the deferral existed to protect: the user's balance comes through
+        a schedule rebuild unchanged.
         """
         with app.app_context():
             user_id = seed_user["user"].id
             _seed_old_schedule(db.session, seed_user)
             account = seed_user["account"]
-            old_anchor_period_id = account.current_anchor_period_id
+            old_period_ids = {
+                p.id for p in pay_period_service.get_all_periods(user_id)
+            }
+            balance_before = cash_ledger.resolve_anchor(account).balance
 
             new_periods = pay_period_admin.reset_pay_periods(
                 user_id, new_start_date=_NEW_START, num_periods=6,
@@ -189,51 +203,87 @@ class TestResetHappyPath:
             )
             db.session.commit()
 
-            # Whole schedule rebuilt from index 0; old anchor period gone.
+            # Whole schedule rebuilt from index 0; every old period gone.
             assert _all_indices(user_id) == {0, 1, 2, 3, 4, 5}
             assert [p.period_index for p in new_periods] == [0, 1, 2, 3, 4, 5]
-            live_ids = {p.id for p in new_periods}
-            assert old_anchor_period_id not in live_ids
-            assert db.session.get(PayPeriod, old_anchor_period_id) is None
+            for old_id in old_period_ids:
+                assert db.session.get(PayPeriod, old_id) is None
 
-            # Account re-anchored to a live new period, balance preserved.
+            # The asserted balance is untouched by the rebuild.
             account = db.session.get(Account, account.id)
-            assert account.current_anchor_period_id in live_ids
-            assert account.current_anchor_balance == Decimal("1000.00")
-            # The anchor is the period containing today (index 0 here).
-            assert account.current_anchor_period_id == new_periods[0].id
+            assert cash_ledger.resolve_anchor(account).balance == balance_before
+            assert balance_before == Decimal("1000.00")
 
             assert_pay_period_invariants(db.session, user_id)
             assert all(r.passed for r in check_balance_anomalies(db.session))
             assert all(r.passed for r in check_referential_integrity(db.session))
 
-    def test_fresh_origination_history_row_written(self, app, db, seed_user):
-        """The wipe clears old anchor history; reset writes one fresh row.
+    def test_the_reset_preserves_every_balance_assertion(
+        self, app, db, seed_user,
+    ):
+        """A schedule rebuild does not touch what the user said their bank held.
 
-        The cascade deletes the old ``AccountAnchorHistory`` rows along
-        with their pay periods, so after reset the account has exactly one
-        history row -- the new origination, against the new anchor period.
+        **This test asserted the OPPOSITE until ruling R-EO** (plan step
+        X-f1c3b), and the inversion is the finding.  It read: "the cascade
+        deletes the old ``AccountAnchorHistory`` rows along with their pay
+        periods, so after reset the account has exactly one history row -- the
+        new origination".  That was a true description of a defect.  A balance
+        assertion is a fact about a BANK -- "on day D this account held $B" --
+        and it stays true however the user re-schedules their paychecks;
+        ``account_anchor_history.pay_period_id`` filed it under a budgeting
+        artifact on an ``ON DELETE CASCADE`` FK, so a reset destroyed it.
+        Measured on the developer's production data before the column was
+        dropped: **all 78 assertions deleted, 9 fabricated
+        ``"origination (pay-period reset)"`` rows written in their place.**
+
+        The row-for-row comparison is what makes this falsifiable: asserting
+        only a COUNT would pass against a reset that deleted every real
+        assertion and wrote the same number of synthetic ones, which is very
+        nearly what the old behaviour did.
         """
         with app.app_context():
             user_id = seed_user["user"].id
             _seed_old_schedule(db.session, seed_user)
             account = seed_user["account"]
 
-            new_periods = pay_period_admin.reset_pay_periods(
+            def _assertions():
+                return sorted(
+                    (row.id, row.anchor_balance, row.observed_on)
+                    for row in db.session.query(AccountAnchorHistory)
+                    .filter_by(account_id=account.id)
+                )
+
+            before = _assertions()
+            assert before, "fixture must write at least one assertion"
+
+            pay_period_admin.reset_pay_periods(
                 user_id, new_start_date=_NEW_START, num_periods=4,
                 cadence_days=14,
             )
             db.session.commit()
 
-            rows = (
-                db.session.query(AccountAnchorHistory)
-                .filter_by(account_id=account.id)
-                .all()
+            after = _assertions()
+            # **The named diagnostic MOVED ONTO this assertion at plan step
+            # X-f1e2**, and nothing is ungraded by the move.  A second line
+            # used to scan the post-reset snapshot for a row whose ``notes``
+            # read ``"origination (pay-period reset)"`` -- the exact string the
+            # old behaviour fabricated -- purely so a failure would NAME the
+            # defect; its own comment recorded that it was a diagnostic and not
+            # an independent grader, because the row-for-row equality here
+            # already fails for any fabricated row and fails first.  Ruling
+            # R-ES deleted the ``notes`` column, so the string cannot be
+            # searched for; the message it carried is stated here instead.
+            # What is lost is the ability to distinguish "fabricated by the
+            # reset" from "fabricated by something else", which no assertion
+            # in this test ever made use of.
+            assert after == before, (
+                "the reset changed this account's assertion history.  Measured "
+                "on production before ruling R-EO: a reset deleted all 78 "
+                "assertions and wrote 9 fabricated replacements, because the "
+                "row was filed under a pay period on a CASCADE FK.  A balance "
+                "assertion is a fact about a BANK and survives any schedule "
+                f"rebuild.\nbefore={before}\nafter ={after}"
             )
-            assert len(rows) == 1
-            assert rows[0].pay_period_id == new_periods[0].id
-            assert rows[0].anchor_balance == Decimal("1000.00")
-            assert rows[0].notes == "origination (pay-period reset)"
 
     def test_balance_preserved_and_correct_after_reset(self, app, db, seed_user):
         """Disciplines 2 + 3: anchor balance preserved, balances recompute.
@@ -284,7 +334,6 @@ class TestResetHappyPath:
             make_expense_template(db.session, seed_user, amount="1200.00")
             savings = create_savings_account(
                 seed_user, db.session, "Savings", Decimal("500.00"),
-                anchor_period_id=seed_user["bootstrap_period"].id,
             )
             make_transfer_template(db.session, seed_user, savings)
             db.session.commit()
@@ -412,7 +461,6 @@ class TestResetHappyPath:
             checking = seed_user["account"]
             savings = create_savings_account(
                 seed_user, db.session, "Savings", Decimal("500.00"),
-                anchor_period_id=seed_user["bootstrap_period"].id,
             )
             db.session.commit()
 
@@ -422,13 +470,10 @@ class TestResetHappyPath:
             )
             db.session.commit()
 
-            live_ids = {p.id for p in new_periods}
             checking = db.session.get(Account, checking.id)
             savings = db.session.get(Account, savings.id)
-            assert checking.current_anchor_period_id in live_ids
-            assert savings.current_anchor_period_id in live_ids
-            assert checking.current_anchor_balance == Decimal("1000.00")
-            assert savings.current_anchor_balance == Decimal("500.00")
+            assert cash_ledger.resolve_anchor(checking).balance == Decimal("1000.00")
+            assert cash_ledger.resolve_anchor(savings).balance == Decimal("500.00")
             assert_pay_period_invariants(db.session, user_id)
             assert all(r.passed for r in check_balance_anomalies(db.session))
             assert all(r.passed for r in check_referential_integrity(db.session))
@@ -500,7 +545,6 @@ class TestResetRefusals:
 
             before_ids = {p.id for p in periods}
             account = seed_user["account"]
-            before_anchor = account.current_anchor_period_id
 
             with pytest.raises(PayPeriodResetBlocked) as exc_info:
                 pay_period_admin.reset_pay_periods(
@@ -514,7 +558,6 @@ class TestResetRefusals:
             assert after_ids == before_ids  # nothing deleted
             assert db.session.get(Transaction, settled.id) is not None
             account = db.session.get(Account, account.id)
-            assert account.current_anchor_period_id == before_anchor
             assert_pay_period_invariants(db.session, user_id)
 
     def test_soft_deleted_settled_does_not_block(self, app, db, seed_user):
@@ -556,7 +599,6 @@ class TestResetRefusals:
             _seed_old_schedule(db.session, seed_user)
             before_ids = {p.id for p in pay_period_service.get_all_periods(user_id)}
             account = seed_user["account"]
-            before_anchor = account.current_anchor_period_id
 
             with pytest.raises(ValidationError):
                 pay_period_admin.reset_pay_periods(
@@ -568,7 +610,6 @@ class TestResetRefusals:
             after_ids = {p.id for p in pay_period_service.get_all_periods(user_id)}
             assert after_ids == before_ids
             account = db.session.get(Account, account.id)
-            assert account.current_anchor_period_id == before_anchor
             assert_pay_period_invariants(db.session, user_id)
 
 
@@ -645,13 +686,20 @@ class TestResetResyncsAccountOpenings:
 
     The Step-5 analogue of the loan re-sync above (plan Section 3.3, point
     4): a non-loan account's opening correction carries a ``pay_period_id``
-    and CASCADE-deletes with the wiped periods -- along with its
-    ``AccountAnchorHistory`` rows -- yet ``_reanchor_accounts`` stages one
-    fresh origination row per account, so the per-user account re-sync must
-    re-derive each opening onto the rebuilt schedule in the same
+    and CASCADE-deletes with the wiped periods, so the per-user account
+    re-sync must re-derive each opening onto the rebuilt schedule in the same
     transaction.  Without it every non-loan ledger reads empty (the
     absolute invariant silently degrades to changes-only) until the
     account's next anchor event.
+
+    **What it re-derives FROM changed at ruling R-EO** (plan step X-f1c3c).
+    The wipe used to take the account's ``AccountAnchorHistory`` rows with it
+    -- they carried a ``pay_period_id`` on a CASCADE FK -- and a
+    ``_reanchor_accounts`` pass staged one fabricated origination row per
+    account for this re-sync to read.  The assertion carries no period now, so
+    the wipe cannot reach it and the re-sync reads the observations that were
+    always there.  ``_reanchor_accounts`` is deleted; this docstring named it
+    until X-f1c3c.
     """
 
     def test_openings_reposted_and_reconcile_after_reset(
@@ -694,7 +742,37 @@ class TestResetResyncsAccountOpenings:
                 .all()
             )
             assert len(openings) == 1
-            assert openings[0].pay_period_id == checking.current_anchor_period_id
+            # The opening correction books in the period CONTAINING the
+            # assertion's own day (ruling R-EA: the period is DERIVED from the
+            # day, never read beside it).  The containing period is resolved
+            # HERE from the dates, not by calling the resolver the writer
+            # calls, so the two cannot agree by sharing one implementation.
+            #
+            # A first version of this assertion only checked membership in the
+            # set of all live periods -- true of any of the six, so it would
+            # have passed against a correction filed in the wrong one.
+            rebuilt = pay_period_service.get_all_periods(user_id)
+            opening_assertion = (
+                db.session.query(AccountAnchorHistory)
+                .filter_by(account_id=checking_id)
+                .order_by(AccountAnchorHistory.observed_on.asc())
+                .first()
+            )
+            # The fixture's Checking is asserted on 2024-01-05 and the rebuilt
+            # schedule starts 2026-06-05, so the assertion's day precedes EVERY
+            # period.  ``resolve_anchor_pay_period`` files such a correction in
+            # the user's EARLIEST period -- index 0 -- so the reader, which
+            # bounds by period start, counts it from the first period on.
+            assert all(
+                opening_assertion.observed_on < p.start_date for p in rebuilt
+            ), (
+                f"this test's expected period is the no-containing-period "
+                f"branch; the assertion ({opening_assertion.observed_on}) must "
+                f"precede every rebuilt period"
+            )
+            earliest = min(rebuilt, key=lambda p: p.period_index)
+            assert earliest.period_index == 0
+            assert openings[0].pay_period_id == earliest.id
             assert posting_service.account_posting_total(
                 checking.id, scenario_id,
             ) == Decimal("1000.00")

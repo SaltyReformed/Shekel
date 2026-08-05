@@ -1684,7 +1684,6 @@ class TestReturnRateClarity:
                     account_type_id=custom_type.id,
                     name="My 403(b)",
                     anchor_balance=Decimal("50000"),
-                    anchor_period_id=seed_periods_today[0].id,
                 ),
             )
             db.session.add(acct)
@@ -1734,7 +1733,6 @@ class TestReturnRateClarity:
                     account_type_id=custom_type.id,
                     name="My Roth Solo 401(k)",
                     anchor_balance=Decimal("25000"),
-                    anchor_period_id=seed_periods_today[0].id,
                 ),
             )
             db.session.add(acct)

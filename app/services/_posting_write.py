@@ -7,7 +7,7 @@ below every writer, so the correction packages can import them without
 importing :mod:`app.services.posting_service` itself.  It also held the entry's
 civil-date rule as ``_utc_civil_date`` until ruling R-DH (2026-07-31) moved that
 day to the USER's timezone; the derivation now lives once in
-:func:`app.utils.dates.to_display_civil_date`, which every writer and both folds
+:func:`app.utils.balance_predicates.settled_day`, which every writer and both folds
 share.
 
 Why a leaf and not the writer module: Build-Order Step 5's effect-time

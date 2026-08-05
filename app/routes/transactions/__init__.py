@@ -24,8 +24,19 @@ Module map:
 * :mod:`app.routes.transactions.forms` -- read-only GET HTMX partials.
 * :mod:`app.routes.transactions.create` -- create handlers.
 * :mod:`app.routes.transactions.mutations` -- PATCH/DELETE edit + the
-  mark-done / credit / cancel status workflow (co-located so their shared
-  transfer-shadow parallel code stays intra-file).
+  mark-done / credit / cancel status workflow, for REGULAR (non-shadow)
+  rows (co-located so their shared apply / commit / error-tail parallel
+  code stays intra-file).
+* :mod:`app.routes.transactions._shadow_mutations` -- the three branches
+  where those same routes land on a transfer SHADOW and re-express the
+  request as a ``transfer_service.update_transfer`` call.  Split out at
+  plan step X-f1c when ``mutations`` hit the 1000-line ceiling; the three
+  moved TOGETHER, so their parallelism with each other stays intra-file
+  rather than becoming cross-file ``duplicate-code``.  **This entry and
+  the parenthetical above are the correction a neutral review demanded:
+  the map still credited ``mutations`` with co-locating the shadow code
+  the same commit had moved out of it, and did not list this module at
+  all.**
 * :mod:`app.routes.transactions.carry_forward` -- carry-forward routes.
 """
 

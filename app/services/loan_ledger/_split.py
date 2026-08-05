@@ -135,7 +135,7 @@ class LoanPaymentSplit:
     cash paid (not the scheduled payment) -- see :func:`.._fold.walk_loan_ledger`.
     Carries the loan-side income shadow it derives from (the posting writer books
     its correction under that shadow's ``transaction_id``, and reads the shadow's
-    period / scenario / owner / ``paid_at`` for the entry header) plus the four
+    period / scenario / owner / ``settled_on`` for the entry header) plus the four
     economic parts the cash divides into, all signed for a debit-positive ledger.
 
     Attributes:

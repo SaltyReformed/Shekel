@@ -33,15 +33,13 @@ deletes from ``budget.accounts`` still cascade through the FK action,
 since those run outside the ORM and are the documented disposal path
 for an entire account's history.
 
-Same-day duplicate prevention follows the
-:class:`AccountAnchorHistory` precedent: a functional unique
-expression index ``uq_loan_anchor_events_acct_date_bal_day`` covers
-``(account_id, anchor_date, anchor_balance,
-((created_at AT TIME ZONE 'UTC')::date))`` so that a network retry
-or double-click on the Save button cannot create two literal-duplicate
-rows on the same calendar day while still permitting two legitimate
-trueups on the same day with different balances (the user corrected
-their initial typo and re-saved).
+Duplicate-submit prevention follows the :class:`AccountAnchorHistory`
+precedent, and since ruling **R-EQ** (plan step X-f1c4b) that precedent is a
+WRITE-DOOR rule rather than a unique index: an event is appended only when it
+differs from the event that already governs its source.  See
+:func:`app.services.anchor_service._append_loan_anchor_and_sync` for the rule
+and the ``__table_args__`` comment below for what the deleted index could not
+express.
 """
 
 from sqlalchemy import event
@@ -72,8 +70,10 @@ class LoanAnchorEvent(AccountScopedMixin, CreatedAtMixin, db.Model):
       the rest of the schema.
     * ``account_id`` CASCADE-on-delete -- deleting a loan account
       removes its anchor history with it.  No orphan-event rows.
-    * Unique functional index prevents same-day duplicate inserts
-      (see the module docstring for the exact expression).
+    * No uniqueness guard, deliberately (ruling R-EQ) -- a duplicate submit
+      is refused at the write door, which can compare against what governs;
+      an index over the row's values cannot.  See the ``__table_args__``
+      comment below.
     """
 
     __tablename__ = "loan_anchor_events"
@@ -82,48 +82,41 @@ class LoanAnchorEvent(AccountScopedMixin, CreatedAtMixin, db.Model):
             "anchor_balance >= 0",
             name="ck_loan_anchor_events_balance_nonneg",
         ),
-        # Forward-scan index for the resolver's "latest anchor per
-        # account" lookup; the unique index below already covers
-        # ``(account_id, anchor_date, ...)`` but its postgres-text
-        # expression term keeps it from doubling as a clean range
-        # scan over (account_id, anchor_date).  This secondary
-        # ascending index serves the ORDER BY pattern.
+        # Forward-scan index for the resolver's "latest anchor per account"
+        # lookup and for the write door's governing-event query.  It shared the
+        # table with a unique expression index over ``(account_id, anchor_date,
+        # anchor_balance, utc_day(created_at))`` until ruling R-EQ deleted that
+        # one (plan step X-f1c4b); this is now the only index serving the
+        # ORDER BY pattern, which is what it was always doing -- the deleted
+        # index's postgres-text expression term kept it from doubling as a clean
+        # range scan over ``(account_id, anchor_date)``.
         db.Index(
             "idx_loan_anchor_events_account",
             "account_id", "anchor_date",
         ),
-        # Same-day duplicate prevention, the loan twin of
-        # ``uq_anchor_history_account_period_balance_day`` on
-        # :class:`AccountAnchorHistory`.  **It keys the BUSINESS date
-        # (``anchor_date``) and the RECORDING day separately, and the
-        # checking twin now keys only the business date
-        # (``observed_on``)** -- not a drift, but the difference the two
-        # tables' shapes force: an ``anchor_date`` is user-supplied and
-        # re-assertable, so a second assertion of the same date and
-        # balance on a LATER recording day is a legitimate correction
-        # here, while a checking assertion has one business day per
-        # submission and a repeat of it is a double-submit
-        # (finding N-133 / F12).
+        # **There is no uniqueness guard on this table, and that is ruling
+        # R-EQ** (plan step X-f1c4b).  It carried
+        # ``uq_loan_anchor_events_acct_date_bal_day`` over ``(account_id,
+        # anchor_date, anchor_balance, ((created_at AT TIME ZONE 'UTC')::date))``
+        # to absorb a double-click on the dashboard's "Record balance" button,
+        # the loan twin of a guard ``AccountAnchorHistory`` also carried.
         #
-        # **That asymmetry EXPIRES at plan step 2's second half.**  When the
-        # checking true-up form gains its own date field, ``observed_on``
-        # becomes user-supplied and re-assertable exactly as ``anchor_date``
-        # is, and the checking index will then reject the same legitimate
-        # correction this one permits.  Re-key it back onto
-        # ``(observed_on, utc_day(created_at))`` at that step -- recorded here
-        # because this comment is the justification a reader will find first.
+        # A content key cannot tell a transport retry from a deliberate
+        # re-assertion -- their values are identical by construction -- so it
+        # refused the correction: re-assert a balance for a date after
+        # correcting it earlier on the same recording day, and the write was
+        # rejected while the route flashed "already recorded".  The rule now
+        # lives at the write door
+        # (``anchor_service._append_loan_anchor_and_sync``), which compares the
+        # submission against the event that GOVERNS for its own source and so
+        # answers exactly.
         #
-        # Truncating ``created_at`` (timestamptz) to a civil date requires
-        # pinning the timezone via ``AT TIME ZONE 'UTC'`` because PostgreSQL
-        # refuses to use the bare ``::date`` cast in an index -- the cast
-        # depends on the session's TimeZone and is not IMMUTABLE.  UTC matches
-        # ``CreatedAtMixin``'s storage convention exactly.
-        db.Index(
-            "uq_loan_anchor_events_acct_date_bal_day",
-            "account_id", "anchor_date", "anchor_balance",
-            db.text("((created_at AT TIME ZONE 'UTC')::date)"),
-            unique=True,
-        ),
+        # An earlier version of this comment scheduled the OPPOSITE fix: it
+        # said the checking twin's asymmetry would expire when the checking
+        # form gained its own date field, and directed a re-key back onto
+        # ``(observed_on, utc_day(created_at))``.  That would have narrowed the
+        # false refusal to one recording day rather than removing it; the trace
+        # for that step measured the residue and replaced the mechanism instead.
         {"schema": "budget"},
     )
 

@@ -19,7 +19,6 @@ from app.utils.dates import (
     attribution_date,
     display_today,
     months_between,
-    to_display_civil_date,
     to_display_date,
     to_display_tz,
 )
@@ -187,49 +186,6 @@ class TestDisplayToday:
 
         monkeypatch.setattr("app.utils.dates.datetime", _FixedDateTime)
         assert display_today() == date(2026, 6, 12)
-
-
-class TestToDisplayCivilDate:
-    """Pin the L9 tax-attribution helper: display-tz civil date, or fallback.
-
-    ``to_display_civil_date`` is the reading-boundary counterpart of the
-    storage-side UTC ``entry_date`` rule: tax-year and calendar-window
-    readers attribute a settle to the user's wall-clock day (the L9
-    decision, 2026-07-03), falling back to the source's pay-period start
-    when ``paid_at`` was never recorded or was cleared by a revert.
-    """
-
-    def test_new_years_eve_evening_settle_stays_in_the_earlier_year(self):
-        """THE L9 CASE: 8:05 PM EST Dec 31 (Jan 1 in UTC) attributes to Dec 31.
-
-        A settle clicked 2026-12-31 20:05 Eastern is stored as
-        2027-01-01 01:05 UTC.  The stored ``entry_date`` books Jan 1 (the
-        UTC storage rule); THIS helper returns the Dec 31 tax day.
-        """
-        stored_utc = datetime(2027, 1, 1, 1, 5, tzinfo=timezone.utc)
-        assert to_display_civil_date(
-            stored_utc, date(2027, 2, 1),
-        ) == date(2026, 12, 31)
-
-    def test_daytime_settle_keeps_its_day(self):
-        """A daytime instant maps to the same civil day in both zones."""
-        stored_utc = datetime(2026, 3, 15, 12, 0, tzinfo=timezone.utc)
-        assert to_display_civil_date(
-            stored_utc, date(2026, 1, 1),
-        ) == date(2026, 3, 15)
-
-    def test_null_paid_at_falls_back_to_the_given_date(self):
-        """A missing ``paid_at`` returns the caller's period-start fallback."""
-        assert to_display_civil_date(
-            None, date(2026, 4, 10),
-        ) == date(2026, 4, 10)
-
-    def test_naive_instant_assumed_utc(self):
-        """A naive instant follows the storage convention (UTC), not local."""
-        # Naive 2027-01-01 01:05 == UTC -> Eastern Dec 31.
-        assert to_display_civil_date(
-            datetime(2027, 1, 1, 1, 5), date(2027, 2, 1),
-        ) == date(2026, 12, 31)
 
 
 class TestAttributionDate:

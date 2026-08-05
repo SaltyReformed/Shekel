@@ -73,6 +73,8 @@ its display label derives from the live ``account.name`` (see
 
 import logging
 
+from sqlalchemy.exc import IntegrityError
+
 from app import ref_cache
 from app.enums import (
     AcctCategoryEnum,
@@ -89,6 +91,7 @@ from app.services.account_projection import (
     classify_account,
 )
 from app.utils import archive_helpers
+from app.utils.db_errors import is_unique_violation
 
 
 logger = logging.getLogger(__name__)
@@ -176,6 +179,100 @@ def _ledger_class_id_for_account(account: Account) -> int:
         Liability class.
     """
     return ledger_class_id_for_category(account.account_type.category_id)
+
+
+# Every partial-unique index that makes a ledger account's NATURAL key unique,
+# read off the live catalog rather than recalled: ``\di budget.ledger_accounts``
+# on a production clone 2026-08-04.  They are the arbiters
+# :func:`_add_or_reuse` defers to when two concurrent requests both find no row
+# and both try to create one; naming them means an unrelated IntegrityError
+# still propagates rather than being read as "someone else won the race".
+# Renaming any of them requires a coordinated edit here and in its migration.
+_LEDGER_ACCOUNT_NATURAL_KEYS = (
+    "uq_ledger_accounts_account_kind",
+    "uq_ledger_accounts_category",
+    "uq_ledger_accounts_loan",
+    "uq_ledger_accounts_uncategorized",
+)
+
+
+def _add_or_reuse(ledger_account: LedgerAccount, find_existing) -> LedgerAccount:
+    """Insert *ledger_account*, or return the row a concurrent request won with.
+
+    **Every get-or-create in this module that two requests can RACE FOR is a
+    check-then-INSERT, and that is a race.**  Two requests can both find no row
+    for a natural key and both try to create one; the loser's flush hits
+    ``uq_ledger_accounts_account_kind`` (or its category twin) and, uncaught,
+    surfaces as a 500 on an operation that in fact succeeded -- the winner's
+    row is exactly the row the loser wanted.  Three resolvers consume this:
+    the anchor-equity, category and loan ones.
+
+    **``create_ledger_account_for_account`` is deliberately NOT converted, and
+    an earlier version of this docstring said "every get-or-create in this
+    module" without the qualifier.**  Its only caller is
+    ``account_service.create_account``, immediately after INSERTing a brand-new
+    ``accounts`` row, so its natural key ``(account_id, linked kind)`` carries
+    an id no other transaction can hold: two concurrent creates make two
+    different accounts and cannot collide.  Wrapping it would be a SAVEPOINT
+    for a state the database cannot reach.
+
+    It was unreachable on the anchor-equity path until plan step X-f1c3c,
+    because the C-17 optimistic lock made one of two concurrent true-ups 409
+    before either reached the chart resolver.  Ruling R-EN deleted that lock
+    (an assertion history is append-only, so there is nothing to contend for),
+    which is what made the race REACHABLE and is how it was found -- by the
+    concurrency test, not by a review.  The lock was never what made this
+    correct, it was only what hid it: the same race is reachable on the
+    category and loan resolvers through any two concurrent settles.
+
+    The INSERT runs in a SAVEPOINT so a lost race does not poison the caller's
+    transaction, and the re-read is the caller's own lookup rather than a
+    second query written here -- so "which row is THE row for this key" has one
+    definition per resolver, not two.
+
+    Args:
+        ledger_account: The unflushed row to insert.
+        find_existing: The caller's zero-argument lookup for the same natural
+            key, re-run after a lost race.
+
+    Returns:
+        The flushed new row, or the equal row a concurrent request committed.
+
+    Raises:
+        IntegrityError: When the violation is NOT one of this table's natural
+            keys -- a different constraint failed and must not be swallowed.
+        RuntimeError: When the natural key rejected the insert and the re-read
+            then finds nothing.  Not reachable through the database's own
+            semantics (the row that rejected us is visible once our savepoint
+            is gone), so it is a fail-loud trap for a resolver whose lookup and
+            whose INSERT disagree about the key.
+    """
+    try:
+        with db.session.begin_nested():
+            db.session.add(ledger_account)
+            db.session.flush()
+    except IntegrityError as exc:
+        if not any(
+            is_unique_violation(exc, name)
+            for name in _LEDGER_ACCOUNT_NATURAL_KEYS
+        ):
+            raise
+        existing = find_existing()
+        if existing is None:
+            raise RuntimeError(
+                "ledger_account_service: a natural-key unique violation "
+                f"rejected the insert for user_id={ledger_account.user_id}, "
+                f"kind_id={ledger_account.kind_id}, but the re-read found no "
+                "row -- the resolver's lookup and its INSERT disagree about "
+                "the key."
+            ) from exc
+        logger.info(
+            "Reused ledger account id=%d after a concurrent create "
+            "(user_id=%d, kind_id=%d)",
+            existing.id, existing.user_id, existing.kind_id,
+        )
+        return existing
+    return ledger_account
 
 
 def create_ledger_account_for_account(account: Account) -> LedgerAccount:
@@ -466,19 +563,26 @@ def get_or_create_category_ledger_account(
         _FALLBACK_LEDGER_ACCOUNT_NAMES[ledger_class] if is_fallback
         else _category_display_name(user_id, category_id)
     )
-    ledger_account = LedgerAccount(
-        user_id=user_id,
-        class_id=class_id,
-        kind_id=ref_cache.ledger_account_kind_id(kind_member),
-        account_id=None,
-        category_id=category_id,
-        is_fallback=is_fallback,
-        name=name,
+    ledger_account = _add_or_reuse(
+        LedgerAccount(
+            user_id=user_id,
+            class_id=class_id,
+            kind_id=ref_cache.ledger_account_kind_id(kind_member),
+            account_id=None,
+            category_id=category_id,
+            is_fallback=is_fallback,
+            name=name,
+        ),
+        lambda: _find_existing_category_ledger_account(
+            user_id, class_id, category_id,
+        ),
     )
-    db.session.add(ledger_account)
-    db.session.flush()
+    # "Resolved", not "Created": :func:`_add_or_reuse` returns the row a
+    # concurrent request won when this one lost the natural-key race, and that
+    # row is not one this call created.  ``_add_or_reuse`` logs the reuse
+    # itself, so the two lines together read correctly either way.
     logger.info(
-        "Created %s ledger account id=%d (user_id=%d, category_id=%s, "
+        "Resolved %s ledger account id=%d (user_id=%d, category_id=%s, "
         "class_id=%d, is_fallback=%s)",
         "Uncategorized fallback" if is_fallback else "category",
         ledger_account.id, user_id, category_id, class_id, is_fallback,
@@ -718,29 +822,34 @@ def get_or_create_anchor_equity_account(
     kind_id = ref_cache.ledger_account_kind_id(
         LedgerAccountKindEnum.ANCHOR_EQUITY,
     )
-    existing = (
-        db.session.query(LedgerAccount)
-        .filter_by(user_id=user_id, account_id=account_id, kind_id=kind_id)
-        .first()
-    )
+
+    def _find_existing():
+        return (
+            db.session.query(LedgerAccount)
+            .filter_by(user_id=user_id, account_id=account_id, kind_id=kind_id)
+            .first()
+        )
+
+    existing = _find_existing()
     if existing is not None:
         return existing
 
     account = _load_non_loan_account(user_id, account_id)
     name = f"{account.name} -- Opening"[:_LEDGER_ACCOUNT_NAME_MAX_LEN]
-    ledger_account = LedgerAccount(
-        user_id=user_id,
-        class_id=ref_cache.ledger_account_class_id(
-            LedgerAccountClassEnum.EQUITY,
+    ledger_account = _add_or_reuse(
+        LedgerAccount(
+            user_id=user_id,
+            class_id=ref_cache.ledger_account_class_id(
+                LedgerAccountClassEnum.EQUITY,
+            ),
+            kind_id=kind_id,
+            account_id=account_id,
+            name=name,
         ),
-        kind_id=kind_id,
-        account_id=account_id,
-        name=name,
+        _find_existing,
     )
-    db.session.add(ledger_account)
-    db.session.flush()
     logger.info(
-        "Created anchor-equity ledger account id=%d (user_id=%d, "
+        "Resolved anchor-equity ledger account id=%d (user_id=%d, "
         "account_id=%d)",
         ledger_account.id, user_id, account_id,
     )
@@ -830,17 +939,22 @@ def get_or_create_loan_ledger_account(
 
     loan = _load_amortizing_loan_account(user_id, loan_account_id)
     name = f"{loan.name} -- {component}"[:_LEDGER_ACCOUNT_NAME_MAX_LEN]
-    ledger_account = LedgerAccount(
-        user_id=user_id,
-        class_id=class_id,
-        kind_id=kind_id,
-        loan_account_id=loan_account_id,
-        name=name,
+    ledger_account = _add_or_reuse(
+        LedgerAccount(
+            user_id=user_id,
+            class_id=class_id,
+            kind_id=kind_id,
+            loan_account_id=loan_account_id,
+            name=name,
+        ),
+        lambda: _find_existing_loan_ledger_account(
+            user_id, loan_account_id, kind_id,
+        ),
     )
-    db.session.add(ledger_account)
-    db.session.flush()
+    # "Resolved", not "Created" -- see the note on the category resolver: a
+    # lost natural-key race returns a row this call did not create.
     logger.info(
-        "Created loan %s ledger account id=%d (user_id=%d, "
+        "Resolved loan %s ledger account id=%d (user_id=%d, "
         "loan_account_id=%d, class_id=%d, kind_id=%d)",
         component, ledger_account.id, user_id, loan_account_id,
         class_id, kind_id,

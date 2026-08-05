@@ -29,7 +29,6 @@ from tests._test_helpers import (
     create_loan_account,
     create_settled_transfer,
     create_transfer,
-    settle_instant_on,
 )
 
 # The suite's frozen today is 2026-03-20.  This loan closes 2026-03-01 -- in the
@@ -44,7 +43,7 @@ def _loan_and_checking(db, seed_user, seed_periods):
         seed_user, db.session, name="Probe Mortgage",
         principal=Decimal("200000.00"), rate=Decimal("0.05000"),
         term=360, origination_date=ORIGINATION, payment_day=1,
-        account_type=AcctTypeEnum.MORTGAGE, anchor_period=seed_periods[0],
+        account_type=AcctTypeEnum.MORTGAGE,
     )
     checking = create_account_of_type(
         seed_user, db.session, "Checking", "Chk",
@@ -115,7 +114,7 @@ class TestTheBoundaryIsInclusive:
             create_settled_transfer(
                 seed_user, db.session, checking, acct, seed_periods[5],
                 amount=Decimal("1200.00"),
-                paid_at=settle_instant_on(date(2026, 3, 18)),
+                settled_on=date(2026, 3, 18),
             )
             db.session.commit()
 
@@ -226,7 +225,7 @@ class TestTheEditPathIsGuardedToo:
         """A rejected edit is atomic -- transfer and BOTH shadows unchanged.
 
         The check runs before any field is applied, the same discipline
-        ``_apply_status_to_all_three`` follows for an illegal status transition.  A
+        ``apply_status_to_all_three`` follows for an illegal status transition.  A
         guard that raised halfway through would leave the three rows disagreeing,
         breaking Transfer Invariant 3 while reporting an error.
 
@@ -424,7 +423,7 @@ class TestTheMoneyItProtects:
             xfer = create_settled_transfer(
                 seed_user, db.session, checking, acct, seed_periods[8],
                 amount=Decimal("1200.00"),
-                paid_at=settle_instant_on(date(2026, 3, 10)),
+                settled_on=date(2026, 3, 10),
             )
             db.session.commit()
             # Plant the pre-origination installment underneath the guard, which

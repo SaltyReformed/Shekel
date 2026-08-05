@@ -449,15 +449,17 @@ class TestTrueUpWiring:
                 db.session, interest_ledger_id, whatif.id,
             ) == Decimal("450.00")
 
-    def test_trueup_duplicate_same_day_is_idempotent(
+    def test_trueup_resubmit_is_idempotent(
         self, app, db, seed_user, seed_periods,
     ):
-        """A same-(date, balance) true-up re-submit is an idempotent no-op.
+        """A re-submit of the governing (date, balance) is an idempotent no-op.
 
-        The shared sync-or-duplicate helper flushes the pending event; the
-        second identical submit trips the same-day unique index, rolls back, and
-        returns DUPLICATE_SAME_DAY, leaving the first commit's correction intact
-        (interest still 450.00, not doubled or lost).
+        The second identical submit matches the governing ``user_trueup``, so
+        the door writes nothing, rolls back and returns UNCHANGED, leaving the
+        first commit's correction intact (interest still 450.00, not doubled or
+        lost).  **It tripped a same-day unique index until plan step X-f1c4b**
+        (ruling R-EQ); what this grades is the LEDGER outcome, which is the same
+        either way and is why the test survived the mechanism change.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -479,7 +481,7 @@ class TestTrueUpWiring:
                 account=loan, anchor_balance=Decimal("90000.00"),
                 anchor_date=date(2026, 1, 15),
             )
-            assert second is AnchorTrueUpOutcome.DUPLICATE_SAME_DAY
+            assert second is AnchorTrueUpOutcome.UNCHANGED
             assert ledger_net(
                 db.session, _interest_ledger(loan).id, scenario_id,
             ) == Decimal("450.00")

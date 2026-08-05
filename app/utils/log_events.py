@@ -355,13 +355,6 @@ EVT_ENTRIES_SETTLED_DAY_RECORDED = _register(
     "User confirmed which outstanding purchases their bank statement shows, "
     "stamping each one's settled_on with the day the balance was observed.",
 )
-EVT_ANCHOR_CACHE_RECONCILED = _register(
-    "anchor_cache_reconciled", BUSINESS,
-    "cash_ledger.resolve_anchor found Account.current_anchor_* "
-    "disagreeing with the latest AccountAnchorHistory row; the history "
-    "row won (E-19 dated source of truth) and the divergence was logged.",
-)
-
 
 # ── Business events: pay periods ───────────────────────────────────
 

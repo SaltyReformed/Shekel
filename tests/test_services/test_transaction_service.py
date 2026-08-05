@@ -12,7 +12,9 @@ deliberately kept small and single-purpose so a regression at any
 contract boundary surfaces with a precise failure message.
 """
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime
+
+from app.utils.dates import display_today
 from decimal import Decimal
 
 import pytest
@@ -122,10 +124,10 @@ class TestSettleFromEntriesExpense:
     def test_expense_with_entries_sets_done_and_sum(
         self, app, db, seed_user, seed_periods,
     ):
-        """Expense + multiple entries: status=DONE, actual=sum, paid_at set.
+        """Expense + multiple entries: status=DONE, actual=sum, day recorded.
 
         Setup: $150 + $250 = $400 of debit entries against a $500 envelope.
-        Expected: status_id == DONE, actual_amount == 400.00, paid_at set.
+        Expected: status_id == DONE, actual_amount == 400.00, day recorded.
         """
         with app.app_context():
             template = _make_envelope_template(seed_user)
@@ -145,7 +147,7 @@ class TestSettleFromEntriesExpense:
             # 150 + 250 = 400
             assert txn.actual_amount == Decimal("400.00")
             assert txn.status_id == ref_cache.status_id(StatusEnum.DONE)
-            assert txn.paid_at is not None
+            assert txn.settled_on is not None
 
     def test_expense_includes_credit_entries(
         self, app, db, seed_user, seed_periods,
@@ -205,7 +207,7 @@ class TestSettleFromEntriesExpense:
             assert txn.actual_amount == Decimal("0.00")
             assert txn.estimated_amount == Decimal("100.00")
             assert txn.status_id == ref_cache.status_id(StatusEnum.DONE)
-            assert txn.paid_at is not None
+            assert txn.settled_on is not None
 
     def test_expense_overspend_records_full_actual(
         self, app, db, seed_user, seed_periods,
@@ -261,7 +263,7 @@ class TestSettleFromEntriesIncome:
     def test_income_with_entries_sets_received(
         self, app, db, seed_user, seed_periods,
     ):
-        """Income + entries: status=RECEIVED, actual=sum, paid_at set."""
+        """Income + entries: status=RECEIVED, actual=sum, day recorded."""
         with app.app_context():
             template = _make_envelope_template(
                 seed_user, txn_type_name="Income", default_amount="2500.00",
@@ -283,21 +285,40 @@ class TestSettleFromEntriesIncome:
             # 1000 + 1500 = 2500
             assert txn.actual_amount == Decimal("2500.00")
             assert txn.status_id == ref_cache.status_id(StatusEnum.RECEIVED)
-            assert txn.paid_at is not None
+            assert txn.settled_on is not None
 
 
-# ── paid_at Handling ─────────────────────────────────────────────────
+# ── Settle-day handling ──────────────────────────────────────────────
 
 
-class TestSettleFromEntriesPaidAt:
-    """The helper accepts an explicit paid_at and falls back to db.func.now()."""
+class TestSettleFromEntriesSettleDay:
+    """The helper records the settle day through the seam, and takes no knob.
 
-    def test_default_paid_at_is_set(self, app, db, seed_user, seed_periods):
-        """Calling without paid_at sets txn.paid_at to a real timestamp.
+    **It accepted an explicit ``paid_at`` until plan step X-f1, and the
+    parameter was DEAD** (ruling R-EC).  Its docstring named the carry-forward
+    envelope branch as the caller that supplied one;
+    ``carry_forward_service._execute`` calls it with no such argument and always
+    has, and an AST sweep of ``app/`` found ZERO call sites passing it.  The
+    test that pinned it is deleted with it rather than renamed: a test for a
+    knob nothing turns is a test for speculative flexibility, which the coding
+    standards forbid outright.  A caller that genuinely means "this settled on
+    another day" corrects it afterwards, through the edit door ruling R-ED
+    builds.
+    """
 
-        The default uses ``db.func.now()`` which becomes a SQL ``NOW()``
-        evaluated at flush time; after commit the column holds a
-        concrete ``datetime``.
+    def test_the_settle_day_is_the_users_today(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Settling from entries records the user's civil day, via the seam.
+
+        A ``date``, not an instant, and not the process's UTC day: the helper
+        does no dating of its own -- it hands the status change to
+        ``status_seam.apply_status_change``, whose stamp is ``display_today()``.
+        The zone rule itself is pinned at the seam
+        (``test_status_seam.py``); this pins that the envelope path really goes
+        through it rather than reaching for a clock of its own, which it did
+        (``db.func.now()``, a fourth database-clock reach) before the seam
+        absorbed it.
         """
         with app.app_context():
             template = _make_envelope_template(seed_user)
@@ -312,33 +333,8 @@ class TestSettleFromEntriesPaidAt:
             db.session.commit()
 
             db.session.refresh(txn)
-            assert isinstance(txn.paid_at, datetime)
-
-    def test_explicit_paid_at_is_preserved(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """Caller-supplied paid_at is written verbatim.
-
-        Useful when the caller has a more meaningful timestamp than
-        "right now" -- e.g. a back-dated reconciliation or a batch
-        operation that should record a single shared timestamp.
-        """
-        with app.app_context():
-            template = _make_envelope_template(seed_user)
-            txn = _make_projected_txn(
-                seed_user, seed_periods[0], template=template,
-            )
-            user_id = seed_user["user"].id
-            _make_entry(txn.id, user_id, "10.00", "Test")
-            db.session.flush()
-
-            explicit = datetime(2026, 3, 15, 12, 0, 0, tzinfo=timezone.utc)
-            transaction_service.settle_from_entries(txn, paid_at=explicit)
-            db.session.commit()
-
-            db.session.refresh(txn)
-            # PostgreSQL stores TIMESTAMP WITH TIME ZONE -- compare in UTC.
-            assert txn.paid_at == explicit
+            assert txn.settled_on == display_today()
+            assert not isinstance(txn.settled_on, datetime)
 
 
 # ── Precondition Tests ───────────────────────────────────────────────
@@ -500,7 +496,7 @@ class TestSettleFromEntriesPreconditions:
 
         The Paid status is immutable per the ``is_immutable`` flag on
         ``ref.statuses``.  Attempting to re-settle would update
-        ``paid_at`` and possibly ``actual_amount`` on a finalised
+        the settle day and possibly ``actual_amount`` on a finalised
         row, which is meaningless and indicates a caller bug.
         """
         with app.app_context():

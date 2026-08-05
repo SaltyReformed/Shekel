@@ -634,7 +634,7 @@ class TestBalanceSheetTab:
     Checking's $1000 opening is dated by its origination ``created_at``
     (the real DB clock), which the module's frozen 2026-03-20 ``today``
     predates, so the default as-of does NOT fold it.  Content is therefore
-    exercised with a settled transaction whose ``paid_at`` is pinned inside
+    exercised with a settled transaction whose settle day is pinned inside
     the frozen range; the opening is excluded but as a WHOLE entry, so the
     tie-out still closes.  A far-future ``today`` refreeze is avoided
     deliberately: Flask-Login would treat the real-clock session as
@@ -713,7 +713,7 @@ class TestBalanceSheetTab:
     ):
         """A settled income posts to the sheet and the tie-out stays green.
 
-        A $500 income settled with a ``paid_at`` inside the frozen range
+        A $500 income settled on a day inside the frozen range
         (2026-02-15) folds into the default as-of (2026-03-20): Checking
         +500 (Asset) and Retained Earnings +500 (Income closed into
         equity).  The seed opening's journal entry_date is the real-clock
@@ -727,7 +727,7 @@ class TestBalanceSheetTab:
             create_settled_cash_transaction(
                 seed_user, db.session, seed_periods[0], Decimal("500.00"),
                 is_income=True, name="Paycheck",
-                paid_at=datetime(2026, 2, 15, 12, tzinfo=timezone.utc),
+                settled_on=date(2026, 2, 15),
             )
             db.session.commit()
 
@@ -1168,13 +1168,15 @@ class TestCalendarYearView:
         with app.app_context():
             from app.services import pay_period_service
             from datetime import date
-            periods = pay_period_service.generate_pay_periods(
+            # The BINDING went with the ``current_anchor_period_id`` line it
+            # fed (ruling R-EH); the CALL is fixture setup and stays -- these
+            # 26 periods ARE the third-paycheck year under test.
+            pay_period_service.generate_pay_periods(
                 user_id=seed_user["user"].id,
                 start_date=date(2026, 1, 2),
                 num_periods=26,
                 cadence_days=14,
             )
-            seed_user["account"].current_anchor_period_id = periods[0].id
             db.session.commit()
 
             resp = auth_client.get(
@@ -1451,16 +1453,14 @@ class TestCalendarFlowStrip:
         bill nobody paid, and one that pins no trough.
         """
         with app.app_context():
-            from datetime import date, datetime, time, timezone
+            from datetime import date, datetime, timezone
             from decimal import Decimal
             from tests._test_helpers import create_settled_cash_transaction
 
             create_settled_cash_transaction(
                 seed_user, db.session, seed_periods[0], Decimal("600.00"),
                 name="Trough Expense",
-                paid_at=datetime.combine(
-                    date(2026, 1, 5), time(12, 0), tzinfo=timezone.utc,
-                ),
+                settled_on=date(2026, 1, 5),
             )
             db.session.commit()
 
@@ -1503,16 +1503,14 @@ class TestCalendarFlowStrip:
         documents: a past month's line moves on what actually happened.
         """
         with app.app_context():
-            from datetime import date, datetime, time, timezone
+            from datetime import date, datetime, timezone
             from decimal import Decimal
             from tests._test_helpers import create_settled_cash_transaction
 
             create_settled_cash_transaction(
                 seed_user, db.session, seed_periods[0], Decimal("1600.00"),
                 name="Overdraft Expense",
-                paid_at=datetime.combine(
-                    date(2026, 1, 5), time(12, 0), tzinfo=timezone.utc,
-                ),
+                settled_on=date(2026, 1, 5),
             )
             db.session.commit()
 
@@ -1876,6 +1874,9 @@ def _settled_spending_txn(db, seed_user, period, name, category_key,
         actual_amount=Decimal(actual) if actual is not None else None,
         category_id=cat.id if cat else None,
         due_date=due_date,
+        # A settled row carries the day its money moved; this bare fixture
+        # states it rather than leaving a row the readers refuse (X-f1).
+        settled_on=due_date or period.start_date,
     )
     db.session.add(txn)
     db.session.flush()

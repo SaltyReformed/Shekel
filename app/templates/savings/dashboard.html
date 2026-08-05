@@ -236,14 +236,15 @@
                    branch that used to sit here, which tested a key
                    ``_data._load_archived_accounts`` has never built.
 
-                   ``Last Balance`` below is the ``current_anchor_balance``
-                   COLUMN, and for an amortizing loan it is not a balance at
+                   ``Last Balance`` below is the account's latest cash
+                   ASSERTION, and for an amortizing loan it is not a balance at
                    all: ``anchor_service.AmortizingAccountAnchorError`` says so
-                   in terms ("a loan's balance is never
-                   ``accounts.current_anchor_balance``") and the cash true-up
-                   door refuses the kind, so nothing keeps the column true for
-                   a loan.  Finding N-103 (plan step X-e) carries the
-                   measurements and the option space.  The field it is read
+                   in terms (a loan's balance is ledger-derived) and the cash
+                   true-up door refuses the kind, so nothing keeps that
+                   assertion true for a loan.  Finding N-103 (plan step
+                   X-f1c3a) carries the measurements and the option space.  It
+                   read the ``current_anchor_balance`` CACHE COLUMN until that
+                   step deleted it; the figure is the same one.  The field it is read
                    from now SAYS which figure it is: it was ``current_balance``,
                    the name the live tiles use for the seam-derived balance,
                    until plan step X-w2 (ruling R-CH). #}

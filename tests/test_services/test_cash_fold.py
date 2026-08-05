@@ -58,10 +58,10 @@ from tests._test_helpers import (
     create_savings_account,
     create_settled_cash_transaction,
     create_settled_transfer,
+    freeze_today,
     mark_purchase_settled,
     override_anchor,
     restamp_opening_assertion,
-    settle_instant_on,
 )
 
 # An as-of far past every valuation date these ACTUAL-tier tests read, so the
@@ -76,12 +76,12 @@ def _instant(year, month, day, hour=0, minute=0, second=0):
 
     The arguments are read as the DISPLAY timezone -- the clock the user is
     actually looking at -- and converted to UTC for storage, which is the
-    direction production runs in: ``paid_at`` and ``created_at`` are stamped
+    direction production runs in: the settle day and ``created_at`` are stamped
     when the user acts and stored UTC.
 
     **It read them as UTC until ruling R-DH (b)** (2026-07-31), and the default
     ``hour=0`` then meant midnight UTC -- 7pm or 8pm the PREVIOUS Eastern day.
-    So a fixture writing ``_instant(2026, 1, 15)`` to mean "this settled on the
+    So a fixture writing ``date(2026, 1, 15)`` to mean "this settled on the
     15th" pinned an event the fold correctly places on the 14th, and five tests
     in this class asserted figures for a day their own setup had not built.
     Reading the arguments as Eastern makes the helper mean what every call site
@@ -139,7 +139,7 @@ class TestTheOpeningMovesIntoTheSeed:
         _opened_at(account, _instant(2026, 2, 1))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[0], Decimal("500.00"),
-            paid_at=_instant(2026, 1, 15), name="pre-opening",
+            settled_on=date(2026, 1, 15), name="pre-opening",
         )
         db.session.commit()
 
@@ -171,7 +171,6 @@ class TestTheOpeningMovesIntoTheSeed:
         scenario = seed_user["scenario"]
         account = create_savings_account(
             seed_user, db.session, "Money Market", Decimal("4879.26"),
-            anchor_period_id=seed_periods[8].id,
         )
         _opened_at(account, _instant(2026, 5, 1))
         for amount, day, is_income in (
@@ -183,7 +182,7 @@ class TestTheOpeningMovesIntoTheSeed:
             create_settled_cash_transaction(
                 seed_user, db.session, seed_periods[7], amount,
                 account=account, is_income=is_income,
-                paid_at=_instant(2026, 4, day), name=f"apr-{day}",
+                settled_on=date(2026, 4, day), name=f"apr-{day}",
             )
         db.session.commit()
 
@@ -213,13 +212,12 @@ class TestTheOpeningMovesIntoTheSeed:
         scenario = seed_user["scenario"]
         account = create_savings_account(
             seed_user, db.session, "Fidelity Savings", Decimal("5363.56"),
-            anchor_period_id=seed_periods[7].id,
         )
         _opened_at(account, _instant(2026, 4, 6))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[6], Decimal("500.00"),
             account=account, is_income=True,
-            paid_at=_instant(2026, 3, 27), name="deposit",
+            settled_on=date(2026, 3, 27), name="deposit",
         )
         db.session.commit()
 
@@ -255,7 +253,7 @@ class TestTheOpeningMovesIntoTheSeed:
         _opened_at(account, _instant(2026, 2, 1))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[0], Decimal("500.00"),
-            paid_at=_instant(2026, 1, 15), name="pre-opening",
+            settled_on=date(2026, 1, 15), name="pre-opening",
         )
         append_balance_assertion(
             db.session, account, seed_periods[3], Decimal("2000.00"),
@@ -263,7 +261,7 @@ class TestTheOpeningMovesIntoTheSeed:
         )
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[6], Decimal("250.00"),
-            paid_at=_instant(2026, 4, 1), name="post",
+            settled_on=date(2026, 4, 1), name="post",
         )
         db.session.commit()
 
@@ -329,13 +327,21 @@ class TestSettledMoneyRidesOnTheAssertionItFollowed:
     """
 
     def test_a_transfer_settled_after_the_assertion_reduces_the_balance(
-        self, db, seed_user, seed_periods,
+        self, db, monkeypatch, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
         """The reported bug, reproduced: $5,644.27 - $2,000.00 = $3,644.27.
 
         The real Money Market shape: opening $1,000.00 (2026-01-01), the user
         asserts $5,644.27 (2026-03-01 12:20:20), and a $2,000.00 transfer to
         Checking settles a month later (2026-04-01 19:47:44).
+
+        **Today is moved to the end of that history**, overriding this suite's
+        module freeze at 2026-03-20 (which the suite's own conftest invites a
+        test to do).  The narrative is a PAST: the transfer HAS settled.  Under
+        the module's clock it would settle a fortnight in its own future, which
+        ruling R-EJ refuses at the write door -- correctly, because a settled
+        row asserts that money has already moved.  The fixture's calendar has to
+        contain its own today.
 
         Hand-computed: the transfer is attributed AFTER the assertion, so it
         rides on top of it and the fold reads $5,644.27 through 03-31 and
@@ -347,10 +353,10 @@ class TestSettledMoneyRidesOnTheAssertionItFollowed:
         exactly as it reaches the shipping projection; neither queries
         ``Transfer``.
         """
+        freeze_today(monkeypatch, date(2026, 4, 5))
         scenario = seed_user["scenario"]
         money_market = create_savings_account(
             seed_user, db.session, "Money Market", Decimal("1000.00"),
-            anchor_period_id=seed_periods[0].id,
         )
         _opened_at(money_market, _instant(2026, 1, 1))
         append_balance_assertion(
@@ -360,7 +366,7 @@ class TestSettledMoneyRidesOnTheAssertionItFollowed:
         create_settled_transfer(
             seed_user, db.session, money_market, seed_user["account"],
             seed_periods[6], amount=Decimal("2000.00"),
-            paid_at=_instant(2026, 4, 1, 19, 47, 44),
+            settled_on=date(2026, 4, 1),
         )
         db.session.commit()
 
@@ -391,7 +397,7 @@ class TestSettledMoneyRidesOnTheAssertionItFollowed:
         _opened_at(account, _instant(2026, 1, 1))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[4], Decimal("50.00"),
-            paid_at=_instant(2026, 3, 1, 12, 0, 0), name="earlier",
+            settled_on=date(2026, 3, 1), name="earlier",
         )
         append_balance_assertion(
             db.session, account, seed_periods[4], Decimal("2932.41"),
@@ -425,7 +431,7 @@ class TestSettledMoneyRidesOnTheAssertionItFollowed:
         _opened_at(account, _instant(2026, 1, 1))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[4], Decimal("40.00"),
-            paid_at=_instant(2026, 3, 1, 9, 0, 0), name="before",
+            settled_on=date(2026, 3, 1), name="before",
         )
         append_balance_assertion(
             db.session, account, seed_periods[4], Decimal("2932.41"),
@@ -433,7 +439,7 @@ class TestSettledMoneyRidesOnTheAssertionItFollowed:
         )
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[4], Decimal("60.00"),
-            paid_at=_instant(2026, 3, 1, 20, 0, 0), name="after",
+            settled_on=date(2026, 3, 1), name="after",
         )
         db.session.commit()
 
@@ -465,7 +471,7 @@ class TestEveryAssertionIsReplayed:
         _opened_at(account, _instant(2026, 1, 1))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[2], Decimal("200.00"),
-            paid_at=_instant(2026, 2, 1), name="feb spend",
+            settled_on=date(2026, 2, 1), name="feb spend",
         )
         append_balance_assertion(
             db.session, account, seed_periods[4], Decimal("900.00"),
@@ -473,7 +479,7 @@ class TestEveryAssertionIsReplayed:
         )
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[6], Decimal("300.00"),
-            paid_at=_instant(2026, 4, 1), name="apr spend",
+            settled_on=date(2026, 4, 1), name="apr spend",
         )
         append_balance_assertion(
             db.session, account, seed_periods[8], Decimal("500.00"),
@@ -531,7 +537,7 @@ class TestThePlannedTier:
         )
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[6], Decimal("108.15"),
-            paid_at=_instant(2026, 4, 2, 13, 7, 11), name="settled late",
+            settled_on=date(2026, 4, 2), name="settled late",
         )
         add_txn(
             db.session, seed_user, seed_periods[6], "overdue bill", "50.00",
@@ -683,7 +689,7 @@ class TestThePlannedTier:
         (2026-03-20), and that is the OTHER half of the same rule.**  The first
         conversion moved the assertion FORWARD to 04-01 to cover an 04-01
         purchase, which is unreachable in the opposite direction:
-        ``account_service._reject_undatable_observation`` refuses an
+        ``anchor_service.resolve_observation_day`` refuses an
         ``observed_on`` after the user's today, and R-M refuses a
         ``purchased_on`` after it.  ``mark_purchase_settled`` now checks both
         bounds and named that fixture, which is why the SCENARIO moved back
@@ -725,7 +731,7 @@ class TestThePlannedTier:
         independent of the reader's ``as_of``; the earlier form got the same
         separation by dating the purchase into the app's future, which BOTH
         write doors refuse (R-M on ``purchased_on``,
-        ``_reject_undatable_observation`` on the assertion covering it).
+        ``anchor_service.resolve_observation_day`` on the assertion covering it).
         Sliding the READER backwards is the same experiment on a state
         production can actually hold.
 
@@ -820,7 +826,6 @@ class TestScope:
         _opened_at(account, _instant(2026, 1, 1))
         savings = create_savings_account(
             seed_user, db.session, "Savings", Decimal("50.00"),
-            anchor_period_id=seed_periods[0].id,
         )
         add_txn(
             db.session, seed_user, seed_periods[6], "their bill", "250.00",
@@ -854,7 +859,7 @@ class TestTotality:
         _opened_at(account, _instant(2026, 2, 1))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[0], Decimal("500.00"),
-            paid_at=_instant(2026, 1, 15), name="pre-opening",
+            settled_on=date(2026, 1, 15), name="pre-opening",
         )
         db.session.commit()
 
@@ -937,7 +942,7 @@ class TestTotality:
         _opened_at(card, _instant(2026, 1, 1))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[4], Decimal("75.00"),
-            account=card, paid_at=_instant(2026, 3, 1), name="charge",
+            account=card, settled_on=date(2026, 3, 1), name="charge",
         )
         db.session.commit()
 
@@ -989,16 +994,15 @@ _DRIFT_AS_OF = date(2026, 10, 8)
 _DRIFT_REASSERTION = Decimal("5412.83")
 _DRIFT_REASSERTION_AT = _instant(2026, 7, 3, 9, 0)
 _DRIFT_REASSERTION_INDEX = 13
-# Ruling R-B is an INSTANT partition, so period 13's two settled rows straddle
-# the assertion ON ITS OWN CIVIL DAY: the income strictly before it (absorbed by
-# the reset), the expense strictly after (riding on top).  Only the SIDE of the
-# assertion each falls on is load-bearing; the hour is arbitrary, and the
-# exactly-at-the-instant boundary is graded at the leaf
-# (``test_cash_walk.py``'s ``test_a_settle_at_exactly_the_assertion_instant_``
-# ``is_absorbed``).  A date-keyed partition puts BOTH on one side and cannot
-# reproduce period 13's figure either way.
-_DRIFT_STRADDLE_BEFORE_AT = _instant(2026, 7, 3, 8, 0)
-_DRIFT_STRADDLE_AFTER_AT = _instant(2026, 7, 3, 10, 0)
+# Period 13's two settled rows sit on the assertion's OWN CIVIL DAY, and under
+# ruling R-DH (a) an assertion is the CLOSING balance for its day -- so BOTH are
+# inside it and the reset absorbs both.  They were two instants an hour either
+# side of the assertion's when ruling R-B partitioned by instant; R-DH replaced
+# that rule and the figures below were recomputed for it then, so collapsing the
+# pair to the one day they always shared moves nothing.  Kept as a named
+# constant rather than inlined because "the settles that share the assertion's
+# day" is the property period 13 is here to grade.
+_DRIFT_STRADDLE_DAY = date(2026, 7, 3)
 
 # Rows worth exactly nothing, in four shapes.  See the class docstring for what
 # they are and are NOT: three independent layers zero them, so no single-point
@@ -1035,25 +1039,26 @@ _DRIFT_LATE_STRAY = Decimal("88.23")
 _DRIFT_STRAY_LATE_DAYS = 20
 
 
-def _drift_settle_instants(period, index):
-    """Return ``(income_instant, expense_instant)`` for a settled period.
+def _drift_settle_days(period, index):
+    """Return ``(income_day, expense_day)`` for a settled period.
 
     Args:
         period: The :class:`~app.models.pay_period.PayPeriod` being filled.
         index: Its ``period_index``.
 
     Returns:
-        The two aware-UTC settle instants.  Period 13's straddle the
-        re-assertion; every other period's sit on ordinary days inside their own
-        period.
+        The two civil settle days.  Period 13's both fall on the re-assertion's
+        own day; every other period's sit on ordinary days inside their own
+        period.  They were noon-UTC INSTANTS until plan step X-f1 (ruling
+        R-EC) -- noon UTC is the same civil day in the display timezone, which
+        is the day the readers derived from them, so every figure below is
+        unchanged.
     """
     if index == _DRIFT_REASSERTION_INDEX:
-        return _DRIFT_STRADDLE_BEFORE_AT, _DRIFT_STRADDLE_AFTER_AT
+        return _DRIFT_STRADDLE_DAY, _DRIFT_STRADDLE_DAY
     return (
-        settle_instant_on(period.start_date + timedelta(days=_DRIFT_INCOME_DAY)),
-        settle_instant_on(
-            period.start_date + timedelta(days=_DRIFT_EXPENSE_DAY),
-        ),
+        period.start_date + timedelta(days=_DRIFT_INCOME_DAY),
+        period.start_date + timedelta(days=_DRIFT_EXPENSE_DAY),
     )
 
 
@@ -1132,14 +1137,14 @@ def _build_drift_shape(db_session, seed_user, periods):
     """
     for index in _DRIFT_SETTLED_PERIODS:
         period = periods[index]
-        income_at, expense_at = _drift_settle_instants(period, index)
+        income_day, expense_day = _drift_settle_days(period, index)
         create_settled_cash_transaction(
             seed_user, db_session, period, _DRIFT_INCOME, is_income=True,
-            name=f"paycheck p{index}", paid_at=income_at,
+            name=f"paycheck p{index}", settled_on=income_day,
         )
         create_settled_cash_transaction(
             seed_user, db_session, period, _DRIFT_EXPENSE,
-            name=f"rent p{index}", paid_at=expense_at,
+            name=f"rent p{index}", settled_on=expense_day,
             actual_amount=(
                 _DRIFT_ACTUAL_EXPENSE if index == _DRIFT_ACTUAL_INDEX else None
             ),
@@ -1148,7 +1153,6 @@ def _build_drift_shape(db_session, seed_user, periods):
     override_anchor(
         db_session, seed_user["account"], periods[_DRIFT_REASSERTION_INDEX],
         _DRIFT_REASSERTION,
-        notes="X-g4a drift oracle re-assertion",
         at=_DRIFT_REASSERTION_AT,
     )
 

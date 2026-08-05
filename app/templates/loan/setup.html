@@ -35,7 +35,11 @@
             <span class="input-group-text">$</span>
             <input type="number" class="form-control" id="current_principal"
                    name="current_principal" step="0.01" min="0" required
-                   value="{{ "%.2f"|format(account.current_anchor_balance) if account.current_anchor_balance is not none else '' }}">
+                   {# The account's latest balance ASSERTION, resolved by the
+                      route (plan step X-f1c3a).  It seeds the loan's opening
+                      principal on the setup form only; the loan's own balance
+                      is ledger-derived and is never this value afterwards. #}
+                   value="{{ "%.2f"|format(anchor_balance) if anchor_balance is not none else '' }}">
           </div>
         </div>
       </div>

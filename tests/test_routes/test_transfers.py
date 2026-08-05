@@ -5,14 +5,13 @@ Tests for transfer template CRUD, grid cell endpoints, transfer instance
 operations, and ad-hoc transfer creation (§2.3 of the test plan).
 """
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 from decimal import Decimal
 
 from app import ref_cache
 from app.enums import StatusEnum
 from app.extensions import db
 from app.models.journal_entry import JournalEntry
-from app.models.account import Account
 from app.models.category import Category
 from app.models.transaction import Transaction
 from app.models.transfer_template import TransferTemplate
@@ -26,7 +25,13 @@ from app.services.balance_at import BalanceContext
 from app.services import transfer_service
 from app.services.auth_service import hash_password
 from app.services import account_service
-from tests._test_helpers import create_loan_account, field_is_disabled
+from app.utils.dates import display_today
+from tests._test_helpers import (
+    create_loan_account,
+    field_is_disabled,
+    net_posted_by_day,
+    override_anchor,
+)
 
 
 def _create_savings_account(seed_user):
@@ -862,7 +867,7 @@ class TestTransferInstance:
         POST and the finalised-row lock sees nothing locked; the status
         ``<select>`` is NOT disabled and submits the row's own status, so an
         ordinary notes edit arrives as an identity transition.  The transfer
-        service's own status seam re-stamped ``paid_at = now()`` on any entry
+        service's own status seam re-stamped the settle instant on any entry
         into a settled status -- and since plan step E1a that day IS the
         ``entry_date`` the transfer's postings are filed under, so editing the
         notes moved the money to today.  Measured at ``HEAD`` before the fix:
@@ -876,10 +881,10 @@ class TestTransferInstance:
             xfer = _create_transfer(seed_user, seed_periods_today, savings)
             done_id = ref_cache.status_id(StatusEnum.DONE)
 
-            settled_at = datetime.now(timezone.utc) - timedelta(days=7)
+            settled_at = display_today() - timedelta(days=7)
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
-                status_id=done_id, paid_at=settled_at,
+                status_id=done_id, settled_on=settled_at,
             )
             db.session.commit()
 
@@ -887,7 +892,7 @@ class TestTransferInstance:
                 """Return the shadows' settle instants and the posted days."""
                 db.session.expire_all()
                 paid = sorted(
-                    s.paid_at for s in db.session.query(Transaction)
+                    s.settled_on for s in db.session.query(Transaction)
                     .filter_by(transfer_id=xfer.id).all()
                 )
                 dated = sorted(
@@ -919,7 +924,7 @@ class TestTransferInstance:
 
             # ARCHIVING it must not re-date it either.  Paid -> Settled is a
             # real state change, not an identity re-submit, and it reaches the
-            # same rule: the schema carries no ``paid_at``, so the seam decides,
+            # same rule: the schema carries no settle day, so the seam decides,
             # and before X-aj1 it stamped now() on any entry into a settled
             # status.  Archiving a transfer paid last month used to move its
             # posted entry to today.  Reachable from this very form -- Settled
@@ -1577,18 +1582,18 @@ class TestAdHoc:
                 f"Expected 2 distinct ad-hoc transfers, found {count}"
             )
 
-    def test_mark_done_transfer_sets_paid_at_on_shadows(
+    def test_mark_done_transfer_sets_the_settle_day_on_both_shadows(
         self, app, auth_client, seed_user, seed_periods_today
     ):
-        """POST /transfers/instance/<id>/mark-done sets paid_at on both shadows.
+        """POST /transfers/instance/<id>/mark-done dates both shadows.
 
         F-048 / C-22: parity with ``transactions.mark_done``.
         Settling a transfer must record when it was settled so
         ``Transaction.days_paid_before_due`` analytics, the
         dashboard's "paid on time" indicator, and any downstream
-        report that joins on ``paid_at`` work.  Both shadow
+        report that reads the settle day work.  Both shadow
         transactions are checked because the parent transfer has
-        no ``paid_at`` column of its own.
+        no ``settled_on`` column of its own.
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -1607,10 +1612,516 @@ class TestAdHoc:
             assert len(shadows) == 2
             for shadow in shadows:
                 assert shadow.status.name == "Paid"
-                assert shadow.paid_at is not None, (
-                    f"Shadow {shadow.id} has NULL paid_at after mark-done; "
+                assert shadow.settled_on is not None, (
+                    f"Shadow {shadow.id} has no settled_on after mark-done; "
                     f"the F-048 parity gap is back."
                 )
+
+    def test_re_marking_a_settled_transfer_does_not_re_date_it(
+        self, app, auth_client, seed_user, seed_periods_today
+    ):
+        """A replayed mark-done leaves a settled transfer's money where it is.
+
+        Finding **N-178**, reproduced before it was fixed: ``done -> done`` is a
+        legal transition and neither mark-done route gates on status, so a stale
+        page, a second tab or a replayed POST re-submits the settle.  The route
+        used to pass ``settled_on=db.func.now()`` explicitly, and
+        ``update_transfer``'s explicit-day branch wrote both shadows
+        VERBATIM after the status seam has already preserved the existing
+        instant -- so the re-submit moved the money to today.  Since plan step
+        E1a a settle's civil day IS the posted ``entry_date``, which is why this
+        asserts the LEDGER and not only the column: measured at the defective
+        commit, a transfer settled 7 days earlier gained a reversal at its real
+        settle day plus a fresh posting at today.
+
+        This is finding N-146 through a second door.  N-146's fix was in the
+        seam; nothing stopped a caller overriding the seam, and that is what
+        both mark-done routes did.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
+
+            assert auth_client.post(
+                f"/transfers/instance/{xfer.id}/mark-done"
+            ).status_code == 200
+
+            # Back-date THROUGH the service, so the posted ledger follows the
+            # column.  Setting the attribute directly would leave the ledger at
+            # today and the assertion below could pass on a stale ledger rather
+            # than on a preserved one -- the control has to start from the state
+            # a genuinely week-old settle is really in.
+            settled_a_week_ago = display_today() - timedelta(days=7)
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id, settled_on=settled_a_week_ago,
+            )
+            db.session.commit()
+
+            def _ledger_days():
+                return sorted(
+                    entry.entry_date
+                    for entry in db.session.query(JournalEntry)
+                    .filter(JournalEntry.transfer_id == xfer.id)
+                    .all()
+                )
+
+            days_before = _ledger_days()
+            shadow_days_before = {
+                shadow.id: shadow.settled_on
+                for shadow in db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id, is_deleted=False)
+                .all()
+            }
+            assert shadow_days_before, "fixture produced no shadows"
+
+            # The replay.
+            assert auth_client.post(
+                f"/transfers/instance/{xfer.id}/mark-done"
+            ).status_code == 200
+
+            db.session.expire_all()
+            for shadow in (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id, is_deleted=False)
+                .all()
+            ):
+                moved = (
+                    shadow.settled_on - shadow_days_before[shadow.id]
+                ).days
+                assert moved == 0, (
+                    f"Shadow {shadow.id} was re-dated by {moved} days by a "
+                    f"replayed mark-done (N-178)."
+                )
+            assert _ledger_days() == days_before, (
+                "The replayed mark-done moved the posted ledger: "
+                f"{days_before} -> {_ledger_days()} (N-178)."
+            )
+
+
+class TestTransferSettleDayEditDoor:
+    """The transfer PATCH's settle-day correction (rulings R-ED / R-EG).
+
+    **This door is not a convenience twin of the transaction one.**  It is the
+    ONLY correction path for the rows finding **N-181** names: all eight settled
+    rows whose day the X-f1b backfill had to invent from a pay period's
+    ``start_date`` are transfer SHADOWS (four pairs, measured on the 2026-08-03
+    production clone), and a shadow's full-edit popover is the TRANSFER form --
+    ``routes/transactions/forms.get_full_edit`` redirects a shadow to it rather
+    than rendering the transaction popover.  Without this door X-f1c would close
+    N-181 in principle and zero rows in fact.
+    """
+
+    @staticmethod
+    def _settled_transfer(seed_user, seed_periods_today, day):
+        """Return a settled transfer whose money moved on *day*, ledger in step.
+
+        Settled and then back-dated THROUGH the service, so the fixture's own
+        journal entry carries *day*.  A bare attribute write would leave the
+        ledger at today and let a "the ledger followed" assertion pass on a
+        stale comparison instead of on the edit under test.
+        """
+        savings = _create_savings_account(seed_user)
+        xfer = _create_transfer(seed_user, seed_periods_today, savings)
+        transfer_service.update_transfer(
+            xfer.id, seed_user["user"].id,
+            status_id=ref_cache.status_id(StatusEnum.DONE),
+        )
+        transfer_service.update_transfer(
+            xfer.id, seed_user["user"].id, settled_on=day,
+        )
+        db.session.commit()
+        return xfer
+
+    @staticmethod
+    def _net_by_day(xfer_id):
+        """Return ``{entry_date: net posted magnitude}`` for one transfer.
+
+        Thin wrapper over the shared
+        :func:`tests._test_helpers.net_posted_by_day`; see it for why the NET
+        rather than the raw ``entry_date`` list is what grades a correction.
+        """
+        return net_posted_by_day(JournalEntry.transfer_id == xfer_id)
+
+    @staticmethod
+    def _shadow_days(xfer_id):
+        """Return both live shadows' settle days, as a set (Invariant 3)."""
+        return {
+            shadow.settled_on
+            for shadow in db.session.query(Transaction)
+            .filter_by(transfer_id=xfer_id, is_deleted=False)
+            .all()
+        }
+
+    def test_correcting_the_day_moves_both_shadows_and_the_ledger(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """PATCH ``settled_on`` re-dates the pair and its postings (R-ED).
+
+        The gate ruling R-ED names for this half in terms: a test that EDITS a
+        settled row's day and asserts the LEDGER followed.  Both shadows take
+        the corrected day (Transfer Invariant 3 --
+        ``posting_service._entry_date`` reads the income shadow's day for the
+        pair), and the reconcile reverses the stale-dated entry and re-posts at
+        the corrected day (finding **N-13**).
+        """
+        with app.app_context():
+            original = display_today() - timedelta(days=9)
+            corrected = display_today() - timedelta(days=4)
+            xfer = self._settled_transfer(
+                seed_user, seed_periods_today, original,
+            )
+            assert self._net_by_day(xfer.id) == {original: Decimal("200.00")}, (
+                "fixture did not leave its net posted effect at the settle day: "
+                f"{self._net_by_day(xfer.id)}"
+            )
+
+            response = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={"settled_on": corrected.isoformat()},
+            )
+            assert response.status_code == 200, response.get_data(as_text=True)[:300]
+
+            db.session.expire_all()
+            assert self._shadow_days(xfer.id) == {corrected}, (
+                "the correction did not reach both shadows equally"
+            )
+            assert self._net_by_day(xfer.id) == {corrected: Decimal("200.00")}, (
+                "the settle day moved but the posted ledger did not follow: "
+                f"net effect by day is {self._net_by_day(xfer.id)}, expected "
+                f"the whole $200.00 at {corrected} and nothing left at "
+                f"{original}"
+            )
+
+    def test_reverting_to_projected_ignores_the_submitted_day(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The unlock path survives the form re-submitting the transfer's day.
+
+        Ruling **R-EG**, the transfer half.  ``apply_settle_day_correction``
+        raises ``ValidationError`` for a day supplied on an unsettled transfer,
+        and the full-edit form re-submits the day the row already carries when
+        the user sets Status to Projected to unlock the amount -- so without
+        the route dropping it, the documented unlock path would 400 on every
+        settled transfer.  Graded on the 400 NOT happening, on both shadows
+        being undated, AND on the ledger being reversed.
+
+        **That last clause was a docstring overclaim until a neutral review
+        measured it.**  The body asserted only the status and the shadows, so a
+        planted mutant that left the settled effect POSTED through a revert --
+        the balance keeping money the user just said never moved -- survived
+        this test.  Its transaction-side sibling graded the ledger from the
+        start; the asymmetry was an omission, not a design choice.
+        """
+        with app.app_context():
+            settled_day = display_today() - timedelta(days=5)
+            xfer = self._settled_transfer(
+                seed_user, seed_periods_today, settled_day,
+            )
+
+            response = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={
+                    "status_id": str(ref_cache.status_id(StatusEnum.PROJECTED)),
+                    "settled_on": settled_day.isoformat(),
+                },
+            )
+            assert response.status_code == 200, (
+                "the unlock path (Status -> Projected) was refused because the "
+                "form re-submitted the transfer's own settle day: "
+                f"{response.get_data(as_text=True)[:300]}"
+            )
+
+            db.session.expire_all()
+            xfer = db.session.get(Transfer, xfer.id)
+            assert xfer.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
+            assert self._shadow_days(xfer.id) == {None}, (
+                "the revert left a settle day on a shadow, breaking the "
+                "settled-iff-dated invariant"
+            )
+            assert self._net_by_day(xfer.id) == {}, (
+                "the revert left the settled effect POSTED -- the balance keeps "
+                f"money the user just said never moved: {self._net_by_day(xfer.id)}"
+            )
+
+    def test_a_future_settle_day_is_refused_and_moves_no_money(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A day that has not happened is refused, and the balance holds.
+
+        Ruling **R-EJ**, the transfer half.  A settled source counts from its
+        own ``settled_on``, and ``walk_cash_ledger`` absorbs one into an
+        assertion only when the assertion is dated ON OR AFTER it -- so a
+        future-dated settle rides on top of every assertion until that day
+        arrives, putting already-spent money back in the rendered balance.
+        Measured on the live route before the guard existed: a ``$200``
+        transfer out of Checking read ``$800`` against a ``$1,000`` anchor, and
+        PATCHing its day forward answered **200** with Checking back at
+        ``$1,000``.
+
+        The BALANCE is asserted, not just the status code: a 400 that still let
+        the write through would pass a status-only check, and the balance is
+        the thing the defect actually moved.
+        """
+        with app.app_context():
+            settled_day = display_today() - timedelta(days=3)
+            xfer = self._settled_transfer(
+                seed_user, seed_periods_today, settled_day,
+            )
+            ctx = BalanceContext.build(seed_user["user"].id)
+            before = balance_at.cash_balance_at(
+                seed_user["account"], ctx, display_today(),
+            )
+
+            response = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={
+                    "settled_on": (display_today() + timedelta(days=400)).isoformat(),
+                },
+            )
+            assert response.status_code == 400, (
+                "a settle day 400 days out was accepted: "
+                f"{response.status_code}"
+            )
+
+            db.session.expire_all()
+            assert self._shadow_days(xfer.id) == {settled_day}, (
+                "the refused day was written anyway"
+            )
+            ctx = BalanceContext.build(seed_user["user"].id)
+            assert balance_at.cash_balance_at(
+                seed_user["account"], ctx, display_today(),
+            ) == before, (
+                "the refused future settle moved the rendered balance -- "
+                "already-spent money came back"
+            )
+
+    def test_full_edit_offers_the_correction_only_on_a_settled_transfer(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The correction input renders for a settled transfer and not before.
+
+        A Projected transfer's money has not moved, so there is no day to
+        state.  Asserted from BOTH openers -- the transfers page and a grid
+        shadow cell -- because the shadow opener is the one N-181's rows are
+        reached through, and it renders this same partial from a different
+        blueprint.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
+            shadow = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id, account_id=savings.id)
+                .one()
+            )
+
+            for url in (
+                f"/transfers/{xfer.id}/full-edit",
+                f"/transactions/{shadow.id}/full-edit",
+            ):
+                response = auth_client.get(url)
+                assert response.status_code == 200, (
+                    f"{url} did not render: a 500 would satisfy the negative "
+                    "assertion below without the condition holding"
+                )
+                body = response.get_data(as_text=True)
+                assert 'name="settled_on"' not in body, (
+                    f"{url} offered a settle day on a Projected transfer"
+                )
+
+            settled_day = display_today() - timedelta(days=2)
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id,
+                status_id=ref_cache.status_id(StatusEnum.DONE),
+            )
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id, settled_on=settled_day,
+            )
+            db.session.commit()
+
+            for url in (
+                f"/transfers/{xfer.id}/full-edit",
+                f"/transactions/{shadow.id}/full-edit",
+            ):
+                response = auth_client.get(url)
+                assert response.status_code == 200, f"{url} did not render"
+                body = response.get_data(as_text=True)
+                assert 'name="settled_on"' in body, (
+                    f"{url} offered no settle day on a settled transfer"
+                )
+                assert f'value="{settled_day.isoformat()}"' in body, (
+                    f"{url} did not pre-fill the stored settle day"
+                )
+                # The browser half of ruling R-EJ, and it must be the USER's
+                # today: a ``date.today()`` here would refuse, in the evening
+                # Eastern, a day the seam accepts.  ``settled_day`` is two days
+                # back, so neither assertion can satisfy the other.
+                assert f'max="{display_today().isoformat()}"' in body, (
+                    f"{url} did not bound the settle day at the user's today"
+                )
+                assert not field_is_disabled(body, "settled_on"), (
+                    f"{url} locked the settle day on a finalised transfer, so "
+                    "the correction R-ED exists for is unreachable"
+                )
+
+    def test_an_undated_settled_transfer_still_offers_the_repair_box(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A settled transfer carrying NO day still gets a correction input.
+
+        The shape the template's condition is written for, and the reason it
+        keys on the STATUS rather than on ``xfer.settled_on``: an undated
+        settled transfer is exactly what makes ``posting_service._entry_date``
+        raise ``UndatedSettleError`` -- a 500 on the grid -- so it is the row
+        that most needs a way to state the day its money really moved.  Keying
+        the condition on the day instead would hide the box from precisely that
+        row, and a neutral review found nothing grading the difference:
+        ``{% if xfer.settled_on %}`` passed the whole suite.
+
+        The row is built by clearing the column directly, which is legal only in
+        a fixture -- ``status_seam`` is the single writer and refuses to leave a
+        settled row undated -- because production's instances of this shape
+        predate the column (finding **N-181**).
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id,
+                status_id=ref_cache.status_id(StatusEnum.DONE),
+            )
+            db.session.commit()
+
+            shadow = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id, account_id=savings.id)
+                .one()
+            )
+            # The legacy shape, reproduced the only way it can be: straight at
+            # the column, behind the seam's back.
+            for row in (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id, is_deleted=False)
+                .all()
+            ):
+                row.settled_on = None
+            db.session.commit()
+            db.session.expire_all()
+            assert db.session.get(Transfer, xfer.id).settled_on is None
+
+            for url in (
+                f"/transfers/{xfer.id}/full-edit",
+                f"/transactions/{shadow.id}/full-edit",
+            ):
+                response = auth_client.get(url)
+                assert response.status_code == 200, (
+                    f"{url} 500'd on an undated settled transfer -- the row "
+                    "that most needs the repair box"
+                )
+                body = response.get_data(as_text=True)
+                assert 'name="settled_on"' in body, (
+                    f"{url} hid the correction box from an UNDATED settled "
+                    "transfer, leaving it no way to state the real day"
+                )
+                assert 'value=""' in body, (
+                    f"{url} pre-filled a day onto a row that carries none"
+                )
+
+    def test_the_shadow_PATCH_door_corrects_the_pair_too(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """PATCHing a SHADOW's own route corrects both shadows and the ledger.
+
+        There are TWO routes onto a transfer's settle day, and this is the one
+        no test reached: ``PATCH /transactions/<shadow_id>`` lands in
+        ``_shadow_mutations._apply_shadow_update``, which re-expresses the
+        submitted fields as ``transfer_service.update_transfer`` kwargs.  A
+        neutral review DELETED that mapping block outright and the whole 7,803-
+        test suite stayed green -- new, deliberate, defensive code with nothing
+        grading either claim its own comment makes.
+
+        No UI submits a day here (a shadow's popover is the TRANSFER form), so
+        the reachable callers are a crafted request, a replayed POST or a future
+        surface.  That is precisely why it is worth a test: the block exists so
+        such a request cannot LOOK like it took while doing nothing, and so the
+        two doors onto one rule answer identically.
+        """
+        with app.app_context():
+            original = display_today() - timedelta(days=8)
+            corrected = display_today() - timedelta(days=5)
+            xfer = self._settled_transfer(
+                seed_user, seed_periods_today, original,
+            )
+            shadow = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id, account_id=xfer.from_account_id)
+                .one()
+            )
+
+            response = auth_client.patch(
+                f"/transactions/{shadow.id}",
+                data={"settled_on": corrected.isoformat()},
+            )
+            assert response.status_code == 200, response.get_data(as_text=True)[:300]
+
+            db.session.expire_all()
+            assert self._shadow_days(xfer.id) == {corrected}, (
+                "the shadow PATCH door dropped the settle day: the request "
+                "answered 200 and changed nothing"
+            )
+            assert self._net_by_day(xfer.id) == {corrected: Decimal("200.00")}, (
+                "the shadow PATCH door moved the day without the ledger: "
+                f"{self._net_by_day(xfer.id)}"
+            )
+
+    def test_the_shadow_PATCH_door_drops_a_day_beside_a_revert(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A revert through the SHADOW route drops the day rather than 400ing.
+
+        Ruling **R-EG** through the second door.  Without the drop this request
+        reaches ``apply_settle_day_correction`` with a day for a Projected
+        transfer and raises.
+
+        ``_apply_shadow_update`` grades the submitted day against the PARENT
+        transfer's status rather than the shadow's -- ``transfer_service`` hands
+        it to a function that grades against the parent, so reading the shadow's
+        would be a second spelling of one question.  **This test does not prove
+        that half and cannot**: Transfer Invariant 3 keeps the two statuses
+        equal, so swapping one read for the other is undetectable from outside.
+        A neutral review found the claim being made where nothing graded it; what
+        is graded here is the drop.
+        """
+        with app.app_context():
+            settled_day = display_today() - timedelta(days=6)
+            xfer = self._settled_transfer(
+                seed_user, seed_periods_today, settled_day,
+            )
+            shadow = (
+                db.session.query(Transaction)
+                .filter_by(transfer_id=xfer.id, account_id=xfer.from_account_id)
+                .one()
+            )
+
+            response = auth_client.patch(
+                f"/transactions/{shadow.id}",
+                data={
+                    "status_id": str(ref_cache.status_id(StatusEnum.PROJECTED)),
+                    "settled_on": settled_day.isoformat(),
+                },
+            )
+            assert response.status_code == 200, (
+                "the shadow route refused a revert because the payload carried "
+                f"the row's own settle day: {response.get_data(as_text=True)[:300]}"
+            )
+
+            db.session.expire_all()
+            xfer = db.session.get(Transfer, xfer.id)
+            assert xfer.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
+            assert self._shadow_days(xfer.id) == {None}
+            assert self._net_by_day(xfer.id) == {}, (
+                "the revert through the shadow door left the effect posted"
+            )
 
 
 # ── Helpers for Negative-Path Tests ───────────────────────────────
@@ -2292,8 +2803,10 @@ class TestOneTimeTransfer:
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
-            savings.current_anchor_period_id = seed_periods_today[0].id
-            savings.current_anchor_balance = Decimal("0.00")
+            # Asserted rather than assigned (ruling R-EH deleted the column).
+            override_anchor(
+                db.session, savings, seed_periods_today[0], Decimal("0.00"),
+            )
             db.session.commit()
 
             once = db.session.query(RecurrencePattern).filter_by(

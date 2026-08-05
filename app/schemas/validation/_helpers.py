@@ -72,9 +72,18 @@ def _normalize_empty_inputs(schema, data):
     loaded payload, so the user's clear was a silent no-op (the
     deep-hunt pension salary-unlink follow-up; same class at the
     transfer category, deduction target-account, and date/notes
-    clears).  ``dump_only`` fields keep the drop behavior -- they can
-    never load a value, so mapping them would only feed the loader a
-    key it discards as unknown.
+    clears).
+
+    **It carried an ``and not field.dump_only`` arm until plan step X-f1c**
+    (finding **N-184**).  That arm existed for one field,
+    ``TransactionUpdateSchema.paid_at``, which ruling R-EC deleted with the
+    column it named; no schema in this package declares a ``dump_only`` field
+    now, and the settle-day door X-f1c added LOADS.  Worse than merely
+    instance-less, the branch was UNFALSIFIABLE downstream of ``load()``:
+    marshmallow discards a ``dump_only`` key either way, so a case routed
+    through ``load()`` passed identically with the arm deleted -- which is how
+    it survived a repair pass and a mutation test.  A guard whose only possible
+    test cannot fail is not a guard.
 
     Args:
         schema: the schema instance (``self`` inside a ``@pre_load``
@@ -93,7 +102,7 @@ def _normalize_empty_inputs(schema, data):
             cleaned[key] = value
             continue
         field = schema.fields.get(key)
-        if field is not None and field.allow_none and not field.dump_only:
+        if field is not None and field.allow_none:
             cleaned[key] = None
     return cleaned
 

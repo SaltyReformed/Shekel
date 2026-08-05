@@ -503,7 +503,6 @@ class TestRetirementProjectionEntryAware:
                 ),
             )
             db.session.flush()
-            assert acct.current_anchor_period_id == current_period.id
 
             db.session.add(InvestmentParams(
                 account_id=acct.id,
@@ -627,7 +626,6 @@ class TestRetirementAnchorInPastModeledHeadlineDatedSeed:
             all_periods = pay_period_service.get_all_periods(user.id)
             current_period = pay_period_service.get_current_period(user.id)
             assert current_period is not None
-            assert acct.current_anchor_period_id == past_anchor.id
             assert past_anchor.period_index < current_period.period_index, (
                 "fixture regressed: the anchor must be strictly before today"
             )

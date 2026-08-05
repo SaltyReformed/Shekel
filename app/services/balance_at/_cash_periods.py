@@ -404,8 +404,9 @@ def _cash_sums(
 
     The same rows :func:`_budget_legs` groups by budget column, grouped instead
     by the day each one's money moves: a settled row on its ``settled_on``
-    (``paid_at``'s display-timezone civil day, resolved once on the fact --
-    ruling R-DH), a planned row on the day ruling R-G lands it.
+    (a STORED civil day since plan step X-f1, read once onto the fact; it was
+    ``paid_at``'s display-timezone day under ruling R-DH), a planned row on
+    the day ruling R-G lands it.
     Assertions are NOT here -- they are :func:`_assertion_sums`, because an
     assertion is not a row.
 

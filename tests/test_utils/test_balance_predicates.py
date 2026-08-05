@@ -30,14 +30,19 @@ API per subsection C; the parity tests cover ``is_balance_contributing``
 and the clause but not the pure-status-equality predicate).
 """
 import ast
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
+
+import pytest
 
 from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
 from app.models.ref import Status
 from app.models.transaction import Transaction
+from app.exceptions import UndatedSettleError
 from app.utils.balance_predicates import (
+    settled_day,
     balance_contributing_clause,
     balance_excluded_status_ids,
     is_balance_contributing,
@@ -274,6 +279,61 @@ class TestBalanceExcludedStatusIds:
         """
         with app.app_context():
             assert isinstance(balance_excluded_status_ids(), frozenset)
+
+
+class TestSettledDay:
+    """Pins the ONE accessor for "which civil day did this cash move".
+
+    ``settled_day`` replaced ELEVEN separate derivations at plan step X-f1
+    (ruling R-EC), each of which took ``transactions.paid_at`` -- the instant
+    the user clicked -- converted it to a display-timezone civil day, and fell
+    back to the row's pay-period ``start_date`` when the instant was NULL.  The
+    day is a stored fact now, and the fallback is a REFUSAL.
+
+    These tests pin the refusal specifically, because a fallback is the failure
+    mode that would be invisible: it would put real money on a day nothing
+    recorded, and every figure downstream would look plausible.
+    """
+
+    def test_a_recorded_day_is_returned_unchanged(self):
+        """The accessor is a pass-through for a row that carries its day.
+
+        No timezone conversion, no clamping: the column already holds the
+        user's civil day, so the only correct answer is the stored value.
+        """
+        assert settled_day(1, date(2026, 5, 9)) == date(2026, 5, 9)
+
+    def test_a_missing_day_is_REFUSED_never_defaulted(self):
+        """A settled row with no day raises rather than inventing one.
+
+        This is the whole reason the accessor exists rather than each caller
+        reading the attribute.  A settled row without a day is a broken
+        invariant -- ``status_seam.apply_status_change`` writes the status and
+        the day in one statement -- and it is REACHABLE, because a bulk
+        ``query.update({status_id: paid})`` bypasses the ORM entirely and a
+        fixture can construct the row directly.
+        """
+        with pytest.raises(UndatedSettleError) as exc:
+            settled_day(4242, None)
+        message = str(exc.value)
+        assert "4242" in message, (
+            "The refusal must name the row so a broken row is identifiable "
+            f"without re-querying; got: {message}"
+        )
+        assert "status_seam" in message, (
+            "The refusal must name the write door that maintains the "
+            f"invariant, so the fix is actionable; got: {message}"
+        )
+
+    def test_the_refusal_is_a_value_error(self):
+        """It subclasses ValueError, so a bare ``except ValueError`` sees it.
+
+        Mirrors ``BaselineMissingError``.  Pinned because the class is caught
+        by type nowhere in ``app/`` -- reaching the user as a 500 is the
+        correct disposition for a broken stored invariant -- so its base is the
+        only contract a caller could rely on.
+        """
+        assert issubclass(UndatedSettleError, ValueError)
 
 
 class TestSettledStatusIds:

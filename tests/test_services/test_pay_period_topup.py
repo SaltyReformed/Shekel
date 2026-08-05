@@ -24,9 +24,7 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import event
 
-from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.services import (
@@ -41,9 +39,11 @@ from scripts.integrity_check import (
 )
 from tests._test_helpers import (
     assert_pay_period_invariants,
+    capture_sql_statements,
     freeze_today,
     make_expense_template,
     seam_cash_balance_at,
+    took_advisory_lock,
 )
 
 
@@ -93,31 +93,6 @@ def _future_count(db_session, user_id):
     )
 
 
-def _capture_statements(fn):
-    """Run ``fn`` while recording every SQL statement the engine emits.
-
-    Returns ``(result, statements)``.  Mirrors the statement-capture
-    idiom used by the C-19 lock tests to assert -- at the unit level --
-    that a lock IS or is NOT acquired on a given path.
-    """
-    statements: list[str] = []
-
-    def _cap(_conn, _cursor, statement, *_args, **_kwargs):
-        statements.append(statement)
-
-    event.listen(db.engine, "before_cursor_execute", _cap)
-    try:
-        result = fn()
-    finally:
-        event.remove(db.engine, "before_cursor_execute", _cap)
-    return result, statements
-
-
-def _took_advisory_lock(statements):
-    """True if any captured statement acquired the advisory lock."""
-    return any("pg_advisory_xact_lock" in s for s in statements)
-
-
 class TestTopUpFastPaths:
     """The cheap paths: no write work and -- crucially -- no lock taken."""
 
@@ -126,13 +101,13 @@ class TestTopUpFastPaths:
         with app.app_context():
             _future_periods(db.session, seed_user, count=3)
             before = _count_periods(db.session, seed_user["user"].id)
-            result, statements = _capture_statements(
+            result, statements = capture_sql_statements(
                 lambda: pay_period_admin.top_up_rolling_window(
                     seed_user["user"].id,
                 )
             )
             assert result == 0
-            assert not _took_advisory_lock(statements)
+            assert not took_advisory_lock(statements)
             assert _count_periods(db.session, seed_user["user"].id) == before
 
     def test_disabled_returns_zero_no_lock(self, app, db, seed_user):
@@ -144,11 +119,11 @@ class TestTopUpFastPaths:
             pay_schedule_service.upsert_schedule(user_id, cadence_days=14)
             db.session.commit()
             before = _count_periods(db.session, user_id)
-            result, statements = _capture_statements(
+            result, statements = capture_sql_statements(
                 lambda: pay_period_admin.top_up_rolling_window(user_id)
             )
             assert result == 0
-            assert not _took_advisory_lock(statements)
+            assert not took_advisory_lock(statements)
             assert _count_periods(db.session, user_id) == before
 
     def test_full_window_returns_zero_no_lock(self, app, db, seed_user):
@@ -158,11 +133,11 @@ class TestTopUpFastPaths:
             _future_periods(db.session, seed_user, count=3)  # 3 future
             _enable_rolling(db.session, user_id, target=3)
             before = _count_periods(db.session, user_id)
-            result, statements = _capture_statements(
+            result, statements = capture_sql_statements(
                 lambda: pay_period_admin.top_up_rolling_window(user_id)
             )
             assert result == 0
-            assert not _took_advisory_lock(statements)
+            assert not took_advisory_lock(statements)
             assert _count_periods(db.session, user_id) == before
 
     def test_current_period_counts_toward_target(self, app, db, seed_user):
@@ -198,13 +173,13 @@ class TestTopUpDeficitPath:
         with app.app_context():
             _future_periods(db.session, seed_user, count=3)  # idx 1..3 future
             _enable_rolling(db.session, user_id, target=5)  # deficit 2
-            result, statements = _capture_statements(
+            result, statements = capture_sql_statements(
                 lambda: pay_period_admin.top_up_rolling_window(user_id)
             )
             db.session.commit()
 
             assert result == 2  # 5 target - 3 future
-            assert _took_advisory_lock(statements)
+            assert took_advisory_lock(statements)
             # The window now holds exactly the target.
             assert _future_count(db.session, user_id) == 5
             # Disciplines 1 + 3.

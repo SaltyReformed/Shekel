@@ -160,7 +160,6 @@ def baseline_less_owner(app, db, seed_user, seed_periods_today):
             account_service.AccountSpec(
                 user_id=user.id, account_type_id=card_type.id,
                 name="Policy Card", anchor_balance=Decimal("-500.00"),
-                anchor_period_id=anchor.id,
             ),
         )
         invest = make_investment_account(

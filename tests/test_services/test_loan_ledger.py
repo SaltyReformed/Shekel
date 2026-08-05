@@ -32,7 +32,6 @@ from tests._test_helpers import (
     create_settled_transfer,
     insert_tracking_start_event,
     posted_loan_balance_at,
-    settle_instant_on,
 )
 
 # The controlled loan: $250,000 originated 2025-01-01 at 6%, trued up to
@@ -69,13 +68,13 @@ def _fold(loan, seed_user, on_dates):
 def _settle(seed_user, db, loan, period, amount):
     """Settle a Checking -> loan payment, visible from its period start (C2).
 
-    Pins ``paid_at`` to the period start so the payment is visible from that day
+    Pins the settle day to the period start so the payment is visible from that day
     under C2's settled-date clock -- the deterministic past date these
     hand-computed folds value the balance from.
     """
     return create_settled_transfer(
         seed_user, db.session, seed_user["account"], loan, period,
-        amount=amount, paid_at=settle_instant_on(period.start_date),
+        amount=amount, settled_on=period.start_date,
     )
 
 
@@ -503,7 +502,7 @@ class TestFoldCountsAnEventOnTheDayItHappened:
             create_settled_transfer(
                 seed_user, db.session, seed_user["account"], loan,
                 seed_periods[1], amount=Decimal("1000.00"),
-                paid_at=settle_instant_on(settled),
+                settled_on=settled,
             )
             db.session.commit()
             # The installment this payment satisfies is 2026-02-01 (the split key).

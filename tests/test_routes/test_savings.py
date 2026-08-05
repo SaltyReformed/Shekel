@@ -66,7 +66,7 @@ from app.services.auth_service import hash_password
 
 def _create_savings_account(
     seed_user, name="Savings",
-    anchor_balance=Decimal("5000.00"), anchor_period_id=None,
+    anchor_balance=Decimal("5000.00"),
 ):
     """Create a savings account for the test user.
 
@@ -97,7 +97,6 @@ def _create_savings_account(
             account_type_id=savings_type.id,
             name=name,
             anchor_balance=anchor_balance,
-            anchor_period_id=anchor_period_id,
         ),
     )
     db.session.add(acct)
@@ -198,7 +197,6 @@ def _create_investment_account_with_params(seed_user, seed_periods):
             account_type_id=acct_type.id,
             name="Test 401k",
             anchor_balance=Decimal("50000.00"),
-            anchor_period_id=seed_periods[0].id,
         ),
     )
     db.session.add(acct)
@@ -229,7 +227,6 @@ def _create_investment_account_with_contributions(seed_user, seed_periods):
             account_type_id=acct_type.id,
             name="Test 401k Employer",
             anchor_balance=Decimal("50000.00"),
-            anchor_period_id=seed_periods[0].id,
         ),
     )
     db.session.add(acct)
@@ -508,7 +505,10 @@ class TestDashboard:
             # See test_dashboard_investment_account_shows_growth_projections
             # for why ``start`` is computed relative to today.
             start = date.today() - timedelta(days=14)
-            periods = pay_period_service.generate_pay_periods(
+            # The BINDING went with the ``current_anchor_period_id`` line it
+            # fed (ruling R-EH); the CALL is fixture setup and stays -- it is
+            # what creates the periods this test projects over.
+            pay_period_service.generate_pay_periods(
                 user_id=seed_user["user"].id,
                 start_date=start,
                 num_periods=40,
@@ -524,7 +524,6 @@ class TestDashboard:
                     account_type_id=acct_type.id,
                     name="Employer Only 401k",
                     anchor_balance=Decimal("50000.00"),
-                    anchor_period_id=periods[0].id,
                 ),
             )
             db.session.add(acct)
@@ -1178,7 +1177,6 @@ class TestSavingsDashboardShadowTransactions:
             savings = _create_savings_account(
                 seed_user, name="Emergency Fund",
                 anchor_balance=Decimal("3000.00"),
-                anchor_period_id=seed_periods[0].id,
             )
             db.session.flush()
 
@@ -1232,7 +1230,6 @@ class TestSavingsDashboardShadowTransactions:
             savings = _create_savings_account(
                 seed_user, name="Plain Savings",
                 anchor_balance=Decimal("2000.00"),
-                anchor_period_id=seed_periods[0].id,
             )
             db.session.commit()
 
@@ -1335,6 +1332,10 @@ class TestEmergencyFundCommittedBaseline:
                     category_id=category_id,
                     transaction_type_id=expense_type_id,
                     estimated_amount=Decimal("10.00"),
+                    # A settled row carries the day its money moved; this bare
+                    # fixture states the day its readers would otherwise refuse
+                    # to guess (plan step X-f1).
+                    settled_on=period.start_date,
                 )
                 db.session.add(txn)
 
@@ -1402,6 +1403,7 @@ class TestEmergencyFundCommittedBaseline:
                     category_id=category_id,
                     transaction_type_id=expense_type_id,
                     estimated_amount=Decimal("120.00"),
+                    settled_on=period.start_date,
                 ))
                 db.session.add(Transaction(
                     account_id=savings.id,
@@ -1412,6 +1414,7 @@ class TestEmergencyFundCommittedBaseline:
                     category_id=category_id,
                     transaction_type_id=expense_type_id,
                     estimated_amount=Decimal("300.00"),
+                    settled_on=period.start_date,
                 ))
             db.session.commit()
 
@@ -1718,7 +1721,6 @@ class TestSetupRequiredBadge:
                     account_type_id=hysa_type.id,
                     name="Unconfigured HYSA",
                     anchor_balance=Decimal("5000.00"),
-                    anchor_period_id=seed_periods[0].id,
                 ),
             )
             db.session.add(acct)
@@ -1744,7 +1746,6 @@ class TestSetupRequiredBadge:
                     account_type_id=hysa_type.id,
                     name="Configured HYSA",
                     anchor_balance=Decimal("5000.00"),
-                    anchor_period_id=seed_periods[0].id,
                 ),
             )
             db.session.add(acct)
@@ -1777,7 +1778,6 @@ class TestSetupRequiredBadge:
                     account_type_id=k401_type.id,
                     name="Unconfigured 401k",
                     anchor_balance=Decimal("10000.00"),
-                    anchor_period_id=seed_periods[0].id,
                 ),
             )
             db.session.add(acct)
@@ -1801,7 +1801,6 @@ class TestSetupRequiredBadge:
                     account_type_id=k401_type.id,
                     name="Configured 401k",
                     anchor_balance=Decimal("10000.00"),
-                    anchor_period_id=seed_periods[0].id,
                 ),
             )
             db.session.add(acct)
@@ -1846,7 +1845,6 @@ class TestSetupRequiredBadge:
                     account_type_id=k401_type.id,
                     name="Legacy 401k",
                     anchor_balance=Decimal("50000.00"),
-                    anchor_period_id=seed_periods[0].id,
                 ),
             )
             db.session.add(acct)
@@ -2522,7 +2520,6 @@ class TestAccountArchivalDashboard:
                     account_type_id=savings_type.id,
                     name="Active Savings",
                     anchor_balance=Decimal("3000.00"),
-                    anchor_period_id=seed_periods[0].id,
                 ),
                 is_active=True,
             )
@@ -3190,7 +3187,6 @@ class TestDebtSummaryDisplay:
                 seed_user, db.session, name="Only Loan",
                 principal=Decimal("12000.00"), rate=Decimal("0.05000"),
                 term=24, origination_date=date(2026, 1, 1),
-                anchor_period=seed_periods[0],
             )
             insert_trueup_event(
                 loan_params_for(db.session, loan.id), Decimal("0.00"),
@@ -3387,7 +3383,6 @@ class TestDashboardNetWorthContext:
             _create_savings_account(
                 seed_user, name="Savings",
                 anchor_balance=Decimal("4000.00"),
-                anchor_period_id=seed_periods[0].id,
             )
             db.session.commit()
 
@@ -3420,7 +3415,6 @@ class TestDashboardNetWorthContext:
             _create_savings_account(
                 seed_user, name="Savings",
                 anchor_balance=Decimal("4000.00"),
-                anchor_period_id=seed_periods[0].id,
             )
             db.session.commit()
 
@@ -3732,7 +3726,6 @@ class TestNetWorthStreamRender:
             _create_savings_account(
                 seed_user, name="Savings",
                 anchor_balance=Decimal("4000.00"),
-                anchor_period_id=seed_periods[0].id,
             )
             db.session.commit()
 

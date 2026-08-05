@@ -62,7 +62,6 @@ from tests._test_helpers import (
     freeze_today,
     insert_tracking_start_event,
     posted_loan_balance_at,
-    settle_instant_on,
 )
 
 # The controlled loan terms, shared with B1's hand-computed suite
@@ -95,13 +94,13 @@ def _make_loan(seed_user, db, **kwargs):
 def _settle(seed_user, db, loan, period, amount=Decimal("1000.00")):
     """Settle a Checking -> loan payment transfer through the sole writer.
 
-    Pins ``paid_at`` to the period's start (C2 keys visibility on the settled
+    Pins the settle day to the period's start (C2 keys visibility on the settled
     date), so the payment is visible from its period start -- the deterministic
     past date the every-day walk below values it from.
     """
     return create_settled_transfer(
         seed_user, db.session, seed_user["account"], loan, period,
-        amount=amount, paid_at=settle_instant_on(period.start_date),
+        amount=amount, settled_on=period.start_date,
     )
 
 
@@ -500,7 +499,7 @@ class TestRawLoanTransactionIsTheOnlyDivergence:
             create_settled_cash_transaction(
                 seed_user, db.session, seed_periods[1], Decimal("300.00"),
                 account=loan, name="Typed On Loan",
-                paid_at=settle_instant_on(seed_periods[1].start_date),
+                settled_on=seed_periods[1].start_date,
             )
             db.session.commit()
 

@@ -117,7 +117,6 @@ def _create_loan_account(seed_user, db_session, *,
             account_type_id=loan_type.id,
             name=name,
             anchor_balance=current_principal,
-            anchor_period_id=seed_user["bootstrap_period"].id,
         ),
     )
     db_session.flush()

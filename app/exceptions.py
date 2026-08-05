@@ -33,6 +33,30 @@ class ConflictError(ShekelError):
     """Operation would create a conflicting state (e.g. duplicate)."""
 
 
+class UndatedSettleError(ShekelError, ValueError):
+    """A settled transaction was read for its settle day and carries none.
+
+    A row is settled if and only if it records the civil day its money moved.
+    Both facts are written by one statement -- ``status_seam.apply_status_change``
+    assigns ``status_id`` and ``settled_on`` together -- so a row that breaks the
+    pairing was written around that seam (a bulk ``query.update()``, or a
+    fixture constructing the row directly).
+
+    Raised by ``app.utils.balance_predicates.settled_day``, the single accessor
+    every balance and posting consumer asks the question through (plan step
+    X-f1, ruling R-EC).  It is a REFUSAL rather than a fallback on purpose: the
+    day is a stored fact now, so inventing one would put real money on a day
+    nothing recorded, and skipping the row would remove money from a balance
+    without saying so.
+
+    A ``ValueError`` as well as a ``ShekelError``, mirroring
+    :class:`BaselineMissingError` below: the condition is a broken invariant in
+    stored data rather than a user input error, and no route translates it --
+    reaching a user as a 500 is the correct disposition, because the request
+    cannot be answered correctly and answering it wrongly is worse.
+    """
+
+
 class BaselineMissingError(ShekelError, ValueError):
     """The balance seam was asked for a figure by a user with no baseline scenario.
 

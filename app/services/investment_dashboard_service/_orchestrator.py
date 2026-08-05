@@ -118,5 +118,5 @@ def compute_balance_hero_cell(user_id: int, account_id: int) -> dict | None:
     return {
         "account": account,
         "current_balance": balance,
-        "anchor_as_of": _resolve_anchor_as_of(account, balance_ctx),
+        "anchor_as_of": _resolve_anchor_as_of(account),
     }

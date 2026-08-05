@@ -33,7 +33,7 @@ from app.services.spending_report_service import (
 def _txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     db, seed_user, period, name, category_key, estimated,
     *, actual=None, status_enum=StatusEnum.DONE, is_income=False,
-    is_deleted=False, due_date=None, paid_at=None,
+    is_deleted=False, due_date=None, settled_on=None,
 ):
     """Create one transaction for report testing (settled expense by default)."""
     cat_id = (
@@ -52,7 +52,7 @@ def _txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         actual_amount=Decimal(str(actual)) if actual is not None else None,
         due_date=due_date or period.start_date,
         is_deleted=is_deleted,
-        paid_at=paid_at,
+        settled_on=settled_on,
     )
     db.session.add(txn)
     db.session.flush()
@@ -369,15 +369,17 @@ class TestHero:
         on-time 2, late 0, avg 0.00.
         """
         with app.app_context():
-            from datetime import datetime, timezone
             due = seed_periods[0].start_date
-            # Noon UTC on the due date -> same civil day in the display tz,
-            # so days_paid_before_due == 0 (on time).
-            paid = datetime(due.year, due.month, due.day, 12, tzinfo=timezone.utc)
+            # The settle day IS the due date, so days_paid_before_due == 0 (on
+            # time).  It was a noon-UTC instant until plan step X-f1, chosen so
+            # the display-timezone conversion landed back on the same civil day;
+            # the column stores that day directly now, so the arithmetic is
+            # exact rather than zone-dependent.
+            paid = due
             _txn(db, seed_user, seed_periods[0], "R", "Rent", "1200.00",
-                 actual="1200.00", due_date=due, paid_at=paid)
+                 actual="1200.00", due_date=due, settled_on=paid)
             _txn(db, seed_user, seed_periods[0], "G", "Groceries", "400.00",
-                 actual="400.00", due_date=due, paid_at=paid)
+                 actual="400.00", due_date=due, settled_on=paid)
             db.session.commit()
 
             report = compute_spending_report(

@@ -259,7 +259,7 @@ def compute_goal_progress(
     resolve their target via ``resolve_goal_target`` instead of rendering
     ``$0.00 / 0%``, and the balance basis is the entries-aware resolver
     balance (each projection's ``current_balance``) rather than the
-    raw stored ``current_anchor_balance``.  So this card and the /savings
+    raw asserted balance.  So this card and the /savings
     page report the same numbers for the same goal.
 
     Args:

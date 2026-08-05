@@ -35,22 +35,38 @@ def _valid_compounding_frequency_ids() -> set[int]:
 
 
 class AnchorUpdateSchema(BaseSchema):
-    """Validates PATCH data for updating the account anchor balance.
+    """Validates PATCH data for asserting an account's balance.
 
-    ``version_id`` is the optimistic-locking counter from the row at
-    the moment the form was rendered.  The route handler compares
-    the submitted value against ``Account.version_id`` and returns
-    409 Conflict if they differ -- a stale-form check that catches
-    the Tab-1/Tab-2 race even when the two requests are sequential
-    rather than truly concurrent.  Optional so callers that have
-    no way to plumb the version through (e.g. a future programmatic
-    client) still pass validation; in that case only the
-    SQLAlchemy ``version_id_col`` race detection applies, which
-    catches the truly-concurrent case at flush time.
+    **It carried an optional ``version_id`` until plan step X-f1c3c** (ruling
+    R-EN), the C-17 optimistic-locking counter the route compared against
+    ``Account.version_id`` to answer 409 on a stale form.  A true-up no longer
+    writes the ``accounts`` row that counter guards -- it appends an assertion
+    -- so there is nothing for a second tab to overwrite and no conflict to
+    report.  ``AccountUpdateSchema`` below keeps its ``version_id``: that door
+    writes real columns and still has a row to guard.
+
+    **It gained ``observed_on`` at plan step X-f1c4c** (rulings **R-EE** /
+    **R-EI**), which is what makes the one-click editor able to say WHEN a
+    balance was read rather than always meaning "now".  The ``@pre_load`` is not
+    decoration: an untouched HTML date input submits ``""``, and
+    ``fields.Date()`` deserializes that to a validation error rather than to
+    "absent", so without the normalizer a cleared box would 400 instead of
+    meaning today.
     """
 
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        """Drop empty inputs; map empties on nullable fields to None."""
+        return _normalize_empty_inputs(self, data)
+
     anchor_balance = fields.Decimal(required=True, places=2, as_string=True)
-    version_id = RowId(validate=validate.Range(min=1))
+    # The civil day ``anchor_balance`` was TRUE (ruling R-DH), optional exactly
+    # as ``AccountCreateSchema.observed_on`` below is: blank means today.  The
+    # BOUNDS are not here, for the reason stated there -- they compare against
+    # the DISPLAY timezone's today and against the owner's pay schedule, and a
+    # schema owns neither clock nor query.  ``anchor_service`` refuses both
+    # (ruling R-ER), so the two anchor write doors share one rule.
+    observed_on = fields.Date()
 
 
 class AccountCreateSchema(BaseSchema):
@@ -78,8 +94,19 @@ class AccountUpdateSchema(BaseSchema):
     ``version_id`` is the optimistic-locking counter from the row at
     the moment the edit form was rendered.  The handler compares
     the submitted value against the current ``Account.version_id``
-    and short-circuits with 409 Conflict on mismatch; see the
-    matching docstring on :class:`AnchorUpdateSchema`.
+    and short-circuits with 409 Conflict on mismatch.  This door writes real
+    ``accounts`` columns, so unlike :class:`AnchorUpdateSchema` -- which stopped
+    writing any at plan step X-f1c3c -- it still has a row to guard.
+
+    **It carried ``anchor_balance`` until plan step X-f1e** (finding **N-195**),
+    which made this the app's second balance-assertion door.  Dropping the field
+    is what makes the deletion structural rather than cosmetic: a forged POST
+    carrying ``anchor_balance`` is now DISCARDED by the schema, so the route
+    cannot assert a balance even if a later edit reintroduced a branch that
+    tried to.  :class:`AnchorUpdateSchema` is the one schema that accepts an
+    asserted balance, and it is reached only through ``accounts.true_up``.
+    ``AccountCreateSchema`` keeps its own, which is the account's OPENING and a
+    different fact from a later reading.
     """
 
     @pre_load
@@ -90,7 +117,6 @@ class AccountUpdateSchema(BaseSchema):
     name = fields.String(validate=validate.Length(min=1, max=100))
     account_type_id = RowId()
     is_active = fields.Boolean()
-    anchor_balance = fields.Decimal(places=2, as_string=True)
     version_id = RowId(validate=validate.Range(min=1))
 
 

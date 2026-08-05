@@ -47,8 +47,10 @@ but never commits (the caller owns the transaction boundary).
 
 **Write status.**  WIRED as of C6, at seven lifecycle chokepoints: account
 create (``account_service.create_account``), the anchor true-up
-(``anchor_service.apply_anchor_true_up``), the direct anchor edit
-(``routes.accounts.crud.update_account``), the pay-period reset
+(``anchor_service.apply_anchor_true_up``), the account-type change
+(``routes.accounts.crud.update_account`` -- which was the *direct anchor edit*
+until plan step X-f1e deleted that door, and now reaches this package only when
+a re-type crosses a posting boundary), the pay-period reset
 (``pay_period_admin.reset_pay_periods``), the effect-time self-heal at the
 ``posting_service`` sync tails (:func:`self_heal_anchor_corrections`), the
 ``create_baseline`` recovery path, and the account-type boundary changes
