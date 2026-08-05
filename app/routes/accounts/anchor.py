@@ -361,96 +361,15 @@ def _submission_is_the_coverage_boundary(
     return submitted_day == boundary_day
 
 
-def _true_up_success_response(
-    account: Account, revert_context: str | None, submitted_day: date | None,
-) -> tuple[str, int, dict[str, str]]:
-    """Compose the grid anchor true-up success response.
-
-    Shared by ``true_up``'s COMMITTED and UNCHANGED outcomes
-    (both render the updated display cell and fire ``balanceChanged`` so
-    other surfaces recompute).  The single-account grid and dashboard
-    surfaces append an out-of-band ``#anchor-as-of`` snippet dating the
-    edit; the cockpit (``revert=accounts``), the investment detail hero
-    (``revert=investment``), and the cash detail hero (``revert=cash``)
-    have no such singleton element and re-render their region on the
-    ``balanceChanged`` trigger instead, so emitting the OOB there would
-    orphan-target (htmx:oobErrorNoTarget) -- it is skipped.
-
-    **A BACK-DATED submission is acknowledged rather than rendered**, and the
-    reason is that without it this response is indistinguishable from doing
-    nothing.  The cell re-renders from ``resolve_anchor`` -- the assertion that
-    governs NOW -- which a back-dated correction by definition does not change,
-    so a user who recorded an older statement saw their editor collapse back to
-    the same figure with no sign the write landed.  That is the defect
-    :func:`_anchor_editor_error` exists to prevent on the failure side, and it
-    was still live on the success side.
-
-    Args:
-        account: The post-commit account.  The "as of" snippet is dated from
-            the ASSERTION this resolves for it (``observed_on``), never from
-            the row's ``updated_at`` -- see the comment at that line for why
-            the two are different facts (ruling R-EP).
-        revert_context: The normalized surface token, or ``None``.
-        submitted_day: The civil day the form submitted, or ``None``.  Decides
-            both whether the reconcile prompt is asked
-            (:func:`_submission_is_the_coverage_boundary`) and whether the
-            caption acknowledges a back-dated recording.  **Required, with no
-            default**: a defaulted ``None`` here means "suppress the safety
-            check", and with one caller a default that can only ever be wrong
-            is a footgun rather than a convenience.
-
-    Returns:
-        The ``(body, status, headers)`` tuple Flask returns, carrying the
-        ``HX-Trigger: balanceChanged`` header.
-    """
-    anchor = cash_ledger.resolve_anchor(account)
-    html = render_template(
-        "grid/_anchor_edit.html", account=account,
-        anchor_balance=anchor.balance, editing=False,
-    )
-    # The reconcile prompt rides along on EVERY surface, unlike the "as of"
-    # snippet below: its mount is in ``base.html`` rather than being a
-    # per-surface singleton, precisely so the one question worth asking after a
-    # balance reading -- which of these purchases has your bank taken? -- is
-    # asked wherever the reading was entered.  Empty when nothing is
-    # outstanding, so a routine true-up is unchanged; and empty when the
-    # submission is NOT the account's coverage boundary, because a back-dated
-    # assertion reconciles nothing new and asking against the wrong statement
-    # invites a settlement the user cannot have observed.
-    is_boundary = _submission_is_the_coverage_boundary(
-        cash_ledger.reconciled_through(account.id).observed_day, submitted_day,
-    )
-    prompt = _reconcile_prompt_fragment(account) if is_boundary else ""
-    if revert_context in ("accounts", "investment", "cash"):
-        return html + prompt, 200, {"HX-Trigger": "balanceChanged"}
-    # The day the balance was asserted TRUE, from the assertion itself
-    # (ruling R-EP).  It was ``account.updated_at`` -- the row's last-touched
-    # instant -- which named a different fact, moved on any account edit, and
-    # stops moving at all once a true-up no longer writes the account row.
-    recorded = (
-        ""
-        if is_boundary
-        else (
-            f'<span class="d-block text-success">'
-            f'recorded as of {submitted_day.strftime("%b %-d, %Y")}'
-            f'</span>'
-        )
-    )
-    as_of_html = (
-        f'<small class="text-muted" id="anchor-as-of" hx-swap-oob="true">'
-        f'as of {anchor.observed_on.strftime("%b %-d, %Y")}{recorded}'
-        f'</small>'
-    )
-    return html + as_of_html + prompt, 200, {"HX-Trigger": "balanceChanged"}
-
-
 @dataclass(frozen=True)
 class _AnchorSubmission:
     """One validated balance assertion, as the true-up form submitted it.
 
     Two values that are ONE fact -- "this account held $B on day D" -- so the
-    gate hands them back together rather than as a widening tuple.  Frozen: a
-    submission is a record of what arrived, not a working value.
+    gate hands them back together rather than as a widening tuple, and so the
+    success response can acknowledge BOTH halves of what was recorded rather
+    than being handed the day alone.  Frozen: a submission is a record of what
+    arrived, not a working value.
 
     Attributes:
         balance: The validated :class:`Decimal` balance being asserted.
@@ -464,6 +383,103 @@ class _AnchorSubmission:
 
     balance: Decimal
     observed_on: date | None
+
+
+def _true_up_success_response(
+    account: Account, revert_context: str | None,
+    submission: _AnchorSubmission,
+) -> tuple[str, int, dict[str, str]]:
+    """Compose the anchor true-up success response.
+
+    Shared by ``true_up``'s COMMITTED and UNCHANGED outcomes (both render the
+    updated display cell and fire ``balanceChanged`` so other surfaces
+    recompute).  Three fragments can ride along, and each is mounted where it
+    can actually survive -- which is the whole of plan step X-f1e3:
+
+    * **the updated display cell**, the response's primary target on all five
+      surfaces;
+    * **exactly ONE of the reconcile prompt or the back-dated
+      acknowledgement**, both out-of-band into a ``base.html`` mount that no
+      refresh region owns, so both reach all five surfaces by construction;
+    * **the ``#anchor-as-of`` caption, for the GRID alone**, because it is the
+      only surface whose caption nothing else redraws (see
+      ``grid/_anchor_as_of_oob.html`` for the per-surface measurement).
+
+    **The prompt and the acknowledgement are ONE if/else, deliberately.**  They
+    are the opposite branches of :func:`_submission_is_the_coverage_boundary`:
+    a submission that IS the account's coverage boundary can be reconciled
+    against, and one that is not has nothing new to reconcile.  Writing them as
+    two independent conditionals -- which is what stood here -- states one
+    branch twice and lets a later edit produce both or neither.
+
+    **A BACK-DATED submission is acknowledged rather than rendered**, and the
+    reason is that without it this response is indistinguishable from doing
+    nothing.  The cell re-renders from ``resolve_anchor`` -- the assertion that
+    governs NOW -- which a back-dated correction by definition does not change,
+    so a user who recorded an older statement saw their editor collapse back to
+    the same figure with no sign the write landed.  That is the defect
+    :func:`_anchor_editor_error` exists to prevent on the failure side, and it
+    was still live on the success side.  It reached ONE of the five surfaces
+    until plan step X-f1e3 gave it a mount of its own (finding **N-199**).
+
+    Args:
+        account: The post-commit account.  The "as of" snippet is dated from
+            the ASSERTION this resolves for it (``observed_on``), never from
+            the row's ``updated_at`` -- the two are different facts (ruling
+            R-EP).
+        revert_context: The normalized surface token, or ``None`` -- which is
+            the grid, the one surface the "as of" snippet is emitted for.
+        submission: What the form asserted.  Decides whether the reconcile
+            prompt is asked (:func:`_submission_is_the_coverage_boundary`) and,
+            on the other branch, supplies both figures the acknowledgement
+            names.  **Required, with no default**: a defaulted submission here
+            means "suppress the safety check", and with one caller a default
+            that can only ever be wrong is a footgun rather than a convenience.
+
+    Returns:
+        The ``(body, status, headers)`` tuple Flask returns, carrying the
+        ``HX-Trigger: balanceChanged`` header.
+    """
+    anchor = cash_ledger.resolve_anchor(account)
+    html = render_template(
+        "grid/_anchor_edit.html", account=account,
+        anchor_balance=anchor.balance, editing=False,
+    )
+    is_boundary = _submission_is_the_coverage_boundary(
+        cash_ledger.reconciled_through(account.id).observed_day,
+        submission.observed_on,
+    )
+    if is_boundary:
+        # The one question worth asking after a balance reading -- which of
+        # these purchases has your bank taken?  Empty when nothing is
+        # outstanding, so the one-click habit is not taxed by a prompt with
+        # nothing in it.
+        feedback = _reconcile_prompt_fragment(account)
+    else:
+        # ``submission.observed_on`` cannot be None on this branch: a blank
+        # date box means "today", and today IS the coverage boundary
+        # (:func:`_submission_is_the_coverage_boundary` proves it from the
+        # no-future-day rule), so a blank submission always takes the branch
+        # above.  The template dereferences it, so a future edit that broke
+        # that guarantee fails LOUD rather than rendering a wrong day.
+        feedback = render_template(
+            "accounts/_anchor_recorded_toast.html",
+            account=account,
+            balance=submission.balance,
+            observed_on=submission.observed_on,
+        )
+    # ``None`` is the grid, and only the grid: every named surface re-fetches
+    # its own region on the ``balanceChanged`` fired below and redraws its own
+    # caption, while three of them carry no ``#anchor-as-of`` element at all
+    # (an out-of-band swap there would orphan-target, htmx:oobErrorNoTarget).
+    as_of = (
+        ""
+        if revert_context is not None
+        else render_template(
+            "grid/_anchor_as_of_oob.html", observed_on=anchor.observed_on,
+        )
+    )
+    return html + as_of + feedback, 200, {"HX-Trigger": "balanceChanged"}
 
 
 def _anchor_day_bounds() -> dict[str, date]:
@@ -500,6 +516,51 @@ def _anchor_day_bounds() -> dict[str, date]:
         ),
         "observed_on_max": display_today(),
     }
+
+
+def _anchor_kind_refusal(account: Account) -> ResponseReturnValue:
+    """Refuse a cash-anchor write on an AMORTIZING account, renderably.
+
+    **The kind refusal answers a DISPLAY cell, not an editor** (plan step
+    X-f1e3).  A loan's balance is ledger-derived and is asserted on the loan's
+    own page (ruling D4 / step A1, finding B-15), so there is nothing here to
+    resubmit -- re-rendering the editor would offer a Save button guaranteed to
+    be refused again, which is the dead-end affordance this module's own
+    ``anchor_form`` docstring says never to offer.
+    :func:`_anchor_editor_error` is the right answer for the two INPUT-shaped
+    rejections and the wrong one for this, so the two do not share a function.
+
+    **It used to answer a raw string body**, which ``base.html`` leaves
+    non-swapping, so the refusal rendered NOTHING and the form sat there.  That
+    was justified on the claim that the arm is unreachable because
+    ``anchor_form`` refuses to OPEN the editor for a loan -- and an account's
+    kind is EDITABLE, so a form opened on a cash account can be submitted after
+    that account has become a loan (finding **N-199**;
+    ``test_a_cash_account_can_become_a_loan_under_an_open_editor`` walks the
+    path).  The ordinary click that used to reach it is gone -- the shared
+    partial now renders a loan's cell read-only -- so what remains is this
+    race, and a raced write still deserves an answer its surface can render.
+
+    Keeps the 422 rather than the sibling's 400: the payload is well formed and
+    it is the ENTITY that cannot be processed.  A designed fragment swaps on
+    any status, so naming the failure honestly costs a non-htmx client nothing.
+
+    Args:
+        account: The owned, attached amortizing :class:`Account`.
+
+    Returns:
+        The designed-fragment ``(body, 422, headers)`` triple.
+    """
+    return designed_error(
+        render_template(
+            "grid/_anchor_edit.html",
+            account=account,
+            anchor_balance=cash_ledger.resolve_anchor(account).balance,
+            editing=False,
+            error=_LOAN_ANCHOR_REFUSAL,
+        ),
+        422,
+    )
 
 
 def _anchor_editor_error(
@@ -578,12 +639,27 @@ def _true_up_request_gates(
     finding N-134's shape -- a balance the user typed, refused for want of a
     budgeting artifact that has nothing to do with what their bank holds.
 
-    **The schema arm's response is a DESIGNED FRAGMENT since plan step
-    X-f1c4c**, not ``jsonify(errors=...)``; see :func:`_anchor_editor_error` for
-    what that changed and why.  The kind refusal keeps its raw 422 body: the
-    editor is never OPENED for an amortizing account (``anchor_form`` refuses
-    the same kind), so that arm answers a forged request rather than a user, and
-    a designed fragment for it would be a rendering nobody can reach.
+    **BOTH arms answer a DESIGNED FRAGMENT.**  The schema arm converted at plan
+    step X-f1c4c (it was ``jsonify(errors=...)``); the kind arm at X-f1e3, and
+    the reason it had NOT converted was a measured-false claim this docstring
+    used to make.  It said the editor is never OPENED for an amortizing account
+    (``anchor_form`` refuses the same kind), so the arm answered a forged
+    request and a designed fragment would be a rendering nobody could reach.
+    **An account's kind is EDITABLE.**  ``_ACCOUNT_UPDATE_FIELDS`` includes
+    ``account_type_id``, and ``_validate_account_type_change`` permits a
+    boundary-crossing re-type while the account has no ledger postings -- which
+    a ``$0.00`` opening leaves it with, because a zero correction emits no legs
+    (``account_posting_service/_anchors.py``).  So: open the editor on such an
+    account, re-type it to a mortgage in a second tab, press Save.  That is a
+    real user in ordinary use, and ``base.html`` leaves 4xx non-swapping, so
+    the raw body rendered NOTHING and the form simply sat there -- the exact
+    defect X-f1c4c converted the other arm to prevent (finding **N-199**).
+    It keeps the 422: the payload is well-formed and the ENTITY is what cannot
+    be processed, and a designed fragment swaps on any status.
+
+    It is the same open-then-change race ``_anchor_day_bounds`` already
+    anticipates for the date floor, one field over: a form captured at render
+    time can always be submitted after the state it was rendered against moved.
 
     Args:
         account: The owned, attached :class:`Account` under edit.
@@ -598,7 +674,7 @@ def _true_up_request_gates(
         is ``None``.
     """
     if _is_amortizing(account):
-        return None, (_LOAN_ANCHOR_REFUSAL, 422)
+        return None, _anchor_kind_refusal(account)
 
     errors = _anchor_schema.validate(request.form)
     if errors:
@@ -710,9 +786,7 @@ def true_up(account_id):
         # writer's, and two INFO lines per true-up where one is contained in the
         # other is noise that reads as corroboration.
 
-    return _true_up_success_response(
-        account, revert_context, submission.observed_on,
-    )
+    return _true_up_success_response(account, revert_context, submission)
 
 
 def _anchor_revert_url(account_id, revert_context):
@@ -788,10 +862,20 @@ def anchor_form(account_id):
 
     # Ruling D4 / step A1: never OPEN the cash anchor editor for an
     # amortizing loan -- the PATCH would be refused (B-15), so offering
-    # the form would be a dead-end affordance.  The cockpit's loan cards
-    # render their balance read-only for the same reason.
+    # the form would be a dead-end affordance.
+    #
+    # **The affordance itself is gone since plan step X-f1e3**: the shared
+    # partial renders a loan's balance read-only on every surface, the rule the
+    # cockpit's loan cards already followed and the other four did not.  So
+    # this arm no longer answers an ordinary click; what can still reach it is
+    # a RACE -- the cell was rendered while the account was cash and clicked
+    # after it became a loan (an account's kind is editable).  It answers a
+    # designed fragment rather than a raw body for that case, because a raw
+    # 4xx is left non-swapping by ``base.html`` and the click would otherwise
+    # do nothing visible at all -- a dead click with no form to explain it,
+    # which is finding N-199's defect in its worst form.
     if _is_amortizing(account):
-        return _LOAN_ANCHOR_REFUSAL, 422
+        return _anchor_kind_refusal(account)
 
     revert_context = _normalize_revert_context(request.args.get("revert"))
     revert_url = _anchor_revert_url(account_id, revert_context)

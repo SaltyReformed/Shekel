@@ -5,6 +5,7 @@ Tests for account CRUD, anchor balance true-up, and account type
 management endpoints (§2.1 of the test plan).
 """
 
+import re
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -1251,48 +1252,67 @@ class TestTrueUp:
             db.session.refresh(other["account"])
             assert cash_ledger.resolve_anchor(other["account"]).balance == orig_balance
 
-    def test_true_up_accounts_revert_skips_as_of_oob(
-        self, app, auth_client, seed_user, seed_periods_today,
+    @pytest.mark.parametrize(
+        ("revert", "expected"),
+        [
+            (None, True),
+            ("dashboard", False),
+            ("accounts", False),
+            ("investment", False),
+            ("cash", False),
+        ],
+        ids=["grid", "dashboard", "cockpit", "investment-hero", "cash-hero"],
+    )
+    def test_the_as_of_snippet_goes_to_the_grid_and_only_the_grid(
+        self, app, auth_client, seed_user, seed_periods_today, revert, expected,
     ):
-        """With ?revert=accounts, the success response omits the as-of OOB.
+        """The out-of-band "as of" caption update is the GRID's alone.
 
-        The cockpit is multi-card and has no singleton ``#anchor-as-of``
-        element, and it re-syncs the whole region via ``balanceChanged``, so
-        the out-of-band "as of" snippet (which would orphan-target) is
-        dropped.  The ``balanceChanged`` trigger still fires.
+        **One rule, no per-surface exception list** (plan step X-f1e3): an
+        out-of-band caption update goes to the caption nothing else refreshes.
+
+        The grid's ``#anchor-as-of`` sits at page level in ``grid/grid.html``,
+        so nothing on that page redraws it and the snippet is the only way it
+        can move.  Every other opener re-fetches its own region on the
+        ``balanceChanged`` this response fires:
+
+        * the cockpit, the investment hero and the cash hero carry no
+          ``#anchor-as-of`` element at all, so a snippet would orphan-target
+          (``htmx:oobErrorNoTarget``);
+        * the DASHBOARD carries one, and it was emitted there until this step.
+          That was a redundant SECOND render of one fact -- ``#pulse-section``
+          re-renders the same caption from ``reconciled_through``, which
+          ``dashboard_pulse_service`` states is provably equal to the
+          ``resolve_anchor`` day the snippet carries -- and it was the
+          mechanism that destroyed the back-dated acknowledgement riding on it
+          (finding N-199).
+
+        The dashboard case is the one this parametrization exists for: with
+        the two original tests covering only ``accounts`` and the default, a
+        regression that re-emitted the snippet for the dashboard passed.
         """
         with app.app_context():
             acct_id = seed_user["account"].id
+            url = f"/accounts/{acct_id}/true-up"
+            if revert is not None:
+                url = f"{url}?revert={revert}"
             response = auth_client.patch(
-                f"/accounts/{acct_id}/true-up?revert=accounts",
-                data={"anchor_balance": "3210.00"},
+                url, data={"anchor_balance": "3210.00"},
             )
             assert response.status_code == 200
             assert response.headers.get("HX-Trigger") == "balanceChanged"
-            body = response.data.decode()
-            assert 'id="anchor-as-of"' not in body
-            assert 'hx-swap-oob="true"' not in body
-
-    def test_true_up_grid_default_includes_as_of_oob(
-        self, app, auth_client, seed_user, seed_periods_today,
-    ):
-        """The grid / default success response keeps the #anchor-as-of OOB.
-
-        The single-account grid and dashboard surfaces have an
-        ``#anchor-as-of`` caption to update, so the OOB snippet stays -- the
-        cockpit skip must not regress them.
-        """
-        with app.app_context():
-            acct_id = seed_user["account"].id
-            response = auth_client.patch(
-                f"/accounts/{acct_id}/true-up",
-                data={"anchor_balance": "3211.00"},
-            )
-            assert response.status_code == 200
-            assert response.headers.get("HX-Trigger") == "balanceChanged"
-            body = response.data.decode()
-            assert 'id="anchor-as-of"' in body
-            assert 'hx-swap-oob="true"' in body
+            # **The whole opening tag, so the id and its OUT-OF-BAND-ness are
+            # graded together.**  The bare ``hx-swap-oob`` attribute would
+            # match whichever fragment happened to ride along (the reconcile
+            # prompt and the acknowledgement are out-of-band too), and the id
+            # alone leaves the attribute ungraded -- an adversarial review
+            # deleted it and measured the whole suite still passing, with the
+            # caption then rendering INSIDE the grid balance cell and the
+            # page-level ``#anchor-as-of`` never updating again.
+            assert ((
+                '<small class="text-muted" id="anchor-as-of" '
+                'hx-swap-oob="true">'
+            ) in response.data.decode()) is expected
 
 
 class TestTrueUpSameDayDuplicate:
@@ -1860,25 +1880,74 @@ class TestTheReconcileRoute:
                 "a back-dated assertion reconciles nothing new, so the prompt "
                 "must not ask against a statement it does not describe"
             )
-            if revert in ("accounts", "investment", "cash"):
-                # Those three carry no ``#anchor-as-of`` element, so the
-                # acknowledgement is not emitted there at all (finding N-199).
-                # Asserted rather than skipped, so the gap is a recorded fact.
-                assert "recorded as of" not in html
-                return
             # The user is TOLD the back-dated write landed, because the cell
             # re-renders from the GOVERNING assertion and would otherwise be
-            # indistinguishable from having done nothing.  The DAY is graded,
-            # not the phrase: a mutant naming the governing assertion's day
-            # instead of the submitted one also passed the whole suite, and it
-            # is worse than silence -- it affirmatively tells the user the
-            # correction landed on a day it did not.
-            assert (
-                f"recorded as of {statement_day.strftime('%b %-d, %Y')}" in html
+            # indistinguishable from having done nothing.
+            #
+            # **On ALL FIVE surfaces since plan step X-f1e3.**  It used to ride
+            # the per-surface ``#anchor-as-of`` caption and so reached one:
+            # three surfaces carry no such element and were skipped outright,
+            # and the dashboard's copy was destroyed by the ``balanceChanged``
+            # refresh this same response fires (finding N-199).  The mount
+            # asserted below is what makes five a property of the structure.
+            assert 'id="anchor-ack-mount"' in html, (
+                "the acknowledgement must ride the global base.html mount, "
+                "not a per-surface element only some surfaces carry"
             )
+            # **The negatives are scoped to the acknowledgement fragment, not
+            # to the whole body, and that is load-bearing.**  On the grid the
+            # response ALSO carries the ``#anchor-as-of`` snippet, which
+            # correctly says "as of <today>" because today's assertion is the
+            # one that still governs.  A whole-body ``not in`` would read that
+            # correct caption as the acknowledgement naming the wrong day and
+            # fail the honest code, which is a control that fires on the truth.
+            #
+            # The as-of snippet is REMOVED before slicing rather than the
+            # slice being taken on faith.  Taking everything after the mount
+            # id makes the negatives depend on the order the route
+            # concatenates its fragments (``html + as_of + feedback``): move
+            # the acknowledgement earlier and ``f"as of {today}" not in ack``
+            # would silently start grading the as-of snippet instead, which is
+            # a control that stops testing its own subject without failing.
+            assert html.count('id="anchor-ack-mount"') == 1
+            ack = re.sub(
+                r'<small[^>]*id="anchor-as-of".*?</small>', "", html,
+                flags=re.DOTALL,
+            ).split('id="anchor-ack-mount"', 1)[1]
+            assert "Balance recorded" in ack
+            # **The attribute that makes the toast VISIBLE, graded** -- the
+            # whole feature hangs on one token and nothing saw it.  Vendored
+            # Bootstrap carries ``.toast:not(.show){display:none}``, and the
+            # only thing that adds ``.show`` to a fragment arriving by
+            # out-of-band swap is ``app.js``'s ``[data-toast-auto-show]``
+            # handler.  Deleting this attribute leaves the acknowledgement in
+            # the DOM and permanently invisible -- N-199's exact symptom --
+            # and an adversarial review MEASURED the whole suite still
+            # passing on that mutation.  The reconcile prompt's twin marker
+            # is already graded two tests down; this one was the only
+            # auto-show marker in the app that nothing checked.
+            assert "data-toast-auto-show" in ack, (
+                "without this marker the toast swaps in with display:none "
+                "and the user sees nothing -- the defect N-199 records"
+            )
+            # The DAY is graded, not just the phrase: a mutant naming the
+            # governing assertion's day instead of the submitted one also
+            # passed the whole suite, and it is worse than silence -- it
+            # affirmatively tells the user the correction landed on a day it
+            # did not.
+            assert f"as of {statement_day.strftime('%b %-d, %Y')}" in ack
             assert (
-                f"recorded as of {today.strftime('%b %-d, %Y')}" not in html
+                f"as of {today.strftime('%b %-d, %Y')}" not in ack
             ), "the acknowledgement must name the SUBMITTED day, not today"
+            # The BALANCE too, for the same reason the day is graded: the
+            # acknowledgement is the only evidence the write landed, so naming
+            # the governing figure instead of the submitted one would confirm
+            # a value the user did not enter.
+            assert "$2,500.00" in ack
+            assert "$1,000.00" not in ack, (
+                "the acknowledgement must name the SUBMITTED balance, not the "
+                "one that still governs"
+            )
 
     @pytest.mark.parametrize(
         "revert",
@@ -6133,28 +6202,18 @@ class TestCashDetailClickToEditHero:
                 in body
             )
 
-    def test_true_up_cash_revert_skips_as_of_oob(
-        self, app, auth_client, seed_user, seed_periods_today,
-    ):
-        """With ?revert=cash, the success response omits the as-of OOB.
-
-        The cash detail page has no singleton ``#anchor-as-of`` element
-        (the band's caption re-renders with the region on
-        ``balanceChanged``), so the out-of-band "as of" snippet -- which
-        would orphan-target -- is dropped.  The ``balanceChanged``
-        trigger still fires.
-        """
-        with app.app_context():
-            acct_id = seed_user["account"].id
-            response = auth_client.patch(
-                f"/accounts/{acct_id}/true-up?revert=cash",
-                data={"anchor_balance": "3210.00"},
-            )
-            assert response.status_code == 200
-            assert response.headers.get("HX-Trigger") == "balanceChanged"
-            body = response.data.decode()
-            assert 'id="anchor-as-of"' not in body
-            assert 'hx-swap-oob="true"' not in body
+    # ``test_true_up_cash_revert_skips_as_of_oob`` was DELETED at plan step
+    # X-f1e3.  It is the ``cash-hero`` case of
+    # ``TestTrueUp.test_the_as_of_snippet_goes_to_the_grid_and_only_the_grid``,
+    # which grades all five openers in one parametrization -- keeping a third
+    # copy is the duplication that parametrization removed.  Its second
+    # assertion had also become false in principle: it read
+    # ``'hx-swap-oob="true"' not in body``, meaning "this surface receives no
+    # out-of-band fragment at all", and BOTH the reconcile prompt and the
+    # back-dated acknowledgement now ride out-of-band on all five surfaces by
+    # design.  It passed only because this fixture has nothing outstanding and
+    # submits no ``observed_on``; the first purchase added to it would have
+    # failed here and read as a regression in the new feature.
 
 
 # ── Multi-Tenant Account Type Ownership (commit C-28 / F-044) ─────
@@ -6965,10 +7024,145 @@ class TestAnchorKindGate:
                 .filter_by(account_id=loan.id).count()
             ) == events_before
 
+    def test_the_kind_refusal_is_a_fragment_the_submitting_form_can_render(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The kind refusal is DESIGNED, so the user actually sees it.
+
+        **Plan step X-f1e3, finding N-199.**  This arm answered a raw string
+        body, and ``base.html``'s htmx config leaves 4xx non-swapping, so the
+        refusal rendered NOTHING and the form simply sat there -- the exact
+        defect X-f1c4c converted the door's other arm to prevent.
+
+        It was left raw on the argument that the arm answers a forged request:
+        ``anchor_form`` refuses to OPEN the editor for a loan, so no user could
+        reach the PATCH.  **That argument is false, and the test below proves
+        the path.**  An account's kind is editable, and a boundary-crossing
+        re-type is permitted while the account carries no ledger postings, so a
+        form opened on a cash account can be submitted after that account has
+        become a loan.
+
+        Graded on the MARKER HEADER, not on the status: the header is what the
+        global ``htmx:beforeSwap`` listener reads to swap a 4xx at all, so a
+        fragment without it is invisible however well it renders.  The 422 is
+        asserted too -- a designed fragment does not need a 2xx, and flattening
+        this onto the input-shaped 400 would tell a non-htmx client the payload
+        was malformed when it was the entity that could not be processed.
+        """
+        with app.app_context():
+            loan = self._loan(seed_user)
+
+            response = auth_client.patch(
+                f"/accounts/{loan.id}/true-up",
+                data={"anchor_balance": "1.00"},
+            )
+
+            assert response.status_code == 422
+            assert response.headers.get("Shekel-Designed-Fragment") == "1", (
+                "without the marker header htmx leaves this 4xx non-swapping, "
+                "so the refusal is invisible and the form sits there"
+            )
+            body = response.data.decode()
+            assert "not a cash anchor" in body
+            assert 'role="alert"' in body
+            # **It renders the read-only DISPLAY cell, not the editor.**  An
+            # adversarial review caught the first version of this fix
+            # re-rendering the editor: a live input and a Save button whose
+            # PATCH is guaranteed to be refused again -- the dead-end
+            # affordance this module's own ``anchor_form`` docstring forbids,
+            # twelve lines below the arm that was offering it.  There is
+            # nothing here to resubmit, so the response must not look like
+            # there is.
+            assert 'name="anchor_balance"' not in body, (
+                "a refusal that can never be satisfied must not re-offer the "
+                "form that cannot satisfy it"
+            )
+            assert 'id="anchor-display"' not in body
+            assert "hx-get" not in body
+
+    def test_a_cash_account_can_become_a_loan_under_an_open_editor(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The kind refusal's user path exists -- it is not a forged request.
+
+        **The measurement behind the docstring correction in
+        ``_true_up_request_gates``** (finding N-199).  This test does not
+        assert on the refusal; it asserts the STATE the refusal answers is
+        reachable through ordinary routes, which is what makes a designed
+        fragment worth rendering.
+
+        The sequence is two browser tabs: open the anchor editor on a cash
+        account, re-type that account to an amortizing kind, then submit the
+        still-open form.  The re-type is permitted here because the account
+        carries no ledger postings -- a ``$0.00`` opening emits no legs, so
+        ``_validate_account_type_change``'s posting guard does not bite.
+        """
+        with app.app_context():
+            # A SAVINGS account whose opening asserts $0.00: a zero delta
+            # emits no legs, so its ledger is empty and the posting guard in
+            # ``_validate_account_type_change`` does not bite.  Built through
+            # the service, the shape ``TestTypeChangeBoundaryGuard`` uses.
+            savings_type = (
+                db.session.query(AccountType)
+                .filter_by(name="Savings", user_id=None).one()
+            )
+            account = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings_type.id,
+                    name="Opened At Zero",
+                    anchor_balance=Decimal("0.00"),
+                ),
+            )
+            db.session.commit()
+            account_id = account.id
+
+            # Tab A opens the editor: the account is cash, so it opens.
+            assert auth_client.get(
+                f"/accounts/{account_id}/anchor-form",
+            ).status_code == 200
+
+            # Tab B re-types it across the amortizing boundary.
+            mortgage_type = (
+                db.session.query(AccountType)
+                .filter_by(name="Mortgage", user_id=None).one()
+            )
+            assert mortgage_type.has_amortization, (
+                "the fixture type is not amortizing, so this test would not "
+                "cross the boundary it exists to cross"
+            )
+            auth_client.post(
+                f"/accounts/{account_id}",
+                data={"account_type_id": str(mortgage_type.id)},
+                follow_redirects=True,
+            )
+            db.session.expire_all()
+            assert db.session.get(
+                Account, account_id,
+            ).account_type.has_amortization, (
+                "the re-type was refused, so this test is no longer proving "
+                "the kind refusal is reachable -- re-check "
+                "_validate_account_type_change's posting guard"
+            )
+
+            # Tab A submits the form it opened while the account was cash.
+            submitted = auth_client.patch(
+                f"/accounts/{account_id}/true-up",
+                data={"anchor_balance": "1.00"},
+            )
+            assert submitted.status_code == 422
+            assert submitted.headers.get("Shekel-Designed-Fragment") == "1"
+
     def test_anchor_form_refuses_amortizing_loan(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """GET anchor-form for a loan: 422 -- the editor never even opens."""
+        """GET anchor-form for a loan: 422 -- the editor never even opens.
+
+        Designed since plan step X-f1e3, for the same reason as its PATCH
+        twin: a raw 4xx is left non-swapping by ``base.html``, so the click
+        produced NOTHING at all -- and unlike the PATCH there was not even a
+        form sitting there to explain it.
+        """
         with app.app_context():
             loan = self._loan(seed_user)
 
@@ -6976,6 +7170,58 @@ class TestAnchorKindGate:
 
             assert response.status_code == 422
             assert b"not a cash anchor" in response.data
+            assert response.headers.get("Shekel-Designed-Fragment") == "1"
+
+    def test_a_loan_balance_cell_offers_no_click_to_edit(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The refused affordance is DELETED, not decorated with a refusal.
+
+        **Plan step X-f1e3's root fix for finding N-199's second half.**  Both
+        anchor doors refuse an amortizing account, and the shared display
+        partial offered the click anyway on every surface that includes it, so
+        an ordinary click reached a refusal the page could not render.  A
+        control that cannot succeed is not offered: the cell renders read-only,
+        which is the rule ``savings/_cockpit_balance.html`` already followed
+        and the other four surfaces did not.
+
+        Graded on the ABSENCE of the opener, not on the presence of the
+        figure: a mutant that kept ``hx-get`` while adding a title attribute
+        would still be a dead click.
+        """
+        with app.app_context():
+            loan = self._loan(seed_user)
+
+            body = auth_client.get(
+                f"/accounts/{loan.id}/anchor-display",
+            ).data.decode()
+
+            assert "anchor-balance-display" in body, (
+                "the loan's balance must still be SHOWN -- this step removes "
+                "the edit affordance, not the figure"
+            )
+            assert 'id="anchor-display"' not in body
+            assert "hx-get" not in body
+            assert "data-keyboard-activate" not in body
+            assert 'role="button"' not in body
+
+    def test_a_cash_balance_cell_still_offers_click_to_edit(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The negative control for the read-only branch, on a CASH account.
+
+        Without this, deleting the affordance for EVERY account would pass the
+        test above -- and would silently remove the one-click true-up habit
+        this whole arc is built around.
+        """
+        with app.app_context():
+            body = auth_client.get(
+                f"/accounts/{seed_user['account'].id}/anchor-display",
+            ).data.decode()
+
+            assert 'id="anchor-display"' in body
+            assert "hx-get" in body
+            assert 'role="button"' in body
 
     def test_update_form_cannot_assert_a_loan_balance_at_all(
         self, app, auth_client, seed_user, seed_periods_today,

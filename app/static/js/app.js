@@ -196,6 +196,23 @@ document.body.addEventListener("htmx:afterSwap", function(event) {
     target.querySelectorAll('[data-modal-auto-show]').forEach(function(modalEl) {
       bootstrap.Modal.getOrCreateInstance(modalEl).show();
     });
+
+    // Auto-show toast partials swapped into the DOM -- the toast twin of
+    // the modal handler above (plan step X-f1e3).  Used by the anchor
+    // true-up's back-dated acknowledgement, which arrives out-of-band
+    // into #anchor-ack-mount in base.html.  The DOMContentLoaded block
+    // near the bottom of this file shows FLASH toasts, which exist only
+    // on a full page render; a toast raised by an HTMX response has no
+    // page load to be shown by, and without this it would swap in and
+    // stay invisible (.toast is display:none until .show).
+    //
+    // Marked by ``data-toast-auto-show`` rather than matching .toast, so
+    // an unrelated swap that happens to carry toast markup cannot
+    // re-show a toast the user already dismissed.  Delay and autohide
+    // come from the element's own data-bs-* attributes.
+    target.querySelectorAll('[data-toast-auto-show]').forEach(function(toastEl) {
+      bootstrap.Toast.getOrCreateInstance(toastEl).show();
+    });
   }
 });
 

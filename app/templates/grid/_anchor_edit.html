@@ -114,6 +114,44 @@
   <div class="small text-danger mt-1" role="alert">{{ error }}</div>
   {% endif %}
 </form>
+{% elif account.account_type.has_amortization %}
+{# Display mode, AMORTIZING: read-only, because the click has nowhere to go
+   (plan step X-f1e3).
+
+   **This is the affordance the two kind refusals were refusing.**  A loan's
+   balance is ledger-derived and is asserted on the loan's own page (ruling D4
+   / step A1, finding B-15), so BOTH anchor doors reject an amortizing account:
+   ``anchor_form`` will not open the editor and ``true_up`` will not write.
+   This partial offered the click anyway, on every surface that includes it, so
+   the refusal was reached by an ordinary click and -- ``base.html`` leaving 4xx
+   non-swapping -- produced no visible response at all.  A dead click with no
+   form to explain it is worse than an unrenderable refusal, which is the
+   defect finding N-199 names one door over.
+
+   Deleting the affordance is the root fix rather than designing a nicer
+   refusal for it: a control that cannot succeed should not be offered.  The
+   Net Worth Cockpit already renders its loan cells read-only for exactly this
+   reason (``savings/_cockpit_balance.html``) -- that rule simply never reached
+   the SHARED partial the other four surfaces render, so one surface was
+   correct and four were not.
+
+   Branches on the ``has_amortization`` boolean column, never a type-name
+   string.  The service-layer refusals STAY: they answer a forged or raced
+   request (an account's kind is editable, so a form opened on a cash account
+   can be submitted after it became a loan), and this template is display, not
+   a guard. #}
+<div class="anchor-balance-display font-mono"
+     title="A loan's balance is recorded on the loan's own page">
+  {{ money(anchor_balance, cents=false) }}
+</div>
+{% if error %}
+{# The REFUSAL, when a submission raced the account's kind: the editor was
+   opened while the account was cash and submitted after it became a loan.
+   Rendered beside the read-only figure rather than beside a live input,
+   because there is nothing here to resubmit -- the message names where the
+   balance is recorded instead. #}
+<div class="small text-danger mt-1" role="alert">{{ error }}</div>
+{% endif %}
 {% else %}
 {# Display mode: clickable balance.  The reopen hx-get carries the same
    ``revert`` token (dashboard only) so the editor opens back in the surface
