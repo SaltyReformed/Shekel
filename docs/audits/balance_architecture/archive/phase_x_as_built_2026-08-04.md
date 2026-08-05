@@ -1,8 +1,10 @@
-# Phase X as built: X-c2c4 through X-f1b
+# Phase X as built: X-c2c4 through X-f1e1
 
 **Read-only history. Nothing here governs work.** The live document is `../README.md`. This record
 was extracted 2026-08-04, when that document stood at 6,688 lines and Section 9 rule 4 was rewritten
-into a 1,000-line cap with a gate behind it.
+into a 1,000-line cap with a gate behind it. **Extended 2026-08-05** with the X-f1 cluster
+(X-f1a .. X-f1e1), when the live document reached 1,195 of its 1,200-line cap -- the second time
+rule 4 bound, and the same answer both times: condense what SHIPPED, never trim what remains.
 
 **Every line here is one step, its commit, and what it closed. The commit message is the step's own
 account of itself and every hash below was verified against `git log` at extraction; the narrative,
@@ -47,6 +49,36 @@ merged.
 | **X-af** | `209e8b6c` | test(periods): the fixtures build their window on the USER's clock | N-137 (merge-gate half) | PR #77, merge `dbee3812`. Test-only. Opened N-138 |
 | **X-aj1** | `1688f508` + `63514efc` + `1e75d0ce` | refactor(transfers): restore validates before it mutates | N-146 | PR #80, merge `dde107f6`. `transfer_service.py` 999 -> 987. Opened N-149..N-152 |
 | **X-f1b** | `51679384` | feat(transactions): a settle carries the day the money moved | N-179, N-182, N-183 | Figure-neutral by construction. Opened N-180, N-181, N-184, N-185 |
+
+### 1a. The X-f1 cluster (added 2026-08-05)
+
+Every row below is on `feat/xf1-settle-day` and **none of it is in production**, which still runs
+merge `e5f27154` at migration head `d7c1f4a9e603`. The parent **X-f1** stays LIVE in
+`../README.md` -- X-f1e2 and X-f1e3 remain -- so this section is the cluster's shipped leaves, not
+the step. Hashes re-verified against `git log` at extraction.
+
+| step | commit(s) | what the commit says it did | findings closed | note |
+|---|---|---|---|---|
+| **X-f1a** | `1ca63972` | docs(balance): X-f1's three forks are ruled, and the reviews refuted three claims | -- | Rulings R-EC / R-ED / R-EE, before any code cited them |
+| **X-f1b0** | `70ba87f6` (folded into `51679384`) + `0b04f255` | fix: a re-settle does not re-date the money | N-178 | **Never shipped as its own commit**, so the revertability the plan claimed for it was false. Cited at three sites in the code |
+| **X-f1c1** | `0b04f255` | feat(transactions): the settle day is editable on a settled row | N-184, N-186, N-189 | Ruling R-ED, plus R-EG's shared `settle_day_for_status`, R-EJ's future-day refusal, R-EL's lower bound. Preceded by the module split its 1000-line ceiling forced. **Hash recovered at extraction -- the plan never recorded it** |
+| **X-f1c2** | `7e9f261a` | feat(transfers): the settle day is editable on a settled transfer | N-181 | Ruling R-EF. `Transfer.settled_on` as a read-only property over the INCOME shadow; no setter, so the seam stays the single writer structurally. **Hash recovered at extraction** |
+| **X-f1c3a** | `c16bdb3b` | refactor(accounts): the asserted balance has one resolver | N-73, N-83 (cache half), N-103 (premise), cash D4 | Rulings R-EM / R-EP. `resolve_anchor` loses `scenario_id`, gains a batch twin; five `IS NULL` guards on a `NOT NULL` column deleted |
+| **X-f1c3b** | `379ed1af` | refactor(accounts): an assertion is a day and a balance | N-168, N-169 (cash half), N-170 | Ruling R-EO. Drops `account_anchor_history.pay_period_id`; 0 of 78 production rows rejected by the tighter key. `reset_pay_periods` stops destroying 69 real observations |
+| **X-f1c3c** | `4b0af18b` (migration `c81f0a5b3e27`) | refactor(accounts): the anchor balance has one home, and the reconcile has a lock | N-134, N-4, N-5, N-190 | Ruling R-EH drops both anchor cache columns; R-EN removes the C-17 lock. Carries N-190's fix -- one per-USER advisory lock inside the reconcile, all four entry points. Opened **N-191**, **N-192**, **N-193**. **The commit's subject differs from the title the plan predicted** (`drop the anchor cache columns`) |
+| **X-f1c4a** | `380d44dd` | docs(balance): the duplicate rule is designed, not re-keyed a fourth time | -- | Ruling R-EQ, with R-EE / R-EI restated onto the leaves that build them |
+| **X-f1c4b** | `22e472e6` (migration `a3f6c1d84b90`) | refactor(anchors): an assertion is refused only when it changes nothing | N-194 | Ruling R-EQ on BOTH anchor tables in one commit. Drops both content-keyed unique indexes. The horizon correction -- compare against the assertion governing the SUBMITTED DAY, not the account's latest -- came from three adversarial reviews; all four lock mutants had survived the suite before its tests existed. Opened **N-195**, **N-196** |
+| **X-f1c4c** | `5fc22bba` | feat(accounts): a true-up carries the statement day it was read from | N-187 is NOT among these -- see X-an | Rulings R-EE / R-EI / R-ER. Fixed two live defects the plan had not named: an unrenderable refusal, and a reconcile prompt decoupled from the coverage boundary releasing `$120.00` of projected checking. 16 mutants planted and killed. Opened **N-197**, **N-198**, **N-199** |
+| **X-f1d** | -- | the archive move (N-175) | N-175 | No commit of its own: done at the 2026-08-04 trim, when `anchor_settle_partition.md` moved here |
+| **X-f1e1** | `677bb397` | refactor(accounts): a balance is asserted at ONE door | N-195 | The account EDIT page stops asserting balances, in four layers (template, schema, route branch, kind gate) so none is a fence. Measured refutation of the two reviews that recommended ALIGNING the door: with its gate deleted, a RENAME moves the coverage boundary two months. Baselines byte-identical, positive-controlled; four controls shown to fail on revert |
+
+**The three DECOMPOSITION PARENTS have no commit of their own and ticked with their last leaf**,
+and they are listed because the live document still cites them by id: **X-f1c** (the edit doors --
+c1, c2, c3, c4; the re-scope was itself the finding, since as one leaf it was measured wrong three
+ways), **X-f1c3** (the anchor's one home -- c3a, c3b, c3c; the census was 65 references over 24
+`app/` modules and 5 templates, and substituting moved no figure on 9 of 9 production accounts),
+and **X-f1c4** (the statement day and the duplicate rule -- c4a, c4b, c4c, one SESSION each).
+**X-f1c's ordering was load-bearing: c3 ran BEFORE c4**, so back-dating never met the anchor cache.
 ## 2. Findings closed outside a Phase X step
 
 | finding | closed by | note |
