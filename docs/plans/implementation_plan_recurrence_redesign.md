@@ -193,12 +193,14 @@ due_offset_days = +10
 
 ## 3. Target model
 
-```sql
-ref.recurrence_units        -- PERIOD, WEEK, MONTH, YEAR
-ref.period_placements       -- CONTAINING_DATE, PERIOD_STARTING_ON_OR_AFTER
-ref.business_day_shifts     -- NONE, PRIOR, NEXT
+**This is the END state. Which step creates each piece is marked; see R2.**
 
-budget.recurrence_rules
+```sql
+ref.recurrence_units        -- PERIOD, WEEK, MONTH, YEAR                    [R2]
+ref.period_placements       -- CONTAINING_DATE, PERIOD_STARTING_ON_OR_AFTER [R2]
+ref.business_day_shifts     -- NONE, PRIOR, NEXT                            [R2]
+
+budget.recurrence_rules                                                     [R2]
   id               PK
   user_id          FK auth.users CASCADE          NOT NULL
   interval_n       INT   NOT NULL  CHECK (interval_n > 0)
@@ -211,13 +213,15 @@ budget.recurrence_rules
   created_at
   CHECK (end_date IS NULL OR max_occurrences IS NULL)   -- at most one end bound
 
-budget.recurrence_due_dates          -- 0..1 per rule; present iff installment <> cash
+budget.recurrence_due_dates    [HALF B -- created in R5/R6, NOT in R2]
+                               -- 0..1 per rule; present iff installment <> cash
   recurrence_rule_id  PK FK -> budget.recurrence_rules  ON DELETE CASCADE
   due_day             SMALLINT NOT NULL CHECK (due_day BETWEEN 1 AND 31)
   due_month_offset    SMALLINT NOT NULL DEFAULT 0
                       CHECK (due_month_offset BETWEEN -12 AND 12)
 
-budget.recurrence_weekday_anchors    -- 0..1 per rule; nth-weekday-of-month rules
+budget.recurrence_weekday_anchors    [R2 creates it; R8 is the first writer]
+                                     -- 0..1 per rule; nth-weekday-of-month rules
   recurrence_rule_id  PK FK -> budget.recurrence_rules  ON DELETE CASCADE
   nth_week            SMALLINT NOT NULL
                       CHECK (nth_week BETWEEN -1 AND 5 AND nth_week <> 0)  -- -1 = last
@@ -310,13 +314,46 @@ proves the harness resolves the engine at call time rather than having bound it 
 "can it SEE the code under test?" failure. Suite **7,875 passed** (7,868 + 7), green under
 `TZ=Pacific/Kiritimati`; the capture reads no clock.
 
-**R2 -- New schema, additive.** Three ref tables + the three `AUDITED_TABLES` entries + the new
-columns and subtype tables, all nullable, with the backfill IN the migration (backfills belong in
-Alembic). Old columns retained and still authoritative. Downgrade works.
+**R2 -- New schema, additive.** Old columns retained and still authoritative; nothing reads the new
+ones yet. Section 3 is the END state, this is how it gets there.
+
+*Creates:* `ref.recurrence_units`, `ref.period_placements`, `ref.business_day_shifts` (seeded in the
+migration, the dual-seed pattern the posting refs use so a freshly upgraded DB resolves them before
+`ref_seeds` re-runs); the new `recurrence_rules` columns; and `budget.recurrence_weekday_anchors`.
+*Does NOT create* `budget.recurrence_due_dates` -- **that one is Half B** (section 0), because Half
+A must leave the `due_date` contract byte-identical for the R1 baseline to stay green.
+`recurrence_weekday_anchors` IS created here even though nothing writes it until R8: one migration
+for the shape, not two.
+
+*Nullability, the documented three-step* (`.claude/rules/database.md`): `anchor_date`, `unit_id`,
+`placement_id` and `shift_id` land NULLABLE, the backfill populates them, and the SAME migration
+tightens them to NOT NULL after verifying zero NULLs -- raising `RuntimeError` with the diagnostic
+SELECT if any survive. `placement_id` defaults to `CONTAINING_DATE` and `shift_id` to `NONE` for
+every backfilled row, so R8 turns behaviour on rather than adding a column.
+
+*The backfill* derives each rule from section 3's mapping table. Two derivations it must not be left
+to invent: an `EVERY_PERIOD` / `EVERY_N_PERIODS` rule takes its `anchor_date` from
+`start_period.start_date`, falling back to the earliest generated row's period start when
+`start_period_id` is NULL; and the **5 ORPHANED rules have neither**, so they are DELETED here
+rather than backfilled with a guess (R9 changes the template FKs off `ON DELETE SET NULL` so they
+cannot recur). Deleting them is destructive, so the migration carries the `Review:` line the
+database rules require.
+
+*Exit criteria.* Migration tested in BOTH directions. `python scripts/build_test_template.py` re-run
+(it adds a migration, so every suite fails against a stale template until it is). And the R1
+baseline **byte-identical** -- R2 changes no behaviour, so a moved line means the migration touched
+something it should not have.
 
 **R3 -- New engine, parallel and unread.** `app/services/recurrence/` with `occurrences()` and
-`place()`. Pure, no Flask. Ships with the parallel-run test asserting new output == R1 oracle for
-every live rule shape. Nothing reads it yet.
+`place()`. Pure, no Flask. Nothing reads it yet.
+
+Ships with a parallel-run test that drives the NEW engine through
+`tests/oracles/recurrence_baseline.py`'s own shape set and schedules and asserts it reproduces the
+committed blob -- all **423 shapes**, not the 50 live ones. Expect exactly one class of legitimate
+divergence: the `long_cadence.*` shapes, which R1 froze WRONG on purpose (D3's dropped months and
+duplicate period). Those lines are the proof R3 works and must be re-frozen with
+`SHEKEL_UPDATE_RECURRENCE_BASELINE=1` **in R4's commit, not R3's** -- R3 changes no reader, so
+nothing it does may move the baseline yet.
 
 **R4 -- Cut generation over.** `match_periods` becomes a thin adapter, then callers move to the new
 engine. D3 dies here. The R1 oracle is the gate.
