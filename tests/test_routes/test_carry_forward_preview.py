@@ -122,7 +122,7 @@ def _add_entry(txn, seed_user, amount):
         user_id=seed_user["user"].id,
         amount=Decimal(amount),
         description="Test purchase",
-        entry_date=date(2026, 1, 5),
+        purchased_on=date(2026, 1, 5),
     ))
     db.session.flush()
 

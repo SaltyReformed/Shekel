@@ -32,8 +32,7 @@ from app.utils.log_events import (
     EVT_CREDIT_UNMARKED,
     EVT_CROSS_USER_BLOCKED,
     EVT_ANCHOR_CACHE_RECONCILED,
-    EVT_ENTRIES_CLEARED_ON_ANCHOR_TRUEUP,
-    EVT_ENTRY_CLEARED_TOGGLED,
+    EVT_ENTRIES_SETTLED_DAY_RECORDED,
     EVT_ENTRY_CREATED,
     EVT_ENTRY_DELETED,
     EVT_ENTRY_PAYBACK_CREATED,
@@ -309,8 +308,11 @@ class TestExpectedEventsRegistered:
         (EVT_ENTRY_CREATED, BUSINESS),
         (EVT_ENTRY_UPDATED, BUSINESS),
         (EVT_ENTRY_DELETED, BUSINESS),
-        (EVT_ENTRY_CLEARED_TOGGLED, BUSINESS),
-        (EVT_ENTRIES_CLEARED_ON_ANCHOR_TRUEUP, BUSINESS),
+        # Business (plan step S1-c -- the reconcile step's writer).  It
+        # SUCCEEDS the two events the retired ``is_cleared`` flag needed: the
+        # bulk clear at true-up and the manual toggle both deleted with the
+        # flag, and one event now records an OBSERVATION the user supplied.
+        (EVT_ENTRIES_SETTLED_DAY_RECORDED, BUSINESS),
         # Business (Commit 4 / E-19 -- balance_resolver anchor reconciliation)
         (EVT_ANCHOR_CACHE_RECONCILED, BUSINESS),
         (EVT_PAY_PERIODS_GENERATED, BUSINESS),

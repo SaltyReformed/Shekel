@@ -40,11 +40,23 @@ correction is recorded at the step.
 
 The reservation formula under test::
 
-    cleared_debit   = sum(amount where not is_credit and     is_cleared)
-    uncleared_debit = sum(amount where not is_credit and not is_cleared)
-    sum_credit      = sum(amount where is_credit)
+    settled_debit     = sum(amount where not is_credit
+                            and settled_on <= reconciled_through)
+    outstanding_debit = sum(amount where not is_credit and every other case)
+    sum_credit        = sum(amount where is_credit)
 
-    impact = max(estimated - cleared_debit - sum_credit, uncleared_debit)
+    impact = max(estimated - settled_debit - sum_credit, outstanding_debit)
+
+**Which bucket a debit falls in is DERIVED from a DATE** (plan step S1-c, ruling
+R-DH (d)).  It was a stored ``is_cleared`` boolean, and every fixture below
+carried it as a third bool in a triple.  The boolean was an unconditional claim
+that a purchase was inside the anchor -- a claim its own account could not
+always support -- so the triples now carry the day the bank was SEEN to take the
+money, and the bucket is ``settled_on <= reconciled_through`` evaluated here.
+Three consequences are new test cases rather than renames: a NULL posting day is
+OUTSTANDING, a posting day AFTER the day the balance was read is OUTSTANDING,
+and an account that has never asserted a balance reconciles nothing.  None of
+the three was expressible while the answer was a flag.
 """
 
 from datetime import date
@@ -52,6 +64,8 @@ from decimal import Decimal
 from pathlib import Path
 
 from app.services.cash_ledger._amounts import (
+    ProjectedBasis,
+    ReconciledThrough,
     _entry_aware_amount,
     _expense_amount,
     income_amount,
@@ -59,7 +73,19 @@ from app.services.cash_ledger._amounts import (
 from tests._test_helpers import add_entry, add_txn, create_envelope_txn
 
 
-_ENTRY_DAY = date(2026, 1, 20)
+# The four days these tests turn on, named for the fact each one is.  They are
+# DISTINCT on purpose: a purchase made, taken by the bank a day later, and read
+# on a statement two days after that is the ordinary debit-card shape, and
+# collapsing them onto one date would hide which comparison the rule makes.
+_PURCHASED_ON = date(2026, 1, 20)
+_POSTED_ON = date(2026, 1, 21)
+_STATEMENT_DAY = date(2026, 1, 22)
+# The BOUNDARY that day establishes.  It is a type and not a date so that
+# `settled_on <= reconciled_through` cannot be written anywhere but inside
+# `ReconciledThrough.covers` -- see that class for what the fifth spelling
+# of this rule cost production.
+_ASSERTED_THROUGH = ReconciledThrough(_STATEMENT_DAY)
+_POSTED_AFTER_THE_STATEMENT = date(2026, 1, 23)
 
 
 def _envelope(db_session, seed_user, period, estimated, entries=()):
@@ -78,8 +104,15 @@ def _envelope(db_session, seed_user, period, estimated, entries=()):
         seed_user: The ``seed_user`` fixture dict.
         period: The :class:`~app.models.pay_period.PayPeriod` to place it in.
         estimated: The envelope's budgeted amount, as a string.
-        entries: An iterable of ``(amount, is_credit, is_cleared)`` triples,
-            each a string amount and two bools.
+        entries: An iterable of ``(amount, is_credit, settled_on)`` triples --
+            a string amount, a bool, and the day the bank was seen to take the
+            money (or ``None`` for a purchase not yet seen on a statement).
+            The third element was a BOOL until plan step S1-c, which is the
+            whole finding: a flag claimed a purchase was inside the anchor
+            without saying which day made it so, while a date can be compared
+            against the day the balance was actually read.  Passing the day at
+            the call site is what makes each test's bucket readable there
+            instead of in this helper.
 
     Returns:
         The flushed :class:`~app.models.transaction.Transaction`.
@@ -87,10 +120,10 @@ def _envelope(db_session, seed_user, period, estimated, entries=()):
     txn = create_envelope_txn(
         seed_user, db_session, period, "Groceries", Decimal(estimated),
     )
-    for amount, is_credit, is_cleared in entries:
+    for amount, is_credit, settled_on in entries:
         add_entry(
-            db_session, seed_user, txn, Decimal(amount), _ENTRY_DAY,
-            is_credit=is_credit, is_cleared=is_cleared,
+            db_session, seed_user, txn, Decimal(amount), _PURCHASED_ON,
+            is_credit=is_credit, settled_on=settled_on,
         )
     db_session.commit()
     return txn
@@ -116,7 +149,7 @@ class TestTheEntryAwareReservation:
         with app.app_context():
             txn = _envelope(db.session, seed_user, seed_periods[1], "500.00")
 
-            assert _entry_aware_amount(txn) == Decimal("500.00")
+            assert _entry_aware_amount(txn, _ASSERTED_THROUGH) == Decimal("500.00")
 
     def test_debit_under_budget_holds_the_full_reservation(
         self, app, db, seed_user, seed_periods,
@@ -129,10 +162,10 @@ class TestTheEntryAwareReservation:
         with app.app_context():
             txn = _envelope(
                 db.session, seed_user, seed_periods[1], "500.00",
-                [("200.00", False, False)],
+                [("200.00", False, None)],
             )
 
-            assert _entry_aware_amount(txn) == Decimal("500.00")
+            assert _entry_aware_amount(txn, _ASSERTED_THROUGH) == Decimal("500.00")
 
     def test_a_credit_entry_reduces_the_reservation(
         self, app, db, seed_user, seed_periods,
@@ -145,10 +178,10 @@ class TestTheEntryAwareReservation:
         with app.app_context():
             txn = _envelope(
                 db.session, seed_user, seed_periods[1], "500.00",
-                [("300.00", False, False), ("100.00", True, False)],
+                [("300.00", False, None), ("100.00", True, None)],
             )
 
-            assert _entry_aware_amount(txn) == Decimal("400.00")
+            assert _entry_aware_amount(txn, _ASSERTED_THROUGH) == Decimal("400.00")
 
     def test_all_credit_leaves_only_the_uncovered_portion(
         self, app, db, seed_user, seed_periods,
@@ -161,10 +194,10 @@ class TestTheEntryAwareReservation:
         with app.app_context():
             txn = _envelope(
                 db.session, seed_user, seed_periods[1], "500.00",
-                [("400.00", True, False)],
+                [("400.00", True, None)],
             )
 
-            assert _entry_aware_amount(txn) == Decimal("100.00")
+            assert _entry_aware_amount(txn, _ASSERTED_THROUGH) == Decimal("100.00")
 
     def test_debit_overspend_raises_the_reservation_to_the_debits(
         self, app, db, seed_user, seed_periods,
@@ -177,10 +210,10 @@ class TestTheEntryAwareReservation:
         with app.app_context():
             txn = _envelope(
                 db.session, seed_user, seed_periods[1], "500.00",
-                [("530.00", False, False)],
+                [("530.00", False, None)],
             )
 
-            assert _entry_aware_amount(txn) == Decimal("530.00")
+            assert _entry_aware_amount(txn, _ASSERTED_THROUGH) == Decimal("530.00")
 
     def test_mixed_overspend_takes_the_debit_floor_over_the_reduction(
         self, app, db, seed_user, seed_periods,
@@ -193,10 +226,10 @@ class TestTheEntryAwareReservation:
         with app.app_context():
             txn = _envelope(
                 db.session, seed_user, seed_periods[1], "500.00",
-                [("400.00", False, False), ("200.00", True, False)],
+                [("400.00", False, None), ("200.00", True, None)],
             )
 
-            assert _entry_aware_amount(txn) == Decimal("400.00")
+            assert _entry_aware_amount(txn, _ASSERTED_THROUGH) == Decimal("400.00")
 
     def test_zero_estimate_with_a_debit_reserves_the_debit(
         self, app, db, seed_user, seed_periods,
@@ -209,10 +242,10 @@ class TestTheEntryAwareReservation:
         with app.app_context():
             txn = _envelope(
                 db.session, seed_user, seed_periods[1], "0.00",
-                [("50.00", False, False)],
+                [("50.00", False, None)],
             )
 
-            assert _entry_aware_amount(txn) == Decimal("50.00")
+            assert _entry_aware_amount(txn, _ASSERTED_THROUGH) == Decimal("50.00")
 
     def test_credit_exceeding_the_estimate_floors_at_the_debits(
         self, app, db, seed_user, seed_periods,
@@ -225,10 +258,10 @@ class TestTheEntryAwareReservation:
         with app.app_context():
             txn = _envelope(
                 db.session, seed_user, seed_periods[1], "500.00",
-                [("100.00", False, False), ("600.00", True, False)],
+                [("100.00", False, None), ("600.00", True, None)],
             )
 
-            assert _entry_aware_amount(txn) == Decimal("100.00")
+            assert _entry_aware_amount(txn, _ASSERTED_THROUGH) == Decimal("100.00")
 
     def test_one_cent_debit_does_not_disturb_the_reservation(
         self, app, db, seed_user, seed_periods,
@@ -241,10 +274,10 @@ class TestTheEntryAwareReservation:
         with app.app_context():
             txn = _envelope(
                 db.session, seed_user, seed_periods[1], "500.00",
-                [("0.01", False, False)],
+                [("0.01", False, None)],
             )
 
-            assert _entry_aware_amount(txn) == Decimal("500.00")
+            assert _entry_aware_amount(txn, _ASSERTED_THROUGH) == Decimal("500.00")
 
     def test_values_near_the_column_limit_do_not_overflow(
         self, app, db, seed_user, seed_periods,
@@ -259,10 +292,10 @@ class TestTheEntryAwareReservation:
             large = "9999999999.99"
             txn = _envelope(
                 db.session, seed_user, seed_periods[1], large,
-                [(large, False, False)],
+                [(large, False, None)],
             )
 
-            assert _entry_aware_amount(txn) == Decimal(large)
+            assert _entry_aware_amount(txn, _ASSERTED_THROUGH) == Decimal(large)
 
     def test_a_row_with_no_template_is_worth_its_effective_amount(
         self, app, db, seed_user, seed_periods,
@@ -280,111 +313,136 @@ class TestTheEntryAwareReservation:
             )
             db.session.commit()
 
-            assert _entry_aware_amount(txn) == Decimal("1200.00")
+            assert _entry_aware_amount(txn, _ASSERTED_THROUGH) == Decimal("1200.00")
 
 
-class TestTheClearedFlag:
-    """``is_cleared`` moves a debit from the FLOOR into the reduction.
+class TestTheRecordedPostingDay:
+    """``settled_on`` moves a debit from the FLOOR into the reduction.
 
-    A cleared debit is already reflected in the account's anchor balance, so it
-    is subtracted from the reservation; an uncleared one has hit checking but
-    is not yet in the anchor, so it acts as the floor instead.
+    A purchase the account's latest asserted balance already contains is
+    subtracted from the reservation; every other purchase has hit checking
+    without the anchor knowing, so it acts as the floor instead.
+
+    **This class tested a stored ``is_cleared`` boolean until plan step S1-c**
+    (ruling R-DH (d)).  The flag was written by a bulk UPDATE at every anchor
+    true-up over "every entry dated on or before the SERVER's today", so which
+    bucket a purchase fell in was decided by the order two buttons were
+    pressed.  The bucket is now
+    ``reconciled_through.covers(entry.settled_on)``, evaluated at read time --
+    the same rule, in the same units, the read replay and the posting walk
+    apply to a settled transaction.
+
+    Three of the cases below could not be WRITTEN against a flag, and they are
+    the ones that matter: an unobserved purchase (NULL), a purchase the bank
+    took after the statement was read, and an account that has never declared a
+    balance.  Each is OUTSTANDING, which is the conservative arm -- the engine
+    never guesses a posting day on the user's behalf.
     """
 
     def test_the_grocery_bug_after_a_true_up(
         self, app, db, seed_user, seed_periods,
     ):
-        """The user-reported defect: three cleared purchases against $500.
+        """The user-reported defect: three posted purchases against $500.
 
-        est=500, cleared_debit=106.86+249.71+105.77=462.34, uncleared=0,
+        est=500, settled_debit=106.86+249.71+105.77=462.34, outstanding=0,
         credit=0.  max(500 - 462.34 - 0, 0) = 37.66 -- only the unreconciled
         remainder is still held.  (Was: 5000 - 37.66 = 4962.34.)
+
+        All three were taken by the bank on 01-21 and the statement the user
+        read was true through 01-22, so all three are inside it.
         """
         with app.app_context():
             txn = _envelope(
                 db.session, seed_user, seed_periods[1], "500.00",
-                [("106.86", False, True),
-                 ("249.71", False, True),
-                 ("105.77", False, True)],
+                [("106.86", False, _POSTED_ON),
+                 ("249.71", False, _POSTED_ON),
+                 ("105.77", False, _POSTED_ON)],
             )
 
-            assert _entry_aware_amount(txn) == Decimal("37.66")
+            assert _entry_aware_amount(txn, _ASSERTED_THROUGH) == Decimal("37.66")
 
-    def test_partial_cleared_and_uncleared(
+    def test_partial_settled_and_outstanding(
         self, app, db, seed_user, seed_periods,
     ):
-        """Cleared reduces, uncleared floors, in the same envelope.
+        """A posted purchase reduces, an unobserved one floors, in one envelope.
 
-        est=500, cleared_debit=100, uncleared_debit=50, credit=0.
+        est=500, settled_debit=100, outstanding_debit=50, credit=0.
         max(500 - 100 - 0, 50) = max(400, 50) = 400.  (Was: 4600.)
         """
         with app.app_context():
             txn = _envelope(
                 db.session, seed_user, seed_periods[1], "500.00",
-                [("100.00", False, True), ("50.00", False, False)],
+                [("100.00", False, _POSTED_ON), ("50.00", False, None)],
             )
 
-            assert _entry_aware_amount(txn) == Decimal("400.00")
+            assert _entry_aware_amount(txn, _ASSERTED_THROUGH) == Decimal("400.00")
 
-    def test_cleared_overspend_floors_at_zero(
+    def test_settled_overspend_floors_at_zero(
         self, app, db, seed_user, seed_periods,
     ):
-        """Cleared debits beyond the budget hold back nothing further.
+        """Posted debits beyond the budget hold back nothing further.
 
-        est=500, cleared_debit=600, uncleared_debit=0, credit=0.
+        est=500, settled_debit=600, outstanding_debit=0, credit=0.
         max(500 - 600 - 0, 0) = max(-100, 0) = 0 -- the money already left and
         the anchor already knows.  (Was: 5000 - 0 = 5000.)
         """
         with app.app_context():
             txn = _envelope(
                 db.session, seed_user, seed_periods[1], "500.00",
-                [("600.00", False, True)],
+                [("600.00", False, _POSTED_ON)],
             )
 
-            assert _entry_aware_amount(txn) == Decimal("0.00")
+            assert _entry_aware_amount(txn, _ASSERTED_THROUGH) == Decimal("0.00")
 
-    def test_all_uncleared_reduces_to_the_legacy_formula(
+    def test_all_outstanding_reduces_to_the_legacy_formula(
         self, app, db, seed_user, seed_periods,
     ):
-        """With nothing cleared the three buckets collapse to the old two.
+        """With nothing posted the three buckets collapse to the old two.
 
-        est=500, uncleared_debit=200, credit=0.
+        est=500, outstanding_debit=200, credit=0.
         max(500 - 0 - 0, 200) = 500, which is what the pre-cleared-flag
         formula gave.  (Was: 4500.)
         """
         with app.app_context():
             txn = _envelope(
                 db.session, seed_user, seed_periods[1], "500.00",
-                [("200.00", False, False)],
+                [("200.00", False, None)],
             )
 
-            assert _entry_aware_amount(txn) == Decimal("500.00")
+            assert _entry_aware_amount(txn, _ASSERTED_THROUGH) == Decimal("500.00")
 
-    def test_cleared_debit_plus_credit_both_reduce(
+    def test_settled_debit_plus_credit_both_reduce(
         self, app, db, seed_user, seed_periods,
     ):
-        """A cleared debit and a credit reduce the same reservation.
+        """A posted debit and a credit reduce the same reservation.
 
-        est=500, cleared_debit=200, uncleared_debit=0, credit=100.
+        est=500, settled_debit=200, outstanding_debit=0, credit=100.
         max(500 - 200 - 100, 0) = 200.  (Was: 4800.)
         """
         with app.app_context():
             txn = _envelope(
                 db.session, seed_user, seed_periods[1], "500.00",
-                [("200.00", False, True), ("100.00", True, False)],
+                [("200.00", False, _POSTED_ON), ("100.00", True, None)],
             )
 
-            assert _entry_aware_amount(txn) == Decimal("200.00")
+            assert _entry_aware_amount(txn, _ASSERTED_THROUGH) == Decimal("200.00")
 
-    def test_a_new_entry_defaults_to_uncleared(
+    def test_a_new_purchase_has_no_posting_day_and_is_outstanding(
         self, app, db, seed_user, seed_periods,
     ):
-        """An entry written without the flag is UNCLEARED, and that is safe.
+        """A purchase written without a posting day is OUTSTANDING, and safe.
 
-        The default matters to money: an entry defaulting to CLEARED would
-        subtract a purchase from the reservation before the anchor reflected
-        it, double-counting it out of the projection.  est=500,
-        uncleared_debit=200 -> max(500 - 0 - 0, 200) = 500.  (Was: 4500.)
+        The default matters to money: a purchase defaulting to SETTLED would
+        subtract it from the reservation before the anchor reflected it,
+        double-counting it out of the projection.  est=500,
+        outstanding_debit=200 -> max(500 - 0 - 0, 200) = 500.  (Was: 4500.)
+
+        ``settled_on`` being NULL is a FACT, not a gap (ruling R-DH (d)): it
+        means the user has not seen this purchase on a statement, so the
+        envelope keeps holding its whole budget back until they confirm the
+        money has left.  The column is asserted directly beside the figure so a
+        regression that started defaulting it fails as itself rather than as a
+        balance drift.
         """
         with app.app_context():
             txn = create_envelope_txn(
@@ -392,12 +450,93 @@ class TestTheClearedFlag:
                 Decimal("500.00"),
             )
             add_entry(
-                db.session, seed_user, txn, Decimal("200.00"), _ENTRY_DAY,
+                db.session, seed_user, txn, Decimal("200.00"), _PURCHASED_ON,
             )
             db.session.commit()
 
-            assert txn.entries[0].is_cleared is False
-            assert _entry_aware_amount(txn) == Decimal("500.00")
+            assert txn.entries[0].settled_on is None
+            assert _entry_aware_amount(txn, _ASSERTED_THROUGH) == Decimal("500.00")
+
+    def test_a_purchase_posted_after_the_statement_is_outstanding(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The case a flag could not hold: posted, but AFTER the balance was read.
+
+        A ``$200.00`` purchase made 01-20 whose bank took it on 01-23, against a
+        balance the user read for 01-22.  ``23 > 22``, so it is NOT inside that
+        balance and stays on the floor: max(500 - 0 - 0, 200) = 500.
+
+        Under the retired ``is_cleared`` boolean this state was INEXPRESSIBLE.
+        The flag said "inside the anchor" with no day attached, so a purchase
+        the bank had taken was reconciled against every balance the account had
+        ever asserted -- including ones read before the money moved.  That is
+        the direction of the defect that opened the arc: subtracting a purchase
+        from a reservation whose anchor never contained it double-counts it out
+        of the projection, and the resulting figure is too HIGH by the purchase.
+
+        The mirror of this is the test above it, one day earlier
+        (``test_partial_settled_and_outstanding``'s ``$100.00`` on 01-21), so
+        the pair straddles the boundary rather than probing one side of it.
+        """
+        with app.app_context():
+            txn = _envelope(
+                db.session, seed_user, seed_periods[1], "500.00",
+                [("200.00", False, _POSTED_AFTER_THE_STATEMENT)],
+            )
+
+            assert _entry_aware_amount(txn, _ASSERTED_THROUGH) == Decimal("500.00")
+
+    def test_a_purchase_posted_ON_the_statement_day_is_inside_it(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The boundary itself: an assertion is its day's CLOSING balance.
+
+        A ``$200.00`` purchase the bank took on 01-22, against a balance read
+        for 01-22.  ``22 <= 22``, so it is inside -- ruling R-DH (a), the same
+        inclusive boundary the read fold and the posting walk apply to a settled
+        transaction.  max(500 - 200 - 0, 0) = 300.
+
+        The off-by-one this pins is worth a cent-exact figure rather than a
+        direction: an EXCLUSIVE boundary here would hold the full $500.00 and
+        the projection would be $200.00 too low every time a user entered their
+        balance the same day they shopped -- which, on the developer's real
+        data, is 53 of 53 same-day entries.
+        """
+        with app.app_context():
+            txn = _envelope(
+                db.session, seed_user, seed_periods[1], "500.00",
+                [("200.00", False, _STATEMENT_DAY)],
+            )
+
+            assert _entry_aware_amount(txn, _ASSERTED_THROUGH) == Decimal("300.00")
+
+    def test_an_account_that_has_never_asserted_reconciles_nothing(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A boundary that declares nothing puts every purchase on the floor.
+
+        A ``$200.00`` purchase the bank was seen to take on 01-21, priced on a
+        boundary whose ``observed_day`` is ``None`` -- what
+        ``cash_ledger.reconciled_through`` returns for an account that has
+        never asserted a balance.  There is nothing for the purchase to be
+        inside of, so it is outstanding and the reservation stays at
+        max(500 - 0 - 0, 200) = 500.
+
+        ``ReconciledThrough.covers`` is TOTAL in both the argument and the
+        boundary for exactly this reason -- both absences mean "not inside" --
+        so no caller has to remember a precondition.  A rule that treated a missing assertion as
+        "everything is reconciled" would empty every envelope on an account the
+        user had never trued up.
+        """
+        with app.app_context():
+            txn = _envelope(
+                db.session, seed_user, seed_periods[1], "500.00",
+                [("200.00", False, _POSTED_ON)],
+            )
+
+            assert _entry_aware_amount(
+                txn, ReconciledThrough(None),
+            ) == Decimal("500.00")
 
 
 class TestTheEntriesRelationshipIsNotASeam:
@@ -428,12 +567,12 @@ class TestTheEntriesRelationshipIsNotASeam:
         with app.app_context():
             txn = _envelope(
                 db.session, seed_user, seed_periods[1], "500.00",
-                [("300.00", True, False)],
+                [("300.00", True, None)],
             )
             db.session.expire(txn)
             assert "entries" not in txn.__dict__
 
-            assert _entry_aware_amount(txn) == Decimal("200.00")
+            assert _entry_aware_amount(txn, _ASSERTED_THROUGH) == Decimal("200.00")
 
     def test_the_silent_degrade_seam_is_absent_from_source(self):
         """C5-8: the ``'entries' not in __dict__`` short-circuit is not in source.
@@ -527,6 +666,15 @@ class TestTheLiveOverride:
     ``TestIncomeOverridesSeam`` test did NOT move: it pins that the override is
     honoured in the POST-ANCHOR period specifically, which is a ``_calculator``
     branch rather than a valuation rule.
+
+    **Both legs take a whole :class:`ProjectedBasis` since plan step S1-c.**  The
+    argument was a bare, optional ``amount_overrides`` map; the expense leg now
+    also needs the day through which the account's purchases are reconciled, and
+    two optional arguments would be two ways to hand a reduction half a basis --
+    which would silently value every purchase as outstanding and hold whole
+    budgets back.  One required record makes that shape unwritable, and the
+    income leg takes it too although it reads only one field, so there is no
+    shape in which one leg is valued on a basis the other was not.
     """
 
     def test_an_override_replaces_the_income_amount(self):
@@ -536,16 +684,27 @@ class TestTheLiveOverride:
         anchor $100.00 + override = $2573.38.)
         """
         row = _FakeRow(txn_id=101, effective_amount="2000.00")
-
-        assert income_amount(row, {101: Decimal("2473.38")}) == Decimal(
-            "2473.38",
+        basis = ProjectedBasis(
+            amount_overrides={101: Decimal("2473.38")},
+            reconciled_through=_ASSERTED_THROUGH,
         )
 
-    def test_no_map_uses_the_stored_amount(self):
-        """``amount_overrides=None`` is byte-identical pre-seam behaviour."""
-        row = _FakeRow(txn_id=101, effective_amount="2000.00")
+        assert income_amount(row, basis) == Decimal("2473.38")
 
-        assert income_amount(row, None) == Decimal("2000.00")
+    def test_an_empty_map_uses_the_stored_amount(self):
+        """An empty override map is byte-identical pre-seam behaviour.
+
+        ``{}`` rather than ``None``: the basis is required and every producer
+        builds its map (``live_amount_overrides`` returns ``{}`` when neither
+        seam has a candidate, which is the common case), so an absent map is
+        not a state a caller can be in.
+        """
+        row = _FakeRow(txn_id=101, effective_amount="2000.00")
+        basis = ProjectedBasis(
+            amount_overrides={}, reconciled_through=_ASSERTED_THROUGH,
+        )
+
+        assert income_amount(row, basis) == Decimal("2000.00")
 
     def test_an_unlisted_id_falls_back_to_the_stored_amount(self):
         """A non-empty map overrides only the ids it lists.
@@ -553,8 +712,12 @@ class TestTheLiveOverride:
         The map keys id 999; row 101 keeps its stored $2000.00.
         """
         row = _FakeRow(txn_id=101, effective_amount="2000.00")
+        basis = ProjectedBasis(
+            amount_overrides={999: Decimal("5.00")},
+            reconciled_through=_ASSERTED_THROUGH,
+        )
 
-        assert income_amount(row, {999: Decimal("5.00")}) == Decimal("2000.00")
+        assert income_amount(row, basis) == Decimal("2000.00")
 
     def test_an_override_wins_over_the_entry_formula(
         self, app, db, seed_user, seed_periods,
@@ -563,19 +726,28 @@ class TestTheLiveOverride:
 
         A live-derived amount is what the row is worth now and carries no
         entries to reduce, so the override is returned verbatim rather than the
-        50.00 the three-bucket reservation would give (est=500, two cleared
-        debits of 200.00 and 250.00: max(500 - 450 - 0, 0) = 50.00).
+        50.00 the three-bucket reservation would give (est=500, two debits of
+        200.00 and 250.00 both taken by the bank on 01-21, inside a balance read
+        for 01-22: max(500 - 450 - 0, 0) = 50.00).
+
+        Both calls are made on the SAME basis except for the map, so the figure
+        that changes is attributable to the override alone.
         """
         with app.app_context():
             txn = _envelope(
                 db.session, seed_user, seed_periods[1], "500.00",
-                [("200.00", False, True), ("250.00", False, True)],
+                [("200.00", False, _POSTED_ON), ("250.00", False, _POSTED_ON)],
+            )
+            no_override = ProjectedBasis(
+                amount_overrides={}, reconciled_through=_ASSERTED_THROUGH,
+            )
+            overridden = ProjectedBasis(
+                amount_overrides={txn.id: Decimal("123.45")},
+                reconciled_through=_ASSERTED_THROUGH,
             )
 
-            assert _expense_amount(txn, None) == Decimal("50.00")
-            assert _expense_amount(
-                txn, {txn.id: Decimal("123.45")},
-            ) == Decimal("123.45")
+            assert _expense_amount(txn, no_override) == Decimal("50.00")
+            assert _expense_amount(txn, overridden) == Decimal("123.45")
 
     def test_no_entries_short_circuits_before_the_status_read(self):
         """The guard ORDER holds: no entries returns before ``is_projected``.
@@ -590,4 +762,6 @@ class TestTheLiveOverride:
         ``is_projected`` reads ``status_id`` BEFORE it consults ``ref_cache``,
         so that attribute, not the cache, is what the ordering protects.
         """
-        assert _entry_aware_amount(_FakeRow()) == Decimal("77.00")
+        assert _entry_aware_amount(_FakeRow(), _ASSERTED_THROUGH) == Decimal(
+            "77.00",
+        )

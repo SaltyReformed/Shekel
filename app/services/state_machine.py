@@ -56,23 +56,53 @@ transition table in this module gives every state-changing path a
 single, auditable choke point and produces a uniform 400-class error
 message on illegal transitions instead of letting the row drift.
 
+The workflow is chosen by the ROW, never by the caller
+------------------------------------------------------
+
+:func:`verify_transition` and :func:`allowed_transitions` take the row
+whose status is in question and derive the map from its own type.  They
+used to take ``(status_id, context="transaction")`` -- an id lifted off a
+row plus a separate string naming that row's kind, which is ONE fact
+stated twice and kept in step by hand.  Every call site spelled it
+correctly and every one of them could have got it wrong; the transaction
+default made the wrong answer the silent one, since a transfer's
+``status_id`` passed without the kwarg would have been graded against the
+map that admits Credit and Received -- the two states this module's
+transfer map exists to exclude.
+
+Plan step X-aj1 (``docs/audits/balance_architecture/README.md``, ruling
+**R-DN**).  The balance arc's Section 8 states the rule this applies: an
+argument a caller can get wrong is a defect, not a contract.
+
 Consumers
 ---------
 
-* ``app/services/transfer_service.py:update_transfer`` -- the transfer
-  status branch.  Verifies before propagating ``status_id`` to the
-  parent transfer and both shadow transactions.
+* ``app/services/status_seam.py:apply_status_change`` -- the ONE seam
+  that ASSIGNS a status, for both row types.  Every status-changing path
+  in the application writes through it.
 
-* ``app/routes/transactions.py:update_transaction`` -- the PATCH
-  endpoint for non-transfer transactions.  Verifies before applying
-  the ``setattr`` loop.
+The other four callers READ the rules without assigning, so they are
+listed too rather than left to be discovered -- the sentence above is
+about writes, and a "everything goes through the seam" claim that
+quietly meant "every write" is the kind of overclaim this arc keeps
+paying for:
 
-Future extension: every other service-layer or route-layer site that
-assigns ``Transaction.status_id`` or ``Transfer.status_id`` should
-adopt this helper.  Doing so is intentionally out of scope for the
-C-21 commit -- F-046 / F-047 / F-161 are scoped to the two sites
-above, and the audit's outstanding finding ledger gates the broader
-rollout.
+* ``app/services/transfer_service.py:_apply_status_to_all_three`` --
+  verifies all three of a transfer's rows BEFORE the seam assigns any,
+  so an illegal move leaves the trio untouched (F-047 atomicity).
+* ``app/services/_transfer_validation.py:assert_restorable`` -- asks
+  :func:`allowed_transitions` whether a drifted shadow can legally be
+  pulled back to its parent, and refuses the restore when it cannot
+  (ruling R-DO).
+* ``app/routes/transactions/mutations.py`` -- the PATCH handler's
+  error-precedence pre-check, which deliberately duplicates the seam's
+  own verification so an illegal transition reports its own message
+  before any other guard speaks.
+* ``app/routes/transfers/forms.py`` / ``app/routes/transactions/forms.py``
+  -- the two status dropdowns' pre-hint.
+
+In all four the seam remains the enforcement point; none of them writes
+a ``status_id``.
 
 Caching
 -------
@@ -92,12 +122,53 @@ import logging
 from app import ref_cache
 from app.enums import StatusEnum
 from app.exceptions import ValidationError
+from app.models.transaction import Transaction
+from app.models.transfer import Transfer
 
 logger = logging.getLogger(__name__)
 
+# The two status-bearing models and the workflow each one speaks.  Keyed by
+# CLASS rather than by a caller-supplied label so the map is chosen by the row
+# whose status is being changed, and a row can no longer be graded against the
+# other entity's rules (ruling R-DN).  A model absent from this map is a
+# programming error and :func:`_context_for` says so loudly rather than
+# defaulting -- fail closed, because the transaction map is the PERMISSIVE one
+# and a silent default would admit Credit and Received onto a transfer.
+_ROW_CONTEXTS = {
+    Transaction: "transaction",
+    Transfer: "transfer",
+}
 
-def _build_transitions(context):
-    """Return the transitions dict keyed by ``ref.statuses.id`` integers.
+
+def _context_for(row):
+    """Return the state-machine context for *row*, by its model class.
+
+    Args:
+        row: The :class:`~app.models.transaction.Transaction` or
+            :class:`~app.models.transfer.Transfer` whose status is in
+            question.
+
+    Returns:
+        ``"transaction"`` or ``"transfer"`` -- the key
+        :func:`_build_transitions` selects a map with.
+
+    Raises:
+        TypeError: If *row* is neither status-bearing model.  A programming
+            error at the call site, raised rather than defaulted: the
+            transaction map is a strict SUPERSET of the transfer map, so
+            guessing would silently widen the workflow of whatever was passed.
+    """
+    for model, context in _ROW_CONTEXTS.items():
+        if isinstance(row, model):
+            return context
+    raise TypeError(
+        f"{type(row).__name__} is not a status-bearing row; "
+        f"expected one of {sorted(m.__name__ for m in _ROW_CONTEXTS)}."
+    )
+
+
+def _build_transitions():
+    """Return BOTH workflows' transition dicts, keyed by entity label.
 
     Lazily computed (see module docstring) -- ``ref_cache`` must be
     initialised before this runs.  ``ref_cache.status_id`` raises
@@ -110,21 +181,21 @@ def _build_transitions(context):
     to the transaction workflow must not silently leak into the
     transfer workflow (or vice versa).
 
-    Args:
-        context: ``"transaction"`` or ``"transfer"`` -- selects which
-            entity's transition map to build (the module docstring
-            documents both workflows).
+    **It returns both rather than selecting between them**, and that is
+    what makes the selection total: the caller indexes this by a label
+    that came from :data:`_ROW_CONTEXTS`, so there is no unrecognised
+    label to raise on.  It used to take a ``context`` argument and raise
+    ``ValueError`` on a typo; once the label stopped being a caller's
+    string that arm became a guard against an impossible shape, which
+    ``CLAUDE.md`` rule 13 forbids and this arc's Section 8 records as
+    reading like coverage without being any.  It was deleted WITH the
+    parameter rather than left (plan step X-aj1).
 
     Returns:
-        dict mapping the integer PK of each StatusEnum member legal
-        for *context* to the set of integer PKs reachable from it.
-        Identity transitions are included so idempotent re-submits
-        succeed.
-
-    Raises:
-        ValueError: If *context* is not a recognised entity label --
-            a programming error at the call site, surfaced loudly
-            rather than silently falling back to either map.
+        ``{"transaction": {...}, "transfer": {...}}`` -- each mapping the
+        integer PK of a status legal for that entity to the set of PKs
+        reachable from it.  Identity transitions are included so
+        idempotent re-submits succeed.
     """
     projected = ref_cache.status_id(StatusEnum.PROJECTED)
     done = ref_cache.status_id(StatusEnum.DONE)
@@ -133,8 +204,8 @@ def _build_transitions(context):
     cancelled = ref_cache.status_id(StatusEnum.CANCELLED)
     settled = ref_cache.status_id(StatusEnum.SETTLED)
 
-    if context == "transaction":
-        return {
+    return {
+        "transaction": {
             # Projected can move to any active workflow state and absorbs
             # idempotent re-submission via the projected -> projected entry.
             projected: {projected, done, received, credit, cancelled},
@@ -157,9 +228,8 @@ def _build_transitions(context):
             # included so an idempotent resubmit of "settle this row" on
             # an already-settled row does not raise.
             settled: {settled},
-        }
-    if context == "transfer":
-        return {
+        },
+        "transfer": {
             # No Credit (the credit workflow is expense-only and refuses
             # transfers) and no Received (a display convention for
             # regular income rows; transfers settle with Done) -- see
@@ -169,15 +239,12 @@ def _build_transitions(context):
             cancelled: {cancelled, projected},
             # Terminal, as for transactions.
             settled: {settled},
-        }
-    raise ValueError(
-        f"Unknown state-machine context {context!r}; "
-        "use 'transaction' or 'transfer'."
-    )
+        },
+    }
 
 
-def allowed_transitions(current_status_id, context="transaction"):
-    """Return the set of status ids legally reachable from the current one.
+def allowed_transitions(row):
+    """Return the set of status ids legally reachable from *row*'s current one.
 
     The template-facing half of the state machine (grid audit D2, ruled
     2026-07-11): the action cards' status dropdowns disable options this
@@ -187,9 +254,10 @@ def allowed_transitions(current_status_id, context="transaction"):
     crafted request that ignores it is still rejected there.
 
     Args:
-        current_status_id: Integer PK of the row's current status.
-        context: ``"transaction"`` or ``"transfer"`` -- selects that
-            entity's transition map.
+        row: The :class:`~app.models.transaction.Transaction` or
+            :class:`~app.models.transfer.Transfer` the dropdown is being
+            rendered for.  Its class selects the workflow and its
+            ``status_id`` is the state read from (ruling R-DN).
 
     Returns:
         frozenset of legal successor status ids (identity included).
@@ -198,10 +266,11 @@ def allowed_transitions(current_status_id, context="transaction"):
         guessing).
 
     Raises:
-        ValueError: If *context* is not a recognised entity label
-            (programming error at the call site).
+        TypeError: If *row* is not a status-bearing model (programming
+            error at the call site).
     """
-    return frozenset(_build_transitions(context).get(current_status_id, ()))
+    transitions = _build_transitions()[_context_for(row)]
+    return frozenset(transitions.get(row.status_id, ()))
 
 
 def _status_labels():
@@ -224,35 +293,34 @@ def _status_labels():
     }
 
 
-def verify_transition(current_status_id, new_status_id, context="transaction"):
+def verify_transition(row, new_status_id):
     """Raise ``ValidationError`` when the proposed transition is illegal.
 
     Args:
-        current_status_id: Integer PK of the row's current
-            ``status_id`` (or the loaded relationship's
-            ``Status.id``).  Typically ``txn.status_id`` or
-            ``xfer.status_id``.
+        row: The :class:`~app.models.transaction.Transaction` or
+            :class:`~app.models.transfer.Transfer` being transitioned.
+            Its class selects the workflow -- transfers exclude Credit
+            and Received; see the module docstring -- and labels the
+            exception message so the route layer can surface a precise
+            400 to the user.  Its ``status_id`` is the current state.
         new_status_id: Integer PK of the proposed status.
-        context: The entity being transitioned -- ``"transaction"``
-            or ``"transfer"``.  Selects that entity's transition map
-            (transfers exclude Credit and Received; see the module
-            docstring) and labels the exception message so the route
-            layer can surface a precise 400 to the user.
 
     Raises:
         ValidationError: The new state is not in the set of legal
             successors for the current state, OR the current state
-            is not a legal status for *context* (defensive check
-            against a corrupt row -- a non-enum ``status_id`` or,
-            for a transfer, a transaction-only status).  Successful
+            is not a legal status for the row's workflow (defensive
+            check against a corrupt row -- a non-enum ``status_id``
+            or, for a transfer, a transaction-only status).  Successful
             return (no exception) signals that the caller may
             proceed to mutate ``status_id``.  Identity transitions
             return without raising so idempotent re-submission is
             always safe.
-        ValueError: If *context* is not a recognised entity label
-            (programming error at the call site).
+        TypeError: If *row* is not a status-bearing model (programming
+            error at the call site).
     """
-    transitions = _build_transitions(context)
+    context = _context_for(row)
+    current_status_id = row.status_id
+    transitions = _build_transitions()[context]
     if current_status_id not in transitions:
         # The row's current status is not a legal state for this
         # entity.  Refuse the transition rather than silently

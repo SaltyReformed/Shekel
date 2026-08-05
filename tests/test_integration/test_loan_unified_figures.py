@@ -543,13 +543,25 @@ def test_arm_payoff_date_consistent_across_surfaces(
         # The chip's producer since C8d: the fold to zero.  Hand-checked -- the
         # loan has paid nothing, so its balance is still $400,000.00 and the
         # contractual payment amortizes exactly that over exactly 360
-        # installments; the first one the plan synthesizes is the next one after
-        # today (a strictly-past installment with no record pays nothing, D1), so
-        # the loan clears 360 months after it.
+        # installments; the first one the plan synthesizes is the first one NOT
+        # already past (a strictly-past installment with no record pays nothing,
+        # D1), so the loan clears 360 months after it.
+        #
+        # "Not already past" is ON OR AFTER today, not "next month".  The fixture
+        # pays on the 1st, so on the 1st of a month today's own installment is
+        # still owed and the plan synthesizes it -- the payoff is then 359 months
+        # from TODAY, not from next month.  Hard-coding ``add_months(first of this
+        # month, 1)`` assumed today is never an installment date and failed CI on
+        # 2026-08-01, reading 2056-07-01 against an expected 2056-08-01.
         seam_payoff = balance_at.loan_payoff_date(account, ctx)
         assert seam_payoff is not None
-        first_forward = add_months(
-            date(date.today().year, date.today().month, 1), 1,
+        this_months_installment = date(
+            date.today().year, date.today().month, 1,
+        )
+        first_forward = (
+            this_months_installment
+            if this_months_installment >= date.today()
+            else add_months(this_months_installment, 1)
         )
         assert seam_payoff == add_months(first_forward, 359), (
             f"Derived payoff {seam_payoff} is not 360 installments from the "
@@ -766,15 +778,41 @@ def test_standing_extra_folds_past_the_shadow_horizon(
     contractual there).
     """
     with app.app_context():
-        today = date.today()
         current_period = next(
             period for period in seed_periods_today
-            if period.start_date <= today <= period.end_date
+            if period.start_date <= date.today() <= period.end_date
         )
+        # **The whole test reads at the loan's ORIGINATION day, not at the wall
+        # clock, and the payment day is derived so the first installment can
+        # never already be due.**  Both are what make the docstring's premise --
+        # "clean past: no overdue installment" -- a PROPERTY rather than a hope.
+        #
+        # It was neither.  With ``payment_day=1`` and origination on the period's
+        # start (the most recent Monday), whether the first installment fell in
+        # the future, on today, or in the PAST depended on the day of the month
+        # the suite happened to run:
+        #
+        #   * on the 1st it lands on today, and ``balance_at(today)`` reads the
+        #     LEDGER while the committed row for that day is the post-payment
+        #     projection (``balance_at/_positions.py:207-218``) -- the CI failure
+        #     of 2026-08-01;
+        #   * on the days between the 1st and the month's first Monday it is
+        #     OVERDUE and unpaid, so the fold pays nothing for it (D1 / B-9,
+        #     ``balance_at/_plan.py:288``) while the committed schedule still
+        #     lists it -- and EVERY later row then diverges by that installment,
+        #     which no per-row filter can rescue.
+        #
+        # Pinning the read to origination puts every contractual installment
+        # strictly in the future, which is the state the test says it is
+        # exercising.  ``(day % 28) + 1`` is simply "a day that is never the
+        # origination's own day and exists in every month", so the first
+        # installment is always at least one day out.
+        as_of = current_period.start_date
+        payment_day = (as_of.day % 28) + 1
         account = create_loan_account(
             seed_user, db.session, name="C8a Mortgage",
             principal=FIXED_PRINCIPAL, rate=FIXED_RATE, term=FIXED_TERM,
-            origination_date=current_period.start_date, payment_day=1,
+            origination_date=as_of, payment_day=payment_day,
             account_type=AcctTypeEnum.MORTGAGE, anchor_period=current_period,
         )
         loan_params = loan_params_for(db.session, account.id)
@@ -795,9 +833,9 @@ def test_standing_extra_folds_past_the_shadow_horizon(
                 ctx_loan.rate_changes,
             ),
             extra_monthly=Decimal("0.00"),
-            as_of=today,
+            as_of=as_of,
             confirmed_view=seam_confirmed_view(
-                loan_params.account_id, scenario_id, today,
+                loan_params.account_id, scenario_id, as_of,
             ),
             extra_principal=extra,
         )
@@ -814,12 +852,35 @@ def test_standing_extra_folds_past_the_shadow_horizon(
             scenarios.original_forward[-1].payment_date
         ), "standing extra did not accelerate payoff; test would be vacuous"
 
-        ctx = BalanceContext.build(seed_user["user"].id)
+        ctx = BalanceContext.build(seed_user["user"].id, as_of=as_of)
 
-        # The fold reproduces the committed forward on EVERY month, including the
-        # ESTIMATED tail -- an independent producer (project_forward) agreeing with
-        # the fold that the extra is applied for the whole term.
-        for row in committed_forward:
+        # The fold reproduces the committed forward on EVERY month the forward
+        # projection OWNS, including the ESTIMATED tail -- an independent producer
+        # (project_forward) agreeing with the fold that the extra is applied for
+        # the whole term.
+        #
+        # Rows dated at or before the resolver's NOW are excluded, and the
+        # exclusion is the seam's own rule rather than a convenience: a date at or
+        # before ``ctx.as_of`` reads the LEDGER (``balance_at._positions`` routes
+        # ``on_date <= ctx.as_of`` to the fold -- "the past is the ledger's"),
+        # while both plan tiers clamp a still-projected item to
+        # ``as_of + 1 day`` (``balance_at._plan`` for loans, ``_cash_fold`` for
+        # cash, ruling D1 / R-G: "a plan cannot have already happened").  So on a
+        # day that IS an installment due date, ``balance_at(today)`` is the
+        # still-owed balance while the committed row for that same day is the
+        # post-payment projection.  Both are right and they answer different
+        # questions; comparing them is a category error, and it fired as a real
+        # CI failure on 2026-08-01 because this fixture originates at the current
+        # period with ``payment_day=1``.  On every other day of the month the
+        # filter removes nothing.
+        comparable = [
+            row for row in committed_forward if row.payment_date > ctx.as_of
+        ]
+        assert len(comparable) > 1, (
+            "the forward projection owns no comparable rows; the parallel-run "
+            "would be vacuous"
+        )
+        for row in comparable:
             folded = balance_at.balance_at(account, ctx, row.payment_date)
             assert folded == row.remaining_balance, (
                 f"Fold {folded} != committed {row.remaining_balance} at "
@@ -831,12 +892,12 @@ def test_standing_extra_folds_past_the_shadow_horizon(
         # window) must fold BELOW the extra-free contractual balance -- proof the
         # extra reaches the tail.  Pre-C8a the ESTIMATED tail carried no extra, so
         # the fold equalled the contractual balance here and this failed.
-        probe_date = date(today.year + 3, 8, 1)
+        probe_date = date(as_of.year + 3, as_of.month, payment_day)
         assert probe_date in contractual_by_date, (
             "probe date not on the contractual grid; adjust the fixture"
         )
-        months_out = (probe_date.year - today.year) * 12 + (
-            probe_date.month - today.month
+        months_out = (probe_date.year - as_of.year) * 12 + (
+            probe_date.month - as_of.month
         )
         assert months_out > 24, "probe date is inside the materialized horizon"
         folded_probe = balance_at.balance_at(account, ctx, probe_date)

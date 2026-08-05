@@ -1914,9 +1914,9 @@ def _add_envelope_expense_with_cleared_entries_inv(
             user_id=user_id,
             amount=amt,
             description="Cleared purchase",
-            entry_date=date(2026, 5, 15),
+            purchased_on=date(2026, 5, 15),
             is_credit=False,
-            is_cleared=True,
+            settled_on=date(2026, 5, 15),
         ))
     db_session.flush()
     return txn

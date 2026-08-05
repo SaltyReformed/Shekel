@@ -14,6 +14,7 @@ from marshmallow import (
 
 from app.schemas.validation._helpers import (
     BaseSchema,
+    RowId,
     _normalize_empty_inputs,
     _normalize_percent_fields,
 )
@@ -38,7 +39,7 @@ class PensionProfileCreateSchema(BaseSchema):
         data = _normalize_empty_inputs(self, data)
         return _normalize_percent_fields(data, self._PERCENT_FIELDS)
 
-    salary_profile_id = fields.Integer(allow_none=True)
+    salary_profile_id = RowId(allow_none=True)
     name = fields.String(
         required=True, validate=validate.Length(min=1, max=100)
     )
@@ -98,7 +99,7 @@ class PensionProfileUpdateSchema(BaseSchema):
         data = _normalize_empty_inputs(self, data)
         return _normalize_percent_fields(data, self._PERCENT_FIELDS)
 
-    salary_profile_id = fields.Integer(allow_none=True)
+    salary_profile_id = RowId(allow_none=True)
     name = fields.String(validate=validate.Length(min=1, max=100))
     benefit_multiplier = fields.Decimal(
         places=5, as_string=True,

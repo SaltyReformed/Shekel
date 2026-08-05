@@ -29,19 +29,19 @@ from flask_login import current_user, login_required
 
 from app import ref_cache
 from app.enums import (
-    AcctTypeEnum,
     CompoundingFrequencyEnum,
     EmployerContributionTypeEnum,
 )
 from app.exceptions import ValidationError
 from app.extensions import db
-from app.models.account import Account, AccountAnchorHistory
+from app.models.account import Account
 from app.models.asset_appreciation_params import AssetAppreciationParams
 from app.models.escrow_line import EscrowLine
 from app.models.interest_params import InterestParams
 from app.models.investment_params import InvestmentParams
 from app.models.loan_features import RateHistory
 from app.models.loan_params import LoanParams
+from app.models.pay_period import PayPeriod
 from app.models.savings_goal import SavingsGoal
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
@@ -57,7 +57,7 @@ from app.routes.accounts._bp import accounts_bp
 from app.services import (
     account_posting_service,
     account_service,
-    entry_service,
+    anchor_service,
     ledger_account_service,
     pay_period_service,
     transfer_service,
@@ -71,6 +71,7 @@ from app.utils.account_validation import (
     _visible_account_types,
 )
 from app.utils.auth_helpers import fresh_login_required, get_or_404, require_owner
+from app.utils.dates import display_today
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +116,17 @@ def new_account():
         "accounts/form.html",
         account=None,
         account_types=_visible_account_types(current_user.id),
+        # The "balance as of" field's default and its two bounds, mirroring
+        # ``account_service._reject_undatable_observation`` so the browser
+        # refuses what the service would refuse rather than round-tripping a
+        # rejection.  ``display_today()`` rather than ``date.today()``: the
+        # process clock is pinned to the display zone in the deployed
+        # container, but a script or CI run is not, and the form must not offer
+        # a day the service then rejects (ruling R-DH (b)).
+        today=display_today(),
+        observed_on_min=account_service.earliest_observable_day(
+            current_user.id,
+        ),
     )
 
 
@@ -255,6 +267,13 @@ def create_account():
     # provided).
     account_type_id = data.pop("account_type_id")
     name = data.pop("name")
+    # The civil day the entered balance was TRUE (ruling R-DH, plan step 2).
+    # Popped out of ``data`` like the two above because what remains is
+    # splatted onto the ``Account`` constructor, and this is a column on the
+    # assertion, not on the account.  Absent (the field left blank) means
+    # today, which the factory applies -- stated there rather than here so the
+    # non-route callers get the same default.
+    observed_on = data.pop("observed_on", None)
     try:
         account = account_service.create_account(
             account_service.AccountSpec(
@@ -262,11 +281,28 @@ def create_account():
                 account_type_id=account_type_id,
                 name=name,
                 anchor_balance=anchor_balance,
+                observed_on=observed_on,
                 notes="origination",
             ),
             **data,
         )
-    except ValidationError:
+    except ValidationError as exc:
+        # Two shapes reach here and they need different destinations: the user
+        # has NO pay periods (send them to generate some), or the "balance as
+        # of" day is out of bounds (send them back to the form with the
+        # service's own message, which names the day and the bound it broke).
+        #
+        # Discriminated by asking the database, not by re-deriving the
+        # service's own predicate: re-evaluating "is this date in the future"
+        # here would read the clock a second time and could disagree with the
+        # read that raised.
+        has_periods = db.session.query(
+            db.session.query(PayPeriod)
+            .filter_by(user_id=current_user.id).exists()
+        ).scalar()
+        if has_periods:
+            flash(str(exc), "warning")
+            return redirect(url_for("accounts.new_account"))
         flash(
             "Generate pay periods before creating an account so the "
             "account balance has a period to anchor against.",
@@ -363,16 +399,47 @@ def update_account(account_id):
         new_anchor = Decimal(str(new_anchor))
         if new_anchor != account.current_anchor_balance:
             anchor_changed = True
-            current_period = pay_period_service.get_current_period(current_user.id)
-            account.current_anchor_balance = new_anchor
+            # The period and the assertion's day must come off ONE clock.
+            # ``stage_anchor_true_up`` dates the row ``display_today()``; a
+            # bare ``get_current_period`` defaults to ``date.today()``, the
+            # PROCESS-local day, and the two disagree in any process not pinned
+            # to the display zone (CI, a script, the migration host).  A
+            # 21:00 ET true-up on a period's last day would then file the row
+            # in the NEXT period while dating it in this one -- the grid buckets
+            # the correction by ``observed_on`` and the ledger stamps it with
+            # ``pay_period_id``, so the two surfaces disagree by the whole
+            # correction.
+            current_period = pay_period_service.get_current_period(
+                current_user.id, as_of=display_today(),
+            )
             if current_period:
-                account.current_anchor_period_id = current_period.id
-                history = AccountAnchorHistory(
-                    account_id=account.id,
-                    pay_period_id=current_period.id,
-                    anchor_balance=new_anchor,
+                # ONE definition of "re-point the period + write the balance +
+                # append the dated history row", and it lives in
+                # ``anchor_service`` (ruling R-DH, plan step 2).  This route
+                # restated it inline, and the two had already drifted: the
+                # stager takes a ``notes`` label and this did not, and the
+                # assertion's ``observed_on`` -- the civil day the balance is
+                # asserted TRUE for, which the whole anchor/settle partition
+                # turns on -- would have had to be added HERE too, as a third
+                # copy of a rule two writers already state.  A route composes
+                # services; it does not re-implement one.
+                anchor_service.stage_anchor_true_up(
+                    account=account,
+                    new_balance=new_anchor,
+                    anchor_period=current_period,
                 )
-                db.session.add(history)
+            else:
+                # No period contains today, so there is no period to file the
+                # assertion against and the balance moves WITHOUT a history
+                # row.  Behaviour preserved verbatim from before the stager
+                # call above replaced this block's inline copy -- but it breaks
+                # E-19's "a matching AccountAnchorHistory row from the moment it
+                # exists", and the cash walk then replays an assertion history
+                # that disagrees with ``current_anchor_balance``
+                # (``cash_ledger._facts`` logs exactly that divergence).
+                # Recorded as finding N-134 in ``anchor_settle_partition.md``
+                # rather than changed under an unrelated ruling.
+                account.current_anchor_balance = new_anchor
 
     old_type_id = account.account_type_id
     for field, value in data.items():
@@ -380,31 +447,32 @@ def update_account(account_id):
             setattr(account, field, value)
     type_changed = account.account_type_id != old_type_id
 
-    # Reconcile entries on checking true-ups and commit.  Both
-    # operations live inside the same try/except because
-    # ``clear_entries_for_anchor_true_up`` autoflushes the pending
-    # Account mutation before issuing its own bulk UPDATE -- the
-    # version-pinned WHERE clause is checked at autoflush time, so
+    # The side effects and the commit live inside the same try/except
+    # because the resync below flushes the pending Account mutation -- the
+    # version-pinned WHERE clause is checked at flush time, so
     # ``StaleDataError`` would otherwise escape outside the catch.
     # See the matching comment in :func:`true_up`.
-    checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
 
     def _reconcile_anchor_and_type_effects():
         """Reconcile the anchor / type side effects (in-transaction step).
 
-        On an anchor change: clear the checking entries (the true-up
-        contract) and re-base the account's Step-5 anchor corrections.
+        On an anchor change: re-base the account's Step-5 anchor corrections.
         On a type change: re-class the (empty) linked ledger row when the
         Asset/Liability boundary was crossed -- ``_validate_update_account``
         already refused a crossing on a posted account -- and re-sync the
         corrections so an amortizing-boundary crossing swaps correction
         families instead of stranding one (the sync structurally no-ops
         for the loan side).
+
+        **It no longer touches entries** (ruling R-DH (d), plan step S1-c).
+        An anchor change here used to bulk-flip ``is_cleared``, which made
+        "is this purchase already inside the balance the user typed" an
+        answer decided by recording order.  Reconciliation is derived from
+        each purchase's own recorded posting day now, and confirming which
+        ones a statement showed is the user's own step on the account's
+        reconcile panel -- not a side effect of an account EDIT, which is
+        not even the surface a balance reading is entered on.
         """
-        if anchor_changed and account.account_type_id == checking_type_id:
-            entry_service.clear_entries_for_anchor_true_up(
-                current_user.id, account.id,
-            )
         if type_changed:
             # Flush the new FK and expire the stale ``account_type``
             # relationship so the re-class and the resync's classifier both

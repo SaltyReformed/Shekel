@@ -360,10 +360,10 @@ class TestTransactionEntriesRelationship:
     """Verify the Transaction.entries relationship behavior."""
 
     def test_transaction_entries_relationship(self, app, db, seed_user, seed_periods):
-        """Accessing txn.entries returns entries ordered by entry_date.
+        """Accessing txn.entries returns entries ordered by purchased_on.
 
         Creates 3 entries with different dates on the same transaction.
-        The relationship's order_by=TransactionEntry.entry_date must
+        The relationship's order_by=TransactionEntry.purchased_on must
         return them in chronological order.
         """
         with app.app_context():
@@ -373,15 +373,15 @@ class TestTransactionEntriesRelationship:
             # Create entries out of chronological order.
             _make_entry(
                 txn, user, Decimal("30.00"), "Middle",
-                entry_date=date(2026, 1, 5),
+                purchased_on=date(2026, 1, 5),
             )
             _make_entry(
                 txn, user, Decimal("10.00"), "First",
-                entry_date=date(2026, 1, 3),
+                purchased_on=date(2026, 1, 3),
             )
             _make_entry(
                 txn, user, Decimal("20.00"), "Last",
-                entry_date=date(2026, 1, 7),
+                purchased_on=date(2026, 1, 7),
             )
             db.session.commit()
 
@@ -393,7 +393,7 @@ class TestTransactionEntriesRelationship:
             assert entries[0].description == "First"
             assert entries[1].description == "Middle"
             assert entries[2].description == "Last"
-            assert entries[0].entry_date < entries[1].entry_date < entries[2].entry_date
+            assert entries[0].purchased_on < entries[1].purchased_on < entries[2].purchased_on
 
     def test_transaction_entries_empty_by_default(self, app, db, seed_user, seed_periods):
         """A transaction with no entries returns an empty list via the relationship.
@@ -504,7 +504,8 @@ class TestTransactionEntryEdgeCases:
             assert refreshed is not None
             assert refreshed.credit_payback_id is None
 
-    def test_entry_date_server_default(self, app, db, seed_user, seed_periods):
+    @pytest.mark.server_clock
+    def test_purchased_on_server_default(self, app, db, seed_user, seed_periods):
         """Entry date defaults to CURRENT_DATE when not explicitly set.
 
         The server_default=CURRENT_DATE uses the database server's
@@ -524,10 +525,10 @@ class TestTransactionEntryEdgeCases:
 
             # Re-query to pick up server_default.
             refreshed = db.session.get(TransactionEntry, entry.id)
-            assert isinstance(refreshed.entry_date, date)
-            delta = abs((refreshed.entry_date - date.today()).days)
+            assert isinstance(refreshed.purchased_on, date)
+            delta = abs((refreshed.purchased_on - date.today()).days)
             assert delta <= 1, (
-                f"entry_date {refreshed.entry_date} is more than 1 day "
+                f"purchased_on {refreshed.purchased_on} is more than 1 day "
                 f"from today {date.today()}"
             )
 
@@ -544,7 +545,7 @@ class TestTransactionEntryEdgeCases:
             for i in range(5):
                 _make_entry(
                     txn, user, Decimal("10.00"), f"Entry {i}",
-                    entry_date=date(2026, 1, 3 + i),
+                    purchased_on=date(2026, 1, 3 + i),
                 )
             db.session.commit()
 

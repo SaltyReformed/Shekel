@@ -51,6 +51,7 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.services import account_service
+from app.utils.dates import display_today
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
@@ -178,7 +179,11 @@ def _make_entry(txn_id, user_id):
         user_id=user_id,
         amount=Decimal("25.00"),
         description="Kroger",
-        entry_date=date.today(),
+        # The APP's today: the PATCH route re-posts this value and
+        # ``_reject_future_purchase_date`` judges it on ``display_today()``
+        # (ruling R-M), so a process date one day ahead is refused as a
+        # future entry.  Same defect as the c19 concurrent-entry test.
+        purchased_on=display_today(),
     )
     db.session.add(entry)
     db.session.commit()
@@ -1124,7 +1129,7 @@ class TestTransactionEntryStaleFormPrevention:
                 data={
                     "amount": "30.00",
                     "description": "Walmart",
-                    "entry_date": entry.entry_date.isoformat(),
+                    "purchased_on": entry.purchased_on.isoformat(),
                     "version_id": str(v0),
                 },
             )
@@ -1161,7 +1166,7 @@ class TestTransactionEntryStaleFormPrevention:
                 data={
                     "amount": "9999.99",
                     "description": "Should Not Apply",
-                    "entry_date": entry.entry_date.isoformat(),
+                    "purchased_on": entry.purchased_on.isoformat(),
                     "version_id": str(stale),
                 },
             )

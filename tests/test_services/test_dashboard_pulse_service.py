@@ -95,9 +95,9 @@ def _add_tracked_expense(db_session, seed_user, period, name, estimated):
     )
 
 
-def _add_entry(db_session, seed_user, txn, amount, entry_date):
+def _add_entry(db_session, seed_user, txn, amount, purchased_on):
     """Attach one debit entry of ``amount`` to ``txn`` (string-amount wrapper)."""
-    add_entry(db_session, seed_user, txn, Decimal(str(amount)), entry_date)
+    add_entry(db_session, seed_user, txn, Decimal(str(amount)), purchased_on)
 
 
 # ── Hero: balance, captions, staleness, next paycheck ───────────────

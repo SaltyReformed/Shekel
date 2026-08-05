@@ -33,7 +33,7 @@ from app.services import transaction_service
 
 
 def _make_entry(txn_id, user_id, amount, description, *,
-                entry_date=None, is_credit=False):
+                purchased_on=None, is_credit=False):
     """Create an entry directly via ORM (bypasses service validation).
 
     The transaction service operates on already-loaded entries, so
@@ -45,7 +45,7 @@ def _make_entry(txn_id, user_id, amount, description, *,
         user_id=user_id,
         amount=Decimal(amount),
         description=description,
-        entry_date=entry_date or date(2026, 1, 5),
+        purchased_on=purchased_on or date(2026, 1, 5),
         is_credit=is_credit,
     )
     db.session.add(entry)

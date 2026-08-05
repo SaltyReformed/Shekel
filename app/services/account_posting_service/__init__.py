@@ -20,13 +20,13 @@ cheat" made visible as an explicit equity adjustment.
 
 Mirrors :mod:`app.services.loan_posting_service` (split by concern):
 
-* :mod:`._walk` -- the pure moment-granular walk: replay the account's
+* :mod:`._walk` -- the pure DAY-granular walk: replay the account's
   :class:`~app.models.account.AccountAnchorHistory` rows against the source
   facts read back from its linked ledger, producing one
   :class:`AccountAnchorCorrection` per assertion.
 * :mod:`._anchors` -- the opening + true-up reconcile: per-(source kind,
-  civil date) targets, posted-leg read-back, one balanced delta per key
-  that differs.
+  pay period, civil date) targets, posted-leg read-back, one balanced delta
+  per key that differs.
 * :mod:`._sync` -- the entry points: per-scenario, all-scenarios (baseline
   UNION scenarios with postings on the linked ledger), and per-user.
 
@@ -34,10 +34,12 @@ Mirrors :mod:`app.services.loan_posting_service` (split by concern):
 
 Books through :mod:`app.services.posting_service`'s shared balanced-write
 path and the reconcile primitives in
-:mod:`app.services._posting_reconcile` (``delta_legs`` /
-``posted_correction_legs`` / ``emit_anchor_correction_entry`` -- shared with
-the loan package, so the two correction families can never drift on the
-delta math or the correction-entry shape).  Ledger rows are minted only via
+:mod:`app.services._posting_reconcile` (``posted_correction_legs`` /
+``emit_correction_deltas``, which owns the union-the-keys loop and the
+``delta_legs`` / ``emit_anchor_correction_entry`` pair inside it -- all shared
+with the loan package, so the two correction families can never drift on the
+delta math, the correction-entry shape, or the reconcile loop itself).  Ledger
+rows are minted only via
 :func:`app.services.ledger_account_service.get_or_create_anchor_equity_account`,
 whose non-loan guard keeps the loan and account correction families on
 disjoint charts.  Flask-isolated: plain data in, plain values out; flushes

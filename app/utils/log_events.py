@@ -359,13 +359,10 @@ EVT_ENTRY_DELETED = _register(
     "entry_deleted", BUSINESS,
     "Individual purchase entry hard-deleted from a transaction.",
 )
-EVT_ENTRY_CLEARED_TOGGLED = _register(
-    "entry_cleared_toggled", BUSINESS,
-    "User flipped is_cleared on a single entry (manual reservation override).",
-)
-EVT_ENTRIES_CLEARED_ON_ANCHOR_TRUEUP = _register(
-    "entries_cleared_on_anchor_trueup", BUSINESS,
-    "Anchor true-up bulk-cleared past-dated entries on projected parents.",
+EVT_ENTRIES_SETTLED_DAY_RECORDED = _register(
+    "entries_settled_day_recorded", BUSINESS,
+    "User confirmed which outstanding purchases their bank statement shows, "
+    "stamping each one's settled_on with the day the balance was observed.",
 )
 EVT_ANCHOR_CACHE_RECONCILED = _register(
     "anchor_cache_reconciled", BUSINESS,

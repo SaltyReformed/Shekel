@@ -30,7 +30,8 @@
    The figures are computed in the balance-at seam with Decimal and passed
    in via ``columns``; this template only displays them.  They are the SAME
    GridColumn records the sticky footer's balance row reads, which is what
-   makes ``balance[p] - balance[p-1] == net[p] + reconciliation[p] +
+   makes ``balance[p] - balance[p-1] == net[p] + period_timing[p] +
+   book_vs_bank[p] +
    interest[p]`` a property of one row set rather than an agreement between
    producers (ruling R-K).
 

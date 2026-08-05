@@ -274,10 +274,13 @@
 
     today (default none): a `datetime.date` (or ISO string) used
     by `_transaction_entries.html` as the default value of the
-    add-entry form's hidden `entry_date` input.  The grid and
-    companion routes pass `date.today()`; macro callers that
-    don't render entries (e.g. unit tests that pass no
-    `entry_lists`) can leave this `none`.
+    add-entry form's `purchased_on` input and both date pickers'
+    `max`.  It MUST be the user's civil day (`display_today()`),
+    never `date.today()`: entry_service refuses a future purchase
+    date on the display clock (ruling R-M), so a process not pinned
+    to that zone would default the form to a value its own server
+    rejects.  Macro callers that don't render entries (e.g. unit
+    tests that pass no `entry_lists`) can leave this `none`.
 
     NOTE: the `data-mobile-xfer-id` guard uses `txn.transfer_id`
     rather than a (not-yet-defined) `txn.is_transfer_shadow`

@@ -1345,6 +1345,51 @@ class TestMfaLogin:
             assert grid_resp.status_code == 302
             assert "login" in grid_resp.headers.get("Location", "")
 
+    def test_mfa_verify_totp_code_in_another_digit_script(
+        self, app, client, seed_user,
+    ):
+        """Finding N-136 on the LOGIN path, and it is not an ``int()`` guard.
+
+        ``_find_matching_step`` short-circuited on
+        ``len(code) != 6 or not code.isdigit()``, and ``isdigit()`` is true
+        for every non-Latin digit script.  A six-character code of Eastern
+        Arabic numerals therefore passed the shape check and reached
+        ``hmac.compare_digest``, which raises
+        ``TypeError: comparing strings with non-ASCII characters is not
+        supported`` -- unhandled, on the door every user walks through.
+        ``MfaVerifySchema`` validates only ``Length(max=6)`` and neither
+        ``verify_totp_code`` nor the route wrapper catches it.
+
+        It always failed CLOSED, so this asserts the same refusal the
+        surrounding tests do; what changes is that the refusal is now an
+        answer rather than a 500.  ``verify_totp_code`` is deliberately NOT
+        monkeypatched here -- the real service is the code under test.
+        """
+        with app.app_context():
+            self._enable_mfa(seed_user["user"].id)
+
+            client.post("/login", data={
+                "email": "test@shekel.local",
+                "password": "testpass",
+            })
+
+            eastern_arabic = "١٢٣٤٥٦"
+            # The premise: this is exactly what the retired guard accepted.
+            assert len(eastern_arabic) == 6
+            assert eastern_arabic.isdigit()
+
+            response = client.post("/mfa/verify", data={
+                "totp_code": eastern_arabic,
+            }, follow_redirects=True)
+
+            assert response.status_code == 200
+            assert b"Invalid verification code." in response.data
+
+            # Still unauthenticated -- the refusal did not become an opening.
+            grid_resp = client.get("/", follow_redirects=False)
+            assert grid_resp.status_code == 302
+            assert "login" in grid_resp.headers.get("Location", "")
+
     def test_mfa_verify_missing_totp_key(self, app, client, seed_user, monkeypatch):
         """POST /mfa/verify redirects to login when TOTP key is missing.
 

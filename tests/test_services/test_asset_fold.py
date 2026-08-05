@@ -55,9 +55,11 @@ from app.services.balance_at import (
     _asset_contributions,
     _asset_fold,
     _cash_fold,
+    _cash_periods,
 )
 from app.services.balance_at._asset_contributions import ContributionInputs
 from app.services.balance_at._context import BalanceContext
+from app.services.cash_ledger import ReconciledThrough
 from app.services.projection_inputs import (
     load_active_deductions_for_accounts,
     load_investment_params_for_accounts,
@@ -990,7 +992,8 @@ class TestTheContributionWalksLimit:  # pylint: disable=protected-access
             recorded_by_period={},
         )
         events = _asset_contributions._dated_events(
-            plan, self._periods(date(2026, 1, 2), 4), date(2026, 1, 1),
+            plan, self._periods(date(2026, 1, 2), 4),
+            ReconciledThrough(date(2026, 1, 1)),
         )
         assert [amount for _day, amount in events] == [
             Decimal("500.00"), Decimal("500.00"), Decimal("200.00"),
@@ -1015,7 +1018,7 @@ class TestTheContributionWalksLimit:  # pylint: disable=protected-access
             recorded_by_period={periods[0].id: Decimal("900.00")},
         )
         events = _asset_contributions._dated_events(
-            plan, periods, date(2026, 1, 1),
+            plan, periods, ReconciledThrough(date(2026, 1, 1)),
         )
         assert [amount for _day, amount in events] == [Decimal("300.00")]
 
@@ -1034,7 +1037,7 @@ class TestTheContributionWalksLimit:  # pylint: disable=protected-access
                 recorded_by_period={},
             ),
             self._periods(date(2026, 12, 4), 4),
-            date(2026, 12, 3),
+            ReconciledThrough(date(2026, 12, 3)),
         )
         assert [(day.isoformat(), amount) for day, amount in events] == [
             ("2026-12-04", Decimal("500.00")),
@@ -1090,13 +1093,20 @@ class TestAnAccountThatModelsNothingIsItsCashFold:
 
 
 class TestThePerPeriodIdentity:
-    """``balance(p.end) - balance(p.start - 1) == net + reconciliation + accrual + contribution``.
+    """``balance delta == net + period_timing + book_vs_bank + accrual + contribution``.
 
     Ruling R-K's identity, extended by ruling R-W to the modelled kinds -- what
     plan step X-g3 renders as the grid's "Growth" row.  It holds BY
-    CONSTRUCTION: all four terms are readings of ONE resolved step list, and
+    CONSTRUCTION: all five terms are readings of ONE resolved step list, and
     every step is a whole cent.  Every component is computed INDEPENDENTLY here,
     never as a residual proving itself (plan Section 7.2).
+
+    **The cash remainder is TWO terms since plan step S1-c** (ruling R-DH (f)):
+    ``period_timing`` (money budgeted to one column that moved in another) and
+    ``book_vs_bank`` (what the user's own balance readings booked).  They are
+    summed here rather than through a combined accessor, because no such
+    accessor survives -- leaving one would invite a surface to render the sum
+    again, which is the figure the ruling exists to delete.
     """
 
     def test_it_holds_over_every_period_of_a_mixed_shape(
@@ -1127,7 +1137,7 @@ class TestThePerPeriodIdentity:
             account, ctx, seed_periods, params=params,
             gross=Decimal("3631.74"),
         )
-        cash = _cash_fold.cash_period_view(
+        cash = _cash_periods.cash_period_view(
             account, ctx.scenario.id, ctx.as_of, seed_periods,
         )
         openings = _fold(
@@ -1140,7 +1150,8 @@ class TestThePerPeriodIdentity:
             assert (
                 column.balance - openings[period.start_date - timedelta(days=1)]
             ) == (
-                cash_column.net + cash_column.reconciliation
+                cash_column.net
+                + cash_column.period_timing + cash_column.book_vs_bank
                 + column.accrual + column.contribution
             ), f"identity broke on period {period.period_index}"
 

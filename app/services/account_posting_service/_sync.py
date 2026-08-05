@@ -43,21 +43,20 @@ commits -- the caller owns the transaction boundary.
 
 import logging
 from collections.abc import Iterable
-from datetime import datetime
 
 from app import ref_cache
 from app.enums import PostingSourceEnum
 from app.extensions import db
-from app.models.account import Account, AccountAnchorHistory
+from app.models.account import Account
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.ref import AccountType
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
+from app.services.cash_ledger import reconciled_through
 from app.services.posting_reads import _ledger_account_for
 from app.services.scenario_resolver import get_baseline_scenario
-from app.utils.dates import utc_day_start_instant, utc_instant
 
 from ._anchors import reconcile_account_anchor_corrections
 from ._walk import walk_account_ledger
@@ -192,33 +191,6 @@ def sync_account_anchor_postings_all_scenarios(account_id: int) -> None:
         sync_account_anchor_postings(account_id, scenario_id)
 
 
-def _latest_anchor_instant(account_id: int) -> datetime | None:
-    """Return an account's latest anchor assertion instant (aware UTC), or ``None``.
-
-    The self-heal predicate's right-hand side: ``MAX(created_at)`` over the
-    account's :class:`~app.models.account.AccountAnchorHistory` rows -- the
-    assertion instant of the row ``cash_ledger.resolve_anchor`` resolves
-    -- normalized through the walk's UTC convention
-    (:func:`app.utils.dates.utc_instant`).  One indexed lookup
-    (``idx_anchor_history_account`` covers ``(account_id, created_at)``).
-
-    Args:
-        account_id: The account whose latest assertion instant to resolve.
-
-    Returns:
-        The aware-UTC instant, or ``None`` for an account with no anchor
-        history (fixture-only) or a missing account.
-    """
-    value = (
-        db.session.query(db.func.max(AccountAnchorHistory.created_at))
-        .filter(AccountAnchorHistory.account_id == account_id)
-        .scalar()
-    )
-    if value is None:
-        return None
-    return utc_instant(value)
-
-
 def self_heal_anchor_corrections(
     account_ids: Iterable[int],
     scenario_id: int,
@@ -248,17 +220,23 @@ def self_heal_anchor_corrections(
        attributed at-or-before an account's latest anchor assertion moves
        that anchor's walked ``ledger_before``, so its posted correction is
        stale until re-derived; a change attributed after every assertion
-       adds to the ledger without moving any correction.  The test reads the
-       emitted entries' ``entry_date``s -- the earliest emitted date's
-       midnight-UTC instant against the account's latest assertion instant.
-       A settle-side entry is dated at the source's CURRENT attribution
-       civil date, and a reversal entry inherits the latest date it reverses
-       (the R2 rule) -- the OLD attribution's civil date -- so both sides of
-       every lifecycle delta are covered, including the revert of an
-       early-settled future-period source whose CURRENT attribution (its
-       period start) sits after the anchor while the reversed effect
-       preceded it.  A day-granular midnight comparison over-fires only for
-       same-UTC-day changes, where the resync is an idempotent no-op walk.
+       adds to the ledger without moving any correction.  The test asks the
+       account's own boundary
+       (:meth:`app.services.cash_ledger.ReconciledThrough.covers`) about the
+       earliest emitted ``entry_date`` -- the SAME rule both walks apply to a
+       source, called rather than re-spelled, so a cost guard cannot come to
+       disagree with the money rule it is a guard for (finding N-133 / F4; see
+       :func:`app.services.cash_ledger.reconciled_through` for the
+       timezone-sign bug the third form carried).  A settle-side entry is
+       dated at the source's CURRENT
+       attribution civil date, and a reversal entry inherits the latest date
+       it reverses (the R2 rule) -- the OLD attribution's civil date -- so
+       both sides of every lifecycle delta are covered, including the revert
+       of an early-settled future-period source whose CURRENT attribution
+       (its period start) sits after the anchor while the reversed effect
+       preceded it.  Testing ``<=`` rather than ``<`` over-fires for a
+       same-day change, where the resync is an idempotent no-op walk -- the
+       safe direction, since this is a SKIP predicate.
     2. **The corrections are already POSTED in this scenario.**  "Riding on
        top" says a posted correction does not MOVE; it says nothing about
        one that was never written.  A scenario becomes live for an account
@@ -301,14 +279,19 @@ def self_heal_anchor_corrections(
     """
     if not delta_entries:
         return
-    earliest = min(
-        utc_day_start_instant(entry.entry_date) for entry in delta_entries
-    )
+    earliest = min(entry.entry_date for entry in delta_entries)
     for account_id in sorted(set(account_ids)):
-        latest = _latest_anchor_instant(account_id)
-        if latest is None:
+        # ONE statement of "the account's coverage boundary", shared with the
+        # entry reservation and the reconcile panel (plan step S1-c), and asked
+        # through the rule's ONE implementation rather than re-spelled as a
+        # ``<=`` here.  This module had its own copy of both; a second copy of
+        # this question is what carried a silent timezone-sign dependency until
+        # finding N-133 / F4, and it is the site a lint-based fence could never
+        # have seen, because both of its operands were bare locals.
+        boundary = reconciled_through(account_id)
+        if boundary.observed_day is None:
             continue
-        if earliest <= latest or not _has_posted_anchor_correction(
+        if boundary.covers(earliest) or not _has_posted_anchor_correction(
             account_id, scenario_id,
         ):
             sync_account_anchor_postings(account_id, scenario_id)

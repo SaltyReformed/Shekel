@@ -87,7 +87,7 @@ def _create_projected_transfer(seed_user, from_account, to_account, amount):
 
     Routed through ``transfer_service.create_transfer`` -- the sole transfer
     writer -- so the two shadows obey every transfer invariant.  A Projected
-    transfer never goes through ``_apply_status_change`` and so posts no ledger
+    transfer never goes through the status seam and so posts no ledger
     entry until it is settled.
     """
     return transfer_service.create_transfer(
@@ -483,7 +483,7 @@ class TestSettleWithActualSameCall:
         The grid shadow-edit path can send ``status_id=done`` AND
         ``actual_amount`` in a single ``update_transfer`` call, and the service
         applies ``actual_amount`` AFTER ``status_id``.  The reconcile runs at
-        the END of ``update_transfer`` (NOT inside ``_apply_status_change``), so
+        the END of ``update_transfer`` (NOT inside ``_apply_status_to_all_three``), so
         it reads the FINAL income-shadow effective amount.
 
         Arithmetic: nominal $100, settled actual $88.00 -> the income shadow's

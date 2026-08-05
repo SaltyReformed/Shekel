@@ -11,6 +11,7 @@ from marshmallow import (
 
 from app.schemas.validation._helpers import (
     BaseSchema,
+    RowId,
     _normalize_empty_inputs,
 )
 
@@ -19,7 +20,14 @@ class EntryCreateSchema(BaseSchema):
     """Validates POST data for creating a transaction entry.
 
     Requires amount (>= 0.01), description (1--200 chars), and
-    entry_date.  is_credit defaults to False.
+    ``purchased_on``.  is_credit defaults to False.
+
+    **``settled_on`` is deliberately absent from the CREATE door.**  It records
+    the day the user SAW the purchase on a bank statement, and at the moment a
+    purchase is entered there is nothing to have seen.  It is set later, either
+    by ticking the purchase at a balance true-up or by editing the entry -- see
+    :class:`EntryUpdateSchema`.  Offering it here would invite a value that is
+    a forecast rather than an observation.
     """
 
     @pre_load
@@ -34,7 +42,7 @@ class EntryCreateSchema(BaseSchema):
     description = fields.String(
         required=True, validate=validate.Length(min=1, max=200),
     )
-    entry_date = fields.Date(required=True)
+    purchased_on = fields.Date(required=True)
     is_credit = fields.Boolean(load_default=False)
 
 
@@ -58,8 +66,14 @@ class EntryUpdateSchema(BaseSchema):
         validate=validate.Range(min=Decimal("0.01")),
     )
     description = fields.String(validate=validate.Length(min=1, max=200))
-    entry_date = fields.Date()
+    purchased_on = fields.Date()
+    # ``allow_none`` is what makes an emptied date input CLEAR the observation
+    # rather than being dropped as "not provided" (see
+    # ``_normalize_empty_inputs``).  Clearing it is a real user action: "I
+    # ticked this as posted and the statement does not actually show it", which
+    # must put the purchase back among the outstanding ones.
+    settled_on = fields.Date(allow_none=True)
     is_credit = fields.Boolean()
 
     # Optimistic-locking pin (commit C-18).
-    version_id = fields.Integer(validate=validate.Range(min=1))
+    version_id = RowId(validate=validate.Range(min=1))

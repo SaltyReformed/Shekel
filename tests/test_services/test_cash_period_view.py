@@ -1,15 +1,26 @@
 """X-c1: the cash PERIOD VIEW -- one row set, two clocks, one named remainder.
 
 Plan step X-c1 (``docs/audits/balance_architecture/README.md``, ruling R-K).
-Grades ``app.services.balance_at._cash_fold.cash_period_view`` -- the producer
-plan step X-c2 points the grid's balance row, its subtotal rows and its new
-Reconciliation row at.  The view is ADDITIVE here: no production surface reads
+Grades ``app.services.balance_at._cash_periods.cash_period_view`` -- the producer
+plan step X-c2 points the grid's balance row, its subtotal rows and its two
+remainder rows at.  The view is ADDITIVE here: no production surface reads
 it yet, so nothing in this file can move a shipped balance.
 
 **The identity is the point, and it is asserted against an INDEPENDENT fold.**
 For every period::
 
-    balance(p.end) - balance(p.start - 1 day) == net[p] + reconciliation[p]
+    balance(p.end) - balance(p.start - 1 day)
+        == net[p] + period_timing[p] + book_vs_bank[p]
+
+**The remainder is TWO figures here, and that is ruling R-DH (f)** (plan step
+S1-c).  It was one field, ``reconciliation``, summing two facts with different
+causes and different fixes: money landing in a different column from the one it
+was budgeted to (``period_timing``), and the gap between what the app had
+recorded and what the bank actually held (``book_vs_bank``).  Every assertion
+below that read the single field now names WHICH half carries the figure and
+pins the other at ``$0.00`` -- which is strictly sharper, because the old form
+could not tell a timing error from a true-up and each of these fixtures produces
+exactly one of the two.
 
 The left side is sampled from ``fold_cash_balances`` -- the X-b producer, graded
 on its own hand-computed oracle -- and the right side is the view's grouping of
@@ -33,10 +44,10 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.transaction_entry import TransactionEntry
 from app.services import cash_ledger
-from app.services.balance_at._cash_fold import (
+from app.services.balance_at._cash_fold import fold_cash_balances
+from app.services.balance_at._cash_periods import (
     CashPeriodFigures,
     cash_period_view,
-    fold_cash_balances,
 )
 from tests._test_helpers import (
     add_entry,
@@ -44,6 +55,7 @@ from tests._test_helpers import (
     append_balance_assertion,
     create_envelope_txn,
     create_settled_cash_transaction,
+    mark_purchase_settled,
     restamp_opening_assertion,
 )
 from tests.test_services.test_cash_fold import _instant
@@ -70,7 +82,14 @@ def _view(account, scenario, periods, as_of=_EARLY_AS_OF):
 
 
 def _identity_holds(account, scenario, periods, as_of=_EARLY_AS_OF):
-    """Return ``[(period, balance_delta, net + reconciliation)]`` per period.
+    """Return ``[(period, balance_delta, explained)]`` per period.
+
+    ``explained`` is ``net + period_timing + book_vs_bank`` -- R-DH (f) split
+    the single remainder in two, and the identity is stated over BOTH halves
+    rather than over a combined accessor.  No such accessor survives on the
+    dataclass: leaving one would invite a surface to render the sum again,
+    which is the figure the ruling exists to delete, so the sum is composed
+    here at the one place that genuinely needs it.
 
     The balance delta is sampled from the INDEPENDENT fold at the boundary
     dates; the right-hand side is the view's own grouping.  The caller asserts
@@ -85,7 +104,9 @@ def _identity_holds(account, scenario, periods, as_of=_EARLY_AS_OF):
         (
             period,
             folded[period.end_date] - folded[period.start_date - _ONE_DAY],
-            figures[period.id].net + figures[period.id].reconciliation,
+            figures[period.id].net
+            + figures[period.id].period_timing
+            + figures[period.id].book_vs_bank,
         )
         for period in periods
     ]
@@ -112,8 +133,9 @@ class TestTheSubtotalsCountEveryAttributedRow:
 
         Hand-computed, new basis: income ``$500.00``; expenses
         ``200.00 + 75.00 = $275.00``; net ``$225.00``.  Every row settled inside
-        its own column and nobody re-anchored, so the remainder is ``$0.00`` and
-        the balance is ``1000 + 500 - 200 - 75 = $1,225.00``.
+        its own column (``period_timing`` ``$0.00``) and nobody re-anchored
+        (``book_vs_bank`` ``$0.00``), so the balance is
+        ``1000 + 500 - 200 - 75 = $1,225.00``.
 
         The RETIRED producer answered ``$0.00`` income and ``$75.00`` expenses
         for the same column -- the two settled rows were invisible to it -- which
@@ -140,7 +162,8 @@ class TestTheSubtotalsCountEveryAttributedRow:
         assert figures.income == Decimal("500.00")
         assert figures.expense == Decimal("275.00")
         assert figures.net == Decimal("225.00")
-        assert figures.reconciliation == Decimal("0.00")
+        assert figures.period_timing == Decimal("0.00")
+        assert figures.book_vs_bank == Decimal("0.00")
         assert figures.balance == Decimal("1225.00")
 
         # Non-vacuity, now that the old basis is gone as an executable
@@ -156,12 +179,22 @@ class TestTheSubtotalsCountEveryAttributedRow:
         # set the column is built from rather than a second loader that agreed.
         # ``sum_projected`` re-applies ``is_projected`` over whatever it is
         # handed, so the figure is unchanged.
+        # The basis is REQUIRED (plan step S1-c), so the reference states the
+        # one the producer itself would build for this account: no live
+        # override candidate, and the account's own latest asserted day as the
+        # reconciled-through bound.  The $75.00 bill carries no entries, so
+        # neither field can move the figure -- which is why the basis is built
+        # honestly rather than zeroed to make the call compile.
+        basis = cash_ledger.ProjectedBasis(
+            amount_overrides={},
+            reconciled_through=cash_ledger.reconciled_through(account.id),
+        )
         _, unpaid_only_expense = cash_ledger.sum_projected([
             row for row in cash_ledger.planned_cash_rows(
                 account.id, scenario.id,
             )
             if row.pay_period_id == seed_periods[2].id
-        ])
+        ], basis)
         assert unpaid_only_expense == Decimal("75.00")
         assert figures.expense - unpaid_only_expense == Decimal("200.00")
 
@@ -194,7 +227,7 @@ class TestTheSubtotalsCountEveryAttributedRow:
                 user_id=seed_user["user"].id,
                 amount=amount,
                 description="purchase",
-                entry_date=date(2026, 2, 4),
+                purchased_on=date(2026, 2, 4),
                 is_credit=is_credit,
             ))
         db.session.commit()
@@ -202,7 +235,8 @@ class TestTheSubtotalsCountEveryAttributedRow:
         figures = _view(account, scenario, seed_periods)[seed_periods[2].id]
         assert figures.expense == Decimal("120.00")
         assert figures.net == Decimal("-120.00")
-        assert figures.reconciliation == Decimal("0.00")
+        assert figures.period_timing == Decimal("0.00")
+        assert figures.book_vs_bank == Decimal("0.00")
         assert figures.balance == Decimal("880.00")
 
     def test_a_row_counts_on_its_TYPE_row_even_when_its_cash_leg_inverts(
@@ -237,7 +271,7 @@ class TestTheSubtotalsCountEveryAttributedRow:
             user_id=seed_user["user"].id,
             amount=Decimal("80.00"),
             description="credit purchase",
-            entry_date=date(2026, 2, 4),
+            purchased_on=date(2026, 2, 4),
             is_credit=True,
         ))
         db.session.commit()
@@ -246,7 +280,8 @@ class TestTheSubtotalsCountEveryAttributedRow:
         assert figures.income == Decimal("0.00")
         assert figures.expense == Decimal("-30.00")
         assert figures.net == Decimal("30.00")
-        assert figures.reconciliation == Decimal("0.00")
+        assert figures.period_timing == Decimal("0.00")
+        assert figures.book_vs_bank == Decimal("0.00")
         assert figures.balance == Decimal("1030.00")
 
     def test_a_projected_envelope_counts_its_entries_aware_reservation(
@@ -255,60 +290,78 @@ class TestTheSubtotalsCountEveryAttributedRow:
         """A still-projected envelope is worth what it still holds back.
 
         A ``$200.00`` Groceries envelope due 2026-02-10 in period 2, carrying one
-        CLEARED ``$120.00`` debit purchase made 01-31, read at
-        ``as_of = 2026-02-01``.
+        ``$120.00`` debit purchase made 01-31 and RECORDED AS SETTLED that same
+        day, read at ``as_of = 2026-02-01``.
 
         Hand-computed: the reservation is
-        ``max(200.00 - 120.00 - 0.00, 0.00) = $80.00`` -- the cleared purchase is
-        already inside the anchor, so only the unspent budget is still held back.
-        The expense row reads ``$80.00`` (never the ``$200.00`` estimate) and the
-        balance ``1000 - 80 = $920.00``.  Its due date is past ``as_of + 1``, so
-        ruling R-G's clamp is a no-op and the remainder stays ``$0.00``.
+        ``max(200.00 - 120.00 - 0.00, 0.00) = $80.00``.  The purchase's
+        ``settled_on`` (01-31) is at or before the account's latest asserted day
+        -- the opening assertion of 2026-01-01 is the only one, so it is NOT,
+        and that is exactly the precondition this fixture has to state.  The
+        opening is restamped to 01-31 below so the reconciliation the figure
+        depends on is REACHABLE (finding N-132 / R8): a purchase gets inside a
+        declared balance by the user declaring the balance after it posted.
+        The expense row then reads ``$80.00`` (never the ``$200.00`` estimate)
+        and the balance ``1000 - 80 = $920.00``.  Its due date is past
+        ``as_of + 1``, so ruling R-G's clamp is a no-op and both remainders stay
+        ``$0.00``.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
+        # The opening is the account's ONLY assertion, so it is what decides
+        # whether the purchase is reconciled; it is dated 01-31 so it can be.
+        restamp_opening_assertion(db.session, account, _instant(2026, 1, 31))
         txn = create_envelope_txn(
             seed_user, db.session, seed_periods[2], "Groceries",
             Decimal("200.00"),
         )
         txn.due_date = date(2026, 2, 10)
-        db.session.add(TransactionEntry(
-            transaction_id=txn.id,
-            user_id=seed_user["user"].id,
-            amount=Decimal("120.00"),
-            description="purchase",
-            entry_date=date(2026, 1, 31),
-            is_credit=False,
-            is_cleared=True,
-        ))
+        add_entry(
+            db.session, seed_user, txn, Decimal("120.00"), date(2026, 1, 31),
+        )
+        mark_purchase_settled(db.session, account, txn.entries[0])
         db.session.commit()
 
         figures = _view(
             account, scenario, seed_periods, as_of=date(2026, 2, 1),
         )[seed_periods[2].id]
         assert figures.expense == Decimal("80.00")
-        assert figures.reconciliation == Decimal("0.00")
+        assert figures.period_timing == Decimal("0.00")
+        assert figures.book_vs_bank == Decimal("0.00")
         assert figures.balance == Decimal("920.00")
 
 
 class TestTheRemainderHoldsWhatTheSubtotalsCannot:
-    """The three components of the Reconciliation row, one test each."""
+    """The components of the two remainder rows, one test each.
+
+    **Which ROW a component lands on is the property, not just its size**
+    (ruling R-DH (f), plan step S1-c).  Before the split all four cases below
+    asserted one combined figure, so a component booked to the wrong cause
+    passed silently.  Each test now names the half that carries it and pins the
+    other at ``$0.00``: timing components (a row settled outside its column, a
+    plan the clamp moved forward) land on ``period_timing``, and only a balance
+    ASSERTION lands on ``book_vs_bank``.
+    """
 
     def test_timing_a_row_that_settled_outside_its_own_column(
         self, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """Budgeted to period 3, paid in period 5: two remainders that cancel.
+        """Budgeted to period 3, paid in period 5: two timings that cancel.
 
         A ``$300.00`` expense attributed to period 3 (2026-02-13..02-26) but
         settled 2026-03-20, inside period 5 (2026-03-13..03-26).  This is 19 of
         the real Checking account's 130 settled rows.
 
         Hand-computed.  Period 3: expenses ``$300.00`` (it is that column's
-        budget), nothing moved, so the remainder is ``0 - (-300) = +$300.00`` and
-        the balance does not change.  Period 5: no row is budgeted there, but
-        ``-$300.00`` moved, so the remainder is ``-$300.00`` and the balance
-        drops by it.  The two net to ``$0.00`` across history -- the row is
-        counted once as budget and once as cash, never twice.
+        budget), nothing moved, so ``period_timing`` is ``0 - (-300) = +$300.00``
+        and the balance does not change.  Period 5: no row is budgeted there, but
+        ``-$300.00`` moved, so its ``period_timing`` is ``-$300.00`` and the
+        balance drops by it.  The two net to ``$0.00`` across history -- the row
+        is counted once as budget and once as cash, never twice.
+
+        ``book_vs_bank`` is ``$0.00`` in BOTH columns, and that is the half of
+        this the combined figure could not state: nobody re-anchored, so nothing
+        here is about what the bank held.  A regression that booked a timing
+        difference as a true-up would have passed the old assertion.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
@@ -322,17 +375,19 @@ class TestTheRemainderHoldsWhatTheSubtotalsCannot:
         budgeted = figures[seed_periods[3].id]
         assert budgeted.expense == Decimal("300.00")
         assert budgeted.net == Decimal("-300.00")
-        assert budgeted.reconciliation == Decimal("300.00")
+        assert budgeted.period_timing == Decimal("300.00")
+        assert budgeted.book_vs_bank == Decimal("0.00")
         assert budgeted.balance == Decimal("1000.00")
 
         moved = figures[seed_periods[5].id]
         assert moved.expense == Decimal("0.00")
         assert moved.net == Decimal("0.00")
-        assert moved.reconciliation == Decimal("-300.00")
+        assert moved.period_timing == Decimal("-300.00")
+        assert moved.book_vs_bank == Decimal("0.00")
         assert moved.balance == Decimal("700.00")
 
         assert (
-            budgeted.reconciliation + moved.reconciliation == Decimal("0.00")
+            budgeted.period_timing + moved.period_timing == Decimal("0.00")
         )
 
     def test_a_true_up_is_the_remainder_no_row_can_explain(
@@ -345,10 +400,16 @@ class TestTheRemainderHoldsWhatTheSubtotalsCannot:
         in between.
 
         Hand-computed: the correction is ``1500.00 - 1000.00 = +$500.00``.  Both
-        subtotal rows are ``$0.00`` -- there is no transaction to count -- so the
-        remainder is the whole ``+$500.00`` and it is exactly the balance change.
-        This is 51 corrections and ``-$2,906.31`` net on the real Checking
-        account, money no transaction row will ever explain.
+        subtotal rows are ``$0.00`` -- there is no transaction to count -- so
+        ``book_vs_bank`` is the whole ``+$500.00`` and it is exactly the balance
+        change.  This is 51 corrections and ``-$2,906.31`` net on the real
+        Checking account, money no transaction row will ever explain.
+
+        ``period_timing`` is ``$0.00``, and it is the assertion that gives this
+        test its discriminating power under ruling R-DH (f): the two facts are
+        rendered as separate rows with separate advice attached, so an assertion
+        booked as a timing difference would tell the user to check their pay
+        periods for a problem that is really untracked spend.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
@@ -362,7 +423,8 @@ class TestTheRemainderHoldsWhatTheSubtotalsCannot:
         assert figures.income == Decimal("0.00")
         assert figures.expense == Decimal("0.00")
         assert figures.net == Decimal("0.00")
-        assert figures.reconciliation == Decimal("500.00")
+        assert figures.period_timing == Decimal("0.00")
+        assert figures.book_vs_bank == Decimal("500.00")
         assert figures.balance == Decimal("1500.00")
 
     def test_the_opening_assertion_books_nothing_in_its_own_period(
@@ -379,8 +441,11 @@ class TestTheRemainderHoldsWhatTheSubtotalsCannot:
         ``1000.00 - (-400.00) = $1,400.00`` and the account read ``$1,400.00``
         before the spend.  Period 0 therefore changes by
         ``1000.00 - 1400.00 = -$400.00``, which its own expense row explains in
-        full -- remainder ``$0.00``.  Counting the opening's ``+$1,400.00``
-        correction here would claim a jump the balance never took.
+        full -- BOTH remainders ``$0.00``.  Counting the opening's ``+$1,400.00``
+        correction here would claim a jump the balance never took, and it is
+        ``book_vs_bank`` specifically that it would land on (an assertion is
+        what that row holds), so pinning that half at ``$0.00`` is what makes
+        this test name the rule it is about.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         restamp_opening_assertion(db.session, account, _instant(2026, 1, 5))
@@ -393,7 +458,8 @@ class TestTheRemainderHoldsWhatTheSubtotalsCannot:
         figures = _view(account, scenario, seed_periods)[seed_periods[0].id]
         assert figures.expense == Decimal("400.00")
         assert figures.net == Decimal("-400.00")
-        assert figures.reconciliation == Decimal("0.00")
+        assert figures.period_timing == Decimal("0.00")
+        assert figures.book_vs_bank == Decimal("0.00")
         assert figures.balance == Decimal("1000.00")
 
         folded = fold_cash_balances(
@@ -413,11 +479,17 @@ class TestTheRemainderHoldsWhatTheSubtotalsCannot:
 
         Hand-computed: its effective day is ``max(03-20, 04-03) = 2026-04-03``,
         inside period 6 (2026-03-27..04-09).  So period 5 still BUDGETS the
-        ``$50.00`` expense while nothing moves there (remainder ``+$50.00``), and
-        period 6 carries the ``-$50.00`` the balance actually takes (remainder
-        ``-$50.00``).  Under the rejected alternative the bill would land on its
-        stale due date and the next re-anchor would absorb it -- deleting it from
-        the projection entirely.
+        ``$50.00`` expense while nothing moves there (``period_timing``
+        ``+$50.00``), and period 6 carries the ``-$50.00`` the balance actually
+        takes (``period_timing`` ``-$50.00``).  Under the rejected alternative
+        the bill would land on its stale due date and the next re-anchor would
+        absorb it -- deleting it from the projection entirely.
+
+        The clamp is a WHEN fact, so it belongs to ``period_timing`` and
+        ``book_vs_bank`` reads ``$0.00`` in both columns.  That is the ruling's
+        own advice made testable: a persistently non-zero timing row means a
+        bill is budgeted to the wrong period or is being recorded late, which is
+        exactly what an overdue bill is.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         as_of = date(2026, 4, 2)
@@ -431,17 +503,19 @@ class TestTheRemainderHoldsWhatTheSubtotalsCannot:
         figures = _view(account, scenario, seed_periods, as_of=as_of)
         budgeted = figures[seed_periods[5].id]
         assert budgeted.expense == Decimal("50.00")
-        assert budgeted.reconciliation == Decimal("50.00")
+        assert budgeted.period_timing == Decimal("50.00")
+        assert budgeted.book_vs_bank == Decimal("0.00")
         assert budgeted.balance == Decimal("1000.00")
 
         landing = figures[seed_periods[6].id]
         assert landing.expense == Decimal("0.00")
-        assert landing.reconciliation == Decimal("-50.00")
+        assert landing.period_timing == Decimal("-50.00")
+        assert landing.book_vs_bank == Decimal("0.00")
         assert landing.balance == Decimal("950.00")
 
 
 class TestTheIdentityHoldsOnEveryPeriod:
-    """``balance(p.end) - balance(p.start - 1d) == net + reconciliation``.
+    """``balance(p.end) - balance(p.start - 1d) == net + timing + book``.
 
     Asserted with both sides computed independently -- the left from the X-b
     fold, the right from the view's grouping -- over EVERY period of a shape
@@ -526,34 +600,51 @@ class TestTheIdentityHoldsOnEveryPeriod:
         hand-computed from a different component.  Without this a view that
         returned zeros everywhere would satisfy the identity perfectly.
 
-        * period 3 -- ``+$300.00``: it BUDGETS the late rent, which moved
-          elsewhere.
-        * period 4 -- ``-$1,300.00``: the true-up, which no transaction row can
-          explain.  The records had walked the account to
+        **Each figure is asserted on the row its CAUSE belongs to** (ruling
+        R-DH (f)), which is what makes this shape discriminating rather than
+        merely non-zero: the run carries three timing components and one
+        assertion, and the split is the only form in which those are told apart.
+
+        * period 3 -- timing ``+$300.00``: it BUDGETS the late rent, which moved
+          elsewhere.  No assertion touches it, so ``book_vs_bank`` is ``$0.00``.
+        * period 4 -- book-vs-bank ``-$1,300.00``: the true-up, which no
+          transaction row can explain.  The records had walked the account to
           ``1400.00 - 400.00 + 1800.00 = $2,800.00`` by 2026-03-01, and the user
           asserted ``$1,500.00``, so the correction is ``1500 - 2800``.  Note it
           is NOT ``1500 - 1000``: an assertion's correction is measured against
-          the RECORDS, which is the whole reason this row exists.
-        * period 5 -- ``-$250.00``: the late rent MOVED here (``-$300.00``, and
-          it is budgeted two columns back) while the ``$50.00`` overdue bill is
-          budgeted here and moves elsewhere (``+$50.00``).
-        * period 6 -- ``-$50.00``: the overdue bill LANDS here on ruling R-G's
-          clamp (2026-04-03), where nothing budgets it.  The Groceries envelope
-          beside it is budgeted AND lands in this column, so it contributes
-          nothing to the remainder.
+          the RECORDS, which is the whole reason this row exists.  Nothing
+          settled or was budgeted out of column here, so ``period_timing`` is
+          ``$0.00`` -- the one period in the run where the two rows disagree
+          about which is non-zero, and therefore the one that would catch a
+          producer that had booked them to the wrong halves.
+        * period 5 -- timing ``-$250.00``: the late rent MOVED here
+          (``-$300.00``, and it is budgeted two columns back) while the
+          ``$50.00`` overdue bill is budgeted here and moves elsewhere
+          (``+$50.00``).
+        * period 6 -- timing ``-$50.00``: the overdue bill LANDS here on ruling
+          R-G's clamp (2026-04-03), where nothing budgets it.  The Groceries
+          envelope beside it is budgeted AND lands in this column, so it
+          contributes nothing to either remainder.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         as_of = self._rich_shape(seed_user, seed_periods)
 
         figures = _view(account, scenario, seed_periods, as_of=as_of)
-        remainders = {
-            period.period_index: figures[period.id].reconciliation
+        timing = {
+            period.period_index: figures[period.id].period_timing
             for period in seed_periods
         }
-        assert remainders[3] == Decimal("300.00")
-        assert remainders[4] == Decimal("-1300.00")
-        assert remainders[5] == Decimal("-250.00")
-        assert remainders[6] == Decimal("-50.00")
+        book = {
+            period.period_index: figures[period.id].book_vs_bank
+            for period in seed_periods
+        }
+        assert timing[3] == Decimal("300.00")
+        assert timing[4] == Decimal("0.00")
+        assert timing[5] == Decimal("-250.00")
+        assert timing[6] == Decimal("-50.00")
+        # The ONLY non-zero book-vs-bank in the run is period 4's true-up.
+        assert book[4] == Decimal("-1300.00")
+        assert {index for index, value in book.items() if value} == {4}
         assert len({figures[p.id].balance for p in seed_periods}) > 1
 
     def test_the_identity_holds_over_a_non_contiguous_window(
@@ -566,12 +657,15 @@ class TestTheIdentityHoldsOnEveryPeriod:
         reported.
 
         Hand-computed.  Period 0 budgets the ``$250.00`` (net ``-$250.00``) while
-        nothing moves inside its span, so its remainder is ``+$250.00`` and its
-        balance is unchanged at ``$1,000.00``.  Period 2 budgets nothing and
-        nothing moves inside ITS span either -- the settle happened before
+        nothing moves inside its span, so its ``period_timing`` is ``+$250.00``
+        and its balance is unchanged at ``$1,000.00``.  Period 2 budgets nothing
+        and nothing moves inside ITS span either -- the settle happened before
         02-12's opening boundary -- so every figure is ``$0.00`` against a
         ``$750.00`` balance.  A nearest-period fallback would pull the 01-20
         settle into period 0 and break its identity by the row's whole amount.
+
+        ``book_vs_bank`` is ``$0.00`` throughout: only the opening was asserted,
+        and ruling R-I keeps that out of every column.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
@@ -584,10 +678,12 @@ class TestTheIdentityHoldsOnEveryPeriod:
         window = [seed_periods[0], seed_periods[2]]
         figures = _view(account, scenario, window)
         assert figures[seed_periods[0].id].net == Decimal("-250.00")
-        assert figures[seed_periods[0].id].reconciliation == Decimal("250.00")
+        assert figures[seed_periods[0].id].period_timing == Decimal("250.00")
+        assert figures[seed_periods[0].id].book_vs_bank == Decimal("0.00")
         assert figures[seed_periods[0].id].balance == Decimal("1000.00")
         assert figures[seed_periods[2].id].net == Decimal("0.00")
-        assert figures[seed_periods[2].id].reconciliation == Decimal("0.00")
+        assert figures[seed_periods[2].id].period_timing == Decimal("0.00")
+        assert figures[seed_periods[2].id].book_vs_bank == Decimal("0.00")
         assert figures[seed_periods[2].id].balance == Decimal("750.00")
 
         rows = _identity_holds(account, scenario, window)
@@ -617,7 +713,8 @@ class TestTheIdentityHoldsOnEveryPeriod:
             income=Decimal("0.00"),
             expense=Decimal("0.00"),
             net=Decimal("0.00"),
-            reconciliation=Decimal("0.00"),
+            period_timing=Decimal("0.00"),
+            book_vs_bank=Decimal("0.00"),
         )
         for period in seed_periods:
             assert figures[period.id] == empty
@@ -633,9 +730,14 @@ class TestTheIdentityHoldsOnEveryPeriod:
 
         Hand-computed: nothing is ATTRIBUTED to period 2, so both subtotal rows
         read ``$0.00``, while ``-$180.00`` moved through it.  The whole change is
-        the remainder (``-$180.00``) against a ``$820.00`` balance.  This is the
-        mirror of the case above (budgeted in, moved out) and the one that would
-        otherwise read as a balance dropping for no reason.
+        ``period_timing`` (``-$180.00``) against a ``$820.00`` balance.  This is
+        the mirror of the case above (budgeted in, moved out) and the one that
+        would otherwise read as a balance dropping for no reason.
+
+        Landing it on ``period_timing`` rather than ``book_vs_bank`` is the
+        answer the user acts on: the money is accounted for, it is just budgeted
+        to a column outside the window.  Booking it as book-vs-bank would say
+        the bank disagreed with the app, which is false.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
@@ -650,7 +752,8 @@ class TestTheIdentityHoldsOnEveryPeriod:
         assert figures.income == Decimal("0.00")
         assert figures.expense == Decimal("0.00")
         assert figures.net == Decimal("0.00")
-        assert figures.reconciliation == Decimal("-180.00")
+        assert figures.period_timing == Decimal("-180.00")
+        assert figures.book_vs_bank == Decimal("0.00")
         assert figures.balance == Decimal("820.00")
 
         rows = _identity_holds(account, scenario, window)

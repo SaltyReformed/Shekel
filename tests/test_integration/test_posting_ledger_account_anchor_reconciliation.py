@@ -56,7 +56,7 @@ primitives -- ``create_account`` (fires the C6 opening sync),
 seam + posting builder), ``apply_anchor_true_up`` (the true-up chokepoint) --
 so every reconciled row was produced exactly as production produces it.  The one
 non-production affordance is pinning an anchor row's ``created_at`` (via
-:func:`_assert_balance_at`) so the moment partition under test is deterministic
+:func:`_assert_balance_at`) so the civil-day partition under test is deterministic
 regardless of the test clock or timezone -- the same technique the C5 unit suite
 uses.  Assertion instants are always built RELATIVE to the factory origination
 row's stored ``created_at`` (the one instant the test cannot choose).
@@ -102,6 +102,7 @@ from tests._test_helpers import (
     ledger_net,
     linked_ledger_account,
     load_migration_module,
+    observed_day_of,
     restamp_opening_assertion,
 )
 
@@ -195,7 +196,7 @@ def _linked_ledger_sum_as_of(
 
     The "ledger through an assertion instant" reader: every linked-ledger entry
     -- a source OR an anchor correction -- carries ``entry_date`` equal to the
-    UTC civil date of its attribution instant (``posting_service._entry_date`` /
+    display-timezone civil date of its ``paid_at`` (``posting_service._entry_date`` /
     ``_transaction_entry_date`` date sources off ``paid_at``; corrections off
     the anchor's ``created_at``), so summing legs with ``entry_date <=
     civil_date`` reconstructs the ledger as of the END of that civil day.  When
@@ -465,7 +466,7 @@ def _assert_balance_at(account, balance, created_at) -> AccountAnchorHistory:
 
     Mirrors ``anchor_service.stage_anchor_true_up`` (the history row plus the
     ``current_anchor_balance`` cache write) but pins ``created_at`` explicitly
-    so the moment partition under test is exact -- the one non-production
+    so the civil-day partition under test is exact -- the one non-production
     affordance, the same the C5 unit suite uses.  Anchors against the account's
     current anchor period; flushes.  The caller drives the reconcile
     (``sync_account_anchor_postings_all_scenarios``) afterward, exactly as the
@@ -476,6 +477,9 @@ def _assert_balance_at(account, balance, created_at) -> AccountAnchorHistory:
         pay_period_id=account.current_anchor_period_id,
         anchor_balance=Decimal(str(balance)),
         created_at=created_at,
+        # The civil day this assertion is the closing balance FOR, kept in step
+        # with the pinned instant by the shared rule (ruling R-DH, plan step 2).
+        observed_on=observed_day_of(created_at),
     )
     account.current_anchor_balance = Decimal(str(balance))
     _db.session.add(row)
@@ -489,7 +493,7 @@ def _true_up_at(account, balance, created_at) -> None:
     The deterministic stand-in for ``anchor_service.apply_anchor_true_up``: it
     stages the history row + cache (:func:`_assert_balance_at`) at a PINNED
     ``created_at`` and then drives the SAME all-scenarios reconcile the true-up
-    chokepoint calls.  Pinning the instant is what makes the moment partition
+    chokepoint calls.  Pinning the instant is what makes the civil-day partition
     exact -- ``apply_anchor_true_up`` stamps ``created_at = now()``, which cannot
     be placed between two synthetic settles; the C5 unit suite uses the same
     affordance for the same reason.  The chokepoint itself is covered end to end
@@ -517,13 +521,14 @@ def _settle_expense(seed_user, account, amount, paid_at):
 
 
 # ---------------------------------------------------------------------------
-# 1. The absolute invariant: moment partition (CRITICAL-1)
+# 1. The absolute invariant: civil-day partition (CRITICAL-1)
 # ---------------------------------------------------------------------------
 
 
 class TestAbsoluteInvariantPerAccount:
     """A multi-anchor account reconciles to latest anchor + post-assertion sources."""
 
+    @pytest.mark.server_clock
     def test_critical1_absorb_and_ride_reconciles_three_ways(
         self, app, db, seed_user,
     ):
@@ -595,6 +600,7 @@ class TestAbsoluteInvariantPerAccount:
 
             _assert_account_anchors_reconcile(scenario_id)
 
+    @pytest.mark.server_clock
     def test_source_at_exact_assertion_instant_is_absorbed(
         self, app, db, seed_user,
     ):
@@ -666,6 +672,7 @@ class TestAbsoluteInvariantPerAccount:
 class TestTransferSourceRidesOnTop:
     """A settled transfer reconciles on both linked ledgers by its shadow effect."""
 
+    @pytest.mark.server_clock
     def test_transfer_into_savings_reconciles_both_accounts(
         self, app, db, seed_user,
     ):
@@ -729,6 +736,7 @@ class TestTransferSourceRidesOnTop:
 class TestLedgerThroughEachAssertionInstant:
     """At every historical assertion instant the ledger equalled that anchor."""
 
+    @pytest.mark.server_clock
     def test_as_of_each_assertion_lands_on_the_asserted_balance(
         self, app, db, seed_user,
     ):
@@ -804,6 +812,7 @@ class TestLedgerThroughEachAssertionInstant:
 class TestRevertAfterTrueupSelfHeals:
     """Reverting a pre-true-up settle re-bases the true-up and stays reconciled."""
 
+    @pytest.mark.server_clock
     def test_revert_pre_trueup_settle_reconciles(self, app, db, seed_user):
         """The CRITICAL-1 fixture, then revert the pre-true-up spend; sweep ties.
 
@@ -943,6 +952,7 @@ class TestPreAnchorAbsorption:
 class TestSameDayAnchorMerge:
     """Two same-UTC-day true-ups merge to one entry on the later value."""
 
+    @pytest.mark.server_clock
     def test_two_same_day_trueups_reconcile(self, app, db, seed_user):
         """$600 then $550 on one future UTC day merge to a single +50.00 entry.
 
@@ -1001,6 +1011,7 @@ class TestSameDayAnchorMerge:
 class TestNegativelyAnchoredLiability:
     """A non-loan liability anchor posts ledger-native, with no sign branch."""
 
+    @pytest.mark.server_clock
     def test_credit_card_negative_anchor_reconciles(self, app, db, seed_user):
         """A Credit Card anchored -500.00, then a $120 charge, reconciles absolutely.
 
@@ -1258,6 +1269,7 @@ class TestScenarioAndOwnerIsolation:
             _assert_account_anchors_reconcile(baseline.id)
             _assert_account_anchors_reconcile(whatif.id)
 
+    @pytest.mark.server_clock
     def test_owners_reconcile_independently(
         self, app, db, seed_user, seed_second_user,
     ):
@@ -1319,6 +1331,7 @@ class TestScenarioAndOwnerIsolation:
 class TestBackfillEqualsGoForward:
     """Clearing then backfilling reproduces the go-forward ledger exactly."""
 
+    @pytest.mark.server_clock
     def test_backfill_restores_the_absolute_ledger(self, app, db, seed_user):
         """A multi-anchor account's ledger is identical after clear + backfill.
 
@@ -1530,6 +1543,7 @@ def _transfer_net_in_period(account_id, scenario_id, period_id) -> Decimal:
 class TestSettledTransferAttributionMutation:
     """A settled transfer's period / paid_at edit keeps the anchor sound (F1)."""
 
+    @pytest.mark.server_clock
     def test_settled_period_move_reposts_and_reconciles(
         self, app, db, seed_user,
     ):
@@ -1590,6 +1604,7 @@ class TestSettledTransferAttributionMutation:
             ) == Decimal("350.00")
             _assert_account_anchors_reconcile(scenario_id)
 
+    @pytest.mark.server_clock
     def test_settled_paid_at_move_across_anchor_reconciles(
         self, app, db, seed_user,
     ):

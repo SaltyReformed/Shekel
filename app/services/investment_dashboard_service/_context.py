@@ -39,7 +39,6 @@ from app.services.projection_inputs import (
     load_active_deductions_for_account,
     load_shadow_income_contributions_for_account,
 )
-from app.utils.dates import to_display_date
 
 # A period-like row in a projection: a real ``PayPeriod`` (the dashboard's
 # future periods) or a synthetic horizon period from
@@ -158,7 +157,7 @@ def _resolve_anchor_as_of(
     :func:`~app.services.cash_ledger.resolve_anchor`, the same accessor
     the cockpit "as of" uses), NOT the anchor period's ``start_date``.  The UTC
     ``created_at`` is converted to display tz
-    (:func:`~app.utils.dates.to_display_date`).
+    (the stored ``observed_on``).
 
     The ``return None`` for a user with no baseline went at plan step X-v2
     (ruling R-BW): ``scenario_id`` raises and one application-level handler
@@ -166,7 +165,12 @@ def _resolve_anchor_as_of(
     "the app cannot compute anything for you".
     """
     anchor = cash_ledger.resolve_anchor(account, balance_ctx.scenario_id)
-    return to_display_date(anchor.created_at)
+    # The day the balance was TRUE, not the day it was typed (ruling R-DH,
+    # plan step 2).  This caption sits beside a "growth since" figure whose
+    # accrual window ``balance_at._asset_fold`` opens on exactly this day, so
+    # reading ``created_at`` would put the caption and the figure on different
+    # days for any back-dated opening.
+    return anchor.observed_on
 
 
 def _resolve_current_balance(

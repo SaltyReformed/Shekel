@@ -42,10 +42,11 @@ by a same-period credit), and uncleared-floor (the
 ``max(estimated - cleared_debit - sum_credit, uncleared_debit)``
 floor that no cleared/credit drift can squeeze below).
 
-The subtotal-reconciliation assertion
+The subtotal-remainder assertion
 (:class:`TestSubtotalReconciliation`) closes Q-10 / E-25's same-formula
 invariant on ruling R-K's basis: for one ``GridColumn`` per period,
-``balance[p] - balance[p-1] == net[p] + reconciliation[p]`` to the penny, with
+``balance[p] - balance[p-1] == net[p] + period_timing[p] + book_vs_bank[p]``
+to the penny, with
 the remainder pinned per case as the fixture's own true-up.  When this fails the
 grid's subtotal rows and balance row have re-grown the F-002 Pair C / F-004
 same-page divergence (the inline ``sum(... effective_amount ...)`` loop the
@@ -599,7 +600,7 @@ class TestSubtotalReconciliation:
         seed_cross_page_account,
         case,
     ):
-        """C11-5: ``balance[p] - balance[p-1] == net[p] + reconciliation[p]``.
+        """C11-5: ``balance delta == net[p] + timing[p] + book_vs_bank[p]``.
 
         For each case, read ONE grid view over the whole period list and
         reconcile the anchor period's column against its predecessor's, then the
@@ -618,14 +619,23 @@ class TestSubtotalReconciliation:
         landing in the anchor period.  The opening books nothing in its own
         period, so the re-assertion's correction --
         ``anchor_balance - $1,000.00`` -- is money that moved through the column
-        with no row to explain it: exactly what ruling R-K's Reconciliation row
-        exists to show, here on five different anchor balances.  Asserting it as
+        with no row to explain it: exactly what ruling R-K's remainder rows
+        exist to show, here on five different anchor balances.  Asserting it as
         a computed figure rather than letting it fall out of the identity is
         Section 7.2's rule: a remainder read as a residual makes the identity
         arithmetically true, and would silently absorb a mis-grouped row.
 
-        The POST-anchor period carries neither an assertion nor a row, so its
-        remainder and its net are both exactly zero -- the case that would catch
+        **It lands on ``book_vs_bank`` specifically** (plan step S1-c, ruling
+        R-DH (f)).  The single remainder split in two, and this fixture makes
+        exactly ONE of them non-zero: a balance ASSERTION with no row beside it,
+        which is a book-vs-bank fact.  ``period_timing`` is pinned at ``$0.00``
+        on both columns, and that assertion is what would catch a producer
+        attributing a true-up to a timing difference -- a different diagnosis
+        with different advice attached, and one the combined figure could not
+        tell apart.
+
+        The POST-anchor period carries neither an assertion nor a row, so both
+        its remainders and its net are exactly zero -- the case that would catch
         a remainder leaking forward.  A PLAIN account accrues nothing, asserted
         on both columns.
         """
@@ -663,20 +673,33 @@ class TestSubtotalReconciliation:
             expected_trueup = (
                 case["anchor_balance"] - _FACTORY_ORIGINATION_BALANCE
             )
-            assert anchor_column.reconciliation == expected_trueup, (
-                f"case {case['id']!r}: anchor column remainder "
-                f"{anchor_column.reconciliation!r} != the fixture's true-up "
+            assert anchor_column.book_vs_bank == expected_trueup, (
+                f"case {case['id']!r}: anchor column book-vs-bank "
+                f"{anchor_column.book_vs_bank!r} != the fixture's true-up "
                 f"{expected_trueup!r} "
                 f"({case['anchor_balance']!r} asserted over the factory's "
                 f"{_FACTORY_ORIGINATION_BALANCE!r} origination).  R-K's "
-                f"Reconciliation row exists to carry exactly this."
+                f"book-vs-bank row exists to carry exactly this."
+            )
+            # Every row in this fixture is budgeted to, and lands in, the
+            # anchor period, so NOTHING is a timing difference.  A figure
+            # here would mean the true-up had been booked to the wrong row.
+            assert anchor_column.period_timing == Decimal("0.00"), (
+                f"case {case['id']!r}: anchor column carries a "
+                f"{anchor_column.period_timing!r} timing remainder, but every "
+                f"row is budgeted to and lands in this period"
             )
             # The post-anchor period has neither an assertion nor a row, so
-            # nothing can leak into its remainder.
-            assert next_column.reconciliation == Decimal("0.00"), (
+            # nothing can leak into either of its remainders.
+            assert next_column.period_timing == Decimal("0.00"), (
                 f"case {case['id']!r}: post-anchor column has a "
-                f"{next_column.reconciliation!r} remainder, but no assertion "
-                f"and no row is attributed to it"
+                f"{next_column.period_timing!r} timing remainder, but no row "
+                f"is attributed to it"
+            )
+            assert next_column.book_vs_bank == Decimal("0.00"), (
+                f"case {case['id']!r}: post-anchor column has a "
+                f"{next_column.book_vs_bank!r} book-vs-bank remainder, but "
+                f"no assertion falls inside it"
             )
             for label, column in (
                 ("anchor", anchor_column), ("next", next_column),
@@ -694,11 +717,13 @@ class TestSubtotalReconciliation:
                 anchor_column.balance - columns[prior_period.id].balance
             )
             assert anchor_delta == (
-                anchor_column.net + anchor_column.reconciliation
+                anchor_column.net + anchor_column.period_timing
+                + anchor_column.book_vs_bank
             ), (
                 f"case {case['id']!r}: anchor-period balance delta "
                 f"{anchor_delta!r} != net {anchor_column.net!r} + "
-                f"reconciliation {anchor_column.reconciliation!r}.  The "
+                f"period_timing {anchor_column.period_timing!r} + "
+                f"book_vs_bank {anchor_column.book_vs_bank!r}.  The "
                 f"balance row and the subtotal rows disagree on the "
                 f"entries-aware formula -- the F-002 Pair C / F-004 same-page "
                 f"divergence has re-grown."
@@ -706,11 +731,13 @@ class TestSubtotalReconciliation:
 
             forward_delta = next_column.balance - anchor_column.balance
             assert forward_delta == (
-                next_column.net + next_column.reconciliation
+                next_column.net + next_column.period_timing
+                + next_column.book_vs_bank
             ), (
                 f"case {case['id']!r}: post-anchor balance delta "
                 f"{forward_delta!r} != net {next_column.net!r} + "
-                f"reconciliation {next_column.reconciliation!r} "
+                f"period_timing {next_column.period_timing!r} + "
+                f"book_vs_bank {next_column.book_vs_bank!r} "
                 f"-- carry-forward broken"
             )
             # And with no transactions in the post-anchor period the

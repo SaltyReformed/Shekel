@@ -576,7 +576,7 @@ import pytest
 
 from app import create_app
 from app.extensions import db as _db
-from app.utils.dates import DISPLAY_TIMEZONE
+from app.utils.dates import DISPLAY_TIMEZONE, display_today
 from app.models.user import User, UserSettings
 # ``Account`` is intentionally not imported here: every test fixture
 # constructs accounts via ``app.services.account_service.create_account``,
@@ -658,6 +658,59 @@ def disable_hibp_check(monkeypatch):
     for the runtime read.
     """
     monkeypatch.setenv("HIBP_CHECK_ENABLED", "false")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _calendar_sweep():
+    """Run the whole session as if today were ``SHEKEL_FAKE_TODAY``.
+
+    **Opt-in, and a no-op unless the variable is set**, so an ordinary run is
+    byte-identical to one without this fixture.
+
+    Four separate defects in this suite had exactly one trigger: the day of the
+    month the suite happened to run on (findings N-131, N-132, R8, and the two
+    loan cross-surface tests that failed on 2026-08-01).  Each was found by a
+    merge gate rather than by a test, because nothing here could ask "does this
+    still pass on the 1st?".  This is that instrument::
+
+        SHEKEL_FAKE_TODAY=2026-09-01 ./scripts/test.sh
+
+    ``tick=True`` keeps the clock RUNNING from the faked instant rather than
+    freezing it, because a frozen clock makes every ``created_at`` in a session
+    identical and the fold's assertion ordering (ruling R-DH: two assertions
+    sharing a civil day apply in recording order) then has no order to read.
+
+    **What it can and cannot move, stated because the gap decides how to read a
+    failure.**  It moves the PYTHON clock -- ``date.today()``,
+    ``datetime.now()`` and therefore :func:`app.utils.dates.display_today`.  It
+    does NOT move POSTGRES: ``created_at`` / ``updated_at`` are
+    ``server_default=db.func.now()`` (``app/models/mixins.py:237-263``) and
+    ``paid_at`` is ``db.func.now()`` (``app/services/status_seam.py:105``), all
+    evaluated in the database.  So under a fake date every server-stamped row
+    carries the REAL instant, and a test comparing a fixture-built date against
+    a server-stamped one fails by the offset between them.  That failure is an
+    artifact of this instrument, not a defect in the test -- see
+    ``docs/testing-standards.md`` for how to tell the two apart.
+
+    The instant is built in ``DISPLAY_TIMEZONE`` at midday, so the faked civil
+    day is unambiguous in the user's zone and cannot straddle midnight in either
+    direction.
+    """
+    fake = os.environ.get("SHEKEL_FAKE_TODAY")
+    if not fake:
+        yield
+        return
+
+    # Pylint: ``import-outside-toplevel`` -- a test-only dependency imported
+    # only when the sweep is switched on, so an ordinary run never loads it.
+    # pylint: disable=import-outside-toplevel
+    import time_machine
+
+    target = datetime.combine(
+        date.fromisoformat(fake), time(12, 0), tzinfo=DISPLAY_TIMEZONE,
+    )
+    with time_machine.travel(target, tick=True):
+        yield
 
 
 @pytest.fixture(scope="session")
@@ -993,6 +1046,28 @@ def seed_user(app, db):
             name="Checking",
             anchor_balance=Decimal("1000.00"),
             anchor_period_id=bootstrap_period.id,
+            # Day one of the period the account is anchored to -- the
+            # production shape, an account opened on day one of its own period
+            # (ruling R-DH, plan step 2).  Without it the origination asserts a
+            # balance on the WALL-CLOCK day while its ``pay_period_id`` points
+            # at the 2024 bootstrap: two clocks on one row, years apart.
+            #
+            # **It is what makes "and then things happened" say so.**  An
+            # assertion is the CLOSING balance for its civil day, so a settle
+            # dated that day is INSIDE it.  ``tests/test_services/conftest.py``
+            # freezes today, and the ordinary settle idiom is
+            # ``paid_at = db.func.now()`` -- so an origination left on the
+            # frozen clock lands on the very civil day the settles do, and every
+            # fixture meaning "an account existed, then money moved" silently
+            # became "money moved on the opening's own day".  Those fixtures
+            # passed only while the OPENING carried a partition exception
+            # (finding N-133 / F1); this is N-132's shape one layer up.
+            #
+            # Supplied to the factory rather than re-stamped afterwards,
+            # because ``create_account`` posts the opening's anchor correction
+            # keyed on this day: a later re-stamp would leave the ledger
+            # holding a stale key plus its reversal in every seeded database.
+            observed_on=bootstrap_period.start_date,
             notes="seed_user fixture origination",
         ),
     )
@@ -1113,9 +1188,18 @@ def _drop_seed_user_bootstrap(db, seed_user, account, new_anchor_period):
         account_id=account.id, pay_period_id=bootstrap_id,
     ).update({
         "pay_period_id": new_anchor_period.id,
+        # The BUSINESS day moves with the period and the instant.  Leaving it
+        # behind is the "two clocks on one row" shape ``seed_user`` states it
+        # is eliminating, recreated one layer down: the row would assert a
+        # 2026 period from a 2024 day, and its posted correction would carry a
+        # 2024 ``purchased_on`` inside a 2026 ``pay_period_id``.
+        "observed_on": new_anchor_period.start_date,
+        # Eastern midnight, converted for storage -- NOT midnight UTC, which
+        # is the previous EVENING in the display zone and would file the
+        # opening one day before its own period (finding N-132).
         "created_at": datetime.combine(
-            new_anchor_period.start_date, time.min, tzinfo=timezone.utc,
-        ),
+            new_anchor_period.start_date, time.min, tzinfo=DISPLAY_TIMEZONE,
+        ).astimezone(timezone.utc),
     })
     db.session.flush()
     # Step 2: delete the bootstrap row.
@@ -1186,7 +1270,7 @@ def _today_relative_start_date():
     ``pay_period_service.get_current_period`` always returns a real
     period regardless of the wall-clock date.
     """
-    today = date.today()
+    today = display_today()
     return today - timedelta(days=today.weekday() + 4 * 14)
 
 
@@ -1424,8 +1508,12 @@ def seed_cross_page_account(app, db, seed_user):
     Returns:
         Callable ``(anchor_balance, expense_amount, entries) ->
         dict``.  Each entry is a 3-tuple ``(amount, is_credit,
-        is_cleared)`` -- amount as ``Decimal`` (from string),
+        is_settled)`` -- amount as ``Decimal`` (from string), and the two
         booleans as the entries-aware reduction's discriminants.
+        ``is_settled`` stamps the purchase's ``settled_on`` with the anchor
+        period's start day, which is the assertion's own ``observed_on``
+        here, so the purchase reads as already inside the asserted balance
+        (ruling R-DH (d)); ``False`` leaves it NULL and outstanding.
     """
     # pylint: disable=import-outside-toplevel
     from app.models.account import Account
@@ -1519,15 +1607,20 @@ def seed_cross_page_account(app, db, seed_user):
         # surface evaluates, so the E-27 entry-date cut is a no-op
         # for this fixture and the calendar surface's balance equals
         # the resolver's anchor-period balance by construction.
-        for amount, is_credit, is_cleared in entries:
+        for amount, is_credit, is_settled in entries:
             db.session.add(TransactionEntry(
                 transaction_id=txn.id,
                 user_id=user.id,
                 amount=amount,
                 description="PT-01 entry",
-                entry_date=anchor_period.start_date,
+                purchased_on=anchor_period.start_date,
+                # The assertion ``override_anchor`` wrote is observed on this
+                # same day, so a purchase settled on it is INSIDE that balance
+                # -- the state the retired ``settled_on=anchor_period.start_date`` flag named.
+                settled_on=(
+                    anchor_period.start_date if is_settled else None
+                ),
                 is_credit=is_credit,
-                is_cleared=is_cleared,
             ))
         db.session.commit()
 
@@ -2047,6 +2140,9 @@ def second_user(app, db):
             name="Other Checking",
             anchor_balance=Decimal("500.00"),
             anchor_period_id=bootstrap_period.id,
+            # Day one of its own period -- see ``seed_user`` above for why
+            # the origination must not share a civil day with the settles.
+            observed_on=bootstrap_period.start_date,
             notes="second_user fixture origination",
         ),
     )
@@ -2172,6 +2268,9 @@ def seed_second_user(app, db):
             name="Checking",
             anchor_balance=Decimal("2000.00"),
             anchor_period_id=bootstrap_period.id,
+            # Day one of its own period -- see ``seed_user`` above for why
+            # the origination must not share a civil day with the settles.
+            observed_on=bootstrap_period.start_date,
             notes="seed_second_user fixture origination",
         ),
     )

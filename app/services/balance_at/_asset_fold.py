@@ -125,6 +125,7 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
+from app.services.cash_ledger import ReconciledThrough
 from app.services.interest_projection import accrued_interest
 from app.utils.money import round_money
 
@@ -250,7 +251,7 @@ class _AccrualWindow:
         rule: The per-day accrual rule (:class:`_InterestAccrual` or
             :class:`_CompoundAccrual`).
         start: The first day the return may accrue on -- the LATEST balance
-            assertion's UTC civil day, INCLUSIVE (ruling R-L as sharpened at
+            assertion's ``observed_on``, INCLUSIVE (ruling R-L as sharpened at
             plan step X-c2a: the assertion's own day accrues; ruling R-Y
             extends that from INTEREST to all three modelled kinds).
         end: The last day to resolve -- the caller's furthest requested date.
@@ -431,18 +432,21 @@ def _modelled_return(
     return None
 
 
-def _latest_assertion_day(
+def _latest_assertion_boundary(
     account: Account, walk: "_cash_fold.CashLedgerWalk",
-) -> date:
-    """Return the UTC civil day of *account*'s LATEST balance assertion.
+) -> ReconciledThrough:
+    """Return the coverage boundary *account*'s LATEST assertion establishes.
 
-    The day ruling R-L's window opens on, read off the WALK the fold was already
+    The boundary ruling R-L's window opens on and ruling R-Z's contribution
+    feed asks its coverage question of, read off the WALK the fold was already
     built from rather than through a second
     :func:`~app.services.cash_ledger.resolve_anchor` query.  The two are the same
-    row by construction -- both order the account's
-    :class:`~app.models.account.AccountAnchorHistory` rows by ``(created_at,
-    id)`` and take the last -- which is what makes ruling R-L "one line of the
-    event builder" rather than a rule each modelled layer restates.
+    row by construction -- the walk's facts are loaded ``(observed_on,
+    created_at, id)`` ascending and the resolver takes that exact key
+    descending -- which is what makes ruling R-L "one line of the event
+    builder" rather than a rule each modelled layer restates.  The shared key
+    became BUSINESS-date-first at plan step 2, when ``observed_on`` stopped
+    being derived from ``created_at`` and the two orders could differ.
 
     **It fails loud for an account with no assertion history, and that asymmetry
     is deliberate.**  The cash fold answers such an account from a zero seed
@@ -458,7 +462,10 @@ def _latest_assertion_day(
         walk: Its :class:`~app.services.cash_ledger.CashLedgerWalk`.
 
     Returns:
-        The assertion's UTC calendar date.
+        The account's :class:`~app.services.cash_ledger.ReconciledThrough`.
+        Its ``observed_day`` is never ``None`` here -- the refusal above is
+        what guarantees that -- so the accrual window can take it as a raw
+        civil day while the contribution feed asks it ``covers``.
 
     Raises:
         RuntimeError: When the account carries no assertion at all.
@@ -472,7 +479,7 @@ def _latest_assertion_day(
             "investigate any code path that constructed the Account row "
             "without routing through the canonical factory."
         )
-    return walk.anchor_corrections[-1].observed_on
+    return walk.reconciled_through
 
 
 def _resolve(
@@ -617,7 +624,7 @@ def resolve(
 
     Taking the assembled fold rather than assembling one is what lets a reader
     that ALSO needs the cash period columns share the walk (plan step X-g2a):
-    :func:`~app.services.balance_at._cash_fold.period_view_of` regroups the very
+    :func:`~app.services.balance_at._cash_periods.period_view_of` regroups the very
     same record.  The two convenience entries below assemble first, for the
     readers that want only the modelled answer.
 
@@ -650,15 +657,23 @@ def resolve(
     if accrual is None:
         return _resolve(cash, [], None)
 
+    # ONE resolution of "the account's latest assertion", read two ways on
+    # purpose: the contribution feed asks it the COVERAGE question (ruling
+    # R-DH's rule, one implementation), and the accrual window takes its raw
+    # day because tiling a calendar is a different question with its own
+    # inclusive boundary (ruling R-Z).  They were one bare date until the
+    # one-partition step, which is how the contribution feed came to hold a
+    # second statement of the coverage rule.
+    reconciled_through = _latest_assertion_boundary(account, cash.walk)
     window = _AccrualWindow(
         rule=accrual,
-        start=_latest_assertion_day(account, cash.walk),
+        start=reconciled_through.observed_day,
         end=horizon_end,
     )
     return _resolve(
         cash,
         _asset_contributions.contribution_events(
-            account, cash.scenario_id, inputs, window.start,
+            account, cash.scenario_id, inputs, reconciled_through,
         ),
         window,
     )
@@ -781,7 +796,7 @@ def period_columns(
     """Read *periods*' columns off an ALREADY-resolved modelled fold.
 
     :func:`asset_period_view`'s body, split from its assembly for the same
-    reason :func:`~app.services.balance_at._cash_fold.period_view_of` was (plan
+    reason :func:`~app.services.balance_at._cash_periods.period_view_of` was (plan
     step X-g2a): the grid resolves the modelled tiers over the very
     :class:`~app.services.balance_at._cash_fold.AssembledCashFold` it regroups
     into cash columns, so both of its row sets come off ONE walk.

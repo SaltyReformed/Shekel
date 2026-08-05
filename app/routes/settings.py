@@ -13,6 +13,7 @@ from flask_login import current_user, login_required
 from app import ref_cache
 from app.enums import RoleEnum
 from app.utils.auth_helpers import fresh_login_required, require_owner
+from app.utils.digit_strings import parse_row_id
 
 from app.extensions import db
 from app.models.account import Account
@@ -439,9 +440,14 @@ def _load_companions_context(raw_edit_id):
 
     edit_id = None
     values = {}
-    if raw_edit_id and raw_edit_id.isdigit():
+    # Resolved ONCE, before the scan: the id used to be parsed inside the
+    # generator's predicate, so it was re-evaluated per companion and never
+    # evaluated at all for an owner with none -- which is why this door's
+    # share of finding N-136 was only conditionally reachable.
+    requested_id = parse_row_id(raw_edit_id)
+    if requested_id is not None:
         candidate = next(
-            (c for c in active if c.id == int(raw_edit_id)), None,
+            (c for c in active if c.id == requested_id), None,
         )
         if candidate is not None:
             edit_id = candidate.id

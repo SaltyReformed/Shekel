@@ -124,7 +124,7 @@ def field_is_disabled(html: str, field_name: str) -> bool:
     return "disabled" in html[idx:tag_end]
 
 
-def freeze_today(monkeypatch, target_date, modules=None):
+def freeze_today(monkeypatch, target_date, modules=None, at_time=None):
     """Patch ``date.today()`` and ``datetime.now()`` to ``target_date``.
 
     Production services import ``date`` (and sometimes ``datetime``) at
@@ -135,8 +135,22 @@ def freeze_today(monkeypatch, target_date, modules=None):
 
     Patches BOTH ``date`` and ``datetime`` so that test helpers using
     ``datetime.now() - timedelta(days=N)`` align with production code
-    using ``date.today()``.  ``datetime.now()`` returns midnight UTC
-    of ``target_date`` (timezone-aware when ``tz`` is passed).
+    using ``date.today()``.  ``datetime.now()`` returns NOON of
+    ``target_date`` (timezone-aware when ``tz`` is passed).
+
+    **Noon, not midnight, and the DATABASE half of this freeze has always
+    said so.**  :func:`_freeze_db_clock` pins PostgreSQL's clock with
+    :func:`settle_instant_on` -- noon UTC -- precisely "so the frozen date the
+    test reads from ``date.today()`` and the date the app RENDERS for these
+    rows are the same date".  This half used MIDNIGHT UTC, which is the
+    previous EVENING in ``America/New_York``: under ruling R-DH (b) every
+    display-timezone reader (``app.utils.dates.display_today``, the analytics
+    tax year, the loan YTD chips, and since plan step 2 the day an anchor
+    assertion is filed under) then answered ``target_date - 1``.  Two halves of
+    one freeze, twelve hours and one civil date apart, with the rule stated
+    correctly in one of them.  It is finding N-132's shape a sixth time --
+    midnight UTC used to MEAN a civil day -- and it is fixed here rather than
+    worked around at each reader.
 
     Args:
         monkeypatch:
@@ -154,6 +168,15 @@ def freeze_today(monkeypatch, target_date, modules=None):
             that imported ``date`` inline, and ``tests.conftest``
             itself, ensuring all layers see the same frozen "today".
             Pass an explicit tuple to patch only specific modules.
+        at_time:
+            Optional wall time on ``target_date`` for the frozen ``now``,
+            overriding the noon default.  For a test that means a specific
+            INSTANT rather than a day -- the New Year boundary cases, where
+            ``time.min`` (midnight UTC) is deliberately the previous EVENING in
+            the display timezone.  Saying it beats relying on the default: the
+            boundary tests read midnight out of this helper as an undocumented
+            implementation detail, and one of their own siblings already hand-
+            rolled a stub because the helper offered no way to ask.
     """
     # Custom metaclass so ``isinstance(real_date_obj, _FrozenDate)``
     # returns True.  Without this, production code that does
@@ -175,8 +198,14 @@ def freeze_today(monkeypatch, target_date, modules=None):
             """Return the frozen date instead of the wall-clock date."""
             return target_date
 
+    # Noon by default, so this half agrees with ``_freeze_db_clock``'s -- see
+    # the docstring.  Naive here because ``now(tz=None)`` must stay naive; the
+    # ``tz``-aware branch below stamps it without shifting the wall time, which
+    # is the same instant ``settle_instant_on`` builds for a UTC caller.
     target_datetime = _real_datetime.combine(
-        target_date, _real_datetime.min.time()
+        target_date,
+        at_time if at_time is not None
+        else _real_datetime.min.time().replace(hour=12),
     )
 
     class _DateTimeMeta(type(_real_datetime)):
@@ -190,19 +219,19 @@ def freeze_today(monkeypatch, target_date, modules=None):
 
         @classmethod
         def now(cls, tz=None):
-            """Return midnight of target_date (with tz if provided)."""
+            """Return noon of target_date (with tz if provided)."""
             if tz is None:
                 return target_datetime
             return target_datetime.replace(tzinfo=tz)
 
         @classmethod
         def utcnow(cls):
-            """Return midnight UTC of target_date (naive, like real utcnow)."""
+            """Return noon UTC of target_date (naive, like real utcnow)."""
             return target_datetime
 
         @classmethod
         def today(cls):
-            """Return midnight of target_date."""
+            """Return noon of target_date."""
             return target_datetime
 
     date_modules = None
@@ -298,7 +327,7 @@ _DB_CLOCK_BOUND_ENGINES = weakref.WeakSet()
 #: A statement asking PostgreSQL what time it is, in each spelling this schema
 #: can produce, so the rule tests the QUESTION and not one way of writing it.
 #: ``now()`` and ``current_timestamp`` yield an instant; ``current_date`` yields
-#: a DATE and must be answered with one (``transaction_entries.entry_date``).
+#: a DATE and must be answered with one (``transaction_entries.purchased_on``).
 #:
 #: Each alternative carries only the word boundary it can actually have.  The
 #: first draft wrapped the group in ``\b...\b`` and matched nothing at all: the
@@ -312,7 +341,7 @@ _DB_CLOCK_CALL_RX = re.compile(
 
 #: The same question as :data:`_DB_CLOCK_CALL_RX`, asked of a ``server_default``
 #: written as raw SQL text rather than as a SQLAlchemy function.
-#: ``transaction_entries.entry_date`` is ``db.text("CURRENT_DATE")``, which is a
+#: ``transaction_entries.purchased_on`` is ``db.text("CURRENT_DATE")``, which is a
 #: ``TextClause`` and therefore invisible to an ``isinstance(..., now)`` test --
 #: the gap this arm closes (found by plan step X-h's adversarial review, which
 #: caught the row landing on the real wall date while its siblings were frozen).
@@ -367,7 +396,7 @@ def _db_clock_insert_attrs(model_class):
 
     **Both spellings of a default are read**, because the app uses both: a
     SQLAlchemy ``now()`` function, and raw SQL text (``db.text("CURRENT_DATE")``
-    on ``transaction_entries.entry_date``).  An ``isinstance(..., now)`` test
+    on ``transaction_entries.purchased_on``).  An ``isinstance(..., now)`` test
     alone is blind to the second, which is how that column kept landing on the
     real wall date while every timestamp beside it was frozen.
 
@@ -1035,6 +1064,13 @@ def create_loan_account(
             anchor_period_id=(
                 anchor_period.id if anchor_period is not None else None
             ),
+            # ``observed_on`` is left to the factory (today).  A loan's balance
+            # is ledger-derived from dated ``LoanAnchorEvent`` rows, not from
+            # this cash assertion, so the civil-day partition R-DH governs does
+            # not reach it -- and the suites that DO care restamp the opening
+            # themselves.  Recorded rather than "fixed": a blanket day-before
+            # default here trips the create-time floor for a fixture whose pay
+            # periods start today or later.
         ),
     )
     db_session.add(account)
@@ -1234,6 +1270,9 @@ def create_savings_account(
         "account_type_id": savings_type.id,
         "name": name,
         "anchor_balance": anchor_balance,
+        # ``observed_on`` is left to the factory (today).  See
+        # ``create_loan_account`` for why this helper does not take
+        # ``create_account_of_type``'s day-before default.
     }
     if anchor_period_id is not None:
         spec_kwargs["anchor_period_id"] = anchor_period_id
@@ -1351,6 +1390,7 @@ _LEDGER_SUITE_ANCHOR_BALANCE = Decimal("100.00")
 
 def create_account_of_type(
     seed_user, db_session, type_name, name, anchor_balance=None,
+    observed_on=None,
 ):
     """Create an account of any built-in type via the canonical factory.
 
@@ -1363,8 +1403,21 @@ def create_account_of_type(
     defaults to a fixed sentinel (the ledger-pairing suites assert on
     pairing, never on balance); the Step-5 account-anchor suites pass an
     explicit ``anchor_balance`` because the opening correction posts exactly
-    that value.  The anchor period is resolved by the factory from the
-    user's pay periods.
+    that value.  The anchor period is resolved by the factory from the day the
+    opening is observed on.
+
+    **The opening defaults to the day BEFORE today, and that default is the
+    point** (ruling R-DH (a), finding N-133 / F1).  An assertion is the CLOSING
+    balance for its civil day, so a settle dated that same day is INSIDE it --
+    and the ordinary settle idiom in these suites is ``paid_at =
+    db.func.now()``, which under a frozen clock is TODAY.  An account opened
+    "today" therefore swallows every settle the test then records, and the
+    fixture stops exercising the thing it names.  Opening the account
+    yesterday is the production shape (an account exists before money moves in
+    it) and makes "and then things happened" true in the data rather than only
+    in the docstring.  A test that specifically needs a settle on the opening's
+    OWN day passes ``observed_on`` explicitly, which is the honest way to ask
+    for the case rather than inheriting it by accident.
 
     Args:
         seed_user: The ``seed_user`` fixture dict.
@@ -1374,6 +1427,8 @@ def create_account_of_type(
         name: The account name.
         anchor_balance: Optional opening anchor balance (``Decimal``);
             ``None`` uses the ledger-suite sentinel.
+        observed_on: Optional civil day the opening balance was TRUE.
+            Defaults to the DAY BEFORE the frozen today -- see below.
 
     Returns:
         The created :class:`~app.models.account.Account` (flushed,
@@ -1383,8 +1438,10 @@ def create_account_of_type(
     # symbols at top level (its collection-time-safety convention); load
     # the models / service lazily, the same way the factory helpers above do.
     # pylint: disable=import-outside-toplevel
+    from datetime import timedelta
     from app.models.ref import AccountType
     from app.services import account_service
+    from app.utils.dates import display_today
 
     acct_type = (
         db_session.query(AccountType).filter_by(name=type_name).one()
@@ -1397,6 +1454,10 @@ def create_account_of_type(
             anchor_balance=(
                 _LEDGER_SUITE_ANCHOR_BALANCE if anchor_balance is None
                 else anchor_balance
+            ),
+            observed_on=(
+                display_today() - timedelta(days=1)
+                if observed_on is None else observed_on
             ),
         ),
     )
@@ -1647,6 +1708,60 @@ def ledger_net(db_session, ledger_account_id, scenario_id):
         .filter(
             Posting.ledger_account_id == ledger_account_id,
             JournalEntry.scenario_id == scenario_id,
+        )
+        .scalar()
+    )
+
+
+def correction_net_in_period(
+    db_session, ledger_account_id, scenario_id, source_enum, period_id,
+):
+    """Return one source kind's posted net on a ledger account in ONE pay period.
+
+    The per-PERIOD reading of the ledger the R2 attribution rule is about (plan
+    step X-ai-r): a reversal must net the period whose postings it corrects back
+    to what the surviving facts say, rather than leaving that period overstated
+    and filing the correction against a different one.  ``ledger_net`` is the
+    scalar-total counterpart and ``linked_net_by_date`` the per-DATE one; this is
+    the third axis, and it is the one an anchor correction is attributed on.
+
+    Scoped the way the reconcile scopes itself -- one source kind, one ledger
+    account, one scenario -- so the figure asserted here is the figure the
+    reconcile reasons about.  Shared by the cash and loan anchor suites, whose
+    only real difference is where an assertion's period comes from.
+
+    Args:
+        db_session: The test ``db.session``.
+        ledger_account_id: The ledger account whose legs to sum (the account's
+            LINKED ledger, for an anchor correction).
+        scenario_id: The scenario to scope to.
+        source_enum: The :class:`~app.enums.PostingSourceEnum` member naming the
+            correction kind (``ACCOUNT_TRUEUP``, ``LOAN_TRUEUP``, ...).
+        period_id: The pay period to scope to.
+
+    Returns:
+        The signed net as a ``Decimal`` (``Decimal("0.00")`` when the period
+        holds no leg of that kind -- which is what a fully reversed period reads
+        as, and the assertion most of these tests make).
+    """
+    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app import ref_cache
+    from app.extensions import db
+    from app.models.journal_entry import JournalEntry, Posting
+
+    return (
+        db_session.query(
+            db.func.coalesce(db.func.sum(Posting.amount), Decimal("0.00"))
+        )
+        .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
+        .filter(
+            Posting.ledger_account_id == ledger_account_id,
+            JournalEntry.scenario_id == scenario_id,
+            JournalEntry.pay_period_id == period_id,
+            JournalEntry.source_kind_id == ref_cache.posting_source_id(
+                source_enum,
+            ),
         )
         .scalar()
     )
@@ -2564,8 +2679,8 @@ def create_envelope_txn(seed_user, db_session, period, name, estimated):
 
 
 def add_entry(  # pylint: disable=too-many-arguments,too-many-positional-arguments
-    db_session, seed_user, txn, amount, entry_date,
-    *, is_credit=False, is_cleared=False, description="purchase",
+    db_session, seed_user, txn, amount, purchased_on,
+    *, is_credit=False, settled_on=None, description="purchase",
 ):
     """Attach one :class:`TransactionEntry` of ``amount`` to ``txn``.
 
@@ -2573,26 +2688,39 @@ def add_entry(  # pylint: disable=too-many-arguments,too-many-positional-argumen
     copied per suite (a duplicate-code finding).  Flushes; the caller commits.
 
     **The three bucket flags are parameters (plan step X-c2c2a).**  It built a
-    DEBIT-only, uncleared entry until the per-row valuation tests moved to
+    DEBIT-only, outstanding entry until the per-row valuation tests moved to
     ``test_cash_amounts.py``, which needs all three buckets of
-    ``cash_ledger._amounts._entry_checking_impact`` -- cleared debit, uncleared
-    debit, and credit.  Narrowness is why the helper had not displaced the
-    hand-rolled copies it exists to prevent: seven suites still define their own
-    ``_add_entry`` because this one could not express their shape.  Widening it
-    is additive; those suites are not touched here (scope).
+    ``cash_ledger._amounts._entry_checking_impact`` -- settled debit,
+    outstanding debit, and credit.  Narrowness is why the helper had not
+    displaced the hand-rolled copies it exists to prevent: seven suites still
+    define their own ``_add_entry`` because this one could not express their
+    shape.  Widening it is additive; those suites are not touched here (scope).
+
+    **The reconciled bucket is a DATE, not a flag** (plan step S1-c, ruling
+    R-DH (d)).  The stored ``is_cleared`` boolean this replaced was written by
+    a bulk UPDATE at anchor true-up, so which bucket a purchase fell in
+    depended on the order two buttons were pressed.  A fixture that wants the
+    "already inside the asserted balance" bucket therefore passes a
+    ``settled_on`` on or before the account's latest ``observed_on`` -- which
+    makes the precondition it depends on VISIBLE at the call site instead of
+    hidden behind a boolean.
 
     Args:
         db_session: The test ``db.session``.
         seed_user: The ``seed_user`` fixture dict (supplies ``user_id``).
         txn: The parent :class:`~app.models.transaction.Transaction`.
         amount: The entry amount (Decimal).
-        entry_date: The entry's ``entry_date``.
+        purchased_on: The day the purchase was made.  Never after the user's
+            today, which the service refuses (ruling R-M).
         is_credit: True for a credit-card purchase, which never hits checking
             directly (it leaves via the CC Payback sibling) and so only
-            REDUCES the reservation.
-        is_cleared: True when the purchase is already reflected in the
-            account's anchor balance, so it is subtracted from the
-            reservation rather than acting as its floor.
+            REDUCES the reservation whatever its dates say.
+        settled_on: The day the bank took the money, or ``None`` (the default)
+            for a purchase not yet seen on a statement.  A purchase whose
+            ``settled_on`` is at or before the account's latest asserted day is
+            already inside that balance and is SUBTRACTED from the reservation;
+            every other purchase acts as its floor.  Must not precede
+            *purchased_on* (``ck_transaction_entries_settled_not_before_purchase``).
         description: The entry description; the default suits a test that
             does not assert on it.
     """
@@ -2605,11 +2733,105 @@ def add_entry(  # pylint: disable=too-many-arguments,too-many-positional-argumen
         user_id=seed_user["user"].id,
         amount=amount,
         description=description,
-        entry_date=entry_date,
+        purchased_on=purchased_on,
+        settled_on=settled_on,
         is_credit=is_credit,
-        is_cleared=is_cleared,
     ))
     db_session.flush()
+
+
+def mark_purchase_settled(db_session, account, entry, settled_on=None):
+    """Record the day the bank took *entry*, and CHECK the anchor covers it.
+
+    The successor to ``add_entry(..., is_cleared=True)`` (plan step S1-c,
+    ruling R-DH (d)).  The retired boolean asserted "this purchase is already
+    inside the anchor balance" unconditionally, so a fixture could set it on an
+    account whose only assertion PREDATED the purchase -- a state production
+    cannot reach, because the way a purchase gets inside a declared balance is
+    that the user declared the balance after it posted.  That is finding
+    N-132 / R8's shape: a fixture asserting a state the app cannot produce
+    passes for years and stops discriminating the case it names.
+
+    So this helper does what the flag did AND states the precondition the flag
+    let fixtures skip.  It fails loudly rather than silently building an
+    unreachable row, and the failure message names both days.
+
+    **The bound is TWO-SIDED, and the upper half was added after the guard's
+    first pass let an unreachable row through anyway.**  Checking only
+    ``settled_on <= observed_on`` invites the obvious escape: move the
+    ASSERTION forward until it covers the purchase.  But an assertion is itself
+    bounded -- ``account_service._reject_undatable_observation`` refuses an
+    ``observed_on`` after the user's today, because a balance you have not read
+    yet is not an observation -- so an assertion dated into the app's future is
+    exactly as unreachable as the anchor-months-earlier row the guard was
+    written to stop.  A one-sided guard turns finding N-132's defect into a
+    different N-132 defect, which is what the S1-c conversion's own review
+    measured on two ``test_cash_fold`` fixtures.  Both halves are checked here
+    so neither escape is open.
+
+    The clock is :func:`app.utils.dates.display_today` -- the same one the
+    service guard reads, and the one a suite's ``freeze_today`` moves -- never
+    ``date.today()``, which would judge a fixture on the process timezone.
+
+    Args:
+        db_session: The test ``db.session``.
+        account: The :class:`~app.models.account.Account` the purchase's parent
+            transaction belongs to -- the account whose assertions decide
+            whether the purchase is inside a declared balance.
+        entry: The :class:`~app.models.transaction_entry.TransactionEntry` to
+            settle.
+        settled_on: The day the bank took it.  Defaults to the entry's own
+            ``purchased_on`` -- "it posted the day I bought it", the shape a
+            same-day debit has.
+
+    Returns:
+        The updated entry (flushed).
+
+    Raises:
+        AssertionError: When the account has never asserted a balance, when its
+            latest assertion is for a day BEFORE *settled_on*, or when that
+            assertion is dated after the user's today.  In the first two the
+            purchase reads as OUTSTANDING however this helper is spelled; in
+            the third the account is in a state its own write door refuses.
+            Either way a fixture expecting the settled bucket is asking for
+            something production cannot produce.
+    """
+    # pylint: disable=import-outside-toplevel  -- same circular-dep
+    # avoidance as the loan helpers above.
+    from app.services.cash_ledger import reconciled_through
+    from app.utils.dates import display_today
+
+    settled_on = settled_on or entry.purchased_on
+    # The guard asks the PRODUCTION rule, not a lookalike: if this helper
+    # spelled the comparison itself it could come to disagree with the
+    # reservation it exists to set up, which is the whole shape plan step X-f
+    # is about.
+    boundary = reconciled_through(account.id)
+    observed_on = boundary.observed_day
+    assert observed_on is not None, (
+        f"account id={account.id} has asserted no balance, so no purchase can "
+        f"be inside one; give it an assertion before settling entry "
+        f"id={entry.id}"
+    )
+    assert boundary.covers(settled_on), (
+        f"entry id={entry.id} settled {settled_on} is AFTER account "
+        f"id={account.id}'s latest asserted day {observed_on}, so the "
+        f"projection reads it as outstanding.  Move the account's assertion to "
+        f"{settled_on} or later, or the fixture is asserting a state "
+        f"production cannot produce."
+    )
+    today = display_today()
+    assert observed_on <= today, (
+        f"account id={account.id}'s latest assertion is dated {observed_on}, "
+        f"which is AFTER the user's today ({today}); "
+        f"account_service._reject_undatable_observation refuses that at the "
+        f"write door, so no production account can be in this state.  Move the "
+        f"assertion (and entry id={entry.id}'s dates) back inside the clock "
+        f"this suite runs on rather than forward past it."
+    )
+    entry.settled_on = settled_on
+    db_session.flush()
+    return entry
 
 
 def add_txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
@@ -2689,6 +2911,41 @@ def add_txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
     return txn
 
 
+def observed_day_of(instant):
+    """Return the civil day an assertion stamped at ``instant`` is ABOUT.
+
+    The ONE place the test helpers state how a pinned recording instant maps to
+    an ``AccountAnchorHistory.observed_on``, and every anchor builder below
+    routes through it.
+
+    **Why the helpers derive it rather than take it.**  ``observed_on`` is a
+    stored, user-supplied column since plan step 2 (ruling R-DH), so a fixture
+    CAN set the two independently -- and a handful deliberately should, because
+    "the user corrected an anchor's date" is now a reachable state.  But every
+    fixture written before the column existed meant "an assertion recorded at
+    instant X, about the day X falls on", and each of their hand-computed
+    figures depends on that.  Deriving keeps all of them valid unchanged;
+    a fixture that wants the two APART says so explicitly, which is exactly the
+    right way round for a state that used to be unreachable.
+
+    It is the display-timezone day, not the UTC one (ruling R-DH (b)): midnight
+    UTC is the previous EVENING in Eastern, and a fixture that took the UTC day
+    would file a late-evening assertion in the next pay period -- the N-132
+    shape this suite has now been bitten by five times.
+
+    Args:
+        instant: The aware-UTC instant the assertion is stamped at.
+
+    Returns:
+        The :class:`datetime.date` the assertion is the closing balance for.
+    """
+    # pylint: disable=import-outside-toplevel  -- same circular-dep
+    # avoidance as the loan helpers above.
+    from app.utils.dates import to_display_date
+
+    return to_display_date(instant)
+
+
 def add_anchor_history(db_session, account, period, balance, days_ago=0):
     """Append an :class:`AccountAnchorHistory` row ``days_ago`` before now.
 
@@ -2723,6 +2980,7 @@ def add_anchor_history(db_session, account, period, balance, days_ago=0):
         pay_period_id=period.id,
         anchor_balance=Decimal(str(balance)),
         created_at=created,
+        observed_on=observed_day_of(created),
     )
     db_session.add(entry)
     db_session.flush()
@@ -2780,19 +3038,21 @@ def override_anchor(db_session, account, period, balance, *, notes, at=None):
     from app.models.account import AccountAnchorHistory
     from app.utils.dates import DISPLAY_TIMEZONE
 
+    # Day one of the period IN THE USER'S ZONE, converted to UTC for storage.
+    # Midnight UTC is the previous EVENING in Eastern, so since ruling R-DH (b)
+    # -- which reads an instant's display civil day -- it would file this
+    # true-up in the PREVIOUS period and empty the anchor column's remainder of
+    # the very assertion the fixture just made.
+    asserted_at = at if at is not None else datetime.combine(
+        period.start_date, time.min, tzinfo=DISPLAY_TIMEZONE,
+    ).astimezone(timezone.utc)
     history = AccountAnchorHistory(
         account_id=account.id,
         pay_period_id=period.id,
         anchor_balance=balance,
         notes=notes,
-        # Day one of the period IN THE USER'S ZONE, converted to UTC for
-        # storage.  Midnight UTC is the previous EVENING in Eastern, so since
-        # ruling R-DH (b) -- which reads an instant's display civil day -- it
-        # would file this true-up in the PREVIOUS period and empty the anchor
-        # column's remainder of the very assertion the fixture just made.
-        created_at=at if at is not None else datetime.combine(
-            period.start_date, time.min, tzinfo=DISPLAY_TIMEZONE,
-        ).astimezone(timezone.utc),
+        created_at=asserted_at,
+        observed_on=observed_day_of(asserted_at),
     )
     db_session.add(history)
     db_session.flush()
@@ -2888,11 +3148,18 @@ def _restamp_assertion(db_session, account, at, *, newest):
         .first()
     )
     row.created_at = at
+    # The BUSINESS day moves with the recording instant.  Pinning one and
+    # leaving the other is now a reachable state (``observed_on`` is a stored
+    # column since plan step 2), and it is not what any caller of a *restamp*
+    # helper means: they are placing the whole assertion, not editing its date.
+    row.observed_on = observed_day_of(at)
     db_session.flush()
     return row
 
 
-def append_balance_assertion(db_session, account, period, balance, at):
+def append_balance_assertion(
+    db_session, account, period, balance, at, recorded_at=None,
+):
     """Append one balance ASSERTION (a true-up) at a pinned instant.
 
     The instant-precise true-up builder the cash-ledger suites share.  See
@@ -2902,13 +3169,28 @@ def append_balance_assertion(db_session, account, period, balance, at):
     The row is inserted and then re-stamped, because ``created_at`` carries a
     server default that the INSERT would otherwise fill with the wall clock.
 
+    **The row carries TWO clocks and this helper can now separate them**
+    (*recorded_at*).  ``observed_on`` is the BUSINESS day the balance was true
+    for and ``created_at`` is when it was typed; since plan step 2 made
+    ``observed_on`` user-supplied they can disagree, which is precisely the
+    shape the retired third statement of "the latest assertion" got wrong
+    (finding N-133 / F4).  Defaulting *recorded_at* to *at* keeps every
+    existing caller's two clocks equal -- and an adversarial review found that
+    default silently disarming the one test written to exercise the
+    disagreement, which is why the parameter exists.
+
     Args:
         db_session: The test ``db.session``.
         account: The :class:`~app.models.account.Account` asserting.
         period: The :class:`~app.models.pay_period.PayPeriod` the assertion is
             filed against.
         balance: The asserted balance (str or Decimal-coercible).
-        at: The aware-UTC assertion instant.
+        at: The aware-UTC instant whose display-timezone day becomes the
+            BUSINESS day (``observed_on``).
+        recorded_at: The aware-UTC instant to stamp as ``created_at`` -- when
+            the row was TYPED.  Defaults to *at*, which makes the two clocks
+            agree; pass it to build a back-dated assertion, where the business
+            day precedes the recording instant.
 
     Returns:
         The inserted :class:`AccountAnchorHistory` row (flushed).
@@ -2922,10 +3204,11 @@ def append_balance_assertion(db_session, account, period, balance, at):
         pay_period_id=period.id,
         anchor_balance=Decimal(str(balance)),
         notes="test assertion",
+        observed_on=observed_day_of(at),
     )
     db_session.add(row)
     db_session.flush()
-    row.created_at = at
+    row.created_at = at if recorded_at is None else recorded_at
     db_session.flush()
     return row
 

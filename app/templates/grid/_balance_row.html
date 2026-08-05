@@ -7,14 +7,15 @@
    rows in the <tbody> (added in Tasks 13-14).
 
    Ruling R-O seats the whole "how this balance is reached" chain here, in
-   one visual block: Timing & true-ups, then Contributions, then the modelled
-   return, then Projected End Balance.  Reading top to bottom from the Net Cash
-   Flow row above, that is the identity
+   one visual block: Period timing, Book vs bank, then Contributions, then the
+   modelled return, then Projected End Balance.  Reading top to bottom from the
+   Net Cash Flow row above, that is the identity
 
        balance[p] - balance[p-1]
-           == net[p] + reconciliation[p] + contribution[p] + accrual[p]
+           == net[p] + period_timing[p] + book_vs_bank[p]
+              + contribution[p] + accrual[p]
 
-   and it holds because all five figures are one GridColumn -- one valued row
+   and it holds because all six figures are one GridColumn -- one valued row
    set grouped two ways plus its two modelled tiers -- rather than separate
    producers a test keeps in step (ruling R-K).
 
@@ -31,10 +32,12 @@
    the reason its producer states -- "they answer different questions: what the
    market did, and what the user put in".
 
-   All three explanatory rows are CONDITIONAL on the same rule, decided once in
+   All four explanatory rows are CONDITIONAL on the same rule, decided once in
    the seam (GridBalanceView.row_flags, ruling R-O): present for the whole
    visible window when at least one visible column carries a non-zero value,
-   showing its own figure in every column of that window.  The template only
+   showing its own figure in every column of that window.  Each row is asked
+   SEPARATELY (ruling R-DH (f)), so a window carrying only true-ups does not
+   also render a permanently-$0.00 timing row beside them.  The template only
    reads the flag; it never decides visibility itself, because the same rule
    governs four different windows.
 
@@ -52,8 +55,8 @@
      columns   -- dict[period_id -> GridColumn]; a period absent from it
                   (only the user-with-no-accounts empty view) renders "--" for
                   the balance and blanks for the explanatory rows.
-     row_flags -- GridRowFlags for THIS window (.reconciliation /
-                  .contribution / .accrual).
+     row_flags -- GridRowFlags for THIS window (.period_timing /
+                  .book_vs_bank / .contribution / .accrual).
      accrual_label -- the modelled-return row's per-kind heading, resolved in
                   the route from classify_account (ruling R-AI): "Interest" on
                   an HYSA, "Growth" on a 401(k), "Appreciation" on a house.
@@ -66,20 +69,38 @@
        aria-atomic="true">
   {% from "grid/_grid_row_macros.html" import mstart, accrual_class, accrual_money %}
   {% from "_money_macros.html" import money %}
-  {# Read-only remainder row (ruling R-O) -- money budgeted to this column
-     that moved in another, money that moved here but is budgeted elsewhere,
-     and the balance assertions made inside the period.  What the Total
+  {# Read-only remainder rows (rulings R-O and R-DH (f)) -- what the Total
      Income / Total Expenses rows structurally cannot say about the balance
-     change. #}
-  {% if row_flags.reconciliation %}
+     change.  TWO rows, because they have different causes and different
+     fixes: "Period timing" is money landing in a column other than the one it
+     was budgeted to, which you fix by re-budgeting the row or dating it
+     correctly; "Book vs bank" is the gap between what the app had recorded
+     and what your bank actually held, which you fix by recording the spending
+     it did not know about.  Summed into one figure they were unactionable --
+     on the developer's own data the single row read -$4,588.69 in a column
+     whose two halves were -$427.22 and -$4,161.47. #}
+  {% if row_flags.period_timing %}
   <tr class="accrual-row reconciliation-row">
     <td class="sticky-col">
-      <i class="bi bi-arrow-left-right" aria-hidden="true"></i> Timing &amp; true-ups
+      <i class="bi bi-arrow-left-right" aria-hidden="true"></i> Period timing
     </td>
     {% for period in periods %}
       {% set col = columns.get(period.id) %}
       <td class="text-end font-mono{{ mstart(periods, loop.index0) }}">
-        {% if col is not none %}{{ money(col.reconciliation, cents=false) }}{% endif %}
+        {% if col is not none %}{{ money(col.period_timing, cents=false) }}{% endif %}
+      </td>
+    {% endfor %}
+  </tr>
+  {% endif %}
+  {% if row_flags.book_vs_bank %}
+  <tr class="accrual-row reconciliation-row">
+    <td class="sticky-col">
+      <i class="bi bi-bank2" aria-hidden="true"></i> Book vs bank
+    </td>
+    {% for period in periods %}
+      {% set col = columns.get(period.id) %}
+      <td class="text-end font-mono{{ mstart(periods, loop.index0) }}">
+        {% if col is not none %}{{ money(col.book_vs_bank, cents=false) }}{% endif %}
       </td>
     {% endfor %}
   </tr>

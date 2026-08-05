@@ -46,6 +46,31 @@
   {% include "accounts/_cash_band.html" %}
 </div>
 
+{# ── Outstanding purchases, below the band ─────────────────────────────
+   The permanent home of the reconcile step (plan step S1-c).  The
+   post-true-up modal asks the same question with the same partial, and this
+   section is what makes dismissing it lossless: a purchase whose posting day
+   is never recorded keeps its whole envelope budget held back, so leaving the
+   list unattended reads the projection LOW rather than wrong in the dangerous
+   direction -- but it still wants somewhere to be resolved.
+
+   It self-refreshes on ``balanceChanged`` for the same reason the band above
+   does: a true-up moves the boundary the list is computed against, so a stale
+   list would offer purchases that are no longer outstanding. #}
+<div class="card mb-3">
+  <div class="card-header">
+    <h6 class="mb-0">
+      <i class="bi bi-list-check" aria-hidden="true"></i> Outstanding purchases
+    </h6>
+  </div>
+  <div class="card-body"
+       hx-get="{{ url_for('accounts.reconcile_panel', account_id=account.id) }}"
+       hx-trigger="balanceChanged from:body"
+       hx-swap="innerHTML">
+    {% include "accounts/_reconcile_purchases.html" %}
+  </div>
+</div>
+
 {# ── Parameters card, below the band (decision 7) ───────────────────── #}
 {% if is_interest %}
 <div class="card acctd-params">

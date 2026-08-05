@@ -93,9 +93,7 @@ def get_full_edit(txn_id):
             periods=periods,
             # Pre-hint (grid audit D2): the status dropdown disables
             # transitions the state machine would reject.
-            allowed_status_ids=allowed_transitions(
-                xfer.status_id, context="transfer",
-            ),
+            allowed_status_ids=allowed_transitions(xfer),
         )
 
     statuses = db.session.query(Status).all()
@@ -117,7 +115,7 @@ def get_full_edit(txn_id):
         # Pre-hint (grid audit D2): the status dropdown disables
         # transitions the state machine would reject from the row's
         # current status.
-        allowed_status_ids=allowed_transitions(txn.status_id),
+        allowed_status_ids=allowed_transitions(txn),
     )
 
 

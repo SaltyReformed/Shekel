@@ -149,11 +149,22 @@ class Account(
 class AccountAnchorHistory(AccountScopedMixin, CreatedAtMixin, db.Model):
     """Audit trail of anchor balance true-ups for an account.
 
-    Same-day duplicate prevention (F-103 / C-22): the partial unique
-    expression index ``uq_anchor_history_account_period_balance_day``
-    on ``(account_id, pay_period_id, anchor_balance,
-    ((created_at AT TIME ZONE 'UTC')::date))`` rejects a second row
-    with identical values inserted on the same calendar day.  This
+    **Two clocks, and only one of them dates anything.**  ``observed_on`` is
+    the BUSINESS date -- the civil day the asserted balance was TRUE -- and it
+    is what the balance engine partitions settled movements against (ruling
+    R-DH).  ``created_at`` is the RECORDING instant, and its only remaining job
+    is to order two assertions that share an ``observed_on`` so the last one
+    recorded is that day's closing balance.  The loan side has carried the same
+    split since Commit 16 (``LoanAnchorEvent.anchor_date`` beside its
+    ``created_at``); the cash side is the half that never got it, and until
+    2026-07-31 it derived the business date from the recording instant.  That
+    derivation is what let an ordinary bookkeeping session subtract
+    ``$4,001.42`` of already-cleared payments a second time (finding N-130).
+
+    Same-day duplicate prevention (F-103 / C-22): the unique index
+    ``uq_anchor_history_account_period_balance_day`` on ``(account_id,
+    pay_period_id, anchor_balance, observed_on)`` rejects a second row
+    with identical values asserting the same business day.  This
     is the database-level backstop for ``true_up`` double-submits:
     a network retry, a double-click on the Save button, or the
     back-and-resubmit pattern would otherwise create two consecutive
@@ -165,15 +176,19 @@ class AccountAnchorHistory(AccountScopedMixin, CreatedAtMixin, db.Model):
     legitimate true-ups on the same day -- the user noticed an
     arithmetic error and corrected the balance twice -- are still
     allowed; only literal duplicate rows (same balance, same
-    period, same day, same account) are rejected.  Truncating
-    ``created_at`` (a ``timestamptz``) to a civil date requires
-    pinning the timezone via ``AT TIME ZONE 'UTC'`` -- PostgreSQL
-    refuses to use the bare ``::date`` cast in an index because the
-    cast depends on the session's TimeZone and is therefore not
-    IMMUTABLE.  UTC is the application's storage timezone (every
-    ``timestamptz`` in this database is stored in UTC by
-    ``CreatedAtMixin``), so anchoring the truncation to UTC matches
-    the row's logical day-of-record exactly.
+    period, same day, same account) are rejected.
+
+    **Its last column was ``((created_at AT TIME ZONE 'UTC')::date)`` until
+    ``observed_on`` existed** (finding N-133 / F12).  That keyed the guard to a
+    UTC day while the ruling's day is the user's, so two assertions of one
+    balance on two different Eastern days that happened to share a UTC day
+    (23:00 EDT one evening, 01:00 EDT the next) were rejected as a same-day
+    duplicate.  Keying on the stored business date fixes that and still catches
+    every double-submit, because a double-click asserts one ``observed_on``.
+    It also retires the functional-index machinery: the ``AT TIME ZONE`` pin
+    existed only because PostgreSQL refuses a bare ``::date`` cast in an index
+    (it depends on the session TimeZone and is therefore not IMMUTABLE), and a
+    plain ``DATE`` column needs no pin at all.
     """
 
     __tablename__ = "account_anchor_history"
@@ -183,15 +198,9 @@ class AccountAnchorHistory(AccountScopedMixin, CreatedAtMixin, db.Model):
             "account_id",
             "created_at",
         ),
-        # Functional unique index on a UTC-day-truncated timestamp; the
-        # raw text expression matches the migration's DDL exactly so
-        # Alembic autogenerate produces no spurious diff against the
-        # post-migration database state.  See class docstring for the
-        # business rationale and the IMMUTABLE-cast requirement.
         db.Index(
             "uq_anchor_history_account_period_balance_day",
-            "account_id", "pay_period_id", "anchor_balance",
-            db.text("((created_at AT TIME ZONE 'UTC')::date)"),
+            "account_id", "pay_period_id", "anchor_balance", "observed_on",
             unique=True,
         ),
         {"schema": "budget"},
@@ -203,6 +212,14 @@ class AccountAnchorHistory(AccountScopedMixin, CreatedAtMixin, db.Model):
         nullable=False,
     )
     anchor_balance = db.Column(db.Numeric(12, 2), nullable=False)
+    # The civil day the asserted balance was TRUE, in the user's timezone --
+    # the business date the whole anchor/settle partition turns on (ruling
+    # R-DH).  NOT NULL because there is no honest assertion without one: a
+    # balance that was true on no particular day cannot be compared against the
+    # movements it does or does not already contain.  Backfilled from
+    # ``(created_at AT TIME ZONE 'America/New_York')::date``, the derivation it
+    # replaces, so no rendered figure moved on the day the column shipped.
+    observed_on = db.Column(db.Date, nullable=False)
     notes = db.Column(db.Text)
 
     # Relationships

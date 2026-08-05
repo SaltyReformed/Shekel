@@ -77,6 +77,18 @@ _type_update_schema = AccountTypeUpdateSchema()
 _interest_params_schema = InterestParamsUpdateSchema()
 
 
+#: THE answer to "this collateral submission does not name an account you
+#: own", as a ready-to-``flash`` ``(message, category)`` pair.  Not-found,
+#: not-yours and not-an-id-at-all deliberately collapse into one response
+#: -- the project's "404 for both not-found and not-yours" rule expressed
+#: as a flash -- so the picker cannot be used to probe for another owner's
+#: account ids.  Named rather than inlined because :func:`_validate_collateral_link`
+#: is no longer its only emitter: the route rejects a value that names no id
+#: at all before this validator is reached (plan step X-ae), and two spellings
+#: of one answer is how the two paths would come to differ.
+INVALID_COLLATERAL_LINK = ("Invalid linked account.", "danger")
+
+
 def _visible_account_types(user_id):
     """Return the account types this user is allowed to see.
 
@@ -297,9 +309,11 @@ def _validate_collateral_link(collateral_account_id, source_account, user_id):
 
       * No self-link -- an account cannot secure itself.
       * The target exists and belongs to *user_id*.  Not-found and
-        not-yours collapse into one "Invalid linked account." response so
-        the field cannot probe for another owner's account ids (the
-        project's "404 for both not-found and not-yours" rule).
+        not-yours collapse into one :data:`INVALID_COLLATERAL_LINK`
+        response so the field cannot probe for another owner's account
+        ids (the project's "404 for both not-found and not-yours" rule).
+        The route emits that same constant for a submission that names no
+        id at all, so all three are one answer.
       * The target is in the Asset category (a home, not another loan).
       * The source is an amortizing liability (defensive -- the loan
         routes only call this for loan accounts; an asset/liability
@@ -323,7 +337,7 @@ def _validate_collateral_link(collateral_account_id, source_account, user_id):
         return "An account cannot secure itself.", "danger"
     target = db.session.get(Account, collateral_account_id)
     if target is None or target.user_id != user_id:
-        return "Invalid linked account.", "danger"
+        return INVALID_COLLATERAL_LINK
     asset_category_id = ref_cache.acct_category_id(AcctCategoryEnum.ASSET)
     if (
         target.account_type is None

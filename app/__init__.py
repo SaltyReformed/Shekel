@@ -17,6 +17,7 @@ from app.error_handlers import register_error_handlers
 from app.extensions import csrf, db, limiter, login_manager, migrate
 from app.jinja_filters import register_template_filters
 from app.routes.static_pass import static_file_version
+from app.url_converters import register_url_converters
 from app.utils.logging_config import setup_logging
 from app.utils.session_helpers import (
     SESSION_CREATED_AT_KEY,
@@ -130,6 +131,12 @@ def create_app(config_name=None, *, init_ref_cache=True):
 
     # --- Context Processors -----------------------------------------------
     _register_context_processors(app)
+
+    # --- URL converters ---------------------------------------------------
+    # MUST precede the blueprints: Werkzeug resolves a rule's converters when
+    # the rule is added to the map, so registering after would leave every
+    # existing rule on the stock lax ``int`` (plan step X-ae, finding N-140).
+    register_url_converters(app)
 
     # --- Blueprints ------------------------------------------------------
     _register_blueprints(app)

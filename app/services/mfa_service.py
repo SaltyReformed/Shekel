@@ -18,6 +18,7 @@ import qrcode
 from cryptography.fernet import Fernet, MultiFernet
 
 from app.models.user import MfaConfig
+from app.utils.digit_strings import is_ascii_digits
 
 
 # Width in seconds of one TOTP time-step.  RFC 6238 leaves this
@@ -74,8 +75,8 @@ class TotpVerificationResult(Enum):
 
     INVALID: The code does not match any step within the drift
         window, or the input was malformed (wrong length, non-string,
-        non-digits).  Indistinguishable from a typo or a code from
-        another secret.
+        not ASCII decimal digits).  Indistinguishable from a typo or a
+        code from another secret.
     """
 
     ACCEPTED = "accepted"
@@ -228,6 +229,20 @@ def _find_matching_step(secret: str, code: str) -> int | None:
     comparison in constant time relative to the input length so the
     matching step is not leaked through a timing side-channel.
 
+    **The shape check is ASCII-strict, and that is load-bearing rather
+    than tidy** (plan step X-ae, finding N-136).  ``hmac.compare_digest``
+    raises ``TypeError`` on a ``str`` holding any non-ASCII character, and
+    ``str.isdigit`` -- what this guard used to ask -- is true for every
+    non-Latin digit script.  A 6-character code of Eastern Arabic numerals
+    therefore passed the guard and raised out of the comparison below, on
+    the LOGIN path, where nothing catches it: ``MfaVerifySchema.totp_code``
+    validates only ``Length(max=6)``.  It failed closed (no authentication
+    was granted) but as an unhandled 500.
+    :func:`~app.utils.digit_strings.is_ascii_digits` is the predicate the
+    standard library does not offer, and the route layer's id parsing asks
+    it too, so there is one definition of "a digit string" rather than one
+    per door.
+
     Returns the matched step on the first hit because two different
     steps cannot produce the same 6-digit OTP within a 90-second
     window: the OTP space is 10**6, and at one OTP every 30 seconds
@@ -237,9 +252,9 @@ def _find_matching_step(secret: str, code: str) -> int | None:
     Args:
         secret: Base32-encoded TOTP secret as plaintext.
         code: Candidate 6-digit code from the user.  Anything that
-            is not a 6-digit numeric string is rejected without
-            invoking ``pyotp`` so malformed input cannot influence
-            timing.
+            is not exactly six ASCII decimal digits is rejected
+            without invoking ``pyotp`` so malformed input cannot
+            influence timing.
 
     Returns:
         int | None: The integer time-step (Unix-seconds // 30) at
@@ -248,7 +263,7 @@ def _find_matching_step(secret: str, code: str) -> int | None:
     """
     if not isinstance(code, str):
         return None
-    if len(code) != _TOTP_CODE_LENGTH or not code.isdigit():
+    if len(code) != _TOTP_CODE_LENGTH or not is_ascii_digits(code):
         return None
     totp = pyotp.TOTP(secret)
     current_step = int(time.time()) // _TOTP_STEP_SECONDS
@@ -286,9 +301,14 @@ def verify_totp_code(mfa_config: MfaConfig, code: str) -> TotpVerificationResult
             ``last_totp_timestep`` is read for the replay check and
             written on success.
         code: The 6-digit code string from the user's
-            authenticator app.  Non-string, wrong-length, and non-
-            digit inputs are rejected as INVALID without consulting
-            the secret.
+            authenticator app.  Non-string, wrong-length, and
+            non-ASCII-digit inputs are rejected as INVALID without
+            invoking ``pyotp``.  Note that the secret IS decrypted
+            first, so a malformed code still surfaces
+            ``InvalidToken`` / ``RuntimeError`` when the encryption
+            key is missing or rotated away -- an earlier wording here
+            claimed the shape check ran "without consulting the
+            secret", which the decrypt on the line above disproves.
 
     Returns:
         TotpVerificationResult: ACCEPTED if the code matched a step

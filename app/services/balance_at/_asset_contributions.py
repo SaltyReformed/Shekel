@@ -31,6 +31,7 @@ from app.models.account import Account
 from app.models.investment_params import InvestmentParams
 from app.models.pay_period import PayPeriod
 from app.services import growth_engine, pay_period_service
+from app.services.cash_ledger import ReconciledThrough
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
@@ -216,7 +217,7 @@ def contribution_events(
     account: Account,
     scenario_id: int,
     inputs: ContributionInputs,
-    accrual_start: date,
+    reconciled_through: ReconciledThrough,
 ) -> "list[tuple[date, Decimal]]":
     """Return *account*'s modelled CONTRIBUTION events, dated.
 
@@ -236,7 +237,7 @@ def contribution_events(
             classifier and its ``user_id`` the period calendar.
         scenario_id: The budget scenario the recorded contributions live in.
         inputs: The account's :class:`ContributionInputs`.
-        accrual_start: The latest assertion's UTC civil day -- the boundary
+        reconciled_through: The account's coverage boundary -- the assertion
             :func:`_dated_events` admits an event strictly after (ruling R-Z).
 
     Returns:
@@ -252,14 +253,14 @@ def contribution_events(
     return _dated_events(
         plan,
         pay_period_service.get_all_periods(account.user_id),
-        accrual_start,
+        reconciled_through,
     )
 
 
 def _dated_events(
     plan: _ContributionPlan,
     periods: "list[PayPeriod]",
-    accrual_start: date,
+    reconciled_through: ReconciledThrough,
 ) -> "list[tuple[date, Decimal]]":
     """Resolve the plan into dated events, one per paying period.
 
@@ -272,13 +273,24 @@ def _dated_events(
     contribution AFTER its growth and so earns none in its own period.
 
     **It stops at the latest assertion, and the boundary is STRICT** (ruling
-    R-Z): an event exists only when ``payday > accrual_start``.  A contribution
-    on a payday at or before the assertion is money the asserted balance already
-    contains, and modelling it again double counts -- an over-count that looks
-    exactly like real growth and so cannot be detected later.  The ACCRUAL rule
-    beside it is inclusive (``>=``) for a reason that does not transfer: a day
-    count has to tile the calendar with no gap, while a contribution is a
-    discrete event that either is or is not inside the assertion.
+    R-Z): an event exists only when the assertion does NOT already reconcile
+    the payday.  A contribution on a payday at or before the assertion is money
+    the asserted balance already contains, and modelling it again double counts
+    -- an over-count that looks exactly like real growth and so cannot be
+    detected later.
+
+    **That is ruling R-DH's question, so it is ruling R-DH's implementation**
+    (:meth:`app.services.cash_ledger.ReconciledThrough.covers`).  It was a bare
+    ``period.start_date <= accrual_start`` until the one-partition step, which
+    an adversarial review caught: the same rule, the same units and the same
+    inclusivity as the cash walks, reached as a loose date and therefore
+    invisible to the census that step ran.  Re-rule the boundary and this feed
+    would silently have stayed put while every cash consumer moved.
+
+    The ACCRUAL rule beside it is inclusive at its own start for a reason that
+    does NOT transfer and is deliberately NOT routed here: a day count has to
+    tile the calendar with no gap, while a contribution is a discrete event
+    that either is or is not inside the assertion.
 
     **The annual limit is a calendar-year recurrence over BOTH feeds.**  Every
     period's RECORDED contributions consume the year's limit whether or not the
@@ -296,7 +308,8 @@ def _dated_events(
             ``period_index``), and the whole calendar rather than a caller's
             window -- the year-boundary reset and the limit accounting are
             wrong over a slice.
-        accrual_start: The latest assertion's UTC civil day.
+        reconciled_through: The account's coverage boundary -- the latest
+            assertion, as the rule that decides what it already contains.
 
     Returns:
         ``[(payday, amount), ...]`` in period order, one entry per period that
@@ -313,7 +326,7 @@ def _dated_events(
 
         recorded = plan.recorded_by_period.get(period.id, _ZERO)
         ytd += recorded
-        if period.start_date <= accrual_start:
+        if reconciled_through.covers(period.start_date):
             continue
 
         employee = growth_engine.cap_contribution_at_limit(

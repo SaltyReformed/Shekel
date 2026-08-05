@@ -11,6 +11,7 @@ from marshmallow import (
 
 from app.schemas.validation._helpers import (
     BaseSchema,
+    RowId,
     _normalize_empty_inputs,
 )
 
@@ -47,20 +48,24 @@ class TransferTemplateCreateSchema(BaseSchema):
         required=True, places=2, as_string=True,
         validate=validate.Range(min=0, min_inclusive=False),
     )
-    from_account_id = fields.Integer(required=True)
-    to_account_id = fields.Integer(required=True)
-    category_id = fields.Integer(required=True)
+    from_account_id = RowId(required=True)
+    to_account_id = RowId(required=True)
+    category_id = RowId(required=True)
 
     # Recurrence rule fields (optional -- omit for one-time / manual).
     # The value is the integer primary key of a ref.recurrence_patterns row,
     # submitted as a string via HTML form data.  Route-level code validates
-    # existence via db.session.get().
-    recurrence_pattern = fields.Integer(validate=validate.Range(min=1))
+    # existence via db.session.get().  ``RowId`` rather than ``Integer``
+    # because it IS a row id despite the name (plan step X-ae): an
+    # adversarial review found it reading '١', ' 2 ', '+3', '007' and
+    # '1_0' as pattern ids, and the completeness gate could not see it
+    # while that gate matched on a ``_id`` SUFFIX.
+    recurrence_pattern = RowId(validate=validate.Range(min=1))
     interval_n = fields.Integer(validate=validate.Range(min=1))
     offset_periods = fields.Integer(validate=validate.Range(min=0))
     day_of_month = fields.Integer(validate=validate.Range(min=1, max=31))
     month_of_year = fields.Integer(validate=validate.Range(min=1, max=12))
-    start_period_id = fields.Integer()
+    start_period_id = RowId()
     end_date = fields.Date(allow_none=True)
 
     @validates_schema
@@ -81,15 +86,15 @@ class TransferTemplateUpdateSchema(TransferTemplateCreateSchema):
     default_amount = fields.Decimal(
         places=2, as_string=True, validate=validate.Range(min=0, min_inclusive=False)
     )
-    from_account_id = fields.Integer()
-    to_account_id = fields.Integer()
-    category_id = fields.Integer(allow_none=True)
+    from_account_id = RowId()
+    to_account_id = RowId()
+    category_id = RowId(allow_none=True)
 
     # Date from which regeneration takes effect.
     effective_from = fields.Date()
 
     # Optimistic-locking pin (commit C-18).
-    version_id = fields.Integer(validate=validate.Range(min=1))
+    version_id = RowId(validate=validate.Range(min=1))
 
 
 class TransferCreateSchema(BaseSchema):
@@ -100,16 +105,16 @@ class TransferCreateSchema(BaseSchema):
         """Drop empty inputs; map empties on nullable fields to None."""
         return _normalize_empty_inputs(self, data)
 
-    from_account_id = fields.Integer(required=True)
-    to_account_id = fields.Integer(required=True)
+    from_account_id = RowId(required=True)
+    to_account_id = RowId(required=True)
     amount = fields.Decimal(
         required=True, places=2, as_string=True,
         validate=validate.Range(min=0, min_inclusive=False),
     )
-    pay_period_id = fields.Integer(required=True)
-    scenario_id = fields.Integer(required=True)
+    pay_period_id = RowId(required=True)
+    scenario_id = RowId(required=True)
     name = fields.String(validate=validate.Length(max=200))
-    category_id = fields.Integer(required=True)
+    category_id = RowId(required=True)
     notes = fields.String(allow_none=True, validate=validate.Length(max=500))
     due_date = fields.Date(allow_none=True)
 
@@ -134,12 +139,12 @@ class TransferUpdateSchema(BaseSchema):
     amount = fields.Decimal(
         places=2, as_string=True, validate=validate.Range(min=0, min_inclusive=False)
     )
-    status_id = fields.Integer()
-    pay_period_id = fields.Integer()
+    status_id = RowId()
+    pay_period_id = RowId()
     name = fields.String(validate=validate.Length(max=200))
-    category_id = fields.Integer(allow_none=True)
+    category_id = RowId(allow_none=True)
     notes = fields.String(allow_none=True, validate=validate.Length(max=500))
     due_date = fields.Date(allow_none=True)
 
     # Optimistic-locking pin (commit C-18).
-    version_id = fields.Integer(validate=validate.Range(min=1))
+    version_id = RowId(validate=validate.Range(min=1))

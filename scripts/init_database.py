@@ -232,10 +232,19 @@ def resync_all_cash_postings_after_migration():
     ref_cache.init(db.session)
     transactions, transfers = posting_service.resync_all_cash_postings()
     db.session.commit()
-    print(
-        f"Cash posting re-date complete ({transactions} transaction(s), "
-        f"{transfers} transfer(s) walked)."
-    )
+    # CHANGED, not walked (finding N-133 / F8).  A steady-state deploy prints
+    # zeroes; a non-zero line is the operator's only evidence that a one-time
+    # re-date actually happened, and the one worth reading in the deploy log.
+    if transactions or transfers:
+        print(
+            f"Cash posting re-date complete: RE-POSTED {transactions} "
+            f"transaction(s) and {transfers} transfer(s).  These sources' "
+            "journal entries moved to a different entry_date; a rollback "
+            "ACROSS this dating change must re-run the hook under the old "
+            "image, not only swap the container."
+        )
+    else:
+        print("Cash posting re-date complete: already at target (0 changed).")
 
 
 def backfill_loan_payment_postings_after_migration():

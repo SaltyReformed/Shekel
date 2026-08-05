@@ -206,7 +206,7 @@ def _add_txn_entry(seed_user, txn, amount, *, is_credit):
         user_id=seed_user["user"].id,
         amount=Decimal(amount),
         description="purchase",
-        entry_date=txn.pay_period.start_date,
+        purchased_on=txn.pay_period.start_date,
         is_credit=is_credit,
     )
     _db.session.add(entry)

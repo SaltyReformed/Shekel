@@ -11,8 +11,8 @@ finding) and both agree exactly:
 * :func:`summed_posting_legs` -- the grouped "what is already posted" query
   shape every posted-leg reader shares.
 * :func:`posted_correction_legs` -- the posted anchor-correction reader,
-  keyed by ``(source_kind_id, entry_date)`` and scoped to entries touching
-  one linked ledger.
+  keyed by ``(source_kind_id, pay_period_id, entry_date)`` and scoped to
+  entries touching one linked ledger.
 * :func:`delta_legs` -- turn a ``target`` ledger-leg map and the ``posted``
   ledger-leg map into the balanced DELTA legs that move posted to target.
 * :func:`merge_target_legs` -- sum a correction's legs into a target bucket
@@ -20,6 +20,8 @@ finding) and both agree exactly:
 * :func:`emit_anchor_correction_entry` -- the one definition of what a
   sourceless anchor-correction journal entry looks like (both concrete FKs
   NULL, dated at the anchor's civil date, described from its source kind).
+* :func:`emit_correction_deltas` -- the reconcile LOOP itself: union the
+  target and posted keys, emit one balanced delta per key that differs.
 
 Flask-isolated and commit-free like its consumers: plain data in, ORM
 objects or plain values out; flushes only through the shared balanced-write
@@ -46,11 +48,29 @@ logger = logging.getLogger(__name__)
 
 _ZERO_MONEY = Decimal("0.00")
 
-# The anchor-correction reconcile key: (journal ``source_kind_id``, civil
-# ``entry_date``).  Shared by the loan and account anchor reconciles -- an
-# anchor correction has no concrete source FK to key on, so both key each
-# correction's entry by its source kind (opening vs. true-up) and its date.
-CorrectionKey = tuple[int, date]
+# The anchor-correction reconcile key: (journal ``source_kind_id``,
+# ``pay_period_id``, civil ``entry_date``).  Shared by the loan and account
+# anchor reconciles -- an anchor correction has no concrete source FK to key
+# on, so both key each correction's entry by its source kind (opening vs.
+# true-up) plus the period / date pair every reconcile in this ledger keys on.
+#
+# **The period is in the key because R2 is an attribution rule, not a
+# convention** (plan step X-ai-r, finding N-161).  A correction "carries the
+# PAY PERIOD of the postings it reverses -- read back from the ledger per
+# period, never the source row's current period"
+# (:mod:`app.services.posting_service`).  The other two reconciles in this
+# ledger obey it structurally by carrying the period in their key --
+# ``posting_service._posted_by_period`` for a transaction / transfer and
+# ``loan_posting_service._payments._posted_loan_payment_legs`` for a loan
+# payment, both ``(pay_period_id, entry_date)``.  This one did not: it read
+# the posted side keyed ``(source_kind_id, entry_date)`` with no period, so
+# it could not know WHICH period it was correcting, and the account reconcile
+# re-supplied one from the source row's current period -- verbatim what the
+# rule forbids.  Measured on production data, that filed a ``$2,854.36``
+# reversal of period-5 postings into period 6.  The period is therefore not
+# decoration on this tuple: it is the half of the key that makes a reversal
+# land where the postings it undoes live.
+CorrectionKey = tuple[int, int, date]
 # The target/posted leg map: {ledger_account_id: (signed amount, posting_kind_id)}.
 LegMap = dict[int, tuple[Decimal, int]]
 
@@ -94,8 +114,9 @@ def summed_posting_legs(extra_columns: list, filters: list):
 
     Args:
         extra_columns: Extra group-key columns prepended to the SELECT and
-            GROUP BY (empty for the payment reader; the anchor readers add
-            ``source_kind_id`` and ``entry_date`` to sub-group by correction).
+            GROUP BY (``pay_period_id`` + ``entry_date`` for the payment
+            reader; the anchor readers prepend ``source_kind_id`` to that
+            same pair, an anchor correction having no source FK to select on).
         filters: The entry-scoping filter expressions.
 
     Returns:
@@ -129,11 +150,20 @@ def posted_correction_legs(
     touches the given LINKED ledger (which scopes the query to that ledger's
     one account, the linked ledger being per-account -- and every anchor
     correction carries a linked leg, so no correction escapes the scope),
-    grouped by ``(source_kind_id, entry_date, ledger_account_id,
-    posting_kind_id)``.  This is the "already posted" side the anchor
-    reconciles compare their targets against, read straight from the ledger
-    so a reversal negates exactly what was posted and reuses the kind it was
-    posted with.
+    grouped by ``(source_kind_id, pay_period_id, entry_date,
+    ledger_account_id, posting_kind_id)``.  This is the "already posted" side
+    the anchor reconciles compare their targets against, read straight from
+    the ledger so a reversal negates exactly what was posted, reuses the kind
+    it was posted with, and lands in the PERIOD it was posted in.
+
+    **Grouping by ``pay_period_id`` is the R2 attribution rule made
+    structural** (plan step X-ai-r; see the :data:`CorrectionKey` comment for
+    the measurement).  Without it a key spanning two periods reads back as
+    one blob, and the reversal of postings in one period is filed against the
+    other.  A journal entry carries exactly one source kind, one period and
+    one date, so every entry's legs land in exactly one key and each key's
+    posted side sums to zero -- which is what makes each key's delta a
+    balanced entry on its own.
 
     Args:
         linked_ledger_id: The account's LINKED ledger account id whose
@@ -143,15 +173,19 @@ def posted_correction_legs(
             or account opening / true-up pair).
 
     Returns:
-        ``{(source_kind_id, entry_date): {ledger_account_id: (net, kind_id)}}``;
-        empty when no correction is posted yet.
+        ``{(source_kind_id, pay_period_id, entry_date): {ledger_account_id:
+        (net, kind_id)}}``; empty when no correction is posted yet.
     """
     entry_ids = (
         db.session.query(Posting.journal_entry_id)
         .filter(Posting.ledger_account_id == linked_ledger_id)
     )
     rows = summed_posting_legs(
-        [JournalEntry.source_kind_id, JournalEntry.entry_date],
+        [
+            JournalEntry.source_kind_id,
+            JournalEntry.pay_period_id,
+            JournalEntry.entry_date,
+        ],
         [
             JournalEntry.scenario_id == scenario_id,
             JournalEntry.source_kind_id.in_(source_kind_ids),
@@ -159,10 +193,10 @@ def posted_correction_legs(
         ],
     ).all()
     posted: dict[CorrectionKey, LegMap] = {}
-    for source_kind_id, entry_date, ledger_id, net, kind_id in rows:
-        posted.setdefault((source_kind_id, entry_date), {})[ledger_id] = (
-            net, kind_id,
-        )
+    for source_kind_id, period_id, entry_date, ledger_id, net, kind_id in rows:
+        posted.setdefault(
+            (source_kind_id, period_id, entry_date), {},
+        )[ledger_id] = (net, kind_id)
     return posted
 
 
@@ -206,13 +240,27 @@ def delta_legs(target: LegMap, posted: LegMap) -> list[_PostingLeg]:
 def merge_target_legs(bucket: LegMap, legs: LegMap) -> None:
     """Sum a correction's legs into a per-key target *bucket*, in place.
 
-    The same-key merge both anchor reconciles apply when two same-day
-    same-kind anchors share one reconcile key: each ledger's amounts add, so
-    the merged target expresses the anchors' combined jump (landing on the
-    later anchor's value, since each correction's delta already accounts for
-    the prior one).  The posting kind is shared within a key by construction
-    (one key holds one source kind, whose legs all carry that kind), so the
-    incoming kind simply wins.
+    The same-key merge both anchor reconciles apply when two anchors share
+    one reconcile key -- same source kind, same pay period AND same civil day.
+    Each ledger's amounts add, so the merged target expresses the anchors'
+    combined jump (landing on the later anchor's value, since each
+    correction's delta already accounts for the prior one).  The posting kind
+    is shared within a key by construction (one key holds one source kind,
+    whose legs all carry that kind), so the incoming kind simply wins.
+
+    **Adding the period to the key narrowed NOTHING here, and a draft of this
+    docstring claimed it did** ("two same-day assertions filed against
+    different periods now key apart").  That described R-DZ's target key, which
+    ruling R-EA replaced: the period is DERIVED from the assertion's day, so
+    two assertions sharing a day share a period BY CONSTRUCTION and can never
+    key apart.  The correction is kept visible because the claim survived the
+    ruling that falsified it, in the shared primitive both halves read.
+
+    It survives only because an assertion has no source FK for the ledger to
+    key on, so two assertions genuinely indistinguishable in the key merge
+    into one entry.  Giving a correction that identity is what deletes this
+    (plan step X-ai-s) -- and it is the ONLY thing that can, since no part of
+    the current key can tell two same-day assertions apart.
 
     Args:
         bucket: The key's accumulated ``{ledger_account_id: (amount,
@@ -246,7 +294,7 @@ def _correction_description(source_kind_id: int, entry_date: date) -> str:
             entry under a non-correction source is a broken invariant, so it
             fails loudly rather than fabricating a label.
     """
-    labels = {
+    labels: dict[int, str] = {
         ref_cache.posting_source_id(PostingSourceEnum.LOAN_OPENING):
             "Loan opening balance",
         ref_cache.posting_source_id(PostingSourceEnum.LOAN_TRUEUP):
@@ -271,7 +319,6 @@ def emit_anchor_correction_entry(
     owner_id: int,
     scenario_id: int,
     key: CorrectionKey,
-    pay_period_id: int,
     legs: list,
 ) -> JournalEntry:
     """Emit one balanced anchor-correction delta entry (opening or true-up).
@@ -279,19 +326,23 @@ def emit_anchor_correction_entry(
     The one definition of a sourceless correction's journal header, shared by
     the loan and account anchor reconciles: ``transfer_id`` /
     ``transaction_id`` both NULL (an anchor correction links to neither;
-    ``source_kind_id`` disambiguates it), dated at the anchor's civil
-    ``entry_date``, attributed to *pay_period_id*, and described from its
-    source kind (:func:`_correction_description`).  Writes the balanced
-    *legs* through the shared balanced-write path.  Flushes; does not commit.
+    ``source_kind_id`` disambiguates it), and described from its source kind
+    (:func:`_correction_description`).  Writes the balanced *legs* through the
+    shared balanced-write path.  Flushes; does not commit.
+
+    **Every column that identifies the entry comes off the KEY**, including
+    the NOT NULL ``pay_period_id``.  It was a separate parameter until plan
+    step X-ai-r put the period in the key; passing it alongside made it
+    possible for the period an entry is FILED under to differ from the period
+    its delta was COMPUTED against, which is finding N-161's defect stated as
+    a signature.  With one source there is nothing left to disagree.
 
     Args:
         owner_id: The account owner's user id.
         scenario_id: The budget scenario the correction lives in.
-        key: The ``(source_kind_id, entry_date)`` the delta reconciles.
-        pay_period_id: The resolved pay period for the NOT NULL
-            ``pay_period_id`` (the loan reconcile resolves the period
-            containing the anchor date; the account reconcile uses the
-            anchor history row's own period).
+        key: The ``(source_kind_id, pay_period_id, entry_date)`` the delta
+            reconciles -- and, by the paragraph above, the entry's own
+            source kind, period and date.
         legs: The balanced delta legs from :func:`delta_legs`.
 
     Returns:
@@ -301,7 +352,7 @@ def emit_anchor_correction_entry(
         PostingError: If *key* names a non-correction source kind, or the
             legs do not balance (via the shared balanced-write path).
     """
-    source_kind_id, entry_date = key
+    source_kind_id, pay_period_id, entry_date = key
     entry = JournalEntry(
         user_id=owner_id,
         scenario_id=scenario_id,
@@ -314,7 +365,72 @@ def emit_anchor_correction_entry(
     )
     _emit_balanced_entry(entry, legs)
     logger.info(
-        "Posted anchor correction (source %d as of %s) as journal entry %d",
-        source_kind_id, entry_date, entry.id,
+        "Posted anchor correction (source %d as of %s, period %d) as journal "
+        "entry %d",
+        source_kind_id, entry_date, pay_period_id, entry.id,
     )
     return entry
+
+
+def emit_correction_deltas(
+    owner_id: int,
+    scenario_id: int,
+    *,
+    target: dict[CorrectionKey, LegMap],
+    posted: dict[CorrectionKey, LegMap],
+) -> None:
+    """Emit one balanced delta entry per correction key that differs.
+
+    The reconcile LOOP both anchor packages share: over the UNION of the
+    target and posted keys in sorted order, take each key's
+    ``target - posted`` deltas (:func:`delta_legs`) and, when any are
+    non-zero, emit them as one balanced entry (
+    :func:`emit_anchor_correction_entry`).  That covers every lifecycle in
+    one shape -- a key present only in *target* posts fresh, a key present
+    only in *posted* reverses to zero, and a key in both adjusts by the
+    difference.  Idempotent: a re-run at the same state computes every delta
+    as zero and writes nothing.
+
+    **It is here rather than in each package because after plan step X-ai-r
+    the two loops are identical.**  The loan reconcile resolved its entry's
+    period inside this loop (from the anchor date) while the account
+    reconcile carried a parallel ``{key: period}`` map; putting the period in
+    the key left both spelling the same five lines, which is a
+    ``duplicate-code`` finding waiting on the next edit to either.  The
+    difference that remains between the two packages -- WHERE an assertion's
+    period comes from -- now lives entirely in how each builds its target
+    keys, which is where a genuine difference belongs.
+
+    Each key's deltas balance by construction, so no key can produce a
+    single-legged entry: a target sums to zero (every correction contributes
+    a leg and its negative) and the posted side sums to zero per key (a
+    journal entry carries one source kind, one period and one date, so all
+    of its legs fall in the same key).  Flushes but does not commit -- the
+    caller owns the transaction.
+
+    **``target`` and ``posted`` are KEYWORD-ONLY, deliberately.**  They are the
+    same type, adjacent, and swapping them yields ``posted - target`` -- a
+    perfectly balanced, sign-INVERTED entry that the balanced-write path
+    accepts, no checker sees, and no trial balance catches.  Naming them at the
+    call site is what makes that inversion unwritable rather than merely
+    unlikely.
+
+    Args:
+        owner_id: The account owner's user id.
+        scenario_id: The budget scenario to reconcile within.
+        target: ``{key: {ledger_account_id: (amount, kind_id)}}`` the ledger
+            should net to per key (a key with an empty leg map reverses that
+            key to zero).
+        posted: ``{key: {ledger_account_id: (net, kind_id)}}`` currently
+            posted, from :func:`posted_correction_legs`.
+
+    Raises:
+        PostingError: If a key names a non-correction source kind, or its
+            legs do not balance (both via
+            :func:`emit_anchor_correction_entry`).
+    """
+    for key in sorted(set(target) | set(posted)):
+        legs = delta_legs(target.get(key, {}), posted.get(key, {}))
+        if not legs:
+            continue
+        emit_anchor_correction_entry(owner_id, scenario_id, key, legs)

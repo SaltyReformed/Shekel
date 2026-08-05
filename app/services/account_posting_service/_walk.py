@@ -1,4 +1,4 @@
-"""Account-anchor genesis walk: the moment-granular correction producer.
+"""Account-anchor genesis walk: the DAY-granular correction producer.
 
 The pure READ/COMPUTE half of the Build-Order Step 5 write side: one
 chronological walk (:func:`walk_account_ledger`) replays a NON-loan account's
@@ -22,6 +22,13 @@ CRITICAL-1) -- and never by instant, which decided the question by which button
 the user pressed first and cost production ``$4,001.42`` on 2026-07-31 (ruling
 R-DH, ``docs/audits/balance_architecture/anchor_settle_partition.md``).
 
+**One boundary for both anchor kinds**, opening and true-up alike (finding
+N-133 / F1).  The OPENING was excepted for one day -- its boundary stepped back
+a day so its own day's sources rode on top -- and the exception was reverted
+once scored: it made the walk read ``$4,804.00`` for a day production's bank
+showed ``$2,746.58``, and it forced the rule to be stated twice by hand, as a
+date boundary here and as a sort position in the read fold.
+
 **Source facts are read back from the ledger, never re-derived from
 transaction rows.**  Grouping the linked ledger's own postings by source is
 timing-proof against the reverse-before-delete discipline (a reverted source
@@ -36,7 +43,7 @@ refuses an amortizing account outright.
 """
 
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
@@ -59,11 +66,6 @@ from app.services.cash_ledger import (
 )
 
 _ZERO_MONEY = Decimal("0.00")
-# The step back an OPENING's absorption boundary takes, so its own day's
-# sources ride on top of it.  Spelled the same way as the cash fold's twin
-# (``balance_at._cash_fold._ONE_DAY``) because it is the same unit: the
-# civil day both partitions now read.
-_ONE_DAY = timedelta(days=1)
 
 
 @dataclass(frozen=True)
@@ -380,7 +382,8 @@ def walk_account_ledger(
     The single DAY-granular walk the account anchor ledger derives from.
     Seeds the running ledger total at zero and, per anchor fact in
     assertion order, absorbs every source fact dated on or before that
-    fact's ``observed_on``, records the correction with the total JUST
+    fact's ``observed_on`` -- opening and true-up alike, one boundary
+    (finding N-133 / F1) -- records the correction with the total JUST
     BEFORE the assertion (``ledger_before``), then resets the running total
     to the asserted balance -- so the corrections' cumulative effect plus
     the absorbed sources equals each asserted balance as of the day it is
@@ -443,6 +446,15 @@ def walk_account_ledger(
             f"amortizing loan (loans book their anchor corrections through "
             f"the loan posting package, never the account walk)"
         )
+    # BUSINESS-DATE order, guaranteed by the loader rather than restated here
+    # (finding N-133 / F6).  The loop below advances a MONOTONIC pointer through
+    # the day-sorted sources, so a fact list not non-decreasing in
+    # ``observed_on`` would make the pointer skip sources it should absorb and
+    # put this walk and the read fold at odds about the ledger.  That held for
+    # free while ``observed_on`` was DERIVED from ``created_at``; plan step 2
+    # made it user-supplied, and the fix belongs in
+    # :func:`~app.services.cash_ledger.cash_anchor_facts` -- one order, stated
+    # where the rows are read, rather than a re-sort per consumer.
     facts = cash_anchor_facts(account_id)
     if not facts:
         return []
@@ -451,27 +463,25 @@ def walk_account_ledger(
 
     corrections: list[AccountAnchorCorrection] = []
     running = _ZERO_MONEY
-    source_index = 0
+    absorbed = 0
     for fact in facts:
-        # The LAST day whose sources this assertion absorbs.  An OPENING is
-        # where tracking starts, so its own day is NOT inside it and the
-        # boundary falls one day earlier; a TRUE-UP closes its day, so that day
-        # is inside (ruling R-DH (a) as amended).  Stated as a date rather than
-        # a predicate so the comparison below stays one ``<=`` for both kinds --
-        # the boundary is the read fold's, name for name (``cash_ledger._events``
-        # places the same two kinds either side of its own day's sources),
-        # because a posting walk that absorbed what the fold rides on top of is
-        # the exact drift plan step X-a exists to make impossible.
-        last_absorbed = (
-            fact.observed_on - _ONE_DAY if fact.is_opening
-            else fact.observed_on
-        )
-        while (
-            source_index < len(sources)
-            and sources[source_index][0] <= last_absorbed
+        # Absorb every source this assertion RECONCILES -- opening and true-up
+        # alike, because an assertion is the CLOSING BALANCE for its day
+        # (ruling R-DH (a)).  ``ReconciledThrough.covers`` is the ONE
+        # implementation of that rule, and this loop is deliberately the same
+        # shape as the read replay's in
+        # :func:`app.services.cash_ledger.walk_cash_ledger`, over the same
+        # assertions.  It restated the rule as a bare ``<=`` until the
+        # one-partition step: while the OPENING also carried an exception, the
+        # two walks had to be hand-mirrored in two different forms and held in
+        # step by convention (finding N-133 / F1), and a posting walk that
+        # absorbed what the fold rode on top of is the exact drift plan step
+        # X-a exists to make impossible.
+        while absorbed < len(sources) and fact.reconciled_through.covers(
+            sources[absorbed][0],
         ):
-            running += sources[source_index][1]
-            source_index += 1
+            running += sources[absorbed][1]
+            absorbed += 1
         corrections.append(
             AccountAnchorCorrection(anchor=fact, ledger_before=running)
         )

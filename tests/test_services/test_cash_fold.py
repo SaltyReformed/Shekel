@@ -44,7 +44,6 @@ from app.utils.dates import DISPLAY_TIMEZONE
 from app.enums import StatusEnum
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
-from app.models.transaction_entry import TransactionEntry
 from app.services.balance_at._cash_fold import (
     cash_period_balances,
     fold_cash_balances,
@@ -52,12 +51,14 @@ from app.services.balance_at._cash_fold import (
 from app.services.balance_at._fold import sample_cumulative
 from app.services.cash_ledger import dated_deltas, walk_cash_ledger
 from tests._test_helpers import (
+    add_entry,
     add_txn,
     append_balance_assertion,
     create_envelope_txn,
     create_savings_account,
     create_settled_cash_transaction,
     create_settled_transfer,
+    mark_purchase_settled,
     override_anchor,
     restamp_opening_assertion,
     settle_instant_on,
@@ -662,34 +663,48 @@ class TestThePlannedTier:
         three-bucket reservation the grid already shows rather than a second
         copy of the formula.
 
-        A $200.00 grocery envelope with one CLEARED $120.00 debit purchase
-        (2026-04-01) holds back ``max(200.00 - 120.00 - 0, 0) = 80.00``: the
-        cleared debit has already left, so only the unreconciled remainder is
-        still to come.  Hand-computed: $1,000.00 on 04-04 and $920.00 from
-        04-05.  A fold valuing the row at ``effective_amount`` would answer
-        $800.00 and fail.
+        A $200.00 grocery envelope with one $120.00 debit purchase made and
+        posted 2026-03-19, against a balance the user declared for that same
+        day, holds back ``max(200.00 - 120.00 - 0, 0) = 80.00``: the posted
+        debit is already inside the declared balance, so only the unreconciled
+        remainder is still to come.  Hand-computed: $1,000.00 on 04-04 and
+        $920.00 from 04-05 (the envelope is due 04-05 and the reader's as_of
+        is 03-20, so ruling R-G's clamp is a no-op).  A fold valuing the row
+        at ``effective_amount`` would answer $800.00 and fail.
+
+        **The opening assertion is dated 03-19 rather than 01-01, and that is
+        finding N-132 / R8 from a third direction** (plan step S1-c,
+        Section 13.1).  The retired ``is_cleared`` flag let this fixture claim
+        the purchase was inside an anchor asserted three months EARLIER -- a
+        state production cannot reach, because the way a purchase gets inside a
+        declared balance is that the user declared the balance after it posted.
+
+        **Every date here sits at or before this suite's frozen today
+        (2026-03-20), and that is the OTHER half of the same rule.**  The first
+        conversion moved the assertion FORWARD to 04-01 to cover an 04-01
+        purchase, which is unreachable in the opposite direction:
+        ``account_service._reject_undatable_observation`` refuses an
+        ``observed_on`` after the user's today, and R-M refuses a
+        ``purchased_on`` after it.  ``mark_purchase_settled`` now checks both
+        bounds and named that fixture, which is why the SCENARIO moved back
+        rather than the assertion moving further out.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        _opened_at(account, _instant(2026, 1, 1))
+        _opened_at(account, _instant(2026, 3, 19))
         txn = create_envelope_txn(
             seed_user, db.session, seed_periods[6], "Groceries",
             Decimal("200.00"),
         )
         txn.due_date = date(2026, 4, 5)
-        db.session.add(TransactionEntry(
-            transaction_id=txn.id,
-            user_id=seed_user["user"].id,
-            amount=Decimal("120.00"),
-            description="purchase",
-            entry_date=date(2026, 4, 1),
-            is_credit=False,
-            is_cleared=True,
-        ))
+        add_entry(
+            db.session, seed_user, txn, Decimal("120.00"), date(2026, 3, 19),
+        )
+        mark_purchase_settled(db.session, account, txn.entries[0])
         db.session.commit()
 
         folded = _fold(account, scenario, [
             date(2026, 4, 4), date(2026, 4, 5),
-        ], as_of=date(2026, 4, 2))
+        ], as_of=date(2026, 3, 20))
         assert folded[date(2026, 4, 4)] == Decimal("1000.00")
         assert folded[date(2026, 4, 5)] == Decimal("920.00")
 
@@ -699,17 +714,36 @@ class TestThePlannedTier:
         """RULED (R-M) and pinned: what a row is WORTH is not a function of *as_of*.
 
         The firing control for plan step X-c2c1's deletion, and the negative
-        twin of the test above.  The SAME envelope and the same $120.00 cleared
-        purchase, moved to 2026-04-06 -- four days AFTER the reader's ``as_of``
-        of 2026-04-02 -- must reduce the reservation identically: the fold reads
-        ``max(200.00 - 120.00 - 0, 0) = 80.00`` and answers the same $920.00 on
-        04-05 that the entry dated 04-01 produces.
+        twin of the test above.  The SAME envelope and the same $120.00
+        purchase, read at an ``as_of`` of 2026-03-10 -- NINE DAYS BEFORE the
+        purchase was made -- must reduce the reservation identically: the fold
+        reads ``max(200.00 - 120.00 - 0, 0) = 80.00`` and answers the same
+        $920.00 on 04-05 that the test above produces.
+
+        **The reader's clock moves, not the purchase's dates, and that is what
+        makes the fixture reachable.**  The property is that a row's WORTH is
+        independent of the reader's ``as_of``; the earlier form got the same
+        separation by dating the purchase into the app's future, which BOTH
+        write doors refuse (R-M on ``purchased_on``,
+        ``_reject_undatable_observation`` on the assertion covering it).
+        Sliding the READER backwards is the same experiment on a state
+        production can actually hold.
+
+        **The purchase must be in the SETTLED bucket for this to discriminate**
+        (plan step S1-c).  An OUTSTANDING purchase is worth
+        ``max(200 - 0 - 0, 120) = 200`` -- which is exactly what a
+        re-introduced window would also answer, by dropping the entry and
+        falling through the empty-entries short circuit to
+        ``effective_amount``.  The two would be indistinguishable and the test
+        would be over-determined (finding N-69's shape).  Only the settled
+        bucket separates them, so the account asserts a balance covering the
+        purchase and ``mark_purchase_settled`` checks that it does.
 
         This was finding N-39, and it was a genuine three-way fork: the retired
         calendar scalar windowed entries by the reader's now while the grid and
         the daily ramp did not, so the fold had to pick one.  Ruling R-M closed
         it at the SOURCE instead of picking -- plan step X-c0 refuses
-        ``entry_date > display_today()`` at both write doors, so no stored entry
+        ``purchased_on > display_today()`` at both write doors, so no stored entry
         can be dated after any reader's now and the window provably dropped
         nothing.  What it could still have done is fire on a HISTORICAL read,
         whose plan is TODAY's still-Projected rows clamped forward (ruling R-G)
@@ -721,25 +755,21 @@ class TestThePlannedTier:
         restoring it answers $800.00 here.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        _opened_at(account, _instant(2026, 1, 1))
+        _opened_at(account, _instant(2026, 3, 19))
         txn = create_envelope_txn(
             seed_user, db.session, seed_periods[6], "Groceries",
             Decimal("200.00"),
         )
         txn.due_date = date(2026, 4, 5)
-        db.session.add(TransactionEntry(
-            transaction_id=txn.id,
-            user_id=seed_user["user"].id,
-            amount=Decimal("120.00"),
-            description="purchase",
-            entry_date=date(2026, 4, 6),
-            is_credit=False,
-            is_cleared=True,
-        ))
+        add_entry(
+            db.session, seed_user, txn, Decimal("120.00"), date(2026, 3, 19),
+        )
+        mark_purchase_settled(db.session, account, txn.entries[0])
         db.session.commit()
 
+        # The purchase (03-19) is NINE DAYS after the reader's as_of.
         folded = _fold(account, scenario, [date(2026, 4, 5)],
-                       as_of=date(2026, 4, 2))
+                       as_of=date(2026, 3, 10))
         assert folded[date(2026, 4, 5)] == Decimal("920.00")
 
 
@@ -1265,7 +1295,7 @@ class TestTheDriftOracleWalksFiftyTwoPeriods:
     BOTH tests: the assertion no longer resetting the walked total
     (``cash_ledger._walk``); the planned tier never merging into the running
     steps; the closing-balance partition re-keyed onto the INSTANT
-    (``cash_ledger._events.merge_anchor_and_cash_events``) -- the control that
+    (``cash_ledger.ReconciledThrough.covers``) -- the control that
     ran the other way until ruling R-DH (a), and still fires, because period 13
     is built to separate the two rules; ruling R-G's clamp
     deleted; its floor off by one (``not_before = as_of``); the map sampling

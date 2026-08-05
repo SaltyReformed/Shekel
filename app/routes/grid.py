@@ -253,7 +253,8 @@ def _build_grid_view(account, balance_ctx, all_periods):
     :func:`app.services.balance_at.grid_balance_view`, which returns ONE
     :class:`~app.services.balance_at.GridColumn` per period carrying every
     figure the grid renders for it -- the projected end balance, the income /
-    expense / net subtotals, ruling R-K's "Timing & true-ups" remainder, and
+    expense / net subtotals, ruling R-K's two remainders ("Period timing" and
+    "Book vs bank", split at ruling R-DH (f)), and
     the two modelled tiers (the contribution and the accrual, rendered as their
     own conditional rows and labelled per kind by :func:`_accrual_row_label`).
 
@@ -908,7 +909,8 @@ def subtotal_rows():
 
     # The same column set the grid index route and the balance row read --
     # never a re-derived inline loop -- so ``balance[p] - balance[p-1] ==
-    # net[p] + reconciliation[p] + contribution[p] + accrual[p]`` keeps holding
+    # net[p] + period_timing[p] + book_vs_bank[p] + contribution[p] +
+    # accrual[p]`` keeps holding
     # across the live swap because both sides are the same rows (E-25 /
     # Commit 10, rulings R-K / R-AH).  The window is the whole anchor-forward
     # set for the same reason

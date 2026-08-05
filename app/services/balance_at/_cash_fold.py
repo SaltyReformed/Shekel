@@ -29,13 +29,19 @@ branch.**  Every date is answered off a single running total
 **Three readers of that ONE row set** (plan steps X-c1 / X-c2b2, ruling R-K).
 :func:`fold_cash_balances` samples the running total at a list of dates -- the
 balance a scalar or a daily series asks for.  :func:`cash_period_balances`
-samples it at each pay period's end -- the per-period map.
-:func:`cash_period_view` samples the same period ends AND groups the very same
-rows a second way, by the period each was BUDGETED to, so the grid's balance row
-and its subtotal rows reconcile by construction with a named remainder for what
+samples it at each pay period's end -- the per-period map.  And
+:mod:`._cash_periods` samples the same period ends AND groups the very same rows
+a second way, by the period each was BUDGETED to, so the grid's balance row and
+its subtotal rows reconcile by construction with named remainders for what
 neither clock alone can explain.  The assembly is shared rather than duplicated
 (:func:`assemble`): one walk, one plan load, one valuation, whichever reader is
 asking.
+
+**The third reader lives in its own module since plan step S1-c**, when ruling
+R-DH (f) split its remainder in two and this one passed the 1,000-line ceiling.
+Assembling a running total and regrouping it into columns are two jobs sharing
+exactly one input (:class:`AssembledCashFold`), and the dependency runs one way:
+:mod:`._cash_periods` imports this and this imports nothing of it.
 
 Keeping it to one sample is not economy, it is the correctness property: a fold
 assembled from a past producer spliced to a future producer needs a rule for the
@@ -89,7 +95,6 @@ Boundary discipline (``CLAUDE.md``): no Flask symbol, no writes; all money is
 :class:`~decimal.Decimal`.
 """
 
-from bisect import bisect_right
 from collections import OrderedDict, defaultdict
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -100,6 +105,7 @@ from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.services.cash_ledger import (
     CashLedgerWalk,
+    ProjectedBasis,
     dated_deltas,
     live_amount_overrides,
     planned_cash_rows,
@@ -107,7 +113,6 @@ from app.services.cash_ledger import (
     walk_cash_ledger,
 )
 from app.utils.dates import attribution_date
-from app.utils.money import round_money
 
 from ._fold import sample_cumulative
 
@@ -189,7 +194,12 @@ def assemble(
         The :class:`AssembledCashFold`.
     """
     walk = walk_cash_ledger(account.id, scenario_id)
-    plan = _cash_plan(account, scenario_id, as_of)
+    # The walk comes FIRST and is handed to the plan load: a projected
+    # envelope's reservation is valued against the account's latest asserted
+    # day (ruling R-DH (d)), and taking that day off the walk this same call
+    # already built is what makes the plan and the assertion history one
+    # reading of one account rather than two lookups that can disagree.
+    plan = _cash_plan(account, scenario_id, as_of, walk)
     day_nets = _planned_day_nets(plan)
     seed, steps = _running_steps(walk, day_nets)
     return AssembledCashFold(
@@ -415,20 +425,30 @@ class _CashPlan:
             the scenario, unwindowed (:func:`~app.services.cash_ledger.planned_cash_rows`).
         by_day: The same rows keyed by the day each LANDS on (ruling R-G's
             clamp) -- the cash clock.  Empty when the account has no plan.
-        overrides: The live ``{transaction_id: Decimal}`` map, built ONCE over
-            the whole plan and threaded into every reduction (the established
-            build-once-and-thread pattern): each seam picks its own candidates
-            and both filter to ``is_projected``, so a map built over the plan
-            alone is identical on every key that can matter.
+        basis: The account's
+            :class:`~app.services.cash_ledger.ProjectedBasis` -- the live
+            ``{transaction_id: Decimal}`` override map plus the day through
+            which the account's purchases are reconciled -- built ONCE over the
+            whole plan and threaded into every reduction (the established
+            build-once-and-thread pattern).  For the override half: each seam
+            picks its own candidates and both filter to ``is_projected``, so a
+            map built over the plan alone is identical on every key that can
+            matter.  For the reconciled half: it comes off the SAME walk this
+            record is assembled beside, so the plan and the assertion history
+            it is valued against are two readings of one account by
+            construction rather than two arguments a caller could mismatch.
     """
 
     rows: "list[Transaction]"
     by_day: "dict[date, list[Transaction]]"
-    overrides: "dict[int, Decimal]"
+    basis: ProjectedBasis
 
 
 def _cash_plan(
-    account: Account, scenario_id: int, as_of: date,
+    account: Account,
+    scenario_id: int,
+    as_of: date,
+    walk: CashLedgerWalk,
 ) -> _CashPlan:
     """Load the account's plan and key each row onto the day it lands on.
 
@@ -453,20 +473,41 @@ def _cash_plan(
     were attributed to -- and re-loading them for that would be two answers to
     "what is in this account's plan" a day apart from each other.
 
+    **The reconciled-through day comes off the WALK, not off a second query**
+    (plan step S1-c).  A projected envelope's reservation must know which of
+    its purchases the account's latest asserted balance already contains, and
+    that boundary is :attr:`~app.services.cash_ledger.CashLedgerWalk.reconciled_through`
+    -- read off the facts :func:`assemble` has already loaded.  Taking it from
+    the walk rather than resolving the anchor again is the same
+    one-assembly discipline ``_asset_fold`` follows for its accrual window: two
+    lookups of "the account's latest assertion" is two things that can come to
+    disagree, and plan step 2 made ``observed_on`` user-supplied, which is
+    exactly when they would.
+
     Args:
         account: The account whose plan to load (its ``user_id`` scopes the live
             salary override).
         scenario_id: The budget scenario the rows live in.
         as_of: The reader's NOW -- the floor ruling R-G clamps a landing day up
             to.
+        walk: The account's :class:`~app.services.cash_ledger.CashLedgerWalk`,
+            already assembled -- the source of the reconciled-through day.
 
     Returns:
         The account's :class:`_CashPlan`; its ``rows`` and ``by_day`` are empty
-        for an account with no plan.
+        for an account with no plan, and its ``basis`` still carries the
+        account's reconciled-through day so the record is self-describing
+        either way.
     """
+    reconciled_through = walk.reconciled_through
     rows = planned_cash_rows(account.id, scenario_id)
     if not rows:
-        return _CashPlan(rows=[], by_day={}, overrides={})
+        return _CashPlan(
+            rows=[], by_day={},
+            basis=ProjectedBasis(
+                amount_overrides={}, reconciled_through=reconciled_through,
+            ),
+        )
 
     not_before = as_of + _ONE_DAY
     by_day: "dict[date, list[Transaction]]" = defaultdict(list)
@@ -479,7 +520,12 @@ def _cash_plan(
     return _CashPlan(
         rows=rows,
         by_day=dict(by_day),
-        overrides=live_amount_overrides(account, scenario_id, rows),
+        basis=ProjectedBasis(
+            amount_overrides=live_amount_overrides(
+                account, scenario_id, rows,
+            ),
+            reconciled_through=reconciled_through,
+        ),
     )
 
 
@@ -523,439 +569,6 @@ def _planned_day_nets(plan: _CashPlan) -> "dict[date, Decimal]":
     """
     nets: "dict[date, Decimal]" = {}
     for day, txns in plan.by_day.items():
-        income, expense = sum_projected(txns, plan.overrides)
+        income, expense = sum_projected(txns, plan.basis)
         nets[day] = income - expense
     return nets
-
-
-@dataclass(frozen=True)
-class CashPeriodFigures:
-    """One pay period's cash column: the balance, the subtotals, the remainder.
-
-    The per-period output of :func:`cash_period_view`, and the three grid rows
-    ruling R-K makes ONE row set grouped two ways.  For every period and every
-    account kind, in terms of :attr:`balance` below::
-
-        balance(p.end) - balance(p.start - 1 day) == net + reconciliation
-
-    (the boundary form, so the FIRST period is covered too -- it has no
-    predecessor column to subtract).  That identity is a property of the
-    construction, not a coincidence: :attr:`net` sums the rows attributed to the
-    period on the BUDGET clock, :attr:`reconciliation` is what the same rows and
-    the same assertions contribute on the CASH clock MINUS that budget sum, and
-    the balances are the fold of those very steps.  Verified on the prod-shape
-    clone 2026-07-25 over 360 (account, period) pairs -- 6 non-loan accounts x
-    60 periods -- with zero breaks.
-
-    An INTEREST account's modelled accrual is NOT in :attr:`balance` (this is
-    the kind-blind CASH-FLOW view), so a grid layering it back on adds R-K's
-    third term and reads
-    ``balance[p] - balance[p-1] == net[p] + reconciliation[p] + increments[p]``.
-
-    Attributes:
-        balance: The fold's balance at the period's ``end_date``, cent-quantized
-            -- assertions replayed, settled cash counted from the day it moved,
-            and the still-projected plan clamped forward (ruling R-G).
-        income: Every row ATTRIBUTED to this period whose type is income --
-            settled at its confirmed cash leg, still-projected at its live or
-            entries-aware amount.  A magnitude, cent-quantized.
-        expense: The same, for expense rows.  A magnitude (positive), so the
-            column reads ``income`` minus ``expense``.
-        net: ``round_money(income - expense)`` -- rounded ONCE at the boundary
-            rather than as the difference of two separately-rounded legs, the
-            same discipline :class:`~app.services.cash_ledger.PeriodSubtotal`
-            keeps and for the same reason: it is the figure the balance
-            roll-forward has to reconcile with.
-        reconciliation: What the two subtotal rows cannot explain about the
-            balance change: money BUDGETED here that moved in another period (or
-            has not moved yet), money that MOVED here but is budgeted elsewhere,
-            and the balance ASSERTIONS the user made inside the period.  Zero for
-            a period where every row settled in its own column and nobody
-            re-anchored -- which is every FUTURE period, so the row is
-            conditional on screen.
-    """
-
-    balance: Decimal
-    income: Decimal
-    expense: Decimal
-    net: Decimal
-    reconciliation: Decimal
-
-
-@dataclass(frozen=True)
-class CashPeriodView:
-    """A whole account's cash columns, and the income basis they were valued on.
-
-    The output of :func:`cash_period_view`.  The override map rides on the
-    result rather than being the caller's ARGUMENT (ruling R-Q): it is what the
-    projection was actually computed with, so a consumer that renders the
-    individual rows beside the columns -- the budget grid -- prices each row off
-    the same map its balance row folded, BY CONSTRUCTION.  Passing it in was the
-    only way for the two to disagree, and an argument a caller can get wrong is a
-    defect rather than a contract (plan Section 8).
-
-    Attributes:
-        columns: ``OrderedDict`` period id -> :class:`CashPeriodFigures`, in the
-            order the caller's *periods* were given.  Every input period is
-            present.
-        amount_overrides: The live ``{transaction_id: Decimal}`` map the
-            still-Projected rows were valued through -- recomputed salary income
-            and derived loan debits.  ``{}`` for an account with no plan.
-    """
-
-    columns: "OrderedDict[int, CashPeriodFigures]"
-    amount_overrides: "dict[int, Decimal]"
-
-
-def cash_period_view(
-    account: Account,
-    scenario_id: int,
-    as_of: date,
-    periods: "list[PayPeriod]",
-) -> CashPeriodView:
-    """Return the account's cash column for each of *periods* -- ruling R-K.
-
-    ONE valued row set, grouped on TWO clocks, plus the assertion steps.  The
-    same walk and the same plan :func:`fold_cash_balances` folds are grouped here
-    a second way -- by the pay period each row was BUDGETED to -- so the grid's
-    balance row and its subtotal rows stop being two producers that a test has to
-    keep in step and become two readings of one set.
-
-    **Why the subtotals had to change basis, measured.**  Today's subtotal counts
-    only rows that are still UNPAID (``cash_ledger.sum_projected`` filters through
-    ``is_projected``), while a balance folded from the facts counts money that
-    MOVED.  On the real Checking account that identity breaks on 8 of 59 period
-    pairs -- worst ``$2,505.17`` -- and every past column reads ``$0.00`` income
-    and ``$0.00`` expenses while thousands of dollars moved through it
-    (finding N-41).  So :attr:`~CashPeriodFigures.income` /
-    :attr:`~CashPeriodFigures.expense` count EVERY row attributed to the period,
-    which is budget-vs-actual and fixes the ``$0.00`` past columns as a side
-    effect.  Verified on the prod-shape clone 2026-07-25: the eight past columns
-    go from ``$0.00`` to real figures, the current column from ``-$140.63`` to
-    ``$3,153.22``, and every FUTURE column is unchanged to the cent (nothing has
-    settled there, so the two bases coincide).
-
-    **What the remainder holds, and why it is one row.**  Three things the
-    subtotal rows structurally cannot say: a row that settled outside its own pay
-    period (19 of the real account's 130 settled rows; nets to ``$0.00`` across
-    history and swings to ``-$2,007.46`` inside one period), a still-projected row
-    ruling R-G clamped forward out of its column, and the balance ASSERTIONS (51
-    after the opening on the real account, ``-$2,906.31`` net).  Rejected at the
-    ruling: leaving the subtotals unpaid-only, which turns this row into a garbage
-    bucket holding all real past activity, and shipping no remainder row at all,
-    which leaves a visible contradiction on the screen.
-
-    **The OPENING assertion is not in it** (ruling R-I): the fold moves that one
-    correction into its seed -- back-projecting the first assertion over the
-    records it already contains -- so it moves no balance inside any period and
-    must not appear in a period's remainder either.
-
-    Kind-blind, exactly as the fold is (ruling R-J): this is the CASH-FLOW view,
-    whose balance has to reconcile with the transaction rows rendered beside it.
-    An INTEREST account's accrual is layered on ABOVE this by the grid view,
-    which is the ``+ increments[p]`` term of R-K's identity.
-
-    Args:
-        account: The account to project.  Must be attached to ``db.session``;
-            its kind is not consulted.
-        scenario_id: The budget scenario whose rows to group.
-        as_of: The reader's NOW (ruling R-G's clamp floor) -- NOT a valuation
-            date; each period is valued at its own ``end_date``.
-        periods: The pay periods to report, in the caller's display order.  They
-            need not be contiguous and need not start at the account's anchor:
-            each period's figures are read off its OWN span, so a window is a
-            window rather than a re-based projection.
-
-    Returns:
-        The :class:`CashPeriodView`: one :class:`CashPeriodFigures` per input
-        period (a period with no rows and no assertions reports zeros against
-        its folded balance), plus the live override map the projection was
-        computed with.
-    """
-    return period_view_of(assemble(account, scenario_id, as_of), periods)
-
-
-def period_view_of(
-    folded: AssembledCashFold, periods: "list[PayPeriod]",
-) -> CashPeriodView:
-    """Regroup an ALREADY-assembled fold into its per-period columns.
-
-    :func:`cash_period_view`'s body, split from its assembly so a reader that
-    needs the cash columns AND something else off the same account pays for ONE
-    walk, ONE plan load and ONE valuation rather than two (plan step X-g2a).
-    The grid is that reader: from plan step X-g2b it renders the modelled
-    balance -- :func:`app.services.balance_at._asset_fold.resolve` over this very
-    :class:`AssembledCashFold` -- beside the budget-clock subtotals this returns,
-    and calling both entry points would have assembled the account twice.
-
-    Taking the assembled record rather than the account is what makes the
-    sharing STRUCTURAL: the columns and whatever the caller resolves beside them
-    are readings of one valued row set by construction, not two producers that a
-    test keeps in step.
-
-    Args:
-        folded: The account's :class:`AssembledCashFold` (:func:`assemble`).
-        periods: The pay periods to report, in the caller's display order.  See
-            :func:`cash_period_view` for the windowing contract.
-
-    Returns:
-        The :class:`CashPeriodView`.
-    """
-    spans = _PeriodSpans.of(periods)
-    return CashPeriodView(
-        columns=_assemble_figures(
-            periods,
-            _period_balances(folded, periods),
-            _budget_legs(folded.walk, folded.plan, spans),
-            _cash_sums(folded.walk, folded.day_nets, spans),
-            _assertion_sums(folded.walk, spans),
-        ),
-        amount_overrides=folded.plan.overrides,
-    )
-
-
-@dataclass(frozen=True)
-class _PeriodSpans:
-    """The reported periods, indexed for "which column does this day fall in".
-
-    The CASH clock's grouping key.  A day is answered by the period whose
-    ``[start_date, end_date]`` span CONTAINS it, and by nothing otherwise -- no
-    nearest-period fallback, deliberately.  The seam's
-    :func:`~app.services.loan_ledger.find_period_containing_date` does fall back
-    to the latest period that ENDED before the target, which is right for the
-    question it answers (an anchor correction needs a home period, and
-    ``journal_entries.pay_period_id`` is NOT NULL) and wrong for this one: the
-    identity this index serves reads a period's balance change as the steps
-    inside its own span, so a step in a gap or past the horizon belongs to NO
-    column and must not be pulled into the previous one.
-
-    Pay periods do not overlap -- the generator rejects a batch whose earliest
-    start falls on or before the latest existing ``end_date``, because two
-    periods covering one day also make ``get_current_period`` nondeterministic --
-    so the latest period STARTING on or before a day is the only candidate that
-    can contain it, and one bisect answers.
-
-    Attributes:
-        starts: The periods' ``start_date`` values, ascending -- the bisect key.
-        periods: The same periods in that ascending order.
-    """
-
-    starts: "list[date]"
-    periods: "list[PayPeriod]"
-
-    @classmethod
-    def of(cls, periods: "list[PayPeriod]") -> "_PeriodSpans":
-        """Index *periods* by start date (the caller's order is not assumed).
-
-        Args:
-            periods: The pay periods to report, in any order.
-
-        Returns:
-            The :class:`_PeriodSpans` index.
-        """
-        ordered = sorted(periods, key=lambda period: period.start_date)
-        return cls(
-            starts=[period.start_date for period in ordered], periods=ordered,
-        )
-
-    def containing(self, day: date) -> "int | None":
-        """Return the id of the period whose span contains *day*, else ``None``.
-
-        Args:
-            day: The calendar day to place.
-
-        Returns:
-            The containing period's id, or ``None`` when *day* falls in a gap,
-            before the first reported period, or after the last one's end.
-        """
-        index = bisect_right(self.starts, day) - 1
-        if index < 0:
-            return None
-        period = self.periods[index]
-        return period.id if day <= period.end_date else None
-
-    def zeroed(self) -> "dict[int, Decimal]":
-        """Return a ``{period_id: 0.00}`` accumulator over every reported period.
-
-        Returns:
-            One zero per reported period, so a component's dict is TOTAL over
-            the window and a period with nothing in it reads ``0.00`` rather
-            than being missing.
-        """
-        return {period.id: _ZERO_MONEY for period in self.periods}
-
-
-def _budget_legs(
-    walk: CashLedgerWalk,
-    plan: _CashPlan,
-    spans: _PeriodSpans,
-) -> "dict[int, tuple[Decimal, Decimal]]":
-    """Return ``{period_id: (income, expense)}`` on the BUDGET clock.
-
-    Every row ATTRIBUTED to a reported period, whatever day its money moved:
-    settled rows at the confirmed cash leg the walk already valued them at, and
-    still-projected rows at the shared ``sum_projected`` reduction -- the same
-    engine :func:`_planned_day_nets` reduces the same rows through on the other
-    clock, which is why the two groupings reconcile to the cent.
-
-    The income / expense split follows the transaction TYPE
-    (:attr:`~app.services.cash_ledger.CashSourceFact.is_income`), never the sign
-    of the row's value, and the difference is observable: a settled expense whose
-    ``actual_amount`` was corrected BELOW its credit-card entries has a POSITIVE
-    cash leg (it nets money back into checking) and still belongs on the expense
-    row, as a negative expense.  An expense that came back is not income.  The
-    net and the balance agree either way, which is exactly why the shape is
-    pinned -- it is the only one that can tell the two rules apart, and without
-    it this classification would be an untested claim
-    (``test_cash_period_view.py``:
-    ``test_a_row_counts_on_its_TYPE_row_even_when_its_cash_leg_inverts``).
-
-    Args:
-        walk: The account's walk -- its settled facts carry both clocks.
-        plan: The account's :class:`_CashPlan`.
-        spans: The reported periods.
-
-    Returns:
-        ``{period_id: (income, expense)}`` -- both magnitudes, UNROUNDED (the
-        caller rounds once at the boundary), and total over the window.
-    """
-    income = spans.zeroed()
-    expense = spans.zeroed()
-    for fact in walk.source_facts:
-        if fact.pay_period_id not in income:
-            continue
-        if fact.is_income:
-            income[fact.pay_period_id] += fact.delta
-        else:
-            # A settled expense's leg is NEGATIVE (money left), and the expense
-            # row on screen is a magnitude.
-            expense[fact.pay_period_id] -= fact.delta
-    by_period: "dict[int, list[Transaction]]" = defaultdict(list)
-    for txn in plan.rows:
-        if txn.pay_period_id in income:
-            by_period[txn.pay_period_id].append(txn)
-    for period_id, txns in by_period.items():
-        projected_income, projected_expense = sum_projected(txns, plan.overrides)
-        income[period_id] += projected_income
-        expense[period_id] += projected_expense
-    return {
-        period_id: (income[period_id], expense[period_id])
-        for period_id in income
-    }
-
-
-def _cash_sums(
-    walk: CashLedgerWalk,
-    day_nets: "dict[date, Decimal]",
-    spans: _PeriodSpans,
-) -> "dict[int, Decimal]":
-    """Return ``{period_id: net}`` on the CASH clock -- what MOVED in the period.
-
-    The same rows :func:`_budget_legs` groups by budget column, grouped instead
-    by the day each one's money moves: a settled row on the civil day its
-    attribution instant fell on, a planned row on the day ruling R-G lands it.
-    Assertions are NOT here -- they are :func:`_assertion_sums`, because an
-    assertion is not a row.
-
-    Args:
-        walk: The account's walk.
-        day_nets: The plan's per-day nets (:func:`_planned_day_nets`).
-        spans: The reported periods.
-
-    Returns:
-        ``{period_id: net}`` -- signed, UNROUNDED, total over the window.
-    """
-    moved = spans.zeroed()
-    for fact in walk.source_facts:
-        period_id = spans.containing(fact.settled_on)
-        if period_id is not None:
-            moved[period_id] += fact.delta
-    for day, net in day_nets.items():
-        period_id = spans.containing(day)
-        if period_id is not None:
-            moved[period_id] += net
-    return moved
-
-
-def _assertion_sums(
-    walk: CashLedgerWalk, spans: _PeriodSpans,
-) -> "dict[int, Decimal]":
-    """Return ``{period_id: correction}`` -- what the user's true-ups booked.
-
-    Every assertion correction EXCEPT the opening's, on the civil day it was
-    asserted.  The opening is excluded because ruling R-I moves it into the
-    fold's seed (:func:`_actual_steps`), where it back-projects over the records
-    it already contains rather than stepping the balance on its own day; counting
-    it here would put a jump in a column the balance never took.
-
-    The slice is the exact COMPLEMENT of :func:`_actual_steps`' ``[0]``, and
-    that is why it is a slice rather than a second ``is_opening`` test: two
-    independent predicates could come to disagree about which correction the
-    seed swallowed, while ``[0]`` and ``[1:]`` partition the list by
-    construction.
-
-    Args:
-        walk: The account's walk.  Its ``anchor_corrections`` are chronological
-            and the FIRST is the opening (the leaf's own contract).
-        spans: The reported periods.
-
-    Returns:
-        ``{period_id: correction}`` -- signed, UNROUNDED, total over the window.
-    """
-    asserted = spans.zeroed()
-    for correction in walk.anchor_corrections[1:]:
-        period_id = spans.containing(correction.observed_on)
-        if period_id is not None:
-            asserted[period_id] += correction.delta
-    return asserted
-
-
-def _assemble_figures(
-    periods: "list[PayPeriod]",
-    balances: "OrderedDict[int, Decimal]",
-    legs: "dict[int, tuple[Decimal, Decimal]]",
-    moved: "dict[int, Decimal]",
-    asserted: "dict[int, Decimal]",
-) -> "OrderedDict[int, CashPeriodFigures]":
-    """Combine the three groupings into one :class:`CashPeriodFigures` per period.
-
-    The remainder is computed HERE and directly -- ``what moved in the column``
-    minus ``what was budgeted to it``, plus the assertions -- rather than as the
-    leftover of the fold's balance change.  That distinction is the step's whole
-    verification standard: a remainder defined as ``balance_delta - net`` makes
-    the identity arithmetically true and therefore untestable, and it would
-    silently ABSORB a row the budget grouping got wrong.  Computed from the row
-    set, the identity is a claim the fold can falsify (Section 7.2).
-
-    Rounding is once at the boundary, on the same discipline
-    :class:`~app.services.cash_ledger.PeriodSubtotal` keeps: every leg reaching
-    this point is already cent-quantized (stored ``Numeric(12,2)`` columns, and
-    both live-override seams return ``round_money``), so the rounding is a no-op
-    on real data and the identity holds on the DISPLAYED figures, not merely on
-    the raw ones.
-
-    Args:
-        periods: The pay periods to report, in display order.
-        balances: The fold sampled at every period ``end_date``, keyed by
-            period id (:func:`_period_balances`).
-        legs: The budget-clock ``(income, expense)`` per period.
-        moved: The cash-clock net per period.
-        asserted: The assertion corrections per period.
-
-    Returns:
-        ``OrderedDict`` period id -> :class:`CashPeriodFigures`.
-    """
-    figures: "OrderedDict[int, CashPeriodFigures]" = OrderedDict()
-    for period in periods:
-        income, expense = legs[period.id]
-        net = income - expense
-        figures[period.id] = CashPeriodFigures(
-            balance=balances[period.id],
-            income=round_money(income),
-            expense=round_money(expense),
-            net=round_money(net),
-            reconciliation=round_money(
-                moved[period.id] - net + asserted[period.id],
-            ),
-        )
-    return figures

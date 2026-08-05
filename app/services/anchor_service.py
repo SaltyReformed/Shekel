@@ -16,11 +16,22 @@ Its transactional core:
   1. Mutate ``account.current_anchor_balance`` and
      ``current_anchor_period_id``.
   2. Append an ``AccountAnchorHistory`` row.
-  3. When the account is checking, bulk-clear past-dated entries on
-     projected parents (the entry-reconcile contract -- see
-     ``entry_service.clear_entries_for_anchor_true_up`` for the
-     rationale).
-  4. Commit.
+  3. Commit.
+
+**Step 3 used to be a bulk-clear of entry flags, and its deletion is ruling
+R-DH (d)** (``docs/audits/balance_architecture/anchor_settle_partition.md``,
+plan step S1-c).  A true-up flipped ``is_cleared = TRUE`` on every entry dated
+on or before the SERVER's today, so whether a purchase counted as already
+inside the asserted balance depended on the order two buttons were pressed:
+record the purchase then true up and it cleared, true up then record and it
+never did.  There is no flag to write now -- reconciliation is derived from the
+purchase's own recorded posting day -- so the true-up mutates the account and
+its history and nothing else.  Confirming which outstanding purchases the
+statement showed is a SEPARATE, user-driven step
+(``entry_service.record_settled_days``) that the route offers after this commit
+lands; keeping it out of this transaction is deliberate, because a same-day
+re-assert is swallowed here as idempotent success and any reconciliation riding
+along would be silently rolled back with it.
 
 The loan-anchor path -- :func:`apply_loan_anchor_true_up` -- backs
 the loan dashboard's "Record loan balance as of date D" form.  It
@@ -52,17 +63,21 @@ Two failure modes are part of the contract:
     plan; the SQLAlchemy-tier check here covers the truly-concurrent
     interleavings the form-side check cannot see.
 
-  * **F-103 / C-22 same-day same-balance idempotency.** The partial
-    unique expression index
-    ``uq_anchor_history_account_period_balance_day`` on
-    ``(account_id, pay_period_id, anchor_balance,
-    ((created_at AT TIME ZONE 'UTC')::date))`` rejects a second history
-    INSERT with identical values inserted on the same calendar day --
-    a network retry, a double-click on Save, or a back-and-resubmit.
+  * **F-103 / C-22 same-day same-balance idempotency.** The unique
+    index ``uq_anchor_history_account_period_balance_day`` on
+    ``(account_id, pay_period_id, anchor_balance, observed_on)``
+    rejects a second history INSERT asserting the same balance for the
+    same BUSINESS day -- a network retry, a double-click on Save, or a
+    back-and-resubmit.
     We translate that ``IntegrityError`` into ``DUPLICATE_SAME_DAY``
     so the caller renders an idempotent success (the prior request
     committed the same value the current request was trying to
-    submit).  The loan path uses the analogous expression index
+    submit).  Its last column was ``((created_at AT TIME ZONE
+    'UTC')::date)`` until ``observed_on`` existed, which keyed the guard
+    to a UTC day while ruling R-DH's day is the user's -- so two
+    assertions on two different Eastern days sharing one UTC day were
+    rejected as duplicates (finding N-133 / F12).  The loan path uses
+    the analogous expression index
     ``uq_loan_anchor_events_acct_date_bal_day`` covering
     ``(account_id, anchor_date, anchor_balance,
     ((created_at AT TIME ZONE 'UTC')::date))`` -- mirrors the checking
@@ -104,27 +119,30 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
 
 from app import ref_cache
-from app.enums import AcctTypeEnum, LoanAnchorSourceEnum
+from app.enums import LoanAnchorSourceEnum
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.models.loan_anchor_event import LoanAnchorEvent
 from app.models.pay_period import PayPeriod
 from app.services import (
     account_posting_service,
-    entry_service,
     loan_posting_service,
 )
+from app.utils.dates import display_today
 from app.utils.db_errors import is_unique_violation
 
 
 logger = logging.getLogger(__name__)
 
 
-# Name of the partial unique expression index that backstops the F-103
-# / C-22 same-day same-balance idempotency rule.  Mirrors the literal
-# in ``app/models/account.py:AccountAnchorHistory.__table_args__``
-# and ``migrations/versions/e8b14f3a7c22_c22_idempotency_uniqueness_constraints.py``;
-# renaming the index requires a coordinated edit across all three sites.
+# Name of the unique index that backstops the F-103 / C-22 same-day
+# same-balance idempotency rule.  It keys ``(account_id, pay_period_id,
+# anchor_balance, observed_on)`` -- the BUSINESS day; it was a PARTIAL
+# EXPRESSION index on a UTC-day truncation of ``created_at`` until plan step 2
+# gave the row a stored day (finding N-133 / F12).  Mirrors the literal in
+# ``app/models/account.py:AccountAnchorHistory.__table_args__``, its creating
+# migration ``e8b14f3a7c22`` and its re-keying migration ``c4a19e7b2d80``;
+# renaming the index requires a coordinated edit across all four sites.
 ANCHOR_HISTORY_UNIQUE_INDEX = "uq_anchor_history_account_period_balance_day"
 
 
@@ -168,9 +186,11 @@ class AnchorTrueUpOutcome(enum.Enum):
             ``Account`` from the database (the in-memory mutations
             were discarded by the rollback) and renders the 409
             conflict partial.
-        DUPLICATE_SAME_DAY: The F-103 partial unique index rejected
-            the second INSERT for the same ``(account, period, balance,
-            UTC day)`` tuple; the session was rolled back.  Route
+        DUPLICATE_SAME_DAY: The F-103 unique index rejected the second
+            INSERT for the same ``(account, period, balance,
+            observed_on)`` tuple -- the same BUSINESS day, not the same
+            UTC recording day (finding N-133 / F12); the session was
+            rolled back.  Route
             treats this as idempotent success (the first request
             committed the same value the second was trying to submit)
             and renders the success partial without re-issuing the
@@ -237,6 +257,16 @@ def stage_anchor_true_up(
         account_id=account.id,
         pay_period_id=anchor_period.id,
         anchor_balance=new_balance,
+        # The civil day this balance is asserted TRUE for (ruling R-DH).  A
+        # true-up is the user reading their bank NOW, so it is today in the
+        # USER's zone -- not ``date.today()``, which is the server's UTC day
+        # and files an 8pm-Eastern true-up under tomorrow.  It is the same day
+        # ``cash_anchor_facts`` derived from ``created_at`` before the column
+        # existed, so this write moves no figure.  Plan step 2's remaining half
+        # (the true-up form's own date field) is what makes it user-supplied,
+        # exactly as ``account_service.create_account`` already takes it for an
+        # opening; the parameter arrives with that consumer, not before it.
+        observed_on=display_today(),
         notes=notes,
     ))
 
@@ -246,31 +276,33 @@ def apply_anchor_true_up(
     account: Account,
     new_balance: Decimal,
     anchor_period: PayPeriod,
-    user_id: int,
 ) -> AnchorTrueUpOutcome:
     """Apply an anchor balance true-up to ``account`` and commit.
 
     Stages the in-memory mutation and audit-trail history row via
-    :func:`stage_anchor_true_up`, reconciles past-dated entries when the
-    account is checking, and commits the transaction.  Returns an
-    :class:`AnchorTrueUpOutcome` discriminant the caller translates
-    into its rendered response.
+    :func:`stage_anchor_true_up`, re-bases the account's posted anchor
+    corrections, and commits.  Returns an :class:`AnchorTrueUpOutcome`
+    discriminant the caller translates into its rendered response.
 
-    The conditional ``entry_service.clear_entries_for_anchor_true_up``
-    call is wrapped in the same ``try`` as ``commit()`` for autoflush
-    ordering: the bulk ``UPDATE TransactionEntry`` issued there forces
-    a session autoflush of the pending ``Account`` mutation, and the
-    version-pinned WHERE on that UPDATE is what actually raises
-    ``StaleDataError`` for the truly-concurrent race.  Catching only
-    around ``commit()`` would let the autoflush error propagate as a
-    500 instead of a clean ``STALE_CONFLICT`` outcome.
+    **It touches no entry, and that is ruling R-DH (d).**  It used to bulk-flip
+    ``is_cleared`` on every entry dated on or before the server's today, which
+    made "is this purchase already inside the balance the user just typed"
+    an answer decided by the order two buttons were pressed.  The flag is
+    gone; reconciliation is derived from each purchase's own recorded posting
+    day.  Which outstanding purchases the statement actually showed is a
+    separate step the route offers AFTER this commit succeeds
+    (``entry_service.record_settled_days``) -- and it is deliberately not
+    folded in here, because the F-103 duplicate below is swallowed as
+    idempotent success after a ``rollback()``, so a reconciliation riding in
+    this transaction would be silently discarded while the UI reported a save.
 
-    Why entries clear on a checking true-up: the user is declaring
-    "my real checking is now $X" -- every past-dated debit purchase
-    recorded against a projected transaction is already in that
-    number, so flipping ``is_cleared = TRUE`` stops the balance
-    calculator from double-counting them.  Debit purchases only hit
-    checking, so the reconcile fires only for that account type.
+    The posting re-sync is wrapped in the same ``try`` as ``commit()`` for
+    autoflush ordering: its first query forces a session autoflush of the
+    pending ``Account`` mutation and the fresh history row, and the
+    version-pinned WHERE on that flush is what raises ``StaleDataError`` for
+    the truly-concurrent race.  Catching only around ``commit()`` would let
+    the autoflush error propagate as a 500 instead of a clean
+    ``STALE_CONFLICT`` outcome.
 
     Args:
         account: An attached :class:`Account` row.  Caller is
@@ -283,10 +315,6 @@ def apply_anchor_true_up(
         anchor_period: The :class:`PayPeriod` to anchor against.
             Resolved by the caller (typically
             ``pay_period_service.get_current_period``).
-        user_id: ``auth.users.id`` of the account owner.  Forwarded
-            (with ``account.id``) to
-            ``entry_service.clear_entries_for_anchor_true_up`` for the
-            per-owner, per-account entry-reconcile filter.
 
     Returns:
         AnchorTrueUpOutcome -- which response the route should render.
@@ -318,18 +346,12 @@ def apply_anchor_true_up(
         anchor_period=anchor_period,
     )
 
-    checking_type_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
     try:
-        if account.account_type_id == checking_type_id:
-            entry_service.clear_entries_for_anchor_true_up(user_id, account.id)
         # Build-Order Step 5: the new assertion re-bases the account's
         # anchor corrections in EVERY scenario (anchor history is
         # per-account) -- the fresh history row autoflushes into the walk's
         # first query, so the reconcile books the true-up delta in the same
-        # transaction.  Runs AFTER the entry reconcile (verified
-        # side-effect-free for posted amounts: it flips ``is_cleared`` on
-        # PROJECTED parents only, and the Step-3 effect formula never reads
-        # ``is_cleared``) and inside this ``try`` so a StaleDataError or the
+        # transaction.  Inside this ``try`` so a StaleDataError or the
         # F-103 duplicate surfacing at its flushes translates into the same
         # outcome enum.  An amortizing loan is a structural no-op (loans
         # true-up through :func:`apply_loan_anchor_true_up`).

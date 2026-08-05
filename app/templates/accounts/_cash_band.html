@@ -18,8 +18,8 @@
       <div class="pulse-hero__label">Balance</div>
       {% include "accounts/_cash_balance_hero.html" %}
       <div class="nw-hero__cap">
-        {%- if current_period %}current period{% if anchor_as_of %}, anchored {{ anchor_as_of | local_datetime('%b %-d, %Y') }}{% endif %}
-        {%- elif anchor_as_of %}anchored {{ anchor_as_of | local_datetime('%b %-d, %Y') }}
+        {%- if current_period %}current period{% if anchor_as_of %}, anchored {{ anchor_as_of.strftime('%b %-d, %Y') }}{% endif %}
+        {%- elif anchor_as_of %}anchored {{ anchor_as_of.strftime('%b %-d, %Y') }}
         {%- else %}no pay periods yet
         {%- endif -%}
       </div>

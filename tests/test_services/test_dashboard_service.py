@@ -114,7 +114,7 @@ class TestBillRowSingleBase:
                 user_id=seed_user["user"].id,
                 amount=Decimal(str(amt)),
                 description="purchase",
-                entry_date=date(2026, 1, 5),
+                purchased_on=date(2026, 1, 5),
             ))
         db.session.flush()
 

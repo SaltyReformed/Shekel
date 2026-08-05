@@ -18,6 +18,7 @@ from app.enums import (
 )
 from app.schemas.validation._helpers import (
     BaseSchema,
+    RowId,
     _normalize_empty_inputs,
 )
 
@@ -111,7 +112,7 @@ class SavingsGoalCreateSchema(BaseSchema):
         """Drop empty inputs; map empties on nullable fields to None."""
         return _normalize_empty_inputs(self, data)
 
-    account_id = fields.Integer(required=True)
+    account_id = RowId(required=True)
     name = fields.String(required=True, validate=validate.Length(min=1, max=100))
     target_amount = fields.Decimal(
         load_default=None, allow_none=True,
@@ -132,8 +133,8 @@ class SavingsGoalCreateSchema(BaseSchema):
         places=2, as_string=True,
         validate=validate.Range(min=Decimal("0"), min_inclusive=False),
     )
-    goal_mode_id = fields.Integer(load_default=1)
-    income_unit_id = fields.Integer(load_default=None, allow_none=True)
+    goal_mode_id = RowId(load_default=1)
+    income_unit_id = RowId(load_default=None, allow_none=True)
     income_multiplier = fields.Decimal(
         load_default=None, allow_none=True,
         places=2, as_string=True,
@@ -167,7 +168,7 @@ class SavingsGoalUpdateSchema(BaseSchema):
         """Drop empty inputs; map empties on nullable fields to None."""
         return _normalize_empty_inputs(self, data)
 
-    account_id = fields.Integer()
+    account_id = RowId()
     name = fields.String(validate=validate.Length(min=1, max=100))
     target_amount = fields.Decimal(
         places=2, as_string=True, allow_none=True,
@@ -182,15 +183,15 @@ class SavingsGoalUpdateSchema(BaseSchema):
         validate=validate.Range(min=Decimal("0"), min_inclusive=False),
     )
     is_active = fields.Boolean()
-    goal_mode_id = fields.Integer()
-    income_unit_id = fields.Integer(allow_none=True)
+    goal_mode_id = RowId()
+    income_unit_id = RowId(allow_none=True)
     income_multiplier = fields.Decimal(
         places=2, as_string=True, allow_none=True,
         validate=validate.Range(min=0, min_inclusive=False),
     )
 
     # Optimistic-locking pin (commit C-18).
-    version_id = fields.Integer(validate=validate.Range(min=1))
+    version_id = RowId(validate=validate.Range(min=1))
 
     @validates_schema
     def validate_goal_mode_fields(self, data, **kwargs):

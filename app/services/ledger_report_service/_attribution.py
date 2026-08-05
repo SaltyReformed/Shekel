@@ -35,12 +35,20 @@ buckets a PARTITION of the live ledger identical to the write-side walk's
 (:func:`app.services.account_posting_service._walk._transaction_source_days`):
 a hypothetical dual-linked entry classifies as transfer-linked, never both.
 
-**Instant vs civil date.**  The write-side walk partitions by UTC INSTANT
-against each anchor's ``created_at`` (a moment-of-assertion comparison); this
-read side attributes to a display-timezone CIVIL DATE for calendar/as-of
-windows (the L9 tax-day basis).  The two are deliberately different: one answers
-"was this settle inside the asserted balance at the assertion moment?", the
-other "which calendar day does the user see this money on?".
+**One civil date, shared, since ruling R-DH.**  This reader and the write-side
+walk both attribute a source to :func:`app.utils.dates.to_display_civil_date`
+of its ``paid_at`` -- the same day, from the same helper.  They were
+deliberately different until 2026-07-31: the walk partitioned by UTC INSTANT
+against each anchor's ``created_at`` while this side used the display-timezone
+civil date for calendar windows, and the paragraph here justified an
+independent restatement of the attribution rule on exactly that difference.
+The difference is gone (the instant partition cost production ``$4,001.42``),
+so what survives is a weaker and narrower reason: this package restates the
+write side's LOADERS rather than importing a write-package internal, keeping
+the reader decoupled from the writer the way the reconciliation oracles rely
+on.  **That is a stance about package boundaries, not about the rule** -- the
+DAY itself is one helper call on both sides, and plan step 3's one-predicate
+sweep is where the two loaders stop being two.
 
 **Flask-isolated** and read-only: plain ids in, plain data out; no writes.
 """
@@ -520,9 +528,14 @@ def _transfer_attribution_dates(transfer_ids: set[int]) -> dict[int, date]:
     # construction: the reader RESTATES the walk's transfer attribution rather
     # than importing a write-package internal, keeping this read package
     # decoupled from the write package (the same independent-restatement stance
-    # the reconciliation oracles rely on).  The walk consumes the shadow as a
-    # UTC instant for its moment partition; this reader consumes it as a
-    # display-timezone civil date.  One-sided disable so the walk stays
+    # the reconciliation oracles rely on).  Both sides now derive the SAME
+    # display-timezone civil day from the shadow (ruling R-DH deleted the
+    # walk's instant partition), so what is restated here is the LOADER, not
+    # the rule.  **Plan step 3 SHIPPED and deliberately did not resolve this**:
+    # it converged the partition RULE, and extracting a third shared home for
+    # these loaders would be scaffolding for a caller plan step X-d deletes --
+    # X-d retires the write-side walk onto the read walk, taking its twin of
+    # this query with it.  X-d owns it.  One-sided disable so the walk stays
     # un-disabled.
     # pylint: disable=duplicate-code
     rows = (
