@@ -1,14 +1,22 @@
-"""Cross-migration inline-seed parity for the posting-ledger ref enums.
+"""Cross-migration inline-seed parity for the migration-seeded ref enums.
 
-The posting-ledger reference enums (``LedgerAccountClassEnum``,
-``PostingKindEnum``, ``PostingSourceEnum``) follow the project's dual-seed
-pattern: every value is inline-seeded by the migration that introduces it
-(so a bare ``flask db upgrade`` lets ``ref_cache.init()`` resolve it BEFORE
-the app-layer ``seed_reference_data`` runs -- an enum member with no row is
-a fatal ``RuntimeError`` at app start) AND listed in ``app/ref_seeds.py``
-(the ongoing idempotent reseed).
+Introduced for the posting-ledger enums (``LedgerAccountClassEnum``,
+``PostingKindEnum``, ``PostingSourceEnum``, ``LedgerAccountKindEnum``) and
+since extended -- the scan is enum-driven, so every ref enum that follows the
+dual-seed pattern is registered in the tuples below and needs no new harness.
+The recurrence redesign's two-axis vocabulary (``RecurrenceUnitEnum``,
+``PeriodPlacementEnum``, ``BusinessDayShiftEnum``; plan step R2a of
+``docs/plans/implementation_plan_recurrence_redesign.md``) joined that
+registration rather than duplicating this file.
 
-Step 2 introduced these enums with a single value each (``transfer``);
+Those enums follow the project's dual-seed pattern: every value is
+inline-seeded by the migration that introduces it (so a bare ``flask db
+upgrade`` lets ``ref_cache.init()`` resolve it BEFORE the app-layer
+``seed_reference_data`` runs -- an enum member with no row is a fatal
+``RuntimeError`` at app start) AND listed in ``app/ref_seeds.py`` (the
+ongoing idempotent reseed).
+
+Step 2 introduced the posting enums with a single value each (``transfer``);
 Step 3 adds the ``income`` / ``expense`` kinds and a ``transaction``
 source via its own migration, and later steps will add more.  This single
 enum-driven scan replaces the former per-migration inline-seed check so
@@ -38,10 +46,10 @@ The dual seed has three legs, each guarded by a distinct layer:
 
   1. the enum (``app/enums.py``) is the source of truth for valid values;
   2. the migration inline-seed (the bare-``flask db upgrade`` path) -- the
-     ``TestPostingRefInlineSeedParity`` scan below asserts every enum member
+     ``TestRefInlineSeedParity`` scan below asserts every enum member
      is INSERTed by some migration;
   3. the ongoing idempotent reseed (``app/ref_seeds.py``'s
-     ``_REF_TABLE_SEEDS``) -- the ``TestPostingRefSeedsEnumParity`` check
+     ``_REF_TABLE_SEEDS``) -- the ``TestRefSeedsEnumParity`` check
      below asserts its value lists equal the enums exactly.
 
 Leg 3 needs its own check because every test database is migration-built and
@@ -65,10 +73,13 @@ import re
 from enum import Enum
 
 from app.enums import (
+    BusinessDayShiftEnum,
     LedgerAccountClassEnum,
     LedgerAccountKindEnum,
+    PeriodPlacementEnum,
     PostingKindEnum,
     PostingSourceEnum,
+    RecurrenceUnitEnum,
 )
 from app.ref_seeds import _REF_TABLE_SEEDS
 
@@ -78,27 +89,34 @@ _MIGRATIONS_DIR = (
 )
 
 
-# Each migration-seeded posting-ledger ref enum mapped to the ``ref`` table
-# its values are INSERTed into.  The scan requires each member's value to
-# appear inside an ``INSERT INTO <table>`` statement for THIS table (see the
-# module docstring on statement anchoring).
+# Each migration-seeded ref enum mapped to the ``ref`` table its values are
+# INSERTed into.  The scan requires each member's value to appear inside an
+# ``INSERT INTO <table>`` statement for THIS table (see the module docstring
+# on statement anchoring).  Registering a new dual-seeded enum here (and in
+# ``_SEED_LIST_REF_ENUMS`` below) is the whole cost of covering it.
 _INLINE_SEEDED_REF_ENUMS: tuple[tuple[type[Enum], str], ...] = (
     (LedgerAccountClassEnum, "ref.ledger_account_classes"),
     (LedgerAccountKindEnum, "ref.ledger_account_kinds"),
     (PostingKindEnum, "ref.posting_kinds"),
     (PostingSourceEnum, "ref.posting_sources"),
+    (RecurrenceUnitEnum, "ref.recurrence_units"),
+    (PeriodPlacementEnum, "ref.period_placements"),
+    (BusinessDayShiftEnum, "ref.business_day_shifts"),
 )
 
 
-# Each posting-ledger ref enum mapped to its ``_REF_TABLE_SEEDS`` model-attr
+# Each migration-seeded ref enum mapped to its ``_REF_TABLE_SEEDS`` model-attr
 # key (the first element of each ``(model_attr_name, entries)`` tuple).  Used
-# by ``TestPostingRefSeedsEnumParity`` to assert the ongoing reseed list (leg
-# 3 of the dual seed) equals the enum exactly.
+# by ``TestRefSeedsEnumParity`` to assert the ongoing reseed list (leg 3 of
+# the dual seed) equals the enum exactly.
 _SEED_LIST_REF_ENUMS: tuple[tuple[type[Enum], str], ...] = (
     (LedgerAccountClassEnum, "LedgerAccountClass"),
     (LedgerAccountKindEnum, "LedgerAccountKind"),
     (PostingKindEnum, "PostingKind"),
     (PostingSourceEnum, "PostingSource"),
+    (RecurrenceUnitEnum, "RecurrenceUnit"),
+    (PeriodPlacementEnum, "PeriodPlacement"),
+    (BusinessDayShiftEnum, "BusinessDayShift"),
 )
 
 
@@ -177,8 +195,8 @@ def _insert_statement_bodies(source: str, table: str) -> list[str]:
     return bodies
 
 
-class TestPostingRefInlineSeedParity:
-    """Every posting-ledger enum value is inline-seeded by some migration."""
+class TestRefInlineSeedParity:
+    """Every registered ref-enum value is inline-seeded by some migration."""
 
     def test_every_member_inline_seeded_by_some_migration(self):
         """Each enum value sits inside an ``INSERT INTO`` its own ref table."""
@@ -201,7 +219,7 @@ class TestPostingRefInlineSeedParity:
                 )
 
 
-class TestPostingRefSeedsEnumParity:
+class TestRefSeedsEnumParity:
     """The ongoing reseed list (``_REF_TABLE_SEEDS``) equals each enum exactly.
 
     Leg 3 of the dual seed (see the module docstring).  A migration-built test
@@ -214,7 +232,7 @@ class TestPostingRefSeedsEnumParity:
     """
 
     def test_ref_seeds_lists_equal_enums(self):
-        """Each posting-ledger enum's value set equals its reseed list's set."""
+        """Each registered enum's value set equals its reseed list's set."""
         for enum_cls, model_attr in _SEED_LIST_REF_ENUMS:
             seed_values = _seed_value_set(_REF_SEEDS_BY_MODEL[model_attr])
             enum_values = {member.value for member in enum_cls}

@@ -181,6 +181,19 @@ _REF_TABLE_SEEDS = (
         "loan_interest", "loan_escrow", "loan_refund",
         "equity_opening", "anchor_equity",
     ]),
+    # Two-axis recurrence vocabulary (recurrence redesign, step R2; plan
+    # ``docs/plans/implementation_plan_recurrence_redesign.md``).  A rule
+    # recurs every ``interval_n`` ``RecurrenceUnit``s; ``PeriodPlacement``
+    # carries the resulting occurrence DATE onto the pay PERIOD a row lives
+    # in; ``BusinessDayShift`` is the weekend/holiday adjustment step R8
+    # turns on (every rule is seeded at ``none``).  The migration
+    # ``e7a4d95c2b18`` inline-seeds the identical rows so a freshly upgraded
+    # DB resolves those enums before this idempotent reseed runs -- the same
+    # dual-seed pattern the posting refs use.  Names match the enum
+    # ``.value`` strings in ``app/enums.py`` exactly.
+    ("RecurrenceUnit", ["period", "week", "month", "year"]),
+    ("PeriodPlacement", ["containing_date", "period_starting_on_or_after"]),
+    ("BusinessDayShift", ["none", "prior", "next"]),
 )
 # pylint: enable=line-too-long
 # fmt: on

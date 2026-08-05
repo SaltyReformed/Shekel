@@ -1,8 +1,8 @@
 # Implementation Plan: Recurrence Rule Redesign
 
-**Status:** design LOCKED 2026-08-05. **R1 DONE**; R2 next. **Plan of record** for replacing the
-closed 8-name recurrence pattern set with a two-axis model, and for untangling the cash-date /
-installment-date collision the design review surfaced.
+**Status:** design LOCKED 2026-08-05. **R1 DONE. R2a DONE**; R2b next. **Plan of record** for
+replacing the closed 8-name recurrence pattern set with a two-axis model, and for untangling the
+cash-date / installment-date collision the design review surfaced.
 
 Rulings taken 2026-08-05 (developer):
 
@@ -16,6 +16,9 @@ Rulings taken 2026-08-05 (developer):
 | The three defects | Folded into the redesign, not fixed as separate PRs |
 | Sequencing vs the balance arc | **Half A now; Half B folded into X-an.** See section 0 |
 | `PAY_PERIODS_PER_YEAR` | Folded into R7 (which already rewrites `amount_to_monthly`); derivation = `round(365.2425 / cadence_days)`, see section 4a |
+| **Anchor day vs month-end clamp** | **`anchor_date` + a 0..1 `recurrence_month_anchors` subtype. See R-R3** |
+| **`Once` rules under NOT NULL** | **Backfilled with inert values; `pattern_id = Once` stays the gate until R9. See R-R4** |
+| **R2 sequencing** | **R2a (vocabulary, DONE) -> R2b (columns nullable + backfill) -> R2c (writers + NOT NULL). See R-R5** |
 
 ---
 
@@ -175,6 +178,93 @@ day count anywhere in the amortization path. What is wrong is date labels (payof
 rows, payment history), the `first_installment_date` bound, and one anchor-boundary comparison where
 a true-up dated inside the gap could flip a payment's inclusion.
 
+### R-R3 -- one `anchor_date` cannot hold "the 31st", and that is a REGRESSION
+
+Ruled 2026-08-05, before R2b was built. Section 3's `anchor_date DATE` was to be the sole source of
+a calendar rule's day-of-month. Measured against the CURRENT engine, it loses information.
+
+Today the day is the integer `day_of_month`, clamped per month (`recurrence_engine.py:546`,
+`min(day_of_month, last_day)`), so `day_of_month = 31` means "the last day of every month". A DATE
+cannot hold 31 when the anchor month is shorter, and the clamped value it holds instead propagates
+forward:
+
+```text
+monthly day=31, first occurrence April 2026
+  today  : Apr 30  May 31  Jun 30  Jul 31  Aug 31  Sep 30  Oct 31  Nov 30
+  anchor : Apr 30  May 30  Jun 30  Jul 30  Aug 30  Sep 30  Oct 30  Nov 30
+           (anchor_date = 2026-04-30)          4 of 8 WRONG
+
+monthly day=30, first occurrence February 2027       7 of 8 WRONG
+annual  Feb 29, anchored in a non-leap year          never fires on Feb 29 again
+```
+
+5 of 12 possible start months (Feb, Apr, Jun, Sep, Nov) clamp a day-31 rule's anchor.
+**Zero live rules are affected** -- the only day-31 rule is annual in March -- so this is about what
+the model permits going forward, and it is silent: the user sees a plausible date, never an error.
+
+**Ruling: `anchor_date` stays the first occurrence, and a 0..1 subtype carries the nominal day when
+the anchor month clamped it.**
+
+```sql
+budget.recurrence_month_anchors   [R2b creates it]
+                                  -- 0..1 per rule; present iff the anchor month
+                                  --   was too short to hold the nominal day
+  recurrence_rule_id  PK FK -> budget.recurrence_rules  ON DELETE CASCADE
+  nominal_day         SMALLINT NOT NULL CHECK (nominal_day BETWEEN 29 AND 31)
+```
+
+`nominal_day = subtype.nominal_day if the row is present else anchor_date.day`. A rule whose day is
+1-28 can never be clamped and carries no subtype row, so the common case costs nothing. This is the
+design's own idiom -- presence is the discriminator, PK+FK enforces the cardinality -- and it is why
+the three rejected alternatives lost: a nullable `anchor_day` column on the rule re-adds a column
+whose validity depends on the unit (the exact defect section 1 names); splitting `anchor_date` into
+phase + `starts_on` makes two columns hold one value in the common case; and shipping section 3 as
+drafted accepts the regression above.
+
+**Consequence for R8.** `recurrence_month_anchors` and `recurrence_weekday_anchors` are mutually
+exclusive (a rule fires on a day-of-month OR an nth-weekday, never both) and DDL cannot express "at
+most one of two subtype rows". R8 enforces it in the authoring seam and pins it with a test;
+recorded here so R8 does not discover it.
+
+### R-R4 -- a `Once` rule gets inert two-axis values, not a deletion
+
+Ruled 2026-08-05. `Once` means "does not recur", so no honest cadence exists for it -- but R2c makes
+`unit_id` / `anchor_date` / `placement_id` / `shift_id` NOT NULL, and 2 of the 4 live `Once` rules
+are attached to transfer templates (the other 2 are orphans R2b deletes anyway).
+
+Deleting them now was rejected: transaction templates already model "no recurrence" as
+`recurrence_rule_id IS NULL`, but the transfer form has NO null option
+(`app/templates/transfers/form.html:87` passes `include_none_option=false`; the transaction form at
+`templates/form.html:101` passes `true`), so deleting the rules requires the transfer form and every
+transfer reader to handle a NULL rule -- R7's work, pulled into a step that promises no behaviour
+change.
+
+So R2b backfills each surviving `Once` rule with
+`(interval_n=1, unit=period, anchor_date = start_period.start_date, placement=containing_date, shift=none)`
+and `pattern_id = Once` REMAINS the thing that suppresses generation, exactly as today. R9 deletes
+the rows.
+
+### R-R5 -- R2 is three steps, because NOT NULL forces every writer to move
+
+Ruled 2026-08-05. R2 said "nothing reads the new ones yet", which is true of READS and silent about
+WRITES: the moment the four columns are NOT NULL, every INSERT must supply them. There are 5
+production writers (`_recurrence_form_helpers.py:270`, `routes/salary/profiles.py:145`,
+`routes/investment.py:252`, `routes/loan/payment_transfer.py:171`, plus
+`loan_recurrence_sync.py:167-171` mutating existing rules) and ~80 direct `RecurrenceRule(...)`
+constructions across 37 test files. The migration and the writers must therefore land together --
+which is one very large commit.
+
+Split instead, the standard expand/contract shape:
+
+| step | contents | state |
+|---|---|---|
+| **R2a** | the three `ref` vocabulary tables + enums + `ref_cache` accessors + `ref_seeds` + migration `e7a4d95c2b18` | **DONE** |
+| **R2b** | the new `recurrence_rules` columns added NULLABLE, `recurrence_weekday_anchors` + `recurrence_month_anchors`, the backfill, the orphan deletion, `AUDITED_TABLES`. No writer changes. | next |
+| **R2c** | one authoring seam; all 5 writers and the test constructions routed through it; a second migration re-backfills anything created in between and tightens the four columns to NOT NULL. | after R2b |
+
+The intermediate state is safe: nothing READS the columns until R4, so a rule created between R2b
+and R2c carrying NULLs is inert, and R2c's re-backfill catches it.
+
 ### R-R2 -- a signed day offset was proposed and disproved
 
 A `due_offset_days SMALLINT` was the first proposal. The Van case disproves it:
@@ -220,12 +310,18 @@ budget.recurrence_due_dates    [HALF B -- created in R5/R6, NOT in R2]
   due_month_offset    SMALLINT NOT NULL DEFAULT 0
                       CHECK (due_month_offset BETWEEN -12 AND 12)
 
-budget.recurrence_weekday_anchors    [R2 creates it; R8 is the first writer]
+budget.recurrence_weekday_anchors    [R2b creates it; R8 is the first writer]
                                      -- 0..1 per rule; nth-weekday-of-month rules
   recurrence_rule_id  PK FK -> budget.recurrence_rules  ON DELETE CASCADE
   nth_week            SMALLINT NOT NULL
                       CHECK (nth_week BETWEEN -1 AND 5 AND nth_week <> 0)  -- -1 = last
   weekday             SMALLINT NOT NULL CHECK (weekday BETWEEN 0 AND 6)
+
+budget.recurrence_month_anchors      [R2b creates it and is its first writer]
+                                     -- 0..1 per rule; present iff the anchor
+                                     --   month clamped the nominal day (R-R3)
+  recurrence_rule_id  PK FK -> budget.recurrence_rules  ON DELETE CASCADE
+  nominal_day         SMALLINT NOT NULL CHECK (nominal_day BETWEEN 29 AND 31)
 ```
 
 **Zero conditionally-meaningless columns.** Every column on `recurrence_rules` is meaningful for
@@ -236,8 +332,16 @@ the discriminator and the PK+FK enforces the cardinality.
 occurrence date IS a period start, so `CONTAINING_DATE` and `PERIOD_STARTING_ON_OR_AFTER` resolve to
 the same period.
 
-All three new tables go into `AUDITED_TABLES` (`app/audit_infrastructure.py:65`) before their
-migration runs.
+**Only the `budget` tables are audited.** An earlier draft of this section said "all three new
+tables go into `AUDITED_TABLES`"; measured against that list's own inclusion criteria
+(`app/audit_infrastructure.py:46-64`) that is wrong for the `ref` tables -- the `ref` schema is
+excluded with exactly one exception, the multi-tenant `ref.account_types`, and adding read-only seed
+catalogues would both drown the trail in seed noise and move `EXPECTED_TRIGGER_COUNT`, which the
+container entrypoint asserts at start. So: `ref.recurrence_units` / `ref.period_placements` /
+`ref.business_day_shifts` are NOT audited (pinned by `TestNotAudited` in
+`tests/test_models/test_recurrence_ref_tables_migration.py`), while
+`budget.recurrence_weekday_anchors` and `budget.recurrence_month_anchors` go into `AUDITED_TABLES`
+in R2b, and `budget.recurrence_due_dates` in Half B.
 
 ### Where the old columns went
 
@@ -315,34 +419,76 @@ proves the harness resolves the engine at call time rather than having bound it 
 `TZ=Pacific/Kiritimati`; the capture reads no clock.
 
 **R2 -- New schema, additive.** Old columns retained and still authoritative; nothing reads the new
-ones yet. Section 3 is the END state, this is how it gets there.
+ones yet. Section 3 is the END state, this is how it gets there. **Three steps, not one** -- see
+R-R5 for why NOT NULL drags every writer along with it.
 
-*Creates:* `ref.recurrence_units`, `ref.period_placements`, `ref.business_day_shifts` (seeded in the
-migration, the dual-seed pattern the posting refs use so a freshly upgraded DB resolves them before
-`ref_seeds` re-runs); the new `recurrence_rules` columns; and `budget.recurrence_weekday_anchors`.
-*Does NOT create* `budget.recurrence_due_dates` -- **that one is Half B** (section 0), because Half
-A must leave the `due_date` contract byte-identical for the R1 baseline to stay green.
-`recurrence_weekday_anchors` IS created here even though nothing writes it until R8: one migration
-for the shape, not two.
+*Exit criteria, all three steps.* Migration tested in BOTH directions.
+`python scripts/build_test_template.py` re-run (each adds a migration, so every suite fails against
+a stale template until it is). And the R1 baseline **byte-identical** -- R2 changes no behaviour, so
+a moved line means the migration touched something it should not have.
 
-*Nullability, the documented three-step* (`.claude/rules/database.md`): `anchor_date`, `unit_id`,
-`placement_id` and `shift_id` land NULLABLE, the backfill populates them, and the SAME migration
-tightens them to NOT NULL after verifying zero NULLs -- raising `RuntimeError` with the diagnostic
-SELECT if any survive. `placement_id` defaults to `CONTAINING_DATE` and `shift_id` to `NONE` for
-every backfilled row, so R8 turns behaviour on rather than adding a column.
+**R2a -- the vocabulary. DONE** (migration `e7a4d95c2b18`, no behaviour change).
+`ref.recurrence_units`, `ref.period_placements`, `ref.business_day_shifts`, their enums, `ref_cache`
+accessors and `ref_seeds` entries. Seeded in the migration AND in `ref_seeds` -- the dual-seed
+pattern the posting refs use, so a freshly upgraded DB resolves them before `ref_seeds` re-runs.
+That is not a nicety: `entrypoint.sh` runs `scripts/init_database.py` (whose `ref_cache.init` is
+strict about a table that exists but has no rows) BEFORE `scripts/seed_ref_tables.py`, so an
+unseeded new ref table aborts the deploy. Rows are inserted without literal ids so the identity
+sequence stays ahead of the data. Verified executably against the prod-clone dev DB: upgrade -> seed
+-> `flask db migrate` produces no diff for these tables -> downgrade drops all three -> re-upgrade
+re-seeds identically. Suite **7,893 passed**; R1 baseline byte-identical; `pylint app/` 10.00/10.
 
-*The backfill* derives each rule from section 3's mapping table. Two derivations it must not be left
-to invent: an `EVERY_PERIOD` / `EVERY_N_PERIODS` rule takes its `anchor_date` from
-`start_period.start_date`, falling back to the earliest generated row's period start when
-`start_period_id` is NULL; and the **5 ORPHANED rules have neither**, so they are DELETED here
-rather than backfilled with a guess (R9 changes the template FKs off `ON DELETE SET NULL` so they
-cannot recur). Deleting them is destructive, so the migration carries the `Review:` line the
-database rules require.
+**R2b -- the columns, NULLABLE.**
 
-*Exit criteria.* Migration tested in BOTH directions. `python scripts/build_test_template.py` re-run
-(it adds a migration, so every suite fails against a stale template until it is). And the R1
-baseline **byte-identical** -- R2 changes no behaviour, so a moved line means the migration touched
-something it should not have.
+*Creates on `budget.recurrence_rules`, all nullable:* `unit_id` (FK `ref.recurrence_units`
+RESTRICT), `anchor_date` DATE, `placement_id` (FK `ref.period_placements` RESTRICT), `shift_id` (FK
+`ref.business_day_shifts` RESTRICT), `max_occurrences` INT `CHECK (max_occurrences > 0)`, plus the
+two rule-level CHECKs from section 3: `end_date IS NULL OR end_date >= anchor_date` and
+`end_date IS NULL OR max_occurrences IS NULL`. `interval_n` and `end_date` already exist. Measured
+satisfiable: the 3 non-orphan rules carrying an `end_date` derive anchors 2026-03-26, 2026-04-01 and
+2026-04-22 against end dates 2026-06-30, 2048-12-01 and 2029-01-22.
+
+*Creates as tables:* `budget.recurrence_weekday_anchors` (nothing writes it until R8: one migration
+for the shape, not two) and `budget.recurrence_month_anchors` (R-R3; R2b's own backfill is its first
+writer). Both go into `AUDITED_TABLES` before the migration runs -- they are `budget`-schema
+user-controlled state, unlike R2a's ref tables. *Does NOT create* `budget.recurrence_due_dates` --
+**that one is Half B** (section 0), because Half A must leave the `due_date` contract byte-identical
+for the R1 baseline to stay green.
+
+*The backfill* derives each rule from section 3's mapping table. Four derivations it must not be
+left to invent:
+
+1. **The effective start** every calendar anchor is measured from is
+   `max(rule.start_date, rule.start_period.start_date)` over whichever are present; failing both,
+   the earliest generated row's period start; failing that, the user's earliest period start. The
+   MAX is what reproduces today exactly -- `match_periods` applies BOTH filters
+   (`recurrence_engine.py:481,488`) -- and it also keeps the loan bound, because
+   `anchor_date >= start_date` then holds by construction, so no installment can precede origination
+   (step C9a). Measured: 2 live rules carry both (the two loan transfers), and the MAX reproduces
+   their current first occurrence in each case.
+2. **A calendar rule's anchor** is the first date matching its `(month_of_year, day_of_month)` on or
+   after that effective start; a `PERIOD`-unit rule's anchor is the effective start itself.
+3. **A surviving `Once` rule** gets the inert tuple R-R4 fixes.
+4. **The 5 ORPHANED rules have neither a start period nor a template**, so they are DELETED here
+   rather than backfilled with a guess (R9 changes the template FKs off `ON DELETE SET NULL` so they
+   cannot recur). Deleting them is destructive, so the migration carries the `Review:` line the
+   database rules require.
+
+A `recurrence_month_anchors` row is written **iff** the derived `anchor_date` is the last day of its
+month AND the rule's `day_of_month` exceeds it -- i.e. the clamp lost information (R-R3). Measured:
+zero live rules qualify, so the backfill writes no rows today; the branch still needs a test, built
+from a constructed rule rather than live data.
+
+`placement_id` is backfilled to `containing_date` for every rule except `MONTHLY_FIRST` (which gets
+`period_starting_on_or_after`), and `shift_id` to `none` for every rule, so R8 turns behaviour on
+rather than adding a column.
+
+**R2c -- the writers, then NOT NULL.** One authoring seam that every rule writer goes through, so
+the old->new derivation lives in ONE place rather than five; the 5 production writers and the ~80
+test constructions routed through it; then a second migration that re-backfills anything created
+between R2b and R2c and tightens `anchor_date` / `unit_id` / `placement_id` / `shift_id` to NOT NULL
+using the documented three-step (`.claude/rules/database.md`) -- raising `RuntimeError` with the
+diagnostic SELECT if any NULL survives.
 
 **R3 -- New engine, parallel and unread.** `app/services/recurrence/` with `occurrences()` and
 `place()`. Pure, no Flask. Nothing reads it yet.
@@ -389,6 +535,52 @@ Derived simplifications that fall out and must be taken, not left behind:
   `(interval, unit)`, automatically correct for intervals not yet invented.
 - `calendar_service._INFREQUENT_PATTERNS` (`:74-79`): enumerated -> derived.
 - The four `Once` guards: deleted.
+
+### Carried steps -- found while building this arc, NOT part of it
+
+Section 5 records three defects this arc surfaced and does not own. They get steps here so they are
+scheduled rather than remembered. **None blocks R1-R9, and none is blocked by them**; each is a
+standalone commit that can run in any gap. Do not fold them into a recurrence migration -- an
+unrelated fix riding in a schema migration is unreviewable.
+
+**R-F1 -- Re-sync the five lagging `ref` identity sequences** (finding 5.1). **Do this one first**:
+it is the only one with a live failure mode, and the failure lands during a DEPLOY.
+
+One migration, one statement per table, over `goal_modes`, `income_units`, `user_roles`,
+`compounding_frequencies`, `employer_contribution_types`:
+
+```sql
+SELECT setval(pg_get_serial_sequence('ref.goal_modes', 'id'),
+              GREATEST((SELECT max(id) FROM ref.goal_modes), 1));
+```
+
+`GREATEST` so the statement can never move a sequence BACKWARDS -- it must be safe on a database
+where the sequence is already correct (every environment is at a different point). `downgrade`
+raises `NotImplementedError`: reverting means re-introducing the defect, and the rules require the
+refusal to carry both the reason and the literal SQL to do it by hand anyway.
+
+The test is the generalisation, not a copy: widen `TestIdentitySequenceInStep`
+(`tests/test_models/test_recurrence_ref_tables_migration.py`) from the three R2a tables to **every**
+table in the `ref` schema, discovered by query. That covers the five, and covers ref tables not yet
+written. It belongs in its own file once it stops being about recurrence.
+
+**R-F2 -- Tighten the ref-seed parity scan's statement boundary** (finding 5.2).
+`_insert_statement_bodies` (`tests/test_models/test_posting_ref_seed_parity.py`) bounds a statement
+at the next upper-case SQL keyword, so the LAST `INSERT` in a migration runs to end-of-file and any
+quoted literal below it satisfies the scan. Add a Python-level boundary (a line beginning `def `)
+and pin the fix with a test that the scan REJECTS a value appearing only after the seed statement --
+without that negative test the change proves nothing. Its own commit, because it changes the
+semantics of a scan four other migrations' coverage rests on: re-run the whole file and show the
+existing assertions unchanged.
+
+**R-F3 -- Resolve the ref-table constraint-naming disagreement** (finding 5.3).
+**Starts with a ruling, not a keystroke.** `.claude/rules/database.md` says name every constraint;
+all ~23 `ref` tables use auto-named `<table>_pkey` / `<table>_name_key`. Recommendation: amend the
+RULE to exempt single-column PK/UNIQUE on `ref` lookup tables, because the names are never
+referenced (no downgrade drops them by name -- the table goes with them) and renaming 23 tables'
+constraints is a large migration that buys nothing. The alternative is a rename migration. Either
+way the outcome must land in `.claude/rules/database.md` so the next reader is not told two
+different things.
 
 ## 4a. `PAY_PERIODS_PER_YEAR` (folded into R7)
 
@@ -438,6 +630,43 @@ recurrence ones):
   Scoping it is its own task.
 - A 27-paycheck year is a real budgeting event (one extra Groceries at
   $500, one extra Data Manager paycheck at $2,473.38 of income). Surfacing it is a feature.
+
+## 5. Found while building, RECORDED NOT BUILT (rule 6)
+
+Three defects this arc surfaced but does not own. None is caused by the redesign; each is stated
+with its measurement so a later session does not have to re-find it. **Each has a scheduled step**
+-- 5.1 -> R-F1, 5.2 -> R-F2, 5.3 -> R-F3 in section 4's "Carried steps" block -- so the measurement
+below is the evidence and the step is the work.
+
+**5.1 -- Five `ref` identity sequences sit BEHIND their data, on production.** Measured 2026-08-05
+against `shekel-prod-db` (and identically on the dev clone): `goal_modes` (max id 2, next value 1),
+`income_units` (2/1), `user_roles` (2/1), `compounding_frequencies` (3/1),
+`employer_contribution_types` (3/1). Their migrations seeded literal ids
+(`INSERT INTO ref.goal_modes (id, name) VALUES (1, 'Fixed'), ...`, e.g. `1dc0e7a1b9e4`), which does
+not advance the sequence.
+
+Latent today because `ref_seeds.seed_reference_data` only INSERTs a MISSING row and none is missing.
+It bites the first time anyone adds a value to one of those five enums: the id-less INSERT asks for
+id 1, collides on the primary key, and `scripts/seed_ref_tables.py` aborts -- **during a deploy**.
+Fix is a one-line `setval` per table in a migration. R2a's own three tables seed without ids and are
+pinned ahead of their data by `TestIdentitySequenceInStep`.
+
+**5.2 -- The ref-seed parity scan's last `INSERT` body runs to end-of-file.**
+`tests/test_models/test_posting_ref_seed_parity.py` bounds each `INSERT INTO <table>` body at the
+next upper-case SQL keyword, so the LAST insert in a migration has no closing boundary. Measured
+honest today (none of `'none'` / `'prior'` / `'next'` appears in the 1,304 characters of Python
+after `e7a4d95c2b18`'s final seed), but a future edit that quotes one of those values below the seed
+would satisfy the scan without seeding anything. Left alone deliberately: tightening the boundary
+changes the semantics of a scan four other migrations already depend on, which does not belong in an
+additive commit.
+
+**5.3 -- `ref` tables use auto-named PK/UNIQUE constraints.** `.claude/rules/database.md` says "name
+all constraints" (`uq_<table>_<cols>`), but every `ref` table in the project -- including
+`f5037400dc5e`'s posting tables, byte-identical in shape -- uses bare
+`sa.PrimaryKeyConstraint("id")` / `sa.UniqueConstraint("name")` and lets PostgreSQL name them
+`<table>_pkey` / `<table>_name_key`. R2a follows the house pattern rather than making its three
+tables the odd ones out. The rule and the pattern disagree; one of them should be amended,
+project-wide, in its own pass.
 
 ## 6. Alternatives considered and rejected
 
