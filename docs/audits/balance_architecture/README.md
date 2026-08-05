@@ -36,6 +36,7 @@ from `git status -sb` when you edit this.
 | **in flight** | nothing. `dev` and `main` are both at `8d812662`; **no feature branches exist** | -- |
 | **blocked on you** | **two design questions X-f2 owns**: **N-204** (the acknowledgement is keyed on "was the day the boundary", not "did the figure change", so an ordinary re-confirm writes a row and says nothing) and **N-205** (nothing durable records an assertion anywhere in the UI) | Section 6 |
 | **next** | **X-an** -> X-f2 -> **X-f3** (moves money, own PR) -> X-f4 -> X-f5 -> X-f6. Block 2 (**X-ad then X-x, ONE PR**) is now UNGATED and can run in parallel | Section 5.0 |
+| **complementary arc** | **The RECURRENCE redesign is NOT part of this arc and does not pause it.** Its Half A is disjoint and starts whenever; its **Half B (`R5`/`R6`) is the same trace as X-an** and ships with it | `docs/plans/implementation_plan_recurrence_redesign.md`, and X-an / X-f4 in Section 5 |
 | **why this shape** | the anchor half was redesigned from scratch by ruling **R-EB**; R-EQ designed the duplicate rule that had only ever been re-keyed, R-ER put the day rule in the module that owns what an assertion is, X-f1e1 deleted the second DOOR, X-f1e2 the second WRITER, X-f1e3 the mount that was destroying its own message | Section 3.3, and R-EB / R-EQ / R-ER / R-ES / R-ET in Section 4 |
 | **the live lesson** | **a response can destroy its own message**, and the tests could not see it: deleting either of the two attributes the feature hangs on left the whole suite green, measured by an adversarial review | Section 8's first three bullets |
 | **the ledger** | **93 rows**. X-f1e3 closed N-199 and opened N-203..N-206; **N-173 re-pointed to X-f6**, because X-f1 shipped the mechanism and its backfill improved no stored date | Section 6 |
@@ -259,11 +260,16 @@ outside the schedule (one `operator`, two `developer-decision`). Measured, not a
 | 6 | **the read-path residue** -- X-y, X-i1, X-i2, X-j, X-k, X-l, X-m, X-n, X-e, X-p, X-ab, X-ac | Nothing blocks on it and its footprint is disjoint from the write path (tag `xd-attempt-1-parked-n155`'s 30 `app/` files against tag `xx-attempt-1-held-rde`'s 26: **zero overlap**, measured) | 50-70 h |
 | 7 | **the gate and vocabulary residue** -- X-ag, X-ah, X-al | Shares files with nothing; interleaves anywhere | 11-15 h |
 | 8 | **E2 and G** | Runs LAST by ruling; G2 must not begin before the boundary it rests on is proven | 28-44 h |
+| 9 | **the recurrence redesign** (own document) -- **NOT part of this arc** | Its **Half A** (`R1`-`R4`, `R7`-`R8`) overlaps every live block by ONE file (`_recurrence_common.py`, against the `xd-attempt-1-parked-n155` tag), so it interleaves anywhere and pauses nothing. Its **Half B** (`R5`/`R6`) overlaps **4 of 4** of X-an's surfaces and is the SAME trace, so it ships WITH X-an and after X-f4 | own document; not measured against this arc's history |
 
-**Two blocks leave this document and keep only their row here**:
-`docs/plans/implementation_plan_bank_import.md` (X-f6, not yet written) and the existing
-`docs/plans/implementation_plan_credit_card.md`. Both are FEATURES consuming this arc's output, not
-correctness fixes inside it, so rule 1 is not weakened. **The card plan's ratified sequencing is
+**Three blocks leave this document and keep only their row here**:
+`docs/plans/implementation_plan_bank_import.md` (X-f6, not yet written), the existing
+`docs/plans/implementation_plan_credit_card.md`, and
+`docs/plans/implementation_plan_recurrence_redesign.md` (block 9). The first two are FEATURES
+consuming this arc's output; the third is a SEPARATE ARC that merely shares files with two of this
+one's steps. None is a correctness fix inside this arc, so rule 1 is not weakened. **Block 9 owns no
+Section 6 row and never will** -- a recurrence defect is a row in its own plan, which is what keeps
+the partition claim above true. **The card plan's ratified sequencing is
 DISCHARGED, not pending, and its order must never be re-read as a live gate**: every balance-arc
 step it names has SHIPPED -- `C8`/`C9`, `D1`-`D3` and old `X1`-`X3` all resolve in archived records
 (the last closed by X-c2b2), and old `X4` survives here as X-e. What blocks the card arc is NEW and
@@ -331,6 +337,17 @@ live step or a live finding still reads against them.
   proxy rather than adding a guard, and it does not make the resolver read the ledger. Its trace
   owes: the complement at `_build_monthly_override:174` must move with the cut, or replay and
   projection stop being exact complements.
+  **THE RECURRENCE REDESIGN'S HALF B SHIPS WITH THIS STEP** -- `R5` / `R6` of
+  `docs/plans/implementation_plan_recurrence_redesign.md` (its section 0). They are this step seen
+  from the other side: this one asks which date decides a payment ALREADY HAPPENED, `R6` asks which
+  date IS the contractual installment, and both rewrite the neighbourhood of
+  `loan_loaders.loan_payment_due_date` / `rate_period_engine.monthly_due_date`. `R6` DELETES
+  `loan_params.payment_day`, the argument this step's fallback path reads. Measured 2026-08-05:
+  **4 of 4** of this step's surfaces (`loan_ledger/_events.py`, `loan_loaders.py`,
+  `loan_resolver/_payoff.py`, `rate_period_engine.py`) sit in that plan's `R5`+`R6` file set.
+  Tracing them apart means tracing the loan half's date semantics twice. **Its own trace is owed
+  BEFORE either lands**: `payment_day` is set to the CASH day on the live Van Loan while every loan
+  surface reads it as the INSTALLMENT day, which is why the two dates cannot differ today.
 * [ ] **X-f2** `feat(accounts): the true-up is a reconciliation` -- R-DH (f)'s second half. The
   outstanding set covers TRANSACTIONS as well as entries (`_outstanding_scope`'s transaction twin,
   `entry_service.py:819`), ticking stamps the STATEMENT date rather than `now()` on the `settled_on` R-M split out, and the
@@ -351,6 +368,10 @@ live step or a live finding still reads against them.
   the deletion of `_posted_only_key_period_id`'s defensive branch explicitly** -- it has fired in
   production (**N-176**) -- rather than letting it go unnoticed. Closes **N-176**, and takes
   **N-161**, **N-169** and **N-170** with it by deleting the family they are properties of.
+  **GATES the recurrence redesign's `R5`** (the `transactions.due_date` / `transfers.due_date` ->
+  `occurs_on` + new `due_on` split): `R5` edits `cash_ledger/_events.py`, which is inside this step's
+  `ReconciledThrough` deletion set, so renaming a column in a file this step is deleting from is
+  avoided by ordering rather than by merge.
 * [ ] **X-f5** `fix(ledger): the opening equity account holds only the opening` -- one balanced
   entry: debit Uncategorized Expense **$1,495.10**, credit Checking Anchor Equity **$1,495.10**,
   leaving exactly the **-$689.16** opening credit. Verified to the cent against ledger account 30's
