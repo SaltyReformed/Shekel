@@ -1,10 +1,25 @@
 # Implementation Plan: Recurrence Rule Redesign
 
-**Status:** design LOCKED 2026-08-05. **R1 DONE. R2a DONE**; R2b next. **Plan of record** for
-replacing the closed 8-name recurrence pattern set with a two-axis model, and for untangling the
-cash-date / installment-date collision the design review surfaced.
+## Where this stands
 
-Rulings taken 2026-08-05 (developer):
+**Plan of record** for replacing the closed 8-name recurrence pattern set with a two-axis model, and
+for untangling the cash-date / installment-date collision the design review surfaced. Design LOCKED
+2026-08-05.
+
+**Just landed:** R2a, the two-axis vocabulary (`5c13e643`) -- three `ref` tables, read by nothing
+yet. **Next:** R2b, the `budget.recurrence_rules` columns added NULLABLE with the two subtype tables
+and the backfill; then R2c (writers, then NOT NULL); then R3. **Also live:** R-F1, the only carried
+finding whose failure mode is a broken deploy.
+
+**Where detail lives:** section 4 is the step list, each step carrying its own specification;
+section 5 is the findings ledger, one line per finding, each naming the step that closes it; section
+7 is the rules this document is GATED on.
+**This section is REPLACED each session, never appended to** -- if a paragraph here outlived the
+session, it belongs in a step, a ledger row or section 7.
+
+## Rulings
+
+Taken 2026-08-05 (developer):
 
 | fork | ruling |
 |---|---|
@@ -395,50 +410,31 @@ Each step is a leaf boundary: one commit, its own tests green, independently rev
 **Steps R1-R4 do not change any user-visible behaviour.** Half A = R1-R4, R7, R8 (+ the Half-A part
 of R9); Half B = R5, R6 (see section 0).
 
-**R1 -- Oracle and characterization snapshot. DONE** (no production code changed).
-`tests/oracles/recurrence_baseline.py` captures what the CURRENT engine answers from its two public
-entry points, `match_periods` and `compute_due_date`; `recurrence_baseline.txt` freezes it at
-**8,105 lines over 423 shapes**, and `tests/test_services/test_recurrence_baseline.py` is the gate.
+- [x] **R1 -- Oracle and characterization snapshot.** `96a35fe6` -- froze what the current engine
+      answers from `match_periods` and `compute_due_date` at 8,105 lines over 423 shapes
+      (`tests/oracles/recurrence_baseline.py`), gated by
+      `tests/test_services/test_recurrence_baseline.py`. **Binding on R3 and R4:** the
+      `long_cadence.*` shapes freeze D3's WRONG answer ON PURPOSE, so R4 -- not R3 -- re-freezes
+      exactly those lines with `SHEKEL_UPDATE_RECURRENCE_BASELINE=1`, and no other line may move.
 
-Three things it does that the original sketch did not.
-**The shape set is exhaustive on every axis the matcher branches on, not the 50 live shapes** -- 50
-live shapes are themselves a sample, and the verification standard this arc borrows forbids one. All
-31 monthly days, all 12 cycle months against the 6 clamp-relevant days, every `EVERY_N_PERIODS`
-interval 1..8 against every legal phase, the whole due-day axis 1..31, and the validity-window
-bounds on both sides of a period boundary.
-**Keys are `period_index` and the pattern ENUM, never a row id**, so a rebuilt test template cannot
-churn the blob. **The D3 shapes freeze the WRONG answer on purpose**, against a 90-day schedule: R4
-is expected to change exactly those lines, which makes the fix visible in a diff instead of asserted
-in a message.
+### R2 -- New schema, additive (R2a, R2b, R2c)
 
-Shown to fire, not merely asserted: clamping `_match_monthly` one day short turned the gate red at
-`recurrence_baseline.txt line 3780` with the committed and captured lines side by side. Two
-monkeypatch controls (`compute_due_date`, `match_periods`) patch the SOURCE module, which is what
-proves the harness resolves the engine at call time rather than having bound it at import -- the
-"can it SEE the code under test?" failure. Suite **7,875 passed** (7,868 + 7), green under
-`TZ=Pacific/Kiritimati`; the capture reads no clock.
-
-**R2 -- New schema, additive.** Old columns retained and still authoritative; nothing reads the new
-ones yet. Section 3 is the END state, this is how it gets there. **Three steps, not one** -- see
-R-R5 for why NOT NULL drags every writer along with it.
+Old columns retained and still authoritative; nothing reads the new ones yet. Section 3 is the END
+state, this is how it gets there. **Three steps, not one** -- see R-R5 for why NOT NULL drags every
+writer along with it.
 
 *Exit criteria, all three steps.* Migration tested in BOTH directions.
 `python scripts/build_test_template.py` re-run (each adds a migration, so every suite fails against
 a stale template until it is). And the R1 baseline **byte-identical** -- R2 changes no behaviour, so
 a moved line means the migration touched something it should not have.
 
-**R2a -- the vocabulary. DONE** (migration `e7a4d95c2b18`, no behaviour change).
-`ref.recurrence_units`, `ref.period_placements`, `ref.business_day_shifts`, their enums, `ref_cache`
-accessors and `ref_seeds` entries. Seeded in the migration AND in `ref_seeds` -- the dual-seed
-pattern the posting refs use, so a freshly upgraded DB resolves them before `ref_seeds` re-runs.
-That is not a nicety: `entrypoint.sh` runs `scripts/init_database.py` (whose `ref_cache.init` is
-strict about a table that exists but has no rows) BEFORE `scripts/seed_ref_tables.py`, so an
-unseeded new ref table aborts the deploy. Rows are inserted without literal ids so the identity
-sequence stays ahead of the data. Verified executably against the prod-clone dev DB: upgrade -> seed
--> `flask db migrate` produces no diff for these tables -> downgrade drops all three -> re-upgrade
-re-seeds identically. Suite **7,893 passed**; R1 baseline byte-identical; `pylint app/` 10.00/10.
+- [x] **R2a -- the vocabulary.** `5c13e643` -- `ref.recurrence_units` / `ref.period_placements` /
+      `ref.business_day_shifts`, their enums, `ref_cache` accessors and `ref_seeds` entries,
+      dual-seeded by migration `e7a4d95c2b18`. No behaviour change; R1 baseline byte-identical.
+      **Binding on R2b:** these three are NOT audited (section 3) and seed without literal ids (see
+      R-F1 for why that matters).
 
-**R2b -- the columns, NULLABLE.**
+- [ ] **R2b -- the columns, NULLABLE.**
 
 *Creates on `budget.recurrence_rules`, all nullable:* `unit_id` (FK `ref.recurrence_units`
 RESTRICT), `anchor_date` DATE, `placement_id` (FK `ref.period_placements` RESTRICT), `shift_id` (FK
@@ -483,15 +479,18 @@ from a constructed rule rather than live data.
 `period_starting_on_or_after`), and `shift_id` to `none` for every rule, so R8 turns behaviour on
 rather than adding a column.
 
-**R2c -- the writers, then NOT NULL.** One authoring seam that every rule writer goes through, so
-the old->new derivation lives in ONE place rather than five; the 5 production writers and the ~80
-test constructions routed through it; then a second migration that re-backfills anything created
-between R2b and R2c and tightens `anchor_date` / `unit_id` / `placement_id` / `shift_id` to NOT NULL
-using the documented three-step (`.claude/rules/database.md`) -- raising `RuntimeError` with the
-diagnostic SELECT if any NULL survives.
+- [ ] **R2c -- the writers, then NOT NULL.**
 
-**R3 -- New engine, parallel and unread.** `app/services/recurrence/` with `occurrences()` and
-`place()`. Pure, no Flask. Nothing reads it yet.
+One authoring seam that every rule writer goes through, so the old->new derivation lives in ONE
+place rather than five; the 5 production writers and the ~80 test constructions routed through it;
+then a second migration that re-backfills anything created between R2b and R2c and tightens
+`anchor_date` / `unit_id` / `placement_id` / `shift_id` to NOT NULL using the documented three-step
+(`.claude/rules/database.md`) -- raising `RuntimeError` with the diagnostic SELECT if any NULL
+survives.
+
+- [ ] **R3 -- New engine, parallel and unread.**
+
+`app/services/recurrence/` with `occurrences()` and `place()`. Pure, no Flask. Nothing reads it yet.
 
 Ships with a parallel-run test that drives the NEW engine through
 `tests/oracles/recurrence_baseline.py`'s own shape set and schedules and asserts it reproduces the
@@ -501,31 +500,42 @@ duplicate period). Those lines are the proof R3 works and must be re-frozen with
 `SHEKEL_UPDATE_RECURRENCE_BASELINE=1` **in R4's commit, not R3's** -- R3 changes no reader, so
 nothing it does may move the baseline yet.
 
-**R4 -- Cut generation over.** `match_periods` becomes a thin adapter, then callers move to the new
-engine. D3 dies here. The R1 oracle is the gate.
+- [ ] **R4 -- Cut generation over.**
 
-**R5 -- Row columns.** `transactions.due_date` / `transfers.due_date` -> `occurs_on` (pure rename,
-zero value changes -- the column already holds the cash date), plus a new nullable `due_on`. Then
-correct all 28 Python files and 5 templates to the one they actually mean. Highest-risk readers:
-`transfer_service.py` (9), `balance_at/_plan.py` (8), `rate_period_engine.py` (6),
-`loan_payment_service.py` (6).
+`match_periods` becomes a thin adapter, then callers move to the new engine. D3 dies here. The R1
+oracle is the gate.
 
-**R6 -- Delete `payment_day`; one accessor.** `loan_installment_date(...)` becomes the single
-derivation, reading the rule + `recurrence_due_dates`. 22 files, including the balance seam
-(`balance_at/_plan.py`, `_loan_interest.py`, `_resolution.py`) and the loan ledger. Kills D4.
+- [ ] **R5 -- Row columns.**
+
+`transactions.due_date` / `transfers.due_date` -> `occurs_on` (pure rename, zero value changes --
+the column already holds the cash date), plus a new nullable `due_on`. Then correct all 28 Python
+files and 5 templates to the one they actually mean. Highest-risk readers: `transfer_service.py`
+(9), `balance_at/_plan.py` (8), `rate_period_engine.py` (6), `loan_payment_service.py` (6).
+
+- [ ] **R6 -- Delete `payment_day`; one accessor.**
+
+`loan_installment_date(...)` becomes the single derivation, reading the rule +
+`recurrence_due_dates`. 22 files, including the balance seam (`balance_at/_plan.py`,
+`_loan_interest.py`, `_resolution.py`) and the loan ledger. Kills D4.
 **This step needs its own review pass** -- it is the deepest cut into the ledger.
 
-**R7 -- Bounds, form, and labels.** `anchor_date` replaces `start_period_id` + `offset_periods` (D1
-and D2 die), `max_occurrences` lands, the form becomes interval + unit + anchor + optional due row,
-and ONE label function over `(interval, unit)` replaces the 8-branch `recurrence_cell` macro
-(`_recurrence_macros.html:17`), the 8-entry `recurrence_pattern_labels` dict
-(`app/__init__.py:321`), and the 8 `REC_*` Jinja globals (`jinja_globals.py:91`).
+- [ ] **R7 -- Bounds, form, and labels.**
 
-**R8 -- Add-ons.** WEEK unit, `recurrence_weekday_anchors`, business-day shift, count-bounded end.
-Note: the shift applies to the CASH date only -- a bill due Aug 1 paid Friday because Aug 1 is a
-Sunday still satisfies the Aug 1 installment, so `recurrence_due_dates` is never shifted.
+`anchor_date` replaces `start_period_id` + `offset_periods` (D1 and D2 die), `max_occurrences`
+lands, the form becomes interval + unit + anchor + optional due row, and ONE label function over
+`(interval, unit)` replaces the 8-branch `recurrence_cell` macro (`_recurrence_macros.html:17`), the
+8-entry `recurrence_pattern_labels` dict (`app/__init__.py:321`), and the 8 `REC_*` Jinja globals
+(`jinja_globals.py:91`).
 
-**R9 -- Drop the old columns**, the `ref.recurrence_patterns` table, the `Once` row, and
+- [ ] **R8 -- Add-ons.**
+
+WEEK unit, `recurrence_weekday_anchors`, business-day shift, count-bounded end. Note: the shift
+applies to the CASH date only -- a bill due Aug 1 paid Friday because Aug 1 is a Sunday still
+satisfies the Aug 1 installment, so `recurrence_due_dates` is never shifted.
+
+- [ ] **R9 -- Drop the old columns.**
+
+Drops the `ref.recurrence_patterns` table, the `Once` row, and
 `pay_period_admin._repoint_recurrence_rules` (`:756-795`, obsolete once phase is a date). Delete the
 5 orphaned rules and change the template FKs off `ON DELETE SET NULL` so rules cannot leak again.
 
@@ -538,13 +548,22 @@ Derived simplifications that fall out and must be taken, not left behind:
 
 ### Carried steps -- found while building this arc, NOT part of it
 
-Section 5 records three defects this arc surfaced and does not own. They get steps here so they are
-scheduled rather than remembered. **None blocks R1-R9, and none is blocked by them**; each is a
-standalone commit that can run in any gap. Do not fold them into a recurrence migration -- an
+Section 5's ledger carries three findings this arc surfaced and does not own. They get steps here so
+they are scheduled rather than remembered. **None blocks R1-R9, and none is blocked by them**; each
+is a standalone commit that can run in any gap. Do not fold them into a recurrence migration -- an
 unrelated fix riding in a schema migration is unreviewable.
 
-**R-F1 -- Re-sync the five lagging `ref` identity sequences** (finding 5.1). **Do this one first**:
-it is the only one with a live failure mode, and the failure lands during a DEPLOY.
+- [ ] **R-F1 -- Re-sync the five lagging `ref` identity sequences** (finding F-1).
+
+**Do this one first**: it is the only carried finding with a live failure mode, and the failure
+lands during a DEPLOY. Measured 2026-08-05 against `shekel-prod-db` (and identically on the dev
+clone): `goal_modes` (max id 2, next value 1), `income_units` (2/1), `user_roles` (2/1),
+`compounding_frequencies` (3/1), `employer_contribution_types` (3/1). Their migrations seeded
+literal ids (`INSERT INTO ref.goal_modes (id, name) VALUES (1, 'Fixed'), ...`, e.g. `1dc0e7a1b9e4`),
+which does not advance the sequence. Latent today because `ref_seeds.seed_reference_data` only
+INSERTs a MISSING row and none is missing; it bites the first time anyone adds a value to one of
+those five enums, when the id-less INSERT asks for id 1, collides on the primary key, and
+`scripts/seed_ref_tables.py` aborts mid-deploy.
 
 One migration, one statement per table, over `goal_modes`, `income_units`, `user_roles`,
 `compounding_frequencies`, `employer_contribution_types`:
@@ -564,23 +583,31 @@ The test is the generalisation, not a copy: widen `TestIdentitySequenceInStep`
 table in the `ref` schema, discovered by query. That covers the five, and covers ref tables not yet
 written. It belongs in its own file once it stops being about recurrence.
 
-**R-F2 -- Tighten the ref-seed parity scan's statement boundary** (finding 5.2).
+- [ ] **R-F2 -- Tighten the ref-seed parity scan's statement boundary** (finding F-2).
+
 `_insert_statement_bodies` (`tests/test_models/test_posting_ref_seed_parity.py`) bounds a statement
 at the next upper-case SQL keyword, so the LAST `INSERT` in a migration runs to end-of-file and any
-quoted literal below it satisfies the scan. Add a Python-level boundary (a line beginning `def `)
-and pin the fix with a test that the scan REJECTS a value appearing only after the seed statement --
-without that negative test the change proves nothing. Its own commit, because it changes the
-semantics of a scan four other migrations' coverage rests on: re-run the whole file and show the
-existing assertions unchanged.
+quoted literal below it satisfies the scan. Measured honest today: none of `'none'` / `'prior'` /
+`'next'` appears in the 1,304 characters of Python after `e7a4d95c2b18`'s final seed. Left out of
+R2a deliberately -- tightening the boundary changes the semantics of a scan four other migrations
+already depend on, which does not belong in an additive commit. Add a Python-level boundary (a line
+beginning `def `) and pin the fix with a test that the scan REJECTS a value appearing only after the
+seed statement -- without that negative test the change proves nothing. Its own commit, because it
+changes the semantics of a scan four other migrations' coverage rests on: re-run the whole file and
+show the existing assertions unchanged.
 
-**R-F3 -- Resolve the ref-table constraint-naming disagreement** (finding 5.3).
-**Starts with a ruling, not a keystroke.** `.claude/rules/database.md` says name every constraint;
-all ~23 `ref` tables use auto-named `<table>_pkey` / `<table>_name_key`. Recommendation: amend the
-RULE to exempt single-column PK/UNIQUE on `ref` lookup tables, because the names are never
-referenced (no downgrade drops them by name -- the table goes with them) and renaming 23 tables'
-constraints is a large migration that buys nothing. The alternative is a rename migration. Either
-way the outcome must land in `.claude/rules/database.md` so the next reader is not told two
-different things.
+- [ ] **R-F3 -- Resolve the ref-table constraint-naming disagreement** (finding F-3).
+
+**Starts with a ruling, not a keystroke.** `.claude/rules/database.md` says "name all constraints"
+(`uq_<table>_<cols>`), but every `ref` table in the project uses bare
+`sa.PrimaryKeyConstraint("id")` / `sa.UniqueConstraint("name")` and lets PostgreSQL name them
+`<table>_pkey` / `<table>_name_key`. All ~23 of them, including `f5037400dc5e`'s posting tables,
+which are byte-identical in shape -- so this is the house pattern, not an R2a oversight, and R2a
+followed it rather than making its three tables the odd ones out. Recommendation: amend the RULE to
+exempt single-column PK/UNIQUE on `ref` lookup tables, because the names are never referenced (no
+downgrade drops them by name -- the table goes with them) and renaming 23 tables' constraints is a
+large migration that buys nothing. The alternative is a rename migration. Either way the outcome
+must land in `.claude/rules/database.md` so the next reader is not told two different things.
 
 ## 4a. `PAY_PERIODS_PER_YEAR` (folded into R7)
 
@@ -622,8 +649,8 @@ holiday and was PAID 31 Dec 2025, so 2025 carried the 27th and 2026 receives 26.
 weekends and the table does not model that. The developer has never observed a 27-paycheck year, and
 the rounded integer is what matches lived experience -- ruled 2026-08-05.
 
-Two things this surfaces, RECORDED NOT BUILT (rule 6, both are pay-period concerns rather than
-recurrence ones):
+Two things this surfaces, both pay-period concerns rather than recurrence ones, and both recorded in
+section 5 as F-4 and F-5 (CLAUDE.md rule 6: report out of scope, do not fix):
 
 - `pay_periods` stores nominal paydays. A holiday/weekend shift for the PAY SCHEDULE is the sibling
   of R8's business-day shift for recurrence occurrences, and would need the same holiday source.
@@ -631,42 +658,31 @@ recurrence ones):
 - A 27-paycheck year is a real budgeting event (one extra Groceries at
   $500, one extra Data Manager paycheck at $2,473.38 of income). Surfacing it is a feature.
 
-## 5. Found while building, RECORDED NOT BUILT (rule 6)
+## 5. Findings ledger
 
-Three defects this arc surfaced but does not own. None is caused by the redesign; each is stated
-with its measurement so a later session does not have to re-find it. **Each has a scheduled step**
--- 5.1 -> R-F1, 5.2 -> R-F2, 5.3 -> R-F3 in section 4's "Carried steps" block -- so the measurement
-below is the evidence and the step is the work.
+Every defect this arc has measured, one line each, and the step that closes it. **The last column is
+the rule this document is gated on (section 7 rule 1): it names a LIVE step, and a step that ships
+re-points every row that named it.** The measurement lives where the work is -- D1-D4 in section 2,
+F-1 to F-3 in their R-F step entries -- so a row is a pointer, never a second copy of a fact.
 
-**5.1 -- Five `ref` identity sequences sit BEHIND their data, on production.** Measured 2026-08-05
-against `shekel-prod-db` (and identically on the dev clone): `goal_modes` (max id 2, next value 1),
-`income_units` (2/1), `user_roles` (2/1), `compounding_frequencies` (3/1),
-`employer_contribution_types` (3/1). Their migrations seeded literal ids
-(`INSERT INTO ref.goal_modes (id, name) VALUES (1, 'Fixed'), ...`, e.g. `1dc0e7a1b9e4`), which does
-not advance the sequence.
+D1-D4 are defects in the code the redesign replaces; F-1 to F-3 were found while building it and are
+NOT part of it, which is why their steps are the carried block at the end of section 4. F-4 and F-5
+are pay-period features section 4a surfaced -- they have no step because they need a ruling first,
+which is what `operator` means here.
 
-Latent today because `ref_seeds.seed_reference_data` only INSERTs a MISSING row and none is missing.
-It bites the first time anyone adds a value to one of those five enums: the id-less INSERT asks for
-id 1, collides on the primary key, and `scripts/seed_ref_tables.py` aborts -- **during a deploy**.
-Fix is a one-line `setval` per table in a migration. R2a's own three tables seed without ids and are
-pinned ahead of their data by `TestIdentitySequenceInStep`.
+**The ledger stands at 9 rows.**
 
-**5.2 -- The ref-seed parity scan's last `INSERT` body runs to end-of-file.**
-`tests/test_models/test_posting_ref_seed_parity.py` bounds each `INSERT INTO <table>` body at the
-next upper-case SQL keyword, so the LAST insert in a migration has no closing boundary. Measured
-honest today (none of `'none'` / `'prior'` / `'next'` appears in the 1,304 characters of Python
-after `e7a4d95c2b18`'s final seed), but a future edit that quotes one of those values below the seed
-would satisfy the scan without seeding anything. Left alone deliberately: tightening the boundary
-changes the semantics of a scan four other migrations already depend on, which does not belong in an
-additive commit.
-
-**5.3 -- `ref` tables use auto-named PK/UNIQUE constraints.** `.claude/rules/database.md` says "name
-all constraints" (`uq_<table>_<cols>`), but every `ref` table in the project -- including
-`f5037400dc5e`'s posting tables, byte-identical in shape -- uses bare
-`sa.PrimaryKeyConstraint("id")` / `sa.UniqueConstraint("name")` and lets PostgreSQL name them
-`<table>_pkey` / `<table>_name_key`. R2a follows the house pattern rather than making its three
-tables the odd ones out. The rule and the pattern disagree; one of them should be amended,
-project-wide, in its own pass.
+| id | finding (one line) | worst measured | status | owned by |
+|---|---|---|---|---|
+| D1 | an amount-only edit resets `offset_periods`, re-phasing every future occurrence | every occurrence shifts one pay period | OPEN | R7 |
+| D2 | an edit ignores the chosen "First paycheck": `effective_from` overrides `start_period_id` | 4 rows materialised in excluded periods | OPEN | R7 |
+| D3 | `_match_monthly` reads only a period's two ENDPOINT months, so it is neither total nor injective | 6 of 12 occurrences dropped; a duplicate period would 500 | OPEN | R4 |
+| D4 | a loan's cash date and contractual installment date cannot differ | $0 -- labels only (payoff date, schedule rows, history) | OPEN | R6 |
+| F-1 | five `ref` identity sequences sit behind their data, on production | the next value added to those enums aborts a DEPLOY | OPEN | R-F1 |
+| F-2 | the ref-seed parity scan's last `INSERT` body runs to end-of-file | none today; a literal quoted below the seed would pass | OPEN | R-F2 |
+| F-3 | `ref` tables use auto-named constraints while the database rule says name them | none -- the names are never referenced | OPEN | R-F3 (developer ruling first) |
+| F-4 | `pay_periods` stores NOMINAL paydays; a holiday/weekend shift for the pay SCHEDULE is unmodelled | Josh's 1 Jan 2026 payday was really paid 31 Dec 2025 | OPEN | operator (scope it as its own task, or rule it out?) |
+| F-5 | a 27-paycheck year is a real budgeting event and no surface names one | one extra $500 Groceries + one extra $2,473.38 paycheck | OPEN | operator (build the surfacing, or leave it?) |
 
 ## 6. Alternatives considered and rejected
 
@@ -685,3 +701,47 @@ worth borrowing; the storage is not.
 **Materialize occurrence dates into a table.** Rejected: `transactions` / `transfers` already ARE
 the materialization. A second one is a second source of truth for the same fact -- the defect class
 the balance-architecture arc exists to eliminate.
+
+## 7. Document rules (GATED)
+
+`tools/plan_gate/test_recurrence_plan_ledger_integrity.py` grades this file through a pre-commit
+hook scoped to this document and the same CI step that runs the custom pylint checkers -- so EDITING
+THIS FILE is what runs the gate. The machinery is shared with
+`docs/audits/balance_architecture/README.md`, which adopted these rules first after three
+hand-passes in two days each found the same class of rot.
+
+**Rules 1-4, 6's cap and 7 are PREDICATES. Rule 5 and 6's "replaced, never appended" half are
+disciplines** -- nothing distinguishes an archive from a trim, or a rewrite from an append. Saying
+so is the point: this arc's own standard is that a safety which is not a predicate is not a safety,
+and labelling a discipline as one is the failure being guarded against.
+
+1. **Every section 5 row names a LIVE owner.** The last column is a ` / `-separated list, each entry
+   an unticked section 4 step id (optionally annotated in parentheses), or `operator` with the
+   question stated, or `developer-decision` with the date the fork was taken. There is deliberately
+   no value meaning "someone will get to it". A row with an empty owner, an owner naming no
+   checkbox, or an owner naming a TICKED step is a failure.
+2. **A step that ships re-points every row that named it.** Ticking a box is the same edit as
+   re-pointing its findings; the gate refuses the commit that does one without the other.
+3. **Section 5 states its own size, and the number is checked**
+   (`**The ledger stands at N rows.**`). The sentence is optional to the parser and mandatory here:
+   the balance ledger's read 38 against a 40-row table because a step that closed four rows and
+   opened three updated the rows and not the prose about them.
+4. **The whole file is capped at 900 lines**, and the cap is a FORCING FUNCTION, not a ceiling sized
+   to fit the work. The arithmetic says so plainly: the document stands at 747, eight steps remain
+   unspecified (R2c, R3-R9), and specifying each at the ~45 lines R2b's took would add ~293 --
+   landing at ~1,021, well over. **That gap is deliberate and rule 7 is what closes it.** A step
+   that ships surrenders its specification: R1 and R2a occupied 45 lines between them before rule 7
+   condensed them to 11. At roughly 35 lines returned per ship against ~45 spent per specification,
+   the file breathes rather than grows, and the cap binds only when the archive move is genuinely
+   overdue. **Raising it is not the answer when it binds.**
+5. **The only legal way back under the cap is to archive a COMPLETED span** to
+   `docs/plans/historical/recurrence_as_built_<date>.md`, condensed to one line per step: its id,
+   its commit and what it closed. Never trim a live step's specification to fit. Shrink the record
+   of what is done, never the specification of what remains. (Discipline, not a predicate -- see
+   above.)
+6. **"Where this stands" is capped at 20 lines and is REPLACED, never appended to.** It is the
+   signpost the next session reads first. On the balance README the same section became an
+   append-only log of 1,019 lines, so a reader had to scroll a month of history to find the branch
+   they were on. When it overflows, the remedy is relocation, not deletion: a constraint on a step
+   belongs in that step, a defect belongs in a section 5 row with an owner, a standing rule belongs
+   here.
