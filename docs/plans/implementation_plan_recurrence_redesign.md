@@ -1,7 +1,7 @@
 # Implementation Plan: Recurrence Rule Redesign
 
-**Status:** design LOCKED 2026-08-05, not started. **Plan of record** for replacing the closed
-8-name recurrence pattern set with a two-axis model, and for untangling the cash-date /
+**Status:** design LOCKED 2026-08-05. **R1 DONE**; R2 next. **Plan of record** for replacing the
+closed 8-name recurrence pattern set with a two-axis model, and for untangling the cash-date /
 installment-date collision the design review surfaced.
 
 Rulings taken 2026-08-05 (developer):
@@ -287,10 +287,28 @@ Each step is a leaf boundary: one commit, its own tests green, independently rev
 **Steps R1-R4 do not change any user-visible behaviour.** Half A = R1-R4, R7, R8 (+ the Half-A part
 of R9); Half B = R5, R6 (see section 0).
 
-**R1 -- Oracle and characterization snapshot.** *(no production code)* A pure harness that, for a
-given (rule, periods, horizon), returns the exact set of `(period_id, due_date)` the CURRENT engine
-produces. Snapshot it for all 50 live rule shapes across the full horizon. This is the diff gate
-every later step must pass. Exits with the snapshot committed as a test fixture.
+**R1 -- Oracle and characterization snapshot. DONE** (no production code changed).
+`tests/oracles/recurrence_baseline.py` captures what the CURRENT engine answers from its two public
+entry points, `match_periods` and `compute_due_date`; `recurrence_baseline.txt` freezes it at
+**8,105 lines over 423 shapes**, and `tests/test_services/test_recurrence_baseline.py` is the gate.
+
+Three things it does that the original sketch did not.
+**The shape set is exhaustive on every axis the matcher branches on, not the 50 live shapes** -- 50
+live shapes are themselves a sample, and the verification standard this arc borrows forbids one. All
+31 monthly days, all 12 cycle months against the 6 clamp-relevant days, every `EVERY_N_PERIODS`
+interval 1..8 against every legal phase, the whole due-day axis 1..31, and the validity-window
+bounds on both sides of a period boundary.
+**Keys are `period_index` and the pattern ENUM, never a row id**, so a rebuilt test template cannot
+churn the blob. **The D3 shapes freeze the WRONG answer on purpose**, against a 90-day schedule: R4
+is expected to change exactly those lines, which makes the fix visible in a diff instead of asserted
+in a message.
+
+Shown to fire, not merely asserted: clamping `_match_monthly` one day short turned the gate red at
+`recurrence_baseline.txt line 3780` with the committed and captured lines side by side. Two
+monkeypatch controls (`compute_due_date`, `match_periods`) patch the SOURCE module, which is what
+proves the harness resolves the engine at call time rather than having bound it at import -- the
+"can it SEE the code under test?" failure. Suite **7,875 passed** (7,868 + 7), green under
+`TZ=Pacific/Kiritimati`; the capture reads no clock.
 
 **R2 -- New schema, additive.** Three ref tables + the three `AUDITED_TABLES` entries + the new
 columns and subtype tables, all nullable, with the backfill IN the migration (backfills belong in
