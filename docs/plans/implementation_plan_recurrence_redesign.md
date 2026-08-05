@@ -537,6 +537,15 @@ backfill is already `ON CONFLICT DO UPDATE` so re-deriving converges rather than
 writes, and R2b had to pattern-scope both the prefill and the write to stop an ordinary edit
 resetting a Quarterly rule to 1. The seam is what lets a pattern CHANGE re-derive it properly.
 
+**The derivation already exists -- lift it, do not re-invent it.** `_derive_rule`,
+`_calendar_anchor`, `_first_of_month_anchor`, `_period_anchor`, `_effective_start` and
+`_needs_month_anchor` in migration `c8f2b6a41d93` are the full old->new mapping, unit-tested per
+family in `tests/test_models/test_recurrence_two_axis_columns_migration.py`. The seam is where they
+belong as app code. **Decide the duplication deliberately**: a migration may not import from `app/`
+(the self-contained dependency policy), so R2c's own migration needs the logic too -- either it
+carries a copy, like R2b's, or R2c's migration is written to call the seam's SQL-only equivalent.
+Three copies of one calendar derivation is the outcome to avoid.
+
 - [ ] **R3 -- New engine, parallel and unread.**
 
 `app/services/recurrence/` with `occurrences()` and `place()`. Pure, no Flask. Nothing reads it yet.
