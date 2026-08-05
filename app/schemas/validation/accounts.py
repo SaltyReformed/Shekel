@@ -44,9 +44,29 @@ class AnchorUpdateSchema(BaseSchema):
     -- so there is nothing for a second tab to overwrite and no conflict to
     report.  ``AccountUpdateSchema`` below keeps its ``version_id``: that door
     writes real columns and still has a row to guard.
+
+    **It gained ``observed_on`` at plan step X-f1c4c** (rulings **R-EE** /
+    **R-EI**), which is what makes the one-click editor able to say WHEN a
+    balance was read rather than always meaning "now".  The ``@pre_load`` is not
+    decoration: an untouched HTML date input submits ``""``, and
+    ``fields.Date()`` deserializes that to a validation error rather than to
+    "absent", so without the normalizer a cleared box would 400 instead of
+    meaning today.
     """
 
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        """Drop empty inputs; map empties on nullable fields to None."""
+        return _normalize_empty_inputs(self, data)
+
     anchor_balance = fields.Decimal(required=True, places=2, as_string=True)
+    # The civil day ``anchor_balance`` was TRUE (ruling R-DH), optional exactly
+    # as ``AccountCreateSchema.observed_on`` below is: blank means today.  The
+    # BOUNDS are not here, for the reason stated there -- they compare against
+    # the DISPLAY timezone's today and against the owner's pay schedule, and a
+    # schema owns neither clock nor query.  ``anchor_service`` refuses both
+    # (ruling R-ER), so the two anchor write doors share one rule.
+    observed_on = fields.Date()
 
 
 class AccountCreateSchema(BaseSchema):

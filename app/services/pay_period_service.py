@@ -34,24 +34,37 @@ def earliest_recordable_day(user_id: int) -> date:
     happened today, while nobody may back-date into a past the app has no
     schedule for.
 
-    **It has TWO consumers, and it lives here so they cannot drift.**
+    **It has TWO SERVICE consumers, and it lives here so they cannot drift.**
 
-    * ``account_service._reject_undatable_observation`` -- an anchor's
-      ``observed_on``.  An unbounded day opens the modelled-return window
-      (``balance_at._asset_fold._AccrualWindow`` materialises EVERY calendar day
-      from it) and fabricates contribution history back to it (finding
-      **N-133**).
+    * ``anchor_service.resolve_observation_day`` -- an anchor's ``observed_on``,
+      for BOTH writers of ``AccountAnchorHistory`` (the account factory's
+      origination assertion and the true-up door's).  An unbounded day opens the
+      modelled-return window (``balance_at._asset_fold._AccrualWindow``
+      materialises EVERY calendar day from it) and fabricates contribution
+      history back to it (finding **N-133**).
     * ``status_seam.reject_settle_day_before_the_schedule`` -- a settle day
       (plan step X-f1c, ruling **R-EL**).  An unbounded day is absorbed into the
       opening assertion by ``cash_ledger._walk``, which then resets the running
       total to the asserted balance -- so the row's money silently leaves the
       projection while the row still reads Paid.
 
+    **Four ROUTE consumers read it too, and they are a different use**: the two
+    settle-day inputs (``routes/transactions/forms``, ``routes/transfers/forms``)
+    and the two anchor date inputs (``routes/accounts/crud.new_account``,
+    ``routes/accounts/anchor._anchor_day_bounds``) set an input's ``min`` from
+    it so the browser refuses what the service would refuse.  That is a
+    convenience and never the guard -- an input bound is captured at RENDER time
+    and this floor moves whenever pay periods are generated or truncated.
+
     It was ``account_service.earliest_observable_day`` until X-f1c needed the
     same bound one module lower.  This module is the right home: the rule is a
     PAY-PERIOD SCHEDULE question with no account in it, and living here keeps it
     reachable from ``status_seam``, which must stay below the services that call
-    it.
+    it.  **The first bullet named ``account_service._reject_undatable_observation``
+    and this paragraph named ``account_service.earliest_observable_day`` until
+    plan step X-f1c4c deleted both** (ruling R-ER moved the rule to the module
+    that owns what an assertion is); three independent reviews of that step
+    found this docstring still naming them.
 
     Args:
         user_id: The owner whose schedule sets the floor.

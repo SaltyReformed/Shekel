@@ -4,9 +4,8 @@ Shekel Budget App -- Account Service
 Canonical factory for creating ``budget.accounts`` rows.  Every code
 path that materializes an Account MUST route through ``create_account``
 here so the E-19 / CRIT-01 invariant -- "every account row carries a
-non-NULL anchor balance, a non-NULL anchor period, and a matching
-AccountAnchorHistory row from the moment it exists" -- is enforced in
-exactly one place.
+matching ``AccountAnchorHistory`` assertion from the moment it exists"
+-- is enforced in exactly one place.
 
 This service is Flask-isolated per the project architecture rule
 (``CLAUDE.md`` Architecture section): it takes plain data, returns a
@@ -17,15 +16,21 @@ inside this module).
 Background -- audit finding CRIT-01 / governing intent E-19: before
 this remediation, the five balance producers (grid, /accounts,
 /savings, dashboard, net worth) forked four different ways for the
-NULL-anchor case.  The remediation makes the NULL state unreachable
-both at the storage tier (migration ``cfb15e782f86`` adds NOT NULL +
-``ck_accounts_anchor_balance_present``) and at the application tier
-(this factory).  An ``Account(...)`` construction that bypasses this
-factory remains a latent footgun -- the DB constraint fires, but the
-caller pays a 500-shaped error instead of a clean ``ValidationError``.
-Project rule: ``Account(...)`` direct construction is only acceptable
-in tests that deliberately exercise the storage-tier constraint via
-raw SQL.
+NULL-anchor case.
+
+**That invariant is enforced HERE and nowhere else, and saying so is a
+correction.**  This docstring claimed a storage-tier half -- migration
+``cfb15e782f86``'s ``NOT NULL`` plus ``ck_accounts_anchor_balance_present``
+on ``accounts.current_anchor_balance`` -- and ruling **R-EH** dropped that
+column, its check and the deferrable FK beside it (plan step X-f1c3c).  The
+claim was never quite the invariant anyway: a ``NOT NULL`` column forced a
+VALUE onto the account row, not the existence of a history row, and no
+standard-PostgreSQL constraint can require a child row without a trigger.
+What catches a bypassing caller now is
+:func:`app.services.cash_ledger.resolve_anchor`, which raises ``RuntimeError``
+rather than returning a wrong number -- fail-loud at the first READ instead of
+at the write.  Project rule, unchanged: ``Account(...)`` direct construction
+belongs only in tests that deliberately exercise that failure.
 """
 
 import logging
@@ -42,103 +47,53 @@ from app.models.pay_period import PayPeriod
 from app.models.ref import AccountType
 from app.services import (
     account_posting_service,
+    anchor_service,
     ledger_account_service,
-    pay_period_service,
 )
-from app.utils.dates import display_today
 
 
 logger = logging.getLogger(__name__)
 
 
-def earliest_observable_day(user_id: int) -> date:
-    """Return the earliest civil day a balance may be asserted for.
+def _require_pay_period_schedule(user_id: int) -> None:
+    """Refuse to create an account for an owner with no pay-period schedule.
 
-    The floor :func:`_reject_undatable_observation` enforces, exported so the
-    account-create form can set the date input's ``min`` to the same day the
-    service would refuse below -- ONE definition of the bound, rather than a
-    template literal that drifts from the validation behind it.
+    **A precondition of ACCOUNT CREATION, not a property of a day** (ruling
+    **R-ER**, plan step X-f1c4c).  It was the middle arm of a three-part guard
+    this module shared with nothing; when :func:`create_account` stopped being
+    that guard's only caller the arm had to be placed, and it belongs here:
+    :func:`app.services.anchor_service.resolve_observation_day` now owns the two
+    bounds that are about the DAY, and asking this one there would have refused
+    a true-up on an account that already exists -- exactly the refusal ruling
+    R-EO deleted from that door, and under a message about creating an account.
 
-    **The rule itself moved to**
-    :func:`app.services.pay_period_service.earliest_recordable_day` at plan
-    step X-f1c (ruling **R-EL**), because the settle-day write door needs the
-    same bound and ``status_seam`` must stay below the services that call it.
-    This stays as the account-facing name its callers already use; the
-    behaviour is unchanged and there is one implementation.
-
-    Args:
-        user_id: The account owner whose schedule sets the floor.
-
-    Returns:
-        The earliest assertable civil day.  Today when the user has no pay
-        periods at all -- the account create itself then fails on the missing
-        schedule, which is a clearer error than a date bound.
-    """
-    return pay_period_service.earliest_recordable_day(user_id)
-
-
-def _reject_undatable_observation(user_id: int, observed_on: date) -> None:
-    """Refuse an opening day the app cannot honestly model a balance from.
-
-    ``observed_on`` is USER-SUPPLIED and it is not merely a label: it opens the
-    modelled-return window (``balance_at._asset_fold._AccrualWindow``, which
-    materialises EVERY calendar day from it to the reader's horizon) and it is
-    the first period a payroll contribution can be modelled into
-    (``_asset_contributions``).  An unbounded value is therefore both a
-    correctness defect and a work amplifier: a Property or 401(k) opened "as
-    of" year 1 would fabricate contribution history for every past period and
-    fold over three quarters of a million days on every dashboard render.
-
-    Two bounds, and each refuses for its own reason:
-
-    * **Not in the future.**  A balance cannot have been observed on a day the
-      user has not seen.
-    * **Not before the earlier of the schedule's start and today.**  The
-      assertion's correction is dated inside a pay period, and the projection
-      has nothing to say about a day preceding the whole schedule.  The floor
-      takes the EARLIER of the two so a user whose periods are all still in
-      the future can nonetheless assert what they hold today.  **It had a
-      second reason that ruling R-EO removed**: without the bound,
-      ``resolve_anchor_period_id`` fell back to the EARLIEST period and FILED
-      the assertion against a period its own ``observed_on`` fell outside.  An
-      assertion is no longer filed against a period at all, so that half is
-      gone with the function; the accrual-window reason above is why the floor
-      stays.
+    **Its stated reason was already false when it moved.**  It read "so the
+    account's anchor has a period to reference", which ruling R-EO falsified by
+    deleting ``account_anchor_history.pay_period_id`` -- an assertion references
+    no period.  The live reason is one line further down this module: the tail
+    of :func:`create_account` posts the opening's anchor correction, and
+    ``account_posting_service`` derives each correction's pay period from the
+    day it asserts, raising when the owner's calendar is empty (finding
+    **N-192**).  Refusing here turns that 500 into a ``ValidationError`` the
+    route can route to the generate-periods page.
 
     Args:
-        user_id: The account owner, whose pay-period schedule sets the floor.
-        observed_on: The candidate civil day.
+        user_id: The prospective account owner.
 
     Raises:
-        ValidationError: When the day is in the future, before the schedule
-            starts, or the user has no pay periods at all.  The message names
-            the offending value and the bound it broke; the route surfaces it
-            verbatim.
+        ValidationError: When the user has no ``budget.pay_periods`` rows.  The
+            route discriminates this shape from a bad observation day by
+            re-asking the database rather than by reading the message, so the
+            wording is free to say what is true.
     """
-    today = display_today()
-    if observed_on > today:
-        raise ValidationError(
-            f"Cannot observe a balance on {observed_on.isoformat()}: that day "
-            f"has not happened yet (today is {today.isoformat()}).  An "
-            "opening balance states what the account held on a day you have "
-            "already seen."
-        )
     if not db.session.query(
         db.session.query(PayPeriod).filter_by(user_id=user_id).exists()
     ).scalar():
         raise ValidationError(
-            f"Cannot create an account for user_id={user_id}: the user "
-            "has no pay periods.  Generate pay periods first so the "
-            "account's anchor has a period to reference."
-        )
-    floor = earliest_observable_day(user_id)
-    if observed_on < floor:
-        raise ValidationError(
-            f"Cannot observe a balance on {observed_on.isoformat()}: your "
-            f"recorded history starts on {floor.isoformat()}, and a balance "
-            "asserted before then has no pay period to be recorded against.  "
-            "Use a day on or after that, or generate earlier pay periods "
-            "first."
+            f"Cannot create an account for user_id={user_id}: the user has no "
+            "pay periods.  Generate pay periods first -- the opening balance "
+            "posts a correction into the period containing the day it asserts, "
+            "and an empty calendar has no such period."
         )
 
 
@@ -150,8 +105,10 @@ class AccountSpec:
     supplies into one cohesive value object so the factory takes a
     single argument instead of a long keyword list.  The clump is what
     every caller co-loads: a new account is always created from an
-    owner, a type, a name, and a real-money anchor (with an optional
-    explicit anchor period and an audit-trail note).  Open-ended
+    owner, a type, a name, and a real-money anchor (with the civil day
+    that anchor was true and an audit-trail note).  **It carried an
+    optional explicit anchor PERIOD until ruling R-EO** (plan step
+    X-f1c3b), which deleted the column the field fed.  Open-ended
     ``Account`` columns are NOT part of this concept -- they pass
     through :func:`create_account`'s ``**extra_columns`` instead.
 
@@ -220,9 +177,8 @@ def create_account(spec: AccountSpec, **extra_columns) -> Account:
 
     Args:
         spec: The :class:`AccountSpec` carrying the owner, type, name,
-            anchor balance, the day that balance was true, an optional
-            explicit anchor period, and the audit note for the account
-            to create.
+            anchor balance, the day that balance was true, and the audit
+            note for the account to create.
         **extra_columns: Additional ``Account`` columns (e.g.
             ``sort_order``, ``is_active``).  Forwarded verbatim to
             the model constructor.
@@ -233,11 +189,15 @@ def create_account(spec: AccountSpec, **extra_columns) -> Account:
         the session pending commit.
 
     Raises:
-        ValidationError: When ``observed_on`` is in the future (a balance
-            cannot have been observed on a day that has not happened), when it
-            precedes the user's recorded history, or when the user has no pay
-            periods at all -- all three from
-            :func:`_reject_undatable_observation`.
+        ValidationError: When the user has no pay periods at all
+            (:func:`_require_pay_period_schedule`, this module's own
+            precondition), or when ``observed_on`` is in the future or precedes
+            the user's recorded history
+            (:func:`app.services.anchor_service.resolve_observation_day`, the
+            rule every assertion writer shares).  **Two sources, one exception
+            type, and the route must not tell them apart by the message** --
+            ``routes/accounts/crud.create_account`` re-asks the database, which
+            is why splitting them at ruling R-ER changed no destination.
         TypeError: When ``anchor_balance`` is not a ``Decimal``.  The
             project rejects ``float`` in monetary code; passing
             ``int`` or ``str`` is also a caller bug.
@@ -261,18 +221,23 @@ def create_account(spec: AccountSpec, **extra_columns) -> Account:
             f"anchor_balance must be Decimal, got {type(anchor_balance).__name__}"
         )
 
-    # The day the asserted balance was TRUE (ruling R-DH).  It dates the
-    # origination assertion, and the anchor period is resolved FROM it, so the
-    # row's two statements of "when" cannot disagree.
-    observed_on = (
-        spec.observed_on if spec.observed_on is not None else display_today()
+    # An account cannot be created without a pay-period schedule, and that is
+    # this module's own precondition rather than a rule about the day below
+    # (ruling R-ER) -- see :func:`_require_pay_period_schedule` for the reason,
+    # which is the opening correction this function's own tail posts.  Asked
+    # FIRST: with an empty calendar the day bound's floor collapses to today, so
+    # letting it answer first would report "your recorded history starts on
+    # <today>" to a user whose real problem is that they have no history at all.
+    _require_pay_period_schedule(spec.user_id)
+    # The day the asserted balance was TRUE (ruling R-DH), defaulted and bounded
+    # in ONE call by the module that owns what an assertion is (ruling R-ER).
+    # It was defaulted here and then handed to a separate guard that read the
+    # clock again -- two readings, and a midnight tick between them could refuse
+    # this function's own default (the floor arm; the note that used to sit here
+    # considered only the future arm, whose ``>`` test is forgiving).
+    observed_on = anchor_service.resolve_observation_day(
+        spec.user_id, spec.observed_on,
     )
-    _reject_undatable_observation(spec.user_id, observed_on)
-    # NB the default and the guard read ``display_today()`` once each, and the
-    # guard re-reads it.  That is deliberate rather than sloppy: the guard is
-    # also the entry point for a CALLER-supplied day, so it cannot take the
-    # default's clock reading on trust.  A midnight tick between the two makes
-    # the default one day stale, never invalid -- the guard's test is ``>``.
 
     account = Account(
         user_id=spec.user_id,

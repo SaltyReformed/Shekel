@@ -60,6 +60,7 @@ from app.services import (
     anchor_service,
     cash_ledger,
     ledger_account_service,
+    pay_period_service,
     transfer_service,
 )
 from app.services.account_projection import AccountProjectionKind, classify_account
@@ -121,14 +122,19 @@ def new_account():
         anchor_balance=None,
         account_types=_visible_account_types(current_user.id),
         # The "balance as of" field's default and its two bounds, mirroring
-        # ``account_service._reject_undatable_observation`` so the browser
-        # refuses what the service would refuse rather than round-tripping a
-        # rejection.  ``display_today()`` rather than ``date.today()``: the
-        # process clock is pinned to the display zone in the deployed
-        # container, but a script or CI run is not, and the form must not offer
-        # a day the service then rejects (ruling R-DH (b)).
+        # ``anchor_service.resolve_observation_day`` so the browser refuses
+        # what the service would refuse rather than round-tripping a rejection.
+        # ``display_today()`` rather than ``date.today()``: the process clock is
+        # pinned to the display zone in the deployed container, but a script or
+        # CI run is not, and the form must not offer a day the service then
+        # rejects (ruling R-DH (b)).  The floor is
+        # ``pay_period_service.earliest_recordable_day`` DIRECTLY, as
+        # ``routes/transactions/forms.py`` already reads it: it went through an
+        # ``account_service`` alias until ruling R-ER moved the guard out from
+        # under that alias, leaving a pass-through with no behaviour and two
+        # spellings of one form bound at the route layer.
         today=display_today(),
-        observed_on_min=account_service.earliest_observable_day(
+        observed_on_min=pay_period_service.earliest_recordable_day(
             current_user.id,
         ),
     )
@@ -307,9 +313,16 @@ def create_account():
         if has_periods:
             flash(str(exc), "warning")
             return redirect(url_for("accounts.new_account"))
+        # The reason is the OPENING's posting correction, not anchoring: an
+        # assertion carries no pay period (ruling R-EO deleted the column), so
+        # "the account balance has a period to anchor against" -- what this
+        # string said until plan step X-f1c4c -- named a fact that no longer
+        # exists.  It is the only user-facing copy stating the rule, and it was
+        # left behind when the service's own wording was corrected.
         flash(
-            "Generate pay periods before creating an account so the "
-            "account balance has a period to anchor against.",
+            "Generate pay periods before creating an account: its opening "
+            "balance posts into the pay period containing the day it is true "
+            "for, and an empty calendar has no such period.",
             "warning",
         )
         return redirect(url_for("pay_periods.generate_form"))

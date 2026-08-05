@@ -351,19 +351,79 @@ class TestAccountCreate:
         """The date input carries the same two bounds the service enforces.
 
         The browser refuses what the service would refuse, rather than
-        round-tripping a rejection -- and both bounds come from
-        ``account_service.earliest_observable_day`` / ``display_today`` so the
-        form cannot drift from the validation behind it.
+        round-tripping a rejection.  The floor is read from
+        ``pay_period_service.earliest_recordable_day`` -- the SAME function
+        ``anchor_service.resolve_observation_day`` refuses below -- rather than
+        from the fixture's own first period, so this pins the form to the
+        implementation instead of to a value that merely happens to match.
+        It named ``account_service.earliest_observable_day`` until ruling
+        **R-ER** deleted that pass-through (plan step X-f1c4c).
         """
         with app.app_context():
+            floor = pay_period_service.earliest_recordable_day(
+                seed_user["user"].id,
+            )
+            # Non-vacuity: the fixture's first period IS that floor today, so
+            # state the equality rather than letting the two silently diverge.
+            assert floor == seed_periods_today[0].start_date
+
             html = auth_client.get("/accounts/new").data.decode()
 
             assert 'name="observed_on"' in html
             assert f'value="{display_today().isoformat()}"' in html
             assert f'max="{display_today().isoformat()}"' in html
-            assert (
-                f'min="{seed_periods_today[0].start_date.isoformat()}"' in html
+            assert f'min="{floor.isoformat()}"' in html
+
+    def test_creating_an_account_without_a_schedule_is_refused_not_500(
+        self, app, auth_client, seed_user,
+    ):
+        """The schedule precondition, which no test could see before.
+
+        Ruling **R-ER** split this arm out of the shared day rule into
+        ``account_service._require_pay_period_schedule``, promoted it to run
+        FIRST in ``create_account``, and rewrote its rationale.  A neutral
+        review then deleted the guard outright and watched **6,218 tests stay
+        green** -- so the split, the reorder and the message were all shipping
+        ungraded.
+
+        What it protects: ``create_account``'s tail posts the opening's anchor
+        correction, and that reconcile derives each correction's pay period from
+        the day it asserts (ruling R-EA).  With an empty calendar there is no
+        such period and the reconcile raises (finding **N-192**), so without
+        this guard the user gets an unhandled 500 on a money route instead of a
+        flash pointing at the repair.
+        """
+        # Imported here, matching this module's established local-import idiom
+        # for the model (see ``_create_other_user_account``).
+        from app.models.pay_period import PayPeriod  # pylint: disable=import-outside-toplevel
+
+        with app.app_context():
+            user_id = seed_user["user"].id
+            db.session.query(PayPeriod).filter_by(user_id=user_id).delete()
+            db.session.commit()
+            assert db.session.query(PayPeriod).filter_by(
+                user_id=user_id,
+            ).count() == 0, "precondition: the owner has no schedule"
+            savings_type = (
+                db.session.query(AccountType).filter_by(name="Savings").one()
             )
+            accounts_before = db.session.query(Account).filter_by(
+                user_id=user_id,
+            ).count()
+
+            response = auth_client.post("/accounts", data={
+                "name": "Scheduleless Savings",
+                "account_type_id": savings_type.id,
+                "anchor_balance": "500.00",
+            }, follow_redirects=True)
+
+            # A designed refusal, not a crash, and it points at the repair.
+            assert response.status_code == 200
+            assert b"Generate pay periods" in response.data
+            # No account was created -- the guard runs before the factory.
+            assert db.session.query(Account).filter_by(
+                user_id=user_id,
+            ).count() == accounts_before
 
     def test_create_account_zero_anchor_balance(self, app, auth_client, seed_user):
         """POST /accounts with anchor_balance "0" stores an exact zero.
@@ -1052,9 +1112,26 @@ class TestTrueUp:
             ).count() == before_rows + 1
 
     def test_true_up_invalid_amount(self, app, auth_client, seed_user, seed_periods_today):
-        """PATCH /accounts/<id>/true-up with invalid amount returns 400 with errors JSON."""
+        """An unparseable balance is refused with a 400 the browser RENDERS.
+
+        The contract changed at plan step X-f1c4c, on the developer's ruling,
+        and the old one is why: this door answered ``jsonify(errors=...)`` with
+        no marker header, and ``base.html`` configures 4xx as ``swap:false`` --
+        so a correct 400 with a correct message rendered NOTHING and the form
+        sat there.  The test that graded it asserted only that the JSON carried
+        an ``errors`` key, which the invisible response satisfied.
+
+        What is graded now is the property that was missing: the response
+        carries ``Shekel-Designed-Fragment``, which is the ONLY thing that makes
+        htmx swap a 4xx, and its body is the editor re-rendered with the reason
+        in it.  Every clause is load-bearing -- drop the header and the user
+        sees a dead form again, drop the body check and a bare 400 passes.
+        """
         with app.app_context():
             account_id = seed_user["account"].id
+            rows_before = db.session.query(AccountAnchorHistory).filter_by(
+                account_id=account_id,
+            ).count()
 
             response = auth_client.patch(
                 f"/accounts/{account_id}/true-up",
@@ -1062,8 +1139,31 @@ class TestTrueUp:
             )
 
             assert response.status_code == 400
-            body = response.get_json()
-            assert "errors" in body, "400 response must contain validation errors"
+            assert response.headers.get("Shekel-Designed-Fragment") == "1", (
+                "a 4xx without the marker header is non-swapping, so the "
+                "refusal would render nothing at all"
+            )
+            html = response.data.decode()
+            # The editor came back, in EDIT mode, so the user can correct the
+            # value in place rather than losing the surface.
+            assert 'name="anchor_balance"' in html
+            # ...and it says WHY.  The VALIDATOR's own message, not the field
+            # name: ``assert "anchor_balance" in html`` was implied by the line
+            # above and could not fail on its own, so a response carrying the
+            # editor and no error text at all passed it.
+            assert "Not a valid number" in html
+            assert 'role="alert"' in html
+            # Nothing was WRITTEN, counted rather than read back.  Asserting the
+            # resolved balance is still $1,000.00 would be vacuous: that is
+            # ``seed_user``'s own origination figure, so a path that appended a
+            # fresh $1,000.00 assertion dated today -- which would move
+            # ``reconciled_through`` and absorb outstanding purchases -- passes
+            # it.  The same trap is documented twenty lines above, on the
+            # positive side.
+            db.session.expire_all()
+            assert db.session.query(AccountAnchorHistory).filter_by(
+                account_id=account_id,
+            ).count() == rows_before
 
     def test_true_up_other_users_account(
         self, app, auth_client, seed_user, seed_periods_today
@@ -1230,6 +1330,273 @@ class TestTrueUpSameDayDuplicate:
             )
 
 
+class TestTrueUpStatementDay:
+    """The true-up carries the day it was read from (plan step X-f1c4c).
+
+    Rulings **R-EE** (the true-up form gets its own statement date) and
+    **R-EI** (it goes on a second line).  The service contract is pinned in
+    ``tests/test_services/test_anchor_service.py``; these cases grade the WIRING
+    -- that the form offers the field bounded, that the submitted day reaches
+    the write door, and that a refusal renders where the submission was made.
+    """
+
+    #: Days back from today for a day that is assertable on any calendar day.
+    #: ``seed_periods_today`` starts its schedule ``today.weekday() + 56`` days
+    #: back, so 20 is inside the floor with room to spare.
+    STATEMENT_DAYS_BACK = 20
+
+    def _statement_day(self, seed_user):
+        """Return a past day inside both bounds, asserting the fixture affords it."""
+        day = display_today() - timedelta(days=self.STATEMENT_DAYS_BACK)
+        floor = pay_period_service.earliest_recordable_day(seed_user["user"].id)
+        assert floor <= day, (
+            f"the schedule starts {floor}, so {day} is not assertable; "
+            "seed_periods_today no longer affords 20 days of history"
+        )
+        return day
+
+    def test_the_editor_offers_a_bounded_statement_day(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The date box is present, defaults to today, and carries both bounds.
+
+        The bounds are read from the same functions the seam refuses by, not
+        written as literals, so this cannot pass against a second definition of
+        the floor.  Default = today is ruling R-EE's "one click stays one
+        click": leaving the box alone means "I am reading my bank now".
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            floor = pay_period_service.earliest_recordable_day(
+                seed_user["user"].id,
+            )
+            today = display_today()
+
+            html = auth_client.get(
+                f"/accounts/{acct_id}/anchor-form"
+            ).data.decode()
+
+            assert 'name="observed_on"' in html
+            assert f'value="{today.isoformat()}"' in html
+            assert f'min="{floor.isoformat()}"' in html
+            assert f'max="{today.isoformat()}"' in html
+
+    def test_a_submitted_day_is_what_the_assertion_carries(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A back-dated true-up through the route lands on the day submitted."""
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            statement_day = self._statement_day(seed_user)
+
+            response = auth_client.patch(
+                f"/accounts/{acct_id}/true-up",
+                data={
+                    "anchor_balance": "1750.25",
+                    "observed_on": statement_day.isoformat(),
+                },
+            )
+
+            assert response.status_code == 200, response.data[:200]
+            db.session.expire_all()
+            row = (
+                db.session.query(AccountAnchorHistory)
+                .filter_by(account_id=acct_id, observed_on=statement_day)
+                .one()
+            )
+            assert row.anchor_balance == Decimal("1750.25")
+            # Non-vacuity: the stamped day is not the default, so a route that
+            # dropped the field could not pass.
+            assert statement_day != display_today()
+
+    def test_a_blank_day_means_today(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """An empty date box is "now", not a validation error.
+
+        An untouched HTML date input submits ``""``, and ``fields.Date()``
+        deserializes that to an error rather than to "absent" -- so without the
+        schema's ``@pre_load`` normalizer, clearing the box would 400 instead of
+        meaning today.  This is that normalizer's control, submitted the way a
+        browser actually submits it.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+
+            response = auth_client.patch(
+                f"/accounts/{acct_id}/true-up",
+                data={"anchor_balance": "1751.25", "observed_on": ""},
+            )
+
+            assert response.status_code == 200, response.data[:200]
+            db.session.expire_all()
+            anchor = cash_ledger.resolve_anchor(
+                db.session.get(Account, acct_id),
+            )
+            assert anchor.balance == Decimal("1751.25")
+            assert anchor.observed_on == display_today()
+
+    @pytest.mark.parametrize(
+        "offset_days, expected_phrase",
+        [
+            (1, "has not happened yet"),
+            (None, "recorded history starts on"),
+        ],
+        ids=["future-day", "below-the-schedule"],
+    )
+    def test_an_out_of_bounds_day_is_refused_and_RENDERED(
+        self, app, auth_client, seed_user, seed_periods_today,
+        offset_days, expected_phrase,
+    ):
+        """Both bounds refuse with a 400 the browser will actually swap.
+
+        The marker header is the load-bearing assertion: ``base.html``
+        configures 4xx as non-swapping, so a refusal without it renders
+        nothing and the form appears to ignore the click.  Parametrized over
+        the two bounds because they are one surface with one contract -- a fix
+        that rendered only the future case would pass a single-case test.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            before = db.session.query(AccountAnchorHistory).filter_by(
+                account_id=acct_id,
+            ).count()
+            floor = pay_period_service.earliest_recordable_day(
+                seed_user["user"].id,
+            )
+            if offset_days is None:
+                bad_day = floor - timedelta(days=1)
+            else:
+                bad_day = display_today() + timedelta(days=offset_days)
+
+            response = auth_client.patch(
+                f"/accounts/{acct_id}/true-up",
+                data={
+                    "anchor_balance": "1750.25",
+                    "observed_on": bad_day.isoformat(),
+                },
+            )
+
+            assert response.status_code == 400
+            assert response.headers.get("Shekel-Designed-Fragment") == "1", (
+                "a 4xx without the marker header is non-swapping, so this "
+                "refusal would render nothing at all"
+            )
+            html = response.data.decode()
+            assert expected_phrase in html
+            # The editor came back with the user's own inputs, so the wrong
+            # field can be corrected without retyping the right one.
+            assert 'name="observed_on"' in html
+            assert f'value="{bad_day.isoformat()}"' in html
+            assert 'value="1750.25"' in html
+            # The re-rendered editor still carries BOTH bounds.  Graded here as
+            # well as on the GET because the error path builds its context
+            # separately: a template change that dropped them from the
+            # rejection render would leave the corrected re-submit unbounded in
+            # the browser, and only the GET test would have noticed.
+            assert f'min="{floor.isoformat()}"' in html
+            assert f'max="{display_today().isoformat()}"' in html
+            # Escape reverts from EITHER field.  A substring check passes on the
+            # balance input alone, so the count is what pins the date input's
+            # own wiring -- ruling R-EI's second line is where the user's cursor
+            # ends up, and Escape silently dying there is not visible in review.
+            assert html.count('data-action="anchor-cancel-on-escape"') == 2
+            # Nothing was written.
+            db.session.expire_all()
+            assert db.session.query(AccountAnchorHistory).filter_by(
+                account_id=acct_id,
+            ).count() == before
+
+    def test_the_account_edit_door_files_its_assertion_under_today(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The SECOND anchor write door's day, which nothing graded.
+
+        ``routes/accounts/crud.update_account`` calls ``stage_anchor_true_up``
+        with no ``observed_on``, so it relies entirely on
+        ``resolve_observation_day``'s ``None`` default.  A neutral review shimmed
+        that door to back-date every assertion it writes and **5,742 tests stayed
+        green**.
+
+        The day matters on this door specifically: it is what moves
+        ``reconciled_through``, and the comment defending this door's separate
+        change-detection gate turns on the claim that a rename must not move it.
+        That argument was carried by a comment and by nothing else.
+
+        Plan step **X-f1e** deletes this door; until it does, this is what says
+        the door behaves.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            account = db.session.get(Account, acct_id)
+            governing_before = cash_ledger.resolve_anchor(account)
+            checking_type = (
+                db.session.query(AccountType).filter_by(name="Checking").one()
+            )
+
+            response = auth_client.post(f"/accounts/{acct_id}", data={
+                "name": account.name,
+                "account_type_id": str(checking_type.id),
+                "anchor_balance": "4321.00",
+                "version_id": str(account.version_id),
+            }, follow_redirects=True)
+
+            assert response.status_code == 200
+            db.session.expire_all()
+            appended = (
+                db.session.query(AccountAnchorHistory)
+                .filter_by(account_id=acct_id, anchor_balance=Decimal("4321.00"))
+                .one()
+            )
+            assert appended.observed_on == display_today(), (
+                "the edit door files under the USER's today; a back-dated one "
+                "would silently leave reconciled_through where it was"
+            )
+            # The prior assertion is untouched -- this door APPENDS, it does not
+            # rewrite what was already asserted.
+            assert cash_ledger.governing_anchor_on(
+                acct_id, governing_before.observed_on,
+            ).balance == governing_before.balance
+
+    def test_a_refusal_keeps_the_surface_that_opened_the_editor(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Cancel after a refusal returns to the opener, not to the grid cell.
+
+        The editor opens from five surfaces and threads a ``revert`` token so
+        Cancel restores the right one.  A rejection RE-RENDERS the editor, so
+        the token has to survive the rejection -- otherwise a refused dashboard
+        true-up leaves the card able only to revert into the grid's display
+        cell, which is not on that page.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+
+            response = auth_client.patch(
+                f"/accounts/{acct_id}/true-up?revert=dashboard",
+                data={
+                    "anchor_balance": "1750.25",
+                    "observed_on": (
+                        display_today() + timedelta(days=1)
+                    ).isoformat(),
+                },
+            )
+
+            assert response.status_code == 400
+            html = response.data.decode()
+            # Both revert affordances -- the Cancel button's hx-get and the
+            # Escape handler's data-revert-url -- must point at the dashboard
+            # card, exactly as they do on the non-rejected GET.
+            assert 'hx-get="/dashboard/balance"' in html, (
+                "the revert token was dropped by the rejection path"
+            )
+            assert 'data-revert-url="/dashboard/balance"' in html
+            assert f"/accounts/{acct_id}/anchor-display" not in html
+            # The mutation URL keeps the token too, so a corrected re-submit
+            # still lands back on the dashboard rather than on the grid.
+            assert 'hx-patch="/accounts/'f'{acct_id}/true-up?revert=dashboard"' in html
+
+
 class TestTheReconcileRoute:
     """The reconcile step's two doors -- plan step S1-c, ruling R-DH (d) / 12.5.
 
@@ -1328,21 +1695,162 @@ class TestTheReconcileRoute:
         return txn
 
     @staticmethod
-    def _true_up(auth_client, account_id, balance):
-        """Assert *balance* for today through the real PATCH route.
+    def _true_up(auth_client, account_id, balance, observed_on=None, revert=None):
+        """Assert *balance* through the real PATCH route.
 
         The reconcile route reads the account's LATEST asserted day and stamps
         it, so the fixtures true up first rather than hand-writing a history
         row: that is the production sequence (read your bank balance, enter it,
         then tick off what it contained) and it is the sequence whose ORDER the
         retired flag got wrong.
+
+        Args:
+            auth_client: the authenticated client.
+            account_id: the account to assert about.
+            balance: the balance string to submit.
+            observed_on: an optional civil day to submit as the statement date
+                (plan step X-f1c4c).  ``None`` submits the field not at all,
+                which the write door reads as the user's today.
+            revert: an optional surface token naming which of the five openers
+                the editor was opened from.  ``None`` is the grid default.  It
+                exists because the success response BRANCHES on it, and a
+                caller that never passes one grades only the fall-through.
         """
-        response = auth_client.patch(
-            f"/accounts/{account_id}/true-up",
-            data={"anchor_balance": balance},
-        )
+        data = {"anchor_balance": balance}
+        if observed_on is not None:
+            data["observed_on"] = observed_on.isoformat()
+        url = f"/accounts/{account_id}/true-up"
+        if revert is not None:
+            url = f"{url}?revert={revert}"
+        response = auth_client.patch(url, data=data)
         assert response.status_code == 200
         return response
+
+    @pytest.mark.parametrize(
+        "revert",
+        [None, "dashboard", "accounts", "investment", "cash"],
+        ids=["grid", "dashboard", "cockpit", "investment-hero", "cash-hero"],
+    )
+    def test_a_back_dated_true_up_does_not_prompt_to_reconcile(
+        self, app, auth_client, seed_user, seed_periods_today, revert,
+    ):
+        """The prompt follows the COVERAGE BOUNDARY, not the click.
+
+        **This is the money defect a neutral adversarial review of plan step
+        X-f1c4c reproduced end to end.**  The prompt is keyed on
+        ``cash_ledger.reconciled_through`` -- ``MAX(observed_on)`` -- which a
+        back-dated assertion does not move.  Before that step every cash true-up
+        stamped today, so the submitted day and that maximum were the same value
+        by construction; a user-supplied day decoupled them and nothing
+        re-coupled them.
+
+        What that cost: submit an OLD statement's balance and the modal opens
+        against the LATEST assertion's day, offering purchases made after that
+        statement.  Ticking one is a settlement the user cannot have observed,
+        and it releases the envelope budget being held for it -- reproduced at
+        ``$120.00`` of projected checking balance on money that never left the
+        bank.
+
+        The purchase here is dated AFTER the back-dated statement day precisely
+        so it is one the statement could not show.
+
+        **Parametrized over all five openers**, because the success response
+        BRANCHES on the surface token and a re-review proved the branch
+        ungraded: with both original cases submitting no ``revert``, a mutant
+        that kept the pre-fix prompt on the ``accounts`` / ``investment`` /
+        ``cash`` arm passed the whole 7,843-test suite.  ``cash`` is the cash
+        detail page -- the surface a user would most plausibly enter an old
+        statement from, and the one that already carries the reconcile section.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            today = display_today()
+            statement_day = today - timedelta(days=20)
+            # An outstanding purchase the modal WOULD offer.
+            self._make_grocery_txn_with_entries(
+                seed_user, seed_periods_today,
+                [("120.00", today - timedelta(days=2), False, None)],
+            )
+            # Establish a recent coverage boundary, so the back-dated
+            # submission below is genuinely not the account's latest day.
+            self._true_up(auth_client, acct_id, "1000.00")
+
+            response = self._true_up(
+                auth_client, acct_id, "2500.00",
+                observed_on=statement_day, revert=revert,
+            )
+
+            html = response.data.decode()
+            assert "data-modal-auto-show" not in html, (
+                "a back-dated assertion reconciles nothing new, so the prompt "
+                "must not ask against a statement it does not describe"
+            )
+            if revert in ("accounts", "investment", "cash"):
+                # Those three carry no ``#anchor-as-of`` element, so the
+                # acknowledgement is not emitted there at all (finding N-199).
+                # Asserted rather than skipped, so the gap is a recorded fact.
+                assert "recorded as of" not in html
+                return
+            # The user is TOLD the back-dated write landed, because the cell
+            # re-renders from the GOVERNING assertion and would otherwise be
+            # indistinguishable from having done nothing.  The DAY is graded,
+            # not the phrase: a mutant naming the governing assertion's day
+            # instead of the submitted one also passed the whole suite, and it
+            # is worse than silence -- it affirmatively tells the user the
+            # correction landed on a day it did not.
+            assert (
+                f"recorded as of {statement_day.strftime('%b %-d, %Y')}" in html
+            )
+            assert (
+                f"recorded as of {today.strftime('%b %-d, %Y')}" not in html
+            ), "the acknowledgement must name the SUBMITTED day, not today"
+
+    @pytest.mark.parametrize(
+        "revert",
+        [None, "dashboard", "accounts", "investment", "cash"],
+        ids=["grid", "dashboard", "cockpit", "investment-hero", "cash-hero"],
+    )
+    def test_an_ordinary_true_up_still_prompts_to_reconcile(
+        self, app, auth_client, seed_user, seed_periods_today, revert,
+    ):
+        """The non-vacuity control for the case above.
+
+        Identical fixture, identical outstanding purchase; only the submitted
+        day differs.  Without this, suppressing the prompt UNCONDITIONALLY
+        would pass the back-dated case -- and the date box is pre-filled with
+        today, so every ordinary one-click true-up now submits an explicit day
+        and would have been caught by a blanket rule.
+
+        Both spellings of "now" are graded: the field omitted (an older client,
+        and the shape every other true-up test submits) and the field carrying
+        today (what the editor actually sends since plan step X-f1c4c).  Both
+        are checked on EVERY opener, so the surface branch cannot regress on one
+        of them silently.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            today = display_today()
+            self._make_grocery_txn_with_entries(
+                seed_user, seed_periods_today,
+                [("120.00", today - timedelta(days=2), False, None)],
+            )
+
+            omitted = self._true_up(
+                auth_client, acct_id, "1000.00", revert=revert,
+            )
+            assert "data-modal-auto-show" in omitted.data.decode()
+
+            explicit = self._true_up(
+                auth_client, acct_id, "1100.00", observed_on=today,
+                revert=revert,
+            )
+            html = explicit.data.decode()
+            assert "data-modal-auto-show" in html, (
+                "the editor pre-fills today, so this is the ORDINARY path -- "
+                "a rule keyed on 'was a day submitted' would break it"
+            )
+            # Nothing to acknowledge: this submission IS the boundary.
+            assert "recorded as of" not in html
 
     @staticmethod
     def _entries_of(txn_id):

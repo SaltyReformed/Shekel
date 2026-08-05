@@ -99,10 +99,14 @@ from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.services import (
     account_posting_service,
+    anchor_service,
+    cash_ledger,
     posting_service,
     transfer_service,
 )
+from app.services.anchor_service import AnchorTrueUpOutcome
 from app.utils.balance_predicates import settled_status_ids
+from app.utils.dates import display_today
 from tests._test_helpers import (
     create_account_of_type,
     create_settled_cash_transaction,
@@ -1117,6 +1121,195 @@ class TestZeroDeltaBooksNothing:
                 db.session, zero.id, LedgerAccountKindEnum.ANCHOR_EQUITY,
             ) is None
             _assert_account_anchors_reconcile(scenario_id)
+
+
+# ---------------------------------------------------------------------------
+# 7b. A BACK-DATED true-up, through the real write door (plan step X-f1c4c)
+# ---------------------------------------------------------------------------
+
+
+class TestBackDatedTrueUpReBasesTheLedger:
+    """A user-supplied ``observed_on`` inserts an assertion MID-HISTORY.
+
+    Plan step X-f1c4c made that reachable for the first time: every cash true-up
+    stamped ``display_today()`` before it, so an assertion could only ever be
+    appended at or after every existing one.  Inserting one BETWEEN two others
+    is therefore a new input shape for
+    ``account_posting_service.sync_account_anchor_postings_all_scenarios`` --
+    an already-posted correction has to be ADJUSTED rather than posted fresh,
+    and the entry's source kind can flip.
+
+    **Three independent reviews of that step all found the posted ledger
+    ungraded for it**, and one demonstrated the gap by removing the re-sync
+    entirely: all eleven of the step's own new tests still passed, because
+    ``cash_balance_at`` does not read ``account_postings``.  These two cases
+    close that hole, using this file's independent oracles rather than the
+    service's own helpers.
+
+    Both go through ``anchor_service.apply_anchor_true_up`` -- the production
+    door, with its lock, its duplicate rule and its re-sync -- not the
+    deterministic ``_assert_balance_at`` stand-in the older classes use, because
+    the door is what the step changed.
+    """
+
+    def test_a_mid_history_back_date_re_bases_and_reconciles(
+        self, app, db, seed_user,
+    ):
+        """An assertion inserted between two others leaves the ledger exact.
+
+        Opening $1,000.00 at O, a settled $200.00 expense at O+5, a true-up to
+        $900.00 at O+20, then a BACK-DATED $700.00 asserted for O+10 -- which
+        lands after the expense and before the later true-up, so it must
+        re-partition which correction absorbs that expense and adjust the later
+        correction rather than double-count it.
+
+        Hand-computed: the walk absorbs the -$200.00 into the O+10 assertion
+        (running 1000 - 200 = 800, asserted 700, delta -100), and the O+20
+        correction re-bases from 700 to 900 (delta +200).  The linked ledger
+        must therefore land on the LATEST anchor, $900.00, with no
+        post-assertion sources.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            opening_day = display_today() - timedelta(days=40)
+            savings = create_account_of_type(
+                seed_user, db.session, "Savings", "Back-dated Savings",
+                anchor_balance=Decimal("1000.00"), observed_on=opening_day,
+            )
+            db.session.commit()
+
+            _settle_expense(
+                seed_user, savings, "200.00",
+                opening_day + timedelta(days=5),
+            )
+            db.session.commit()
+
+            anchor_service.apply_anchor_true_up(
+                account=savings, new_balance=Decimal("900.00"),
+                observed_on=opening_day + timedelta(days=20),
+            )
+            # THE BACK-DATE: strictly between the expense and the later true-up.
+            outcome = anchor_service.apply_anchor_true_up(
+                account=savings, new_balance=Decimal("700.00"),
+                observed_on=opening_day + timedelta(days=10),
+            )
+
+            assert outcome is AnchorTrueUpOutcome.COMMITTED
+            # The ledger lands on the LATEST anchor, read through the
+            # independent join rather than the service's own total.
+            assert _independent_linked_ledger_sum(
+                savings.id, scenario_id,
+            ) == Decimal("900.00")
+            # ...and through the seam's own reader, which resolves the ledger
+            # row first, so a shared lookup bug cannot satisfy both.
+            assert posting_service.account_posting_total(
+                savings.id, scenario_id,
+            ) == Decimal("900.00")
+            # Ledger-wide self-checks: nothing was double-posted or stranded.
+            assert _trial_balance() == Decimal("0.00")
+            assert _entries_violating_balance() == []
+            _assert_account_anchors_reconcile(scenario_id)
+
+    def test_back_dating_below_the_opening_re_designates_it_and_reconciles(
+        self, app, db, seed_user,
+    ):
+        """An assertion before the opening BECOMES the opening, and ties exactly.
+
+        **Developer ruling 2026-08-04**, taken at this step's adversarial
+        review: a LOAN's origination is a contractual fact and its door refuses
+        below it (``routes/loan/params.true_up_balance``), but a CASH account's
+        opening is merely its earliest record -- so learning an earlier balance
+        legitimately makes that the opening, and the cash door does NOT inherit
+        the loan's third bound.  The reviewer who found this reproduced the
+        re-designation and asked for it to be blocked; it was ruled ALLOWED and
+        graded instead, which is what this case is.
+
+        ``cash_anchor_facts`` marks the earliest row ``is_opening``, and that
+        flag chooses which correction books ``account_opening`` versus
+        ``account_trueup``.  So back-dating below the origination flips the flag,
+        REVERSES the original opening entry and re-posts it as a true-up.  The
+        money must not move: the linked ledger still lands on the latest anchor.
+        """
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            opening_day = display_today() - timedelta(days=20)
+            savings = create_account_of_type(
+                seed_user, db.session, "Savings", "Pre-opening Savings",
+                anchor_balance=Decimal("1000.00"), observed_on=opening_day,
+            )
+            db.session.commit()
+
+            facts_before = cash_ledger.cash_anchor_facts(savings.id)
+            assert [(f.observed_on, f.is_opening) for f in facts_before] == [
+                (opening_day, True),
+            ], "precondition: exactly one assertion, and it is the opening"
+
+            earlier = opening_day - timedelta(days=10)
+            anchor_service.apply_anchor_true_up(
+                account=savings, new_balance=Decimal("250.00"),
+                observed_on=earlier,
+            )
+
+            # The flag MOVED -- this is the behaviour the ruling allows, and it
+            # is asserted rather than merely tolerated.
+            facts_after = cash_ledger.cash_anchor_facts(savings.id)
+            assert [(f.observed_on, f.is_opening) for f in facts_after] == [
+                (earlier, True), (opening_day, False),
+            ], "the earlier assertion must become the account's opening"
+
+            # The ledger is unmoved by the re-designation: still the latest
+            # anchor, still balanced, still reconciling across the scenario.
+            assert _independent_linked_ledger_sum(
+                savings.id, scenario_id,
+            ) == Decimal("1000.00")
+            assert _trial_balance() == Decimal("0.00")
+            assert _entries_violating_balance() == []
+            _assert_account_anchors_reconcile(scenario_id)
+
+            # The source KIND flipped with the flag, and it is graded by the NET
+            # opening-sourced amount per day rather than by which days carry an
+            # opening entry at all.  That distinction is the finding: the
+            # reconcile does not retag a row in place, it REVERSES the old
+            # opening entry -- and a reversal keeps the source kind it reverses,
+            # so the old day still has opening-kind entries and only their SUM
+            # says they cancelled.  A first version of this assertion looked at
+            # the days alone and reported both, which grades nothing.
+            linked = linked_ledger_account(db.session, savings.id)
+            opening_source = ref_cache.posting_source_id(
+                PostingSourceEnum.ACCOUNT_OPENING,
+            )
+            opening_by_day = dict(
+                db.session.query(
+                    JournalEntry.entry_date,
+                    db.func.coalesce(db.func.sum(Posting.amount), Decimal("0")),
+                )
+                .join(Posting, Posting.journal_entry_id == JournalEntry.id)
+                .filter(
+                    Posting.ledger_account_id == linked.id,
+                    JournalEntry.scenario_id == scenario_id,
+                    JournalEntry.source_kind_id == opening_source,
+                )
+                .group_by(JournalEntry.entry_date)
+                .all()
+            )
+            # The earlier day now carries the whole opening; the old opening
+            # day's opening-sourced legs net to zero because they were reversed.
+            assert opening_by_day.get(earlier) == Decimal("250.00")
+            assert opening_by_day.get(opening_day, Decimal("0")) == Decimal("0")
+            # ...and the balance it used to carry is now booked as a TRUE-UP on
+            # its own day: 1000.00 asserted over a running 250.00 = +750.00.
+            trueup_source = ref_cache.posting_source_id(
+                PostingSourceEnum.ACCOUNT_TRUEUP,
+            )
+            assert db.session.query(
+                db.func.coalesce(db.func.sum(Posting.amount), Decimal("0"))
+            ).join(
+                JournalEntry, Posting.journal_entry_id == JournalEntry.id,
+            ).filter(
+                Posting.ledger_account_id == linked.id,
+                JournalEntry.scenario_id == scenario_id,
+                JournalEntry.source_kind_id == trueup_source,
+            ).scalar() == Decimal("750.00")
 
 
 # ---------------------------------------------------------------------------

@@ -35,11 +35,15 @@ Escape re-render the correct opener (see
 """
 
 import logging
+from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 
-from flask import jsonify, render_template, request, url_for
+from flask import render_template, request, url_for
+from flask.typing import ResponseReturnValue
 from flask_login import current_user, login_required
 
+from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.account import Account
 from app.routes.accounts._bp import accounts_bp
@@ -47,11 +51,14 @@ from app.services import (
     anchor_service,
     cash_ledger,
     entry_service,
+    pay_period_service,
 )
 from app.services.anchor_service import AnchorTrueUpOutcome
 from app.utils.account_validation import _anchor_schema
 from app.utils.auth_helpers import get_or_404, require_owner
+from app.utils.dates import display_today
 from app.utils.digit_strings import parse_row_ids
+from app.utils.error_fragments import designed_error, flatten_schema_errors
 
 logger = logging.getLogger(__name__)
 
@@ -293,8 +300,69 @@ def _panel_id(account_id: int) -> str:
     return f"reconcile-panel-{account_id}"
 
 
+def _submission_is_the_coverage_boundary(
+    boundary_day: date | None, submitted_day: date | None,
+) -> bool:
+    """Return True when this submission's assertion IS the account's boundary.
+
+    **The reconcile prompt follows the COVERAGE BOUNDARY, not the click**
+    (developer ruling 2026-08-04, plan step X-f1c4c).  Before this step every
+    cash true-up stamped today, so "the day this submission asserts" and
+    ``cash_ledger.reconciled_through`` -- ``MAX(observed_on)`` -- were the same
+    value by construction and nothing had to say so.  A user-supplied day
+    decouples them for the first time, and the prompt is keyed on the second.
+
+    What that costs when nobody re-couples them, reproduced end to end: assert
+    ``$2,500`` as of Jul 15 while the account's latest assertion is Aug 4, and
+    the modal opens headed with the AUG 4 balance offering an Aug 2 purchase --
+    which a Jul 15 statement cannot show.  Ticking it is a settlement the user
+    has no evidence for, and it moves that debit out of its envelope's
+    outstanding floor (``cash_ledger._amounts._entry_checking_impact``:
+    ``max(500 - 0, 120) = 500`` becomes ``max(500 - 120, 0) = 380``), so the
+    projected balance reads ``$120.00`` HIGH on money that never left the bank.
+
+    **A ``None`` day is ALWAYS the boundary, and that is exact rather than a
+    convenience.**  The service files ``display_today()`` for it, and every
+    other assertion carries an ``observed_on`` at or before its own today
+    (:func:`app.services.anchor_service.resolve_observation_day` refuses a
+    future day), so today is ``>=`` every stored day and is therefore the new
+    maximum.  For a supplied day *D* the new maximum is ``max(previous, D)``,
+    so *D* is the boundary exactly when it equals it.  **The two branches are
+    established differently and saying so matters**: the supplied-day branch
+    COMPARES against the boundary, while the ``None`` branch is PROVED equal to
+    it by the no-future-day rule and reads nothing.  An earlier version of this
+    paragraph claimed both were read off one query, which is the over-stated
+    shape this step corrected in three other docstrings.
+
+    Asking here rather than sharpening the PANEL is the shape ruling R-EB and
+    plan step X-f6 point at: the panel exists because nothing in the app records
+    when money moved, and a bank import replaces the question rather than
+    re-keying it.  Bounding the offer set by a historical statement day would
+    manufacture hand-entered ``settled_on`` values for X-f6's matcher to
+    arbitrate against the bank's own -- one question with two answers, which is
+    what this arc exists to delete.
+
+    Args:
+        boundary_day: The account's coverage boundary AFTER the write --
+            ``cash_ledger.reconciled_through(...).observed_day``.  Passed in
+            rather than queried so this is a pure comparison the caller can
+            resolve once, and so the rule can be graded without a database.
+        submitted_day: The civil day the FORM submitted, or ``None`` when its
+            date box was blank.  The submitted value, deliberately, not a
+            re-resolved one: re-reading the clock here would be a second
+            reading that a midnight tick could disagree with.
+
+    Returns:
+        ``True`` when the assertion this request filed is the account's
+        coverage boundary, so the reconcile question is about IT.
+    """
+    if submitted_day is None:
+        return True
+    return submitted_day == boundary_day
+
+
 def _true_up_success_response(
-    account: Account, revert_context: str | None,
+    account: Account, revert_context: str | None, submitted_day: date | None,
 ) -> tuple[str, int, dict[str, str]]:
     """Compose the grid anchor true-up success response.
 
@@ -308,12 +376,28 @@ def _true_up_success_response(
     ``balanceChanged`` trigger instead, so emitting the OOB there would
     orphan-target (htmx:oobErrorNoTarget) -- it is skipped.
 
+    **A BACK-DATED submission is acknowledged rather than rendered**, and the
+    reason is that without it this response is indistinguishable from doing
+    nothing.  The cell re-renders from ``resolve_anchor`` -- the assertion that
+    governs NOW -- which a back-dated correction by definition does not change,
+    so a user who recorded an older statement saw their editor collapse back to
+    the same figure with no sign the write landed.  That is the defect
+    :func:`_anchor_editor_error` exists to prevent on the failure side, and it
+    was still live on the success side.
+
     Args:
         account: The post-commit account.  The "as of" snippet is dated from
             the ASSERTION this resolves for it (``observed_on``), never from
             the row's ``updated_at`` -- see the comment at that line for why
             the two are different facts (ruling R-EP).
         revert_context: The normalized surface token, or ``None``.
+        submitted_day: The civil day the form submitted, or ``None``.  Decides
+            both whether the reconcile prompt is asked
+            (:func:`_submission_is_the_coverage_boundary`) and whether the
+            caption acknowledges a back-dated recording.  **Required, with no
+            default**: a defaulted ``None`` here means "suppress the safety
+            check", and with one caller a default that can only ever be wrong
+            is a footgun rather than a convenience.
 
     Returns:
         The ``(body, status, headers)`` tuple Flask returns, carrying the
@@ -329,25 +413,147 @@ def _true_up_success_response(
     # per-surface singleton, precisely so the one question worth asking after a
     # balance reading -- which of these purchases has your bank taken? -- is
     # asked wherever the reading was entered.  Empty when nothing is
-    # outstanding, so a routine true-up is unchanged.
-    prompt = _reconcile_prompt_fragment(account)
+    # outstanding, so a routine true-up is unchanged; and empty when the
+    # submission is NOT the account's coverage boundary, because a back-dated
+    # assertion reconciles nothing new and asking against the wrong statement
+    # invites a settlement the user cannot have observed.
+    is_boundary = _submission_is_the_coverage_boundary(
+        cash_ledger.reconciled_through(account.id).observed_day, submitted_day,
+    )
+    prompt = _reconcile_prompt_fragment(account) if is_boundary else ""
     if revert_context in ("accounts", "investment", "cash"):
         return html + prompt, 200, {"HX-Trigger": "balanceChanged"}
     # The day the balance was asserted TRUE, from the assertion itself
     # (ruling R-EP).  It was ``account.updated_at`` -- the row's last-touched
     # instant -- which named a different fact, moved on any account edit, and
     # stops moving at all once a true-up no longer writes the account row.
+    recorded = (
+        ""
+        if is_boundary
+        else (
+            f'<span class="d-block text-success">'
+            f'recorded as of {submitted_day.strftime("%b %-d, %Y")}'
+            f'</span>'
+        )
+    )
     as_of_html = (
         f'<small class="text-muted" id="anchor-as-of" hx-swap-oob="true">'
-        f'as of {anchor.observed_on.strftime("%b %-d, %Y")}'
+        f'as of {anchor.observed_on.strftime("%b %-d, %Y")}{recorded}'
         f'</small>'
     )
     return html + as_of_html + prompt, 200, {"HX-Trigger": "balanceChanged"}
 
 
+@dataclass(frozen=True)
+class _AnchorSubmission:
+    """One validated balance assertion, as the true-up form submitted it.
+
+    Two values that are ONE fact -- "this account held $B on day D" -- so the
+    gate hands them back together rather than as a widening tuple.  Frozen: a
+    submission is a record of what arrived, not a working value.
+
+    Attributes:
+        balance: The validated :class:`Decimal` balance being asserted.
+        observed_on: The civil day the form submitted, or ``None`` when its date
+            box was left blank -- which the write door reads as the user's today
+            (:func:`app.services.anchor_service.resolve_observation_day`).  It is
+            NOT defaulted here: a route that invented the day would be a second
+            answer to "when is an assertion dated", and both anchor write doors
+            already share one.
+    """
+
+    balance: Decimal
+    observed_on: date | None
+
+
+def _anchor_day_bounds() -> dict[str, date]:
+    """Return the editor's date-input bounds, keyed for the template.
+
+    The browser refuses what the seam would refuse rather than round-tripping a
+    rejection, and both bounds come from the same two PRIMITIVES
+    :func:`app.services.anchor_service.resolve_observation_day` refuses by --
+    never from a template literal.  **Stated precisely, because a first version
+    of this docstring claimed the bounds come from that function**: it exposes
+    neither as a value, so the floor here is genuinely one shared implementation
+    (``pay_period_service.earliest_recordable_day``) while the ceiling is a
+    SECOND reading of the same clock.  A midnight tick between this render and
+    the submission therefore lets the browser offer a day the service then
+    refuses -- which is exactly why that refusal is rendered
+    (:func:`_anchor_editor_error`) rather than assumed unreachable.
+    ``display_today()`` rather than ``date.today()``: the
+    process clock is pinned to the display zone in the deployed container but
+    not in CI or a script, and an input must not offer a day the service then
+    rejects (ruling R-DH (b)).
+
+    The layering is deliberate, not redundant: an input bound is captured at
+    RENDER time, and the floor moves when pay periods are generated or
+    truncated, so a form left open across such a change can still submit a day
+    the seam refuses.  That is why the refusal is also rendered
+    (:func:`_anchor_editor_error`) rather than assumed unreachable.
+
+    Returns:
+        The ``observed_on_min`` / ``observed_on_max`` pair, as dates.
+    """
+    return {
+        "observed_on_min": pay_period_service.earliest_recordable_day(
+            current_user.id,
+        ),
+        "observed_on_max": display_today(),
+    }
+
+
+def _anchor_editor_error(
+    account: Account, revert_context: str | None, message: str,
+) -> ResponseReturnValue:
+    """Re-render the anchor editor in place, carrying *message*, as a 400.
+
+    **The ONE rejection surface this door has** (plan step X-f1c4c).  Until that
+    step its only rejection answered ``jsonify(errors=...)`` with no marker
+    header -- and ``base.html``'s htmx config leaves 4xx non-swapping, so
+    clearing the balance box and pressing Save produced a correct 400 that
+    rendered NOTHING and left the form sitting there.  Adding a date box made a
+    second rejection reachable by ordinary use (a day below the schedule, a form
+    submitted after midnight), so the surface had to exist; converting the
+    balance arm onto it too is what stops one form having a visible refusal and
+    an invisible one.
+
+    Echoes the SUBMITTED values rather than the stored ones: whichever field was
+    wrong, the other is still what the user meant, and retyping it is not part of
+    the fix.  Jinja escapes both into their attributes, and a value the browser
+    cannot parse renders as an empty input -- the native affordance for "this
+    needs re-entering".
+
+    Args:
+        account: The owned, attached :class:`Account` under edit.
+        revert_context: The normalized surface token, or ``None``.  Threaded so
+            Cancel / Escape from the error state still restore the surface that
+            OPENED the editor rather than stranding a dashboard card on the grid
+            cell.
+        message: The user-facing reason, already flattened to one sentence.
+
+    Returns:
+        The designed-fragment ``(body, 400, headers)`` triple; the global
+        ``htmx:beforeSwap`` listener in ``app.js`` swaps it despite the status.
+    """
+    return designed_error(
+        render_template(
+            "grid/_anchor_edit.html",
+            account=account,
+            anchor_balance=request.form.get("anchor_balance", ""),
+            observed_on_value=request.form.get("observed_on", ""),
+            editing=True,
+            error=message,
+            revert_url=_anchor_revert_url(account.id, revert_context),
+            revert_context=revert_context,
+            **_anchor_day_bounds(),
+        ),
+        400,
+    )
+
+
 def _true_up_request_gates(
-    account: Account,
-) -> tuple[Decimal | None, tuple | None]:
+    account: Account, revert_context: str | None,
+) -> tuple[_AnchorSubmission | None, ResponseReturnValue | None]:
     """Run every pre-mutation gate for ``true_up`` in one place.
 
     The route grew a fifth early-return gate when the amortizing-kind
@@ -372,23 +578,39 @@ def _true_up_request_gates(
     finding N-134's shape -- a balance the user typed, refused for want of a
     budgeting artifact that has nothing to do with what their bank holds.
 
+    **The schema arm's response is a DESIGNED FRAGMENT since plan step
+    X-f1c4c**, not ``jsonify(errors=...)``; see :func:`_anchor_editor_error` for
+    what that changed and why.  The kind refusal keeps its raw 422 body: the
+    editor is never OPENED for an amortizing account (``anchor_form`` refuses
+    the same kind), so that arm answers a forged request rather than a user, and
+    a designed fragment for it would be a rendering nobody can reach.
+
     Args:
         account: The owned, attached :class:`Account` under edit.
+        revert_context: The normalized surface token, or ``None`` -- needed
+            because a rejection RE-RENDERS the editor, and the re-rendered
+            editor's Cancel must still return to the surface that opened it.
 
     Returns:
-        ``(new_balance, failure)``.  On success ``failure`` is ``None`` and
-        ``new_balance`` carries the validated value; on rejection ``failure``
-        is the ready-to-return Flask response and ``new_balance`` is ``None``.
+        ``(submission, failure)``.  On success ``failure`` is ``None`` and
+        ``submission`` carries the validated balance and day; on rejection
+        ``failure`` is the ready-to-return Flask response and ``submission``
+        is ``None``.
     """
     if _is_amortizing(account):
         return None, (_LOAN_ANCHOR_REFUSAL, 422)
 
     errors = _anchor_schema.validate(request.form)
     if errors:
-        return None, (jsonify(errors=errors), 400)
+        return None, _anchor_editor_error(
+            account, revert_context, flatten_schema_errors(errors),
+        )
 
     data = _anchor_schema.load(request.form)
-    return Decimal(str(data["anchor_balance"])), None
+    return _AnchorSubmission(
+        balance=Decimal(str(data["anchor_balance"])),
+        observed_on=data.get("observed_on"),
+    ), None
 
 
 @accounts_bp.route("/accounts/<int:account_id>/true-up", methods=["PATCH"])
@@ -434,7 +656,7 @@ def true_up(account_id):
     # Both pre-mutation gates (the D4/A1 amortizing-kind refusal and schema
     # validation) live in ``_true_up_request_gates``; a failure is returned
     # as-is.
-    new_balance, failure = _true_up_request_gates(account)
+    submission, failure = _true_up_request_gates(account, revert_context)
     if failure is not None:
         return failure
 
@@ -448,10 +670,23 @@ def true_up(account_id):
     # success-response composition (the updated cell, the optional OOB
     # "as-of" snippet, and the ``HX-Trigger: balanceChanged`` header)
     # lives in ``_true_up_success_response``.
-    outcome = anchor_service.apply_anchor_true_up(
-        account=account,
-        new_balance=new_balance,
-    )
+    #
+    # The DAY's bounds are the seam's, not this route's (ruling R-ER): a future
+    # day and a day below the owner's schedule are refused by
+    # ``anchor_service.resolve_observation_day``, which the two anchor write
+    # doors share, so the account-edit door and this one cannot come to disagree
+    # about which days are assertable.  Raised BEFORE anything is staged and
+    # before the owner's write lock is taken, so there is no transaction to roll
+    # back here -- and it is a 400 rather than a 500 because the date box makes
+    # it ordinary user input.
+    try:
+        outcome = anchor_service.apply_anchor_true_up(
+            account=account,
+            new_balance=submission.balance,
+            observed_on=submission.observed_on,
+        )
+    except ValidationError as exc:
+        return _anchor_editor_error(account, revert_context, str(exc))
 
     # UNCHANGED and COMMITTED share the success response (the
     # updated cell + an OOB "as of" snippet + the HX-Trigger that
@@ -464,11 +699,17 @@ def true_up(account_id):
         db.session.expire(account)
     else:
         db.session.refresh(account)
-        logger.info(
-            "True-up: account %d asserted at $%s", account.id, new_balance,
-        )
+        # No log line here.  ``anchor_service.stage_anchor_true_up`` logs the
+        # account, the balance AND the resolved day -- and it is the only layer
+        # that knows the day, because a blank date box means "today" without
+        # this one being told what that resolved to.  A route line naming the
+        # same account and balance MINUS the day is a strict subset of the
+        # writer's, and two INFO lines per true-up where one is contained in the
+        # other is noise that reads as corroboration.
 
-    return _true_up_success_response(account, revert_context)
+    return _true_up_success_response(
+        account, revert_context, submission.observed_on,
+    )
 
 
 def _anchor_revert_url(account_id, revert_context):
@@ -551,13 +792,23 @@ def anchor_form(account_id):
 
     revert_context = _normalize_revert_context(request.args.get("revert"))
     revert_url = _anchor_revert_url(account_id, revert_context)
+    bounds = _anchor_day_bounds()
     return render_template(
         "grid/_anchor_edit.html",
         account=account,
         anchor_balance=cash_ledger.resolve_anchor(account).balance,
         editing=True,
+        # The statement day defaults to TODAY, not to the governing assertion's
+        # own day (rulings **R-EE** / **R-EI**, plan step X-f1c4c).  A true-up is
+        # the user reading their bank NOW in the overwhelming case, and R-EE
+        # keeps that one click plus Enter; prefilling the last assertion's day
+        # would make the ordinary path silently RE-assert an old day, which is
+        # the one thing this field exists to stop being a guess.  Back-dating is
+        # then a deliberate edit of a box that already shows the right answer.
+        observed_on_value=bounds["observed_on_max"].isoformat(),
         revert_url=revert_url,
         revert_context=revert_context,
+        **bounds,
     )
 
 

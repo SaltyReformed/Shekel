@@ -2798,7 +2798,7 @@ def mark_purchase_settled(db_session, account, entry, settled_on=None):
     first pass let an unreachable row through anyway.**  Checking only
     ``settled_on <= observed_on`` invites the obvious escape: move the
     ASSERTION forward until it covers the purchase.  But an assertion is itself
-    bounded -- ``account_service._reject_undatable_observation`` refuses an
+    bounded -- ``anchor_service.resolve_observation_day`` refuses an
     ``observed_on`` after the user's today, because a balance you have not read
     yet is not an observation -- so an assertion dated into the app's future is
     exactly as unreachable as the anchor-months-earlier row the guard was
@@ -2862,7 +2862,7 @@ def mark_purchase_settled(db_session, account, entry, settled_on=None):
     assert observed_on <= today, (
         f"account id={account.id}'s latest assertion is dated {observed_on}, "
         f"which is AFTER the user's today ({today}); "
-        f"account_service._reject_undatable_observation refuses that at the "
+        f"anchor_service.resolve_observation_day refuses that at the "
         f"write door, so no production account can be in this state.  Move the "
         f"assertion (and entry id={entry.id}'s dates) back inside the clock "
         f"this suite runs on rather than forward past it."

@@ -689,7 +689,7 @@ class TestThePlannedTier:
         (2026-03-20), and that is the OTHER half of the same rule.**  The first
         conversion moved the assertion FORWARD to 04-01 to cover an 04-01
         purchase, which is unreachable in the opposite direction:
-        ``account_service._reject_undatable_observation`` refuses an
+        ``anchor_service.resolve_observation_day`` refuses an
         ``observed_on`` after the user's today, and R-M refuses a
         ``purchased_on`` after it.  ``mark_purchase_settled`` now checks both
         bounds and named that fixture, which is why the SCENARIO moved back
@@ -731,7 +731,7 @@ class TestThePlannedTier:
         independent of the reader's ``as_of``; the earlier form got the same
         separation by dating the purchase into the app's future, which BOTH
         write doors refuse (R-M on ``purchased_on``,
-        ``_reject_undatable_observation`` on the assertion covering it).
+        ``anchor_service.resolve_observation_day`` on the assertion covering it).
         Sliding the READER backwards is the same experiment on a state
         production can actually hold.
 

@@ -59,9 +59,15 @@
         </div>
       </div>
 
-      {# Create only.  An edit re-asserts the balance AS OF NOW (the update
-         route stages a true-up dated today), so offering a date there would
-         imply a back-dating the anchor form does not do. #}
+      {# Create only, and the reason CHANGED at plan step X-f1c4c.  It used to
+         be "the anchor form does not back-date", which that step made false:
+         the one-click editor now carries its own "as of" day (rulings R-EE /
+         R-EI).  What is true instead is that this EDIT form should not be
+         asserting a balance at all -- it pre-fills the field, so a rename
+         submits an unchanged figure, and a second door with a second meaning
+         for one fact is finding N-195.  Plan step X-f1e deletes the balance
+         field and the route branch behind it; asserting a balance is the
+         one-click editor's job. #}
       {% if not account %}
       <div class="mb-3">
         <label for="observed_on" class="form-label">Balance as of</label>

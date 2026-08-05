@@ -149,6 +149,7 @@ from decimal import Decimal
 
 from app import ref_cache
 from app.enums import LoanAnchorSourceEnum
+from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.models.loan_anchor_event import LoanAnchorEvent
@@ -156,6 +157,7 @@ from app.services import (
     account_posting_service,
     cash_ledger,
     loan_posting_service,
+    pay_period_service,
 )
 from app.services.user_write_lock import lock_user_writes
 from app.utils.dates import display_today
@@ -205,10 +207,127 @@ class AnchorTrueUpOutcome(enum.Enum):
     UNCHANGED = "unchanged"
 
 
+def resolve_observation_day(user_id: int, observed_on: date | None) -> date:
+    """Return the civil day an assertion is dated at, refusing an undatable one.
+
+    **The ONE rule both writers of :class:`AccountAnchorHistory` ask** (ruling
+    **R-ER**, plan step X-f1c4c): the origination assertion
+    (``account_service.create_account``) and every later one
+    (:func:`stage_anchor_true_up`).  It lives in THIS module because this module
+    owns what an assertion is.  It was ``account_service``'s private
+    ``_reject_undatable_observation`` while the factory was its only caller, and
+    a second module reaching a private name is finding **N-33**'s shape rather
+    than a way to share a rule.
+
+    **It RESOLVES and refuses in one call, which closes the DEFAULT's half of a
+    clock race and does not pretend to close the other half.**  Both callers
+    previously defaulted an absent day to ``display_today()`` and then handed
+    the result to a guard that read the clock AGAIN -- so a midnight tick
+    between the two lines could refuse the function's own default.  Reachable,
+    if barely: for a user whose earliest pay period starts tomorrow the floor
+    becomes tomorrow the instant the day rolls, and the default (today) is then
+    below it.  ``account_service``'s note about that race considered only the
+    future arm, where the ``>`` test is indeed forgiving, and missed the floor.
+    An absent day now returns *today* directly, so that case is unrepresentable:
+    today is assertable by construction -- it is not in the future, and the
+    floor is ``min(earliest, today)``.
+
+    *A first version of this paragraph claimed the fusion made the race
+    unrepresentable outright.  A neutral review refuted it and the correction is
+    kept here rather than dropped, because the residue is a real window:* both
+    forms PREFILL today into their date box (``routes/accounts/anchor``'s
+    ``observed_on_value``, ``templates/accounts/form.html``), so the ordinary
+    path submits a SUPPLIED day and takes the branch below.  For that branch the
+    input's bound was computed at RENDER time and this floor is read at SUBMIT
+    time, so the window is minutes or hours rather than two adjacent statements.
+    It bites only a schedule that is entirely in the future, it errs toward
+    refusing rather than accepting, and the refusal is rendered in place
+    (``accounts._anchor_editor_error``) rather than swallowed.
+
+    ``observed_on`` is USER-SUPPLIED and it is not merely a label: it opens the
+    modelled-return window (``balance_at._asset_fold._AccrualWindow``, which
+    materialises EVERY calendar day from it to the reader's horizon) and it is
+    the first period a payroll contribution can be modelled into
+    (``_asset_contributions``).  An unbounded value is therefore both a
+    correctness defect and a work amplifier: a Property or 401(k) asserted "as
+    of" year 1 would fabricate contribution history for every past period and
+    fold over three quarters of a million days on every dashboard render.
+
+    Two bounds, and each refuses for its own reason:
+
+    * **Not in the future.**  A balance cannot have been observed on a day the
+      user has not seen.  The loan door states the same rule on a different
+      clock, which is finding **N-197**.
+    * **Not before the earlier of the schedule's start and today.**  The
+      accrual-window reason above; the floor takes the EARLIER of the two so a
+      user whose periods are all still in the future can nonetheless assert what
+      they hold today.  The bound is
+      :func:`app.services.pay_period_service.earliest_recordable_day`, the SAME
+      floor ruling R-EL gave the settle door -- one implementation, so the
+      anchor doors and the settle doors cannot drift apart on where recordable
+      history begins.  **That is a claim about the FLOOR only.**  "Not in the
+      future" is still stated in three modules with three messages and two
+      clocks -- here, ``status_seam.reject_future_settle_day``, and
+      ``schemas/validation/loans.LoanAnchorTrueupSchema`` on ``date.today()``
+      (finding **N-197**) -- so this function did not reduce that count.
+
+    **It does NOT refuse an owner with no pay periods, and that split is ruling
+    R-ER.**  The rule it replaced did, on the stated ground that "the account's
+    anchor has a period to reference" -- which ruling R-EO falsified by deleting
+    ``account_anchor_history.pay_period_id``.  The live reason belongs to
+    ACCOUNT CREATION rather than to a day (the opening's posting reconcile
+    derives each correction's period from the owner's calendar, finding
+    **N-192**), so it stays there as ``account_service``'s own precondition.
+    Asking it here would have re-imposed on the true-up door exactly the refusal
+    ruling R-EO deleted from it -- a balance the user typed, refused for want of
+    a budgeting artifact that has nothing to do with what their bank holds --
+    and would have answered a true-up with a message about creating an account.
+
+    **The clock is the USER's** (ruling R-DH (b)).  ``display_today()``, never
+    ``date.today()``: the process's UTC day is already tomorrow at 8pm Eastern,
+    so the server's clock would refuse an assertion the user is making right
+    now, and would default one made this evening to tomorrow.
+
+    Args:
+        user_id: The owner whose pay-period schedule sets the floor.
+        observed_on: The candidate civil day, or ``None`` to take the default.
+            ``None`` is what an omitted form field and a caller with no opinion
+            both mean: "the balance I am asserting is true now".
+
+    Returns:
+        The civil day the assertion carries -- *observed_on* when one was
+        supplied and passed both bounds, else the user's today.
+
+    Raises:
+        ValidationError: When the day is in the future or precedes the owner's
+            recorded history.  A 400 rather than a programming error: both are
+            ordinary input from a date box, and each message names the offending
+            value and the bound it broke so the surface can render it verbatim.
+    """
+    today = display_today()
+    if observed_on is None:
+        return today
+    if observed_on > today:
+        raise ValidationError(
+            f"Cannot assert a balance for {observed_on.isoformat()}: that day "
+            f"has not happened yet (today is {today.isoformat()}).  A balance "
+            "states what an account held on a day you have already seen."
+        )
+    floor = pay_period_service.earliest_recordable_day(user_id)
+    if observed_on < floor:
+        raise ValidationError(
+            f"Cannot assert a balance for {observed_on.isoformat()}: your "
+            f"recorded history starts on {floor.isoformat()}.  Use a day on or "
+            "after that, or generate earlier pay periods first."
+        )
+    return observed_on
+
+
 def stage_anchor_true_up(
     *,
     account: Account,
     new_balance: Decimal,
+    observed_on: date | None = None,
     notes: str | None = None,
 ) -> bool:
     """Append a dated balance ASSERTION for ``account`` without committing.
@@ -249,8 +368,18 @@ def stage_anchor_true_up(
       a double-click on a back-dated correction appends every time -- reproduced
       on the loan door by two independent reviews of this step.  A submission
       for day D can only change what is true at or after D, so D is the horizon.
-      The cash door cannot back-date until plan step X-f1c4c, which is exactly
-      why the rule is installed before the field is.
+      **Plan step X-f1c4c is what made that reachable here**, by giving the cash
+      door the date field the loan door has carried since Commit 16; the rule was
+      installed one leaf earlier, deliberately, so a user-typed day never met the
+      content-keyed index it replaced.
+
+    **The day is an INPUT now, and resolving it is not this function's rule**
+    (ruling **R-ER**, plan step X-f1c4c).  :func:`resolve_observation_day`
+    supplies the default and enforces both bounds, so the same two rules govern
+    the origination assertion ``account_service.create_account`` writes and every
+    later one written here.  It runs BEFORE the lock on purpose: a refused
+    submission must not take the owner's write lock, and the resolver takes no
+    lock of its own (its only statement is an aggregate SELECT over pay periods).
 
     **What it stages shrank twice, and both shrinks are the same ruling
     applied one table apart.**  It used to re-point ``current_anchor_period_id``
@@ -270,6 +399,11 @@ def stage_anchor_true_up(
         account: An attached :class:`Account` row.  Caller owns the
             ownership check.
         new_balance: The validated :class:`Decimal` balance being asserted.
+        observed_on: The civil day the balance is asserted TRUE for (ruling
+            **R-DH**), or ``None`` for the user's today -- which is what a
+            true-up means when the form's date box is left at its default and
+            what the account-edit door, which offers no such box, always means.
+            Bounded by :func:`resolve_observation_day`, never trusted raw.
         notes: Optional free-text note for the history row's ``notes``
             column, so the audit trail names the originating path.  ``None``
             leaves it NULL, matching the true-up route path.
@@ -283,26 +417,21 @@ def stage_anchor_true_up(
         must not.
 
     Raises:
+        ValidationError: When *observed_on* is in the future or precedes the
+            owner's recorded history, from :func:`resolve_observation_day`.
+            Raised BEFORE the lock and before anything is staged, so the session
+            is clean and no lock is held on a refusal.
         RuntimeError: When the account carries no assertion at all, from
             :func:`app.services.cash_ledger.resolve_anchor`.  Unreachable for a
             real account (``account_service.create_account`` writes the
             origination assertion in the same flush as the row), and the same
             loud failure every reader of that account would already get.
     """
-    # Ruling R-EQ: the lock comes FIRST, before the read the decision below is
-    # made from.  See the function docstring for why it is here and not at
-    # either door.
+    observed_on = resolve_observation_day(account.user_id, observed_on)
+    # Ruling R-EQ: the lock comes before the READ the decision below is made
+    # from.  See the function docstring for why it is here and not at either
+    # door, and why the day is resolved above it rather than under it.
     lock_user_writes(account.user_id)
-    # The civil day this balance is asserted TRUE for (ruling R-DH).  A
-    # true-up is the user reading their bank NOW, so it is today in the
-    # USER's zone -- not ``date.today()``, which is the server's UTC day
-    # and files an 8pm-Eastern true-up under tomorrow.  It is the same day
-    # ``cash_anchor_facts`` derived from ``created_at`` before the column
-    # existed, so this write moves no figure.  Plan step X-f1c4c's form field
-    # is what makes it user-supplied, exactly as
-    # ``account_service.create_account`` already takes it for an opening; the
-    # parameter arrives with that consumer, not before it.
-    observed_on = display_today()
     governing = cash_ledger.governing_anchor_on(account.id, observed_on)
     if governing is not None and (
         (governing.observed_on, governing.balance) == (observed_on, new_balance)
@@ -315,6 +444,14 @@ def stage_anchor_true_up(
         observed_on=observed_on,
         notes=notes,
     ))
+    # The RESOLVED day is logged here because here is the only layer that knows
+    # it: a caller passing ``None`` never learns which civil day its assertion
+    # was filed under, and the day is the fact plan step X-f1c4c exists to
+    # record.  Both write doors reach this line, so the audit trail is uniform.
+    logger.info(
+        "Anchor assertion staged: account %d at $%s as of %s",
+        account.id, new_balance, observed_on.isoformat(),
+    )
     return True
 
 
@@ -322,6 +459,7 @@ def apply_anchor_true_up(
     *,
     account: Account,
     new_balance: Decimal,
+    observed_on: date | None = None,
 ) -> AnchorTrueUpOutcome:
     """Append a balance assertion for ``account``, re-base its postings, commit.
 
@@ -406,6 +544,11 @@ def apply_anchor_true_up(
         new_balance: The validated :class:`Decimal` balance being asserted.
             Caller is responsible for constructing this from
             schema-validated form data via ``Decimal(str(...))``.
+        observed_on: The civil day the balance is asserted TRUE for, or ``None``
+            for the user's today.  Forwarded verbatim to
+            :func:`stage_anchor_true_up`, which bounds it -- this function adds
+            no rule of its own about the day and must not, or the two write
+            doors would answer a back-dated submission differently.
 
     Returns:
         AnchorTrueUpOutcome -- which response the route should render.
@@ -414,6 +557,11 @@ def apply_anchor_true_up(
         nothing.
 
     Raises:
+        ValidationError: When *observed_on* is in the future or precedes the
+            owner's recorded history (:func:`resolve_observation_day`, via the
+            stager).  Raised before anything is staged and before the owner's
+            write lock is taken, so the session is clean; the route renders it
+            as a designed 400 fragment.
         AmortizingAccountAnchorError: When ``account`` is an amortizing
             loan (``account_type.has_amortization``).  A loan's balance
             is ledger-derived and asserted through
@@ -435,7 +583,9 @@ def apply_anchor_true_up(
             "cash anchor"
         )
 
-    if not stage_anchor_true_up(account=account, new_balance=new_balance):
+    if not stage_anchor_true_up(
+        account=account, new_balance=new_balance, observed_on=observed_on,
+    ):
         # Ruling R-EQ: the submission IS the governing assertion, so there is
         # nothing to append and nothing for the reconcile to move.  Roll back
         # rather than returning on an open transaction -- the stager took the
