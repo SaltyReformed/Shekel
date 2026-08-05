@@ -17,7 +17,6 @@ from app.utils.auth_helpers import get_or_404, require_owner
 from app.extensions import db
 from app.models.salary_profile import SalaryProfile
 from app.models.transaction_template import TransactionTemplate
-from app.models.recurrence_rule import RecurrenceRule
 from app.models.category import Category
 from app.models.ref import (
     CalcMethod,
@@ -33,6 +32,7 @@ from app.services import (
     pay_period_service,
     recurrence_engine,
 )
+from app.services.recurrence import RecurrenceSpec, author_rule, calendar_for
 from app.services.scenario_resolver import get_baseline_scenario
 from app.services.tax_config_service import load_tax_configs
 from app.routes._commit_helpers import (
@@ -142,14 +142,15 @@ def create_profile():
 
     try:
         # Create every_period recurrence rule
-        rule = RecurrenceRule(
-            user_id=current_user.id,
-            pattern_id=ref_cache.recurrence_pattern_id(
-                RecurrencePatternEnum.EVERY_PERIOD
+        rule = author_rule(
+            RecurrenceSpec(
+                user_id=current_user.id,
+                pattern_id=ref_cache.recurrence_pattern_id(
+                    RecurrencePatternEnum.EVERY_PERIOD
+                ),
             ),
+            calendar_for(current_user.id),
         )
-        db.session.add(rule)
-        db.session.flush()
 
         # Create linked transaction template
         template = TransactionTemplate(

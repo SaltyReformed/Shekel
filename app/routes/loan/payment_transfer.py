@@ -22,7 +22,6 @@ from app.exceptions import (
 )
 from app.extensions import db
 from app.models.loan_payment_settings import LoanPaymentSettings
-from app.models.recurrence_rule import RecurrenceRule
 from app.routes._redirect_target import RedirectTarget
 from app.routes._transfer_creation_helpers import (
     build_recurring_transfer_template,
@@ -38,6 +37,7 @@ from app.routes.loan._helpers import (
     _transfer_schema,
 )
 from app.services import escrow_calculator, loan_loaders, loan_recurrence_sync
+from app.services.recurrence import RecurrenceSpec, author_rule, calendar_for
 from app.services.recurring_transfer_query import (
     active_recurring_transfer_template,
 )
@@ -168,13 +168,14 @@ def create_payment_transfer(account_id):
     monthly_pattern_id = ref_cache.recurrence_pattern_id(
         RecurrencePatternEnum.MONTHLY,
     )
-    rule = RecurrenceRule(
-        user_id=current_user.id,
-        pattern_id=monthly_pattern_id,
-        day_of_month=params.payment_day,
+    rule = author_rule(
+        RecurrenceSpec(
+            user_id=current_user.id,
+            pattern_id=monthly_pattern_id,
+            day_of_month=params.payment_day,
+        ),
+        calendar_for(current_user.id),
     )
-    db.session.add(rule)
-    db.session.flush()
 
     # Create transfer template via the shared builder.
     template_name = f"{source_account.name} -> {account.name} Payment"

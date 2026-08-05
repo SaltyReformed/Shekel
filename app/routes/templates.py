@@ -10,14 +10,11 @@ from datetime import date
 
 from flask import Blueprint, Response, abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
-from markupsafe import Markup
 
 from app.utils.auth_helpers import get_or_404, require_owner
 from app.extensions import db
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
-from app.models.recurrence_rule import RecurrenceRule
-from app.models.pay_period import PayPeriod
 from app.models.category import Category
 from app.models.account import Account
 from app.models.transaction import Transaction
@@ -38,11 +35,18 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
+from app.services.recurrence import PeriodCalendar
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.balance_predicates import is_projected_clause
 from app.routes._commit_helpers import (
     StaleConflictContext,
     commit_or_handle_stale,
+)
+from app.routes._recurrence_preview import (
+    PREVIEW_OCCURRENCE_LIMIT,
+    build_preview_rule,
+    owned_preview_start_period,
+    render_preview_html,
 )
 from app.routes._recurrence_form_helpers import (
     STALE_ACTION_MESSAGE,
@@ -918,41 +922,6 @@ def hard_delete_template(template_id):
     return redirect(url_for("templates.list_templates"))
 
 
-def _build_preview_rule(pattern):
-    """Build an unsaved RecurrenceRule from the preview request args.
-
-    Reads the recurrence parameters the preview form submits and returns a
-    transient RecurrenceRule (never added to the session) with *pattern*
-    attached for the matcher.  ``offset_periods`` is intentionally left
-    unset here; the route derives it from the owned start period.
-    """
-    end_date_str = request.args.get("end_date")
-    rule = RecurrenceRule(
-        pattern_id=pattern.id,
-        interval_n=request.args.get("interval_n", type=int, default=1),
-        day_of_month=request.args.get("day_of_month", type=int),
-        month_of_year=request.args.get("month_of_year", type=int),
-        start_period_id=request.args.get("start_period_id", type=int),
-        end_date=date.fromisoformat(end_date_str) if end_date_str else None,
-    )
-    # Attach the pattern relationship manually for the matcher.
-    rule.pattern = pattern
-    return rule
-
-
-def _render_preview_html(preview_periods):
-    """Render the occurrence-preview HTML fragment for *preview_periods*."""
-    items = "".join(
-        f"<li>{p.start_date.strftime('%b %d, %Y')} - {p.end_date.strftime('%b %d, %Y')}</li>"
-        for p in preview_periods
-    )
-    html = (
-        f"<small class='text-muted'>Next {len(preview_periods)} occurrences:</small>"
-        f"<ul class='list-unstyled mb-0 ms-2'><small>{items}</small></ul>"
-    )
-    return Markup(html)
-
-
 @templates_bp.route("/templates/preview-recurrence", methods=["GET"])
 @login_required
 @require_owner
@@ -966,34 +935,32 @@ def preview_recurrence():
     if not pattern:
         return "<small class='text-muted'>Unknown pattern</small>"
 
-    rule = _build_preview_rule(pattern)
-
     periods = pay_period_service.get_all_periods(current_user.id)
     if not periods:
         return "<small class='text-muted'>No pay periods generated yet</small>"
 
-    # Determine effective_from from an owned start period, else the
-    # current period (falling back to the first period).
-    effective_from = None
-    if rule.start_period_id:
-        start_period = db.session.get(PayPeriod, rule.start_period_id)
-        # Ownership check: reject other users' periods to prevent
-        # pay period structure disclosure -- see audit finding H3.
-        # Falls through to the current user's own periods below.
-        if start_period and start_period.user_id == current_user.id:
-            effective_from = start_period.start_date
-            # Auto-derive offset for every_n_periods.
-            if (pattern_id == ref_cache.recurrence_pattern_id(
-                    RecurrencePatternEnum.EVERY_N_PERIODS) and rule.interval_n):
-                rule.offset_periods = start_period.period_index % rule.interval_n
-    if effective_from is None:
+    # The schedule is resolved BEFORE the rule: the authoring seam measures a
+    # rule's first occurrence against it, so an empty schedule is refused
+    # rather than anchored against nothing.  Built from the periods already
+    # loaded, so this adds no query.
+    start_period = owned_preview_start_period()
+    rule = build_preview_rule(
+        pattern, start_period, PeriodCalendar.from_pay_periods(periods),
+    )
+
+    # ``effective_from`` is a DISPLAY choice -- "show me the next five from
+    # here" -- and so still the route's, not the rule's: the rule's own
+    # opening bound is its anchor.
+    if start_period is not None:
+        effective_from = start_period.start_date
+    else:
         current_period = pay_period_service.get_current_period(current_user.id)
         effective_from = current_period.start_date if current_period else periods[0].start_date
 
     matching = recurrence_engine.match_periods(rule, pattern_id, periods, effective_from)
-    preview_periods = matching[:5]
+    preview_periods = matching[:PREVIEW_OCCURRENCE_LIMIT]
 
     if not preview_periods:
         return "<small class='text-muted'>No matching periods found</small>"
 
-    return _render_preview_html(preview_periods)
+    return render_preview_html(preview_periods)

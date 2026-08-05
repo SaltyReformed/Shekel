@@ -482,6 +482,77 @@ class TestUpdateRecurrenceNoAutoOffset:
             assert rule.pattern_id == every_n_id
 
 
+class TestUpdateKeepsTheStartPeriodsPhase:
+    """Defect **D1**, closed at plan step R2c-1, at its own surface.
+
+    The sibling class above pins the update path's treatment of a rule that
+    names NO start period: the submitted offset is all the phase information
+    there is, so it arrives verbatim.  This class covers the case D1 was
+    MEASURED on and that 45 of the 50 live rules are in -- a rule that DOES
+    name a start period.  There the phase is a derived fact, and the pre-seam
+    update path overwrote it with the payload's default, shifting every future
+    occurrence by one pay period on an edit that changed only the amount.
+    """
+
+    def test_an_edit_does_not_re_phase_a_rule_with_a_start_period(
+        self, app, auth_client, seed_user, db, seed_periods,  # pylint: disable=unused-argument
+    ):
+        """The phase stays ``period_index % interval_n`` across an edit.
+
+        Start period index 2 with an interval of 3 phases the rule at
+        ``2 % 3 == 2``.  The edit form submits no offset input at all, so the
+        payload carries the schema default 0; before R2c-1 that 0 landed on
+        the rule and every future occurrence moved a pay period earlier.
+        """
+        every_n_id = ref_cache.recurrence_pattern_id(
+            RecurrencePatternEnum.EVERY_N_PERIODS,
+        )
+        with app.test_request_context():
+            rule = build_recurrence_rule_from_form(
+                {
+                    "recurrence_pattern": str(every_n_id),
+                    "interval_n": 3,
+                    "offset_periods": 0,
+                    "day_of_month": None,
+                    "month_of_year": None,
+                    "due_day_of_month": None,
+                },
+                user_id=seed_user["user"].id,
+                start_period_id=seed_periods[2].id,
+                ctx=RecurrenceFormContext(
+                    end_date_value=None,
+                    redirect=RedirectTarget(
+                        "templates.edit_template", {"template_id": 1},
+                    ),
+                    include_due_day_of_month=True,
+                ),
+            )
+            assert rule.offset_periods == 2
+
+            result = update_recurrence_rule_from_form(
+                rule,
+                {
+                    "recurrence_pattern": str(every_n_id),
+                    "interval_n": 3,
+                    "offset_periods": 0,
+                    "day_of_month": None,
+                    "month_of_year": None,
+                    "due_day_of_month": None,
+                },
+                ctx=RecurrenceFormContext(
+                    end_date_value=None,
+                    redirect=RedirectTarget(
+                        "templates.edit_template", {"template_id": 1},
+                    ),
+                    include_due_day_of_month=True,
+                ),
+            )
+
+            assert result is None
+            assert rule.offset_periods == 2
+            assert rule.start_period_id == seed_periods[2].id
+
+
 class TestHandleStaleConflict:
     """Helper :func:`handle_stale_conflict` contract tests."""
 

@@ -1064,6 +1064,50 @@ class TestPreviewRecurrence:
             assert resp.status_code == 200
             assert b"occurrences" in resp.data
 
+    def test_preview_every_n_periods_without_a_start_period(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Previewing "every N paychecks" with no first paycheck chosen is a 200.
+
+        It was a 500 before plan step R2c-1, and the cause is worth keeping:
+        the route hand-built a transient rule, and a SQLAlchemy column default
+        is applied at INSERT rather than at instantiation -- so
+        ``offset_periods`` stayed ``None`` and ``match_periods`` computed
+        ``period_index - None``.  Routing the preview through the authoring
+        seam fixed it incidentally, because resolution always emits an int.
+        """
+        with app.app_context():
+            every_n = db.session.query(RecurrencePattern).filter_by(
+                name="Every N Periods"
+            ).one()
+            resp = auth_client.get(
+                f"/templates/preview-recurrence"
+                f"?recurrence_pattern={every_n.id}&interval_n=2"
+            )
+            assert resp.status_code == 200
+            assert b"occurrences" in resp.data
+
+    def test_preview_tolerates_a_zero_day_of_month(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """``?day_of_month=0`` answers 200, as it did before the seam.
+
+        ``<input type="number" min="1">`` does not stop a user typing 0, and
+        the endpoint reads the value straight from ``request.args``.  The
+        engine coerces a 0 day with ``or 1``; resolution mirrors that exactly,
+        so this stays a preview rather than becoming a 500 on
+        ``date(y, m, 0)``.
+        """
+        with app.app_context():
+            monthly = db.session.query(RecurrencePattern).filter_by(
+                name="Monthly"
+            ).one()
+            resp = auth_client.get(
+                f"/templates/preview-recurrence"
+                f"?recurrence_pattern={monthly.id}&day_of_month=0"
+            )
+            assert resp.status_code == 200
+
     def test_preview_rejects_other_users_start_period(
         self, app, auth_client, seed_user, seed_periods_today,
         seed_second_user, seed_second_periods,

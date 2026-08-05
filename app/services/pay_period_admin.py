@@ -18,9 +18,11 @@ operations build on it and on ``pay_period_service`` /
 
 import enum
 import logging
+from dataclasses import replace
 from datetime import date, timedelta
 
 from sqlalchemy import or_
+from sqlalchemy.orm import selectinload
 
 from app.exceptions import (
     PayPeriodDiscardRequired,
@@ -42,6 +44,11 @@ from app.services import (
     user_write_lock,
 )
 from app.services.period_population import populate_periods_from_active_templates
+from app.services.recurrence import (
+    calendar_for,
+    reauthor_rule,
+    recurrence_spec,
+)
 from app.utils.balance_predicates import is_projected_clause, settled_status_ids
 
 logger = logging.getLogger(__name__)
@@ -755,43 +762,64 @@ def _rule_ids_with_start_period(user_id: int) -> list[int]:
 
 
 def _repoint_recurrence_rules(rule_ids: list[int], first_period) -> None:
-    """Re-point the captured rules to the new first period, re-phased.
+    """Re-author EVERY rule this user owns onto the rebuilt schedule.
 
-    The rules whose ``start_period_id`` the wipe cascade nulled (captured
-    by :func:`_rule_ids_with_start_period`) are re-anchored to the rebuilt
-    schedule's first period, so a rule that had an explicit start keeps one
-    and the new first period correctly classifies as a RECURRENCE_ANCHOR.
+    Two different things happen here, and conflating them was a bug:
 
-    ``offset_periods`` is reset to 0 in the SAME update, and this is
-    load-bearing for the EVERY_N_PERIODS pattern: ``match_periods`` fires
-    where ``(period_index - offset_periods) % interval_n == 0``, and the
-    offset was derived at rule creation as ``start_period.period_index %
-    interval_n`` (``app/routes/_recurrence_form_helpers.py``).  Re-pointing
-    the start to the new first period (index 0) WITHOUT re-phasing would
-    leave a stale offset that fires the rule on the wrong periods -- so the
-    offset is recomputed for the new start, which is
-    ``0 % interval_n == 0`` for every rule regardless of ``interval_n``.
-    The other patterns ignore ``offset_periods`` entirely, so setting it to
-    0 is inert for them (and 0 is the column's default).  The bulk update
-    runs before the repopulation pass, so the regenerated rows use the
-    corrected phase.
+    * the rules whose ``start_period_id`` the wipe cascade nulled (captured by
+      :func:`_rule_ids_with_start_period`) are re-POINTED at the new first
+      period, so a rule that had an explicit start keeps one and that period
+      correctly classifies as a ``RECURRENCE_ANCHOR``;
+    * **every** rule is re-AUTHORED, whether or not it had a start period,
+      because ``anchor_date`` is not a function of the start period alone.
+      ``app.services.recurrence.resolve`` measures it from the GREATEST of the
+      start period, the rule's ``start_date``, and the SCHEDULE'S OPENING
+      PAYDAY -- and a reset moves that opening.  Re-authoring only the
+      captured rules left every start-period-less rule carrying a first
+      occurrence from the schedule that was just deleted: measured on three of
+      the developer's 50 live rules, stored ``2026-01-02`` against a rebuilt
+      schedule opening ``2027-03-05``.  A neutral review found it; plan step
+      R2c-3's NOT NULL tightening never would have, because the value is not
+      null, only wrong.
+
+    **Re-authored rather than bulk-updated, and that is what re-phases them.**
+    This used to be one ``query.update()`` writing ``start_period_id`` and a
+    hardcoded ``offset_periods = 0``.  The zero was load-bearing for
+    EVERY_N_PERIODS -- ``match_periods`` fires where
+    ``(period_index - offset_periods) % interval_n == 0``, so re-pointing the
+    start without re-phasing would fire the rule on the wrong periods -- but it
+    was a hand-maintained copy of a derivation that lives in ``resolve``, which
+    computes ``first_period.period_index % interval_n``: the same 0, from the
+    rule the zero was transcribed from.  A bulk update writes SQL beneath the
+    ORM and so could not have touched ``anchor_date`` at all.
+
+    The schedule is loaded ONCE and threaded through every rule, and the
+    month-anchor children are eager-loaded in the same pass -- re-authoring
+    consults each rule's 0-or-1 subtype row, which would otherwise be a
+    ``SELECT`` per rule.  Runs before the repopulation pass, so the
+    regenerated rows use the corrected phase.
 
     Args:
-        rule_ids: The recurrence-rule ids to re-point (empty -> no-op).
+        rule_ids: The recurrence-rule ids that carried an explicit start
+            period before the wipe, and so are re-pointed at *first_period*.
+            Every other rule the owner has is still re-authored.
         first_period: The new schedule's first
             :class:`~app.models.pay_period.PayPeriod` (index 0).
     """
-    if not rule_ids:
+    repointed = set(rule_ids)
+    rules = db.session.query(RecurrenceRule).options(
+        selectinload(RecurrenceRule.month_anchor),
+    ).filter(
+        RecurrenceRule.user_id == first_period.user_id,
+    ).all()
+    if not rules:
         return
-    db.session.query(RecurrenceRule).filter(
-        RecurrenceRule.id.in_(rule_ids),
-    ).update(
-        {
-            RecurrenceRule.start_period_id: first_period.id,
-            RecurrenceRule.offset_periods: 0,
-        },
-        synchronize_session=False,
-    )
+    calendar = calendar_for(first_period.user_id)
+    for rule in rules:
+        spec = recurrence_spec(rule)
+        if rule.id in repointed:
+            spec = replace(spec, start_period_id=first_period.id)
+        reauthor_rule(rule, spec, calendar)
     db.session.flush()
 
 

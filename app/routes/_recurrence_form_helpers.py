@@ -64,7 +64,7 @@ single wording (some routes name "while you were editing" -- the
 update-template / update-transfer-template forms; others omit it --
 archive / unarchive / hard-delete).
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from decimal import Decimal
 from typing import Any
@@ -72,8 +72,6 @@ from typing import Any
 from flask import Response, flash, render_template, request, url_for
 from flask_login import current_user
 
-from app import ref_cache
-from app.enums import RecurrencePatternEnum
 from app.exceptions import RecurrenceConflict
 from app.extensions import db
 from app.models.pay_period import PayPeriod
@@ -82,6 +80,13 @@ from app.models.ref import RecurrencePattern
 from app.routes._commit_helpers import StaleConflictContext
 from app.routes._redirect_target import RedirectTarget
 from app.services import pay_period_service
+from app.services.recurrence import (
+    RecurrenceSpec,
+    author_rule,
+    calendar_for,
+    reauthor_rule,
+    recurrence_spec,
+)
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.digit_strings import parse_row_id
 
@@ -172,7 +177,11 @@ def build_recurrence_rule_from_form(
 
     Pops every recurrence-related key from ``data`` so the caller's
     downstream ``TransactionTemplate`` / ``TransferTemplate``
-    constructor does not receive stray kwargs.
+    constructor does not receive stray kwargs, then authors the rule
+    through :func:`app.services.recurrence.author_rule` -- the one door
+    that resolves both of the table's cadence vocabularies together.
+    This helper's own job is what only a ROUTE can do: read the form and
+    owner-check the submitted start period.
 
     Args:
         data: Marshmallow-validated payload; mutated in place.  The
@@ -181,10 +190,9 @@ def build_recurrence_rule_from_form(
             ``end_date``, and -- when ``ctx.include_due_day_of_month``
             is ``True`` -- ``due_day_of_month``.
         user_id: Owner of the resulting :class:`RecurrenceRule` row.
-        start_period_id: From the form; needed for the every-N-periods
-            auto-offset derivation.  Caller pops it before calling the
-            helper because the same value is later persisted on the
-            :class:`RecurrenceRule`.
+        start_period_id: From the form; the rule's "First paycheck".
+            Caller pops it before calling the helper because the same
+            value is later persisted on the :class:`RecurrenceRule`.
         ctx: The :class:`RecurrenceFormContext` carrying the form's
             ``end_date_value`` (copied verbatim onto the rule), the
             validation-error ``redirect`` target (invalid pattern id or
@@ -225,14 +233,20 @@ def build_recurrence_rule_from_form(
     # no-pattern branches, so the caller's downstream model
     # constructor never receives ``end_date`` as a stray kwarg.
     data.pop("end_date", None)
+    day_of_month = data.pop("day_of_month", None)
+    month_of_year = data.pop("month_of_year", None)
+    due_day_of_month = (
+        data.pop(_DUE_DAY_KEY, None) if ctx.include_due_day_of_month else None
+    )
 
     # Verify ownership of any submitted start period BEFORE it is
     # persisted onto the rule -- for every pattern, not just
     # EVERY_N_PERIODS.  ``start_period_id`` is written onto the rule
     # unconditionally below (``rule_kwargs["start_period_id"]``), and
     # ``recurrence_engine`` later dereferences ``rule.start_period.start_date``
-    # as the generation boundary, so a cross-user period would both be
-    # stored as a foreign FK and shift this owner's generation timing.
+    # as the generation boundary -- and ``resolve`` reads it as the rule's
+    # opening bound -- so a cross-user period would both be stored as a
+    # foreign FK and shift this owner's generation timing.
     # This matches the read-only preview path
     # (``templates.preview_recurrence``), which already owner-gates the
     # start period for all patterns; without this probe the persist path
@@ -244,33 +258,26 @@ def build_recurrence_rule_from_form(
             flash("Invalid start period.", "danger")
             return ctx.redirect.to_response()
 
-    # Auto-derive offset from the start period for EVERY_N_PERIODS so
-    # the rule generates against the user's chosen rhythm rather than
-    # the default zero-offset cadence.
-    every_n_id = ref_cache.recurrence_pattern_id(
-        RecurrencePatternEnum.EVERY_N_PERIODS,
+    # The offset auto-derivation this branch used to run inline -- "for
+    # EVERY_N_PERIODS, phase the rule on the chosen start period" -- moved
+    # into ``resolve``, which applies it on EVERY write rather than only on
+    # create.  That is what closes defect D1: the update path had no such
+    # derivation and wrote the schema default instead, re-phasing every
+    # future occurrence on an amount-only edit.
+    return author_rule(
+        RecurrenceSpec(
+            user_id=user_id,
+            pattern_id=pattern.id,
+            interval_n=interval_n,
+            offset_periods=offset_periods,
+            day_of_month=day_of_month,
+            due_day_of_month=due_day_of_month,
+            month_of_year=month_of_year,
+            start_period_id=start_period_id,
+            end_date=ctx.end_date_value,
+        ),
+        calendar_for(user_id),
     )
-    if (int(pattern_id_str) == every_n_id
-            and start_period is not None and interval_n):
-        offset_periods = start_period.period_index % interval_n
-
-    rule_kwargs: dict[str, Any] = {
-        "user_id": user_id,
-        "pattern_id": pattern.id,
-        "interval_n": interval_n,
-        "offset_periods": offset_periods,
-        "day_of_month": data.pop("day_of_month", None),
-        "month_of_year": data.pop("month_of_year", None),
-        "start_period_id": start_period_id,
-        "end_date": ctx.end_date_value,
-    }
-    if ctx.include_due_day_of_month:
-        rule_kwargs["due_day_of_month"] = data.pop(_DUE_DAY_KEY, None)
-
-    rule = RecurrenceRule(**rule_kwargs)
-    db.session.add(rule)
-    db.session.flush()
-    return rule
 
 
 def update_recurrence_rule_from_form(
@@ -289,18 +296,19 @@ def update_recurrence_rule_from_form(
     new rule, then pops every recurrence key from ``data`` so the
     caller's downstream ``setattr`` loop never sees a stray kwarg.
 
-    Unlike :func:`build_recurrence_rule_from_form`, this helper does
-    NOT auto-derive ``offset_periods`` from a start period for the
-    ``EVERY_N_PERIODS`` pattern: the update form does not re-collect
-    ``start_period_id`` (it is fixed at creation), so ``offset_periods``
-    is taken verbatim from the payload.  This preserves the
-    pre-extraction inline behaviour exactly.
-
-    ``interval_n`` is the ONE field taken conditionally: it belongs to
-    the ``EVERY_N_PERIODS`` pattern and, since plan step R2b, doubles as
-    the two-axis interval for the calendar patterns.  See the inline
-    comment on the write for why an unconditional assignment silently
-    destroys a Quarterly rule's cadence.
+    **It re-authors rather than assigns, and the difference is two
+    closed defects.**  The pre-seam version wrote the payload onto the
+    rule field by field, so what the form did not collect was written
+    with the schema's DEFAULT rather than left alone -- that is defect
+    **D1**: ``offset_periods`` went to 0 on an amount-only edit,
+    re-phasing every future occurrence of an ``Every N Periods`` rule by
+    one pay period.  Reading the rule's authored state back
+    (:func:`app.services.recurrence.recurrence_spec`), replacing only the
+    fields this form owns, and re-resolving the whole value means the
+    rule's start period still phases it and the two-axis columns are
+    re-derived rather than left describing the replaced cadence.
+    ``interval_n`` needs no pattern-scoping for the same reason -- see
+    the inline comment on the call.
 
     Args:
         rule: The existing :class:`RecurrenceRule` to mutate in place.
@@ -330,28 +338,63 @@ def update_recurrence_rule_from_form(
         flash("Invalid recurrence pattern.", "danger")
         return ctx.redirect.to_response()
 
-    rule.pattern_id = pattern.id
-    # ``interval_n`` is PATTERN-SCOPED, and since plan step R2b it carries the
-    # two-axis interval as well: 3 on a Quarterly rule, 6 on a Semi-Annual one.
-    # This form collects it only for EVERY_N_PERIODS -- the input is hidden
-    # with ``d-none`` for every other pattern, but a hidden input still
-    # SUBMITS -- so writing the submitted value unconditionally would overwrite
-    # a backfilled interval with this input's default on any ordinary edit.
-    # At step R4 a Quarterly rule reading ``(interval_n=1, unit=month)`` IS a
-    # monthly rule: three times the projected spend, with nothing left in the
-    # row to detect the loss by.  Popped either way, so the caller's
-    # downstream ``setattr`` loop still never sees a stray kwarg.
+    # The form's every-recurrence-key pops happen unconditionally, so the
+    # caller's downstream ``setattr`` loop never sees a stray kwarg whichever
+    # pattern was chosen.
     submitted_interval = data.pop("interval_n", 1)
-    if pattern.id == ref_cache.recurrence_pattern_id(
-        RecurrencePatternEnum.EVERY_N_PERIODS,
-    ):
-        rule.interval_n = submitted_interval
-    rule.offset_periods = data.pop("offset_periods", 0)
-    rule.day_of_month = data.pop("day_of_month", None)
-    if ctx.include_due_day_of_month:
-        rule.due_day_of_month = data.pop("due_day_of_month", None)
-    rule.month_of_year = data.pop("month_of_year", None)
-    rule.end_date = ctx.end_date_value
+    day_of_month = data.pop("day_of_month", None)
+    month_of_year = data.pop("month_of_year", None)
+    # The submitted phase is passed through, and resolution IGNORES it for any
+    # rule that names a start period -- deriving the phase from that period
+    # instead.  That is defect D1's fix, and it is scoped exactly where D1
+    # bites: no template renders an offset input, so this value is always the
+    # schema's default 0, which the pre-seam path wrote unconditionally and
+    # thereby re-phased every future occurrence of an ``Every N Periods`` rule
+    # on an amount-only edit.  A rule with NO start period has nothing to
+    # derive from, so the payload remains its only statement of phase -- and
+    # it cannot carry a stale non-zero one, because a period that is a rule's
+    # anchor is HARD-LOCKED against deletion
+    # (``pay_period_admin.PeriodLockReason.RECURRENCE_ANCHOR``).
+    submitted_offset = data.pop("offset_periods", 0)
+
+    # The rule's CURRENT authored state, with the form's fields replaced.
+    # Everything the form does not collect -- ``start_period_id`` (fixed at
+    # creation), ``start_date`` (the loan's origination bound),
+    # ``max_occurrences`` -- rides through untouched, and the whole value is
+    # then re-resolved, so the two-axis columns cannot be left describing the
+    # cadence this edit replaced.
+    #
+    # ``interval_n`` needs no pattern-scoping here any more, and that is the
+    # structural half of the fix rather than a tidier spelling of the old
+    # guard.  This form's interval input is hidden for every pattern but
+    # EVERY_N_PERIODS and a hidden input still SUBMITS, so the pre-seam write
+    # reset a Quarterly rule's backfilled interval to 1 on any ordinary edit
+    # -- at plan step R4, ``(interval_n=1, unit=month)`` IS monthly, three
+    # times the projected spend with nothing left in the row to detect the
+    # loss by.  ``resolve`` DERIVES the interval from the pattern for every
+    # pattern that names one, so the submitted value can only reach a rule
+    # whose pattern actually collects it.  The same derivation closes the
+    # reverse case the old guard left open: switching an every-4-paychecks
+    # rule to Quarterly used to keep the 4.
+    current = recurrence_spec(rule)
+    reauthor_rule(
+        rule,
+        replace(
+            current,
+            pattern_id=pattern.id,
+            interval_n=submitted_interval,
+            offset_periods=submitted_offset,
+            day_of_month=day_of_month,
+            due_day_of_month=(
+                data.pop("due_day_of_month", None)
+                if ctx.include_due_day_of_month
+                else current.due_day_of_month
+            ),
+            month_of_year=month_of_year,
+            end_date=ctx.end_date_value,
+        ),
+        calendar_for(rule.user_id),
+    )
     return None
 
 
