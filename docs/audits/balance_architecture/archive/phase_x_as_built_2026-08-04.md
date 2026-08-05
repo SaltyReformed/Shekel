@@ -1,9 +1,9 @@
-# Phase X as built: X-c2c4 through X-f1e1
+# Phase X as built: X-c2c4 through X-f1e3 (the X-f1 cluster, complete)
 
 **Read-only history. Nothing here governs work.** The live document is `../README.md`. This record
 was extracted 2026-08-04, when that document stood at 6,688 lines and Section 9 rule 4 was rewritten
 into a 1,000-line cap with a gate behind it. **Extended 2026-08-05** with the X-f1 cluster
-(X-f1a .. X-f1e1), when the live document reached 1,195 of its 1,200-line cap -- the second time
+(X-f1a .. X-f1e3, complete), when the live document reached 1,195 of its 1,200-line cap -- the second time
 rule 4 bound, and the same answer both times: condense what SHIPPED, never trim what remains.
 
 **Every line here is one step, its commit, and what it closed. The commit message is the step's own
@@ -53,9 +53,11 @@ merged.
 ### 1a. The X-f1 cluster (added 2026-08-05)
 
 Every row below is on `feat/xf1-settle-day` and **none of it is in production**, which still runs
-merge `e5f27154` at migration head `d7c1f4a9e603`. The parent **X-f1** stays LIVE in
-`../README.md` -- X-f1e2 and X-f1e3 remain -- so this section is the cluster's shipped leaves, not
-the step. Hashes re-verified against `git log` at extraction.
+merge `e5f27154` at migration head `d7c1f4a9e603`. **The cluster is COMPLETE as of 2026-08-05**: all
+fourteen leaves shipped, and the parent **X-f1** is ticked in `../README.md`, where two invariants it
+established stay live because later steps read against them. Hashes re-verified against `git log` at
+extraction. **X-f1 did NOT close N-173** -- its backfill was the deleted derivation verbatim, so no
+stored date improved and that row now belongs to X-f6.
 
 | step | commit(s) | what the commit says it did | findings closed | note |
 |---|---|---|---|---|
@@ -71,6 +73,8 @@ the step. Hashes re-verified against `git log` at extraction.
 | **X-f1c4c** | `5fc22bba` | feat(accounts): a true-up carries the statement day it was read from | N-187 is NOT among these -- see X-an | Rulings R-EE / R-EI / R-ER. Fixed two live defects the plan had not named: an unrenderable refusal, and a reconcile prompt decoupled from the coverage boundary releasing `$120.00` of projected checking. 16 mutants planted and killed. Opened **N-197**, **N-198**, **N-199** |
 | **X-f1d** | -- | the archive move (N-175) | N-175 | No commit of its own: done at the 2026-08-04 trim, when `anchor_settle_partition.md` moved here |
 | **X-f1e1** | `677bb397` | refactor(accounts): a balance is asserted at ONE door | N-195 | The account EDIT page stops asserting balances, in four layers (template, schema, route branch, kind gate) so none is a fence. Measured refutation of the two reviews that recommended ALIGNING the door: with its gate deleted, a RENAME moves the coverage boundary two months. Baselines byte-identical, positive-controlled; four controls shown to fail on revert |
+| **X-f1e2** | `bf15ed0c` (migration `b5e3d9c1a7f2`) | refactor(accounts): an assertion is (account, day, balance), written at one door | N-198 | Ruling R-ES. Drops `account_anchor_history.notes`; the origination assertion routes through `stage_anchor_true_up`, so the table has ONE writer. Both reviews found the same defect the ruling did not anticipate: unifying the writers made a clock-dependent day rule run TWICE, so a midnight roll between the two applications refused the day the first produced. Fixed with `ObservationDay`, a type only the resolver mints -- its field is `civil_day` because `date.day` silently satisfied `.day` with a day-of-month integer. Opened **N-200**, **N-201**, **N-202** |
+| **X-f1e3** | `993532db` | fix(accounts): the back-dated acknowledgement reaches every surface | N-199 | Ruling **R-ET**. The acknowledgement moves off the per-surface `#anchor-as-of` caption onto `#anchor-ack-mount`, a `base.html` toast mount no refresh region owns -- reaching 5 surfaces where it reached 1. The as-of snippet narrows to the GRID alone (the only caption nothing else redraws), the route's HTML f-strings become partials, and the prompt/acknowledgement exclusion becomes one `if/else`. **Both kind refusals stop being raw 4xx AND the affordance behind them is deleted**: the shared partial renders a loan's balance read-only, the rule the cockpit already followed and the other four surfaces did not. Two adversarial reviews; the code review's mutation experiment proved the first test set blind to the two attributes the feature hangs on. Live-verified in Chromium on 3 surfaces. Opened **N-203**..**N-206** |
 
 **The three DECOMPOSITION PARENTS have no commit of their own and ticked with their last leaf**,
 and they are listed because the live document still cites them by id: **X-f1c** (the edit doors --
