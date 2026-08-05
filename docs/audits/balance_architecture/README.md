@@ -31,14 +31,15 @@ from `git status -sb` when you edit this.
 
 | | | detail |
 |---|---|---|
-| **just landed** | **X-f1e3** (`993532db`, no migration), and with it **the whole X-f1 cluster ticks** -- fourteen leaves, all archived with verified hashes. The back-dated acknowledgement moves off the per-surface caption onto `#anchor-ack-mount`, a `base.html` toast mount no refresh region owns, so it reaches **5 surfaces where it reached 1**. Ruling **R-ET**. Both harnesses byte-identical. Production still runs merge `e5f27154`, migration head `d7c1f4a9e603` -- **none of the cluster is deployed** | `archive/…2026-08-04.md` Section 1a |
-| **in flight** | nothing. `feat/xf1-settle-day` carries the whole cluster and has **no PR** -- re-measure `git status -sb` rather than trusting a hash here | -- |
-| **blocked on you** | **two design questions X-f2 now owns**: N-204 (the acknowledgement is keyed on "was the day the boundary", not "did the figure change", so an ordinary re-confirm writes a row and says nothing) and N-205 (nothing durable records an assertion anywhere in the UI, so an 8s toast is the only evidence) | Section 6 |
-| **next** | **X-an** -> X-f2 -> **X-f3** (moves money, own PR) -> X-f4 -> X-f5 -> X-f6 | Section 5, in execution order |
+| **just landed** | **The whole X-f1 cluster is IN PRODUCTION** -- PR #82 -> #83, merge `8d812662`, image `2ab54855937b`, migration head **`b5e3d9c1a7f2`**. Fourteen leaves. A settle carries the day its money moved, an assertion is (account, day, balance) written at one door, and the back-dated acknowledgement reaches all five surfaces | `archive/…2026-08-04.md` Section 1a |
+| **how it was proven** | Rehearsed on a restored copy of prod BEFORE deploying: migrations clean, the backfill proven row by row (**999/999** accounted -- 150 dated from `paid_at`, 8 from the period-start fallback, 841 left NULL, 0 unexpected), and the seam harness **byte-identical**, positive-controlled at 1,674 lines from one cent. Post-deploy prod re-measured byte-identical against the same baseline | Section 7.2 |
+| **in flight** | nothing. `dev` and `main` are both at `8d812662`; **no feature branches exist** | -- |
+| **blocked on you** | **two design questions X-f2 owns**: **N-204** (the acknowledgement is keyed on "was the day the boundary", not "did the figure change", so an ordinary re-confirm writes a row and says nothing) and **N-205** (nothing durable records an assertion anywhere in the UI) | Section 6 |
+| **next** | **X-an** -> X-f2 -> **X-f3** (moves money, own PR) -> X-f4 -> X-f5 -> X-f6. Block 2 (**X-ad then X-x, ONE PR**) is now UNGATED and can run in parallel | Section 5.0 |
 | **why this shape** | the anchor half was redesigned from scratch by ruling **R-EB**; R-EQ designed the duplicate rule that had only ever been re-keyed, R-ER put the day rule in the module that owns what an assertion is, X-f1e1 deleted the second DOOR, X-f1e2 the second WRITER, X-f1e3 the mount that was destroying its own message | Section 3.3, and R-EB / R-EQ / R-ER / R-ES / R-ET in Section 4 |
-| **the live lesson** | **a response can destroy its own message**: an out-of-band fragment aimed into a region that re-fetches on the event that same response fires always loses the race. And the tests could not see it -- deleting either of the two attributes the feature hangs on left the whole suite green, measured | Section 8's first three bullets |
-| **the ledger** | **93 rows**, up from 90: X-f1e3 closed N-199 and opened N-203..N-206; **N-173 re-pointed to X-f6**, because X-f1 shipped the MECHANISM and its backfill improved no stored date | Section 6 |
-| **resuming cold** | branch `feat/xf1-settle-day`; the test template is at **`b5e3d9c1a7f2`** -- X-f1e3 added no migration, so no rebuild. Baseline: **7,868** green under both clock zones. The old advice to override `IDLE_TIMEOUT_MINUTES` is DEAD -- `TestingConfig` pins 720 itself. Clones on `shekel-dev-db`: **`shekel_res_mig`** is at the current head and is what both harnesses diff against. **A browser probe exists** (Playwright against the dev container's IP, not 127.0.0.1) and is what proved the toast actually shows | `app/config.py:447`; Section 7.2 |
+| **the live lesson** | **a response can destroy its own message**, and the tests could not see it: deleting either of the two attributes the feature hangs on left the whole suite green, measured by an adversarial review | Section 8's first three bullets |
+| **the ledger** | **93 rows**. X-f1e3 closed N-199 and opened N-203..N-206; **N-173 re-pointed to X-f6**, because X-f1 shipped the mechanism and its backfill improved no stored date | Section 6 |
+| **resuming cold** | Branch from `dev` (= `main` = `8d812662`). The test template is **already at `b5e3d9c1a7f2`**, the repo head -- VERIFIED against `alembic_version`, not assumed; rebuild only if you add a migration. Baseline **7,868** green under both clock zones. Two REFERENCE tags, neither a rebase candidate: `xd-attempt-1-parked-n155` (X-d) and `xx-attempt-1-held-rde` (X-x). Prod restore point: `~/shekel-backups/shekel_prod_predeploy_20260805_092421.dump` -- **the deploy was forward-only**, so that dump is the only way back | Section 7.2 |
 
 Section 5 is the work that remains, Section 6 every open defect with an owner, Section 4 the
 rulings that govern them, and `archive/` what already shipped.
@@ -110,6 +111,7 @@ the three as-built records.
 | `transaction_entries.entry_date` splits into `purchased_on` + `settled_on` (S1-c) | prod | PR #75, migration `d7c1f4a9e603` |
 | `ReconciledThrough`: the partition's fence is a TYPE, not a checker | prod | PR #76 |
 | One status seam for transactions and transfers (X-aj1) | prod | PR #80 |
+| A settle carries the DAY its money moved, and an assertion is (account, day, balance) written at ONE door (the whole X-f1 cluster) | prod | PR #83, merge `8d812662`, migration `b5e3d9c1a7f2` |
 | An anchor correction's period is DERIVED from its day (X-ai-r) | prod | PR #81 |
 
 **The loan baseline is still a LIVE regression gate for CASH commits.** Mortgage (account 3)
@@ -250,11 +252,11 @@ outside the schedule (one `operator`, two `developer-decision`). Measured, not a
 | # | block | the fact that forces its position | cost |
 |---|---|---|---|
 | 1 | **the anchor half** -- X-an, X-f2, **X-f3**, X-f4, X-f5 (X-f1 COMPLETE, archived) | The only remaining work that moves a figure the developer reads: **N-171**'s `$15,065.08` gross / `-$1,495.10` net stays invisible on the income statement until X-f3, which is its OWN PR and MOVES MONEY | 28-35 h |
-| 2 | **X-ad then X-x, shipped as ONE PR** | Gated on `feat/xf1-settle-day` MERGING, not on block 1 finishing: X-ad's trace must replace the guarantee `accounts.current_anchor_period_id` gave, and X-f1c3c deletes that column. X-x is HELD behind X-ad (**R-DE**), so shipping the pair DISSOLVES the hold instead of maintaining a branch | 12-16 h |
+| 2 | **X-ad then X-x, shipped as ONE PR** | **Its gate CLEARED 2026-08-05** when the X-f1 cluster reached production (`8d812662`), so this block can start now and runs in parallel with the rest of block 1. `accounts.current_anchor_period_id` is GONE rather than going, which is the fact X-ad's trace turns on. X-x is HELD behind X-ad (**R-DE**) and its 2026-07-31 build is a REFERENCE tag, not a branch | 12-16 h |
 | 3 | **the posting restructure** -- X-ai-a/b/c/g, X-d re-land, X-ai-s, X-aj2, X-am, X-ak | **X-ai-s is HELD pending X-f3**; X-d is PARKED on **N-155**, whose fix is X-ai's placement; X-ak carries **N-193**, a reproducible unhandled 500 on a money route. **29 of Section 6's 88 rows live here** -- a third of the whole ledger (X-ai 13, X-ak 9, X-aj2 4, X-aj 1, X-d 1, X-am 1) | 31-42 h |
 | 4 | **the credit-card arc** (own document) | `CC1b`'s fold is specified against the reset semantics **R-EB deletes at X-f3**, and `CC3b` derives a settle from `paid_at`, **deleted at X-f1b**. Earliest correct start is after X-f4 and X-am | 74-104 h |
 | 5 | **X-f6, the bank import** (own document) | Consumes X-f2's outstanding set and X-f3's residual path (**R-EB**). After block 4 so ONE matching rule covers checking and card rows rather than being widened into them later | 22-31 h |
-| 6 | **the read-path residue** -- X-y, X-i1, X-i2, X-j, X-k, X-l, X-m, X-n, X-e, X-p, X-ab, X-ac | Nothing blocks on it and its footprint is disjoint from the write path (tag `xd-attempt-1-parked-n155`'s 30 `app/` files against `wip/x-x-held`'s 26: **zero overlap**, measured) | 50-70 h |
+| 6 | **the read-path residue** -- X-y, X-i1, X-i2, X-j, X-k, X-l, X-m, X-n, X-e, X-p, X-ab, X-ac | Nothing blocks on it and its footprint is disjoint from the write path (tag `xd-attempt-1-parked-n155`'s 30 `app/` files against tag `xx-attempt-1-held-rde`'s 26: **zero overlap**, measured) | 50-70 h |
 | 7 | **the gate and vocabulary residue** -- X-ag, X-ah, X-al | Shares files with nothing; interleaves anywhere | 11-15 h |
 | 8 | **E2 and G** | Runs LAST by ruling; G2 must not begin before the boundary it rests on is proven | 28-44 h |
 
@@ -451,18 +453,35 @@ live step or a live finding still reads against them.
   not one: any periods at all (Q1), which period contains today (Q2), which contains date T (Q3), is
   there a next one (Q4, a normal terminal state), is the requested window non-empty (Q5,
   navigation). **Q1 is unreachable for an owner and Q2 corrupts money**: a 5-day calendar hole moves
-  `/savings` net worth by **+$3,228.55** and puts `Account.current_anchor_balance` on screen as a
-  current balance, while `/grid` renders the repair card at the same instant. **BUILT AND HELD**
-  (ruling R-DE) behind X-ad, because N-127 measures the repair its refusals point at as
+  `/savings` net worth by **+$3,228.55**, while `/grid` renders the repair card at the same instant.
+  (That measurement ALSO put `Account.current_anchor_balance` on screen as a current balance; **that
+  half is now impossible** -- ruling R-EH dropped the column at X-f1c3c, in production since
+  `8d812662`. The net-worth figure stands; the substitution does not.)
+  **HELD behind X-ad** (ruling R-DE), because N-127 measures the repair its refusals point at as
   non-functional.
+  **Its 2026-07-31 build is a REFERENCE, not a rebase candidate.** Tag
+  `xx-attempt-1-held-rde` (branch `wip/x-x-held` deleted 2026-08-05 once the tag was pushed, the
+  `xd-attempt-1-parked-n155` precedent). Measured at tag time: 39 behind `main`, 3 ahead, 38 files,
+  and a test merge conflicts in **7 files across 10 hunks**. Three findings force the re-derive
+  rather than a rebase: **one third of it already shipped** (X-x2's anchor-cache arm, below); **its
+  reasoning is falsified in at least four places** that assert `accounts.current_anchor_period_id is
+  NOT NULL` as a load-bearing guarantee, and that column is gone too; and **one conflict is SEMANTIC**
+  -- in `savings_dashboard_service/_projections.py` the branch DELETES the no-current-period fallback
+  because `ctx.current_period` is no longer nullable, while `main` (ruling **R-EM**, shipped at
+  X-f1c3a) KEEPS the branch and asks the seam for the balance at `ctx.balance_ctx.as_of`. Both cannot
+  stand, and choosing is a design decision rather than a merge resolution.
   * [ ] **X-x1 THE ONE ANSWER** (R-CY) -- `PayCalendarGapError`,
     `pay_period_service.require_current_period` / `covers`, the application-level handler and its
     repair page, on the `require_baseline_scenario` / `BaselineMissingError` pattern name for name.
     **It takes the GRID's two pre-checks as its first callers** rather than shipping a door nobody
     walks through: an unreachable handler has no negative control.
   * [ ] **X-x2 THE FABRICATIONS** (R-CY) -- the branches that publish a figure the app did not
-    compute take the raising accessor: the anchor-cache substitutions, the fabricated `$0.00` in
-    four producers, and `build_trend_periods`' `current_index = 0` into an empty list.
+    compute take the raising accessor. **Its first arm is DONE and must not be rebuilt**: the
+    anchor-cache substitutions died with the column at X-f1c3c (ruling R-EH), and an AST pass over
+    `main` finds no live read left -- only prose in 5 `app/` files. What REMAINS, re-measured against
+    `8d812662`: the fabricated `$0.00` in four producers, and `build_trend_periods`'
+    `current_index = 0` into an empty list, still live at `routes/accounts/detail.py:228` and
+    `analytics_view.py:485`.
   * [ ] **X-x3 THE ONE PREDICATE** (R-DA) -- `onboarding.has_periods` asks Q2 rather than Q1, so the
     checklist and the page it renders on cannot disagree.
   * [ ] **X-x4 THE STATES SPLIT** (R-CZ) -- an empty requested window stops answering with the
@@ -473,13 +492,18 @@ live step or a live finding still reads against them.
 * [ ] **X-ad** `feat(periods): the pay calendar a new user can actually enter` -- closes **N-123**,
   **N-124**, **N-127** (rulings R-DB, R-DC, R-DD). **The WRITE half of X-x's trace, and its own step
   because it moves money-adjacent state**: it creates periods and re-anchors accounts where X-x only
-  reads and deletes. Sequenced immediately after X-x so the read-side guards X-x installs are what
-  grade it. **Registration stops creating a bootstrap pay period** (R-DB): measured, `today+1` /
+  reads and deletes. **It RUNS FIRST, and the pair ships as ONE PR** (Section 5.0 block 2). R-DD had
+  sequenced it immediately AFTER X-x; ruling **R-DE** then held X-x behind it, which reverses the
+  order -- the later ruling governs, and this sentence used to carry the earlier one.
+  **Registration stops creating a bootstrap pay period** (R-DB): measured, `today+1` /
   `+5` / `+13` are REFUSED and `today+20` / `+27` are accepted leaving a permanent hole, so the
   bootstrap either blocks the user's real payday or guarantees the state X-x's readers refuse to
-  answer. **Its trace must decide what replaces the FK guarantee** --
-  `accounts.current_anchor_period_id` is why the bootstrap exists, and X-f1c3c deletes that column,
-  so re-check this fork against the tree rather than against this sentence.
+  answer. **The FK guarantee it had to replace is GONE, not going** --
+  `accounts.current_anchor_period_id` is why the bootstrap exists, and ruling R-EH dropped that
+  column at X-f1c3c, in production since `8d812662`. So the fork is no longer "what will replace it"
+  but "nothing replaces it, and what does the bootstrap exist for now": answer that from the tree,
+  and note that `reconcile_account_anchor_corrections` still raises for an owner with no pay periods
+  (**N-192**), which is the live reason the bootstrap has not simply been deleted.
 * [ ] **X-y** `refactor(balance): the baseline decision that is not the balance seam's` -- closes
   **N-117**. The fifteen surfaces that resolve the baseline DIRECTLY (`get_baseline_scenario`)
   rather than through a `BalanceContext`, and so answer this state without the seam being asked:

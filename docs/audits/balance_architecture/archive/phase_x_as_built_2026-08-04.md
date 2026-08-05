@@ -52,12 +52,20 @@ merged.
 
 ### 1a. The X-f1 cluster (added 2026-08-05)
 
-Every row below is on `feat/xf1-settle-day` and **none of it is in production**, which still runs
-merge `e5f27154` at migration head `d7c1f4a9e603`. **The cluster is COMPLETE as of 2026-08-05**: all
-fourteen leaves shipped, and the parent **X-f1** is ticked in `../README.md`, where two invariants it
-established stay live because later steps read against them. Hashes re-verified against `git log` at
-extraction. **X-f1 did NOT close N-173** -- its backfill was the deleted derivation verbatim, so no
-stored date improved and that row now belongs to X-f6.
+**The cluster is COMPLETE and IN PRODUCTION as of 2026-08-05** -- PR #82 into `dev`, PR #83 into
+`main`, merge `8d812662`, image `2ab54855937b`, migration head `b5e3d9c1a7f2`. All fourteen leaves
+shipped, and the parent **X-f1** is ticked in `../README.md`, where two invariants it established
+stay live because later steps read against them. Hashes re-verified against `git log` at extraction;
+`feat/xf1-settle-day` was deleted once it merged. **X-f1 did NOT close N-173** -- its backfill was
+the deleted derivation verbatim, so no stored date improved and that row now belongs to X-f6.
+
+**The deploy was rehearsed on a restored copy of production before it ran, and was FORWARD-ONLY**:
+four of the five migrations drop columns, `a3f7c8e21b64.downgrade()` refuses by design, and
+`shekel-deploy.sh` reverts only the image digest. Measured on the rehearsal and again on production
+afterwards: migrations clean `d7c1f4a9e603` -> `b5e3d9c1a7f2`, the settled-iff-dated invariant exact
+at 158/158/0, the backfill accounted 999/999 (150 from `paid_at`, 8 from the period-start fallback,
+841 NULL, 0 unexpected), and the seam harness byte-identical across the change with a positive
+control moving 1,674 lines.
 
 | step | commit(s) | what the commit says it did | findings closed | note |
 |---|---|---|---|---|
