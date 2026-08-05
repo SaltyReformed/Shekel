@@ -100,7 +100,7 @@ import pathlib
 from unittest.mock import patch
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 from sqlalchemy.exc import IntegrityError
 
 from app.extensions import SHEKEL_NAMING_CONVENTION
@@ -404,27 +404,57 @@ class TestPayPeriodIdConsistency:
     converge on CASCADE.  Verifying the invariant against the live
     catalog (rather than the model file) catches catalog drift
     introduced by hand-edits to the DB.
+
+    **``account_anchor_history`` left this set at plan step X-f1c3b, and it
+    left by having no FK at all** (ruling R-EO).  Its ``pay_period_id`` column
+    is DELETED: a balance assertion is a fact about a bank, and CASCADE meant a
+    pay-period operation could destroy it -- measured, a schedule reset deleted
+    all 78 of the developer's production assertions and fabricated 9
+    replacements.  Two tables reference ``pay_periods`` now and both still
+    CASCADE, so the consistency invariant is unchanged for the rows it still
+    covers; the case below asserts the third FK is GONE rather than dropping
+    it silently, because "the parametrize list got shorter" is not something a
+    reader can distinguish from an accident.
     """
+
+    def test_account_anchor_history_has_no_pay_period_fk(self, app, db):
+        """A balance assertion carries no pay-period FK at all (ruling R-EO).
+
+        Asserted rather than deleted: this class is the live-catalog guard on
+        which children of ``pay_periods`` cascade, so a future migration
+        re-adding the column would otherwise re-open the destroy-on-reset path
+        with nothing objecting.  The companion behavioural lock is
+        ``test_pay_period_reset.TestResetHappyPath
+        .test_the_reset_preserves_every_balance_assertion``.
+        """
+        with app.app_context():
+            assert _fk_ondelete_code(
+                db.session, "budget",
+                "account_anchor_history_pay_period_id_fkey",
+            ) is None
+            assert "pay_period_id" not in {
+                column["name"] for column in inspect(db.engine).get_columns(
+                    "account_anchor_history", schema="budget",
+                )
+            }
 
     @pytest.mark.parametrize(
         "schema, name",
         [
             ("budget", "transactions_pay_period_id_fkey"),
             ("budget", "fk_transfers_pay_period_id"),
-            ("budget", "account_anchor_history_pay_period_id_fkey"),
         ],
-        ids=["transactions", "transfers", "account_anchor_history"],
+        ids=["transactions", "transfers"],
     )
     def test_pay_period_id_fk_cascades(
         self, app, db, seed_user, schema, name,
     ):
-        """The three child FKs that reference pay_periods.id all CASCADE.
+        """Both surviving child FKs that reference pay_periods.id CASCADE.
 
-        The ``transactions`` and ``account_anchor_history`` FKs keep
-        their pre-C-43 Alembic-default names (the F-078 strategy
-        retains ~35 default names rather than churning all of them);
-        only the ``transfers`` FK was renamed by C-43.  The ondelete
-        invariant applies to all three regardless of name.
+        The ``transactions`` FK keeps its pre-C-43 Alembic-default name (the
+        F-078 strategy retains ~35 default names rather than churning all of
+        them); only the ``transfers`` FK was renamed by C-43.  The ondelete
+        invariant applies to both regardless of name.
         """
         with app.app_context():
             code = _fk_ondelete_code(db.session, schema, name)

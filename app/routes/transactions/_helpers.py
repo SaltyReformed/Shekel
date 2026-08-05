@@ -20,6 +20,7 @@ from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.pay_period import PayPeriod
 from app.models.category import Category
+from app.models.ref import Status
 from app.routes._render_helpers import render_transaction_cell
 from app.schemas.validation import (
     MarkDoneSchema,
@@ -28,6 +29,7 @@ from app.schemas.validation import (
     InlineTransactionCreateSchema,
 )
 from app.services import grid_view_service
+from app.services.state_machine import finalised_edit_rejection
 from app.services.entry_service import (
     build_entry_lists_dict,
     build_entry_sums_dict,
@@ -47,6 +49,27 @@ _CREDIT_PAYBACK_UNIQUE_INDEX = "uq_transactions_credit_payback_unique"
 # Package-local alias of the shared foreign-key rejection message so the
 # mutation handlers import it alongside the other private helpers.
 _INVALID_REFERENCE_MSG = INVALID_REFERENCE_MSG
+
+# Money / period / category / due-date fields that the finalised-row edit
+# lock (#26) protects.  Names match :class:`TransactionUpdateSchema` (the
+# loaded ``data`` dict for both the regular and the transfer-shadow PATCH
+# paths).  Display fields (``notes``, ``name``) and the ad-hoc visibility
+# flags stay editable on a finalised row; the ``status_id`` transition is
+# guarded separately by ``state_machine.verify_transition``.
+#
+# ``settled_on`` is deliberately NOT here (ruling **R-ED**, plan step X-f1c).
+# Every member below is a BUDGET DECISION the user made, locked so a paid
+# movement cannot be retroactively rewritten; the settle day is an OBSERVED
+# FACT about their bank, and an observed fact gets corrected when the statement
+# says otherwise.  Locking it would make the correction UNREACHABLE -- reverting
+# to Projected and re-settling stamps TODAY, so "this actually cleared last
+# Tuesday" would be inexpressible.  It is the same line ``TransactionEntry``
+# draws one table over (``purchased_on`` guarded, ``settled_on`` freely
+# editable on the inline form).
+_LOCKED_EDIT_FIELDS = frozenset({
+    "estimated_amount", "actual_amount", "category_id",
+    "pay_period_id", "due_date",
+})
 
 logger = logging.getLogger(__name__)
 
@@ -343,6 +366,50 @@ def _error_transaction_response(txn_id, message, target=None, status=400):
     if txn is None:
         return "Not found", 404
     return designed_error(render_transaction_cell(txn, error=message), status)
+
+
+def _finalised_edit_response(txn, data):
+    """Reject locked-field edits on a finalised (is_immutable) transaction.
+
+    Looks up the current and (if the PATCH transitions status) the new
+    :class:`Status` BEFORE the caller's ``setattr`` loop dirties the
+    session -- matching ``_resolve_status_change``'s autoflush-safe
+    ordering -- and defers the policy decision to
+    :func:`finalised_edit_rejection`.  Applies to the regular edit path
+    (``mutations._apply_regular_update``) and the transfer-shadow path
+    (``_shadow_mutations._apply_shadow_update`` -- the shadow's status
+    mirrors its parent transfer's, Invariant 3), the two user edit entry
+    points; the system mutation paths (recurrence, carry-forward,
+    mark-done, cancel) deliberately bypass this lock.
+
+    It lives HERE rather than beside either caller because those two now
+    sit in different modules (plan step X-f1c's split), and a route helper
+    both mutation modules need is exactly this module's purpose -- the
+    alternative is one module importing the other, which closes a cycle.
+
+    Args:
+        txn: The Transaction (or transfer shadow) being edited.
+        data: The schema-loaded PATCH payload (``version_id`` already
+            popped by the caller).
+
+    Returns:
+        A designed 400 error-fragment response when a locked field is
+        edited on a finalised row not being reverted to a mutable
+        status, or ``None`` when the edit may proceed.
+    """
+    if not _LOCKED_EDIT_FIELDS & data.keys():
+        return None
+    current_status = db.session.get(Status, txn.status_id)
+    new_status = (
+        db.session.get(Status, data["status_id"])
+        if "status_id" in data else None
+    )
+    message = finalised_edit_rejection(
+        current_status, new_status, context="transaction",
+    )
+    if message is None:
+        return None
+    return _error_transaction_response(txn.id, message)
 
 
 def _get_owned_transaction(txn_id):

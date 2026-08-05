@@ -119,12 +119,12 @@ class TestLoanInterestInYearValue:
             create_settled_transfer(
                 seed_user, db.session, seed_user["account"], loan,
                 seed_periods[p1], amount=Decimal("2000.00"),
-                paid_at=_paid_utc(2026, 2, 15),
+                settled_on=date(2026, 2, 15),
             )
             create_settled_transfer(
                 seed_user, db.session, seed_user["account"], loan,
                 seed_periods[p2], amount=Decimal("1000.00"),
-                paid_at=_paid_utc(2026, 3, 15),
+                settled_on=date(2026, 3, 15),
             )
             db.session.commit()
             ctx = BalanceContext.build(seed_user["user"].id)
@@ -159,7 +159,7 @@ class TestLoanInterestInYearValue:
             create_settled_transfer(
                 seed_user, db.session, seed_user["account"], loan,
                 seed_periods[p1], amount=Decimal("1000.00"),
-                paid_at=_paid_utc(2025, 12, 20),
+                settled_on=date(2025, 12, 20),
             )
             db.session.commit()
             ctx = BalanceContext.build(seed_user["user"].id)
@@ -191,7 +191,7 @@ class TestLoanInterestInYearValue:
             create_settled_transfer(
                 seed_user, db.session, seed_user["account"], loan,
                 seed_periods[p1], amount=Decimal("1000.00"),
-                paid_at=datetime(2026, 1, 1, 1, 5, tzinfo=timezone.utc),
+                settled_on=date(2025, 12, 31),
             )
             db.session.commit()
             ctx = BalanceContext.build(seed_user["user"].id)
@@ -231,12 +231,12 @@ class TestLoanInterestInYearMerge:
             create_settled_transfer(
                 seed_user, db.session, seed_user["account"], loan,
                 seed_periods[p1], amount=Decimal("1000.00"),
-                paid_at=_paid_utc(2026, 2, 5),
+                settled_on=date(2026, 2, 5),
             )
             create_settled_transfer(
                 seed_user, db.session, seed_user["account"], loan,
                 seed_periods[p3], amount=Decimal("1000.00"),
-                paid_at=_paid_utc(2026, 2, 10),
+                settled_on=date(2026, 2, 10),
             )
             db.session.commit()
             # Premise: P3's period has not begun by the frozen today (early settle).
@@ -305,7 +305,7 @@ class TestLoanInterestInYearMerge:
             create_settled_transfer(
                 seed_user, db.session, seed_user["account"], loan,
                 seed_periods[p2], amount=Decimal("1000.00"),
-                paid_at=datetime(2026, 2, 1, 2, 0, tzinfo=timezone.utc),
+                settled_on=date(2026, 1, 31),
             )
             db.session.commit()
             ctx = BalanceContext.build(seed_user["user"].id)
@@ -364,7 +364,7 @@ class TestLoanInterestAnswersFromTheFold:
             create_settled_transfer(
                 seed_user, db.session, seed_user["account"], loan,
                 seed_periods[p1], amount=Decimal("1000.00"),
-                paid_at=_paid_utc(2025, 12, 20),
+                settled_on=date(2025, 12, 20),
             )
             db.session.commit()
 

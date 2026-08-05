@@ -5,7 +5,7 @@ assertions into the double-entry ledger: the once-per-account OPENING (its
 earliest ``AccountAnchorHistory`` row) and a TRUE-UP per later row, each a
 balanced correction driving the linked ledger's total to the asserted balance
 as of the day it is the closing balance for.  The walk partitions source facts
-by their settled CIVIL DAY (``paid_at``'s display-timezone day, transfers by the
+by their settled CIVIL DAY (the stored ``settled_on``; transfers by the
 income shadow's, period-start fallback) against each anchor's stored
 ``observed_on`` -- never by pay period (the plan review's CRITICAL-1) and never
 by instant, which decided the question by click order and cost production
@@ -39,12 +39,14 @@ from app.enums import (
     PostingKindEnum,
     PostingSourceEnum,
 )
+from app.exceptions import UndatedSettleError
 from app.extensions import db as _db
 from app.models.account import AccountAnchorHistory
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.ledger_account import LedgerAccount
 from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
+from app.models.transaction import Transaction
 from app.models.user import User
 from app.services import (
     account_posting_service,
@@ -148,14 +150,12 @@ def _add_assertion(account, balance, created_at, pay_period_id=None):
     """
     row = AccountAnchorHistory(
         account_id=account.id,
-        pay_period_id=pay_period_id or account.current_anchor_period_id,
         anchor_balance=Decimal(str(balance)),
         created_at=created_at,
         # The civil day this assertion is the closing balance FOR, kept in step
         # with the pinned instant by the shared rule (ruling R-DH, plan step 2).
         observed_on=observed_day_of(created_at),
     )
-    account.current_anchor_balance = Decimal(str(balance))
     _db.session.add(row)
     _db.session.flush()
     return row
@@ -171,6 +171,31 @@ def _ledger_of_kind(account_id, kind):
         )
         .one_or_none()
     )
+
+
+def _period_containing(user_id, day):
+    """Return the id of the period a correction observed on ``day`` books in.
+
+    The derivation ``account_posting_service._anchors`` makes
+    (:func:`app.services.loan_ledger.resolve_anchor_pay_period`), asked here
+    rather than read off the assertion row.  These tests compared a journal
+    entry's ``pay_period_id`` against ``AccountAnchorHistory.pay_period_id``
+    until ruling R-EO deleted that column -- a comparison that graded the
+    entry against a CACHE of this same derivation, and which would have
+    passed on production's two rows whose stored period does not contain
+    their own day (finding N-168).  Asking the derivation is what the
+    producer is actually contracted to do.
+    """
+    # Pylint: import-outside-toplevel -- deferred import is the file-wide
+    # test convention.
+    from app.services.loan_ledger import resolve_anchor_pay_period  # pylint: disable=import-outside-toplevel
+    periods = (
+        _db.session.query(PayPeriod)
+        .filter_by(user_id=user_id)
+        .order_by(PayPeriod.period_index)
+        .all()
+    )
+    return resolve_anchor_pay_period(periods, day).id
 
 
 def _correction_entries(account_id, scenario_id, source_enum):
@@ -221,20 +246,20 @@ def _correction_net_in_period(account_id, scenario_id, source_enum, period_id):
     )
 
 
-def _settle_expense(seed_user, account, amount, paid_at):
-    """Settle an expense on *account* at a pinned ``paid_at``; return it.
+def _settle_expense(seed_user, account, amount, settled_on):
+    """Settle an expense on *account* on a pinned civil DAY; return it.
 
-    ``paid_at`` may be an instant or None (the period-start fallback under
-    test), pinned BEFORE the ledger emission so the posted entry and the
-    walk's attribution agree, as in production (the C6 effect-time
-    self-heal reads the emitted ``entry_date``s).  The transaction is
-    placed in the seed bootstrap period; the walk attributes by the
-    ``paid_at``'s DISPLAY-timezone civil day (ruling R-DH), so the period
-    placement is immaterial except for the NULL-``paid_at`` fallback.
+    ``settled_on`` is the day the cash moved, pinned BEFORE the ledger
+    emission so the posted entry and the walk's attribution agree, as in
+    production (the C6 effect-time self-heal reads the emitted
+    ``entry_date``s).  The transaction is placed in the seed bootstrap
+    period; the walk attributes by the SETTLE DAY (ruling R-DH), so the
+    period placement is immaterial.  It took an instant, or ``None`` for the
+    period-start fallback, until plan step X-f1 removed both.
     """
     return create_settled_cash_transaction(
         seed_user, _db.session, seed_user["bootstrap_period"],
-        Decimal(str(amount)), account=account, paid_at=paid_at,
+        Decimal(str(amount)), account=account, settled_on=settled_on,
     )
 
 
@@ -294,7 +319,7 @@ class TestWalkAccountLedger:
             account = _make_account(seed_user, "500.00")
             origin = _origin_day(account)
             _settle_expense(
-                seed_user, account, "200.00", settle_instant_on(origin - timedelta(days=1)),
+                seed_user, account, "200.00", origin - timedelta(days=1),
             )
             _db.session.commit()
 
@@ -304,15 +329,10 @@ class TestWalkAccountLedger:
             assert len(corrections) == 1
             assert corrections[0].ledger_before == Decimal("-200.00")
 
-    @pytest.mark.parametrize(
-        "offset, label",
-        [(_ONE_HOUR, "an hour AFTER"), (-_ONE_HOUR, "an hour BEFORE")],
-        ids=["recorded_after", "recorded_before"],
-    )
-    def test_a_settle_on_the_openings_own_day_is_absorbed_either_order(
-        self, app, db, seed_user, offset, label,
+    def test_a_settle_on_the_openings_own_day_is_absorbed(
+        self, app, db, seed_user,
     ):
-        """A settle dated the opening's OWN day is ABSORBED, either order.
+        """A settle dated the opening's OWN day is ABSORBED.
 
         Savings anchored $500.00 with its opening pinned to 12:00 EDT; a $200.00
         expense settled an hour after it, and again an hour before it -- both the
@@ -331,15 +351,16 @@ class TestWalkAccountLedger:
         showed $2,746.58, then book a -$1,986.16 correction at the next
         assertion where absorbing them books +$71.26.
 
-        **Both directions, because the rule is about the DAY and not the order**
-        (F2, finding N-133).  Under the CURRENT walk the two parameters feed
-        byte-identical inputs -- ``_source_net_days`` aggregates a day's sources
-        to one ``(day, net)`` pair before the partition runs, so the settle's
-        time of day is gone by then -- and the pair is therefore regression
-        insurance rather than two live cases: it is what fails first if an
-        instant partition is ever reintroduced, at the assertion where R-DH's
-        residual is largest.  Saying that plainly beats implying a
-        discrimination the code cannot currently make.
+        **It was parametrised over "an hour after" and "an hour before" until
+        plan step X-f1, and the pair no longer describes two inputs.**  Its own
+        docstring already recorded that the two fed byte-identical values --
+        ``_source_net_days`` aggregates a day's sources to one ``(day, net)``
+        pair before the partition runs -- and once the settle stores a DAY
+        rather than an instant the two arms are literally the same fixture.
+        Collapsed rather than left implying a discrimination the code cannot
+        make; the regression insurance it was kept for is now carried by the
+        column's type, since re-introducing an instant partition would need a
+        column that can hold one.
 
         **This test could not fail before 2026-07-31.**  It passed
         ``origin + timedelta(days=1)`` while claiming "an hour after -- the same
@@ -353,41 +374,83 @@ class TestWalkAccountLedger:
             account = _make_account(seed_user, "500.00")
             pinned = _pin_opening(account)
             settle = _settle_expense(
-                seed_user, account, "200.00", pinned + offset,
+                seed_user, account, "200.00", _PINNED_OPENING_DAY,
             )
             _db.session.commit()
 
             # The precondition the whole case rests on: ONE civil day for both
             # events.  Without it this grades a different partition entirely,
             # which is the defect being repaired here.
-            assert to_display_date(pinned) == _PINNED_OPENING_DAY, label
-            assert to_display_date(settle.paid_at) == _PINNED_OPENING_DAY, label
+            assert to_display_date(pinned) == _PINNED_OPENING_DAY
+            assert settle.settled_on == _PINNED_OPENING_DAY
 
             corrections = account_posting_service.walk_account_ledger(
                 account.id, seed_user["scenario"].id,
             )
             assert len(corrections) == 1
-            assert corrections[0].ledger_before == Decimal("-200.00"), label
+            assert corrections[0].ledger_before == Decimal("-200.00")
 
-    def test_null_paid_at_falls_back_to_period_start(
+    def test_a_settle_dated_before_the_origination_is_absorbed(
         self, app, db, seed_user,
     ):
-        """A NULL-paid_at settle is attributed at its period start (absorbed).
+        """A settle dated before the origination assertion is inside it.
 
-        The $200.00 expense sits in the 2024 bootstrap period with paid_at
-        NULL; its fallback instant (2024-01-05 midnight UTC) precedes the
-        origination assertion (test-run time, 2026+), so it is absorbed:
-        ledger_before -200.00.
+        The $200.00 expense carries the 2024 bootstrap period's start day, which
+        precedes the origination assertion (test-run time, 2026+), so it is
+        absorbed: ledger_before -200.00.
+
+        **It reached that day through a FALLBACK until plan step X-f1** -- the
+        row carried no ``paid_at`` and every reader substituted its pay period's
+        ``start_date`` -- and this test was named for the fallback.  The day is
+        a stored fact now and the substitution is gone, so the fixture states
+        the day it always meant.  The figure is unchanged, because the day is.
         """
         with app.app_context():
             account = _make_account(seed_user, "500.00")
-            _settle_expense(seed_user, account, "200.00", None)
+            _settle_expense(
+                seed_user, account, "200.00",
+                seed_user["bootstrap_period"].start_date,
+            )
             _db.session.commit()
 
             corrections = account_posting_service.walk_account_ledger(
                 account.id, seed_user["scenario"].id,
             )
             assert corrections[0].ledger_before == Decimal("-200.00")
+
+    def test_a_settled_row_with_no_day_is_REFUSED_by_this_walk_too(
+        self, app, db, seed_user,
+    ):
+        """The POSTED walk refuses an undated settled row, as the source walk does.
+
+        Pinned separately from ``test_cash_walk.py``'s twin because it is a
+        different reader on a different table: this walk reaches
+        ``balance_predicates.settled_day`` from ``_transaction_source_days``,
+        which resolves the day of a row it found through the POSTINGS.  The two
+        must not drift about what an undated settled row means, and the whole
+        point of the accessor is that they cannot -- so the pin is here to prove
+        the second call site really consults it.
+        """
+        with app.app_context():
+            account = _make_account(seed_user, "500.00")
+            txn = _settle_expense(
+                seed_user, account, "200.00",
+                seed_user["bootstrap_period"].start_date,
+            )
+            _db.session.commit()
+            # Break the row AFTER its postings exist, which is the only way to
+            # reach this walk with one: a bulk update bypasses the ORM, exactly
+            # as the real hazard does.
+            _db.session.query(Transaction).filter(
+                Transaction.id == txn.id,
+            ).update({"settled_on": None}, synchronize_session=False)
+            _db.session.commit()
+
+            with pytest.raises(UndatedSettleError) as exc:
+                account_posting_service.walk_account_ledger(
+                    account.id, seed_user["scenario"].id,
+                )
+            assert str(txn.id) in str(exc.value)
 
     def test_transfer_attribution_uses_income_shadow_day(
         self, app, db, seed_user,
@@ -409,12 +472,12 @@ class TestWalkAccountLedger:
             create_settled_transfer(
                 seed_user, _db.session, seed_user["account"], account,
                 seed_user["bootstrap_period"], amount=Decimal("50.00"),
-                paid_at=settle_instant_on(origin - timedelta(days=1)),
+                settled_on=origin - timedelta(days=1),
             )
             create_settled_transfer(
                 seed_user, _db.session, seed_user["account"], account,
                 seed_user["bootstrap_period"], amount=Decimal("150.00"),
-                paid_at=settle_instant_on(origin + timedelta(days=1)), name="Post-anchor",
+                settled_on=origin + timedelta(days=1), name="Post-anchor",
             )
             _db.session.commit()
 
@@ -450,13 +513,13 @@ class TestWalkAccountLedger:
             account = _make_account(seed_user, "500.00")
             origin = _origin_day(account)
             _settle_expense(
-                seed_user, account, "200.00", settle_instant_on(origin + timedelta(days=1)),
+                seed_user, account, "200.00", origin + timedelta(days=1),
             )
             _add_assertion(
                 account, "350.00", settle_instant_on(origin + timedelta(days=2)),
             )
             _settle_expense(
-                seed_user, account, "100.00", settle_instant_on(origin + timedelta(days=3)),
+                seed_user, account, "100.00", origin + timedelta(days=3),
             )
             _db.session.commit()
 
@@ -505,7 +568,7 @@ class TestWalkAccountLedger:
             account = _make_account(seed_user, "500.00")
             pinned = _pin_opening(account)
             settle = _settle_expense(
-                seed_user, account, "75.00", pinned + 2 * _ONE_HOUR,
+                seed_user, account, "75.00", _PINNED_OPENING_DAY,
             )
             _add_assertion(account, "425.00", pinned + 3 * _ONE_HOUR)
             _db.session.commit()
@@ -514,7 +577,7 @@ class TestWalkAccountLedger:
             # the two figures below a statement about the RULE rather than
             # about their dates.
             assert to_display_date(pinned) == _PINNED_OPENING_DAY
-            assert to_display_date(settle.paid_at) == _PINNED_OPENING_DAY
+            assert settle.settled_on == _PINNED_OPENING_DAY
             assert to_display_date(
                 pinned + 3 * _ONE_HOUR,
             ) == _PINNED_OPENING_DAY
@@ -532,16 +595,16 @@ class TestWalkAccountLedger:
 
         The $200.00 expense (paid T+1h) is reversed (the revert path's
         ``settled=False`` reconcile); a true-up at T+2h asserting $480.00
-        (distinct from the $500.00 origination -- the F-103 same-day
-        same-balance unique index would reject a literal duplicate) then
+        (distinct from the $500.00 origination -- asserting the balance that
+        already governs writes nothing, ruling R-EQ) then
         sees ledger_before 500.00 -- the reverted source contributes
-        nothing, whatever its paid_at said.
+        nothing, whatever its settle day said.
         """
         with app.app_context():
             account = _make_account(seed_user, "500.00")
             origin = _origin_day(account)
             txn = _settle_expense(
-                seed_user, account, "200.00", settle_instant_on(origin + timedelta(days=1)),
+                seed_user, account, "200.00", origin + timedelta(days=1),
             )
             posting_service.sync_transaction_postings(txn, settled=False)
             _add_assertion(account, "480.00", settle_instant_on(origin + timedelta(days=2)))
@@ -629,7 +692,9 @@ class TestSyncAccountAnchorPostings:
                 .filter_by(account_id=account.id)
                 .one()
             )
-            assert entry.pay_period_id == history_row.pay_period_id
+            assert entry.pay_period_id == _period_containing(
+                account.user_id, history_row.observed_on,
+            )
             # The correction is dated the day the assertion is the CLOSING
             # BALANCE for -- the stored ``observed_on``, read rather than
             # re-derived from ``created_at`` (ruling R-DH, plan step 2).  The
@@ -703,11 +768,11 @@ class TestSyncAccountAnchorPostings:
             account = _make_account(seed_user, "500.00")
             origin = _origin_day(account)
             _settle_expense(
-                seed_user, account, "200.00", settle_instant_on(origin + timedelta(days=1)),
+                seed_user, account, "200.00", origin + timedelta(days=1),
             )
             _add_assertion(account, "350.00", settle_instant_on(origin + timedelta(days=2)))
             _settle_expense(
-                seed_user, account, "100.00", settle_instant_on(origin + timedelta(days=3)),
+                seed_user, account, "100.00", origin + timedelta(days=3),
             )
             _db.session.commit()
 
@@ -755,11 +820,11 @@ class TestSyncAccountAnchorPostings:
             account = _make_account(seed_user, "500.00")
             origin = _origin_day(account)
             txn = _settle_expense(
-                seed_user, account, "200.00", settle_instant_on(origin + timedelta(days=1)),
+                seed_user, account, "200.00", origin + timedelta(days=1),
             )
             _add_assertion(account, "350.00", settle_instant_on(origin + timedelta(days=2)))
             _settle_expense(
-                seed_user, account, "100.00", settle_instant_on(origin + timedelta(days=3)),
+                seed_user, account, "100.00", origin + timedelta(days=3),
             )
             account_posting_service.sync_account_anchor_postings(
                 account.id, scenario_id,
@@ -820,7 +885,7 @@ class TestSyncAccountAnchorPostings:
             account = _make_account(seed_user, "500.00")
             origin = _origin_day(account)
             txn = _settle_expense(
-                seed_user, account, "200.00", settle_instant_on(origin + timedelta(days=1)),
+                seed_user, account, "200.00", origin + timedelta(days=1),
             )
             trueup_row = _add_assertion(
                 account, "350.00", settle_instant_on(origin + timedelta(days=2)),
@@ -833,7 +898,7 @@ class TestSyncAccountAnchorPostings:
             posting_service.sync_transaction_postings(txn, settled=False)
             _settle_expense(
                 seed_user, account, "150.00",
-                settle_instant_on(origin + timedelta(days=1)),
+                origin + timedelta(days=1),
             )
             account_posting_service.sync_account_anchor_postings(
                 account.id, scenario_id,
@@ -848,8 +913,11 @@ class TestSyncAccountAnchorPostings:
                 account.id, scenario_id, PostingSourceEnum.ACCOUNT_TRUEUP,
             )
             assert len(trueups) == 3
+            expected_period_id = _period_containing(
+                account.user_id, trueup_row.observed_on,
+            )
             assert all(
-                entry.pay_period_id == trueup_row.pay_period_id
+                entry.pay_period_id == expected_period_id
                 for entry in trueups
             )
             assert sum(
@@ -878,7 +946,7 @@ class TestSyncAccountAnchorPostings:
             account = _make_account(seed_user, "500.00")
             origin = _origin_day(account)
             _settle_expense(
-                seed_user, account, "200.00", settle_instant_on(origin + timedelta(days=1)),
+                seed_user, account, "200.00", origin + timedelta(days=1),
             )
             trueup_row = _add_assertion(
                 account, "350.00", settle_instant_on(origin + timedelta(days=2)),
@@ -887,7 +955,9 @@ class TestSyncAccountAnchorPostings:
                 account.id, scenario_id,
             )
             _db.session.commit()
-            original_period_id = trueup_row.pay_period_id
+            original_period_id = _period_containing(
+                account.user_id, trueup_row.observed_on,
+            )
 
             _db.session.delete(trueup_row)
             _db.session.flush()
@@ -1235,7 +1305,7 @@ class TestSyncEntryPoints:
                 seed_user, _db.session, seed_user["bootstrap_period"],
                 Decimal("40.00"), account=account, scenario=what_if,
             )
-            txn.paid_at = settle_instant_on(origin + timedelta(days=1))
+            txn.settled_on = origin + timedelta(days=1)
             _db.session.commit()
 
             account_posting_service.sync_account_anchor_postings_all_scenarios(
@@ -1344,17 +1414,23 @@ class TestSyncEntryPoints:
     ):
         """A pre-assertion settle re-bases the opening with NO manual sync (C6).
 
-        A NULL-``paid_at`` settle in the 2024 bootstrap period is attributed
-        at the period start -- BEFORE the account's origination assertion --
-        so the effect-time self-heal at the ``sync_transaction_postings``
-        tail re-derives the opening in the same transaction: the opening key
-        moves to +700.00 (500 - (-200)) and the account's total stays
-        exactly on the 500.00 anchor.
+        A settle dated in the 2024 bootstrap period -- BEFORE the account's
+        origination assertion -- so the effect-time self-heal at the
+        ``sync_transaction_postings`` tail re-derives the opening in the same
+        transaction: the opening key moves to +700.00 (500 - (-200)) and the
+        account's total stays exactly on the 500.00 anchor.
+
+        The row reached that day through the NULL-``paid_at`` fallback until
+        plan step X-f1; it states the day directly now, and the figure is
+        unchanged because the day is.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
             account = _make_account(seed_user, "500.00")
-            _settle_expense(seed_user, account, "200.00", None)
+            _settle_expense(
+                seed_user, account, "200.00",
+                seed_user["bootstrap_period"].start_date,
+            )
             _db.session.commit()
 
             assert posting_service.account_posting_total(
@@ -1396,7 +1472,6 @@ class TestSyncEntryPoints:
             outcome = anchor_service.apply_anchor_true_up(
                 account=account,
                 new_balance=Decimal("350.00"),
-                anchor_period=seed_user["bootstrap_period"],
             )
             assert outcome is AnchorTrueUpOutcome.COMMITTED
             assert posting_service.account_posting_total(
@@ -1455,7 +1530,6 @@ class TestSyncEntryPoints:
                     account_type_id=checking_type_id,
                     name="U2 Checking",
                     anchor_balance=Decimal("100.00"),
-                    anchor_period_id=period2.id,
                 ),
             )
             _db.session.commit()

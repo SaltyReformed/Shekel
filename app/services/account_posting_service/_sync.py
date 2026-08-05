@@ -57,6 +57,7 @@ from app.services.account_projection import (
 from app.services.cash_ledger import reconciled_through
 from app.services.posting_reads import _ledger_account_for
 from app.services.scenario_resolver import get_baseline_scenario
+from app.services.user_write_lock import lock_every_user_writes, lock_user_writes
 
 from ._anchors import reconcile_account_anchor_corrections
 from ._walk import walk_account_ledger
@@ -104,12 +105,27 @@ def sync_account_anchor_postings(account_id: int, scenario_id: int) -> None:
     :func:`_load_non_amortizing_account`).  Flushes but does not commit
     (the caller owns the transaction).
 
+    **Takes the owner's write lock before it reads** (plan step X-f1c3c).
+    Everything below this line is a read-modify-write -- read what is posted,
+    subtract it from what the account's facts say, write the difference -- and
+    two of them interleaved both compute their delta against the same posted
+    state, so the second silently under-posts by the first's amount.  The lock
+    is taken HERE, at the one per-(account, scenario) chokepoint every door
+    funnels through, rather than at any single door: the true-up is not the
+    only caller, and the settle self-heal, the account-type change (the *direct
+    anchor edit* until plan step X-f1e deleted it) and the pay-period resync
+    reach the identical window.  See
+    :mod:`app.services.user_write_lock` for the reproduction and for why the
+    lock is per USER rather than per account.
+
     Args:
         account_id: The non-loan account whose corrections to reconcile.
         scenario_id: The budget scenario to reconcile within.
     """
-    if _load_non_amortizing_account(account_id) is None:
+    account = _load_non_amortizing_account(account_id)
+    if account is None:
         return
+    lock_user_writes(account.user_id)
     reconcile_account_anchor_corrections(
         account_id, scenario_id, walk_account_ledger(account_id, scenario_id),
     )
@@ -165,6 +181,14 @@ def sync_account_anchor_postings_all_scenarios(account_id: int) -> None:
     no-op (see :func:`_load_non_amortizing_account`).  Flushes but does not
     commit (the caller owns the transaction).
 
+    **Takes the owner's write lock before it reads, and so does the
+    per-scenario sync it loops** (plan step X-f1c3c).  Both, not one: the lock
+    is re-entrant within a transaction, and the SCENARIO SET below is itself a
+    read this function then acts on -- a scenario that became live between that
+    read and the loop would otherwise be missed.  Taking it at the inner
+    chokepoint alone would leave that window open;  taking it here alone would
+    leave every OTHER caller of the inner one unprotected.
+
     Args:
         account_id: The non-loan account whose corrections to reconcile
             across every scenario its ledger is live in.
@@ -172,6 +196,7 @@ def sync_account_anchor_postings_all_scenarios(account_id: int) -> None:
     account = _load_non_amortizing_account(account_id)
     if account is None:
         return
+    lock_user_writes(account.user_id)
     scenario_ids = _scenarios_with_account_postings(
         _ledger_account_for(account_id).id,
     )
@@ -279,6 +304,23 @@ def self_heal_anchor_corrections(
     """
     if not delta_entries:
         return
+    # **The lock covers the SKIP DECISION, not just the reconcile it guards**
+    # (plan step X-f1c3c, finding N-193).  Both predicates below are READS --
+    # the account's coverage boundary and an EXISTS over its posted corrections
+    # -- and their answer decides whether the locked reconcile is entered AT
+    # ALL.  A skip taken against a stale read is permanent: nothing re-derives
+    # it later.  Worked, with the lock one level down instead of here: a $70.00
+    # settle dated after the account's latest assertion correctly skips, while a
+    # concurrent true-up walks a ledger that cannot yet see that $70.00 and
+    # posts its correction $70.00 short -- both commit, and the linked ledger
+    # sits $70.00 under its own resolved assertion forever.  Taken here, the
+    # loser blocks, re-reads a boundary that now covers its own entry, and
+    # fires.
+    #
+    # The owner comes off the entries rather than from a query: every journal
+    # entry a source emits carries its ``user_id``, and one source's deltas are
+    # one owner's by construction.
+    lock_user_writes(delta_entries[0].user_id)
     earliest = min(entry.entry_date for entry in delta_entries)
     for account_id in sorted(set(account_ids)):
         # ONE statement of "the account's coverage boundary", shared with the
@@ -469,10 +511,21 @@ def backfill_all_account_anchor_postings() -> list[int]:
     which initialises ``ref_cache`` first because the migration host does not),
     the backfill suite, or the reconciliation oracle.
 
+    **The one transaction in the app that reconciles more than one OWNER**, so
+    it is also the only one that takes more than one per-user write lock -- and
+    it takes them all up front, ascending by user id
+    (:func:`app.services.user_write_lock.lock_every_user_writes`), before the
+    first account is visited.  The loop below walks accounts ascending by
+    ACCOUNT id, which visits owners in no particular order, so two concurrent
+    sweeps could otherwise take the same two keys in opposite orders and
+    deadlock.  Pre-taking them makes the acquisition order a property of this
+    function rather than of the account table's contents.
+
     Returns:
         The non-loan account ids reconciled, ascending -- for the deploy log and
         test introspection (empty on an account-free database).
     """
+    lock_every_user_writes()
     return _reconcile_account_ids(_all_non_loan_account_ids())
 
 
@@ -487,12 +540,21 @@ def resync_user_account_anchor_postings(user_id: int) -> list[int]:
     go-forward one by construction.
 
     Two callers need it: ``pay_period_admin.reset_pay_periods`` (the wipe
-    CASCADE-disposed the user's correction entries with their periods and
-    ``_reanchor_accounts`` staged one fresh history row per account, so this
-    re-derives the openings onto the rebuilt schedule) and
+    CASCADE-disposed the user's correction entries with their periods, so this
+    re-derives the corrections onto the rebuilt schedule) and
     ``routes.grid.create_baseline`` (the recovery path for baseline-less
     users, so openings skipped at account-create time are not silently
     stranded).  Scoped to one user because both are single-user operations.
+
+    **The reset half no longer fabricates anything to re-derive FROM**, and
+    that is ruling R-EO (plan step X-f1c3c).  It used to run a
+    ``_reanchor_accounts`` pass that staged one fresh history row per account,
+    because an assertion's ``pay_period_id`` was an ``ON DELETE CASCADE`` FK
+    and the wipe took the real assertions with the periods -- measured on
+    production, a reset destroyed 69 balance observations and wrote 9
+    fabricated replacements.  The assertion carries no period now, so the wipe
+    cannot reach it, and this function re-derives the corrections from the
+    observations that were always there.
 
     Idempotent and self-healing via reconcile-to-target.  Flushes but does
     NOT commit -- the caller owns the transaction boundary.

@@ -71,10 +71,13 @@ integer IDs from ``ref_cache``. The status display string is never
 consulted; the C2-8 test asserts this property mechanically against the
 module source.
 """
+from datetime import date
+
 from sqlalchemy import and_
 
 from app import ref_cache
 from app.enums import StatusEnum
+from app.exceptions import UndatedSettleError
 from app.models.transaction import Transaction
 
 
@@ -144,6 +147,73 @@ def settled_status_ids() -> frozenset[int]:
         ref_cache.status_id(StatusEnum.RECEIVED),
         ref_cache.status_id(StatusEnum.SETTLED),
     })
+
+
+def settled_day(transaction_id: int, settled_on: date | None) -> date:
+    """Return the civil day a SETTLED transaction's money moved, or refuse.
+
+    **The ONE accessor for "which day did this cash move", and it replaced
+    ELEVEN derivations** (plan step X-f1, ruling R-EC).  Until then every
+    consumer took ``transactions.paid_at`` -- the instant the user clicked --
+    and converted it to a display-timezone civil day with the row's pay-period
+    start as a fallback: the read fold, the posting walk's two loaders, the
+    posting writer's two entry-date helpers, the loan payment writer, the loan
+    fold's visibility rule, the confirmed-statement reader's two loaders, the
+    loan interest tax-year basis, and ``Transaction.days_paid_before_due``.
+    Fourteen sites over three helper layers, all computing one fact the row now
+    stores.  Callers pass ``(id, row.settled_on)`` and get the day.
+
+    It lives beside :func:`settled_status_ids` because it is that predicate's
+    other half.  A row is settled if and only if it carries a settle day, and
+    both facts are written by ONE statement -- ``status_seam.apply_status_change``
+    is the single door that assigns ``status_id``, and it assigns
+    ``settled_on`` in the same call.  That is why there is no CHECK constraint:
+    the predicate lives in ``ref.statuses`` and a constraint cannot join, so the
+    invariant is held structurally at the write door rather than declared at the
+    storage tier.
+
+    **A missing day is REFUSED, not defaulted, and that is the point of the
+    function.**  The derivation this replaced fell back to the pay period's
+    ``start_date`` whenever the instant was NULL, which was a guess the reader
+    could not see; the day is now a stored fact, so its absence on a settled row
+    means the invariant above is broken and no fallback is honest.  Silently
+    dating such a row would put real money on a day nothing recorded, and
+    silently DROPPING it would remove money from a balance without saying so.
+    The condition is reachable rather than theoretical: a bulk
+    ``query.update({status_id: paid})`` bypasses the ORM session entirely
+    (finding N-65 measured 41 such sites in the suite), and a fixture that
+    constructs ``Transaction(status_id=<paid>)`` directly never passes the seam.
+    Both produce exactly this row, and both should fail where they are written.
+
+    Args:
+        transaction_id: The row's id, named in the refusal so a broken row is
+            identifiable without re-querying.
+        settled_on: The row's stored ``settled_on``, read either off the ORM
+            attribute or out of a batched query tuple -- both shapes occur
+            among the call sites, which is why this takes the VALUE rather than
+            the row.
+
+    Returns:
+        The civil day the row's cash moved.
+
+    Raises:
+        UndatedSettleError: When *settled_on* is ``None``.  The caller is
+            reading a row it believes is settled, so a missing day is a broken
+            invariant rather than an empty value.
+    """
+    if settled_on is None:
+        raise UndatedSettleError(
+            f"Transaction {transaction_id} is in a settled status but carries "
+            "no settled_on, so the day its money moved is unknown.  Every "
+            "settled row is given one by status_seam.apply_status_change (the "
+            "single status write door) and by migration a3f7c8e21b64's "
+            "backfill, so this row was written by neither -- most likely a "
+            "bulk query.update() on status_id, or a fixture constructing the "
+            "row with a settled status directly.  Route the write through the "
+            "seam; there is deliberately no fallback day, because inventing "
+            "one would place real money on a day nothing recorded."
+        )
+    return settled_on
 
 
 def status_contributes_to_balance(txn) -> bool:

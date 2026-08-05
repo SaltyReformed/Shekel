@@ -10,9 +10,11 @@ This module exercises three layers of the model contract:
 
   1. **Schema shape** -- NOT NULL columns, the ``anchor_balance >= 0``
      CHECK constraint, FK CASCADE to ``budget.accounts``, FK RESTRICT
-     to ``ref.loan_anchor_sources``, and the functional unique index
-     ``uq_loan_anchor_events_acct_date_bal_day`` that rejects literal
-     same-day duplicate rows.
+     to ``ref.loan_anchor_sources``, and the DELIBERATE ABSENCE of a
+     uniqueness guard (ruling **R-EQ**, plan step X-f1c4b): a literal
+     duplicate is refused at the write door, which can compare against what
+     governs, and not by an index over the row's own values, which cannot
+     tell a retry from a correction.
 
   2. **Append-only programmatic enforcement** -- ORM-mediated UPDATE
      or DELETE raises :class:`LoanAnchorEventImmutableError` rather
@@ -91,7 +93,6 @@ def _create_loan_account(seed_user, db_session, *,
             account_type_id=loan_type.id,
             name=name,
             anchor_balance=current_principal,
-            anchor_period_id=seed_user["bootstrap_period"].id,
         ),
     )
     db_session.flush()
@@ -194,45 +195,63 @@ class TestSchemaShape:
             assert evt.id is not None
             assert evt.anchor_balance == Decimal("0.00")
 
-    def test_same_day_literal_duplicate_rejected(self, app, db, seed_user):
-        """Same (account, anchor_date, balance, day) twice trips the unique index.
+    def test_same_day_literal_duplicate_is_permitted_by_the_storage_tier(
+        self, app, db, seed_user,
+    ):
+        """The table DELIBERATELY admits a literal duplicate (ruling R-EQ).
 
-        Mirrors the AccountAnchorHistory same-day duplicate guard
-        (F-103 / C-22).  ``uq_loan_anchor_events_acct_date_bal_day``
-        rejects a network-retry or double-click producing two
-        literal-duplicate rows on the same calendar day, but still
-        permits two LEGITIMATE trueups with different balances on
-        the same day (covered by the next test).
+        **This test asserted the opposite until plan step X-f1c4b**, when
+        migration ``a3f6c1d84b90`` dropped
+        ``uq_loan_anchor_events_acct_date_bal_day``.  What that guard cost is
+        worth stating rather than silently losing: it made a network retry or a
+        double-click unable to write two identical rows AT THE STORAGE TIER.
+
+        It could not do that job without also refusing a correction, because a
+        retry and a deliberate re-assertion carry identical values -- so the
+        rule moved to the write door
+        (``anchor_service._append_loan_anchor_and_sync``), which compares the
+        submission against the event that GOVERNS and can tell them apart.  The
+        door's coverage is
+        ``test_anchor_service.TestApplyLoanAnchorTrueUpUnchanged``.
+
+        Kept as a POSITIVE assertion rather than deleted so the permission is
+        recorded as a decision: an ``IntegrityError`` reappearing here would
+        mean the index had been re-added behind the door's rule, which is the
+        state ``test_anchor_service`` grades against ``pg_indexes``.
         """
         with app.app_context():
             account, _ = _create_loan_account(seed_user, _db.session)
             source_id = _origination_source_id(_db.session)
-            _db.session.add(LoanAnchorEvent(
-                account_id=account.id,
-                anchor_date=date(2024, 1, 1),
-                anchor_balance=Decimal("250000.00"),
-                source_id=source_id,
-            ))
-            _db.session.commit()
-            with pytest.raises(IntegrityError):
+            for _ in range(2):
                 _db.session.add(LoanAnchorEvent(
                     account_id=account.id,
                     anchor_date=date(2024, 1, 1),
                     anchor_balance=Decimal("250000.00"),
                     source_id=source_id,
                 ))
-                _db.session.commit()
-            _db.session.rollback()
+            _db.session.commit()
+
+            rows = (
+                _db.session.query(LoanAnchorEvent)
+                .filter_by(
+                    account_id=account.id,
+                    anchor_date=date(2024, 1, 1),
+                    anchor_balance=Decimal("250000.00"),
+                )
+                .all()
+            )
+            assert len(rows) == 2, (
+                f"The storage tier must admit both rows: uniqueness is the "
+                f"write door's rule now, not an index's.  Found {len(rows)}."
+            )
 
     def test_same_day_different_balance_permitted(self, app, db, seed_user):
         """Two trueups on the same day with different balances succeed.
 
-        The unique index includes ``anchor_balance`` in the key, so
-        the operator's intended workflow (saw a typo, re-saved with
-        the corrected number) is preserved.  Arithmetic: two distinct
-        ``Decimal`` values -- 250000.00 vs 249000.00 -- on the same
-        ``anchor_date`` and same ``account_id`` yield two distinct
-        index keys, both insertable.
+        The operator's intended workflow (saw a typo, re-saved with the
+        corrected number) is preserved.  Arithmetic: two distinct ``Decimal``
+        values -- 250000.00 vs 249000.00 -- on the same ``anchor_date`` and
+        same ``account_id``, both insertable and both read back.
         """
         with app.app_context():
             account, _ = _create_loan_account(seed_user, _db.session)

@@ -25,7 +25,7 @@ year-periods query the producer runs):
     i=0 01-02  i=1 01-16  i=2 01-30 ... i=12 06-19  i=13 07-03 ... i=25 12-18
 """
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 from decimal import Decimal
 
 from app.enums import AcctTypeEnum
@@ -700,7 +700,7 @@ class TestScheduleAMortgageInterest:
         create_settled_transfer(
             seed_user, db.session, seed_user["account"], loan,
             periods[1], amount=Decimal("1000.00"),
-            paid_at=datetime(2025, 12, 20, 12, 0, tzinfo=timezone.utc),
+            settled_on=date(2025, 12, 20),
         )
         db.session.commit()
 

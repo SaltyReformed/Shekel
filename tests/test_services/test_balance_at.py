@@ -142,7 +142,7 @@ def _make_mortgage(
         seed_user, db.session, name=name, principal=balance,
         rate=Decimal("0.06500"), term=360,
         origination_date=origination_date, payment_day=1,
-        account_type=AcctTypeEnum.MORTGAGE, anchor_period=anchor_period,
+        account_type=AcctTypeEnum.MORTGAGE,
     )
     return acct, loan_params_for(db.session, acct.id)
 
@@ -186,7 +186,7 @@ def _paid_then_trued_loan(seed_user, db_session, periods):
         seed_user, db_session, name="Paid Then Trued",
         principal=Decimal("250000.00"), rate=Decimal("0.06000"),
         term=360, origination_date=date(2025, 1, 1), payment_day=1,
-        account_type=AcctTypeEnum.MORTGAGE, anchor_period=periods[0],
+        account_type=AcctTypeEnum.MORTGAGE,
     )
     # Settled payments due 2026-02-01 (period 1) and 2026-03-01 (period 3);
     # both pay periods have begun by the frozen 2026-03-20, so the replay
@@ -196,9 +196,7 @@ def _paid_then_trued_loan(seed_user, db_session, periods):
         create_settled_transfer(
             seed_user, db_session, seed_user["account"], loan,
             periods[idx], amount=Decimal("2000.00"),
-            paid_at=datetime(
-                paid.year, paid.month, paid.day, 12, 0, tzinfo=timezone.utc,
-            ),
+            settled_on=paid,
         )
     db_session.commit()
     insert_trueup_event(
@@ -386,8 +384,12 @@ class TestInterestBeginsAtTheLatestAssertion:
             anchor_service.stage_anchor_true_up(
                 account=hysa,
                 new_balance=Decimal("10000.00"),
-                anchor_period=periods[2],
-                notes="test true-up",
+                # The stager takes a BOUNDED day (plan step X-f1e2): only
+                # ``resolve_observation_day`` mints one, so the fixture asks
+                # for it the same way both production doors do.
+                observed_on=anchor_service.resolve_observation_day(
+                    user_id, None,
+                ),
             )
             restamp_latest_assertion(
                 db.session, hysa,
@@ -1315,34 +1317,37 @@ class TestBuildMaps:
                     loan, bctx, periods,
                 )
 
-    def test_omits_account_with_no_anchor(
+    def test_build_maps_is_total_over_the_accounts_it_is_handed(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """An account with no anchor period is omitted from build_maps.
+        """EVERY account handed to build_maps gets a map -- none is dropped.
 
-        Mirrors the kernel's ``build_account_balance_map`` returning None
-        for a no-anchor account and the net-worth section's ``balances is
-        None`` skip.  A stand-in with ``current_anchor_period_id=None`` (and
-        no account type, so it classifies PLAIN and the loaders skip it) is
-        dropped while the real checking account is kept.
+        **This replaced an OMISSION test at plan step X-f1c3a.**  That test
+        handed in a ``SimpleNamespace`` stand-in with
+        ``current_anchor_period_id=None`` and asserted it was dropped -- a
+        state the schema forbade (the column was ``NOT NULL`` with a CHECK
+        beside it) and which ruling R-EH deleted the column for, so it graded a
+        branch no real account could reach while teaching every consumer to
+        carry a ``balances is None`` arm for it (finding N-73).
+
+        Totality is what the consumers actually depend on: four producers
+        INDEX this map rather than ``.get``-defaulting it, and a silently
+        dropped account would surface as a ``KeyError`` in one of them rather
+        than as a wrong figure -- which is the disposition ruling R-CA chose.
+        Asserting it here is what makes that safe.
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
-            checking = seed_user["account"]
-            no_anchor = SimpleNamespace(
-                id=-1, user_id=user_id, account_type=None,
-                current_anchor_period_id=None,
-            )
+            accounts = account_service.list_active_accounts(user_id)
+            assert accounts, "fixture must supply at least one account"
 
-            seam_maps = balance_at.build_maps(
-                [checking, no_anchor], bctx, periods,
-            )
+            seam_maps = balance_at.build_maps(accounts, bctx, periods)
 
-            assert checking.id in seam_maps
-            assert no_anchor.id not in seam_maps
+            assert set(seam_maps) == {acct.id for acct in accounts}
+            for acct in accounts:
+                assert set(seam_maps[acct.id]) == {p.id for p in periods}
 
 
 class TestBalanceAt:
@@ -1928,7 +1933,6 @@ class TestBalanceAtDegrade:
             acct = account_service.create_account(account_service.AccountSpec(
                 user_id=user_id, account_type_id=mortgage_type.id,
                 name="Unconfigured Loan", anchor_balance=Decimal("5000.00"),
-                anchor_period_id=periods[0].id,
             ))
             db.session.add(acct)
             add_txn(
@@ -1967,7 +1971,7 @@ class TestBalanceAtDegrade:
 
             seam = balance_at.balance_at(inv, bctx, date(2000, 1, 1))
             expected = round_money(
-                cash_ledger.resolve_anchor(inv, scenario.id).balance,
+                cash_ledger.resolve_anchor(inv).balance,
             )
             assert seam == expected
             assert seam == Decimal("10000.00")  # the 401k's anchor balance
@@ -2155,22 +2159,6 @@ class TestBalanceMapEdgeCases:
             result = balance_at.balance_map(account, bctx, [])
             assert result is not None
             assert len(result) == 0
-
-    def test_balance_map_no_anchor_account_is_none(
-        self, app, db, seed_user, seed_periods_today,
-    ):
-        """A no-anchor account yields None directly from balance_map."""
-        with app.app_context():
-            user_id = seed_user["user"].id
-            scenario = get_baseline_scenario(user_id)
-            bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
-            no_anchor = SimpleNamespace(
-                id=-1, user_id=user_id, account_type=None,
-                current_anchor_period_id=None,
-            )
-            assert balance_at.balance_map(no_anchor, bctx, periods) is None
-
 
 class TestCashFlowView:
     """``cash_balance_map`` / ``cash_balance_at`` -- the pure-cash view.
@@ -2406,13 +2394,14 @@ class TestASettledRowMovesEveryCashAnswerTogether:
             create_settled_cash_transaction(
                 seed_user, db.session, periods[4], Decimal("250.00"),
                 name="settled after the anchor",
-                # The instant is PASSED, not left to the status seam: it stamps
-                # ``paid_at`` from the DATABASE clock, which ``freeze_today``
-                # (Python-level) does not patch -- so an unpinned settle lands
-                # months after the frozen read and outside every seeded period.
-                paid_at=settle_instant_on(
-                    periods[4].start_date + timedelta(days=1),
-                ),
+                # The DAY is PASSED, not left to the status seam: this test
+                # needs the settle on a specific day (one after the anchor's
+                # period start), not on today.  It used to be passed for a
+                # stronger reason -- the seam stamped the settle day from the
+                # DATABASE clock, which ``freeze_today`` cannot patch -- and
+                # that reason died with plan step X-f1 (ruling R-EC): the seam
+                # stamps ``display_today()``, a Python read the freeze governs.
+                settled_on=periods[4].start_date + timedelta(days=1),
             )
             db.session.commit()
 
@@ -2452,9 +2441,7 @@ class TestASettledRowMovesEveryCashAnswerTogether:
                 seed_user, db.session, periods[4], Decimal("2000.00"),
                 account=hysa, name="settled after the anchor",
                 # Pinned for the reason the sibling test above documents.
-                paid_at=settle_instant_on(
-                    periods[4].start_date + timedelta(days=1),
-                ),
+                settled_on=periods[4].start_date + timedelta(days=1),
             )
             db.session.commit()
 
@@ -3599,7 +3586,7 @@ class TestTheRemainderIsWhatTheRowsCannotExplain:
             account = seed_user["account"]
             create_settled_cash_transaction(
                 seed_user, db.session, periods[1], Decimal("300.00"),
-                paid_at=settle_instant_on(periods[3].start_date),
+                settled_on=periods[3].start_date,
                 name="paid two columns late",
             )
             db.session.commit()
@@ -4071,7 +4058,7 @@ class TestLoanNotYetOriginated:
             seed_user, db_session, name="Closing In April",
             principal=self.OPENING, rate=Decimal("0.05000"),
             term=360, origination_date=self.ORIGINATION, payment_day=1,
-            account_type=AcctTypeEnum.MORTGAGE, anchor_period=periods[0],
+            account_type=AcctTypeEnum.MORTGAGE,
         )
 
     def test_scalar_owes_nothing_before_origination_then_its_opening(
@@ -4163,7 +4150,7 @@ class TestLoanNotYetOriginated:
                 seed_user, db.session, name="Closing Friday",
                 principal=self.OPENING, rate=Decimal("0.05000"),
                 term=360, origination_date=date(2026, 3, 25), payment_day=1,
-                account_type=AcctTypeEnum.MORTGAGE, anchor_period=periods[0],
+                account_type=AcctTypeEnum.MORTGAGE,
             )
             bctx = BalanceContext.build(seed_user["user"].id)
             current = next(
@@ -4273,7 +4260,7 @@ class TestLoanNotYetOriginated:
 
         So the payment is now one production CAN produce: its installment
         (2026-05-01, from ``periods[8]``) falls AFTER origination, so the boundary
-        allows it, and it is SETTLED EARLY -- ``paid_at`` 2026-03-10, before the
+        allows it, and it is SETTLED EARLY -- settled 2026-03-10, before the
         loan closes.  Paying an installment ahead of closing is legitimate and
         the fold splits it correctly.  The state under test is unchanged: one
         confirmed payment, a ``0.00`` balance, and a loan that has not
@@ -4299,7 +4286,7 @@ class TestLoanNotYetOriginated:
             create_settled_transfer(
                 seed_user, db.session, checking, acct, periods[8],
                 amount=Decimal("1200.00"),
-                paid_at=settle_instant_on(date(2026, 3, 10)),
+                settled_on=date(2026, 3, 10),
             )
             db.session.commit()
 
@@ -4395,13 +4382,13 @@ class TestUpcomingLoanDoesNotCorruptTheSurfaces:
             seed_user, db_session, name="Auto",
             principal=self.AUTO, rate=Decimal("0.06000"),
             term=60, origination_date=date(2026, 1, 5), payment_day=5,
-            account_type=AcctTypeEnum.AUTO_LOAN, anchor_period=periods[0],
+            account_type=AcctTypeEnum.AUTO_LOAN,
         )
         mortgage = create_loan_account(
             seed_user, db_session, name="Closing In April",
             principal=self.MORTGAGE, rate=Decimal("0.05000"),
             term=360, origination_date=self.ORIGINATION, payment_day=1,
-            account_type=AcctTypeEnum.MORTGAGE, anchor_period=periods[0],
+            account_type=AcctTypeEnum.MORTGAGE,
         )
         return auto, mortgage
 
@@ -4566,7 +4553,7 @@ class TestBrokenLoanFailsLoud:
             seed_user, db_session, name="Broken",
             principal=Decimal("240000.00"), rate=Decimal("0.06000"),
             term=360, origination_date=date(2024, 9, 1), payment_day=1,
-            account_type=AcctTypeEnum.MORTGAGE, anchor_period=periods[0],
+            account_type=AcctTypeEnum.MORTGAGE,
         )
         # The ONE way to build a ledger-less loan: production cannot make one.
         # It clears only the POSTINGS; the source facts (LoanParams + shadows) that
@@ -4669,7 +4656,7 @@ class TestBrokenLoanFailsLoud:
             create_settled_transfer(
                 seed_user, db.session, seed_user["account"], acct,
                 periods[1], amount=Decimal("241200.00"),
-                paid_at=settle_instant_on(date(2024, 10, 1)),
+                settled_on=date(2024, 10, 1),
             )
             db.session.commit()
             # Re-break the cache: settling re-synced the loan's postings.
@@ -4842,14 +4829,14 @@ class TestScalarAndMapAgree:
                 seed_user, db.session, name="Never Paid",
                 principal=Decimal("240000.00"), rate=Decimal("0.06000"),
                 term=360, origination_date=date(2024, 9, 1), payment_day=1,
-                account_type=AcctTypeEnum.MORTGAGE, anchor_period=periods[0],
+                account_type=AcctTypeEnum.MORTGAGE,
             )
             # 2. Trued up (the operator asserted a balance).
             trued_up = create_loan_account(
                 seed_user, db.session, name="Trued Up",
                 principal=Decimal("100000.00"), rate=Decimal("0.05000"),
                 term=120, origination_date=date(2025, 2, 1), payment_day=1,
-                account_type=AcctTypeEnum.AUTO_LOAN, anchor_period=periods[0],
+                account_type=AcctTypeEnum.AUTO_LOAN,
             )
             insert_trueup_event(
                 loan_params_for(db.session, trued_up.id),
@@ -4860,7 +4847,7 @@ class TestScalarAndMapAgree:
                 seed_user, db.session, name="Mid Life",
                 principal=Decimal("300000.00"), rate=Decimal("0.04500"),
                 term=360, origination_date=date(2019, 6, 1), payment_day=1,
-                account_type=AcctTypeEnum.MORTGAGE, anchor_period=periods[0],
+                account_type=AcctTypeEnum.MORTGAGE,
             )
             insert_tracking_start_event(
                 loan_params_for(db.session, mid_life.id),
@@ -4871,7 +4858,7 @@ class TestScalarAndMapAgree:
                 seed_user, db.session, name="Paid Off",
                 principal=Decimal("15000.00"), rate=Decimal("0.07000"),
                 term=48, origination_date=date(2025, 1, 1), payment_day=1,
-                account_type=AcctTypeEnum.AUTO_LOAN, anchor_period=periods[0],
+                account_type=AcctTypeEnum.AUTO_LOAN,
             )
             insert_trueup_event(
                 loan_params_for(db.session, paid_off.id),
@@ -4882,14 +4869,14 @@ class TestScalarAndMapAgree:
                 seed_user, db.session, name="Upcoming",
                 principal=Decimal("200000.00"), rate=Decimal("0.05000"),
                 term=360, origination_date=date(2026, 4, 15), payment_day=1,
-                account_type=AcctTypeEnum.MORTGAGE, anchor_period=periods[0],
+                account_type=AcctTypeEnum.MORTGAGE,
             )
             # 6. Originating INSIDE the current pay period -- the keying trap.
             closing_now = create_loan_account(
                 seed_user, db.session, name="Closing Now",
                 principal=Decimal("180000.00"), rate=Decimal("0.05500"),
                 term=360, origination_date=date(2026, 3, 25), payment_day=1,
-                account_type=AcctTypeEnum.MORTGAGE, anchor_period=periods[0],
+                account_type=AcctTypeEnum.MORTGAGE,
             )
             db.session.commit()
             # 7. PAID, then trued up -- the shape the forward producers exist
@@ -5014,7 +5001,6 @@ class TestLoanTermsAreScenarioIndependent:
             seed_user, db.session, name="Terms Loan",
             principal=Decimal("12000.00"), rate=Decimal("0.05000"), term=24,
             origination_date=date(2026, 1, 1),
-            anchor_period=periods[0],
         )
 
     def _drop_baseline(self, db, seed_user):

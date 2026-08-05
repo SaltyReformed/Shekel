@@ -58,6 +58,8 @@ import pytest
 
 from app import ref_cache
 from app.enums import LedgerAccountClassEnum, LedgerAccountKindEnum
+from sqlalchemy.exc import IntegrityError
+
 from app.extensions import db as _db
 from app.models.category import Category
 from app.models.ledger_account import LedgerAccount
@@ -1189,4 +1191,162 @@ class TestAnchorEquityResolverValidation:
             assert all(
                 row.user_id == seed_second_user["user"].id
                 for row in foreign_rows
+            )
+
+
+class TestAddOrReuseUnderALostRace:
+    """``_add_or_reuse`` -- the shared race-safe insert every resolver consumes.
+
+    **It exists because plan step X-f1c3c made a pre-existing race REACHABLE**
+    (ruling R-EN).  Every ``get_or_create_*`` here is a check-then-INSERT: two
+    requests can both find no row for a natural key and both try to create one,
+    and the loser's flush hits a partial-unique index.  Until R-EN the C-17
+    optimistic lock made one of two concurrent true-ups answer 409 before
+    either reached the anchor-equity resolver, so the collision was masked on
+    that path -- and never masked at all on the category and loan resolvers,
+    which any two concurrent settles can reach.
+
+    The loser's outcome must be SUCCESS, not a 500: the winner's row is exactly
+    the row the loser wanted.  These simulate the lost race directly rather
+    than through threads, because a thread race is a non-deterministic detector
+    and the branch under test is deterministic -- insert the row a "concurrent
+    request" already committed, and require the helper to hand back that row.
+    """
+
+    def _seed_conflicting_row(self, seed_user):
+        """Insert the row a racing request would have committed first.
+
+        Returns the anchor-equity row for ``seed_user``'s account, created
+        through the resolver itself so the natural key is exactly the one the
+        second call will collide on.
+        """
+        return ledger_account_service.get_or_create_anchor_equity_account(
+            seed_user["user"].id, seed_user["account"].id,
+        )
+
+    def test_a_lost_race_returns_the_winners_row(self, app, db, seed_user):
+        """The loser gets the winner's row back, not an IntegrityError.
+
+        Drives ``_add_or_reuse`` directly with a row whose natural key is
+        already taken, which is precisely the state a lost race leaves.  A
+        helper that let the ``IntegrityError`` escape -- the behaviour before
+        this step -- fails here.
+        """
+        with app.app_context():
+            winner = self._seed_conflicting_row(seed_user)
+            _db.session.commit()
+
+            duplicate = LedgerAccount(
+                user_id=seed_user["user"].id,
+                class_id=ref_cache.ledger_account_class_id(
+                    LedgerAccountClassEnum.EQUITY,
+                ),
+                kind_id=ref_cache.ledger_account_kind_id(
+                    LedgerAccountKindEnum.ANCHOR_EQUITY,
+                ),
+                account_id=seed_user["account"].id,
+                name="Checking -- Opening",
+            )
+            resolved = ledger_account_service._add_or_reuse(
+                duplicate,
+                lambda: _db.session.query(LedgerAccount).filter_by(
+                    user_id=seed_user["user"].id,
+                    account_id=seed_user["account"].id,
+                    kind_id=ref_cache.ledger_account_kind_id(
+                        LedgerAccountKindEnum.ANCHOR_EQUITY,
+                    ),
+                ).first(),
+            )
+
+            assert resolved.id == winner.id
+
+    def test_the_session_survives_a_lost_race(self, app, db, seed_user):
+        """A lost race leaves the caller's transaction usable.
+
+        The SAVEPOINT is the whole point: without it the failed flush poisons
+        the session and the caller's next statement raises
+        ``PendingRollbackError``, so the resolver would "succeed" and the
+        request would still die.  Committing real work afterwards is what
+        proves the savepoint was rolled back rather than the transaction.
+        """
+        with app.app_context():
+            winner = self._seed_conflicting_row(seed_user)
+            _db.session.commit()
+
+            # Driven through ``_add_or_reuse`` DIRECTLY, not through the
+            # resolver: the resolver's own check-first lookup finds the winner
+            # and never reaches the helper, so routing through it would make
+            # this case unable to fail.  Caught by planting the race-unsafe
+            # original -- the mutant killed the sibling case and left this one
+            # green.
+            duplicate = LedgerAccount(
+                user_id=seed_user["user"].id,
+                class_id=ref_cache.ledger_account_class_id(
+                    LedgerAccountClassEnum.EQUITY,
+                ),
+                kind_id=ref_cache.ledger_account_kind_id(
+                    LedgerAccountKindEnum.ANCHOR_EQUITY,
+                ),
+                account_id=seed_user["account"].id,
+                name="Checking -- Opening",
+            )
+            assert ledger_account_service._add_or_reuse(
+                duplicate, lambda: winner,
+            ) is winner
+            # Real work, after the reuse path, in the same transaction.
+            category = Category(
+                user_id=seed_user["user"].id,
+                group_name="After The Race",
+                item_name="Proof The Session Lives",
+            )
+            _db.session.add(category)
+            _db.session.commit()
+
+            assert category.id is not None
+
+    def test_an_unrelated_integrity_error_propagates(self, app, db, seed_user):
+        """A violation that is NOT a natural key is re-raised, never swallowed.
+
+        The guard that keeps this helper from becoming a blanket
+        ``except IntegrityError``.  A NULL ``user_id`` trips a NOT NULL rather
+        than one of the four named unique indexes, so it must surface.
+        """
+        with app.app_context():
+            orphan = LedgerAccount(
+                user_id=None,
+                class_id=ref_cache.ledger_account_class_id(
+                    LedgerAccountClassEnum.EQUITY,
+                ),
+                kind_id=ref_cache.ledger_account_kind_id(
+                    LedgerAccountKindEnum.ANCHOR_EQUITY,
+                ),
+                account_id=seed_user["account"].id,
+                name="No Owner",
+            )
+            with pytest.raises(IntegrityError):
+                ledger_account_service._add_or_reuse(orphan, lambda: None)
+            _db.session.rollback()
+
+    def test_the_natural_key_names_are_real_indexes(self, app, db):
+        """Every name in the allowlist exists in the live catalog.
+
+        The allowlist is what tells a lost race from an unrelated failure, so a
+        name that does not exist silently turns the race back into a 500 with
+        the suite green.  **This case exists because one of the four names was
+        INVENTED in the first draft** (``uq_ledger_accounts_user_class_category``,
+        which has never existed) and was caught by reading ``pg_indexes`` rather
+        than by any test.
+        """
+        with app.app_context():
+            live = {
+                row[0] for row in _db.session.execute(_db.text(
+                    "SELECT indexname FROM pg_indexes "
+                    "WHERE schemaname = 'budget' AND tablename = 'ledger_accounts'"
+                ))
+            }
+            missing = set(
+                ledger_account_service._LEDGER_ACCOUNT_NATURAL_KEYS,
+            ) - live
+            assert not missing, (
+                f"allowlisted index names that do not exist: {missing}"
             )

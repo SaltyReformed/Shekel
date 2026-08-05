@@ -41,7 +41,6 @@ from tests._test_helpers import (
     freeze_today,
     insert_tracking_start_event,
     insert_trueup_event,
-    settle_instant_on,
 )
 
 
@@ -67,7 +66,6 @@ def _make_property(
             account_type_id=_property_type_id(db),
             name=name,
             anchor_balance=anchor_balance,
-            anchor_period_id=periods[0].id,
         ),
     )
     db.session.add(acct)
@@ -796,12 +794,12 @@ class TestPropertyEquityChartProducer:
             create_settled_transfer(
                 seed_user, db.session, seed_user["account"], loan,
                 seed_periods[1], amount=Decimal("1500.00"),
-                paid_at=settle_instant_on(seed_periods[1].start_date),
+                settled_on=seed_periods[1].start_date,
             )
             create_settled_transfer(
                 seed_user, db.session, seed_user["account"], loan,
                 seed_periods[3], amount=Decimal("1500.00"),
-                paid_at=settle_instant_on(seed_periods[3].start_date),
+                settled_on=seed_periods[3].start_date,
             )
             db.session.commit()
 

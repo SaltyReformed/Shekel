@@ -46,10 +46,12 @@ from app.extensions import db as _db
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.transfer import Transfer
 from app.services import posting_service, transfer_service
+from app.utils.dates import display_today
 from tests._test_helpers import (
     create_account_of_type,
     linked_ledger_account,
 )
+from app.services import cash_ledger
 
 
 # ---------------------------------------------------------------------------
@@ -108,13 +110,13 @@ def _settle(transfer, user_id, **extra):
     """Settle a transfer (Projected -> Done) through the service chokepoint.
 
     Mirrors the ``transfers.mark_done`` route: status -> Done with a concrete
-    ``paid_at``.  Extra kwargs (e.g. ``actual_amount``) are forwarded so a test
+    the settle day.  Extra kwargs (e.g. ``actual_amount``) are forwarded so a test
     can settle and set an actual amount in one call.
     """
     transfer_service.update_transfer(
         transfer.id, user_id,
         status_id=ref_cache.status_id(StatusEnum.DONE),
-        paid_at=_db.func.now(),
+        settled_on=display_today(),
         **extra,
     )
 
@@ -133,7 +135,7 @@ def _assert_reconciles(scenario_id, *accounts):
     for account in accounts:
         posted = posting_service.account_posting_total(account.id, scenario_id)
         effect = posting_service.settled_transfer_effect(account.id, scenario_id)
-        opening = Decimal(str(account.current_anchor_balance))
+        opening = cash_ledger.resolve_anchor(account).balance
         assert posted == opening + effect, (
             f"account {account.id}: ledger {posted} != opening {opening} "
             f"+ settled effect {effect}"
@@ -483,7 +485,7 @@ class TestSettleWithActualSameCall:
         The grid shadow-edit path can send ``status_id=done`` AND
         ``actual_amount`` in a single ``update_transfer`` call, and the service
         applies ``actual_amount`` AFTER ``status_id``.  The reconcile runs at
-        the END of ``update_transfer`` (NOT inside ``_apply_status_to_all_three``), so
+        the END of ``update_transfer`` (NOT inside ``apply_status_to_all_three``), so
         it reads the FINAL income-shadow effective amount.
 
         Arithmetic: nominal $100, settled actual $88.00 -> the income shadow's

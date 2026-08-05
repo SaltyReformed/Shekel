@@ -54,12 +54,17 @@ from app.models.transaction import Transaction
 from app.services import ledger_account_service
 from app.services.posting_service import (
     _MAX_DESCRIPTION_LENGTH,
-    _civil_settle_date,
     _ledger_account_for,
     emit_keyed_delta_entries,
 )
 
-from app.services._posting_reconcile import delta_legs, summed_posting_legs
+from app.services._posting_reconcile import (
+    account_owner_id,
+    delta_legs,
+    summed_posting_legs,
+)
+from app.services.user_write_lock import lock_user_writes
+from app.utils.balance_predicates import settled_day
 
 from app.services.loan_ledger import (
     LoanPaymentSplit,
@@ -253,7 +258,7 @@ def _reconcile_loan_payment(
     2026-07-02 review's R2 attribution rule, per-date since plan step E1a): a
     reverted-and-moved payment's stale correction reverses into its ORIGINAL
     period, never the shadow's new one, so the net-zero pair cannot straddle
-    periods.  The date key is what closes finding N-13: a settled ``paid_at``
+    periods.  The date key is what closes finding N-13: a settled ``settled_on``
     edit moves the shadow's settle date, the old-dated correction becomes a
     posted key with no target (reversed at its own date), the new date posts
     fresh -- converging in ONE pass, so a repeat sync writes nothing and the
@@ -278,7 +283,7 @@ def _reconcile_loan_payment(
     if target:
         targets[(
             shadow.pay_period_id,
-            _civil_settle_date(shadow.paid_at, shadow.pay_period),
+            settled_day(shadow.id, shadow.settled_on),
         )] = target
     posted = _posted_loan_payment_legs(shadow.id)
     legs_by_key = {
@@ -463,6 +468,11 @@ def sync_loan_payment_postings(
         loan_account_id: The loan whose corrections to reconcile.
         scenario_id: The budget scenario to reconcile within.
     """
+    # Locked like every other reconcile door (plan step X-f1c3c) -- see the
+    # note on its anchor twin: no ``app/`` caller today, but exported.
+    owner_id = account_owner_id(loan_account_id)
+    if owner_id is not None:
+        lock_user_writes(owner_id)
     reconcile_loan_payment_splits(
         loan_account_id, scenario_id,
         compute_loan_payment_splits(loan_account_id, scenario_id),
@@ -484,9 +494,19 @@ def reverse_loan_payment_postings_for_shadow(income_shadow: Transaction) -> None
     Idempotent no-op for a never-posted (Projected) shadow.  Flushes but does
     not commit (the caller owns the transaction).
 
+    **It reads posted legs before it writes their negation, so it takes the
+    owner's write lock like every other reconcile** (plan step X-f1c3c).  It
+    converges even unlocked -- the whole-loan sync that follows it in the same
+    transaction re-derives everything and ``_assert_checked_projection``
+    refuses a divergent ledger -- but "the reconcile that happens to run last
+    fixes it" is a property of the current call order, not a guarantee, and a
+    neutral review was right to name it.
+
     Args:
         income_shadow: The loan-side income :class:`Transaction` about to be
             deleted.  Must still be flushed (``id`` set) so the reversal links
             by ``transaction_id`` and reads the posted legs back.
     """
+    owner_id = income_shadow.pay_period.user_id
+    lock_user_writes(owner_id)
     _reconcile_loan_payment(income_shadow, {})

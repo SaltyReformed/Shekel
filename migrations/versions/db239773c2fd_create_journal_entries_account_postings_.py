@@ -117,6 +117,17 @@ upgrade, so dropping them loses nothing.  Per the ``loan_anchor_events``
 caveat, any go-forward postings emitted between the upgrade and the
 downgrade are NOT preserved across the downgrade (the tables themselves are
 dropped); the historical backfill regenerates identically on re-upgrade.
+
+**ITS BACKFILL PATH BECAME UNREACHABLE AT ``a3f7c8e21b64`` (plan step X-f1), and
+the executable test suite was DELETED there rather than fed a resurrected
+column** (developer ruling, 2026-08-03).  The backfill SQL reads ``sf.paid_at``,
+which that revision DROPS.  A ``base -> head`` upgrade still runs this migration
+at its own point in the chain, long before the drop, over an EMPTY
+``budget.transfers``; on any database already past it, it never runs again, and
+``a3f7c8e21b64``'s downgrade REFUSES, so Alembic cannot rewind past the drop.
+**Do not "fix" the SQL to read ``settled_on``** -- that column does not exist at
+this revision.  ``tests/test_models/test_posting_ledger_backfill.py`` records
+what the deleted ten graded.
 """
 from decimal import Decimal
 

@@ -91,7 +91,6 @@ class TestPopulateFromActiveTemplates:
             periods = _future_periods(db.session, seed_user, count=3)
             savings = create_savings_account(
                 seed_user, db.session, "Savings", Decimal("500.00"),
-                anchor_period_id=periods[0].id,
             )
             make_transfer_template(db.session, seed_user, savings)
             created = period_population.populate_periods_from_active_templates(

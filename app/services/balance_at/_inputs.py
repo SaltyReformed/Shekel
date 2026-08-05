@@ -217,7 +217,7 @@ def _account_balance_map(
     ctx: BalanceContext,
     periods: list,
     inputs: ContributionInputs,
-) -> OrderedDict[int, Decimal] | None:
+) -> OrderedDict[int, Decimal]:
     """Dispatch ONE account's per-period balance map.
 
     The seam's single per-period dispatch site, shared by
@@ -270,21 +270,18 @@ def _account_balance_map(
             models no contribution.
 
     Returns:
-        The OrderedDict period_id -> Decimal balance, or ``None`` when the
-        account has no anchor period (the kernel's own no-anchor contract, which
-        the loan arm reproduces).
+        The OrderedDict period_id -> Decimal balance.  **Never ``None``**: it
+        answered ``None`` for an account with ``current_anchor_period_id IS
+        NULL``, a state the schema forbade and the column no longer exists to
+        express (finding N-73, plan step X-f1c3a), so the arm reproduced a
+        contract nothing could satisfy and made every consumer carry a
+        ``balances is None`` branch for it.
     """
     # A Mortgage-typed account with no LoanParams is NOT a configured loan, so
     # it falls through to the replay here rather than reaching positions()'s
     # fail-loud for an unconfigured loan.  Both halves of that rule live in the
     # predicate; see its docstring for why neither implies the other.
     if configured_loan(account, ctx) is not None:
-        # The no-anchor-period contract build_account_balance_map enforced
-        # upstream of its (now-retired) AMORTIZING branch; positions_period_map
-        # does not replicate it.  Unreachable today (the column is NOT NULL) but
-        # keeps the map's contract identical.
-        if account.current_anchor_period_id is None:
-            return None
         return positions_period_map(account, ctx, periods)
     return _kernel.build_account_balance_map(account, ctx, periods, inputs)
 

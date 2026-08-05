@@ -5,7 +5,7 @@
 FOUR places: 61 columns take their INSERT value from a ``NOW()`` server
 default, one (``transaction_entries.entry_date``) from a raw-text
 ``CURRENT_DATE`` default, 23 of them re-stamp on UPDATE, and ``status_seam``
-assigns ``db.func.now()`` to ``Transaction.paid_at`` outright.  So a fixture that
+assigns ``db.func.now()`` to ``Transaction.settled_on`` outright.  So a fixture that
 settled a row "now" stamped it at the real wall clock -- months outside the
 periods the test seeded -- and the balance fold, which dates every event,
 replayed it outside the window entirely.  Nothing noticed while the shipping
@@ -13,7 +13,7 @@ producers read the LATEST anchor row and ignored its date; the fold made the
 instant load-bearing.
 
 The per-fixture mitigations (``override_anchor``'s period-start default,
-``conftest._pin_opening_to``, an explicit ``paid_at``) stay and are unaffected
+``conftest._pin_opening_to``, an explicit settle day) stay and are unaffected
 -- this pins the STRUCTURAL half that stops a fourth instance:
 ``_test_helpers._freeze_db_clock``.  Read its docstring for the design and its
 one stated boundary.
@@ -62,10 +62,10 @@ class TestTheDatabaseClockIsTheTestClock:
         assert anchor_attrs["created_at"] is False  # an instant, not a date
         txn_attrs = dict(_db_clock_insert_attrs(Transaction))
         assert "created_at" in txn_attrs
-        # ``paid_at`` is NOT a column default -- it is an assignment inside the
+        # the settle day is NOT a column default -- it is an assignment inside the
         # status seam -- so it must NOT appear here.  That it is frozen anyway
         # is what the settle test below proves, through the other mechanism.
-        assert "paid_at" not in txn_attrs
+        assert "settled_on" not in txn_attrs
         # The RAW-TEXT spelling: ``purchased_on`` defaults to
         # ``db.text("CURRENT_DATE")``, a TextClause, so an
         # ``isinstance(..., now)`` test alone is blind to it -- which is how it
@@ -101,9 +101,7 @@ class TestTheDatabaseClockIsTheTestClock:
             account = seed_user["account"]
             row = AccountAnchorHistory(
                 account_id=account.id,
-                pay_period_id=seed_periods[5].id,
                 anchor_balance=Decimal("1234.56"),
-                notes="N-65: no explicit instant",
                 observed_on=display_today(),
             )
             db.session.add(row)
@@ -122,15 +120,21 @@ class TestTheDatabaseClockIsTheTestClock:
                 <= seed_periods[-1].end_date
             )
 
-    def test_a_settled_transactions_paid_at_lands_on_the_frozen_day(
+    def test_a_settled_transactions_day_lands_on_the_frozen_day(
         self, app, db, seed_user, seed_periods,
     ):
         """The status seam's ``db.func.now()`` assignment is frozen too.
 
-        ``paid_at`` is not a column default: ``status_seam`` assigns
-        ``db.func.now()`` to it so PostgreSQL evaluates the instant
-        server-side.  That renders ``now()`` into the INSERT, which is the
-        second of the three mechanisms and the one N-65 names first.
+        **The mechanism this case was written for is GONE, and the case is
+        kept because the property still has to hold** (plan step X-f1).  The
+        seam assigned ``db.func.now()`` to ``paid_at``, so PostgreSQL evaluated
+        the instant SERVER-side and only the statement rewriter could see it --
+        one of the four database-clock reaches finding N-65 was built to
+        contain.  The seam stamps ``display_today()`` into a ``DATE`` column
+        now, which is a Python value the ``date.today()`` freeze already
+        governs, so this passes through the OTHER half of the freeze.  Keeping
+        it pins that a settle still lands on the frozen day by SOME route, which
+        is what every dated fixture in this suite depends on.
         """
         with app.app_context():
             txn = create_settled_cash_transaction(
@@ -140,9 +144,10 @@ class TestTheDatabaseClockIsTheTestClock:
             db.session.commit()
 
             db.session.expire(txn)
-            assert txn.paid_at is not None
-            assert txn.paid_at.date() == FROZEN_DATE, (
-                f"paid_at is {txn.paid_at!r}, not the frozen {FROZEN_DATE!r}"
+            assert txn.settled_on is not None
+            assert txn.settled_on == FROZEN_DATE, (
+                f"settled_on is {txn.settled_on!r}, not the frozen "
+                f"{FROZEN_DATE!r}"
             )
 
     def test_an_onupdate_column_is_frozen_on_a_row_update(
@@ -296,23 +301,18 @@ class TestTheDatabaseClockIsTheTestClock:
             account = seed_user["account"]
             first = override_anchor(
                 db.session, account, seed_periods[4], Decimal("100.00"),
-                notes="N-65 ordering: first",
                 at=None,
             )
             second = AccountAnchorHistory(
                 account_id=account.id,
-                pay_period_id=seed_periods[5].id,
                 anchor_balance=Decimal("200.00"),
-                notes="N-65 ordering: second",
                 observed_on=display_today(),
             )
             db.session.add(second)
             db.session.commit()
             third = AccountAnchorHistory(
                 account_id=account.id,
-                pay_period_id=seed_periods[5].id,
                 anchor_balance=Decimal("300.00"),
-                notes="N-65 ordering: third",
                 observed_on=display_today(),
             )
             db.session.add(third)

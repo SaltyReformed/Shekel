@@ -204,5 +204,82 @@ class Transfer(
             return Decimal("0")
         return self.amount
 
+    @property
+    def settled_on(self):
+        """Return the civil day this transfer's money moved, or ``None``.
+
+        A transfer has no ``settled_on`` COLUMN -- the day lives on its two
+        shadow ``Transaction`` rows, which carry the same value (Transfer
+        Invariant 3, maintained by
+        ``app.services._transfer_status.apply_settle_day_to_pair``).  This is
+        the read of that shared fact, so the two surfaces that need it -- the
+        full-edit form's pre-filled correction input, opened from either the
+        transfers page or a grid shadow cell -- ask ONE question rather than
+        each re-deriving "which shadow, and what if it is missing".
+
+        Read off the INCOME (to-account) shadow, the same row
+        ``posting_service._entry_date`` reads for the pair, so the day this
+        renders is the day the ledger files the postings under.
+
+        **It answers ``None`` rather than raising**, which is the difference
+        between this read and ``_entry_date``'s: that one is about to WRITE
+        real money to a journal entry and must refuse an undated settled row
+        (fail loud -- a fabricated date files money on a day nothing recorded);
+        this one is filling in a form field, and a form that 500s because a row
+        is malformed helps nobody.  The template renders the correction box for
+        any SETTLED transfer, dated or not, so an undated one gets a repair path
+        rather than a blank.
+
+        **The ``limit(1)`` is what makes that true, and a bare ``.scalar()``
+        did not.**  ``Query.scalar()`` swallows ``NoResultFound`` but lets
+        ``MultipleResultsFound`` propagate, so a transfer with DUPLICATE income
+        shadows -- data corruption ``_transfer_validation._get_shadow_transactions``
+        already fails loud on -- would have 500'd both full-edit popovers, which
+        is precisely the outcome the paragraph above says this read avoids.  A
+        neutral review caught the contradiction between the code and its own
+        docstring.  ``_entry_date`` reaches the same place with ``.first()``;
+        the duplicate pair carries one day either way (Transfer Invariant 3),
+        and detecting the corruption is that validator's job, not this form
+        field's.
+
+        There is no setter, deliberately: ``status_seam.apply_status_change``
+        is the single writer of ``Transaction.settled_on``, and an assignable
+        property here would be a second door onto it (the shape finding N-183
+        closed).  ``AttributeError`` on assignment is that refusal, structural
+        rather than reviewed.
+
+        **It QUERIES the one row rather than iterating the backref, and that is
+        not a style choice.**  ``shadow_transactions`` declares no ``order_by``
+        (``models/transaction.py:330-334``), so iterating it makes "the income
+        shadow" and "whichever row this unordered SELECT returned first"
+        indistinguishable -- an implementation that reads by POSITION is right
+        half the time and no test over a two-row pair can tell the two apart.  A
+        neutral review proved exactly that, twice, against two different
+        one-sided controls.  Naming the row in SQL removes the ambiguity from
+        the code instead of asking a test to detect it.
+
+        **SINGLE-ROW reads only.**  One scoped SELECT per transfer, which is
+        right for the full-edit popover -- one transfer, one render -- and an
+        N+1 the moment anything loops: the transfers list, a grid row set, a
+        projection.  A caller that needs the day for MANY transfers must load
+        the shadows itself.
+        """
+        # Imported here rather than at module scope: ``Transaction`` imports
+        # this module for its ``transfer`` relationship, so a top-level import
+        # would close the cycle.
+        # pylint: disable-next=import-outside-toplevel
+        from app.models.transaction import Transaction
+
+        return (
+            db.session.query(Transaction.settled_on)
+            .filter(
+                Transaction.transfer_id == self.id,
+                Transaction.account_id == self.to_account_id,
+                Transaction.is_deleted.is_(False),
+            )
+            .limit(1)
+            .scalar()
+        )
+
     def __repr__(self):
         return f"<Transfer '{self.name}' ${self.amount} ({self.id})>"

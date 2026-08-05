@@ -17,8 +17,6 @@ Architecture:
 """
 
 import logging
-from datetime import datetime
-from typing import Optional
 
 from app import ref_cache
 from app.enums import StatusEnum
@@ -35,16 +33,14 @@ from app.utils.log_events import (
 logger = logging.getLogger(__name__)
 
 
-def settle_from_entries(
-    txn: Transaction, *, paid_at: Optional[datetime] = None,
-) -> None:
+def settle_from_entries(txn: Transaction) -> None:
     """Settle a tracked-envelope transaction at sum(entries).
 
     Drives the entry-sum branch of the manual ``mark_done`` route and
     the source-side settlement step of the carry-forward envelope
     branch (see ``docs/carry-forward-aftermath-design.md`` Option F).
-    Both call sites need the same three writes -- ``status_id``,
-    ``paid_at``, ``actual_amount`` -- so the logic lives here as a
+    Both call sites need the same three writes -- ``status_id``, the
+    settle day, and ``actual_amount`` -- so the logic lives here as a
     single source of truth.
 
     Effect on *txn* (in place):
@@ -56,10 +52,19 @@ def settle_from_entries(
       - ``status_id`` is set to ``DONE`` for expense transactions and
         ``RECEIVED`` for income transactions, matching the display
         convention used by ``app/routes/transactions.py:mark_done``.
-      - ``paid_at`` is set to the explicit *paid_at* argument when
-        provided; otherwise ``db.func.now()`` so PostgreSQL evaluates
-        the timestamp at flush time (consistent with the existing
-        ``mark_done`` route behaviour).
+      - ``settled_on`` is set by the status seam: the user's today on the
+        first entry into a settled status, preserved on a re-settle.
+
+    **It took an explicit ``paid_at`` until plan step X-f1, and that parameter
+    was DEAD** (ruling R-EC, rule 13).  Its docstring named the carry-forward
+    envelope branch as the caller that supplied it;
+    ``carry_forward_service._execute`` calls this with no such argument and
+    always has.  Measured across ``app/``: zero call sites passed it.  A knob
+    with no caller and a false justification is exactly the speculative
+    flexibility the coding standards forbid, so it went rather than being
+    renamed -- the seam owns the day, and a caller that genuinely means "this
+    settled on a different day" corrects it on the row afterwards (ruling
+    R-ED).
 
     The function does NOT flush or commit -- the caller owns the
     session boundary so the settlement can participate in a larger
@@ -87,9 +92,6 @@ def settle_from_entries(
         txn: The Transaction to settle.  Must be attached to the
             current SQLAlchemy session so the entries relationship
             resolves correctly.
-        paid_at: Optional explicit timestamp.  When None (the default)
-            the helper uses ``db.func.now()`` so the timestamp comes
-            from the database server at flush time.
 
     Raises:
         ValidationError: If any precondition is violated.  The error
@@ -148,13 +150,12 @@ def settle_from_entries(
     else:
         new_status_id = ref_cache.status_id(StatusEnum.DONE)
 
-    # Route the status mechanics (transition check, status_id, paid_at, status
-    # expire) through the single seam so this helper cannot drift from the
-    # manual mark-done / PATCH / credit paths.  ``paid_at`` forwards verbatim:
-    # the seam's ``None`` (this helper's historical default) DERIVES now() on
-    # entering the settled status -- exactly the old ``db.func.now()`` fallback --
-    # and an explicit caller timestamp (carry-forward back-dating) passes through.
-    apply_status_change(txn, new_status_id, paid_at=paid_at)
+    # Route the status mechanics (transition check, status_id, settled_on,
+    # status expire) through the single seam so this helper cannot drift from
+    # the manual mark-done / PATCH / credit paths.  No day is passed: the seam
+    # stamps the user's today on entering the settled status and preserves an
+    # existing one, which is the only behaviour any caller here ever wanted.
+    apply_status_change(txn, new_status_id)
     # ``compute_actual_from_entries`` returns Decimal("0") on an empty
     # list, which is the carry-forward "no spend, full rollover" case.
     txn.actual_amount = compute_actual_from_entries(txn.entries)
@@ -171,5 +172,5 @@ def settle_from_entries(
         transaction_id=txn.id,
         new_status_id=new_status_id,
         actual_amount=str(txn.actual_amount),
-        explicit_paid_at=paid_at is not None,
+        settled_on=txn.settled_on.isoformat(),
     )

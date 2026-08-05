@@ -1,26 +1,45 @@
 {% from "_money_macros.html" import money %}
 {# Anchor balance -- toggles between display and edit mode.
-   Expected context: account, editing (bool), conflict (bool, optional),
-   revert_context (str|None, optional -- the normalized surface token that
-   opened the editor, e.g. 'dashboard' or 'accounts').
+   Expected context: account, anchor_balance (Decimal -- the account's latest
+   balance ASSERTION; a raw submitted STRING when re-rendered after a
+   rejection), editing (bool), revert_context (str|None, optional --
+   the normalized surface token that opened the editor, e.g. 'dashboard' or
+   'accounts').
 
-   When conflict=True, the editor was attempting an update against a
-   stale version_id and the route returned 409.  The display cell
-   surfaces a small warning icon and tooltip so the user knows the
-   row was changed by another tab/request and can click to reload
-   the editor with the fresh value.  See
-   app/routes/accounts.py:true_up for the optimistic-locking contract
-   (commit C-17 / F-009).
+   EDIT MODE also expects (plan step X-f1c4c, rulings R-EE / R-EI):
+   observed_on_value (str, already ISO-formatted or echoed raw from the
+   rejected submission -- a template displays, it does not format a fact it
+   may not be able to parse), observed_on_min / observed_on_max (date -- the
+   two bounds anchor_service.resolve_observation_day refuses outside of), and
+   the optional error (str -- the reason a submission was refused).  The
+   bounds come from the route via accounts._anchor_day_bounds, so the browser
+   refuses what the service would refuse; they are a convenience, never the
+   guard, because an input bound is captured at render time and the floor
+   moves when pay periods are generated or truncated.
 
-   ``revert_context`` is threaded through every reopen path (the edit
-   form's hx-patch and the conflict cell's retry hx-get) so a conflict
-   raised from a non-grid surface (the dashboard balance card, the cockpit
-   card cell) reopens the editor back in that surface rather than
-   stranding the card on the grid display cell.  The token is already
-   allowlist-normalized by accounts._normalize_revert_context, so it is
-   safe to pass straight into url_for.  Unset / None is the grid default
-   and keeps both URLs token-free, so the grid path stays byte-for-byte
-   unchanged. #}
+   ``anchor_balance`` is PASSED IN rather than read off the account row
+   (plan step X-f1c3a): the figure is the latest ``account_anchor_history``
+   assertion, resolved by ``cash_ledger.resolve_anchor``, and the denormalized
+   ``accounts.current_anchor_balance`` copy this partial used to reach through
+   the ORM for is deleted.  A template displays; it does not resolve.
+
+   THE CONFLICT MODE IS GONE (plan step X-f1c3c, ruling R-EN).  This partial
+   carried a ``conflict`` flag, a ``version_id`` hidden input and a warning
+   cell: the C-17 optimistic lock answered 409 when another tab had advanced
+   ``Account.version_id`` between the editor opening and Save.  A true-up no
+   longer writes the ``accounts`` row that counter guards -- it APPENDS an
+   assertion -- so nothing a second tab does can be overwritten by this form.
+   Two assertions of different balances are two facts and the later-observed
+   one is current; a submission that asserts what already governs writes
+   nothing and is reported as success (ruling R-EQ, plan step X-f1c4b).
+
+   ``revert_context`` is threaded through the reopen path (the edit form's
+   hx-patch) so a save from a non-grid surface (the dashboard balance card,
+   the cockpit card cell) re-renders in that surface rather than stranding the
+   card on the grid display cell.  The token is already allowlist-normalized
+   by accounts._normalize_revert_context, so it is safe to pass straight into
+   url_for.  Unset / None is the grid default and keeps both URLs token-free,
+   so the grid path stays byte-for-byte unchanged. #}
 {% set revert_token = revert_context if revert_context is defined else none %}
 {% if editing %}
 {# Edit mode: input field with save on Enter.
@@ -32,8 +51,7 @@
    grid path) is byte-for-byte unchanged.
 
    The hx-patch carries the same ``revert`` token (dashboard only) so the
-   true_up handler can re-render a 409 conflict cell with the right retry
-   target. #}
+   true_up handler re-renders into the surface that opened the editor. #}
 {% set revert_url = revert_url
    or url_for('accounts.anchor_display', account_id=account.id) %}
 {% if revert_token %}
@@ -45,35 +63,99 @@
       hx-target="this"
       hx-swap="outerHTML"
       hx-disabled-elt="find button[type=submit]"
-      class="d-inline-flex align-items-center gap-2">
-  {# Optimistic-locking pin: handler compares against
-     account.version_id and short-circuits with 409 when the form is
-     stale. #}
-  <input type="hidden" name="version_id" value="{{ account.version_id }}">
-  <div class="input-group input-group-sm mw-px-200">
-    <span class="input-group-text">$</span>
-    <input type="number" step="0.01" inputmode="decimal" name="anchor_balance"
-           value="{{ account.current_anchor_balance or 0 }}"
-           class="form-control" autofocus
-           aria-label="{{ account.name }} account balance"
+      class="d-inline-block">
+  <div class="d-flex align-items-center gap-2">
+    <div class="input-group input-group-sm mw-px-200">
+      <span class="input-group-text">$</span>
+      <input type="number" step="0.01" inputmode="decimal" name="anchor_balance"
+             value="{{ anchor_balance }}"
+             class="form-control" autofocus
+             aria-label="{{ account.name }} account balance"
+             data-action="anchor-cancel-on-escape"
+             data-revert-url="{{ revert_url }}">
+    </div>
+    <button type="submit" class="btn btn-sm btn-primary" aria-label="Save balance">
+      <i class="bi bi-check"></i>
+    </button>
+    <button type="button" class="btn btn-sm btn-outline-secondary" aria-label="Cancel editing"
+            hx-get="{{ revert_url }}"
+            hx-target="closest form"
+            hx-swap="outerHTML">
+      <i class="bi bi-x"></i>
+    </button>
+  </div>
+  {# The statement day, on its OWN LINE (ruling R-EI) -- the balance keeps the
+     first line so the one-click habit is type-a-number-and-Enter exactly as
+     before, and the day is a deliberate second act rather than a field to tab
+     past.  Prefilled with today, so leaving it alone means "I am reading my
+     bank now"; changing it means "this balance is off the statement dated D".
+     Escape reverts from here too (same data-action pair as the balance box),
+     because a user who opened the editor by mistake should not have to find
+     the first field again. #}
+  {# The VISIBLE label is the accessible name -- deliberately no aria-label
+     beside it.  Carrying both meant aria-label silently won and the label the
+     sighted user reads was never the one announced. #}
+  <div class="d-flex align-items-center gap-2 mt-1">
+    <label for="anchor-observed-on-{{ account.id }}"
+           class="form-label form-label-sm text-muted mb-0">Balance as of</label>
+    <input type="date" name="observed_on"
+           id="anchor-observed-on-{{ account.id }}"
+           value="{{ observed_on_value }}"
+           min="{{ observed_on_min.isoformat() }}"
+           max="{{ observed_on_max.isoformat() }}"
+           class="form-control form-control-sm w-auto"
            data-action="anchor-cancel-on-escape"
            data-revert-url="{{ revert_url }}">
   </div>
-  <button type="submit" class="btn btn-sm btn-primary" aria-label="Save balance">
-    <i class="bi bi-check"></i>
-  </button>
-  <button type="button" class="btn btn-sm btn-outline-secondary" aria-label="Cancel editing"
-          hx-get="{{ revert_url }}"
-          hx-target="closest form"
-          hx-swap="outerHTML">
-    <i class="bi bi-x"></i>
-  </button>
+  {% if error %}
+  {# The refusal, rendered where the submission was made.  It arrives on a 400
+     carrying the Shekel-Designed-Fragment marker, which is what lets htmx swap
+     it at all -- base.html configures 4xx as non-swapping. #}
+  <div class="small text-danger mt-1" role="alert">{{ error }}</div>
+  {% endif %}
 </form>
+{% elif account.account_type.has_amortization %}
+{# Display mode, AMORTIZING: read-only, because the click has nowhere to go
+   (plan step X-f1e3).
+
+   **This is the affordance the two kind refusals were refusing.**  A loan's
+   balance is ledger-derived and is asserted on the loan's own page (ruling D4
+   / step A1, finding B-15), so BOTH anchor doors reject an amortizing account:
+   ``anchor_form`` will not open the editor and ``true_up`` will not write.
+   This partial offered the click anyway, on every surface that includes it, so
+   the refusal was reached by an ordinary click and -- ``base.html`` leaving 4xx
+   non-swapping -- produced no visible response at all.  A dead click with no
+   form to explain it is worse than an unrenderable refusal, which is the
+   defect finding N-199 names one door over.
+
+   Deleting the affordance is the root fix rather than designing a nicer
+   refusal for it: a control that cannot succeed should not be offered.  The
+   Net Worth Cockpit already renders its loan cells read-only for exactly this
+   reason (``savings/_cockpit_balance.html``) -- that rule simply never reached
+   the SHARED partial the other four surfaces render, so one surface was
+   correct and four were not.
+
+   Branches on the ``has_amortization`` boolean column, never a type-name
+   string.  The service-layer refusals STAY: they answer a forged or raced
+   request (an account's kind is editable, so a form opened on a cash account
+   can be submitted after it became a loan), and this template is display, not
+   a guard. #}
+<div class="anchor-balance-display font-mono"
+     title="A loan's balance is recorded on the loan's own page">
+  {{ money(anchor_balance, cents=false) }}
+</div>
+{% if error %}
+{# The REFUSAL, when a submission raced the account's kind: the editor was
+   opened while the account was cash and submitted after it became a loan.
+   Rendered beside the read-only figure rather than beside a live input,
+   because there is nothing here to resubmit -- the message names where the
+   balance is recorded instead. #}
+<div class="small text-danger mt-1" role="alert">{{ error }}</div>
+{% endif %}
 {% else %}
 {# Display mode: clickable balance.  The reopen hx-get carries the same
-   ``revert`` token (dashboard only) so a conflict cell rendered for the
-   dashboard surface reopens the editor back in the dashboard, not the
-   grid. #}
+   ``revert`` token (dashboard only) so the editor opens back in the surface
+   the cell belongs to, not the grid. #}
 {% if revert_token %}
 {% set reopen_url = url_for('accounts.anchor_form', account_id=account.id, revert=revert_token) %}
 {% else %}
@@ -83,18 +165,13 @@
      hx-get="{{ reopen_url }}"
      hx-trigger="click"
      hx-swap="outerHTML"
-     class="anchor-balance-display font-mono{% if conflict %} text-warning{% endif %}"
+     class="anchor-balance-display font-mono"
      role="button"
      tabindex="0"
      data-keyboard-activate
-     aria-label="{{ account.name }} balance: {{ money(account.current_anchor_balance if account.current_anchor_balance else 0, cents=false) }}. {% if conflict %}This account was changed by another action; click to retry.{% else %}Click to edit.{% endif %}"
-     title="{% if conflict %}This account was changed by another action -- click to retry{% else %}Click to update balance{% endif %}">
-  {{ money(account.current_anchor_balance if account.current_anchor_balance else 0, cents=false) }}
-  {% if conflict %}
-  <i class="bi bi-exclamation-triangle text-warning ms-1 small"
-     aria-label="Edit conflict"></i>
-  {% else %}
+     aria-label="{{ account.name }} balance: {{ money(anchor_balance, cents=false) }}. Click to edit."
+     title="Click to update balance">
+  {{ money(anchor_balance, cents=false) }}
   <i class="bi bi-pencil-square text-muted ms-1 small"></i>
-  {% endif %}
 </div>
 {% endif %}

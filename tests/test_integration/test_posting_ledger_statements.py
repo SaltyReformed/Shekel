@@ -78,11 +78,14 @@ from app.services import (
     posting_service,
 )
 from app.services.ledger_report_service import StatementWindow
+import pytest
+
 from tests._test_helpers import (
     create_account_of_type,
     create_loan_with_trueup,
     create_settled_cash_transaction,
     create_settled_transfer,
+    freeze_today,
     linked_ledger_account,
     observed_day_of,
 )
@@ -93,12 +96,57 @@ from tests._test_helpers import (
 # regardless of when CI runs (account openings carry the server-now civil date).
 _ALL_ACTIVITY = date.max
 
-# The clean far-future year every hand-computed calendar fixture pins its
-# settles into: comfortably after the accounts' server-now origination
-# (~today), so a pinned settle rides ON TOP of the opening rather than being
-# absorbed, and far from any real clock so a "year" window sees only what the
-# fixture put there.
+# The clean year every hand-computed calendar fixture pins its settles into:
+# far from any real activity so a "year" window sees only what the fixture put
+# there, and after the accounts' origination so a pinned settle rides ON TOP of
+# the opening rather than being absorbed into it.
+#
+# **The module FREEZES today into it** (:func:`_today_inside_the_fixture_year`
+# below), and that pairing is load-bearing since ruling **R-EJ**.  The year was
+# chosen as "far FUTURE" precisely so it would sit after an origination stamped
+# with the server clock -- but a settle dated after today is exactly what R-EJ
+# refuses, because a settled row asserts that money HAS moved.  The fixture's
+# premise was only ever expressible while that guard was missing: an account
+# opened TODAY closes its opening balance on today, so nothing settled today
+# can ride on top of it, and reaching for tomorrow was the workaround.
+#
+# Freezing today INTO the year fixes it at the root: the accounts originate on
+# 2099-01-01, the settles land in March and April of the same year, and the
+# ordering the fixtures actually depend on holds without any date being in its
+# own future.  Every hand-computed figure and every ``"2099"`` window label is
+# unchanged.
 _Y = 2099
+
+#: The day every account these fixtures create is OPENED on -- the first of
+#: :data:`_Y`, so an opening precedes every settle the fixtures pin and a
+#: settle therefore rides ON TOP of it rather than being absorbed.  Passed to
+#: the account factory explicitly, never re-stamped afterwards: the factory
+#: posts the opening's anchor correction keyed on this day.
+_FIXTURE_OPENING = date(_Y, 1, 1)
+
+#: The day this module's clock is frozen to -- the LAST of :data:`_Y`, so every
+#: settle the fixtures pin is in the past, which is what ruling R-EJ requires
+#: of a settled row and what production always looks like.
+_FIXTURE_TODAY = date(_Y, 12, 31)
+
+
+@pytest.fixture(autouse=True)
+def _today_after_the_fixture_year(monkeypatch):
+    """Freeze today to :data:`_FIXTURE_TODAY` for every test in this module.
+
+    A fixture's calendar must contain its own today, and this one has three
+    instants that must stay in order: the opening, the settles, and now.  These
+    suites pin settles into :data:`_Y` and open accounts explicitly at
+    :data:`_FIXTURE_OPENING`, so freezing now at the end of the same year puts
+    all three in the production order -- an account existed, then money moved,
+    and today is after both.
+
+    Without it the clock sits in the real present while the calendar sits in
+    2099, which is the fixture-clock defect class findings N-131, N-132 and R8
+    were all instances of, and which ruling R-EJ's write-door guard turns from
+    silent into loud.
+    """
+    freeze_today(monkeypatch, _FIXTURE_TODAY)
 
 
 def _noon(year: int, month: int, day: int) -> datetime:
@@ -376,14 +424,12 @@ def _true_up_at(account, balance, created_at) -> None:
     account = _db.session.get(Account, account.id)
     row = AccountAnchorHistory(
         account_id=account.id,
-        pay_period_id=account.current_anchor_period_id,
         anchor_balance=Decimal(str(balance)),
         created_at=created_at,
         # The civil day this assertion is the closing balance FOR, kept in step
         # with the pinned instant by the shared rule (ruling R-DH, plan step 2).
         observed_on=observed_day_of(created_at),
     )
-    account.current_anchor_balance = Decimal(str(balance))
     _db.session.add(row)
     _db.session.flush()
     account_posting_service.sync_account_anchor_postings_all_scenarios(
@@ -480,10 +526,12 @@ class TestRichFixtureStatements:
             card = create_account_of_type(
                 seed_user, db.session, "Credit Card", "Rewards Card",
                 anchor_balance=Decimal("-500.00"),
+                observed_on=_FIXTURE_OPENING,
             )
             savings = create_account_of_type(
                 seed_user, db.session, "Savings", "Rainy Day",
                 anchor_balance=Decimal("200.00"),
+                observed_on=_FIXTURE_OPENING,
             )
             db.session.commit()
 
@@ -491,29 +539,29 @@ class TestRichFixtureStatements:
                 seed_user, db.session, seed_user["bootstrap_period"],
                 Decimal("3000.00"), account=checking, is_income=True,
                 category=seed_user["categories"]["Salary"],
-                paid_at=_noon(_Y, 3, 10),
+                settled_on=date(_Y, 3, 10),
             )
             create_settled_cash_transaction(
                 seed_user, db.session, seed_user["bootstrap_period"],
                 Decimal("400.00"), account=checking,
                 category=seed_user["categories"]["Groceries"],
-                paid_at=_noon(_Y, 3, 15),
+                settled_on=date(_Y, 3, 15),
             )
             create_settled_cash_transaction(
                 seed_user, db.session, seed_user["bootstrap_period"],
                 Decimal("50.00"), account=checking, category=None,
-                paid_at=_noon(_Y, 3, 20),
+                settled_on=date(_Y, 3, 20),
             )
             create_settled_cash_transaction(
                 seed_user, db.session, seed_user["bootstrap_period"],
                 Decimal("120.00"), account=card,
                 category=seed_user["categories"]["Groceries"],
-                paid_at=_noon(_Y, 3, 16),
+                settled_on=date(_Y, 3, 16),
             )
             create_settled_transfer(
                 seed_user, db.session, checking, savings,
                 seed_user["bootstrap_period"], amount=Decimal("150.00"),
-                paid_at=_noon(_Y, 4, 1),
+                settled_on=date(_Y, 4, 1),
             )
             db.session.commit()
 
@@ -639,11 +687,11 @@ class TestLoanInterestEscrowInStatements:
                 seed_user, db.session, pay_period, Decimal("2000.00"),
                 account=checking, is_income=True,
                 category=seed_user["categories"]["Salary"],
-                paid_at=_noon(_Y, 2, 5),
+                settled_on=date(_Y, 2, 5),
             )
             create_settled_transfer(
                 seed_user, db.session, checking, loan, pay_period,
-                amount=Decimal("1000.00"), paid_at=_noon(_Y, 2, 10),
+                amount=Decimal("1000.00"), settled_on=date(_Y, 2, 10),
             )
             db.session.commit()
 
@@ -738,6 +786,7 @@ class TestAccountingIdentityAtMultipleAsOf:
             savings = create_account_of_type(
                 seed_user, db.session, "Savings", "Ladder Savings",
                 anchor_balance=Decimal("500.00"),
+                observed_on=_FIXTURE_OPENING,
             )
             db.session.commit()
 
@@ -745,14 +794,14 @@ class TestAccountingIdentityAtMultipleAsOf:
                 seed_user, db.session, seed_user["bootstrap_period"],
                 Decimal("200.00"), account=savings,
                 category=seed_user["categories"]["Groceries"],
-                paid_at=_noon(_Y, 6, 5),
+                settled_on=date(_Y, 6, 5),
             )
             _true_up_at(savings, "350.00", _noon(_Y, 6, 10))
             create_settled_cash_transaction(
                 seed_user, db.session, seed_user["bootstrap_period"],
                 Decimal("100.00"), account=savings,
                 category=seed_user["categories"]["Groceries"],
-                paid_at=_noon(_Y, 6, 15),
+                settled_on=date(_Y, 6, 15),
             )
             db.session.commit()
 
@@ -829,13 +878,13 @@ class TestArticulation:
                 seed_user, db.session, seed_user["bootstrap_period"],
                 Decimal("800.00"), account=checking, is_income=True,
                 category=seed_user["categories"]["Salary"],
-                paid_at=_noon(_Y, 5, 1),
+                settled_on=date(_Y, 5, 1),
             )
             create_settled_cash_transaction(
                 seed_user, db.session, seed_user["bootstrap_period"],
                 Decimal("300.00"), account=checking,
                 category=seed_user["categories"]["Groceries"],
-                paid_at=_noon(_Y, 5, 2),
+                settled_on=date(_Y, 5, 2),
             )
             _true_up_at(checking, "1600.00", _noon(_Y, 5, 3))
             db.session.commit()
@@ -899,13 +948,13 @@ class TestPeriodVsCalendarAgreement:
                 seed_user, db.session, period, Decimal("500.00"),
                 account=seed_user["account"], is_income=True,
                 category=seed_user["categories"]["Salary"],
-                paid_at=_noon(_Y, 3, 5),
+                settled_on=date(_Y, 3, 5),
             )
             create_settled_cash_transaction(
                 seed_user, db.session, period, Decimal("200.00"),
                 account=seed_user["account"],
                 category=seed_user["categories"]["Groceries"],
-                paid_at=_noon(_Y, 3, 10),
+                settled_on=date(_Y, 3, 10),
             )
             db.session.commit()
 
@@ -960,7 +1009,7 @@ class TestRevertAndResidueDropped:
                 seed_user, db.session, seed_user["bootstrap_period"],
                 Decimal("400.00"), account=seed_user["account"],
                 category=seed_user["categories"]["Groceries"],
-                paid_at=_noon(_Y, 7, 1),
+                settled_on=date(_Y, 7, 1),
             )
             db.session.commit()
             # Sanity: it was present before the revert.
@@ -1052,7 +1101,7 @@ class TestRevertAndResidueDropped:
             seed_user, db.session, seed_user["bootstrap_period"],
             Decimal("0.01"), account=account,
             category=seed_user["categories"][category_key],
-            paid_at=_noon(_Y, 1, 1),
+            settled_on=date(_Y, 1, 1),
         )
         db.session.flush()
         ledger_id = (
@@ -1134,7 +1183,7 @@ class TestAttributionEdgeCases:
                 seed_user, db.session, seed_user["bootstrap_period"],
                 Decimal("500.00"), account=seed_user["account"],
                 category=seed_user["categories"]["Groceries"],
-                paid_at=datetime(2099, 1, 1, 1, 5, tzinfo=timezone.utc),
+                settled_on=date(2098, 12, 31),
             )
             db.session.commit()
 
@@ -1156,16 +1205,23 @@ class TestAttributionEdgeCases:
             assert sheet.tie_out.in_balance is True
             _assert_ledger_self_consistent()
 
-    def test_null_paid_at_falls_back_to_period_start(
+    def test_a_settle_on_the_period_start_attributes_to_that_day(
         self, app, db, seed_user,
     ):
-        """A NULL-paid_at settle attributes to its pay period's start date.
+        """A settle dated on its pay period's start attributes to that day.
 
-        A $150.00 Groceries expense with ``paid_at`` NULL, in a period starting
-        2099-08-03, attributes to 2099-08-03 (the pay-period ``start_date``
-        fallback).  So the August 2099 month window includes it and July does
-        not, and it folds onto an as-of-2099-08-03 balance sheet -- the fallback
-        the reader shares with the entry-dating rule.
+        A $150.00 Groceries expense settled 2099-08-03, in a period starting
+        2099-08-03.  So the August 2099 month window includes it and July does
+        not, and it folds onto an as-of-2099-08-03 balance sheet.
+
+        **It reached that day through a FALLBACK until plan step X-f1** -- the
+        row carried no ``paid_at`` and the reader substituted the period's
+        ``start_date`` -- and this case was named for the fallback.  The day is
+        a stored fact now and the substitution is gone, so the fixture states
+        the day it always meant; every figure below is unchanged, because the
+        day is.  What the case still grades is real and unrelated to the
+        fallback: a settle day sitting exactly ON a window boundary belongs to
+        the LATER window, and to the balance sheet as of that day.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -1179,7 +1235,7 @@ class TestAttributionEdgeCases:
                 seed_user, db.session, period, Decimal("150.00"),
                 account=seed_user["account"],
                 category=seed_user["categories"]["Groceries"],
-                paid_at=None,
+                settled_on=period.start_date,
             )
             db.session.commit()
 
@@ -1226,7 +1282,7 @@ class TestAttributionEdgeCases:
                 seed_user, db.session, future_period, Decimal("250.00"),
                 account=seed_user["account"],
                 category=seed_user["categories"]["Groceries"],
-                paid_at=_noon(2099, 11, 20),
+                settled_on=date(2099, 11, 20),
             )
             db.session.commit()
 
@@ -1276,7 +1332,7 @@ class TestDisplayLabels:
                 seed_user, db.session, seed_user["bootstrap_period"],
                 Decimal("100.00"), account=checking,
                 category=seed_user["categories"]["Groceries"],
-                paid_at=_noon(_Y, 3, 15),
+                settled_on=date(_Y, 3, 15),
             )
             db.session.commit()
 
@@ -1321,7 +1377,7 @@ class TestDisplayLabels:
                 seed_user, db.session, seed_user["bootstrap_period"],
                 Decimal("100.00"), account=seed_user["account"],
                 category=seed_user["categories"]["Groceries"],
-                paid_at=_noon(_Y, 3, 15),
+                settled_on=date(_Y, 3, 15),
             )
             db.session.commit()
             groceries = db.session.get(
@@ -1368,7 +1424,7 @@ class TestScenarioAndOwnerIsolation:
                 seed_user, db.session, seed_user["bootstrap_period"],
                 Decimal("70.00"), account=seed_user["account"], scenario=whatif,
                 category=seed_user["categories"]["Groceries"],
-                paid_at=_noon(_Y, 9, 1),
+                settled_on=date(_Y, 9, 1),
             )
             db.session.commit()
 
@@ -1401,14 +1457,14 @@ class TestScenarioAndOwnerIsolation:
                 seed_user, db.session, seed_user["bootstrap_period"],
                 Decimal("60.00"), account=seed_user["account"],
                 category=seed_user["categories"]["Groceries"],
-                paid_at=_noon(_Y, 10, 1),
+                settled_on=date(_Y, 10, 1),
             )
             create_settled_cash_transaction(
                 seed_second_user, db.session,
                 seed_second_user["bootstrap_period"], Decimal("80.00"),
                 account=seed_second_user["account"],
                 category=seed_second_user["categories"]["Groceries"],
-                paid_at=_noon(_Y, 10, 2),
+                settled_on=date(_Y, 10, 2),
             )
             db.session.commit()
 

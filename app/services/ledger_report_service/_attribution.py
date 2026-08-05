@@ -9,22 +9,24 @@ bounding balance sheets, with no reconciliation code).
 
 **The attribution rule (reader-contract C-3).**  Every posting is attributed by
 its SOURCE, in whole: a source's per-ledger-account net lands on the source's
-CURRENT paid date, converted to the DISPLAY timezone (the decided L9 rule --
-tax-year and calendar figures follow the user's wall clock, so an 8:05pm-Eastern
-Dec-31 settle attributes to Dec 31, not the Jan 1 it becomes in UTC), falling
-back to the source's pay period ``start_date`` when ``paid_at`` is NULL:
+CURRENT settle day -- the stored ``transactions.settled_on``, which IS the user's
+wall-clock civil day (the decided L9 rule -- tax-year and calendar figures follow
+that clock, so an 8:05pm-Eastern Dec-31 settle attributes to Dec 31, not the
+Jan 1 it becomes in UTC).  There is no fallback: a settled row missing its day is
+refused by :func:`app.utils.balance_predicates.settled_day` rather than dated
+from its pay period, which is what the derivation this replaced did:
 
 * transaction-linked entries (``transaction`` and ``loan_payment`` sources, both
   carrying ``transaction_id`` with ``transfer_id`` NULL): by the transaction's
-  ``paid_at`` -- for a loan payment, the loan-side income shadow it links;
+  ``settled_on`` -- for a loan payment, the loan-side income shadow it links;
 * transfer-linked entries (``transfer_id`` set): by the transfer's INCOME
-  shadow's ``paid_at`` (Transfer Invariant 3 mirrors ``paid_at`` onto both
+  shadow's ``settled_on`` (Transfer Invariant 3 mirrors the day onto both
   shadows, and ``posting_service._entry_date`` dates the entry off exactly this
   shadow), so a transfer's two legs land on one date;
 * sourceless corrections (``loan_opening`` / ``loan_trueup`` / ``account_opening``
   / ``account_trueup``, both concrete FKs NULL): by the stored ``entry_date`` (a
-  correction is an anchor fact dated by the anchor's civil date -- it has no
-  ``paid_at`` instant to convert);
+  correction is an anchor fact dated by the anchor's observed civil day, and
+  never had a settle day of its own);
 * hard-delete residue (a ``transaction`` / ``transfer`` / ``loan_payment`` source
   whose concrete FK was SET-NULLed): DROPPED, as whole entries -- each sums to
   zero (the reverse-before-delete discipline), so dropping it leaves the trial
@@ -36,8 +38,8 @@ buckets a PARTITION of the live ledger identical to the write-side walk's
 a hypothetical dual-linked entry classifies as transfer-linked, never both.
 
 **One civil date, shared, since ruling R-DH.**  This reader and the write-side
-walk both attribute a source to :func:`app.utils.dates.to_display_civil_date`
-of its ``paid_at`` -- the same day, from the same helper.  They were
+walk both attribute a source to :func:`app.utils.balance_predicates.settled_day`
+of its ``settled_on`` -- the same day, from the same accessor.  They were
 deliberately different until 2026-07-31: the walk partitioned by UTC INSTANT
 against each anchor's ``created_at`` while this side used the display-timezone
 civil date for calendar windows, and the paragraph here justified an
@@ -69,11 +71,10 @@ from app.enums import (
 from app.extensions import db
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.ledger_account import LedgerAccount
-from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services.posting_reads import PostingError
-from app.utils.dates import to_display_civil_date
+from app.utils.balance_predicates import settled_day
 
 from ._types import StatementLine, StatementSection
 
@@ -386,7 +387,7 @@ def _transaction_dated_nets(
     ``loan_payment`` interest / escrow / refund / principal-split corrections),
     grouped by (ledger account, transaction) and attributed to the transaction's
     display-timezone paid date (falling back to its pay period ``start_date``
-    when ``paid_at`` is NULL).  For a loan payment, ``transaction_id`` is the
+    when the day is missing).  For a loan payment, ``transaction_id`` is the
     loan-side income shadow, so the split is dated by the payment's paid date --
     the same basis the loan tax reader uses.
 
@@ -425,10 +426,12 @@ def _transaction_attribution_dates(
 ) -> dict[int, date]:
     """Return each transaction's display-timezone attribution date, keyed by id.
 
-    One batched load of ``(id, paid_at, pay_period.start_date)`` over the
-    given transactions, each mapped to
-    :func:`app.utils.dates.to_display_civil_date` of its ``paid_at`` with the
-    pay period ``start_date`` as the NULL fallback.
+    One batched load of ``(id, settled_on)`` over the given transactions, each
+    read through the shared :func:`app.utils.balance_predicates.settled_day` --
+    the same accessor the write-side walk and both folds ask the question
+    through.  It loaded ``(id, paid_at, pay_period.start_date)`` and converted
+    the instant until plan step X-f1 (ruling R-EC); the day is stored now, so
+    the pay-period join is gone with the fallback it fed.
 
     Args:
         transaction_ids: The transaction ids whose paid dates to resolve.
@@ -442,16 +445,13 @@ def _transaction_attribution_dates(
             resolves; a miss must fail loudly, not mis-attribute money).
     """
     rows = (
-        db.session.query(
-            Transaction.id, Transaction.paid_at, PayPeriod.start_date,
-        )
-        .join(PayPeriod, Transaction.pay_period_id == PayPeriod.id)
+        db.session.query(Transaction.id, Transaction.settled_on)
         .filter(Transaction.id.in_(transaction_ids))
         .all()
     )
     dates = {
-        transaction_id: to_display_civil_date(paid_at, start_date)
-        for transaction_id, paid_at, start_date in rows
+        transaction_id: settled_day(transaction_id, stored_day)
+        for transaction_id, stored_day in rows
     }
     missing = transaction_ids - set(dates)
     if missing:
@@ -506,11 +506,12 @@ def _transfer_attribution_dates(transfer_ids: set[int]) -> dict[int, date]:
     """Return each transfer's income-shadow attribution date, keyed by transfer.
 
     One batched load of the INCOME shadow (the ``to_account`` side, non-deleted)
-    per transfer -- its ``(paid_at, pay_period.start_date)`` -- mapped to
-    :func:`app.utils.dates.to_display_civil_date`.  Mirrors the write-side walk's
-    transfer loader: a settled transfer has exactly its two shadows (Transfer
-    Invariant 1), so a missing or duplicate income shadow is a broken invariant
-    that fails loudly rather than dating the transfer off an arbitrary shadow.
+    per transfer -- its stored ``settled_on`` -- read through the shared
+    :func:`app.utils.balance_predicates.settled_day`.  Mirrors the write-side
+    walk's transfer loader: a settled transfer has exactly its two shadows
+    (Transfer Invariant 1), so a missing or duplicate income shadow is a broken
+    invariant that fails loudly rather than dating the transfer off an arbitrary
+    shadow.
 
     Args:
         transfer_ids: The transfer ids whose income-shadow dates to resolve.
@@ -528,10 +529,13 @@ def _transfer_attribution_dates(transfer_ids: set[int]) -> dict[int, date]:
     # construction: the reader RESTATES the walk's transfer attribution rather
     # than importing a write-package internal, keeping this read package
     # decoupled from the write package (the same independent-restatement stance
-    # the reconciliation oracles rely on).  Both sides now derive the SAME
-    # display-timezone civil day from the shadow (ruling R-DH deleted the
-    # walk's instant partition), so what is restated here is the LOADER, not
-    # the rule.  **Plan step 3 SHIPPED and deliberately did not resolve this**:
+    # the reconciliation oracles rely on).  Both sides now READ the same stored
+    # day off the shadow through the same accessor (ruling R-DH deleted the
+    # walk's instant partition; plan step X-f1 deleted the derivation itself),
+    # so what is restated here is the LOADER, not the rule.  Re-measured at
+    # X-f1 with the disable stripped: R0801 still fires over 11 shared lines,
+    # so this suppression is load-bearing rather than stale residue.
+    # **Plan step 3 SHIPPED and deliberately did not resolve this**:
     # it converged the partition RULE, and extracting a third shared home for
     # these loaders would be scaffolding for a caller plan step X-d deletes --
     # X-d retires the write-side walk onto the read walk, taking its twin of
@@ -540,7 +544,7 @@ def _transfer_attribution_dates(transfer_ids: set[int]) -> dict[int, date]:
     # pylint: disable=duplicate-code
     rows = (
         db.session.query(
-            Transaction.transfer_id, Transaction.paid_at, PayPeriod.start_date,
+            Transaction.transfer_id, Transaction.id, Transaction.settled_on,
         )
         .join(
             Transfer,
@@ -549,7 +553,6 @@ def _transfer_attribution_dates(transfer_ids: set[int]) -> dict[int, date]:
                 Transaction.account_id == Transfer.to_account_id,
             ),
         )
-        .join(PayPeriod, Transaction.pay_period_id == PayPeriod.id)
         .filter(
             Transaction.transfer_id.in_(transfer_ids),
             Transaction.is_deleted.is_(False),
@@ -558,8 +561,8 @@ def _transfer_attribution_dates(transfer_ids: set[int]) -> dict[int, date]:
     )
     # pylint: enable=duplicate-code
     dates = {
-        transfer_id: to_display_civil_date(paid_at, start_date)
-        for transfer_id, paid_at, start_date in rows
+        transfer_id: settled_day(shadow_id, stored_day)
+        for transfer_id, shadow_id, stored_day in rows
     }
     if len(rows) != len(dates):
         raise PostingError(

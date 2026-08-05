@@ -32,7 +32,7 @@ Pure aggregation service -- no Flask imports, no database writes.
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date
 from decimal import Decimal
 from itertools import groupby
 from typing import TYPE_CHECKING
@@ -42,18 +42,16 @@ from app.models.account import Account
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.user import UserSettings
-from app.services import balance_at, pay_period_service
+from app.services import balance_at, cash_ledger, pay_period_service
 from app.services.balance_at import BalanceContext
 from app.services.dashboard_service import (
     _DEFAULT_STALENESS_DAYS,
-    _get_last_anchor_date,
     _get_user_settings,
     _query_unpaid_expense_rows,
     _resolve_section_context,
     txn_to_bill_dict,
 )
 from app.services.entry_service import compute_remaining
-from app.utils.dates import to_display_date
 from app.utils.money import round_money
 
 if TYPE_CHECKING:
@@ -276,12 +274,20 @@ def _pulse_hero(
         ``period_end_date``, ``account_name``, ``account_id``,
         ``last_updated_date``, ``is_stale``, ``next_paycheck_date``.
     """
-    # One fetch of the raw anchor instant and ONE truncation, in the user's
-    # zone, feeding both the caption and the staleness count.  They were two
-    # truncations in two zones -- UTC for the arithmetic, display for the
-    # caption -- so for four hours each evening the two disagreed about which
-    # day the anchor was set (ruling R-DH (b), finding N-133).
-    last_anchor_dt = _get_last_anchor_date(account.id)
+    # The day the balance was TRUE, read as a stored fact -- ONE value feeding
+    # both the caption and the staleness count (ruling R-EP, plan step
+    # X-f1c3a).  It was ``MAX(created_at)`` truncated to a day: a THIRD
+    # statement of "which assertion is latest", keyed on the RECORDING instant
+    # rather than the business day, so a back-dated assertion recorded later
+    # named the wrong row -- and before ruling R-DH (b) the truncation ran in
+    # two zones at once, so for four hours each evening the caption and the
+    # arithmetic disagreed about which day it was (finding N-133).
+    # ``reconciled_through`` is deliberately the accessor rather than
+    # ``resolve_anchor``: this surface wants only the day, it must answer
+    # ``None`` for an account with no assertion (the never-set staleness arm)
+    # rather than raise, and the two are provably equal -- ``MAX(observed_on)``
+    # against the last element of the same ordering, pinned by a test.
+    last_observed_on = cash_ledger.reconciled_through(account.id).observed_day
 
     return {
         "balance": balance,
@@ -289,20 +295,20 @@ def _pulse_hero(
         "period_end_date": current_period.end_date,
         "account_name": account.name,
         "account_id": account.id,
-        "last_updated_date": to_display_date(last_anchor_dt),
-        "is_stale": _anchor_is_stale(_anchor_day(last_anchor_dt), settings),
+        "last_updated_date": last_observed_on,
+        "is_stale": _anchor_is_stale(last_observed_on, settings),
         "next_paycheck_date": _next_paycheck_date(account.user_id),
     }
 
 
 def _anchor_is_stale(
-    last_updated_date: date | None,
+    observed_on: date | None,
     settings: UserSettings | None,
 ) -> bool:
     """Return whether the checking anchor is stale (the warning condition).
 
-    Stale means the anchor has NEVER been set (``last_updated_date`` is
-    ``None``) OR its last update is strictly older than
+    Stale means the anchor has NEVER been set (``observed_on`` is ``None``) OR
+    the day it was asserted for is strictly older than
     ``settings.anchor_staleness_days`` (the same settings-driven threshold
     the retired Alerts card used; the rebuild surfaces it on the "last
     updated" caption rather than as a separate alert).  A no-settings
@@ -312,21 +318,36 @@ def _anchor_is_stale(
     so the never-set state cannot reach the hero's balance call in
     production -- but the branch is defensive and worth pinning).
 
+    **It measures from the day the balance was TRUE, not the day it was
+    recorded** (ruling R-EP, plan step X-f1c3a).  Those were the same value
+    until ``observed_on`` became user-supplied; a back-dated assertion recorded
+    today is stale on the day it names, which is what a user asking "how old is
+    this number" means.
+
+    **The comparison's own clock is deliberately NOT touched here.**
+    ``date.today()`` is the process day and ``observed_on`` is a display-zone
+    civil day, so the two can differ by one across the evening window -- the
+    finding N-138 class, whose app-side conversion was BUILT AND REVERTED
+    because doing it site by site turns agreeing-but-wrong into actively
+    disagreeing and no gate can currently certify completeness.  This edit
+    changes which display-zone day arrives, not which clock it is compared
+    against, so the split is neither created nor widened here.
+
     Args:
-        last_updated_date: The display-timezone date of the latest anchor
-            event, or ``None`` when the anchor has never been set.
+        observed_on: The civil day the latest assertion was true for, or
+            ``None`` when the anchor has never been set.
         settings: The user's settings, or ``None``.
 
     Returns:
         ``True`` when the anchor is never-set or older than the threshold.
     """
-    if last_updated_date is None:
+    if observed_on is None:
         return True
     staleness_days = (
         settings.anchor_staleness_days if settings
         else _DEFAULT_STALENESS_DAYS
     )
-    return (date.today() - last_updated_date).days > staleness_days
+    return (date.today() - observed_on).days > staleness_days
 
 
 def _pulse_chart(
@@ -725,55 +746,6 @@ def _pulse_due_soon_stations(due_soon: list[dict]) -> list[dict]:
         )
     return stations
 
-
-def _anchor_day(last_anchor_dt: datetime | None) -> date | None:
-    """Truncate a stored anchor instant to its DISPLAY-timezone calendar day.
-
-    The day the staleness count measures FROM.  ``None``-safe (an account
-    whose anchor has never been set).
-
-    **It was a UTC day, and the mismatch was live** (ruling R-DH (b), finding
-    N-133).  This day is compared against a display-timezone "today" to decide
-    whether the anchor is stale, and it sat beside a ``last_updated_date`` the
-    hero renders with :func:`~app.utils.dates.to_display_date` -- so for the
-    four hours each evening when the two zones disagree, the caption showed one
-    day and the staleness arithmetic used another.  One instant, two
-    derivations, one comparison: the shape ruling R-DH (b) exists to delete.
-
-    **A better source exists and is not reached from here.**  What staleness
-    really wants is ``AccountAnchorHistory.observed_on`` -- the day the balance
-    was TRUE -- not the day the row was recorded; since plan step 2 those can
-    differ by any amount for a back-dated opening.  Moving to it means changing
-    ``dashboard_service._get_last_anchor_date``'s contract, which has callers
-    beyond this module, so it is recorded rather than done here.
-
-    Args:
-        last_anchor_dt: The latest anchor ``created_at`` instant, or
-            ``None``.
-
-    Returns:
-        The display-timezone calendar day, or ``None`` when ``last_anchor_dt``
-        is ``None``.
-    """
-    return to_display_date(last_anchor_dt)
-
-
-def _last_anchor_update_date(account_id: int) -> date | None:
-    """Return the UTC calendar date of the account's most recent anchor event.
-
-    A thin date-only wrapper over ``dashboard_service._get_last_anchor_date``
-    (which returns the raw ``created_at`` timestamp): truncates it to the
-    USER's calendar day (via :func:`_anchor_day`), the same day the hero's
-    "last updated" caption renders and the same zone the staleness comparison
-    runs in.  ``None`` when the account has no anchor history (never set).
-
-    Args:
-        account_id: The account whose latest anchor date is wanted.
-
-    Returns:
-        The display-timezone date of the latest anchor event, or ``None``.
-    """
-    return _anchor_day(_get_last_anchor_date(account_id))
 
 
 def _next_paycheck_date(user_id: int) -> date | None:

@@ -10,8 +10,12 @@
   <div class="d-flex align-items-center gap-3">
     <div>
       <h5 class="mb-0">{{ account.name if account else 'Account' }} Balance</h5>
-      {% if account and account.updated_at %}
-      <small class="text-muted" id="anchor-as-of">as of {{ account.updated_at | local_datetime('%b %-d, %Y') }}</small>
+      {# The day the balance was TRUE, from the assertion itself (ruling R-EP).
+         It read ``account.updated_at`` -- the row's last-touched instant, which
+         any account edit moved and which a true-up stopped moving once the
+         true-up stopped writing the row. #}
+      {% if anchor_as_of %}
+      <small class="text-muted" id="anchor-as-of">as of {{ anchor_as_of.strftime('%b %-d, %Y') }}</small>
       {% endif %}
     </div>
     {% if account %}

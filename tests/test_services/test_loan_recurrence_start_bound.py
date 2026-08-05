@@ -58,7 +58,7 @@ def _upcoming_mortgage(seed_user, db_session, periods, payment_day=1):
         seed_user, db_session, name="Closing In April",
         principal=PRINCIPAL, rate=Decimal("0.05000"),
         term=360, origination_date=ORIGINATION, payment_day=payment_day,
-        account_type=AcctTypeEnum.MORTGAGE, anchor_period=periods[0],
+        account_type=AcctTypeEnum.MORTGAGE,
     )
 
 
@@ -125,7 +125,6 @@ class TestFirstInstallmentDate:
                 principal=PRINCIPAL, rate=Decimal("0.05000"), term=360,
                 origination_date=origination, payment_day=payment_day,
                 account_type=AcctTypeEnum.MORTGAGE,
-                anchor_period=seed_periods[0],
             )
             params = loan_loaders.load_loan_params(acct.id)
             rows = contractual_schedule_from_origination(
@@ -509,7 +508,7 @@ class TestNoPaymentGeneratesBeforeTheLoan:
             seed_user, db.session, name="Old Mortgage",
             principal=PRINCIPAL, rate=Decimal("0.05000"), term=360,
             origination_date=date(2018, 12, 1), payment_day=1,
-            account_type=AcctTypeEnum.MORTGAGE, anchor_period=seed_periods[0],
+            account_type=AcctTypeEnum.MORTGAGE,
         )
         checking = seed_user["account"]
         db.session.commit()

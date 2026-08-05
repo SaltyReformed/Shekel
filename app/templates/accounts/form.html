@@ -40,24 +40,35 @@
         </select>
       </div>
 
+      {# CREATE ONLY -- the opening assertion, which is a balance and the day it
+         was true, so the two inputs live in one block and appear together or
+         not at all.
+
+         **The EDIT form carries neither, and that is plan step X-f1e** (finding
+         **N-195**).  It used to render the balance field on both, on the ground
+         that "the anchor form does not back-date" -- which plan step X-f1c4c
+         made false by giving the one-click editor its own "as of" day (rulings
+         R-EE / R-EI).  What was left was a SECOND door asserting a balance,
+         answering the same submission differently from the first: this form
+         PRE-FILLS the current figure, so saving a rename re-submitted it
+         unchanged, and the two doors disagreed on whether that is an assertion.
+         A rename is not a balance reading.  Asserting a balance is the one-click
+         editor the grid, dashboard, cockpit, investment hero and cash hero all
+         open -- one door, one meaning. #}
+      {% if not account %}
       <div class="mb-3">
-        <label for="anchor_balance" class="form-label">Current Balance</label>
+        <label for="anchor_balance" class="form-label">Opening Balance</label>
         <div class="input-group">
           <span class="input-group-text">$</span>
           <input type="number" step="0.01" id="anchor_balance" name="anchor_balance"
-                 class="form-control"
-                 value="{{ account.current_anchor_balance if account and account.current_anchor_balance is not none else '0' }}"
+                 class="form-control" value="0"
                  aria-describedby="anchor-help">
         </div>
         <div id="anchor-help" class="form-text">
-          Your current real-world balance. Projected balances are calculated forward from this amount.
+          The account's real-world balance. Projected balances are calculated forward from this amount.
         </div>
       </div>
 
-      {# Create only.  An edit re-asserts the balance AS OF NOW (the update
-         route stages a true-up dated today), so offering a date there would
-         imply a back-dating the anchor form does not do. #}
-      {% if not account %}
       <div class="mb-3">
         <label for="observed_on" class="form-label">Balance as of</label>
         <input type="date" id="observed_on" name="observed_on"

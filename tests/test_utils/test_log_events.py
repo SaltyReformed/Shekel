@@ -31,7 +31,6 @@ from app.utils.log_events import (
     EVT_CREDIT_MARKED,
     EVT_CREDIT_UNMARKED,
     EVT_CROSS_USER_BLOCKED,
-    EVT_ANCHOR_CACHE_RECONCILED,
     EVT_ENTRIES_SETTLED_DAY_RECORDED,
     EVT_ENTRY_CREATED,
     EVT_ENTRY_DELETED,
@@ -313,8 +312,6 @@ class TestExpectedEventsRegistered:
         # bulk clear at true-up and the manual toggle both deleted with the
         # flag, and one event now records an OBSERVATION the user supplied.
         (EVT_ENTRIES_SETTLED_DAY_RECORDED, BUSINESS),
-        # Business (Commit 4 / E-19 -- balance_resolver anchor reconciliation)
-        (EVT_ANCHOR_CACHE_RECONCILED, BUSINESS),
         (EVT_PAY_PERIODS_GENERATED, BUSINESS),
         (EVT_RECURRENCE_REGENERATED, BUSINESS),
         (EVT_RECURRENCE_CONFLICTS_RESOLVED, BUSINESS),

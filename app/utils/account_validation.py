@@ -44,8 +44,6 @@ exists to keep route bodies thin.  No Flask request globals are
 touched -- callers pass the current user id in explicitly.
 """
 
-from decimal import Decimal
-
 from app import ref_cache
 from app.enums import AcctCategoryEnum
 from app.extensions import db
@@ -425,31 +423,23 @@ def _validate_update_account(account, form, user_id):
     if type_failure is not None:
         return {}, type_failure
 
-    # Amortizing-kind anchor gate (ruling D4 / step A1, finding B-15):
-    # a loan's balance is ledger-derived and asserted through the loan
-    # page's own true-up; the cash anchor column must not become a
-    # second stored loan balance through the full-form edit.  Gated on
-    # the CURRENT type (the anchor branch in ``update_account`` writes
-    # before any re-type applies) and only on a CHANGED value -- the
-    # form round-trips the current balance on every edit, and an
-    # unchanged echo is not an assertion.
-    if "anchor_balance" in data:
-        acct_type = account.account_type
-        submitted_anchor = Decimal(str(data["anchor_balance"]))
-        if (
-            acct_type is not None
-            and acct_type.has_amortization
-            and submitted_anchor != account.current_anchor_balance
-        ):
-            return {}, (
-                "A loan's balance is not a cash anchor. Record a "
-                "balance true-up on the loan's own page instead.",
-                "danger",
-            )
+    # **The amortizing-kind anchor gate left with the field it guarded** (plan
+    # step X-f1e, finding N-195).  It refused a CASH assertion against a loan
+    # (ruling D4 / step A1, finding B-15: a loan's balance is ledger-derived,
+    # and the real Mortgage's cache column was once set to $1.00 with an HTTP
+    # 200 while the ledger said $177,277.97).  That rule is not weakened by its
+    # removal here -- it is enforced where the assertion is WRITTEN rather than
+    # at one of the doors reaching it: ``anchor_service.apply_anchor_true_up``
+    # raises ``AmortizingAccountAnchorError`` on the kind, and this route no
+    # longer reaches any anchor writer at all.  ``AccountUpdateSchema`` now
+    # discards ``anchor_balance``, so there is no submitted value left for a
+    # gate here to read.
 
-    # Stale-form check.  Performed before any mutation so the audit
-    # trail (AccountAnchorHistory, audit_log triggers) records only
-    # successful edits.  The check is conditional on the form having
+    # Stale-form check.  Performed before any mutation so the audit trail
+    # (the ``audit_log`` triggers) records only successful edits.  It named
+    # ``AccountAnchorHistory`` first until plan step X-f1e: this route wrote an
+    # assertion then, and now writes only ``accounts`` columns.  The check is
+    # conditional on the form having
     # submitted a version (clients that omit it fall through to the
     # SQLAlchemy-tier check at flush time).
     submitted_version = data.pop("version_id", None)

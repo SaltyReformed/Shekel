@@ -37,32 +37,33 @@ changes moves the walk's ``ledger_before``; re-running the sync re-derives the
 target and posts the balancing delta, so a stale correction self-heals.
 Flushes but never commits -- the caller owns the transaction.
 
-**The period is DERIVED FROM THE DAY, and it is the SAME derivation the loan
-twin makes** (plan step X-ai-r; ruling R-DH, stated at
-:func:`app.services.account_service.resolve_anchor_period_id`: *"The period is
-DERIVED from the day, not chosen beside it ... an assertion's period and the
+**The period is DERIVED FROM THE DAY, and since plan step X-f1c3c that is the
+app's ONLY day-to-period rule** (ruling R-DH: *"an assertion's period and the
 civil day it was true are two statements of one fact, and the moment they can
-be set independently they can disagree"*).  Both halves of the LEDGER now file
-an anchor correction through
+be set independently they can disagree"*).  Every anchor correction, cash and
+loan alike, is filed through
 :func:`app.services.loan_ledger.resolve_anchor_pay_period` against the entry's
-own date, so "which period does an anchor correction book in" has ONE answer
-for cash and loan alike.
+own date.
 
-**Two limits on that sentence, both stated because a draft of this docstring
-over-claimed them away** (finding **N-170**).  (1) It is one answer across the
-two LEDGER halves, NOT across the app: the WRITE-side resolver
-``account_service.resolve_anchor_period_id`` falls back to the user's EARLIEST
-period when no period contains the day, while this one falls back to the LATEST
-period ending before it.  They agree for a day inside the schedule and for a
-day before it, and diverge for a day AFTER it -- measured on a production-shaped
-calendar of 61 periods, index 0 against index 60.  (2) An entry's
-``pay_period_id`` and its ``entry_date`` are therefore NOT "two columns that
-cannot drift": whenever no period contains the day, the entry is filed in a
-period its own date falls outside, by construction and deliberately -- the
-alternative is a correction with no period at all, and ``pay_period_id`` is NOT
-NULL.  What the derivation buys is that the drift is a function of the CALENDAR
-rather than of which clock a writer happened to read, and that it self-heals the
-moment the containing period exists.
+**That sentence used to carry a limit, and finding N-170 was the limit** --
+closed structurally rather than repaired.  A WRITE-side resolver,
+``account_service.resolve_anchor_period_id``, fell back to the user's EARLIEST
+period when no period contained the day, while this one falls back to the LATEST
+period ending before it: they agreed inside the schedule and diverged maximally
+for a day AFTER it, index 0 against index 60 on a 61-period production calendar.
+Ruling R-EO deleted the assertion's stored period and ruling R-EH deleted the
+account's anchor columns, which left that resolver with no caller at all, so it
+is DELETED and one rule remains.
+
+One limit does survive, and it belongs to the ledger rather than to a
+disagreement.  An entry's ``pay_period_id`` and its ``entry_date`` are NOT "two
+columns that cannot drift": whenever no period contains the day, the entry is
+filed in a period its own date falls outside, by construction and deliberately
+-- the alternative is a correction with no period at all, and
+``journal_entries.pay_period_id`` is NOT NULL.  What the derivation buys is that
+the drift is a function of the CALENDAR rather than of which clock a writer
+happened to read, and that it self-heals the moment the containing period
+exists.
 
 **What that replaced, and the two ways it was wrong** (finding N-161).  The
 key was ``(source kind, entry date)`` with the period carried alongside it in
@@ -77,10 +78,11 @@ against the first's whole posted amount, and its reversal of period-5 postings
 was filed into period 6.
 
 **Reading the STORED period was the second defect, and a first build of this
-step kept it.**  ``account_anchor_history.pay_period_id`` is not an independent
-fact: it is a CACHE of this same derivation, written by
-``resolve_anchor_period_id`` from the same day, and the row that made this
-visible was filed by a broken clock (created 21:28 Eastern on period 5's last
+step kept it.**  ``account_anchor_history.pay_period_id`` was not an
+independent fact -- it was a CACHE of this same derivation, written by
+``resolve_anchor_period_id`` from the same day, and ruling R-EO has since
+deleted BOTH.  The row that made the defect visible was filed by a broken
+clock (created 21:28 Eastern on period 5's last
 day, stored against period 6 -- exactly the case
 ``routes/accounts/crud.py``'s own comment was written to prevent: *"the grid
 buckets the correction by ``observed_on`` and the ledger stamps it with
@@ -320,18 +322,25 @@ def reconcile_account_anchor_corrections(
     # load and the same resolver the loan twin uses, so the two halves cannot
     # come to file an anchor correction under different periods.
     #
-    # Unreachable given referential integrity (an assertion carries a NOT NULL
-    # ``pay_period_id`` pointing at one of THESE periods, so a correction
-    # implies at least one exists), and stated as a loud failure rather than
-    # trusted: this reconcile now DERIVES the period instead of copying the
-    # row's, so the one state that could silently mis-file every correction is
-    # an empty calendar.
+    # **It stopped being referentially unreachable at ruling R-EO** (plan step
+    # X-f1c3c) and this comment justified it with the deleted FK until then: an
+    # assertion used to carry a NOT NULL ``pay_period_id``, so a correction
+    # implied a period existed.  An assertion carries no period now.  What
+    # keeps the state out of reach is the CODE rather than a constraint --
+    # registration opens a bootstrap period before it creates the default
+    # account (``auth_service``), ``truncate_pay_periods`` only deletes indices
+    # ABOVE the one kept so index 0 always survives, and ``reset_pay_periods``
+    # regenerates before it returns.  Weaker than an FK, which is why the
+    # failure below stays LOUD: this reconcile DERIVES each correction's period
+    # from its day, so an empty calendar is the one state that could otherwise
+    # silently mis-file every correction an account has.
     periods = owner_pay_periods(account_id)
     if not periods:
         raise PostingError(
             f"Account {account_id} has anchor corrections to post but owner "
-            f"{owner_id} has no pay periods; a correction's NOT NULL "
-            f"pay_period_id cannot be resolved."
+            f"{owner_id} has no pay periods; the containing period of an "
+            f"assertion's day cannot be resolved, and "
+            f"journal_entries.pay_period_id is NOT NULL."
         )
     linked = _ledger_account_for(account_id)
     emit_correction_deltas(

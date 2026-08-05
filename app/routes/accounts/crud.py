@@ -57,12 +57,12 @@ from app.routes.accounts._bp import accounts_bp
 from app.services import (
     account_posting_service,
     account_service,
-    anchor_service,
     ledger_account_service,
     pay_period_service,
     transfer_service,
 )
 from app.services.account_projection import AccountProjectionKind, classify_account
+from app.services.user_write_lock import lock_user_writes
 from app.utils import archive_helpers
 from app.utils.account_validation import (
     _create_schema,
@@ -117,14 +117,19 @@ def new_account():
         account=None,
         account_types=_visible_account_types(current_user.id),
         # The "balance as of" field's default and its two bounds, mirroring
-        # ``account_service._reject_undatable_observation`` so the browser
-        # refuses what the service would refuse rather than round-tripping a
-        # rejection.  ``display_today()`` rather than ``date.today()``: the
-        # process clock is pinned to the display zone in the deployed
-        # container, but a script or CI run is not, and the form must not offer
-        # a day the service then rejects (ruling R-DH (b)).
+        # ``anchor_service.resolve_observation_day`` so the browser refuses
+        # what the service would refuse rather than round-tripping a rejection.
+        # ``display_today()`` rather than ``date.today()``: the process clock is
+        # pinned to the display zone in the deployed container, but a script or
+        # CI run is not, and the form must not offer a day the service then
+        # rejects (ruling R-DH (b)).  The floor is
+        # ``pay_period_service.earliest_recordable_day`` DIRECTLY, as
+        # ``routes/transactions/forms.py`` already reads it: it went through an
+        # ``account_service`` alias until ruling R-ER moved the guard out from
+        # under that alias, leaving a pass-through with no behaviour and two
+        # spellings of one form bound at the route layer.
         today=display_today(),
-        observed_on_min=account_service.earliest_observable_day(
+        observed_on_min=pay_period_service.earliest_recordable_day(
             current_user.id,
         ),
     )
@@ -282,7 +287,6 @@ def create_account():
                 name=name,
                 anchor_balance=anchor_balance,
                 observed_on=observed_on,
-                notes="origination",
             ),
             **data,
         )
@@ -303,9 +307,16 @@ def create_account():
         if has_periods:
             flash(str(exc), "warning")
             return redirect(url_for("accounts.new_account"))
+        # The reason is the OPENING's posting correction, not anchoring: an
+        # assertion carries no pay period (ruling R-EO deleted the column), so
+        # "the account balance has a period to anchor against" -- what this
+        # string said until plan step X-f1c4c -- named a fact that no longer
+        # exists.  It is the only user-facing copy stating the rule, and it was
+        # left behind when the service's own wording was corrected.
         flash(
-            "Generate pay periods before creating an account so the "
-            "account balance has a period to anchor against.",
+            "Generate pay periods before creating an account: its opening "
+            "balance posts into the pay period containing the day it is true "
+            "for, and an empty calendar has no such period.",
             "warning",
         )
         return redirect(url_for("pay_periods.generate_form"))
@@ -345,14 +356,22 @@ def edit_account(account_id):
 @login_required
 @require_owner
 def update_account(account_id):
-    """Update an account.
+    """Update an account's name, type and active flag.
 
-    The form payload also accepts ``anchor_balance`` and writes it
-    through with the same ``AccountAnchorHistory`` audit trail as
-    :func:`true_up`, so both anchor-balance edit paths stay
-    consistent.  Like that route, this route is owner-only but no
-    longer step-up gated: anchor balances are reversible,
-    version-locked values, not credentials.
+    **It does NOT assert a balance, and that is plan step X-f1e** (finding
+    **N-195**).  It accepted an ``anchor_balance`` and staged an assertion from
+    it, which made this the app's SECOND balance-assertion door -- and the two
+    doors answered the same submission differently.  This form PRE-FILLS the
+    current figure, so saving a rename re-submitted it unchanged; this door read
+    that as "no change" while the write door (:func:`stage_anchor_true_up`, and
+    ruling R-EQ) reads a submission as new when it changes what GOVERNS, which
+    includes the day.  Two neutral reviews of plan step X-f1c4b recommended
+    aligning this door's gate with that rule; both missed that the pre-fill makes
+    it worse, because a rename would then silently assert today's balance and
+    absorb purchases the user never reconciled.  The gate was the right rule for
+    a form that is not a balance-reading surface -- so the SURFACE went, not the
+    gate.  Asserting a balance is the one-click editor's job
+    (``accounts.true_up``), on every screen that shows a balance.
 
     Optimistic locking (commit C-17 / F-009) operates in two layers:
 
@@ -386,60 +405,41 @@ def update_account(account_id):
         flash(failure[0], failure[1])
         return redirect(url_for("accounts.edit_account", account_id=account_id))
 
-    # Handle anchor balance update with audit trail.  Tracking
-    # ``anchor_changed`` separately from ``new_anchor`` is necessary
-    # because the in-place ``account.current_anchor_balance =
-    # new_anchor`` mutates the field used for the equality check;
-    # a later ``new_anchor != account.current_anchor_balance`` would
-    # always be False and skip the reconcile call.  The flag is set
-    # exactly when the balance actually changed.
-    new_anchor = data.pop("anchor_balance", None)
-    anchor_changed = False
-    if new_anchor is not None:
-        new_anchor = Decimal(str(new_anchor))
-        if new_anchor != account.current_anchor_balance:
-            anchor_changed = True
-            # The period and the assertion's day must come off ONE clock.
-            # ``stage_anchor_true_up`` dates the row ``display_today()``; a
-            # bare ``get_current_period`` defaults to ``date.today()``, the
-            # PROCESS-local day, and the two disagree in any process not pinned
-            # to the display zone (CI, a script, the migration host).  A
-            # 21:00 ET true-up on a period's last day would then file the row
-            # in the NEXT period while dating it in this one -- the grid buckets
-            # the correction by ``observed_on`` and the ledger stamps it with
-            # ``pay_period_id``, so the two surfaces disagree by the whole
-            # correction.
-            current_period = pay_period_service.get_current_period(
-                current_user.id, as_of=display_today(),
-            )
-            if current_period:
-                # ONE definition of "re-point the period + write the balance +
-                # append the dated history row", and it lives in
-                # ``anchor_service`` (ruling R-DH, plan step 2).  This route
-                # restated it inline, and the two had already drifted: the
-                # stager takes a ``notes`` label and this did not, and the
-                # assertion's ``observed_on`` -- the civil day the balance is
-                # asserted TRUE for, which the whole anchor/settle partition
-                # turns on -- would have had to be added HERE too, as a third
-                # copy of a rule two writers already state.  A route composes
-                # services; it does not re-implement one.
-                anchor_service.stage_anchor_true_up(
-                    account=account,
-                    new_balance=new_anchor,
-                    anchor_period=current_period,
-                )
-            else:
-                # No period contains today, so there is no period to file the
-                # assertion against and the balance moves WITHOUT a history
-                # row.  Behaviour preserved verbatim from before the stager
-                # call above replaced this block's inline copy -- but it breaks
-                # E-19's "a matching AccountAnchorHistory row from the moment it
-                # exists", and the cash walk then replays an assertion history
-                # that disagrees with ``current_anchor_balance``
-                # (``cash_ledger._facts`` logs exactly that divergence).
-                # Recorded as finding N-134 in ``anchor_settle_partition.md``
-                # rather than changed under an unrelated ruling.
-                account.current_anchor_balance = new_anchor
+    # The owner's write lock, taken HERE and unconditionally, BEFORE any row of
+    # this transaction is touched.  It is the invariant
+    # :mod:`app.services.user_write_lock` states -- **this lock must be the FIRST
+    # lock a transaction takes** -- and without this line the route breaks it on
+    # the type-change branch: the ``setattr`` loop below dirties the ``Account``,
+    # the flush emits ``UPDATE budget.accounts`` and takes that ROW lock, and the
+    # advisory lock is not reached until ``_reconcile_type_effects`` calls the
+    # posting re-sync several statements later.  That inversion is the class
+    # finding **N-193** records; the settle paths still have it, this route does
+    # not, and holding the invariant is the whole reason the line is here.
+    #
+    # **Its original justification expired at plan step X-f1e and the line did
+    # not.**  X-f1c4b added it because two of this route's OWN branches ordered
+    # the two locks oppositely -- the anchor branch reached ``lock_user_writes``
+    # inside ``stage_anchor_true_up`` before the ``setattr`` flush, a type-only
+    # edit reached it after -- and that deadlock was reproduced against a real
+    # database.  X-f1e deleted the anchor branch, so THAT cycle is gone -- but
+    # the sentence that replaced it ("no other ``lock_user_writes`` caller is
+    # known to take a ``budget.accounts`` row lock, so naming one here would be
+    # a claim nobody has tested") was FALSE, and plan step X-f1e2's concurrency
+    # review tested it.  ``account_service.create_account`` INSERTs
+    # ``budget.accounts`` before it reaches the advisory lock, taking an index
+    # lock on ``uq_accounts_user_name``; this route takes the advisory lock
+    # first and then UPDATEs that table.  Two tabs, one creating and one
+    # renaming to the same name, deadlock -- reproduced against a real
+    # PostgreSQL (finding **N-202**).  So the second measured antagonist exists,
+    # this line is not merely an invariant-holder, and deleting it would put the
+    # route back in N-193's class outright.
+    #
+    # It is re-entrant and transaction-scoped, so the nested acquisition inside
+    # the re-sync is free.  On a rename-only edit this acquisition is the only
+    # one and serialises that edit behind the owner's other writes -- a real if
+    # small cost, accepted because the alternative is a lock whose correctness
+    # depends on which branch the request happens to take.
+    lock_user_writes(current_user.id)
 
     old_type_id = account.account_type_id
     for field, value in data.items():
@@ -453,43 +453,47 @@ def update_account(account_id):
     # ``StaleDataError`` would otherwise escape outside the catch.
     # See the matching comment in :func:`true_up`.
 
-    def _reconcile_anchor_and_type_effects():
-        """Reconcile the anchor / type side effects (in-transaction step).
+    def _reconcile_type_effects():
+        """Reconcile the type-change side effects (in-transaction step).
 
-        On an anchor change: re-base the account's Step-5 anchor corrections.
-        On a type change: re-class the (empty) linked ledger row when the
-        Asset/Liability boundary was crossed -- ``_validate_update_account``
-        already refused a crossing on a posted account -- and re-sync the
+        Re-class the (empty) linked ledger row when the Asset/Liability
+        boundary was crossed -- ``_validate_update_account`` already refused a
+        crossing on a posted account -- and re-sync the account's Step-5 anchor
         corrections so an amortizing-boundary crossing swaps correction
-        families instead of stranding one (the sync structurally no-ops
-        for the loan side).
+        families instead of stranding one (the sync structurally no-ops for the
+        loan side).
 
-        **It no longer touches entries** (ruling R-DH (d), plan step S1-c).
-        An anchor change here used to bulk-flip ``is_cleared``, which made
-        "is this purchase already inside the balance the user typed" an
-        answer decided by recording order.  Reconciliation is derived from
-        each purchase's own recorded posting day now, and confirming which
-        ones a statement showed is the user's own step on the account's
-        reconcile panel -- not a side effect of an account EDIT, which is
-        not even the surface a balance reading is entered on.
+        **It reconciles nothing for an ANCHOR any more, because this route no
+        longer asserts one** (plan step X-f1e, finding N-195).  It ran the same
+        re-sync on ``anchor_changed or type_changed``; with the anchor branch
+        deleted, a type change is the only thing here that can move a posted
+        correction, so the whole body is one condition.  A balance assertion
+        re-syncs through its own door (``anchor_service.apply_anchor_true_up``),
+        which is where the assertion is now written.
+
+        **It stopped touching entries at plan step S1-c** (ruling R-DH (d)).  An
+        anchor change here used to bulk-flip ``is_cleared``, which made "is this
+        purchase already inside the balance the user typed" an answer decided by
+        recording order.  That reasoning is what this step finished: an account
+        EDIT is not the surface a balance reading is entered on.
         """
-        if type_changed:
-            # Flush the new FK and expire the stale ``account_type``
-            # relationship so the re-class and the resync's classifier both
-            # read the NEW type (the relationship attribute is not refreshed
-            # by the setattr alone).
-            db.session.flush()
-            db.session.expire(account, ["account_type"])
-            ledger_account_service.sync_linked_ledger_class(account)
-        if anchor_changed or type_changed:
-            account_posting_service.sync_account_anchor_postings_all_scenarios(
-                account.id,
-            )
+        if not type_changed:
+            return
+        # Flush the new FK and expire the stale ``account_type``
+        # relationship so the re-class and the resync's classifier both
+        # read the NEW type (the relationship attribute is not refreshed
+        # by the setattr alone).
+        db.session.flush()
+        db.session.expire(account, ["account_type"])
+        ledger_account_service.sync_linked_ledger_class(account)
+        account_posting_service.sync_account_anchor_postings_all_scenarios(
+            account.id,
+        )
 
     # The reconcile step must run inside the same stale-race guard as
     # the commit (it flushes and can itself raise StaleDataError).
     conflict = regenerate_and_commit_or_stale(
-        _reconcile_anchor_and_type_effects,
+        _reconcile_type_effects,
         ctx=StaleConflictContext(
             logger=logger,
             log_label="update_account",

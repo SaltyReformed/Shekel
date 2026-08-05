@@ -26,7 +26,6 @@ def _make_property(db, seed_user, periods, name="House"):
             account_type_id=property_type.id,
             name=name,
             anchor_balance=Decimal("400000.00"),
-            anchor_period_id=periods[0].id,
         ),
     )
     db.session.commit()

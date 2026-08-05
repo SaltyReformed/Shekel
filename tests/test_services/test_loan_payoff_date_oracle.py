@@ -189,7 +189,7 @@ def _create_loan(seed_user, period, origination_date, *, name):
         seed_user, db.session, name=name,
         principal=_PRINCIPAL, rate=_RATE, term=_TERM,
         origination_date=origination_date, payment_day=1,
-        account_type=AcctTypeEnum.MORTGAGE, anchor_period=period,
+        account_type=AcctTypeEnum.MORTGAGE,
     )
     return account, loan_params_for(db.session, account.id)
 

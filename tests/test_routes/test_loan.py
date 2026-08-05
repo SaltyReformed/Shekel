@@ -6,7 +6,7 @@ rate history, and payoff calculator across multiple loan types.
 """
 
 import re
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -52,7 +52,6 @@ from tests._test_helpers import (
     loan_params_for,
     posted_loan_balance_at,
     select_option_values,
-    settle_instant_on,
 )
 
 
@@ -222,7 +221,7 @@ class TestLoanDashboard:
             seed_user, db.session, name="Broken Mortgage",
             principal=Decimal("240000.00"), rate=Decimal("0.06000"),
             term=360, origination_date=date(2024, 9, 1), payment_day=1,
-            account_type=AcctTypeEnum.MORTGAGE, anchor_period=seed_periods[0],
+            account_type=AcctTypeEnum.MORTGAGE,
         )
         checking = create_account_of_type(
             seed_user, db.session, "Checking", "Chk",
@@ -232,7 +231,7 @@ class TestLoanDashboard:
         create_settled_transfer(
             seed_user, db.session, checking, acct, seed_periods[0],
             amount=Decimal("10000.00"),
-            paid_at=settle_instant_on(seed_periods[0].start_date),
+            settled_on=seed_periods[0].start_date,
         )
         db.session.commit()
         # The BROKEN state, built on purpose: only the postings are removed; the
@@ -1051,7 +1050,7 @@ class TestEscrow:
         create_settled_transfer(
             seed_user, db.session, seed_user["account"], acct,
             seed_periods[0], amount=Decimal("2000.00"),
-            paid_at=settle_instant_on(seed_periods[0].start_date),
+            settled_on=seed_periods[0].start_date,
         )
         db.session.commit()
         backfill_all_loan_postings()
@@ -1909,7 +1908,7 @@ class TestEscrowPostingSync:
         scenario_id = seed_user["scenario"].id
         xfer = create_settled_transfer(
             seed_user, db.session, seed_user["account"], loan, seed_periods[1],
-            amount=Decimal("1000.00"), paid_at=settle_instant_on(date(2026, 1, 20)),
+            amount=Decimal("1000.00"), settled_on=date(2026, 1, 20),
         )
         db.session.commit()
         linked_id = linked_ledger_account(db.session, loan.id).id
@@ -1969,7 +1968,7 @@ class TestEscrowPostingSync:
         scenario_id = seed_user["scenario"].id
         create_settled_transfer(
             seed_user, db.session, seed_user["account"], loan, seed_periods[1],
-            amount=Decimal("1000.00"), paid_at=settle_instant_on(date(2026, 1, 20)),
+            amount=Decimal("1000.00"), settled_on=date(2026, 1, 20),
         )
         db.session.commit()
         linked_id = linked_ledger_account(db.session, loan.id).id
@@ -3172,7 +3171,7 @@ def _create_transfer_to_loan(seed_user, loan_account, period, amount,
     ``now()``, and the real clock sits past these fixtures' frozen todays and
     seeded 2026 periods -- the payment would be invisible to every bounded
     read).  Period start is the exact visibility these fixtures had before
-    E1a, when a born-settled create left ``paid_at`` NULL and every reader
+    E1a, when a born-settled create left the settle day NULL and every reader
     fell back to the period start, so no test's arithmetic moves.
     """
     status_id = ref_cache.status_id(status_enum)
@@ -3187,7 +3186,7 @@ def _create_transfer_to_loan(seed_user, loan_account, period, amount,
             amount=amount,
             status_id=status_id,
             category_id=seed_user["categories"]["Rent"].id,
-            paid_at=settle_instant_on(period.start_date) if settled else None,
+            settled_on=period.start_date if settled else None,
         ),
     )
 
@@ -5265,7 +5264,7 @@ class TestDashboardPayoffConsistency:
     """
 
     def test_payoff_committed_matches_dashboard_chart(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, monkeypatch, seed_periods,
     ):
         """Payoff committed chart data matches dashboard committed chart.
 
@@ -5281,7 +5280,16 @@ class TestDashboardPayoffConsistency:
         month, both routes produce empty committed arrays, and the
         equality assertion passes trivially without exercising the
         integration the test was written to verify.
+        **Today is moved past that payment**, overriding the module freeze at
+        2026-03-20.  A settled payment in a period that STARTS after today is a
+        settle in its own future, which ruling R-EJ refuses at the write door --
+        a settled row asserts that money has already moved.  The clock is moved
+        rather than the period, because the period is load-bearing here: the
+        docstring above explains why seed_periods[7] specifically must line up
+        with the schedule's first payment month, and moving it would make the
+        assertion vacuous in exactly the way that paragraph warns about.
         """
+        freeze_today(monkeypatch, seed_periods[7].start_date + timedelta(days=5))
         acct = _create_fresh_mortgage(
             seed_user, db.session, origination_date=date(2026, 3, 1),
         )
@@ -5318,14 +5326,21 @@ class TestDashboardPayoffConsistency:
         assert all(v is None for v in overlay[:current_index])
 
     def test_payoff_with_payments_no_crash(
-        self, auth_client, seed_user, db, seed_periods,
+        self, auth_client, seed_user, db, monkeypatch, seed_periods,
     ):
         """Payoff calculator with prepared payments does not crash.
 
         After the DRY refactor, both routes use _load_route_context.
         Verify the payoff calculator handles prepared payments correctly
         in both extra_payment and target_date modes.
+
+        **Today is moved past the settled payment**, overriding the module
+        freeze at 2026-03-20: a settled payment whose period STARTS after today
+        is a settle in its own future, which ruling R-EJ refuses at the write
+        door.  The PROJECTED payment below stays where it is -- a projected row
+        carries no settle day, so it is legitimately still ahead.
         """
+        freeze_today(monkeypatch, seed_periods[7].start_date + timedelta(days=5))
         acct = _create_fresh_mortgage(seed_user, db.session)
         _create_transfer_to_loan(
             seed_user, acct, seed_periods[7], Decimal("1580.17"),
@@ -7456,17 +7471,17 @@ class TestLoanBalanceTrueUp:
         )
         assert after == before
 
-    def test_trueup_duplicate_same_day_idempotent(
+    def test_trueup_resubmit_is_idempotent(
         self, auth_client, seed_user, db, seed_periods,
     ):
         """Submitting the same (date, balance) twice is idempotent.
 
-        The partial unique expression index
-        ``uq_loan_anchor_events_acct_date_bal_day`` rejects the second
-        identical insert; :func:`apply_loan_anchor_true_up` translates
-        that into ``DUPLICATE_SAME_DAY`` and the route flashes an
-        informational message.  Exactly one new event row exists at
-        the (date, balance) tuple after both calls.
+        The second submit asserts what the first made governing, so
+        :func:`apply_loan_anchor_true_up` writes nothing, returns
+        ``UNCHANGED``, and the route flashes an informational message.
+        Exactly one new event row exists at the (date, balance) tuple after
+        both calls.  **It was a unique-index rejection until plan step
+        X-f1c4b** (ruling R-EQ); the route behaviour is unchanged.
         """
         from app.models.loan_anchor_event import LoanAnchorEvent as _LAE  # pylint: disable=import-outside-toplevel
         acct = _create_auto_loan(seed_user, db.session)
@@ -7500,8 +7515,8 @@ class TestLoanBalanceTrueUp:
             .all()
         )
         assert len(matching) == 1, (
-            "Same-day same-balance double-submit must produce exactly "
-            "one row (uq_loan_anchor_events_acct_date_bal_day)."
+            "A resubmit of the governing (date, balance) must write nothing, "
+            "so exactly one row survives."
         )
 
 
@@ -7548,7 +7563,7 @@ class TestLoanDetailMeasuredSurfaces:
         create_settled_transfer(
             seed_user, db.session, seed_user["account"], loan,
             seed_periods[3], amount=Decimal("1000.00"),
-            paid_at=datetime(2026, 3, 15, 12, 0, tzinfo=timezone.utc),
+            settled_on=date(2026, 3, 15),
         )
         db.session.commit()
 
@@ -7614,7 +7629,7 @@ class TestLoanDetailMeasuredSurfaces:
         create_settled_transfer(
             seed_user, db.session, seed_user["account"], loan,
             seed_periods[3], amount=Decimal("1000.00"),
-            paid_at=datetime(2026, 3, 15, 12, 0, tzinfo=timezone.utc),
+            settled_on=date(2026, 3, 15),
         )
         db.session.commit()
 

@@ -334,7 +334,6 @@ class TestTransferShadowMarkDoneStateMachine:
                 account_type_id=savings_type.id,
                 name="Savings",
                 anchor_balance=Decimal("500.00"),
-                anchor_period_id=seed_periods_today[0].id,
             ),
         )
         db_session.add(savings)

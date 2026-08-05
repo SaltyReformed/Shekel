@@ -25,6 +25,7 @@ from decimal import Decimal
 import pytest
 
 from app.extensions import db
+from app.utils.dates import display_today
 from app.enums import StatusEnum
 from app.models.category import Category
 from app.models.ref import Status
@@ -958,4 +959,8 @@ class TestTransactionServiceLogging:
         assert record.user_id == seed_user["user"].id
         assert record.transaction_id == _envelope_transaction.id
         assert record.actual_amount == "33.00"
-        assert record.explicit_paid_at is False
+        # The recorded settle DAY, replacing the ``explicit_paid_at`` boolean
+        # the event carried while the helper took a (dead) ``paid_at`` knob --
+        # a flag about the CALL is not a fact about the money, and plan step
+        # X-f1 deleted both the knob and the flag.
+        assert record.settled_on == display_today().isoformat()

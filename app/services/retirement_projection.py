@@ -35,6 +35,7 @@ from app.models.transaction import Transaction
 from app.services import (
     account_service,
     balance_at,
+    cash_ledger,
     growth_engine,
     income_service,
     pension_calculator,
@@ -498,7 +499,9 @@ def _resolve_displayed_balances(
     if not ctx.all_periods:
         return {}
     return _pick_current_period_balances(
-        ctx, balance_at.build_maps(ctx.accounts, balance_ctx, ctx.all_periods),
+        ctx,
+        balance_ctx,
+        balance_at.build_maps(ctx.accounts, balance_ctx, ctx.all_periods),
     )
 
 
@@ -567,16 +570,21 @@ def _resolve_seed_balances(
         tuple(acct.id for acct in ctx.accounts),
     )
     if key not in batch.seed_memo:
+        # TOTAL over ``ctx.accounts``.  It used to skip an account with
+        # ``current_anchor_period_id IS NULL`` -- a state the schema forbade and
+        # the column no longer exists to express (finding N-73, plan step
+        # X-f1c3a), so the filter admitted nothing and only made the map look
+        # partial to its consumers.
         batch.seed_memo[key] = {
             acct.id: balance_at.balance_at(acct, batch.balance_ctx, key[0])
             for acct in ctx.accounts
-            if acct.current_anchor_period_id is not None
         }
     return batch.seed_memo[key]
 
 
 def _pick_current_period_balances(
     ctx: _RetirementProjectionContext,
+    balance_ctx: BalanceContext,
     maps_by_account: dict[int, dict[int, Decimal]],
 ) -> dict[int, Decimal]:
     """Pick each account's current-period balance from its per-period map.
@@ -585,29 +593,38 @@ def _pick_current_period_balances(
     :func:`_resolve_displayed_balances` builds: a per-account
     ``period_id -> balance`` map read at the current period.  It served a second
     (cash-basis) map until plan step X-g2b made the forward projection's seed a
-    dated read rather than a period one.  An account absent from
-    *maps_by_account* (no anchor period, so the seam / accessor omitted it) or
-    with no current period falls back to its stored anchor balance --
-    ``current_anchor_balance`` is NOT NULL, so no ``or Decimal("0")`` guard is
-    needed (the prior truthiness was dead defence on a stored zero).
+    dated read rather than a period one.
+
+    **Both of its fallbacks to a stored balance are gone** (plan step X-f1c3a).
+    The "account absent from *maps_by_account*" arm covered an account with no
+    anchor period, a state the schema forbade and the column no longer exists to
+    express (finding N-73) -- ``build_maps`` is TOTAL, so the account and its
+    period column are both INDEXED, and a missing key is a loader defect rather
+    than a display state.  The "no current period" arm returned the last balance
+    the user ASSERTED under a heading that says what the account holds now, and
+    now reads the seam at ``as_of`` instead (ruling R-EM): the seam takes a DATE,
+    and the period was only ever a way of supplying one.
 
     Args:
         ctx: The read-only projection context.
-        maps_by_account: ``{account_id: period_id -> Decimal}`` for the
-            accounts the producer returned a map for.
+        balance_ctx: The read pass's
+            :class:`~app.services.balance_at.BalanceContext` -- its ``as_of`` is
+            the valuation date when no period contains today.
+        maps_by_account: ``{account_id: period_id -> Decimal}``, total over
+            ``ctx.accounts``.
 
     Returns:
         A mapping of account ID to its current-period balance.
     """
-    result: dict[int, Decimal] = {}
-    for acct in ctx.accounts:
-        anchor = acct.current_anchor_balance
-        per_period = maps_by_account.get(acct.id)
-        if per_period is not None and ctx.current_period is not None:
-            result[acct.id] = per_period.get(ctx.current_period.id, anchor)
-        else:
-            result[acct.id] = anchor
-    return result
+    if ctx.current_period is None:
+        return {
+            acct.id: balance_at.balance_at(acct, balance_ctx, balance_ctx.as_of)
+            for acct in ctx.accounts
+        }
+    return {
+        acct.id: maps_by_account[acct.id][ctx.current_period.id]
+        for acct in ctx.accounts
+    }
 
 
 def _run_account_projection(  # pylint: disable=too-many-arguments,too-many-positional-arguments
@@ -715,7 +732,9 @@ def _project_one_account(
             empty list leaves the account non-projecting).
         seeds: Ruling R-AB's ``{account_id: balance}`` the day before the
             window opens (:func:`_resolve_seed_balances`), resolved once for
-            this axis.
+            this axis.  Total over ``ctx.accounts`` whenever
+            ``projection_periods`` is non-empty, which is the only branch that
+            reads it.
 
     Returns:
         A projection dict with keys ``account``, ``current_balance``,
@@ -728,7 +747,17 @@ def _project_one_account(
         input).
     """
     params = batch.params_by_account.get(acct.id)
-    balance = batch.balance_map.get(acct.id, acct.current_anchor_balance)
+    # ``balance_map`` is EMPTY only for a user with no pay periods at all
+    # (``_resolve_displayed_balances`` returns ``{}`` there); with any schedule
+    # it is total over ``ctx.accounts``.  With no schedule the seam has nothing
+    # to project over, so the honest figure is the last balance the user
+    # asserted -- read from the assertion itself rather than from the cache
+    # column that used to mirror it (plan step X-f1c3a).  This is NOT ruling
+    # R-EM's no-current-period case, which is handled inside the map builder.
+    balance = (
+        batch.balance_map[acct.id] if acct.id in batch.balance_map
+        else cash_ledger.resolve_anchor(acct).balance
+    )
     acct_deductions = batch.deductions_by_account.get(acct.id, [])
     acct_contributions = [
         t for t in batch.contributions if t.account_id == acct.id
@@ -738,7 +767,10 @@ def _project_one_account(
     if params is not None and projection_periods:
         result = _run_account_projection(
             acct, ctx, batch, params, projection_periods,
-            seeds.get(acct.id, acct.current_anchor_balance),
+            # INDEXED: ``projection_periods`` is non-empty here, so
+            # ``_resolve_seed_balances`` built a total map (plan step X-f1c3a
+            # deleted the no-anchor-period filter that used to make it partial).
+            seeds[acct.id],
         )
     else:
         result = _AccountProjectionResult(

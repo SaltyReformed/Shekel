@@ -4,7 +4,9 @@ Plan step X-ae / finding N-141.  ``marshmallow.fields.Integer`` is crash-safe
 -- it catches the ``ValueError`` -- but it is as lax as ``int()`` about what it
 will read, so before :class:`~app.schemas.validation._helpers.RowId` the row-id
 declarations in ``app/schemas/validation`` accepted seven spellings of "the row
-I mean", two of which name no row at all.  **75 declarations now use ``RowId``**
+I mean", two of which name no row at all.  **74 declarations now use ``RowId``**
+(75 until plan step X-f1c3c deleted ``AnchorUpdateSchema.version_id`` with the
+optimistic lock that read it -- ruling R-EN)
 -- 73 named ``*_id`` plus the two ``recurrence_pattern`` fields, which are
 ``ref.recurrence_patterns`` primary keys under a name the first version of the
 gate below could not see.
@@ -302,7 +304,7 @@ class TestNoIdFieldWasMissed:
         found = self._id_fields_by_class()
         row_ids = [f for f in found if f[3] == "RowId"]
         integers = [f for f in found if f[3] in _LAX_INTEGER_SPELLINGS]
-        assert len(row_ids) >= 75, (
+        assert len(row_ids) >= 74, (
             f"the scan found only {len(row_ids)} RowId declarations; it is "
             "not reading the schema package"
         )

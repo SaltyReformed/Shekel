@@ -20,7 +20,7 @@ import enum
 import logging
 from datetime import date, timedelta
 
-from sqlalchemy import or_, text
+from sqlalchemy import or_
 
 from app.exceptions import (
     PayPeriodDiscardRequired,
@@ -29,7 +29,6 @@ from app.exceptions import (
     ValidationError,
 )
 from app.extensions import db
-from app.models.account import Account
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.pay_period import PayPeriod
 from app.models.recurrence_rule import RecurrenceRule
@@ -37,42 +36,27 @@ from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import (
     account_posting_service,
-    account_service,
-    anchor_service,
     loan_posting_service,
     pay_period_service,
     pay_schedule_service,
+    user_write_lock,
 )
 from app.services.period_population import populate_periods_from_active_templates
 from app.utils.balance_predicates import is_projected_clause, settled_status_ids
 
 logger = logging.getLogger(__name__)
 
-# The full-reset path defers the account anchor FK to commit so it can
-# delete the old anchor period and re-point every account inside ONE
-# transaction.  The FK is ``NO ACTION DEFERRABLE INITIALLY IMMEDIATE``
-# (Phase 0, migration d410f6b9caa3); ``SET CONSTRAINTS ... DEFERRED``
-# postpones its NO ACTION check to COMMIT for this transaction only, while
-# every other path keeps the fail-fast immediate check.  There is no
-# SQLAlchemy ORM/Core construct for ``SET CONSTRAINTS`` (it is
-# transaction-control, not a query), so it is issued as a constant text
-# statement -- the same way ``pay_schedule_service.lock_schedule`` reaches
-# for the non-CRUD ``pg_advisory_xact_lock`` primitive.  The constraint
-# name is schema-qualified because the connection search_path does not
-# include ``budget`` (the unqualified name does not resolve); it mirrors
-# the ``_FK_NAME`` literal in migration d410f6b9caa3.
-_DEFER_ANCHOR_FK_SQL = (
-    "SET CONSTRAINTS budget.accounts_current_anchor_period_id_fkey DEFERRED"
-)
-
 
 class PeriodLockReason(enum.Enum):
     """Why a pay period may not be deleted or rebuilt.
 
     A non-``None`` reason is a HARD lock: the period either is historical
-    or holds irreplaceable state (settled money, an account's balance
-    anchor, a recurrence rule's origin), and no operation may delete or
-    rebuild it -- not even with ``confirm_discard``.  ``None`` means the
+    or holds irreplaceable state (settled money, posted ledger entries, a
+    recurrence rule's origin), and no operation may delete or rebuild it --
+    not even with ``confirm_discard``.  **An account's balance ASSERTION is no
+    longer among them, and it did not become deletable**: ruling R-EO moved the
+    assertion off the pay period entirely, so a schedule operation cannot reach
+    it at all (see :func:`_resolve_lock`).  ``None`` means the
     period is the mutable payload truncate / regenerate may rewrite; its
     projected and ad-hoc rows are guarded separately by the overridable
     discard gate.
@@ -86,20 +70,30 @@ class PeriodLockReason(enum.Enum):
     HISTORICAL = "historical"
     SETTLED_TXN = "settled"
     LEDGER_POSTINGS = "ledger_postings"
-    ACCOUNT_ANCHOR = "account_anchor"
     RECURRENCE_ANCHOR = "recurrence_anchor"
 
 
 def _resolve_lock(
     *, is_historical: bool, has_settled: bool, has_unbalanced_ledger: bool,
-    is_account_anchor: bool, is_recurrence_anchor: bool,
+    is_recurrence_anchor: bool,
 ) -> PeriodLockReason | None:
-    """Apply the lock-reason precedence to five already-computed booleans.
+    """Apply the lock-reason precedence to four already-computed booleans.
 
     The single source of truth for the ordering, shared by the
     single-period and bulk classifiers so the two query strategies
     (scalar EXISTS vs. set membership) can never disagree on which
     reason wins.
+
+    **``ACCOUNT_ANCHOR`` left this set at plan step X-f1c3c** (ruling R-EO),
+    and it left by becoming unreachable rather than by being relaxed.  It
+    refused a period an account's ``current_anchor_period_id`` pointed at; that
+    column is deleted, and a balance ASSERTION no longer references a pay
+    period either, so no period delete can take one.  What is still worth
+    protecting is the period's POSTED state, and ``LEDGER_POSTINGS`` -- which
+    outranked ``ACCOUNT_ANCHOR`` anyway -- covers it: measured on the
+    developer's production data, all 10 periods holding an assertion carry an
+    unbalanced ledger account, so the deleted reason was refusing nothing that
+    survives without it.
 
     Args:
         is_historical: The period has already ended (``end_date`` is
@@ -109,8 +103,6 @@ def _resolve_lock(
             zero per ledger account -- posted financial state a CASCADE
             delete would mis-state (see
             :func:`_period_ids_with_unbalanced_ledger`).
-        is_account_anchor: An account's ``current_anchor_period_id``
-            points at the period.
         is_recurrence_anchor: A recurrence rule's ``start_period_id``
             points at the period.
 
@@ -124,8 +116,6 @@ def _resolve_lock(
         return PeriodLockReason.SETTLED_TXN
     if has_unbalanced_ledger:
         return PeriodLockReason.LEDGER_POSTINGS
-    if is_account_anchor:
-        return PeriodLockReason.ACCOUNT_ANCHOR
     if is_recurrence_anchor:
         return PeriodLockReason.RECURRENCE_ANCHOR
     return None
@@ -179,7 +169,6 @@ def classify_periods_bulk(
 
     settled = _period_ids_with_settled_transaction(period_ids)
     unbalanced = _period_ids_with_unbalanced_ledger(period_ids)
-    anchors = _period_ids_that_are_account_anchors(period_ids)
     rule_anchors = _period_ids_that_are_recurrence_anchors(period_ids)
 
     return {
@@ -187,7 +176,6 @@ def classify_periods_bulk(
             is_historical=period.end_date < as_of,
             has_settled=period.id in settled,
             has_unbalanced_ledger=period.id in unbalanced,
-            is_account_anchor=period.id in anchors,
             is_recurrence_anchor=period.id in rule_anchors,
         )
         for period in periods
@@ -226,7 +214,7 @@ def extend_pay_periods(user_id, num_periods, cadence_days=None):
     # ``last`` is read under the lock and the append cannot race another
     # extend / top-up into a duplicate index.  The unique constraint is the
     # hard guard; the lock keeps the racing loser from hitting it as a 500.
-    pay_schedule_service.lock_schedule(user_id)
+    user_write_lock.lock_user_writes(user_id)
 
     existing = pay_period_service.get_all_periods(user_id)
     if not existing:
@@ -255,19 +243,23 @@ def truncate_pay_periods(user_id, keep_through_index, confirm_discard=False):
     in order before anything is deleted:
 
       1. **Hard locks (not overridable).** If any to-delete period is
-         historical, holds a settled transaction, or is an account /
-         recurrence anchor, raise :class:`PayPeriodLocked` and delete
-         nothing.
+         historical, holds a settled transaction, carries an unbalanced
+         ledger account, or is a recurrence anchor, raise
+         :class:`PayPeriodLocked` and delete nothing.
       2. **Discard gate (overridable).** If any to-delete period holds a
          row regeneration cannot reproduce -- hand-entered, override, or
          Credit/Cancelled -- and ``confirm_discard`` is False, raise
          :class:`PayPeriodDiscardRequired` and delete nothing.
 
     Deletion is a single bulk ``DELETE`` so PostgreSQL performs the whole
-    cascade in one pass: transactions, transfers (and both shadows,
-    preserving the transfer invariant), and anchor history all go, with
+    cascade in one pass: transactions and transfers (and both shadows,
+    preserving the transfer invariant) go, with
     ``recurrence_rules.start_period_id`` set NULL; DB-level audit triggers
-    still fire.  Per-object ``session.delete()`` would instead trip
+    still fire.  **Balance ASSERTIONS do NOT go** -- ruling R-EO deleted
+    ``account_anchor_history.pay_period_id``, so a schedule operation can
+    no longer destroy the record of what the bank said.
+
+    Per-object ``session.delete()`` would instead trip
     SQLAlchemy's nullify-on-disassociate against the NOT NULL
     ``transactions.pay_period_id`` and raise before the DB cascade fires.
     ``expire_all`` then drops the now-stale identity map.
@@ -293,7 +285,7 @@ def truncate_pay_periods(user_id, keep_through_index, confirm_discard=False):
     # and the bulk DELETE see one consistent set -- closes the
     # classify-then-DELETE TOCTOU against another extend / top-up /
     # truncate for this user.
-    pay_schedule_service.lock_schedule(user_id)
+    user_write_lock.lock_user_writes(user_id)
 
     to_delete = [
         p for p in pay_period_service.get_all_periods(user_id)
@@ -346,8 +338,8 @@ def regenerate_pay_periods(
     onward), then generate a fresh ``num_periods``-long schedule from
     ``new_start_date`` at ``cadence_days`` and repopulate it with the
     active templates' recurring rows.  Periods that have already started,
-    are historical, hold settled money, or anchor an account / rule are
-    KEPT; if any such locked period sits inside the rebuildable tail the
+    are historical, hold settled money or posted ledger entries, or anchor a
+    recurrence rule are KEPT; if any such locked period sits inside the rebuildable tail the
     truncate step refuses (history cannot be rewritten under a settled
     paycheck).  The new cadence is persisted so later extends continue at
     it.
@@ -382,7 +374,7 @@ def regenerate_pay_periods(
     # Serialize the whole rebuild -- boundary computation through the
     # truncate + regenerate -- for this user; re-entrant with the lock
     # ``truncate_pay_periods`` itself takes.
-    pay_schedule_service.lock_schedule(user_id)
+    user_write_lock.lock_user_writes(user_id)
 
     keep_through = _regenerate_keep_through_index(user_id)
     truncate_pay_periods(user_id, keep_through, confirm_discard=confirm_discard)
@@ -429,36 +421,37 @@ def reset_pay_periods(user_id, new_start_date, num_periods, cadence_days):
     transaction.  Once a paycheck has settled, rewriting the schedule
     under it would corrupt history, so those users use regenerate instead.
 
-    The whole operation is ONE transaction the route commits.  The
-    obstacle it must clear: the account anchor FK is ``NOT NULL`` and the
-    app is forward-only, so a corrected schedule cannot coexist with the
-    wrong one -- reset must delete the old anchor period before it can
-    re-point the anchor, leaving the anchor briefly dangling
-    mid-transaction.  The FK is ``NO ACTION DEFERRABLE INITIALLY
-    IMMEDIATE`` (Phase 0), so this -- the only path that needs it --
-    issues ``SET CONSTRAINTS ... DEFERRED`` (see :data:`_DEFER_ANCHOR_FK_SQL`)
-    so the FK is validated at COMMIT, by which point every account points
-    at a live new period.
+    The whole operation is ONE transaction the route commits.
+
+    **It used to need an obstacle cleared, and the obstacle is gone.**  An
+    account carried a ``NOT NULL`` FK to its anchor pay period, so a reset had
+    to delete the old anchor period before it could re-point the anchor,
+    leaving the FK dangling mid-transaction; the FK was declared
+    ``NO ACTION DEFERRABLE INITIALLY IMMEDIATE`` (Phase 0) purely so this --
+    its only caller -- could issue ``SET CONSTRAINTS ... DEFERRED``.  Ruling
+    R-EH deleted the columns and ruling R-EO deleted the assertion's own pay
+    period, so nothing an account owns points at a period any more: no
+    deferral, no re-anchoring, and no window in which the schema is
+    inconsistent.
 
     Steps, all in one transaction:
 
       1. Refuse if any settled transaction exists (delete nothing).
       2. Take the per-user advisory lock (a structural mutation, like
          extend / truncate / regenerate).
-      3. Defer the anchor FK for this transaction.
-      4. Capture each account's anchor balance and the recurrence rules
-         that carry an explicit start period (the cascade NULLs those).
-      5. Bulk-DELETE every pay period.  PostgreSQL cascades it in one
-         pass: transactions, transfers (+ both shadows, preserving the
-         transfer invariant), and anchor history all go, and the rules'
-         ``start_period_id`` is set NULL; audit triggers still fire.
-      6. Generate the fresh schedule from ``new_start_date``.
-      7. Re-anchor each account onto the new schedule's resolved anchor
-         period through ``anchor_service.stage_anchor_true_up`` (balance
-         preserved, fresh origination history row); re-point the captured
-         rules to the new first period; repopulate the new periods from
-         the active templates.
-      8. Re-sync each of the user's loans' genesis postings onto the
+      3. Capture the recurrence rules that carry an explicit start period
+         (the cascade NULLs those).  There is no balance to capture: since
+         ruling R-EO the assertions do not reference a pay period and survive
+         the wipe untouched.
+      4. Bulk-DELETE every pay period.  PostgreSQL cascades it in one
+         pass: transactions and transfers (+ both shadows, preserving the
+         transfer invariant) go and the rules' ``start_period_id`` is set
+         NULL; audit triggers still fire.  Anchor history is NOT in that
+         cascade any more (ruling R-EO).
+      5. Generate the fresh schedule from ``new_start_date``.
+      6. Re-point the captured rules to the new first period; repopulate the
+         new periods from the active templates.
+      7. Re-sync each of the user's loans' genesis postings onto the
          rebuilt schedule (:func:`loan_posting_service.resync_user_loan_postings`).
          A loan's opening / true-up ledger entries carry a ``pay_period_id``
          and so CASCADE-delete with the wiped periods, but they exist
@@ -468,11 +461,11 @@ def reset_pay_periods(user_id, new_start_date, num_periods, cadence_days):
          and re-posts them attributed to the new periods.  Then the same for
          the non-loan accounts' anchor corrections (Build-Order Step 5,
          :func:`account_posting_service.resync_user_account_anchor_postings`):
-         the wipe took their correction entries AND history rows, and step 7
-         staged one fresh origination row per account, so each account's
-         opening re-posts onto the rebuilt schedule at its preserved balance.
-      9. Persist the new cadence.  The route's commit then validates the
-         deferred FK.
+         the wipe took their correction ENTRIES, which are keyed on a pay
+         period, but not the assertions those entries derive from -- so this
+         re-derives every one of the user's real assertions onto the rebuilt
+         schedule rather than one fabricated opening per account.
+      8. Persist the new cadence; the route commits.
 
     Args:
         user_id: The owning user's id.
@@ -513,12 +506,8 @@ def reset_pay_periods(user_id, new_start_date, num_periods, cadence_days):
         raise PayPeriodResetBlocked(settled)
 
     # Serialize against concurrent structural mutations for this user.
-    pay_schedule_service.lock_schedule(user_id)
-    # Defer the anchor FK so the wipe-then-re-point validates at COMMIT.
-    db.session.execute(text(_DEFER_ANCHOR_FK_SQL))
+    user_write_lock.lock_user_writes(user_id)
 
-    accounts = db.session.query(Account).filter_by(user_id=user_id).all()
-    preserved_balances = {a.id: a.current_anchor_balance for a in accounts}
     anchored_rule_ids = _rule_ids_with_start_period(user_id)
 
     # Wipe ALL the user's periods (cascade handles the dependents); drop
@@ -531,7 +520,6 @@ def reset_pay_periods(user_id, new_start_date, num_periods, cadence_days):
     new_periods = pay_period_service.generate_pay_periods(
         user_id, new_start_date, num_periods, cadence_days,
     )
-    _reanchor_accounts(user_id, preserved_balances)
     _repoint_recurrence_rules(anchored_rule_ids, new_periods[0])
     populate_periods_from_active_templates(user_id, new_periods)
     # Re-post the loan genesis (opening / true-up) corrections the period
@@ -539,12 +527,12 @@ def reset_pay_periods(user_id, new_start_date, num_periods, cadence_days):
     # onto the rebuilt schedule inside this transaction (review M2 / R7).
     loan_posting_service.resync_user_loan_postings(user_id)
     # Same for the NON-loan accounts' anchor corrections (Build-Order Step
-    # 5): the wipe CASCADEd their opening / true-up entries with the old
-    # periods AND their history rows, and ``_reanchor_accounts`` staged one
-    # fresh origination row per account, so this re-derives each opening
-    # onto the rebuilt schedule.  Post-reset is clean by construction: the
-    # zero-settled gate guarantees no posted source effects survive, so
-    # each account walks to exactly its preserved anchor balance.
+    # 5): the wipe CASCADEd their opening / true-up ENTRIES with the old
+    # periods, but no longer their assertions (ruling R-EO), so this re-derives
+    # every real assertion's correction onto the rebuilt schedule.  Post-reset
+    # is clean by construction: the zero-settled gate guarantees no posted
+    # source effects survive, so each account walks to exactly the balance its
+    # latest assertion declares.
     account_posting_service.resync_user_account_anchor_postings(user_id)
 
     pay_schedule_service.upsert_schedule(user_id, cadence_days)
@@ -598,7 +586,7 @@ def top_up_rolling_window(user_id, as_of=None):
     # A deficit exists: serialize concurrent top-ups, then re-count under
     # the lock so a request that lost the race re-reads a now-full window
     # and creates nothing.
-    pay_schedule_service.lock_schedule(user_id)
+    user_write_lock.lock_user_writes(user_id)
     deficit = target - _future_period_count(user_id, as_of)
     if deficit <= 0:
         return 0
@@ -766,38 +754,6 @@ def _rule_ids_with_start_period(user_id: int) -> list[int]:
     return [row[0] for row in rows]
 
 
-def _reanchor_accounts(user_id: int, preserved_balances: dict[int, object]) -> None:
-    """Re-point every account onto the rebuilt schedule, preserving balance.
-
-    Resolves the new anchor period the SAME way account creation does
-    (``account_service.resolve_anchor_period_id`` -- the new period
-    containing today, else the earliest) and re-anchors each account to it
-    through ``anchor_service.stage_anchor_true_up``, restoring the balance
-    captured before the wipe and writing a fresh origination history row.
-    A user with no accounts is a no-op (and the anchor period is not even
-    resolved, so a brand-new not-yet-anchored user resets cleanly).
-
-    Args:
-        user_id: The owning user's id.
-        preserved_balances: ``{account_id: anchor_balance}`` captured
-            before the wipe (the reset never changes a user's real money,
-            only the schedule, so each account keeps its existing
-            balance).
-    """
-    if not preserved_balances:
-        return
-    anchor_period_id = account_service.resolve_anchor_period_id(user_id)
-    anchor_period = db.session.get(PayPeriod, anchor_period_id)
-    for account in db.session.query(Account).filter_by(user_id=user_id):
-        anchor_service.stage_anchor_true_up(
-            account=account,
-            new_balance=preserved_balances[account.id],
-            anchor_period=anchor_period,
-            notes="origination (pay-period reset)",
-        )
-    db.session.flush()
-
-
 def _repoint_recurrence_rules(rule_ids: list[int], first_period) -> None:
     """Re-point the captured rules to the new first period, re-phased.
 
@@ -882,14 +838,6 @@ def _period_ids_with_unbalanced_ledger(period_ids: list[int]) -> set[int]:
         .having(db.func.sum(Posting.amount) != 0)
         .all()
     )
-    return {row[0] for row in rows}
-
-
-def _period_ids_that_are_account_anchors(period_ids: list[int]) -> set[int]:
-    """Return the subset of ``period_ids`` that are an account's anchor."""
-    rows = db.session.query(Account.current_anchor_period_id).filter(
-        Account.current_anchor_period_id.in_(period_ids),
-    ).distinct().all()
     return {row[0] for row in rows}
 
 

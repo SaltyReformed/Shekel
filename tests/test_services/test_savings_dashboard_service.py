@@ -214,7 +214,6 @@ class TestGoalProgress:
                     account_type_id=savings_type.id,
                     name="Goal Account",
                     anchor_balance=Decimal("5000.00"),
-                    anchor_period_id=seed_periods[0].id,
                 ),
             )
             db.session.add(savings)
@@ -266,7 +265,6 @@ class TestGoalProgress:
                     account_type_id=savings_type.id,
                     name="Truncation Account",
                     anchor_balance=Decimal("4980.00"),
-                    anchor_period_id=seed_periods[0].id,
                 ),
             )
             db.session.add(savings)
@@ -312,7 +310,6 @@ class TestGoalProgress:
                     account_type_id=savings_type.id,
                     name="Over-funded Account",
                     anchor_balance=Decimal("6000.00"),
-                    anchor_period_id=seed_periods[0].id,
                 ),
             )
             db.session.add(savings)
@@ -360,7 +357,6 @@ class TestGoalProgress:
                     account_type_id=savings_type.id,
                     name="Overdrawn Account",
                     anchor_balance=Decimal("-500.00"),
-                    anchor_period_id=seed_periods[0].id,
                 ),
             )
             db.session.add(savings)
@@ -681,7 +677,6 @@ class TestGoalTrajectoryDashboard:
                     account_type_id=savings_type.id,
                     name="Trajectory Account",
                     anchor_balance=Decimal("3000.00"),
-                    anchor_period_id=seed_periods[0].id,
                 ),
             )
             db.session.add(savings)
@@ -725,7 +720,6 @@ class TestGoalTrajectoryDashboard:
                     account_type_id=savings_type.id,
                     name="No Transfer Account",
                     anchor_balance=Decimal("2000.00"),
-                    anchor_period_id=seed_periods[0].id,
                 ),
             )
             db.session.add(savings)
@@ -769,7 +763,6 @@ class TestGoalTrajectoryDashboard:
                     account_type_id=savings_type.id,
                     name="With Transfer Account",
                     anchor_balance=Decimal("3000.00"),
-                    anchor_period_id=seed_periods[0].id,
                 ),
             )
             db.session.add(savings)
@@ -836,7 +829,6 @@ class TestEmergencyFundMetrics:
                     account_type_id=savings_type.id,
                     name="Savings",
                     anchor_balance=Decimal("8000.00"),
-                    anchor_period_id=seed_periods[0].id,
                 ),
             )
             db.session.add(savings)
@@ -1136,7 +1128,7 @@ class TestPaidOffReadsTheLedgerNotTheReplay:
         # Pylint: import-outside-toplevel -- the file-wide deferred-import
         # convention for test-local symbols.
         # pylint: disable=import-outside-toplevel
-        from tests._test_helpers import create_settled_transfer, settle_instant_on
+        from tests._test_helpers import create_settled_transfer
 
         with app.app_context():
             acct = _create_small_loan(seed_user, db.session)
@@ -1147,7 +1139,7 @@ class TestPaidOffReadsTheLedgerNotTheReplay:
             create_settled_transfer(
                 seed_user, db.session, seed_user["account"], acct,
                 seed_periods_today[4], amount=Decimal("1100.00"),
-                paid_at=settle_instant_on(seed_periods_today[4].start_date),
+                settled_on=seed_periods_today[4].start_date,
             )
             db.session.commit()
 
@@ -1760,7 +1752,6 @@ class TestPrincipalPaidFraction:
                 principal=Decimal("200000.00"), rate=Decimal("0.05000"),
                 term=360, origination_date=date(2026, 4, 15), payment_day=1,
                 account_type=AcctTypeEnum.MORTGAGE,
-                anchor_period=seed_periods[0],
             )
 
             summary = savings_dashboard_service.compute_debt_summary(
@@ -1982,19 +1973,19 @@ class TestDebtSummaryMembershipRules:
             seed_user, db_session, name="Owing Auto",
             principal=self.AUTO, rate=Decimal("0.05000"),
             term=24, origination_date=date(2026, 1, 1), payment_day=1,
-            account_type=AcctTypeEnum.AUTO_LOAN, anchor_period=periods[0],
+            account_type=AcctTypeEnum.AUTO_LOAN,
         )
         retired = create_loan_account(
             seed_user, db_session, name="Retired Auto",
             principal=self.AUTO, rate=Decimal("0.05000"),
             term=24, origination_date=date(2026, 1, 1), payment_day=1,
-            account_type=AcctTypeEnum.AUTO_LOAN, anchor_period=periods[0],
+            account_type=AcctTypeEnum.AUTO_LOAN,
         )
         unborrowed = create_loan_account(
             seed_user, db_session, name="Closing In April",
             principal=self.MORTGAGE, rate=Decimal("0.05000"),
             term=360, origination_date=date(2026, 4, 15), payment_day=1,
-            account_type=AcctTypeEnum.MORTGAGE, anchor_period=periods[0],
+            account_type=AcctTypeEnum.MORTGAGE,
         )
         insert_trueup_event(owing.loan_params, self.OWING_BALANCE)
         insert_trueup_event(retired.loan_params, Decimal("0.00"))
@@ -2646,7 +2637,6 @@ def _override_anchor(db_session, account, pay_period, anchor_balance):
 
     override_anchor(
         db_session, account, pay_period, anchor_balance,
-        notes="C6 symptom-#1 test: anchor override",
     )
     db_session.commit()
 
@@ -2876,7 +2866,6 @@ class TestCanonicalProducerRouting:
                     account_type_id=hysa_type.id,
                     name="HYSA Entry Test",
                     anchor_balance=Decimal("614.29"),
-                    anchor_period_id=current_period.id,
                 ),
             )
             db.session.add(hysa)
@@ -2986,8 +2975,8 @@ class TestCanonicalProducerRouting:
 # ── F-21 / Commit 19: Loan period-balance dispatcher ──────────────
 
 
-def _add_savings_account(seed_user, anchor_period_id, balance):
-    """Create a liquid Savings account anchored to a period.
+def _add_savings_account(seed_user, balance):
+    """Create a liquid Savings account.
 
     Returns:
         The new savings Account.
@@ -3001,7 +2990,6 @@ def _add_savings_account(seed_user, anchor_period_id, balance):
             account_type_id=savings_type.id,
             name="Savings",
             anchor_balance=balance,
-            anchor_period_id=anchor_period_id,
         ),
     )
     db.session.add(acct)
@@ -3009,9 +2997,7 @@ def _add_savings_account(seed_user, anchor_period_id, balance):
     return acct
 
 
-def _add_mortgage_account(
-    seed_user, anchor_period_id, balance, origination_date=None,
-):
+def _add_mortgage_account(seed_user, balance, origination_date=None):
     """Create a Mortgage (liability) account with a loan schedule.
 
     Mortgage at 6.5%, 30-year, defaulting to a 2025-01-01 origination so the
@@ -3043,12 +3029,11 @@ def _add_mortgage_account(
         principal=balance, rate=Decimal("0.06500"), term=360,
         origination_date=origination_date or _date(2025, 1, 1), payment_day=1,
         account_type=AcctTypeEnum.MORTGAGE,
-        anchor_period=db.session.get(PayPeriod, anchor_period_id),
     )
 
 
-def _add_property_account(seed_user, anchor_period_id, market_value):
-    """Create a Property (appreciating physical asset) anchored to a period.
+def _add_property_account(seed_user, market_value):
+    """Create a Property (appreciating physical asset).
 
     The market value is the user-set anchor balance; no appreciation params
     row is needed for equity (equity reads the anchor value, not the
@@ -3066,7 +3051,6 @@ def _add_property_account(seed_user, anchor_period_id, market_value):
             account_type_id=property_type.id,
             name="House",
             anchor_balance=market_value,
-            anchor_period_id=anchor_period_id,
         ),
     )
     db.session.add(acct)
@@ -3097,10 +3081,10 @@ class TestNetWorthHero:
         """
         with app.app_context():
             _add_savings_account(
-                seed_user, seed_periods[0].id, Decimal("4000.00"),
+                seed_user, Decimal("4000.00"),
             )
             _add_mortgage_account(
-                seed_user, seed_periods[0].id, Decimal("240000.00"),
+                seed_user, Decimal("240000.00"),
             )
 
             nw = savings_dashboard_service.compute_dashboard_data(
@@ -3120,7 +3104,7 @@ class TestNetWorthHero:
         """A liability contributes a POSITIVE total_liabilities, not negative."""
         with app.app_context():
             _add_mortgage_account(
-                seed_user, seed_periods[0].id, Decimal("240000.00"),
+                seed_user, Decimal("240000.00"),
             )
 
             nw = savings_dashboard_service.compute_dashboard_data(
@@ -3161,7 +3145,6 @@ class TestNetWorthHero:
                 account_type_id=cc_type.id,
                 name="Visa",
                 anchor_balance=Decimal("-500.00"),
-                anchor_period_id=seed_periods[0].id,
             ))
             db.session.add(card)
             db.session.commit()
@@ -3191,10 +3174,10 @@ class TestNetWorthHero:
         """
         with app.app_context():
             _add_savings_account(
-                seed_user, seed_periods[0].id, Decimal("4000.00"),
+                seed_user, Decimal("4000.00"),
             )
             _add_mortgage_account(
-                seed_user, seed_periods[0].id, Decimal("240000.00"),
+                seed_user, Decimal("240000.00"),
             )
 
             nw = savings_dashboard_service.compute_dashboard_data(
@@ -3269,10 +3252,10 @@ class TestNetWorthSeries:
         )
         with app.app_context():
             _add_savings_account(
-                seed_user, seed_periods[0].id, Decimal("4000.00"),
+                seed_user, Decimal("4000.00"),
             )
             _add_mortgage_account(
-                seed_user, seed_periods[0].id, Decimal("240000.00"),
+                seed_user, Decimal("240000.00"),
             )
 
             series = savings_dashboard_service.compute_dashboard_data(
@@ -3325,7 +3308,6 @@ class TestNetWorthSeries:
                 account_type_id=cc_type.id,
                 name="Visa",
                 anchor_balance=Decimal("-500.00"),
-                anchor_period_id=seed_periods[0].id,
             ))
             db.session.add(card)
             db.session.commit()
@@ -3359,7 +3341,7 @@ class TestNetWorthSeries:
         """
         with app.app_context():
             _add_savings_account(
-                seed_user, seed_periods[0].id, Decimal("4000.00"),
+                seed_user, Decimal("4000.00"),
             )
 
             nw = savings_dashboard_service.compute_dashboard_data(
@@ -3402,7 +3384,7 @@ class TestNetWorthSeries:
         """
         with app.app_context():
             _add_mortgage_account(
-                seed_user, seed_periods_today[0].id, Decimal("240000.00"),
+                seed_user, Decimal("240000.00"),
             )
 
             nw = savings_dashboard_service.compute_dashboard_data(
@@ -3477,14 +3459,9 @@ class TestBuildTrendPeriods:
             has_appreciation=kind is AccountProjectionKind.APPRECIATING,
             has_parameters=kind is AccountProjectionKind.INVESTMENT,
         )
-        return SimpleNamespace(
-            id=account_id,
-            account_type=acct_type,
-            current_anchor_period_id=(
-                None if anchor_period_index is None
-                else 100 + anchor_period_index
-            ),
-        )
+        # ``current_anchor_period_id`` went with ruling R-EH; the stand-in
+        # carries only what a producer still reads off an account.
+        return SimpleNamespace(id=account_id, account_type=acct_type)
 
     @staticmethod
     def _debt_schedule(first_payment_period_index, periods):
@@ -3938,11 +3915,11 @@ class TestNetWorthComposition:
             # pylint: disable=import-outside-toplevel
             from tests._test_helpers import make_investment_account
             periods = seed_periods_today
-            _add_savings_account(seed_user, periods[0].id, Decimal("4000.00"))
+            _add_savings_account(seed_user, Decimal("4000.00"))
             make_investment_account(
                 seed_user, db.session, periods[0], Decimal("10000.00"),
             )
-            _add_mortgage_account(seed_user, periods[0].id, Decimal("240000.00"))
+            _add_mortgage_account(seed_user, Decimal("240000.00"))
 
             series = savings_dashboard_service.compute_dashboard_data(
                 seed_user["user"].id,
@@ -4098,11 +4075,11 @@ class TestNetWorthHorizon:
             # pylint: disable=import-outside-toplevel
             from tests._test_helpers import make_investment_account
             periods = seed_periods_today
-            _add_savings_account(seed_user, periods[0].id, Decimal("4000.00"))
+            _add_savings_account(seed_user, Decimal("4000.00"))
             make_investment_account(
                 seed_user, db.session, periods[0], Decimal("10000.00"),
             )
-            _add_mortgage_account(seed_user, periods[0].id, Decimal("240000.00"))
+            _add_mortgage_account(seed_user, Decimal("240000.00"))
             uid = seed_user["user"].id
 
             hero = savings_dashboard_service.compute_dashboard_data(
@@ -4139,10 +4116,9 @@ class TestNetWorthHorizon:
         true-up -- a pre-existing cockpit-wide seam, not this element's.)
         """
         with app.app_context():
-            periods = seed_periods_today
-            _add_savings_account(seed_user, periods[0].id, Decimal("4000.00"))
+            _add_savings_account(seed_user, Decimal("4000.00"))
             _add_mortgage_account(
-                seed_user, periods[0].id, Decimal("240000.00"),
+                seed_user, Decimal("240000.00"),
             )
             uid = seed_user["user"].id
 
@@ -4172,8 +4148,7 @@ class TestNetWorthHorizon:
             # pylint: disable=import-outside-toplevel
             from app.models.ref import AccountType
             from app.services import account_service
-            periods = seed_periods_today
-            _add_savings_account(seed_user, periods[0].id, Decimal("4000.00"))
+            _add_savings_account(seed_user, Decimal("4000.00"))
             cc_type = (
                 db.session.query(AccountType)
                 .filter_by(name="Credit Card").one()
@@ -4183,7 +4158,6 @@ class TestNetWorthHorizon:
                 account_type_id=cc_type.id,
                 name="Visa",
                 anchor_balance=Decimal("3000.00"),
-                anchor_period_id=periods[0].id,
             ))
             db.session.add(card)
             db.session.commit()
@@ -4214,11 +4188,11 @@ class TestNetWorthHorizon:
             # pylint: disable=import-outside-toplevel
             from tests._test_helpers import make_investment_account
             periods = seed_periods_today
-            _add_savings_account(seed_user, periods[0].id, Decimal("4000.00"))
+            _add_savings_account(seed_user, Decimal("4000.00"))
             make_investment_account(
                 seed_user, db.session, periods[0], Decimal("10000.00"),
             )
-            _add_mortgage_account(seed_user, periods[0].id, Decimal("240000.00"))
+            _add_mortgage_account(seed_user, Decimal("240000.00"))
 
             horizon = savings_dashboard_service.compute_dashboard_data(
                 seed_user["user"].id,
@@ -4286,9 +4260,8 @@ class TestNetWorthHorizon:
         would be delinquent under the C6b plan fold and never reach zero (B-9).
         """
         with app.app_context():
-            periods = seed_periods_today
             _add_mortgage_account(
-                seed_user, periods[0].id, Decimal("240000.00"),
+                seed_user, Decimal("240000.00"),
                 origination_date=date.today(),
             )
             uid = seed_user["user"].id
@@ -4329,8 +4302,7 @@ class TestNetWorthHorizon:
             _DEBT_FREE_MILESTONE_LABEL,
         )
         with app.app_context():
-            periods = seed_periods_today
-            _add_mortgage_account(seed_user, periods[0].id, Decimal("240000.00"))
+            _add_mortgage_account(seed_user, Decimal("240000.00"))
             uid = seed_user["user"].id
 
             data = savings_dashboard_service.compute_dashboard_data(uid)
@@ -4448,7 +4420,7 @@ class TestAMilestoneLabelCanCollide:
                 seed_user, db.session, name="All loans",
             )
             _add_mortgage_account(
-                seed_user, seed_periods_today[0].id, Decimal("240000.00"),
+                seed_user, Decimal("240000.00"),
                 origination_date=date.today(),
             )
             db.session.commit()
@@ -4501,7 +4473,7 @@ class TestGroupSubtotals:
         """
         with app.app_context():
             _add_savings_account(
-                seed_user, seed_periods[0].id, Decimal("4000.00"),
+                seed_user, Decimal("4000.00"),
             )
 
             result = savings_dashboard_service.compute_dashboard_data(
@@ -4522,7 +4494,7 @@ class TestGroupSubtotals:
         """
         with app.app_context():
             _add_mortgage_account(
-                seed_user, seed_periods[0].id, Decimal("240000.00"),
+                seed_user, Decimal("240000.00"),
             )
 
             result = savings_dashboard_service.compute_dashboard_data(
@@ -4543,10 +4515,10 @@ class TestGroupSubtotals:
         """
         with app.app_context():
             _add_savings_account(
-                seed_user, seed_periods[0].id, Decimal("4000.00"),
+                seed_user, Decimal("4000.00"),
             )
             _add_mortgage_account(
-                seed_user, seed_periods[0].id, Decimal("240000.00"),
+                seed_user, Decimal("240000.00"),
             )
 
             result = savings_dashboard_service.compute_dashboard_data(
@@ -4730,10 +4702,10 @@ class TestPropertyEquityInContext:
         """
         with app.app_context():
             prop = _add_property_account(
-                seed_user, seed_periods_today[0].id, Decimal("400000.00"),
+                seed_user, Decimal("400000.00"),
             )
             mortgage = _add_mortgage_account(
-                seed_user, seed_periods_today[0].id, Decimal("240000.00"),
+                seed_user, Decimal("240000.00"),
             )
             mortgage.collateral_account_id = prop.id
             db.session.commit()
@@ -4771,7 +4743,7 @@ class TestPropertyEquityInContext:
         """
         with app.app_context():
             prop = _add_property_account(
-                seed_user, seed_periods_today[0].id, Decimal("300000.00"),
+                seed_user, Decimal("300000.00"),
             )
 
             result = savings_dashboard_service.compute_dashboard_data(
@@ -5161,10 +5133,10 @@ class TestNoBaselineIsAnsweredOnceForEveryKind:
         with app.app_context():
             _create_small_loan(seed_user, db.session, name="No Baseline")
             mortgage = _add_mortgage_account(
-                seed_user, seed_periods_today[0].id, Decimal("240000.00"),
+                seed_user, Decimal("240000.00"),
             )
             prop = _add_property_account(
-                seed_user, seed_periods_today[0].id, Decimal("400000.00"),
+                seed_user, Decimal("400000.00"),
             )
             mortgage.collateral_account_id = prop.id
             scenario = db.session.get(Scenario, seed_user["scenario"].id)
@@ -5208,7 +5180,7 @@ class TestUnclearingDebtHasNoDebtFreeDate:
         acct = create_loan_account(
             seed_user, db_session, name="Never Clears",
             principal=Decimal("240000.00"), rate=Decimal("0.06000"), term=360,
-            origination_date=date(2026, 1, 1), anchor_period=periods[0],
+            origination_date=date(2026, 1, 1),
         )
         insert_trueup_event(
             loan_params_for(db_session, acct.id), Decimal("900000.00"),
@@ -5259,7 +5231,6 @@ class TestUnclearingDebtHasNoDebtFreeDate:
                 seed_user, db.session, name="Healthy Small",
                 principal=Decimal("12000.00"), rate=Decimal("0.05000"),
                 term=24, origination_date=date(2026, 1, 1),
-                anchor_period=seed_periods[0],
             )
             db.session.commit()
 
@@ -5548,7 +5519,11 @@ class TestTheDenseMapIsTotalAndSaysSo:
             _current_balance_from_map,
         )
         with app.app_context():
-            acct = SimpleNamespace(current_anchor_balance=Decimal("5.00"))
+            # The stand-in carried a ``current_anchor_balance`` for the
+            # no-current-period arm; ruling R-EM sends that arm to the seam and
+            # ruling R-EH deleted the column, so what this case pins is the
+            # arm it always graded: with a current period the map is INDEXED.
+            acct = SimpleNamespace()
             ctx = SimpleNamespace(current_period=SimpleNamespace(id=2))
             assert _current_balance_from_map(
                 {2: Decimal("42.00")}, acct, ctx,
@@ -5660,7 +5635,7 @@ class TestARetiredLoanHasNoDebtLine:
         retired = create_loan_account(
             seed_user, db_session, name="Lump Sum Payoff",
             principal=Decimal("12000.00"), rate=Decimal("0.05000"), term=24,
-            origination_date=date(2026, 1, 1), anchor_period=periods[0],
+            origination_date=date(2026, 1, 1),
         )
         insert_trueup_event(
             loan_params_for(db_session, retired.id), Decimal("0.00"),
@@ -5669,7 +5644,7 @@ class TestARetiredLoanHasNoDebtLine:
         clearing = create_loan_account(
             seed_user, db_session, name="Still Clearing",
             principal=Decimal("12000.00"), rate=Decimal("0.05000"), term=24,
-            origination_date=date(2026, 1, 1), anchor_period=periods[0],
+            origination_date=date(2026, 1, 1),
         )
         db_session.commit()
         return retired, clearing
@@ -5816,7 +5791,6 @@ class TestARetiredLoanHasNoDebtLine:
                 seed_user, db.session, name="Only Loan",
                 principal=Decimal("12000.00"), rate=Decimal("0.05000"),
                 term=24, origination_date=date(2026, 1, 1),
-                anchor_period=seed_periods[0],
             )
             insert_trueup_event(
                 loan_params_for(db.session, retired.id), Decimal("0.00"),
@@ -5893,12 +5867,12 @@ class TestTheDebtFreeDateIsOneDerivation:
         create_loan_account(
             seed_user, db_session, name="Car Loan",
             principal=Decimal("12000.00"), rate=Decimal("0.05000"), term=24,
-            origination_date=date(2026, 1, 1), anchor_period=periods[0],
+            origination_date=date(2026, 1, 1),
         )
         create_loan_account(
             seed_user, db_session, name="Future Mortgage",
             principal=Decimal("200000.00"), rate=Decimal("0.06000"), term=360,
-            origination_date=date(2026, 6, 1), anchor_period=periods[0],
+            origination_date=date(2026, 6, 1),
             account_type=AcctTypeEnum.MORTGAGE,
         )
         db_session.commit()
@@ -6100,7 +6074,6 @@ class TestTheDebtFreeDateIsOneDerivation:
                 seed_user, db.session, name="Car Loan",
                 principal=Decimal("12000.00"), rate=Decimal("0.05000"),
                 term=24, origination_date=date(2026, 1, 1),
-                anchor_period=seed_periods[0],
             )
             create_account_of_type(
                 seed_user, db.session, "Credit Card", "Rewards Card",
@@ -6148,7 +6121,6 @@ class TestTheDebtFreeDateIsOneDerivation:
                 seed_user, db.session, name="Car Loan",
                 principal=Decimal("12000.00"), rate=Decimal("0.05000"),
                 term=24, origination_date=date(2026, 1, 1),
-                anchor_period=seed_periods[0],
             )
             create_account_of_type(
                 seed_user, db.session, "Credit Card", "Rewards Card",

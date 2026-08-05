@@ -15,7 +15,7 @@ from app.models.escrow_line import EscrowLine
 from app.models.interest_params import InterestParams
 from app.models.loan_params import LoanParams
 from app.models.ref import AccountType
-from app.services import pay_period_service
+from app.services import cash_ledger, pay_period_service
 from app.services.projection_inputs import (
     load_investment_params_for_accounts,
 )
@@ -176,10 +176,11 @@ def _load_archived_accounts(user_id: int) -> list[ArchivedAccount]:
     finding owns the question of whether the line belongs here at all.
 
     The ``or Decimal("0.00")`` this loop used to apply is gone with the dict:
-    ``accounts.current_anchor_balance`` is ``NOT NULL`` with a redundant CHECK
-    beside it, so the reducer could fire only on a genuine ``$0.00`` and return
-    ``$0.00`` -- vacuous, and the truthiness-on-money shape ruling R-CA deleted
-    eight of.
+    an account always carries an assertion (E-19), so the reducer could fire
+    only on a genuine ``$0.00`` and return ``$0.00`` -- vacuous, and the
+    truthiness-on-money shape ruling R-CA deleted eight of.  The figure itself
+    is now read from that assertion rather than from the cache column that
+    mirrored it (plan step X-f1c3a).
 
     Args:
         user_id: Integer ID of the current user.
@@ -195,7 +196,8 @@ def _load_archived_accounts(user_id: int) -> list[ArchivedAccount]:
     )
     return [
         ArchivedAccount(
-            account=acct, last_anchor_balance=acct.current_anchor_balance,
+            account=acct,
+            last_anchor_balance=cash_ledger.resolve_anchor(acct).balance,
         )
         for acct in accounts
     ]

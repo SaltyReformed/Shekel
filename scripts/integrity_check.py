@@ -157,13 +157,13 @@ def check_referential_integrity(session):
             LEFT JOIN ref.account_types t ON a.account_type_id = t.id
             WHERE t.id IS NULL
         """),
-        ("FK-03", "Accounts pointing to nonexistent anchor period", """
-            SELECT a.id, a.name, a.current_anchor_period_id
-            FROM budget.accounts a
-            LEFT JOIN budget.pay_periods p ON a.current_anchor_period_id = p.id
-            WHERE a.current_anchor_period_id IS NOT NULL
-              AND p.id IS NULL
-        """),
+        # FK-03 was "accounts pointing to a nonexistent anchor period" until
+        # plan step X-f1c3c (ruling R-EH) deleted
+        # ``accounts.current_anchor_period_id``.  An account references no pay
+        # period now, so the dangling-reference class it looked for cannot
+        # exist; the check is deleted rather than answered vacuously.  What
+        # replaces it in spirit is BA-01 below: an account with no balance
+        # ASSERTION, which is the state that actually breaks a producer.
         ("FK-04", "Transactions referencing nonexistent templates", """
             SELECT t.id, t.name, t.template_id
             FROM budget.transactions t
@@ -313,28 +313,44 @@ def check_balance_anomalies(session):
     Args:
         session: SQLAlchemy session.
 
+    **Severity is per CHECK, not per family** (plan step X-f1c3c).  It was one
+    ``"warning"`` constant applied to the whole list, which was true of every
+    member while they were all anchor-cache smells; re-pointing BA-01 at "this
+    account has no balance assertion at all" made it false, because that state
+    makes ``cash_ledger.resolve_anchor`` raise on every page that renders the
+    account.  A family constant silently downgraded it, so the sweep exited 2
+    and ``verify_backup.sh`` logged a WARNING for a broken restore.  The
+    per-check form is the one ``check_data_consistency`` already uses, so this
+    is the file's own established shape rather than a new one.
+
     Returns:
-        List of CheckResult for checks BA-01 through BA-05.
+        List of CheckResult for the surviving balance/anchor checks
+        (BA-01 critical; BA-03, BA-04, BA-05 warnings.  BA-02 was deleted with
+        the anchor cache columns at plan step X-f1c3c).
     """
     checks = [
-        ("BA-01", "Anchor balance set but no anchor period (or vice versa)", """
-            SELECT a.id, a.name, a.current_anchor_balance, a.current_anchor_period_id
+        # BA-01 and BA-02 both keyed on ``accounts.current_anchor_*``, deleted
+        # at plan step X-f1c3c (ruling R-EH): BA-01 looked for one of the pair
+        # set without the other, and BA-02 for an anchor period past the end of
+        # the user's schedule.  Neither state is expressible now.  BA-01 is
+        # RE-POINTED at the invariant those columns existed to serve -- every
+        # account carries at least one balance ASSERTION (E-19 / Commit 3) --
+        # because an account the resolver cannot answer for is the state that
+        # actually breaks every producer downstream.  BA-02 is deleted with no
+        # replacement: an assertion carries a DAY, and a day outside the
+        # schedule is legitimate (money moved before you started budgeting).
+        # CRITICAL, unlike its siblings: an account with no assertion is not an
+        # anomaly to look at later, it is an account ``resolve_anchor`` raises
+        # for -- the balance engine has no starting point, so every producer
+        # downstream of it fails.  BA-03/04/05 flag states worth a human's
+        # attention that still render.
+        ("BA-01", "critical", "Accounts with no balance assertion at all", """
+            SELECT a.id, a.name
             FROM budget.accounts a
-            WHERE (a.current_anchor_balance IS NOT NULL AND a.current_anchor_period_id IS NULL)
-               OR (a.current_anchor_balance IS NULL AND a.current_anchor_period_id IS NOT NULL)
+            LEFT JOIN budget.account_anchor_history h ON h.account_id = a.id
+            WHERE h.id IS NULL
         """),
-        ("BA-02", "Anchor period is beyond the last pay period for the user", """
-            SELECT a.id, a.name, pp.period_index, max_pp.max_idx
-            FROM budget.accounts a
-            JOIN budget.pay_periods pp ON a.current_anchor_period_id = pp.id
-            JOIN (
-                SELECT user_id, MAX(period_index) AS max_idx
-                FROM budget.pay_periods
-                GROUP BY user_id
-            ) max_pp ON a.user_id = max_pp.user_id
-            WHERE pp.period_index > max_pp.max_idx
-        """),
-        ("BA-03", "Pay period sequence gaps (non-contiguous period_index)", """
+        ("BA-03", "warning", "Pay period sequence gaps (non-contiguous period_index)", """
             WITH numbered AS (
                 SELECT user_id, period_index,
                        LAG(period_index) OVER (
@@ -347,7 +363,7 @@ def check_balance_anomalies(session):
             WHERE prev_idx IS NOT NULL
               AND period_index - prev_idx > 1
         """),
-        ("BA-04", "Pay period date overlap within the same user", """
+        ("BA-04", "warning", "Pay period date overlap within the same user", """
             SELECT p1.id AS period_1_id, p2.id AS period_2_id,
                    p1.user_id, p1.start_date AS p1_start, p1.end_date AS p1_end,
                    p2.start_date AS p2_start
@@ -358,7 +374,9 @@ def check_balance_anomalies(session):
              AND p2.start_date > p1.start_date
              AND p2.start_date < p1.end_date
         """),
-        ("BA-05", "Large anchor balance jumps (>50% change between consecutive entries)", """
+        ("BA-05", "warning",
+         "Large anchor balance jumps (>50% change between consecutive entries)",
+         """
             WITH ordered AS (
                 SELECT id, account_id, anchor_balance,
                        LAG(anchor_balance) OVER (
@@ -374,8 +392,8 @@ def check_balance_anomalies(session):
         """),
     ]
     return [
-        _run_check(session, CheckSpec(cid, "balance", "warning", desc, sql))
-        for cid, desc, sql in checks
+        _run_check(session, CheckSpec(cid, "balance", severity, desc, sql))
+        for cid, severity, desc, sql in checks
     ]
 
 

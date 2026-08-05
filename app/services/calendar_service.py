@@ -787,7 +787,7 @@ def _get_display_day(
     **It no longer places a flow on the same day as the balance step for it,
     and that is an open fork rather than a settled rule** (plan step X-c2b2,
     finding N-58).  The balance line under these cells is the cash fold now:
-    a SETTLED row steps it on the day its money moved (``paid_at``'s
+    a SETTLED row steps it on the day its money moved (``settled_on``, the
     display-timezone civil day since ruling R-DH (b)) and a still-projected one
     on ``max(attribution, as_of + 1)`` (ruling R-G).  Neither is the budget
     attribution date this function returns, so a chip and its own balance step

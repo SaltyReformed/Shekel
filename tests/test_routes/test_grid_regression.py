@@ -40,6 +40,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.ref import Status, TransactionType
 from app.services import pay_period_service
+from app.services import cash_ledger
 
 
 class TestPaydayWorkflowRegression:
@@ -93,13 +94,8 @@ class TestPaydayWorkflowRegression:
             # Re-fetch from DB because fixture-created objects may be
             # detached after request processing (scoped session recycling).
             account = db.session.get(Account, account.id)
-            assert account.current_anchor_balance == Decimal("3500.00")
+            assert cash_ledger.resolve_anchor(account).balance == Decimal("3500.00")
 
-            # Database: anchor period set to the current period.
-            current_period = pay_period_service.get_current_period(
-                seed_user["user"].id
-            )
-            assert account.current_anchor_period_id == current_period.id
 
     # -- C-0-2 -------------------------------------------------------
 
@@ -500,7 +496,7 @@ class TestPaydayWorkflowRegression:
         reflected it -- $2,500 of real money "lost" at the moment the user
         recorded it (finding cash D1).  That reasoning reads the ORDER OF TWO
         CLICKS as chronology, and on real data it is wrong far more often than
-        right: ``paid_at`` is ``db.func.now()`` at the click and the assertion
+        right: the settle day was ``db.func.now()`` at the click and the assertion
         has no date column at all, so the user's actual workflow -- read the
         bank, enter the anchor, then tick off what already cleared -- files
         every one of those settles AFTER an anchor that already contains them.
@@ -644,8 +640,7 @@ class TestPaydayWorkflowRegression:
             expense_done = db.session.get(Transaction, expense_done.id)
             expense_credit = db.session.get(Transaction, expense_credit.id)
 
-            assert account.current_anchor_balance == Decimal("5000.00")
-            assert account.current_anchor_period_id == current_period.id
+            assert cash_ledger.resolve_anchor(account).balance == Decimal("5000.00")
             assert income_txn.status.name == "Received"
             assert past_expense.pay_period_id == current_period.id
             assert expense_done.status.name == "Paid"

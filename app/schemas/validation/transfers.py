@@ -145,6 +145,24 @@ class TransferUpdateSchema(BaseSchema):
     category_id = RowId(allow_none=True)
     notes = fields.String(allow_none=True, validate=validate.Length(max=500))
     due_date = fields.Date(allow_none=True)
+    # The civil day the money moved, for BOTH shadows (ruling R-ED, plan step
+    # X-f1c).  Editable on a finalised transfer for the reason
+    # ``routes/transactions/_helpers._LOCKED_EDIT_FIELDS`` carries: the locked
+    # fields are budget decisions, and this is an observed fact about the bank.
+    #
+    # This door is not a convenience twin of the transaction one -- it is the
+    # ONLY door onto the rows finding **N-181** names.  All 8 settled rows whose
+    # day the X-f1b backfill had to invent from a pay period's start are
+    # transfer SHADOWS (four pairs), and a shadow's full-edit popover is THIS
+    # form: ``routes/transactions/forms.get_full_edit`` redirects a shadow here
+    # rather than rendering the transaction popover.
+    #
+    # Deliberately NOT ``allow_none``: an empty input loads as ABSENT ("leave
+    # the day alone"), never as a request to clear it.  Clearing it on a settled
+    # transfer is refused by ``_transfer_status.apply_settle_day_correction`` --
+    # the balance walk REFUSES a settled row with no day -- and the way to
+    # remove one is to revert the transfer to Projected.
+    settled_on = fields.Date()
 
     # Optimistic-locking pin (commit C-18).
     version_id = RowId(validate=validate.Range(min=1))

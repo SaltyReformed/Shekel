@@ -445,9 +445,12 @@ def compute_slider_defaults(data):
             # zero (Account A at $0.00 contributes weight 0 to the
             # denominator); only the upstream-contract escape hatch
             # ``proj.get`` returning ``None`` triggers the fallback.
-            bal = proj.get("current_balance", acct.current_anchor_balance)
-            if bal is None:
-                bal = Decimal("0")
+            # INDEXED, not defaulted: ``_project_one_account`` writes
+            # ``current_balance`` on EVERY projection dict it returns, so the
+            # default was unreachable -- and it named a cache column deleted at
+            # plan step X-f1c3a.  A missing key here is a producer defect and
+            # fails loud rather than substituting a different account's fact.
+            bal = proj["current_balance"]
             total_balance += bal
             weighted_return += bal * params.assumed_annual_return
     if total_balance > 0:

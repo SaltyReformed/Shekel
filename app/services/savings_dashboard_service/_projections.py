@@ -129,12 +129,18 @@ def _seam_batches(accounts, ctx):
 
 
 def _current_balance_from_map(balances, acct, ctx):
-    """Read the current-period balance from a seam map, anchor as fallback.
+    """Read the current-period balance from a seam map, or today's from the seam.
 
     With a current period the tile shows that period's balance from the map;
-    with no current period at all it falls back to the account's stored anchor
-    balance (a ``NOT NULL`` column, so that is a real figure and not a
-    stand-in).
+    with no current period at all there is no column to read, so the same seam
+    is asked for the balance at ``ctx.balance_ctx.as_of`` instead.
+
+    **The no-current-period arm reads the SEAM, not a stored balance** (ruling
+    R-EM, plan step X-f1c3a).  It returned ``acct.current_anchor_balance`` --
+    the last figure the user ASSERTED -- under a tile that says what the account
+    holds now, so every settled movement since that assertion went missing from
+    it.  The seam has never needed a period to answer: it takes a DATE, and a
+    period was only ever being used to supply one.
 
     **The map is INDEXED, not ``.get``-defaulted** (plan step X-v2, ruling
     R-CA), which is the argument :func:`app.services.balance_at.build_maps`
@@ -153,8 +159,7 @@ def _current_balance_from_map(balances, acct, ctx):
     Args:
         balances: The seam's period_id -> balance map, built over
             ``ctx.all_periods``.
-        acct: The account whose ``current_anchor_balance`` is the
-            no-current-period fallback.
+        acct: The account to value at ``as_of`` when no period contains today.
         ctx: The shared :class:`_ProjectionContext`.
 
     Returns:
@@ -165,7 +170,7 @@ def _current_balance_from_map(balances, acct, ctx):
             it -- a seam or period-list defect, never a display state.
     """
     if ctx.current_period is None:
-        return acct.current_anchor_balance
+        return balance_at.balance_at(acct, ctx.balance_ctx, ctx.balance_ctx.as_of)
     return balances[ctx.current_period.id]
 
 
@@ -298,8 +303,8 @@ def _project_one_account(acct, ctx, batches):
             :func:`_seam_batches` -- every seam read this projection makes,
             built once for the whole set.  ``balance_maps`` is TOTAL over the
             projected accounts and is INDEXED here for that reason: the seam
-            omits only an account with no anchor period, and
-            ``accounts.current_anchor_period_id`` is ``NOT NULL``.
+            used to omit an account with no anchor period, a state the schema
+            forbade and whose column plan step X-f1c3a deleted.
 
     Returns:
         The account's :class:`~.._types.AccountProjection` -- THE shape every

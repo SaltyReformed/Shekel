@@ -684,9 +684,11 @@ def _calendar_sweep():
     failure.**  It moves the PYTHON clock -- ``date.today()``,
     ``datetime.now()`` and therefore :func:`app.utils.dates.display_today`.  It
     does NOT move POSTGRES: ``created_at`` / ``updated_at`` are
-    ``server_default=db.func.now()`` (``app/models/mixins.py:237-263``) and
-    ``paid_at`` is ``db.func.now()`` (``app/services/status_seam.py:105``), all
-    evaluated in the database.  So under a fake date every server-stamped row
+    ``server_default=db.func.now()`` (``app/models/mixins.py:237-263``),
+    evaluated in the database.  (The settle day was a fourth such reach until
+    plan step X-f1; the seam stamps ``display_today()`` into a ``DATE`` column
+    now, which this instrument DOES move.)  So under a fake date every
+    server-stamped row
     carries the REAL instant, and a test comparing a fixture-built date against
     a server-stamped one fails by the offset between them.  That failure is an
     artifact of this instrument, not a defect in the test -- see
@@ -1045,7 +1047,6 @@ def seed_user(app, db):
             account_type_id=checking_type.id,
             name="Checking",
             anchor_balance=Decimal("1000.00"),
-            anchor_period_id=bootstrap_period.id,
             # Day one of the period the account is anchored to -- the
             # production shape, an account opened on day one of its own period
             # (ruling R-DH, plan step 2).  Without it the origination asserts a
@@ -1055,8 +1056,8 @@ def seed_user(app, db):
             # **It is what makes "and then things happened" say so.**  An
             # assertion is the CLOSING balance for its civil day, so a settle
             # dated that day is INSIDE it.  ``tests/test_services/conftest.py``
-            # freezes today, and the ordinary settle idiom is
-            # ``paid_at = db.func.now()`` -- so an origination left on the
+            # freezes today, and the ordinary settle idiom dates the row on the
+            # user's today -- so an origination left on the
             # frozen clock lands on the very civil day the settles do, and every
             # fixture meaning "an account existed, then money moved" silently
             # became "money moved on the opening's own day".  Those fixtures
@@ -1068,7 +1069,6 @@ def seed_user(app, db):
             # keyed on this day: a later re-stamp would leave the ledger
             # holding a stale key plus its reversal in every seeded database.
             observed_on=bootstrap_period.start_date,
-            notes="seed_user fixture origination",
         ),
     )
 
@@ -1171,10 +1171,12 @@ def _drop_seed_user_bootstrap(db, seed_user, account, new_anchor_period):
     # nested commits below.
     bootstrap_id = bootstrap.id
     # Step 1: repoint the account anchor.
-    account.current_anchor_period_id = new_anchor_period.id
-    # Repoint any history rows that referenced the bootstrap so they
-    # survive the cascade-delete (the rows would otherwise be wiped
-    # by the AccountAnchorHistory.pay_period_id CASCADE FK).
+    # Restamp any assertion the factory wrote against the bootstrap period.
+    # It no longer has to SURVIVE anything -- ruling R-EO deleted
+    # ``AccountAnchorHistory.pay_period_id`` and its CASCADE FK, so a period
+    # delete cannot take an assertion with it -- but its INSTANT and its
+    # business DAY still have to move onto the new anchor period, for the
+    # reason below.
     from app.models.account import AccountAnchorHistory  # pylint: disable=import-outside-toplevel
     # The row's INSTANT moves with its period, not just its FK.  The account
     # factory stamps the opening with the WALL CLOCK, while the suites freeze
@@ -1185,9 +1187,8 @@ def _drop_seed_user_bootstrap(db, seed_user, account, new_anchor_period):
     # Pinning it to the new anchor period's first day is the production shape:
     # an account opened on day one of the period it is anchored to.
     db.session.query(AccountAnchorHistory).filter_by(
-        account_id=account.id, pay_period_id=bootstrap_id,
+        account_id=account.id,
     ).update({
-        "pay_period_id": new_anchor_period.id,
         # The BUSINESS day moves with the period and the instant.  Leaving it
         # behind is the "two clocks on one row" shape ``seed_user`` states it
         # is eliminating, recreated one layer down: the row would assert a
@@ -1446,7 +1447,6 @@ def _neutralize_seed_checking(db, seed_user, anchor_period):
     _pin_opening_to(db, account, anchor_period)
     override_anchor(
         db.session, account, anchor_period, Decimal("0.00"),
-        notes="per-kind cross-page fixture: neutralize seed checking to $0",
     )
 
 
@@ -1562,7 +1562,6 @@ def seed_cross_page_account(app, db, seed_user):
         _pin_opening_to(db, account, anchor_period)
         override_anchor(
             db.session, account, anchor_period, anchor_balance,
-            notes="seed_cross_page_account: HIGH-01 lock anchor override",
         )
 
         # Single Projected envelope expense in the anchor period.
@@ -1828,7 +1827,6 @@ def cross_page_loan_off_schedule_ctx(db, seed_user):
     from tests._test_helpers import (
         create_loan_with_trueup,
         create_settled_transfer,
-        settle_instant_on,
     )
 
     user = seed_user["user"]
@@ -1862,7 +1860,7 @@ def cross_page_loan_off_schedule_ctx(db, seed_user):
     create_settled_transfer(
         seed_user, db.session, seed_user["account"], loan, payment_period,
         amount=Decimal("5000.00"),
-        paid_at=settle_instant_on(payment_period.start_date),
+        settled_on=payment_period.start_date,
     )
     db.session.commit()
 
@@ -2139,11 +2137,9 @@ def second_user(app, db):
             account_type_id=checking_type.id,
             name="Other Checking",
             anchor_balance=Decimal("500.00"),
-            anchor_period_id=bootstrap_period.id,
             # Day one of its own period -- see ``seed_user`` above for why
             # the origination must not share a civil day with the settles.
             observed_on=bootstrap_period.start_date,
-            notes="second_user fixture origination",
         ),
     )
 
@@ -2267,11 +2263,9 @@ def seed_second_user(app, db):
             account_type_id=checking_type.id,
             name="Checking",
             anchor_balance=Decimal("2000.00"),
-            anchor_period_id=bootstrap_period.id,
             # Day one of its own period -- see ``seed_user`` above for why
             # the origination must not share a civil day with the settles.
             observed_on=bootstrap_period.start_date,
-            notes="seed_second_user fixture origination",
         ),
     )
 
@@ -2440,8 +2434,6 @@ def _build_full_user_data(db, seed_user, periods):
             account_type_id=savings_acct_type.id,
             name="Savings",
             anchor_balance=Decimal("500.00"),
-            anchor_period_id=periods[0].id,
-            notes="_build_full_user_data savings origination",
         ),
     )
 
@@ -2602,8 +2594,6 @@ def seed_full_second_user_data(app, db, seed_second_user, seed_second_periods):
             account_type_id=savings_acct_type.id,
             name="Savings",
             anchor_balance=Decimal("300.00"),
-            anchor_period_id=periods[0].id,
-            notes="seed_full_second_user_data savings origination",
         ),
     )
 

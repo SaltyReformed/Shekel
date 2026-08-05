@@ -23,7 +23,7 @@ from app.schemas.validation import EntryCreateSchema, EntryUpdateSchema
 from app.exceptions import NotFoundError, ValidationError
 from app import ref_cache
 from app.enums import RoleEnum, StatusEnum
-from app.services import account_service, pay_period_service
+from app.services import account_service, pay_period_service, status_seam
 from app.utils.dates import display_today
 from app.models.account import AccountAnchorHistory
 from tests._test_helpers import mark_purchase_settled
@@ -424,7 +424,10 @@ class TestCreateEntry:
             # Reload transaction in this session context.
             txn = db.session.get(Transaction, txn_id)
             done = db.session.query(Status).filter_by(name="Paid").one()
-            txn.status_id = done.id
+            # Through the seam, which writes the settle day in the same call --
+            # a bare status assign leaves the row settled-but-undated, which
+            # every reader now refuses (plan step X-f1).
+            status_seam.apply_status_change(txn, done.id)
             db.session.flush()
 
             entry = entry_service.create_entry(
@@ -1930,9 +1933,10 @@ class TestTheOutstandingSet:
             # loaded upstream and an assignment on a stale instance is not
             # reliably marked dirty for the next flush (the same reason
             # ``test_anchor_service`` re-gets its account).
-            db.session.get(
-                Transaction, txn.id,
-            ).status_id = ref_cache.status_id(StatusEnum.DONE)
+            status_seam.apply_status_change(
+                db.session.get(Transaction, txn.id),
+                ref_cache.status_id(StatusEnum.DONE),
+            )
             db.session.commit()
 
             assert self._listed(seed_user) == []
@@ -1984,7 +1988,6 @@ class TestTheOutstandingSet:
                     account_type_id=seed_user["account"].account_type_id,
                     name="Checking 2",
                     anchor_balance=Decimal("2000.00"),
-                    anchor_period_id=seed_periods[0].id,
                 ),
             )
             db.session.flush()

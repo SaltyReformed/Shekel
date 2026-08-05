@@ -46,15 +46,6 @@ class Account(
             "version_id > 0",
             name="ck_accounts_version_id_positive",
         ),
-        # Anchor balance presence (E-19, Commit 3).  Redundant with the
-        # NOT NULL on the column itself, but named so a future schema
-        # audit can match it to the Marshmallow contract by name.  The
-        # canonical balance resolver (Commit 4) relies on this guarantee
-        # to delete the four NULL-anchor forks documented in CRIT-01.
-        db.CheckConstraint(
-            "current_anchor_balance IS NOT NULL",
-            name="ck_accounts_anchor_balance_present",
-        ),
         # Collateral self-link guard (home-equity mini-sprint): an
         # account may not secure itself.  Belt-and-suspenders with the
         # route validator's no-self-link check.
@@ -71,34 +62,23 @@ class Account(
         nullable=False,
     )
     name = db.Column(db.String(100), nullable=False)
-    # Anchor columns are the storage-tier half of E-19: the
-    # canonical balance producer (Commit 4) assumes both are non-NULL
-    # on every account row, so CRIT-01's four NULL-anchor forks
-    # (blank/projection/omit) become unreachable.  See migration
-    # cfb15e782f86 for the backfill rule and the rationale.
+    # An account carries NO anchor columns, and that is ruling R-EH (plan step
+    # X-f1c3c).  ``current_anchor_balance`` / ``current_anchor_period_id`` were
+    # a denormalized copy of the newest ``AccountAnchorHistory`` row --
+    # ``cash_ledger/_facts`` said so in those words, and when they disagreed the
+    # history row already won while the copy was logged and left wrong.  Twelve
+    # surfaces read the copy instead of the fact.  What the account has been
+    # asserted to hold is now asked of
+    # :func:`app.services.cash_ledger.resolve_anchor`, the one resolver, and the
+    # divergence this pair could express is not detected-and-logged, it is
+    # inexpressible.  Measured before the drop: the copy agreed with the latest
+    # assertion on 9 of 9 production accounts, so nothing moved.
     #
-    # FK action note: ``current_anchor_period_id`` is ``ON DELETE NO
-    # ACTION DEFERRABLE INITIALLY IMMEDIATE`` (migration d410f6b9caa3,
-    # pay-period CRUD Phase 0).  The column is ``NOT NULL``, so deleting
-    # the referenced pay period is refused immediately -- the database
-    # backstop behind the application-level anchor lock in
-    # ``pay_period_admin``.  ``NO ACTION`` (not ``RESTRICT``) is chosen
-    # because only ``NO ACTION`` can be deferred: the full-reset path
-    # (``reset_pay_periods``, Phase 3) deletes the old anchor period and
-    # re-points each account to a fresh one inside one transaction via
-    # ``SET CONSTRAINTS ... DEFERRED``, so the FK validates at commit.
-    # Every other path keeps the fail-fast immediate check.
-    current_anchor_balance = db.Column(db.Numeric(12, 2), nullable=False)
-    current_anchor_period_id = db.Column(
-        db.Integer,
-        db.ForeignKey(
-            "budget.pay_periods.id",
-            ondelete="NO ACTION",
-            deferrable=True,
-            initially="IMMEDIATE",
-        ),
-        nullable=False,
-    )
+    # Their FK to ``pay_periods`` went with them, and it took real machinery:
+    # ``ON DELETE NO ACTION DEFERRABLE INITIALLY IMMEDIATE`` existed so
+    # ``reset_pay_periods`` could delete the old anchor period and re-point
+    # every account inside one transaction via ``SET CONSTRAINTS ... DEFERRED``.
+    # With no column to re-point there is nothing to defer.
     # Collateral link (home-equity mini-sprint): a secured liability
     # (mortgage / HELOC / auto loan) points at the Asset account it is
     # secured by, so a Property and its loans can be grouped and equity
@@ -121,7 +101,6 @@ class Account(
 
     # Relationships
     account_type = db.relationship("AccountType", lazy="joined")
-    anchor_period = db.relationship("PayPeriod", foreign_keys=[current_anchor_period_id])
     anchor_history = db.relationship(
         "AccountAnchorHistory",
         back_populates="account",
@@ -161,34 +140,78 @@ class AccountAnchorHistory(AccountScopedMixin, CreatedAtMixin, db.Model):
     derivation is what let an ordinary bookkeeping session subtract
     ``$4,001.42`` of already-cleared payments a second time (finding N-130).
 
-    Same-day duplicate prevention (F-103 / C-22): the unique index
-    ``uq_anchor_history_account_period_balance_day`` on ``(account_id,
-    pay_period_id, anchor_balance, observed_on)`` rejects a second row
-    with identical values asserting the same business day.  This
-    is the database-level backstop for ``true_up`` double-submits:
-    a network retry, a double-click on the Save button, or the
-    back-and-resubmit pattern would otherwise create two consecutive
-    history rows with the same anchor_balance, polluting the audit
-    trail with entries that record nothing the prior row did not
-    already record.
+    **It carries no pay period, and that is ruling R-EO** (plan step X-f1c3b).
+    An assertion is a fact about a BANK -- "on day D, account A held $B" -- and
+    it is true whatever the user's paychecks are scheduled to do.  A
+    ``pay_period_id`` filed it under a BUDGETING artifact, on an
+    ``ON DELETE CASCADE`` FK, so a pay-period operation could destroy the
+    record of what the bank said: a schedule reset wiped all 78 of the
+    developer's production assertions and wrote 9 fabricated replacements.  The
+    column was also a CACHE of a derivation rather than a fact -- both posting
+    reconciles derive a correction's period from ``observed_on`` and
+    ``account_posting_service._anchors`` refuses this column BY NAME -- and it
+    was already WRONG on 2 of those 78 rows, whose stored period does not
+    contain their own ``observed_on`` (finding N-168).  A reader wanting the
+    period an assertion books in derives it from the day, which is ruling
+    R-EA verbatim.
 
-    The index intentionally includes ``anchor_balance`` so two
-    legitimate true-ups on the same day -- the user noticed an
-    arithmetic error and corrected the balance twice -- are still
-    allowed; only literal duplicate rows (same balance, same
-    period, same day, same account) are rejected.
+    **This table has NO uniqueness constraint, and that is ruling R-EQ** (plan
+    step X-f1c4b).  It carried ``uq_anchor_history_account_period_balance_day``
+    on ``(account_id, anchor_balance, observed_on)`` as the database-level
+    backstop for ``true_up`` double-submits -- a network retry, a double-click,
+    a back-and-resubmit.  **A key over the row's own values cannot do that job**:
+    a transport retry and a deliberate re-assertion carry identical values by
+    construction, so the index had to mis-classify one of them, and it
+    mis-classified the correction.  Assert ``$500`` for a day, correct it to
+    ``$600``, then re-assert ``$500`` for that day and the index rejected the
+    third write while ``anchor_service`` reported it as saved and every surface
+    kept rendering ``$600``.  Measured on the developer's own data, account 1
+    carries 2-3 assertions on 3 of its 50 assertion days, so the shape is
+    ordinary rather than exotic.
 
-    **Its last column was ``((created_at AT TIME ZONE 'UTC')::date)`` until
-    ``observed_on`` existed** (finding N-133 / F12).  That keyed the guard to a
-    UTC day while the ruling's day is the user's, so two assertions of one
-    balance on two different Eastern days that happened to share a UTC day
-    (23:00 EDT one evening, 01:00 EDT the next) were rejected as a same-day
-    duplicate.  Keying on the stored business date fixes that and still catches
-    every double-submit, because a double-click asserts one ``observed_on``.
-    It also retires the functional-index machinery: the ``AT TIME ZONE`` pin
-    existed only because PostgreSQL refuses a bare ``::date`` cast in an index
-    (it depends on the session TimeZone and is therefore not IMMUTABLE), and a
-    plain ``DATE`` column needs no pin at all.
+    The rule lives at the write door instead (:func:`stage_anchor_true_up`),
+    where the question can be answered exactly: an assertion is refused only
+    when it matches the assertion that currently GOVERNS.  What that costs and
+    what it buys is stated in ``anchor_service``'s module docstring; what it
+    costs THIS table is nothing, because a surplus row would be financially
+    inert (a zero-delta anchor correction emits no legs, and two assertions of
+    one balance replay to one balance).
+
+    The key's own history, kept because it explains two other comments: it lost
+    ``pay_period_id`` with the column at ruling R-EO, and its last term was
+    ``((created_at AT TIME ZONE 'UTC')::date)`` until ``observed_on`` existed
+    (finding N-133 / F12), which keyed a USER's day to a UTC one.  Each move was
+    an attempt to make a content key mean what the door meant.
+
+    ``idx_anchor_history_account`` survives and is not a uniqueness guard: it
+    serves the per-account lookups (:func:`app.services.cash_ledger.resolve_anchor`
+    and :func:`~app.services.cash_ledger.cash_anchor_facts`).
+
+    **An assertion is (account, day, balance) and NOTHING else, and that is
+    ruling R-ES** (plan step X-f1e2).  The row carried a free-text ``notes``
+    column for the audit trail's "which door wrote this", and it answered
+    nobody: no code in ``app/`` ever read it (an AST census of every ``.notes``
+    attribute access finds a transfer and a salary tax checkpoint, and no
+    anchor), 76 of production's 78 rows were NULL, and the 2 labelled rows were
+    the only assertion their account carried.  Worse, it was a SECOND definition
+    of a word the engine already owns --
+    :func:`app.services.cash_ledger.cash_anchor_facts` marks the OPENING
+    positionally (``is_opening = index == 0`` over
+    ``(observed_on, created_at, id)``) and
+    ``account_posting_service._anchors`` maps that to the typed
+    ``account_opening`` / ``account_trueup`` posting kinds, so a back-dated
+    assertion could make the label and the flag name different rows.  What the
+    column held is not lost: this table is in
+    ``app.audit_infrastructure.AUDITED_TABLES``, so an INSERT's whole row --
+    ``notes`` included -- is in ``system.audit_log`` wherever an audit row
+    exists.  The migration states that record's two measured limits.
+
+    The LOAN twin keeps its provenance and that is not a drift.
+    :class:`~app.models.loan_anchor_event.LoanAnchorEvent` carries a typed
+    ``source_id`` FK because it is READ -- ``loan_loaders`` tells a
+    ``tracking_start`` from a ``user_trueup``, the write door scopes its
+    duplicate compare per source, and the dashboard renders the label.  This
+    table carries one kind of fact and needs no such split.
     """
 
     __tablename__ = "account_anchor_history"
@@ -198,19 +221,10 @@ class AccountAnchorHistory(AccountScopedMixin, CreatedAtMixin, db.Model):
             "account_id",
             "created_at",
         ),
-        db.Index(
-            "uq_anchor_history_account_period_balance_day",
-            "account_id", "pay_period_id", "anchor_balance", "observed_on",
-            unique=True,
-        ),
         {"schema": "budget"},
     )
 
     id = db.Column(db.Integer, primary_key=True)
-    pay_period_id = db.Column(
-        db.Integer, db.ForeignKey("budget.pay_periods.id", ondelete="CASCADE"),
-        nullable=False,
-    )
     anchor_balance = db.Column(db.Numeric(12, 2), nullable=False)
     # The civil day the asserted balance was TRUE, in the user's timezone --
     # the business date the whole anchor/settle partition turns on (ruling
@@ -220,11 +234,9 @@ class AccountAnchorHistory(AccountScopedMixin, CreatedAtMixin, db.Model):
     # ``(created_at AT TIME ZONE 'America/New_York')::date``, the derivation it
     # replaces, so no rendered figure moved on the day the column shipped.
     observed_on = db.Column(db.Date, nullable=False)
-    notes = db.Column(db.Text)
 
     # Relationships
     account = db.relationship("Account", back_populates="anchor_history")
-    pay_period = db.relationship("PayPeriod")
 
     def __repr__(self):
         return f"<AnchorHistory account={self.account_id} balance={self.anchor_balance}>"

@@ -14,8 +14,15 @@ helper directly, so a schema that stops routing its ``@pre_load``
 through the helper fails here too.
 """
 
+from datetime import date
+
+from marshmallow import fields
 from werkzeug.datastructures import MultiDict
 
+from app.schemas.validation._helpers import (
+    BaseSchema,
+    _normalize_empty_inputs,
+)
 from app.schemas.validation import (
     AccountTypeUpdateSchema,
     PensionProfileUpdateSchema,
@@ -67,16 +74,66 @@ class TestEmptyInputNormalization:
         data = PensionProfileUpdateSchema().load({"csrf_token": ""})
         assert data == {}
 
-    def test_dump_only_nullable_field_stays_dropped(self):
-        """A dump_only field keeps the drop behavior even when nullable.
+    def test_empty_settle_day_is_dropped_not_cleared(self):
+        """An empty settle-day input means "leave the day alone", not "clear it".
 
-        ``TransactionUpdateSchema.paid_at`` is ``allow_none`` but
-        ``dump_only``: it can never load a value, so mapping its empty
-        submit to ``None`` would only hand the loader a key it
-        discards.  The pre-change shape (key absent) is preserved.
+        The load-bearing case for plan step X-f1c's two settle-day edit doors.
+        ``settled_on`` is declared WITHOUT ``allow_none`` on both update
+        schemas precisely so an untouched or blanked input lands in the
+        non-nullable arm above and DROPS: a settled row always carries the day
+        its money moved (the balance walk refuses one that does not), and the
+        way to remove the day is to move the row out of the settled band, which
+        the status seam does.  Were the field nullable, blanking the box on a
+        settled transfer would post ``settled_on=None`` and
+        ``apply_settle_day_correction`` would reject the save.
+
+        Asserted on BOTH doors, because the rule is only true if the two agree:
+        the transaction popover and the transfer popover are two forms onto one
+        column-level invariant.
         """
-        data = TransactionUpdateSchema().load({"paid_at": ""})
-        assert data == {}
+        assert "settled_on" not in TransferUpdateSchema().load(
+            {"settled_on": ""},
+        )
+        assert "settled_on" not in TransactionUpdateSchema().load(
+            {"settled_on": ""},
+        )
+        # The positive control: a real day still arrives, so the assertions
+        # above are about the EMPTY value and not about the field being absent
+        # from the schema altogether.
+        assert TransferUpdateSchema().load(
+            {"settled_on": "2026-07-14"},
+        ) == {"settled_on": date(2026, 7, 14)}
+        assert TransactionUpdateSchema().load(
+            {"settled_on": "2026-07-14"},
+        ) == {"settled_on": date(2026, 7, 14)}
+
+    def test_nullable_arm_is_reached_through_the_helper(self):
+        """The allow_none arm maps an empty submit to an explicit ``None``.
+
+        Asserted against the HELPER rather than through ``load()`` so the arm
+        is falsifiable on its own: deleting ``if field.allow_none`` kills this
+        case directly instead of being masked by a schema's other fields.
+
+        **This replaced a ``dump_only`` case that could not fail** (finding
+        **N-184**, closed at plan step X-f1c).  That case pinned an
+        ``and not field.dump_only`` arm which existed for exactly one field --
+        ``TransactionUpdateSchema.paid_at``, deleted with its column by ruling
+        R-EC -- and which was invisible downstream of ``load()`` regardless,
+        because marshmallow discards a ``dump_only`` key either way.  The arm
+        and its test are both gone; no schema in the package declares a
+        ``dump_only`` field, and X-f1c's settle-day field LOADS.
+        """
+
+        class _NullableProbe(BaseSchema):
+            """A minimal schema carrying both field shapes under test."""
+
+            cleared = fields.String(allow_none=True)
+            required_ish = fields.String()
+
+        cleaned = _normalize_empty_inputs(
+            _NullableProbe(), {"cleared": "", "required_ish": ""},
+        )
+        assert cleaned == {"cleared": None}
 
     def test_transfer_category_clear_loads_as_none(self):
         """The transfer full-edit "-- None --" category posts as None.

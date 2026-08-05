@@ -13,7 +13,7 @@ from app.models.ref import AccountType
 from app.services import account_service
 
 
-def _create_hysa_account(seed_user, db_session, name="My HYSA", anchor_period_id=None):
+def _create_hysa_account(seed_user, db_session, name="My HYSA"):
     """Helper to create a HYSA account with params.
 
     ``anchor_period_id`` is forwarded to
@@ -33,7 +33,6 @@ def _create_hysa_account(seed_user, db_session, name="My HYSA", anchor_period_id
             account_type_id=hysa_type.id,
             name=name,
             anchor_balance=Decimal("10000.00"),
-            anchor_period_id=anchor_period_id,
         ),
     )
     db_session.add(account)
@@ -110,7 +109,7 @@ class TestHysaDetailView:
         longer drives the rendered projection.
         """
         account, _ = _create_hysa_account(
-            seed_user, db.session, anchor_period_id=seed_periods_today[0].id,
+            seed_user, db.session,
         )
 
         resp = auth_client.get(f"/accounts/{account.id}/details")
@@ -151,7 +150,6 @@ class TestHysaDetailView:
                 account_type_id=mortgage_type.id,
                 name="Home Mortgage",
                 anchor_balance=Decimal("250000.00"),
-                anchor_period_id=seed_user["bootstrap_period"].id,
             ),
         )
         db.session.add(account)
@@ -429,7 +427,7 @@ class TestHysaDetailShadowTransactions:
         # silently omits it from the projection (the F-009 silent-degrade
         # shape).
         account, _ = _create_hysa_account(
-            seed_user, db.session, anchor_period_id=seed_periods_today[0].id,
+            seed_user, db.session,
         )
 
         # Add transfer categories required by the service.
@@ -487,7 +485,7 @@ class TestHysaDetailShadowTransactions:
         the rationale.
         """
         account, _ = _create_hysa_account(
-            seed_user, db.session, anchor_period_id=seed_periods_today[0].id,
+            seed_user, db.session,
         )
 
         # Anchor $10,000 with only interest (no deposit): the current-period

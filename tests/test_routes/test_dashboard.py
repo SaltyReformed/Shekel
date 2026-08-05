@@ -235,7 +235,6 @@ class TestDashboardPulseRendering:
                     account_type_id=savings_type.id,
                     name="Sweep",
                     anchor_balance=Decimal("0.00"),
-                    anchor_period_id=seed_periods_today[0].id,
                 ),
             )
             db.session.add(savings)
@@ -563,7 +562,9 @@ class TestHeroCaptions:
         with app.app_context():
             cur = pay_period_service.get_current_period(seed_user["user"].id)
             account = seed_user["account"]
-            account.current_anchor_balance = Decimal("100.00")
+            # The assertion IS the anchor since ruling R-EH; the cache column
+            # this used to set beside it is deleted.  The origination row is
+            # cleared so the one added below is the account's only assertion.
             db.session.query(AccountAnchorHistory).filter_by(
                 account_id=account.id,
             ).delete()
@@ -630,7 +631,7 @@ class TestDashboardTracks:
         with app.app_context():
             acct = create_savings_account(
                 seed_user, db.session, "Goal Account",
-                Decimal("2500.00"), anchor_period_id=seed_periods_today[0].id,
+                Decimal("2500.00"),
             )
             goal = SavingsGoal(
                 user_id=seed_user["user"].id,
@@ -999,8 +1000,14 @@ class TestBalanceSection:
 # ── Anchor-edit revert cycle (the dashboard cancel/409 contract) ────
 
 
+# ``test_anchor_409_conflict_reopens_in_dashboard`` was DELETED at plan step
+# X-f1c3c (ruling R-EN), for the reason its investment twin was: the 409 it
+# graded does not exist, because a true-up appends rather than overwrites.  The
+# Cancel / Escape revert cycle this class is really about is untouched.
+
+
 class TestAnchorEditRevertCycle:
-    """The dashboard anchor-edit Cancel / Escape / 409 cycle still threads.
+    """The dashboard anchor-edit Cancel / Escape cycle still threads.
 
     The hero control opens ``accounts.anchor_form?revert=dashboard``; the
     editor's Cancel reverts to ``dashboard.balance_section`` (mapped by
@@ -1029,32 +1036,10 @@ class TestAnchorEditRevertCycle:
             # Cancel reverts to the dashboard balance fragment.
             assert 'hx-get="/dashboard/balance"' in html
             # The PATCH carries the dashboard revert token through the
-            # round-trip (so a 409 conflict re-opens in the dashboard).
+            # round-trip, so the success re-render lands on the dashboard
+            # card.  It also served a 409 conflict re-open until ruling R-EN
+            # deleted that response (plan step X-f1c3c).
             assert "revert=dashboard" in html
-
-    def test_anchor_409_conflict_reopens_in_dashboard(
-        self, app, auth_client, seed_user, seed_periods_today, db,
-    ):
-        """A stale-version true-up from the dashboard returns 409 in-surface.
-
-        Submitting a version_id that no longer matches yields the conflict
-        cell (409) whose retry opener keeps the ``revert=dashboard`` token,
-        so the conflict resolves back in the dashboard, not the grid.
-        """
-        with app.app_context():
-            account = seed_user["account"]
-            account_id = account.id
-            stale_version = account.version_id - 1
-            resp = auth_client.patch(
-                f"/accounts/{account_id}/true-up?revert=dashboard",
-                data={"anchor_balance": "2500.00", "version_id": stale_version},
-                headers={"HX-Request": "true"},
-            )
-            assert resp.status_code == 409
-            html = resp.data.decode()
-            # The conflict cell's retry opener keeps the dashboard surface.
-            assert "revert=dashboard" in html
-
 
 # ── Nav bar (unchanged chrome) ──────────────────────────────────────
 

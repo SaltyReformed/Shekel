@@ -181,7 +181,6 @@ class TestInvestmentDashboard:
         body for every configured employer match.
         """
         acct = _create_investment_account(seed_user, db.session)
-        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(
             db.session, acct.id,
             employer_contribution_type_id=ref_cache.employer_contribution_type_id(
@@ -205,7 +204,6 @@ class TestInvestmentDashboard:
     ):
         """Employer flat-percentage card renders the contribute formula (TPLA-01)."""
         acct = _create_investment_account(seed_user, db.session)
-        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(
             db.session, acct.id,
             employer_contribution_type_id=ref_cache.employer_contribution_type_id(
@@ -231,7 +229,6 @@ class TestInvestmentDashboard:
         no year.
         """
         acct = _create_investment_account(seed_user, db.session)
-        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(
             db.session, acct.id, contribution_limit_year=2026,
         )
@@ -853,7 +850,6 @@ class TestGrowthChartFragment:
     ):
         """Returns canvas element when projection data exists."""
         acct = _create_investment_account(seed_user, db.session)
-        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(db.session, acct.id)
         resp = auth_client.get(
             f"/accounts/{acct.id}/investment/growth-chart?horizon_years=2",
@@ -935,7 +931,6 @@ class TestContributionAwareDashboard:
         and the periodic contribution value appears in the response.
         """
         acct = _create_investment_account(seed_user, db.session)
-        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(db.session, acct.id)
 
         profile = _create_salary_profile(
@@ -961,7 +956,6 @@ class TestContributionAwareDashboard:
         still call build_contribution_timeline without crashing.
         """
         acct = _create_investment_account(seed_user, db.session)
-        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(db.session, acct.id)
 
         profile = _create_salary_profile(
@@ -1022,7 +1016,6 @@ class TestContributionPrompt:
             seed_user, db.session, type_name="Roth IRA",
             name="My Roth IRA", balance="5000.00",
         )
-        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(
             db.session, acct.id,
             annual_contribution_limit=Decimal("7000.00"),
@@ -1044,7 +1037,6 @@ class TestContributionPrompt:
             seed_user, db.session, type_name="401(k)",
             name="My 401k", balance="50000.00",
         )
-        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(db.session, acct.id)
         resp = auth_client.get(f"/accounts/{acct.id}/investment")
         assert resp.status_code == 200
@@ -1068,7 +1060,6 @@ class TestContributionPrompt:
             seed_user, db.session, type_name="Roth IRA",
             name="My Roth IRA", balance="5000.00",
         )
-        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(
             db.session, acct.id,
             annual_contribution_limit=Decimal("7000.00"),
@@ -1094,7 +1085,6 @@ class TestContributionPrompt:
             seed_user, db.session, type_name="401(k)",
             name="My 401k", balance="50000.00",
         )
-        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(db.session, acct.id)
         profile = _create_salary_profile(
             db.session, seed_user["user"].id,
@@ -1128,7 +1118,6 @@ class TestContributionPrompt:
             seed_user, db.session, type_name="Roth IRA",
             name="My Roth IRA", balance="5000.00",
         )
-        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(
             db.session, acct.id,
             annual_contribution_limit=Decimal("7000.00"),
@@ -1157,7 +1146,6 @@ class TestContributionPrompt:
             seed_user, db.session, type_name="Roth IRA",
             name="My Roth IRA", balance="5000.00",
         )
-        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(
             db.session, acct.id,
             annual_contribution_limit=Decimal("7000.00"),
@@ -1201,7 +1189,6 @@ class TestContributionPrompt:
             seed_user, db.session, type_name="Roth IRA",
             name="My Roth IRA", balance="5000.00",
         )
-        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(
             db.session, acct.id,
             annual_contribution_limit=Decimal("7000.00"),
@@ -1237,7 +1224,6 @@ class TestContributionPrompt:
             seed_user, db.session, type_name="Roth IRA",
             name="My Roth IRA", balance="5000.00",
         )
-        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(
             db.session, acct.id,
             annual_contribution_limit=Decimal("7000.00"),
@@ -1266,7 +1252,6 @@ class TestContributionPrompt:
             seed_user, db.session, type_name="Roth IRA",
             name="My Roth IRA", balance="5000.00",
         )
-        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(db.session, acct.id)
 
         resp = auth_client.post(
@@ -1297,7 +1282,6 @@ class TestContributionPrompt:
             seed_user, db.session, type_name="Roth IRA",
             name="My Roth IRA", balance="5000.00",
         )
-        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(
             db.session, acct.id,
             annual_contribution_limit=Decimal("7000.00"),
@@ -1358,7 +1342,6 @@ class TestContributionPrompt:
             seed_user, db.session, type_name="Roth IRA",
             name="My Roth IRA", balance="5000.00",
         )
-        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(db.session, acct.id)
         checking = seed_user["account"]
 
@@ -1422,7 +1405,6 @@ class TestWhatIfContributionCalculator:
         no what-if parameter is provided.
         """
         acct = _create_investment_account(seed_user, db.session)
-        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(db.session, acct.id)
         resp = auth_client.get(
             f"/accounts/{acct.id}/investment/growth-chart?horizon_years=2",
@@ -1447,7 +1429,6 @@ class TestWhatIfContributionCalculator:
         datasets, and a comparison card.
         """
         acct = _create_investment_account(seed_user, db.session)
-        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(db.session, acct.id)
         resp = auth_client.get(
             f"/accounts/{acct.id}/investment/growth-chart"
@@ -1479,7 +1460,6 @@ class TestWhatIfContributionCalculator:
         treated as "clear the what-if."
         """
         acct = _create_investment_account(seed_user, db.session)
-        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(db.session, acct.id)
         resp = auth_client.get(
             f"/accounts/{acct.id}/investment/growth-chart"
@@ -1500,7 +1480,6 @@ class TestWhatIfContributionCalculator:
         Empty input means "no what-if" -- chart reverts to standard mode.
         """
         acct = _create_investment_account(seed_user, db.session)
-        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(db.session, acct.id)
         resp = auth_client.get(
             f"/accounts/{acct.id}/investment/growth-chart"
@@ -1518,7 +1497,6 @@ class TestWhatIfContributionCalculator:
         Non-numeric input degrades gracefully to single-line chart.
         """
         acct = _create_investment_account(seed_user, db.session)
-        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(db.session, acct.id)
         resp = auth_client.get(
             f"/accounts/{acct.id}/investment/growth-chart"
@@ -1537,7 +1515,6 @@ class TestWhatIfContributionCalculator:
         what-if overlay.
         """
         acct = _create_investment_account(seed_user, db.session)
-        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(db.session, acct.id)
         resp = auth_client.get(
             f"/accounts/{acct.id}/investment/growth-chart"
@@ -1570,7 +1547,6 @@ class TestWhatIfContributionCalculator:
             seed_user, db.session, type_name="Roth IRA",
             name="Limited IRA", balance="0.00",
         )
-        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(
             db.session, acct.id,
             assumed_annual_return=Decimal("0.00000"),
@@ -1618,7 +1594,6 @@ class TestWhatIfContributionCalculator:
             seed_user, db.session, type_name="401(k)",
             name="Matched 401k", balance="0.00",
         )
-        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(
             db.session, acct.id,
             assumed_annual_return=Decimal("0.00000"),
@@ -1664,7 +1639,6 @@ class TestWhatIfContributionCalculator:
             seed_user, db.session, type_name="Brokerage",
             name="My Brokerage", balance="0.00",
         )
-        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(
             db.session, acct.id,
             assumed_annual_return=Decimal("0.00000"),
@@ -1696,7 +1670,6 @@ class TestWhatIfContributionCalculator:
         The what-if end balance exceeds committed -> positive difference.
         """
         acct = _create_investment_account(seed_user, db.session)
-        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(db.session, acct.id)
         resp = auth_client.get(
             f"/accounts/{acct.id}/investment/growth-chart"
@@ -1720,7 +1693,6 @@ class TestWhatIfContributionCalculator:
         The what-if end balance is lower -> negative difference.
         """
         acct = _create_investment_account(seed_user, db.session)
-        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(
             db.session, acct.id,
             annual_contribution_limit=None,
@@ -1755,7 +1727,6 @@ class TestWhatIfContributionCalculator:
         exactly $0.
         """
         acct = _create_investment_account(seed_user, db.session)
-        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(db.session, acct.id)
         resp = auth_client.get(
             f"/accounts/{acct.id}/investment/growth-chart"
@@ -1778,7 +1749,6 @@ class TestWhatIfContributionCalculator:
         so it should produce a higher end balance.
         """
         acct = _create_investment_account(seed_user, db.session)
-        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(db.session, acct.id)
         resp = auth_client.get(
             f"/accounts/{acct.id}/investment/growth-chart"
@@ -1820,7 +1790,6 @@ class TestWhatIfContributionCalculator:
         (same x-axis) regardless of the horizon setting.
         """
         acct = _create_investment_account(seed_user, db.session)
-        acct.current_anchor_period_id = seed_periods_today[0].id
         _create_investment_params(db.session, acct.id)
         resp = auth_client.get(
             f"/accounts/{acct.id}/investment/growth-chart"
@@ -1974,7 +1943,6 @@ class TestInvestmentEntryAwareRouting:
                 type_name="401(k)", name="Test 401k",
                 balance="50000.00",
             )
-            assert acct.current_anchor_period_id == current_period.id
             _create_investment_params(db.session, acct.id)
             _add_envelope_expense_with_cleared_entries_inv(
                 db.session,
@@ -2061,7 +2029,6 @@ class TestInvestmentEntryAwareRouting:
                 type_name="401(k)", name="Test 401k",
                 balance="50000.00",
             )
-            assert acct.current_anchor_period_id == current_period.id
             _create_investment_params(db.session, acct.id)
             _add_envelope_expense_with_cleared_entries_inv(
                 db.session,
@@ -2606,15 +2573,25 @@ class TestTheProjectionContinuesTheHistory:
         )
 
 
+# ``test_true_up_from_investment_409_reopens_investment`` was DELETED at plan
+# step X-f1c3c (ruling R-EN): it asserted that a 409 conflict raised from this
+# hero reopened the editor back in the investment surface.  There is no 409 --
+# an assertion history is append-only, so nothing a second tab does can be
+# overwritten here.  The surviving revert-context cases in this class still
+# grade that a SUCCESS re-renders into the surface that opened the editor,
+# which is the routing this test shared.
+
+
 class TestInvestmentBalanceHeroTrueUp:
     """Loop B P1 C4: the detail page's click-to-edit balance hero true-up.
 
     The hero reuses the shared anchor editor (accounts.anchor_form /
     accounts.true_up / anchor_service) via a new ``revert=investment``
-    surface: ``investment.balance_hero`` is the Cancel / Escape / 409 revert
+    surface: ``investment.balance_hero`` is the Cancel / Escape revert
     target (rendering the model-from-anchor balance), and the PATCH records a
     statement balance as a dated anchor as-of today -- the same semantics as
-    the cockpit card's click-to-edit editor.
+    the cockpit card's click-to-edit editor.  It was a 409-conflict revert
+    target too, until ruling R-EN deleted the 409 (plan step X-f1c3c).
     """
 
     def test_balance_hero_renders_editable_cell(
@@ -2642,7 +2619,7 @@ class TestInvestmentBalanceHeroTrueUp:
         assert f"{headline:,.2f}" in html
         assert "investment-balance-hero" in html
         # Opens the shared anchor editor scoped to the investment surface, so
-        # Cancel / Escape / 409 revert back to this hero, not the grid cell.
+        # Cancel / Escape revert back to this hero, not the grid cell.
         assert "revert=investment" in html
 
     def test_balance_hero_redirects_without_htmx(
@@ -2715,28 +2692,3 @@ class TestInvestmentBalanceHeroTrueUp:
         assert len(history) == 1, (
             "true-up should append exactly one dated anchor history row"
         )
-
-    def test_true_up_from_investment_409_reopens_investment(
-        self, auth_client, seed_user, db, seed_periods_today,
-    ):
-        """A stale-version true-up returns 409 whose retry keeps revert=investment."""
-        acct = _create_investment_account(seed_user, db.session)
-        _create_investment_params(db.session, acct.id)
-        db.session.commit()
-        # A freshly created account is at version_id == 1, and the schema
-        # requires version_id >= 1, so submitting version_id - 1 (== 0) would
-        # 400 at validation before the conflict check.  Submit a valid but
-        # mismatched (higher) version so the optimistic-lock guard's
-        # ``submitted != current`` fires the 409 conflict path.
-        mismatched_version = acct.version_id + 1
-
-        resp = auth_client.patch(
-            f"/accounts/{acct.id}/true-up?revert=investment",
-            data={
-                "anchor_balance": "60000.00", "version_id": mismatched_version,
-            },
-            headers={"HX-Request": "true"},
-        )
-        assert resp.status_code == 409
-        # The conflict cell's retry opener keeps the investment surface.
-        assert "revert=investment" in resp.data.decode()

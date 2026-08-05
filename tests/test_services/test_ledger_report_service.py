@@ -20,7 +20,7 @@ source (including the seed Checking's opening, whose ``entry_date`` is its
 origination ``created_at``'s civil date) is folded regardless of the test clock
 or timezone; a dedicated case pins the as-of cutoff itself.
 """
-from datetime import date, datetime, timezone
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -45,13 +45,32 @@ from tests._test_helpers import (
 # clock- and timezone-independent (nothing is ever attributed after it).
 _ALL_ACTIVITY = date.max
 
-# A settle instant comfortably AFTER any test-created account's origination
-# (which is the server clock at ``create_account`` time), so a settle pinned
-# here RIDES ON TOP of the opening -- it is strictly after the assertion moment
-# -- rather than being absorbed into it (the moment-of-assertion rule).  A
-# settle dated before origination is instead already inside the asserted
-# opening balance.
-_RIDES_ON_TOP = datetime(2099, 6, 1, 12, tzinfo=timezone.utc)
+# A settle DAY after every account these fixtures use was opened, so a settle
+# pinned here RIDES ON TOP of the opening rather than being absorbed into it.
+# A settle dated before origination is instead already inside the asserted
+# opening balance.  It was a noon-UTC instant until plan step X-f1; the column
+# stores a civil day now, and handing an instant to the seam is refused
+# (finding N-179) rather than silently truncated on the UTC session clock.
+#
+# **It was ``2099-06-01`` until ruling R-EJ**, chosen as "far future" so it
+# would clear an origination stamped with the server clock.  R-EJ refuses a
+# settle dated after today -- a settled row asserts that money HAS moved -- so
+# that shape was only ever expressible while the guard was missing.  The fix is
+# the production one and it runs the other way: open the account EARLY
+# (:data:`_OPENED_BEFORE`) and settle in the past.
+#
+# 2025 is chosen because it is empty: ``seed_user``'s bootstrap period opens
+# 2024-01-05 and ``seed_periods`` runs 2026-01-02 to 2026-05-21, so a "year"
+# window here still sees only what the fixture put there, which is the property
+# the far-future date was really bought for.  The services suite freezes today
+# at 2026-03-20, so this day is in its past.
+_RIDES_ON_TOP = date(2025, 6, 1)
+
+#: The day accounts these fixtures create are OPENED on -- before
+#: :data:`_RIDES_ON_TOP`, so the settle rides on top of the opening.  Passed to
+#: the factory rather than re-stamped, because it posts the opening's anchor
+#: correction keyed on this day.
+_OPENED_BEFORE = date(2025, 1, 1)
 
 
 def _find_line(lines, label):
@@ -100,18 +119,18 @@ class TestIncomeStatementCalendarWindow:
                 seed_user, db.session, period, Decimal("2000.00"),
                 account=checking, is_income=True,
                 category=seed_user["categories"]["Salary"],
-                paid_at=datetime(2026, 3, 10, 12, tzinfo=timezone.utc),
+                settled_on=date(2026, 3, 10),
             )
             create_settled_cash_transaction(
                 seed_user, db.session, period, Decimal("300.00"),
                 account=checking,
                 category=seed_user["categories"]["Groceries"],
-                paid_at=datetime(2026, 3, 15, 12, tzinfo=timezone.utc),
+                settled_on=date(2026, 3, 15),
             )
             create_settled_cash_transaction(
                 seed_user, db.session, period, Decimal("50.00"),
                 account=checking, category=None,
-                paid_at=datetime(2026, 3, 20, 12, tzinfo=timezone.utc),
+                settled_on=date(2026, 3, 20),
             )
             db.session.commit()
 
@@ -155,12 +174,12 @@ class TestIncomeStatementCalendarWindow:
                 seed_user, db.session, period, Decimal("300.00"),
                 account=checking,
                 category=seed_user["categories"]["Groceries"],
-                paid_at=datetime(2026, 3, 15, 12, tzinfo=timezone.utc),
+                settled_on=date(2026, 3, 15),
             )
             create_settled_cash_transaction(
                 seed_user, db.session, period, Decimal("800.00"),
                 account=checking, category=seed_user["categories"]["Rent"],
-                paid_at=datetime(2026, 4, 15, 12, tzinfo=timezone.utc),
+                settled_on=date(2026, 4, 15),
             )
             db.session.commit()
 
@@ -255,7 +274,7 @@ class TestDisplayTimezoneAttribution:
                 seed_user, db.session, seed_user["bootstrap_period"],
                 Decimal("500.00"), account=seed_user["account"],
                 category=seed_user["categories"]["Groceries"],
-                paid_at=datetime(2027, 1, 1, 1, 5, tzinfo=timezone.utc),
+                settled_on=date(2026, 12, 31),
             )
             db.session.commit()
 
@@ -349,12 +368,13 @@ class TestTransfersNeverInIncomeStatement:
             savings = create_account_of_type(
                 seed_user, db.session, "Savings", "Rainy Day",
                 anchor_balance=Decimal("200.00"),
+                observed_on=_OPENED_BEFORE,
             )
             db.session.commit()
             create_settled_transfer(
                 seed_user, db.session, checking, savings,
                 seed_user["bootstrap_period"], amount=Decimal("150.00"),
-                paid_at=_RIDES_ON_TOP,
+                settled_on=_RIDES_ON_TOP,
             )
             db.session.commit()
 
@@ -508,12 +528,12 @@ class TestBalanceSheetPosition:
                 seed_user, db.session, seed_user["bootstrap_period"],
                 Decimal("100.00"), account=seed_user["account"],
                 category=seed_user["categories"]["Groceries"],
-                paid_at=_RIDES_ON_TOP,
+                settled_on=_RIDES_ON_TOP,
             )
             db.session.commit()
 
             before = ledger_report_service.compute_balance_sheet(
-                user_id, date(2099, 5, 31),
+                user_id, _RIDES_ON_TOP - timedelta(days=1),
             )
             assert _find_line(
                 before.assets.lines, "Checking",
@@ -521,7 +541,7 @@ class TestBalanceSheetPosition:
             assert before.tie_out.in_balance is True
 
             on_day = ledger_report_service.compute_balance_sheet(
-                user_id, _RIDES_ON_TOP.date(),
+                user_id, _RIDES_ON_TOP,
             )
             assert _find_line(
                 on_day.assets.lines, "Checking",
@@ -580,7 +600,7 @@ class TestDisplayLabels:
                 seed_user, db.session, seed_user["bootstrap_period"],
                 Decimal("100.00"), account=seed_user["account"],
                 category=seed_user["categories"]["Groceries"],
-                paid_at=datetime(2026, 3, 15, 12, tzinfo=timezone.utc),
+                settled_on=date(2026, 3, 15),
             )
             db.session.commit()
 
@@ -610,7 +630,7 @@ class TestDisplayLabels:
                 seed_user, db.session, seed_user["bootstrap_period"],
                 Decimal("100.00"), account=seed_user["account"],
                 category=seed_user["categories"]["Groceries"],
-                paid_at=datetime(2026, 3, 15, 12, tzinfo=timezone.utc),
+                settled_on=date(2026, 3, 15),
             )
             db.session.commit()
 

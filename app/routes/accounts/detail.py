@@ -280,7 +280,7 @@ def _cash_projection(
     interest_by_period: dict[int, Decimal] = {}
     anchor: AnchorPoint | None = None
     if is_interest:
-        anchor = cash_ledger.resolve_anchor(account, balance_ctx.scenario_id)
+        anchor = cash_ledger.resolve_anchor(account)
         # ONE walk for both figures.  Asking the seam twice (the balance
         # map, then the interest map) folded the account's whole cash
         # event stream twice per render once the accrual's base became
@@ -295,7 +295,7 @@ def _cash_projection(
         balances = balance_at.cash_balance_map(
             account, balance_ctx, all_periods,
         )
-        anchor = cash_ledger.resolve_anchor(account, balance_ctx.scenario_id)
+        anchor = cash_ledger.resolve_anchor(account)
     return balances, interest_by_period, anchor
 
 

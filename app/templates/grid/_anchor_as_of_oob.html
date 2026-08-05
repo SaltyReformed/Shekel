@@ -1,0 +1,53 @@
+{# The GRID's "as of" caption, as an out-of-band update (plan step X-f1e3).
+
+   Was an f-string in ``routes/accounts/anchor.py``; it is a template because
+   HTMX responses are partial templates in this app, and because the caption's
+   copy and the acknowledgement's copy are now reviewable side by side.
+
+   **It is the GRID's alone, and that is the whole rule** (plan step X-f1e3).
+   The grid's ``#anchor-as-of`` sits at page level in ``grid/grid.html``, so
+   nothing else on that page ever redraws it and an out-of-band update is the
+   only way it can move.  Every OTHER anchor-editor surface carries its
+   assertion-dated caption INSIDE the region it re-fetches on the
+   ``balanceChanged`` this same response fires, and redraws it from its own
+   loader:
+
+   * the dashboard's copy is inside ``#pulse-section`` and is re-rendered from
+     ``pulse.hero.last_updated_date``, which ``dashboard_pulse_service`` reads
+     through ``cash_ledger.reconciled_through`` -- provably the same value this
+     snippet carries (``MAX(observed_on)`` against the last element of the same
+     ordering, pinned by a test);
+   * the cockpit, the investment hero and the cash hero carry no such element
+     at all, so an out-of-band swap there would orphan-target
+     (``htmx:oobErrorNoTarget``).
+
+   **One assertion-dated caption on the investment page is OUTSIDE its region
+   and does go stale, and this snippet was never the thing that fixed it**
+   (finding **N-203**, from this step's adversarial design review, which
+   falsified a first version of the paragraph above).  The Growth chip's
+   "Growth since <day>" label reads the same ``anchor_as_of`` the hero does,
+   but it renders in ``.pulse-statrow``, a SIBLING of
+   ``#investment-hero-region`` (``investment/dashboard.html``), so no
+   ``balanceChanged`` listener redraws it.  After a true-up the hero moves and
+   the chip beside it still names the old day, with a growth figure measured
+   from it -- which the template's own comment claims reconciles with the hero
+   to the cent.  It is PRE-EXISTING and this snippet never reached it: the chip
+   is not ``#anchor-as-of``, so no version of the out-of-band update, narrowed
+   or not, ever targeted it.  Recorded rather than fixed here, because the fix
+   is that page's region boundary.
+
+   Emitting it for the dashboard was therefore a redundant SECOND render of one
+   fact that the region refresh replaced within the same round-trip -- and it
+   was the mechanism that destroyed the back-dated acknowledgement riding on it
+   (finding N-199).  Narrowing it to the grid leaves ONE rule with no
+   per-surface exception list: an out-of-band caption update goes to the
+   caption nothing else refreshes.
+
+   The day is the ASSERTION's own ``observed_on`` (ruling R-EP), never the
+   account row's ``updated_at`` -- that named a different fact, moved on any
+   account edit, and stopped moving at all once a true-up stopped writing the
+   row.
+
+   Expected context: observed_on (date -- the governing assertion's civil
+   day). #}
+<small class="text-muted" id="anchor-as-of" hx-swap-oob="true">as of {{ observed_on.strftime('%b %-d, %Y') }}</small>

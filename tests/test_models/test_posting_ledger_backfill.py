@@ -17,20 +17,38 @@ append-only tables) to reproduce the pre-ledger historical state the backfill
 targets; otherwise the backfill's ``NOT EXISTS`` guard would no-op and the test
 would assert on the auto-posted entry instead of the backfilled one.
 
-The asserted invariants:
+**THE EXECUTABLE HALF OF THIS SUITE WAS DELETED AT PLAN STEP X-f1** (developer
+ruling, 2026-08-03), and what survives is the revision pair and the
+source-level downgrade check.  The ten deleted tests drove
+``_backfill_settled_transfers``'s frozen raw SQL, which reads
+``sf.paid_at`` -- a column migration ``a3f7c8e21b64`` DROPS.  They graded these
+invariants: one balanced entry per settled transfer (asset->asset and
+asset->liability), the leg amount taken from the shadow's ``effective_amount``,
+the entry date derived from the shadow's ``paid_at``, the four exclusions
+(Projected / Cancelled / soft-deleted / zero-effective), and idempotency.
 
-  * a settled transfer backfills to exactly one balanced entry: a ``-amount``
-    leg on the from-account's ledger and a ``+amount`` leg on the
-    to-account's ledger, summing to zero (asset->asset AND asset->liability);
-  * the leg amount is the shadow's ``effective_amount``
-    (``COALESCE(actual_amount, estimated_amount)``), so an ``actual_amount``
-    that diverges from the transfer amount is honoured (the value the oracle
-    reconciles against);
-  * the entry date is the shadow ``paid_at`` (UTC civil date), falling back
-    to the pay-period start when ``paid_at`` is NULL;
-  * Projected / Cancelled / soft-deleted / zero-effective transfers are
-    excluded;
-  * the backfill is idempotent.
+**The path they graded is unreachable with data, permanently, and that is why
+they went rather than being fed a resurrected column.**  This migration runs at
+its OWN point in the chain, long before the drop, so a real ``base -> head``
+upgrade is unaffected -- but it runs there over an EMPTY ``budget.transfers``,
+and on any database already past it it never runs again.  ``a3f7c8e21b64``'s
+downgrade REFUSES, so Alembic cannot rewind past the drop either.  Keeping them
+runnable would have meant a per-revision template fixture that this suite does
+not have -- ``alembic upgrade base -> <that revision>`` gives exactly the
+application's schema at that point and is not blocked, so the honest statement is
+that the harness has no such fixture, NOT that the schema could not be
+reproduced.  (An earlier draft said the latter; a neutral review corrected it.)
+
+**One of the deleted ten was NOT redundant, and naming it is the point.**  The
+zero-effective-transfer exclusion has no survivor anywhere.  Nor do the
+``TestBackfillAndGoForwardAgree`` cases deleted from the two live reconciliation
+oracles in the same pass: the two surviving "backfill == go-forward" tests
+(``test_posting_ledger_account_backfill.py``, ``test_loan_posting_backfill.py``)
+reuse the go-forward builder, so they are true by construction rather than an
+independent second opinion.  The ledger these entries built is graded instead by the live
+reconciliation oracles (``tests/test_integration/test_posting_ledger_*.py``),
+which assert the stronger property: that the posted ledger reconciles to the
+source rows, whatever wrote it.
 
 The executable migration up/down round-trip was verified manually against the
 prod-clone dev DB during development (downgrade dropped both tables, the
@@ -46,20 +64,13 @@ conflicts with the session-scoped ``ref_cache`` refresh in an xdist worker).
 from __future__ import annotations
 
 import pathlib
-from datetime import date, datetime, timezone
-from decimal import Decimal
 
 import pytest
 
-from app import ref_cache
-from app.enums import PostingKindEnum, PostingSourceEnum, StatusEnum
 from app.extensions import db as _db
 from app.models.journal_entry import JournalEntry, Posting
-from app.services import transfer_service
 from tests._test_helpers import (
-    clear_postings_for_transfer,
     create_account_of_type,
-    create_settled_transfer,
     ledger_accounts_for_account,
     load_migration_module,
 )
@@ -138,280 +149,6 @@ def savings(app, db, seed_user):  # pylint: disable=unused-argument
 # ---------------------------------------------------------------------------
 # Backfill: one balanced entry per settled transfer
 # ---------------------------------------------------------------------------
-
-
-class TestBackfillPostsBalancedEntry:
-    """A settled transfer backfills to exactly one balanced two-leg entry."""
-
-    def test_asset_to_asset_signs_and_balance(self, app, db, seed_user, savings):
-        """Checking -> Savings $100 backfills to -100 / +100, summing to zero.
-
-        Arithmetic (plan Section 1): the from leg is -100.00 (a credit: money
-        leaving Checking), the to leg is +100.00 (a debit: money entering
-        Savings); -100.00 + 100.00 = 0.00.  Both ledgers are Asset class, but
-        the posting builder never branches on class -- the sign follows
-        from/to direction alone.
-        """
-        with app.app_context():
-            transfer = create_settled_transfer(
-                seed_user, _db.session, seed_user["account"], savings,
-                seed_user["bootstrap_period"], amount=Decimal("100.00"),
-            )
-            _db.session.commit()
-            checking_ledger = _ledger_id(seed_user["account"])
-            savings_ledger = _ledger_id(savings)
-
-            # Commit-5 auto-posted on settle; clear to the pre-ledger historical
-            # state so the backfill genuinely posts the entry.
-            clear_postings_for_transfer(transfer.id)
-            posted = _run_backfill()
-            assert posted == [transfer.id]
-
-            entry = _entry_for_transfer(transfer.id)
-            assert entry is not None
-            assert entry.source_kind_id == ref_cache.posting_source_id(
-                PostingSourceEnum.TRANSFER,
-            )
-            legs = _legs_by_ledger(entry.id)
-            assert legs[checking_ledger] == Decimal("-100.00")
-            assert legs[savings_ledger] == Decimal("100.00")
-            assert sum(legs.values()) == Decimal("0.00")
-            # Every leg carries the transfer posting kind.
-            kinds = {
-                leg.posting_kind_id
-                for leg in _db.session.query(Posting).filter_by(
-                    journal_entry_id=entry.id,
-                ).all()
-            }
-            assert kinds == {ref_cache.posting_kind_id(PostingKindEnum.TRANSFER)}
-
-    def test_asset_to_liability_signs(self, app, db, seed_user):
-        """Checking -> Mortgage $250 backfills to -250 / +250 (pay-down).
-
-        Arithmetic (plan Section 1, second worked example): paying down a
-        liability is still from=-amount / to=+amount.  -250.00 on the Asset
-        Checking ledger, +250.00 on the Liability Mortgage ledger, summing to
-        zero -- the sign rule is class-independent.
-        """
-        with app.app_context():
-            mortgage = create_account_of_type(
-                seed_user, _db.session, "Mortgage", "Backfill Mortgage",
-            )
-            _db.session.commit()
-            transfer = create_settled_transfer(
-                seed_user, _db.session, seed_user["account"], mortgage,
-                seed_user["bootstrap_period"], amount=Decimal("250.00"),
-            )
-            _db.session.commit()
-            checking_ledger = _ledger_id(seed_user["account"])
-            mortgage_ledger = _ledger_id(mortgage)
-
-            clear_postings_for_transfer(transfer.id)
-            _run_backfill()
-            entry = _entry_for_transfer(transfer.id)
-            legs = _legs_by_ledger(entry.id)
-            assert legs[checking_ledger] == Decimal("-250.00")
-            assert legs[mortgage_ledger] == Decimal("250.00")
-            assert sum(legs.values()) == Decimal("0.00")
-
-    def test_backfill_uses_effective_amount_not_transfer_amount(
-        self, app, db, seed_user, savings,
-    ):
-        """A settled shadow ``actual_amount`` overrides the transfer amount.
-
-        The transfer's nominal amount is $100, but the settled actual is
-        $97.50 (mirrored to both shadows), so the shadow ``effective_amount``
-        is $97.50 -- the value the balance calculator and the reconciliation
-        oracle use.  The backfill must post -97.50 / +97.50, NOT -100 / +100.
-        """
-        with app.app_context():
-            transfer = create_settled_transfer(
-                seed_user, _db.session, seed_user["account"], savings,
-                seed_user["bootstrap_period"], amount=Decimal("100.00"),
-                actual_amount=Decimal("97.50"),
-            )
-            _db.session.commit()
-            checking_ledger = _ledger_id(seed_user["account"])
-            savings_ledger = _ledger_id(savings)
-
-            clear_postings_for_transfer(transfer.id)
-            _run_backfill()
-            legs = _legs_by_ledger(_entry_for_transfer(transfer.id).id)
-            assert legs[checking_ledger] == Decimal("-97.50")
-            assert legs[savings_ledger] == Decimal("97.50")
-
-
-class TestBackfillEntryDate:
-    """``entry_date`` is the shadow paid_at (UTC), else the period start."""
-
-    def test_entry_date_from_paid_at_utc(self, app, db, seed_user, savings):
-        """A settled paid_at maps to its UTC civil date.
-
-        Arithmetic: paid_at 2026-05-10 14:30 UTC -> entry_date 2026-05-10
-        (``(paid_at AT TIME ZONE 'UTC')::date``).
-        """
-        with app.app_context():
-            transfer = create_settled_transfer(
-                seed_user, _db.session, seed_user["account"], savings,
-                seed_user["bootstrap_period"], amount=Decimal("100.00"),
-                paid_at=datetime(2026, 5, 10, 14, 30, tzinfo=timezone.utc),
-            )
-            _db.session.commit()
-            clear_postings_for_transfer(transfer.id)
-            _run_backfill()
-            entry = _entry_for_transfer(transfer.id)
-            assert entry.entry_date == date(2026, 5, 10)
-
-    def test_entry_date_falls_back_to_period_start_when_paid_at_null(
-        self, app, db, seed_user, savings,
-    ):
-        """A settled transfer with NULL paid_at uses the pay-period start.
-
-        Historical settled transfers can carry a NULL ``paid_at`` (settled
-        before the paid_at sync existed); ``entry_date`` is NOT NULL, so the
-        backfill falls back to the period's ``start_date``.
-        """
-        with app.app_context():
-            period = seed_user["bootstrap_period"]
-            transfer = create_settled_transfer(
-                seed_user, _db.session, seed_user["account"], savings,
-                period, amount=Decimal("100.00"), paid_at=None,
-            )
-            _db.session.commit()
-            clear_postings_for_transfer(transfer.id)
-            _run_backfill()
-            entry = _entry_for_transfer(transfer.id)
-            assert entry.entry_date == period.start_date
-
-
-class TestBackfillExclusions:
-    """Projected / Cancelled / soft-deleted / zero-effective are excluded."""
-
-    def test_projected_transfer_not_backfilled(self, app, db, seed_user, savings):
-        """An unsettled (Projected) transfer produces no entry.
-
-        Only confirmed facts post -- a Projected transfer has not happened.
-        """
-        with app.app_context():
-            transfer = transfer_service.create_transfer(
-                transfer_service.TransferSpec(
-                    user_id=seed_user["user"].id,
-                    from_account_id=seed_user["account"].id,
-                    to_account_id=savings.id,
-                    pay_period_id=seed_user["bootstrap_period"].id,
-                    scenario_id=seed_user["scenario"].id,
-                    amount=Decimal("100.00"),
-                    status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-                    category_id=None,
-                ),
-            )
-            _db.session.commit()
-            assert _run_backfill() == []
-            assert _entry_for_transfer(transfer.id) is None
-
-    def test_cancelled_transfer_not_backfilled(self, app, db, seed_user, savings):
-        """A Cancelled transfer (is_settled FALSE) produces no entry."""
-        with app.app_context():
-            transfer = transfer_service.create_transfer(
-                transfer_service.TransferSpec(
-                    user_id=seed_user["user"].id,
-                    from_account_id=seed_user["account"].id,
-                    to_account_id=savings.id,
-                    pay_period_id=seed_user["bootstrap_period"].id,
-                    scenario_id=seed_user["scenario"].id,
-                    amount=Decimal("100.00"),
-                    status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-                    category_id=None,
-                ),
-            )
-            transfer_service.update_transfer(
-                transfer.id, seed_user["user"].id,
-                status_id=ref_cache.status_id(StatusEnum.CANCELLED),
-            )
-            _db.session.commit()
-            assert _run_backfill() == []
-            assert _entry_for_transfer(transfer.id) is None
-
-    def test_soft_deleted_settled_transfer_not_backfilled(
-        self, app, db, seed_user, savings,
-    ):
-        """A settled-then-soft-deleted transfer produces no entry.
-
-        Its net posted effect is zero (the balance calculator drops a deleted
-        shadow), so the backfill's ``is_deleted = FALSE`` filter excludes it.
-        """
-        with app.app_context():
-            transfer = create_settled_transfer(
-                seed_user, _db.session, seed_user["account"], savings,
-                seed_user["bootstrap_period"], amount=Decimal("100.00"),
-            )
-            transfer_service.delete_transfer(
-                transfer.id, seed_user["user"].id, soft=True,
-            )
-            _db.session.commit()
-            # Clear the settle auto-post + soft-delete auto-reversal to the
-            # pre-ledger state, then confirm the backfill excludes the
-            # soft-deleted transfer (posts nothing).
-            clear_postings_for_transfer(transfer.id)
-            assert _run_backfill() == []
-            assert _entry_for_transfer(transfer.id) is None
-
-    def test_zero_effective_transfer_not_backfilled(
-        self, app, db, seed_user, savings,
-    ):
-        """A settled transfer whose actual amount is zero produces no entry.
-
-        No money moved, so there is nothing to post; a zero leg is forbidden
-        by ``ck_account_postings_amount_nonzero`` and contributes nothing to
-        the oracle, so the backfill omits the entry entirely.
-        """
-        with app.app_context():
-            transfer = create_settled_transfer(
-                seed_user, _db.session, seed_user["account"], savings,
-                seed_user["bootstrap_period"], amount=Decimal("100.00"),
-                actual_amount=Decimal("0.00"),
-            )
-            _db.session.commit()
-            assert _run_backfill() == []
-            assert _entry_for_transfer(transfer.id) is None
-
-
-class TestBackfillIdempotency:
-    """Re-running the backfill does not double-post."""
-
-    def test_backfill_is_idempotent(self, app, db, seed_user, savings):
-        """Two runs leave exactly one entry and two legs for the transfer.
-
-        The enumeration's ``NOT EXISTS`` guard on a prior entry for the
-        transfer makes the second run a no-op.
-        """
-        with app.app_context():
-            transfer = create_settled_transfer(
-                seed_user, _db.session, seed_user["account"], savings,
-                seed_user["bootstrap_period"], amount=Decimal("100.00"),
-            )
-            _db.session.commit()
-
-            # Clear the Commit-5 auto-post so the backfill itself runs.
-            clear_postings_for_transfer(transfer.id)
-            first = _run_backfill()
-            second = _run_backfill()
-            assert first == [transfer.id]
-            assert second == []
-
-            entries = (
-                _db.session.query(JournalEntry)
-                .filter_by(transfer_id=transfer.id)
-                .count()
-            )
-            assert entries == 1
-            legs = (
-                _db.session.query(Posting)
-                .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
-                .filter(JournalEntry.transfer_id == transfer.id)
-                .count()
-            )
-            assert legs == 2
 
 
 # ---------------------------------------------------------------------------
