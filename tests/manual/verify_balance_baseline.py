@@ -53,9 +53,20 @@ For a HEAD-vs-post comparison use ``git worktree add`` for the HEAD side --
 never ``git checkout``, which reverts the working tree and discards the very
 change under test.
 
-Run it against BOTH databases.  ``shekel`` is the dev runtime clone and
-``shekel_f3_final`` the prod-shape one; they carry different account sets, and
-plan step X-c2c1's run found figures that exist in one and not the other.
+**One database is now enough, and that is a LOSS rather than a simplification.**
+This said to run it against BOTH -- ``shekel`` the dev runtime clone and
+``shekel_f3_final`` the prod-shape one -- because they carried DIFFERENT account
+sets, and plan step X-c2c1's run found figures that existed in one and not the
+other.  That is no longer true: measured 2026-08-07, both hold the identical
+nine accounts and differ by one transaction row, because ``shekel`` has since
+been re-cloned from production and ``shekel_f3_final`` was refreshed from it.
+Running both now costs a second pass and buys almost nothing.
+
+So a second dataset is worth REBUILDING before a step that could be
+data-shape-sensitive, rather than assumed to exist: give it an account the
+other lacks, or a kind the other has no instance of.  X-c2c1's find is the
+argument for doing so -- a figure that exists in only one dataset is invisible
+to a harness that sees one shape twice.
 
 **Its own limitation, stated so it is not mistaken for more.**  Every figure
 here is read at the seam's default ``as_of`` (the reader's today).  A step that
