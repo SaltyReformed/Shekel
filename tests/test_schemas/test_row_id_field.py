@@ -18,6 +18,7 @@ stops the 76th declaration from being written with the lax field.
 import pytest
 from marshmallow import ValidationError, fields
 
+from app.schemas.validation import _helpers
 from app.schemas.validation._helpers import RowId
 from app.schemas.validation.transactions import TransactionCreateSchema
 
@@ -178,6 +179,21 @@ class TestTheFieldIsWiredIntoRealSchemas:
 #: alias invisible to a matcher that only knew one of the two names.
 _LAX_INTEGER_SPELLINGS = frozenset({"Integer", "Int"})
 
+#: Every field-class spelling in the validation package that is STRICT about
+#: what names a row -- ``RowId`` and anything derived from it.
+#:
+#: The scan reads an AST, so it sees a TOKEN, not a class: a field declared as
+#: a ``RowId`` SUBCLASS is exactly as strict as ``RowId`` and was invisible to
+#: a gate that matched the one name.  ``RecurrencePatternField`` (plan step
+#: R2e-2) is the first such subclass -- it layers "and the id must name a
+#: cadence this application MODELS" on top of ``RowId``'s parsing rules.
+#:
+#: This set is an allowlist, so ``TestNoIdFieldWasMissed
+#: ::test_every_strict_spelling_really_derives_from_row_id`` resolves each name
+#: and asserts it IS a ``RowId`` subclass -- otherwise widening this set would
+#: be a way to smuggle a lax field past the gate below.
+_STRICT_ROW_ID_SPELLINGS = frozenset({"RowId", "RecurrencePatternField"})
+
 #: Every ``fields.Integer`` in the validation package that is NOT a row id,
 #: as an explicit allowlist.  **The gate below is an allowlist rather than a
 #: name pattern, and an adversarial review is why.**  Its first version asked
@@ -291,6 +307,27 @@ class TestNoIdFieldWasMissed:
         assert fields.Int is fields.Integer
         assert {"Integer", "Int"} == _LAX_INTEGER_SPELLINGS
 
+    def test_every_strict_spelling_really_derives_from_row_id(self):
+        """The strict allowlist cannot be padded with a lax field class.
+
+        :data:`_STRICT_ROW_ID_SPELLINGS` is what the scan accepts INSTEAD of
+        ``RowId``, so without this arm the cheapest way past the gate below
+        would be to add a name to that set -- a hole in exactly the shape the
+        gate exists to close.  Each name is resolved against the schema
+        helpers module and must be a real ``RowId`` subclass, so a strict
+        spelling is strict by inheritance rather than by assertion.
+        """
+        for spelling in _STRICT_ROW_ID_SPELLINGS:
+            field_cls = getattr(_helpers, spelling, None)
+            assert field_cls is not None, (
+                f"{spelling} is allowlisted as a strict row-id field class but "
+                "does not exist in app.schemas.validation._helpers"
+            )
+            assert issubclass(field_cls, RowId), (
+                f"{spelling} is allowlisted as strict but does not derive from "
+                "RowId, so it does not inherit RowId's parsing rules"
+            )
+
     def test_the_scan_finds_the_declarations_it_grades(self):
         """Premise: the AST walk is reading real declarations.
 
@@ -302,11 +339,11 @@ class TestNoIdFieldWasMissed:
         ``Integer`` fields it is choosing to allow.
         """
         found = self._id_fields_by_class()
-        row_ids = [f for f in found if f[3] == "RowId"]
+        row_ids = [f for f in found if f[3] in _STRICT_ROW_ID_SPELLINGS]
         integers = [f for f in found if f[3] in _LAX_INTEGER_SPELLINGS]
         assert len(row_ids) >= 74, (
-            f"the scan found only {len(row_ids)} RowId declarations; it is "
-            "not reading the schema package"
+            f"the scan found only {len(row_ids)} strict row-id declarations; "
+            "it is not reading the schema package"
         )
         assert len(integers) > 40, (
             f"the scan found only {len(integers)} plain Integer declarations; "

@@ -207,14 +207,15 @@ def build_recurrence_rule_from_form(
     This helper's own job is what only a ROUTE can do: read the form and
     owner-check the submitted start period.
 
-    **The submitted pattern is checked against what the application MODELS,
-    not against the ``ref`` table** (plan step R2e-2).  A row
-    ``RecurrencePatternEnum`` does not name is a pattern
-    :func:`app.services.recurrence.resolve` cannot read, so accepting one here
-    -- which ``db.session.get(RecurrencePattern, ...)`` did -- would author a
-    rule that raises the moment anything resolves it, and no route catches
-    that.  Refusing it is the same flash as a nonexistent id, because from the
-    user's side it is the same thing: not a cadence this application offers.
+    **It does NOT validate the pattern id.**  That the id names a cadence the
+    application MODELS -- narrower than "names a ``ref`` row", and the
+    difference is a 500 -- is a property of the SUBMISSION, so it belongs to
+    the submission's validator:
+    :class:`~app.schemas.validation._helpers.RecurrencePatternField` refuses it
+    before any route code runs (plan step R2e-2, developer ruling 2026-08-07).
+    The check used to live here AND in
+    :func:`update_recurrence_rule_from_form` -- one rule written twice, which
+    a third caller would have had neither copy of.
 
     Args:
         data: Marshmallow-validated payload; mutated in place.  The
@@ -228,9 +229,9 @@ def build_recurrence_rule_from_form(
             value is later persisted on the :class:`RecurrenceRule`.
         ctx: The :class:`RecurrenceFormContext` carrying the form's
             ``end_date_value`` (copied verbatim onto the rule), the
-            validation-error ``redirect`` target (invalid pattern id or
-            invalid every-N-periods start period), and the
-            ``include_due_day_of_month`` transaction-vs-transfer flag.
+            validation-error ``redirect`` target (an invalid start
+            period), and the ``include_due_day_of_month``
+            transaction-vs-transfer flag.
 
     Returns:
         * :class:`RecurrenceRule` -- newly added, flushed, ready to
@@ -238,9 +239,10 @@ def build_recurrence_rule_from_form(
           FK (e.g. ``template.recurrence_rule_id = rule.id``).
         * ``None`` -- no recurrence pattern was selected; the helper
           still popped every recurrence key from ``data``.
-        * :class:`Response` -- a Flask redirect to ``ctx.redirect``; the
-          caller returns it directly so the route's control flow matches
-          the pre-extraction shape.
+        * :class:`Response` -- a Flask redirect to ``ctx.redirect`` when the
+          submitted start period is not this user's; the caller returns it
+          directly so the route's control flow matches the pre-extraction
+          shape.
     """
     pattern_id = data.pop("recurrence_pattern", None)
 
@@ -252,10 +254,6 @@ def build_recurrence_rule_from_form(
         if ctx.include_due_day_of_month:
             data.pop(_DUE_DAY_KEY, None)
         return None
-
-    if modelled_pattern(pattern_id) is None:
-        flash("Invalid recurrence pattern.", "danger")
-        return ctx.redirect.to_response()
 
     interval_n = data.pop("interval_n", 1)
     offset_periods = data.pop("offset_periods", 0)
@@ -317,7 +315,7 @@ def update_recurrence_rule_from_form(
     data: dict[str, Any],
     *,
     ctx: RecurrenceFormContext,
-) -> Response | None:
+) -> None:
     """Re-point an existing :class:`RecurrenceRule` from a form payload.
 
     Sibling of :func:`build_recurrence_rule_from_form` for the
@@ -351,24 +349,20 @@ def update_recurrence_rule_from_form(
             ``ctx.include_due_day_of_month`` is ``True`` --
             ``due_day_of_month``.
         ctx: The :class:`RecurrenceFormContext` carrying the form's
-            ``end_date_value`` (copied verbatim onto ``rule.end_date``),
-            the invalid-pattern ``redirect`` target, and the
-            ``include_due_day_of_month`` transaction-vs-transfer flag.
+            ``end_date_value`` (copied verbatim onto ``rule.end_date``) and
+            the ``include_due_day_of_month`` transaction-vs-transfer flag.
+            Its ``redirect`` is unused here and kept only because the three
+            helpers share one context object.
 
     Returns:
-        * ``None`` -- the rule was re-pointed successfully; the caller
-          continues to the field-update loop.
-        * :class:`Response` -- a Flask redirect emitted when the
-          submitted ``recurrence_pattern`` id names no pattern this
-          application models (see
-          :func:`build_recurrence_rule_from_form`); the caller returns it
-          directly so the route's control flow matches the pre-extraction
-          shape.
+        ``None``.  **It cannot fail**, which is what plan step R2e-2 changed:
+        the one failure it used to have -- an unmodelled ``recurrence_pattern``
+        -- is refused by
+        :class:`~app.schemas.validation._helpers.RecurrencePatternField` before
+        the route reads the payload, so there is no redirect left to return and
+        the signature says so.
     """
     pattern_id = data.pop("recurrence_pattern")
-    if modelled_pattern(pattern_id) is None:
-        flash("Invalid recurrence pattern.", "danger")
-        return ctx.redirect.to_response()
 
     # The form's every-recurrence-key pops happen unconditionally, so the
     # caller's downstream ``setattr`` loop never sees a stray kwarg whichever
@@ -430,7 +424,6 @@ def update_recurrence_rule_from_form(
         ),
         calendar_for(rule.user_id),
     )
-    return None
 
 
 LOAN_PAYMENT_CANNOT_BE_ONE_TIME: str = (
@@ -639,11 +632,15 @@ def resolve_recurrence_rule_for_update(
         return ctx.redirect.to_response()
 
     if data.get("recurrence_pattern") and template.recurrence_rule:
-        return update_recurrence_rule_from_form(
+        # Re-points the rule in place and cannot fail, so this branch has no
+        # redirect to propagate -- it returns the same ``None`` the other two
+        # branches do on success.
+        update_recurrence_rule_from_form(
             template.recurrence_rule,
             data,
             ctx=ctx,
         )
+        return None
 
     rule_or_redirect = build_recurrence_rule_from_form(
         data,

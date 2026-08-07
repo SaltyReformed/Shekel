@@ -231,6 +231,67 @@ class RowId(fields.Integer):
         return row_id
 
 
+class RecurrencePatternField(RowId):
+    """A submitted recurrence pattern id the application MODELS.
+
+    :class:`RowId` answers "does this name a row"; this answers the narrower
+    question every recurrence surface actually needs -- "does this name a
+    cadence we can resolve".  ``ref.recurrence_patterns`` is a TABLE and
+    :class:`~app.enums.RecurrencePatternEnum` is the set
+    :func:`app.services.recurrence.resolve` can read back, and the two are
+    deliberately allowed to diverge: plan step R2e-3 deletes the ``Once`` enum
+    member while its row SURVIVES to R9, because ``ref_cache.init`` raises for
+    an enum member with no row and the deploy auto-rolls back to the previous
+    image (ruling R-R11).
+
+    **Declared as a FIELD TYPE rather than a ``validate=`` argument on purpose.**
+    The rule then travels with the value: a future schema that declares a
+    recurrence pattern gets the refusal without its author remembering, which
+    is the failure this placement exists to remove.  Before plan step R2e-2 the
+    check lived in the two route-layer form readers -- so it was the same rule
+    written twice, and any third caller would have had neither copy.
+
+    The last-resort invariant stays where it was: ``resolve`` still RAISES for
+    an unmodelled pattern, so a value that reaches the write door some other
+    way is refused loudly rather than persisted.  This field is what turns that
+    500 into a field error the form can flash.
+
+    No guard for an uninitialised ``ref_cache``: the lookup raises there, but a
+    form cannot render in that window either (``pattern_choices`` and
+    ``register_ref_id_globals`` both need the same cache), so a guard would be
+    dead code that only made the failure quieter.
+    """
+
+    def _deserialize(self, value, attr, data, **kwargs):
+        """Return the row id, refusing one the application does not model.
+
+        Args:
+            value: The submitted value.
+            attr: Field name (marshmallow's contract).
+            data: The whole payload being loaded (marshmallow's contract).
+            **kwargs: Forwarded to :class:`RowId`.
+
+        Returns:
+            The pattern id as an ``int``.
+
+        Raises:
+            ValidationError: *value* names no row (via :class:`RowId`), or
+                names a row no ``RecurrencePatternEnum`` member does.
+        """
+        # Pylint: ``import-outside-toplevel`` -- deferred so this shared schema
+        # helper, which every domain module imports, does not pull the
+        # recurrence service package in at import time for the two schemas that
+        # need it.
+        from app.services.recurrence import (  # pylint: disable=import-outside-toplevel
+            modelled_pattern,
+        )
+
+        pattern_id = super()._deserialize(value, attr, data, **kwargs)
+        if modelled_pattern(pattern_id) is None:
+            raise ValidationError("Invalid recurrence pattern.")
+        return pattern_id
+
+
 class BaseSchema(Schema):
     """Base schema that strips CSRF tokens from form submissions."""
 

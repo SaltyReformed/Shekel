@@ -11,6 +11,7 @@ from marshmallow import (
 
 from app.schemas.validation._helpers import (
     BaseSchema,
+    RecurrencePatternField,
     RowId,
     _normalize_empty_inputs,
 )
@@ -54,21 +55,26 @@ class TransferTemplateCreateSchema(BaseSchema):
 
     # Recurrence rule fields.
     # The value is the integer primary key of a ref.recurrence_patterns row,
-    # submitted as a string via HTML form data.  Route-level code validates it
-    # against ``RecurrencePatternEnum`` -- what the application MODELS, which
-    # is narrower than what the table HOLDS (plan step R2e-2).  ``RowId``
-    # rather than ``Integer``
-    # because it IS a row id despite the name (plan step X-ae): an
-    # adversarial review found it reading '١', ' 2 ', '+3', '007' and
-    # '1_0' as pattern ids, and the completeness gate could not see it
-    # while that gate matched on a ``_id`` SUFFIX.
+    # submitted as a string via HTML form data.  ``RecurrencePatternField``
+    # rather than a bare ``RowId``: it also refuses an id no
+    # ``RecurrencePatternEnum`` member names -- what the application MODELS is
+    # narrower than what the table HOLDS, and the gap is a 500 (plan step
+    # R2e-2).  Carrying the rule in the FIELD is what stops a third schema
+    # declaring a pattern without it; ``validate.Range(min=1)`` went with the
+    # move because ``RowId`` already floors at ``MIN_ROW_ID``.
+    #
+    # ``RowId`` underneath rather than ``Integer`` because it IS a row id
+    # despite the name (plan step X-ae): an adversarial review found
+    # ``Integer`` reading '١', ' 2 ', '+3', '007' and '1_0' as pattern ids,
+    # and the completeness gate could not see it while that gate matched on a
+    # ``_id`` SUFFIX.
     #
     # ``allow_none`` so the form's "None (one-time / manual)" option survives
     # the pre_load hook as an explicit ``None`` rather than a dropped key
     # (plan step R2e-1) -- see the identical field on
     # :class:`~app.schemas.validation.templates.TemplateCreateSchema` for why
     # a present ``None`` and an absent key must stay distinguishable.
-    recurrence_pattern = RowId(validate=validate.Range(min=1), allow_none=True)
+    recurrence_pattern = RecurrencePatternField(allow_none=True)
     interval_n = fields.Integer(validate=validate.Range(min=1))
     offset_periods = fields.Integer(validate=validate.Range(min=0))
     day_of_month = fields.Integer(validate=validate.Range(min=1, max=31))

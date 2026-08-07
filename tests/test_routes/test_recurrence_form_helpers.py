@@ -113,26 +113,6 @@ class TestBuildRecurrenceRuleFromForm:
             # because the schema strips it via EXCLUDE.
             assert data == {"due_day_of_month": 5}
 
-    def test_invalid_pattern_returns_redirect_response(
-        self, app, auth_client, seed_user,  # pylint: disable=unused-argument
-    ):
-        """C2-2: invalid pattern id -> Response 302 + flash."""
-        with app.test_request_context():
-            data = {"recurrence_pattern": "99999999"}  # nonexistent
-            result = build_recurrence_rule_from_form(
-                data,
-                user_id=seed_user["user"].id,
-                start_period_id=None,
-                ctx=RecurrenceFormContext(
-                    end_date_value=None,
-                    redirect=RedirectTarget("templates.new_template"),
-                    include_due_day_of_month=True,
-                ),
-            )
-            assert isinstance(result, Response)
-            assert result.status_code == 302
-            assert "/templates/new" in result.headers["Location"]
-
     def test_every_n_periods_auto_offset(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
@@ -402,7 +382,7 @@ class TestUpdateRecurrenceNoAutoOffset:
                 "month_of_year": None,
                 "due_day_of_month": None,
             }
-            result = update_recurrence_rule_from_form(
+            update_recurrence_rule_from_form(
                 rule,
                 data,
                 ctx=RecurrenceFormContext(
@@ -413,7 +393,6 @@ class TestUpdateRecurrenceNoAutoOffset:
                     include_due_day_of_month=True,
                 ),
             )
-            assert result is None
             # Verbatim from the payload -- NOT auto-derived (3, not 3 % 4
             # or any period-index computation).
             assert rule.offset_periods == 3
@@ -471,7 +450,6 @@ class TestUpdateRecurrenceNoAutoOffset:
                     include_due_day_of_month=True,
                 ),
             )
-            assert result is None
             assert rule.offset_periods == 5
             assert rule.interval_n == 7
             assert rule.pattern_id == every_n_id
@@ -524,7 +502,7 @@ class TestUpdateKeepsTheStartPeriodsPhase:
             )
             assert rule.offset_periods == 2
 
-            result = update_recurrence_rule_from_form(
+            update_recurrence_rule_from_form(
                 rule,
                 {
                     "recurrence_pattern": every_n_id,
@@ -543,7 +521,6 @@ class TestUpdateKeepsTheStartPeriodsPhase:
                 ),
             )
 
-            assert result is None
             assert rule.offset_periods == 2
             assert rule.start_period_id == seed_periods[2].id
 
@@ -710,7 +687,7 @@ class TestTheFormsIntervalCannotChangeACalendarCadence:
                 "month_of_year": 4,
                 "due_day_of_month": None,
             }
-            result = update_recurrence_rule_from_form(
+            update_recurrence_rule_from_form(
                 rule, data,
                 ctx=RecurrenceFormContext(
                     end_date_value=None,
@@ -720,7 +697,6 @@ class TestTheFormsIntervalCannotChangeACalendarCadence:
                     include_due_day_of_month=True,
                 ),
             )
-            assert result is None
             assert "interval_n" not in data, (
                 "interval_n must be popped whether or not it is written, so "
                 "the caller's setattr loop never sees a stray kwarg"

@@ -61,6 +61,7 @@ from app.routes._recurrence_form_helpers import (
     handle_stale_form_conflict,
     resolve_recurrence_rule_for_update,
 )
+from app.routes._form_errors import validate_form_or_redirect
 from app.routes._redirect_target import RedirectTarget
 from app.routes._transfer_creation_helpers import (
     flush_template_or_namedup_redirect,
@@ -149,10 +150,11 @@ def create_transfer_template():
     by re-rendering the same form page rather than confirming
     whether the FK exists for someone else.
     """
-    errors = _create_schema.validate(request.form)
-    if errors:
-        flash("Please correct the highlighted errors and try again.", "danger")
-        return redirect(url_for("transfers.new_transfer_template"))
+    invalid_payload = validate_form_or_redirect(
+        _create_schema, RedirectTarget("transfers.new_transfer_template"),
+    )
+    if invalid_payload is not None:
+        return invalid_payload
 
     data = _create_schema.load(request.form)
 
@@ -279,10 +281,14 @@ def update_transfer_template(template_id):
     if template is None:
         abort(404)
 
-    errors = _update_schema.validate(request.form)
-    if errors:
-        flash("Please correct the highlighted errors and try again.", "danger")
-        return redirect(url_for("transfers.edit_transfer_template", template_id=template_id))
+    invalid_payload = validate_form_or_redirect(
+        _update_schema,
+        RedirectTarget(
+            "transfers.edit_transfer_template", {"template_id": template_id},
+        ),
+    )
+    if invalid_payload is not None:
+        return invalid_payload
 
     data = _update_schema.load(request.form)
 

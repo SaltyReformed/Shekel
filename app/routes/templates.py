@@ -62,6 +62,7 @@ from app.routes._recurrence_form_helpers import (
     handle_stale_form_conflict,
     resolve_recurrence_rule_for_update,
 )
+from app.routes._form_errors import validate_form_or_redirect
 from app.routes._redirect_target import RedirectTarget
 
 logger = logging.getLogger(__name__)
@@ -86,40 +87,6 @@ templates_bp = Blueprint("templates", __name__)
 
 _create_schema = TemplateCreateSchema()
 _update_schema = TemplateUpdateSchema()
-
-
-_GENERIC_VALIDATION_FLASH = "Please correct the highlighted errors and try again."
-
-# Marshmallow error keys whose messages should be flashed verbatim instead
-# of falling through to the generic prompt.  Listed keys correspond to
-# cross-field validators whose messages are user-facing and actionable;
-# field-level errors on the same keys (e.g. "Not a valid boolean.") are
-# rare in practice -- HTML forms only submit the canonical "on" string --
-# and remain acceptable feedback when they do appear.
-_ACTIONABLE_FLASH_FIELDS = ("is_envelope",)
-
-
-def _flash_message_for_errors(errors):
-    """Pick a user-facing flash message from a Marshmallow errors dict.
-
-    Cross-field validators (e.g. ``validate_envelope_only_on_expense``
-    in ``app/schemas/validation.py``) attach actionable messages to
-    specific fields so the form can highlight them.  When such a
-    message is present, surface it verbatim so the user sees the actual
-    rule that fired.  Other field-level errors fall back to a generic
-    prompt because the individual form widgets convey the issue inline.
-
-    Args:
-        errors: The dict returned by ``schema.validate(request.form)``.
-
-    Returns:
-        str: The message to flash.  Always non-empty.
-    """
-    for field in _ACTIONABLE_FLASH_FIELDS:
-        msgs = errors.get(field)
-        if isinstance(msgs, list) and msgs:
-            return str(msgs[0])
-    return _GENERIC_VALIDATION_FLASH
 
 
 def _is_tracking_on_non_expense(data, template=None):
@@ -462,10 +429,11 @@ def new_template():
 @require_owner
 def create_template():
     """Create a new transaction template with optional recurrence rule."""
-    errors = _create_schema.validate(request.form)
-    if errors:
-        flash(_flash_message_for_errors(errors), "danger")
-        return redirect(url_for("templates.new_template"))
+    invalid_payload = validate_form_or_redirect(
+        _create_schema, RedirectTarget("templates.new_template"),
+    )
+    if invalid_payload is not None:
+        return invalid_payload
 
     data = _create_schema.load(request.form)
 
@@ -604,10 +572,12 @@ def update_template(template_id):
     if template is None:
         abort(404)
 
-    errors = _update_schema.validate(request.form)
-    if errors:
-        flash(_flash_message_for_errors(errors), "danger")
-        return redirect(url_for("templates.edit_template", template_id=template_id))
+    invalid_payload = validate_form_or_redirect(
+        _update_schema,
+        RedirectTarget("templates.edit_template", {"template_id": template_id}),
+    )
+    if invalid_payload is not None:
+        return invalid_payload
 
     # The load / version-guard / pop / resolve preamble below is the
     # standard parallel-CRUD update shape it shares with
