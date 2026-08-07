@@ -37,14 +37,14 @@ class RecurrenceWeekdayAnchor(db.Model):
     """Nth-weekday-of-month anchor for a recurrence rule (0 or 1 per rule).
 
     Present exactly when a rule fires on "the third Friday" rather than on a
-    day of the month.  The rule's ``anchor_date`` still holds the first
-    occurrence -- this row says how to find the occurrence in every LATER
-    cycle, which a date alone cannot: "the 15th" is a stable day number,
-    "the third Friday" is not.
+    day of the month.  The rule's first occurrence still fixes WHEN it starts
+    -- this row says how to find the occurrence in every LATER cycle, which a
+    date alone cannot: "the 15th" is a stable day number, "the third Friday"
+    is not.
 
-    **Created empty by step R2b; step R8 is its first writer.**  No rule
-    references it before then, so a NULL-safe reader is not needed -- the
-    absence of a row simply means the rule anchors on a day of the month.
+    **Created empty, and step R8 is its first writer.**  No rule references it
+    before then, so a NULL-safe reader is not needed -- the absence of a row
+    simply means the rule anchors on a day of the month.
 
     Attributes:
         nth_week: Which occurrence of ``weekday`` within the month.  ``1``-``5``
@@ -101,10 +101,10 @@ class RecurrenceMonthAnchor(db.Model):
     29-31 AND the anchor's own month clamped it -- and absent otherwise, which
     is why the ordinary case costs nothing.
 
-    **This row is what stops a month-end rule from decaying.**  ``anchor_date``
-    is a real DATE, so it cannot hold "the 31st" when the anchor month is
-    April; it holds 2026-04-30 instead, and an engine reading the day back off
-    the anchor would then fire on the 30th forever:
+    **This row is what will stop a month-end rule from decaying.**  A rule's
+    first occurrence is a real DATE, so it cannot hold "the 31st" when the
+    anchor month is April; it is 2026-04-30 instead, and an engine reading the
+    day back off it would then fire on the 30th forever:
 
     ```text
     monthly day=31, first occurrence April 2026
@@ -122,10 +122,15 @@ class RecurrenceMonthAnchor(db.Model):
     for what the model PERMITS going forward -- and the failure is silent: the
     user sees a plausible date, never an error.
 
-    The resolved nominal day is therefore
-    ``month_anchor.nominal_day if month_anchor else anchor_date.day``, clamped
-    per occurrence month exactly as ``recurrence_engine._match_monthly`` clamps
-    ``day_of_month`` today.
+    **Empty until plan step R7c**, which is where the anchor becomes a stored
+    column and can therefore clamp.  Today the two-axis view is computed on
+    demand and carries the nominal day in
+    :attr:`~app.services.recurrence.ResolvedRecurrence.nominal_day`, derived
+    from the rule's own ``day_of_month`` -- so there is nothing for this table
+    to hold that is not already in the row (plan step R2d).  From R7c the
+    resolved nominal day is ``month_anchor.nominal_day if month_anchor else
+    anchor_date.day``, clamped per occurrence month exactly as
+    ``recurrence_engine._match_monthly`` clamps ``day_of_month`` today.
 
     Attributes:
         nominal_day: The day the user meant, 29-31.  Below 29 no month can

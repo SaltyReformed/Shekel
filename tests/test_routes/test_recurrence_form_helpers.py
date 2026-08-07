@@ -24,7 +24,7 @@ from flask import Response
 from werkzeug.datastructures import MultiDict
 
 from app import ref_cache
-from app.enums import RecurrencePatternEnum
+from app.enums import RecurrencePatternEnum, RecurrenceUnitEnum
 from app.exceptions import RecurrenceConflict
 from app.extensions import db
 from app.models.recurrence_rule import RecurrenceRule
@@ -45,6 +45,7 @@ from app.routes._recurrence_form_helpers import (
     update_recurrence_rule_from_form,
 )
 from app.routes._redirect_target import RedirectTarget
+from app.services.recurrence import calendar_for, recurrence_spec, resolve
 
 
 class TestBuildRecurrenceRuleFromForm:
@@ -727,28 +728,42 @@ class TestApplyConflictDecisions:
         assert 999 not in keep["ids"]
 
 
-class TestUpdateDoesNotClobberTheTwoAxisInterval:
-    """``interval_n`` is written only for the pattern that collects it.
+class TestTheFormsIntervalCannotChangeACalendarCadence:
+    """A hidden input cannot make a Quarterly bill recur monthly.
 
     **This is a regression guard for a defect an adversarial review caught
-    before it shipped** (plan step R2b).  ``interval_n`` carries a SECOND
-    meaning since R2b backfilled the two-axis model: 3 on a Quarterly rule,
-    6 on a Semi-Annual one.  The edit form's ``interval_n`` input is hidden
-    with ``d-none`` for every other pattern -- but a hidden input still
-    SUBMITS, and it renders the pattern-scoped default of 1.
+    before it shipped** (plan step R2b).  The edit form's ``interval_n`` input
+    is hidden with ``d-none`` for every pattern but ``Every N Periods`` -- and
+    a hidden input still SUBMITS, rendering the default of 1.
 
-    An unconditional ``rule.interval_n = data.pop("interval_n", 1)`` therefore
-    reset a Quarterly rule to 1 on any edit at all, including a rename.  At
-    plan step R4 a rule reading ``(interval_n=1, unit=month)`` IS a monthly
-    rule, so a quarterly bill would project three times its real cost and a
-    semi-annual one six times, with nothing left in the row to detect the
-    loss by.  Nothing else guards this: the value looks valid, the column is
-    already NOT NULL, and R2c's re-derivation cannot tell a clobbered 1 from
-    an authentic one.
+    While plan step R2b gave ``interval_n`` a SECOND meaning (3 on a Quarterly
+    rule, 6 on a Semi-Annual one), that submitted 1 reset the cadence on any
+    edit at all, including a rename: ``(interval_n=1, unit=month)`` IS a
+    monthly rule, so a quarterly bill would project three times its real cost
+    and a semi-annual one six times, with nothing left in the row to detect
+    the loss by.
+
+    Plan step R2d removed the second meaning rather than guarding it.  The
+    column carries only "repeat every N pay PERIODS" again, read by
+    ``match_periods`` in its ``EVERY_N_PERIODS`` branch; the interval of a
+    MONTH- or YEAR-unit recurrence is derived from the PATTERN and stored
+    nowhere.  So the assertions below are about the resolved cadence, not the
+    column: whatever the form submits, a Quarterly rule recurs every 3 months.
     """
 
     def _edit(self, app, seed_user, pattern, stored_interval, submitted):
-        """Run one update through the helper and return the resulting rule."""
+        """Run one update through the helper and return the resulting rule.
+
+        Args:
+            app: The Flask app, for a request context.
+            seed_user: The seeded user fixture.
+            pattern: The pattern the rule carries and the form submits.
+            stored_interval: The rule's ``interval_n`` before the edit.
+            submitted: The ``interval_n`` the form posts.
+
+        Returns:
+            The edited :class:`RecurrenceRule`.
+        """
         with app.test_request_context():
             rule = RecurrenceRule(
                 user_id=seed_user["user"].id,
@@ -784,28 +799,49 @@ class TestUpdateDoesNotClobberTheTwoAxisInterval:
             )
             return rule
 
-    def test_a_quarterly_edit_keeps_its_backfilled_interval(
-        self, app, auth_client, seed_user,  # pylint: disable=unused-argument
+    def test_a_quarterly_edit_still_recurs_every_three_months(
+        self, app, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
     ):
-        """Quarterly stored at 3, form submits 1 -> the rule stays at 3."""
+        """Neither a stored 4 nor a submitted 99 can reach the cadence.
+
+        Deliberately hostile values on BOTH sides rather than the form's
+        actual default of 1: a 1 -> 1 edit exercises no mismatch at all, so
+        the assertion would hold even if the column WERE the cadence.  A
+        stored 4 (left by a rule that used to be every-4-paychecks) and a
+        submitted 99 are each wrong in a way that would be visible.
+        """
         rule = self._edit(
             app, seed_user, RecurrencePatternEnum.QUARTERLY,
-            stored_interval=3, submitted=1,
-        )
-        assert rule.interval_n == 3, (
-            "the hidden form default overwrote a Quarterly rule's two-axis "
-            "interval; at step R4 that bill generates MONTHLY -- 3x the spend"
+            stored_interval=4, submitted=99,
         )
 
-    def test_a_semi_annual_edit_keeps_its_backfilled_interval(
-        self, app, auth_client, seed_user,  # pylint: disable=unused-argument
+        assert rule.interval_n == 99, (
+            "the submitted value should reach the COLUMN -- it is the "
+            "authored pay-period interval, meaningless for this pattern"
+        )
+        resolved = resolve(
+            recurrence_spec(rule), calendar_for(seed_user["user"].id),
+        )
+        assert resolved.interval_n == 3, (
+            "a form input reached a Quarterly rule's cadence; that bill would "
+            "generate every 99 months or MONTHLY -- 3x the spend or none"
+        )
+        assert resolved.unit is RecurrenceUnitEnum.MONTH
+
+    def test_a_semi_annual_edit_still_recurs_every_six_months(
+        self, app, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
     ):
-        """Semi-Annual stored at 6, form submits 1 -> the rule stays at 6."""
+        """The same hostile pair against the six-month cadence."""
         rule = self._edit(
             app, seed_user, RecurrencePatternEnum.SEMI_ANNUAL,
-            stored_interval=6, submitted=1,
+            stored_interval=4, submitted=99,
         )
-        assert rule.interval_n == 6, "6x the spend if this regresses"
+
+        resolved = resolve(
+            recurrence_spec(rule), calendar_for(seed_user["user"].id),
+        )
+        assert resolved.interval_n == 6, "6x the spend if this regresses"
+        assert resolved.unit is RecurrenceUnitEnum.MONTH
 
     def test_every_n_periods_still_takes_the_submitted_value(
         self, app, auth_client, seed_user,  # pylint: disable=unused-argument

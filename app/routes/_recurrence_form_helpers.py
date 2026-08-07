@@ -304,11 +304,10 @@ def update_recurrence_rule_from_form(
     re-phasing every future occurrence of an ``Every N Periods`` rule by
     one pay period.  Reading the rule's authored state back
     (:func:`app.services.recurrence.recurrence_spec`), replacing only the
-    fields this form owns, and re-resolving the whole value means the
-    rule's start period still phases it and the two-axis columns are
-    re-derived rather than left describing the replaced cadence.
-    ``interval_n`` needs no pattern-scoping for the same reason -- see
-    the inline comment on the call.
+    fields this form owns, and writing the whole value means the rule's
+    start period still phases it and nothing the form does not collect is
+    reset to a schema default.  ``interval_n`` needs no pattern-scoping
+    for a related reason -- see the inline comment on the call.
 
     Args:
         rule: The existing :class:`RecurrenceRule` to mutate in place.
@@ -360,22 +359,25 @@ def update_recurrence_rule_from_form(
     # The rule's CURRENT authored state, with the form's fields replaced.
     # Everything the form does not collect -- ``start_period_id`` (fixed at
     # creation), ``start_date`` (the loan's origination bound),
-    # ``max_occurrences`` -- rides through untouched, and the whole value is
-    # then re-resolved, so the two-axis columns cannot be left describing the
-    # cadence this edit replaced.
+    # ``max_occurrences`` -- rides through untouched, so this edit cannot
+    # reset a field it never showed the user.
     #
-    # ``interval_n`` needs no pattern-scoping here any more, and that is the
-    # structural half of the fix rather than a tidier spelling of the old
-    # guard.  This form's interval input is hidden for every pattern but
-    # EVERY_N_PERIODS and a hidden input still SUBMITS, so the pre-seam write
-    # reset a Quarterly rule's backfilled interval to 1 on any ordinary edit
-    # -- at plan step R4, ``(interval_n=1, unit=month)`` IS monthly, three
-    # times the projected spend with nothing left in the row to detect the
-    # loss by.  ``resolve`` DERIVES the interval from the pattern for every
-    # pattern that names one, so the submitted value can only reach a rule
-    # whose pattern actually collects it.  The same derivation closes the
-    # reverse case the old guard left open: switching an every-4-paychecks
-    # rule to Quarterly used to keep the 4.
+    # ``interval_n`` needs no pattern-scoping here, and that is structural
+    # rather than a tidier spelling of the old guard.  This form's interval
+    # input is hidden for every pattern but EVERY_N_PERIODS and a hidden input
+    # still SUBMITS, so the submitted value lands on a Quarterly rule's column
+    # -- where it means nothing and nobody reads it.  ``interval_n`` carries
+    # one meaning only, "repeat every N pay PERIODS", consulted by
+    # ``match_periods`` in its EVERY_N_PERIODS branch, by
+    # ``savings_goal_service.amount_to_monthly`` under the same condition, and
+    # by ``_recurrence_macros.html`` inside the same branch.  The interval of
+    # a MONTH- or YEAR-unit recurrence is a different fact, derived from the
+    # pattern by ``resolve`` and stored nowhere (plan step R2d), so no value
+    # this form can submit is able to say a Quarterly bill recurs monthly.
+    # That is what makes the pattern-scoped guard unnecessary rather than
+    # merely relocated, and it closes the reverse case the guard left open:
+    # switching an every-4-paychecks rule to Quarterly used to make it read as
+    # "every 4 months".
     current = recurrence_spec(rule)
     reauthor_rule(
         rule,

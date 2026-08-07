@@ -173,12 +173,14 @@ def _sync_loan_cadence(rule: "RecurrenceRule", params: "LoanParams") -> None:
     if rule.start_date == new_start and rule.day_of_month == new_day:
         return
     old_start, old_day = rule.start_date, rule.day_of_month
-    # RE-AUTHORED, not assigned: both values feed the rule's derived
-    # ``anchor_date``, so writing them alone would leave the two-axis columns
-    # describing the contract this edit replaced.  The schedule is loaded only
-    # on this side of the no-change guard above, so the ordinary settle /
-    # revert path (which reaches this function on every loan-payment mutation)
-    # still costs no extra query.
+    # RE-AUTHORED, not assigned: a rule is written whole through one door, so
+    # ``offset_periods`` is re-derived from the rule's own start period rather
+    # than left holding the phase a previous cadence implied.  Both values
+    # here also feed the rule's first occurrence, which is DERIVED on read
+    # (plan step R2d) and so cannot lag the contract this edit states.  The
+    # schedule is loaded only on this side of the no-change guard above, so
+    # the ordinary settle / revert path (which reaches this function on every
+    # loan-payment mutation) still costs no extra query.
     reauthor_rule(
         rule,
         replace(
@@ -300,14 +302,12 @@ def sync_recurring_payment_bounds(account_id: int) -> None:
 
     old_end_date = rule.end_date
     # Re-authored like the cadence above, and for the same reason: a rule is
-    # written whole, so there is no field-at-a-time write that could leave the
-    # two-axis columns behind.  ``end_date`` is not itself an input to the
-    # anchor, so this normally re-derives the anchor it already had.  It is
-    # not a no-op in every case, and the difference is a REPAIR rather than a
-    # surprise: the anchor is measured against the owner's schedule, so a rule
-    # whose anchor went stale is corrected here.  That is the property that
-    # makes a whole-value write safe as a uniform rule rather than one applied
-    # only where it happens to matter.
+    # written whole through one door, so there is no field-at-a-time write to
+    # leave some other column holding a value this edit invalidated.
+    # ``end_date`` is not an input to any derived value, so on this path the
+    # re-author is ordinarily a no-op on every column but the one named --
+    # which is the point of a uniform rule rather than one applied only where
+    # it happens to matter.
     reauthor_rule(
         rule,
         replace(recurrence_spec(rule), end_date=new_end_date),

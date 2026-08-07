@@ -34,8 +34,9 @@ class SchedulePeriod:
 
     Attributes:
         period_id: The ``budget.pay_periods.id`` this came from, or ``None``
-            for an unsaved period (the R1 characterization oracle builds its
-            schedules in memory, and ``match_periods`` never reads the id).
+            for an unsaved period.  Only :meth:`PeriodCalendar.period_by_id`
+            reads it, and only to resolve a rule's chosen start period, so a
+            schedule built in memory resolves everything else unchanged.
         period_index: The owner's 0-based ordinal for the period.
         start_date: The payday the period opens on.
         end_date: The last day the period covers.
@@ -51,16 +52,30 @@ class SchedulePeriod:
 class PeriodCalendar:
     """A user's pay-period schedule, ordered by ``period_index``.
 
+    **Carries the owner, and the resolver refuses a mismatch.**  A recurrence
+    anchor is measured against a schedule, so resolving one user's rule
+    against another user's schedule silently produces a first occurrence that
+    is wrong rather than an error.  Nothing in the application does that today
+    -- but two call sites derive the calendar's owner from a DIFFERENT object
+    than the rule's (``loan_recurrence_sync`` uses ``account.user_id``,
+    ``pay_period_admin`` uses ``first_period.user_id``), so the pairing is an
+    assumption rather than a fact until it is checked.  Recording the owner
+    here is what lets :func:`~app.services.recurrence.resolve` check it.
+
     Attributes:
+        user_id: The user whose schedule this is.
         periods: The owner's periods in ``period_index`` order.  Empty is a
             legal value here but not a resolvable one -- see
             :meth:`opening_bound`.
     """
 
+    user_id: int
     periods: tuple[SchedulePeriod, ...]
 
     @classmethod
-    def from_pay_periods(cls, pay_periods: Iterable) -> "PeriodCalendar":
+    def from_pay_periods(
+        cls, pay_periods: Iterable, user_id: int,
+    ) -> "PeriodCalendar":
         """Build a calendar from ``PayPeriod`` ORM rows.
 
         Sorts by ``period_index`` rather than trusting the caller's query
@@ -69,23 +84,34 @@ class PeriodCalendar:
         calendar whose order depended on how it was fetched would make
         :meth:`opening_bound` answer differently for the same schedule.
 
+        The owner is passed rather than read off the rows.  Reading it would
+        mean either trusting the first row (which says nothing about the
+        rest) or scanning for disagreement -- and either way an UNSAVED
+        ``PayPeriod``, which this class accepts by design, carries no
+        ``user_id`` to read.  The caller always knows which user it queried
+        for; making it say so costs one argument and removes the question.
+
         Args:
             pay_periods: An iterable of
                 :class:`~app.models.pay_period.PayPeriod` rows, saved or not.
+            user_id: The user whose schedule these periods are.
 
         Returns:
             The frozen calendar.
         """
         rows = sorted(pay_periods, key=lambda period: period.period_index)
-        return cls(periods=tuple(
-            SchedulePeriod(
-                period_id=period.id,
-                period_index=period.period_index,
-                start_date=period.start_date,
-                end_date=period.end_date,
-            )
-            for period in rows
-        ))
+        return cls(
+            user_id=user_id,
+            periods=tuple(
+                SchedulePeriod(
+                    period_id=period.id,
+                    period_index=period.period_index,
+                    start_date=period.start_date,
+                    end_date=period.end_date,
+                )
+                for period in rows
+            ),
+        )
 
     def opening_bound(self) -> date | None:
         """Return the schedule's first payday, or ``None`` when it is empty.

@@ -22,7 +22,6 @@ from dataclasses import replace
 from datetime import date, timedelta
 
 from sqlalchemy import or_
-from sqlalchemy.orm import selectinload
 
 from app.exceptions import (
     PayPeriodDiscardRequired,
@@ -762,25 +761,12 @@ def _rule_ids_with_start_period(user_id: int) -> list[int]:
 
 
 def _repoint_recurrence_rules(rule_ids: list[int], first_period) -> None:
-    """Re-author EVERY rule this user owns onto the rebuilt schedule.
+    """Re-point the rules that carried a start period onto the new schedule.
 
-    Two different things happen here, and conflating them was a bug:
-
-    * the rules whose ``start_period_id`` the wipe cascade nulled (captured by
-      :func:`_rule_ids_with_start_period`) are re-POINTED at the new first
-      period, so a rule that had an explicit start keeps one and that period
-      correctly classifies as a ``RECURRENCE_ANCHOR``;
-    * **every** rule is re-AUTHORED, whether or not it had a start period,
-      because ``anchor_date`` is not a function of the start period alone.
-      ``app.services.recurrence.resolve`` measures it from the GREATEST of the
-      start period, the rule's ``start_date``, and the SCHEDULE'S OPENING
-      PAYDAY -- and a reset moves that opening.  Re-authoring only the
-      captured rules left every start-period-less rule carrying a first
-      occurrence from the schedule that was just deleted: measured on three of
-      the developer's 50 live rules, stored ``2026-01-02`` against a rebuilt
-      schedule opening ``2027-03-05``.  A neutral review found it; plan step
-      R2c-3's NOT NULL tightening never would have, because the value is not
-      null, only wrong.
+    The wipe cascade SET-NULLs every rule's ``start_period_id``, so the rules
+    captured by :func:`_rule_ids_with_start_period` are re-pointed at the new
+    first period: a rule that had an explicit start keeps one, and that period
+    correctly classifies as a ``RECURRENCE_ANCHOR``.
 
     **Re-authored rather than bulk-updated, and that is what re-phases them.**
     This used to be one ``query.update()`` writing ``start_period_id`` and a
@@ -788,38 +774,66 @@ def _repoint_recurrence_rules(rule_ids: list[int], first_period) -> None:
     EVERY_N_PERIODS -- ``match_periods`` fires where
     ``(period_index - offset_periods) % interval_n == 0``, so re-pointing the
     start without re-phasing would fire the rule on the wrong periods -- but it
-    was a hand-maintained copy of a derivation that lives in ``resolve``, which
-    computes ``first_period.period_index % interval_n``: the same 0, from the
-    rule the zero was transcribed from.  A bulk update writes SQL beneath the
-    ORM and so could not have touched ``anchor_date`` at all.
+    was a hand-maintained copy of a derivation that lives in
+    ``app.services.recurrence``, which computes
+    ``first_period.period_index % interval_n``: the same 0, from the rule the
+    zero was transcribed from.  Going through the seam means the phase is
+    derived rather than transcribed.
 
-    The schedule is loaded ONCE and threaded through every rule, and the
-    month-anchor children are eager-loaded in the same pass -- re-authoring
-    consults each rule's 0-or-1 subtype row, which would otherwise be a
-    ``SELECT`` per rule.  Runs before the repopulation pass, so the
+    **The rules WITHOUT a start period are deliberately left alone**, and that
+    is a change from the first cut of this function, which re-authored every
+    rule the owner had.  It did so because ``anchor_date`` was a stored value
+    measured partly from the schedule's OPENING PAYDAY, so a reset stranded
+    every start-period-less rule on a first occurrence from the deleted
+    schedule.  Plan step R2d removed the stored anchor: the two-axis view is
+    computed on demand, so a reset cannot strand it.
+
+    Exactly two columns of ``budget.recurrence_rules`` depend on the schedule
+    at all.  ``start_period_id`` is NULL before and after for these rules, and
+    ``offset_periods`` is a function of the start period alone -- so
+    ``resolve`` returns the value already stored whenever there is no start
+    period to derive from.  The wide pass therefore wrote nothing on this set,
+    and the narrow one is the same behaviour stated honestly rather than a
+    saving.  **It is NOT an UPDATE saving**: assigning identical values to an
+    instance loaded in this transaction emits no statement at all, because
+    SQLAlchemy compares each attribute against its committed state before
+    building the UPDATE (measured on the pinned 2.0.49 -- 0 statements for the
+    identical-reassign shape, 1 for the control that changes a value).
+
+    What the narrowing does give up, stated because it is not nothing: the
+    wide pass resolved every rule the owner had, so an unresolvable one would
+    have raised.  That is a worse behaviour rather than a lost safety -- it
+    would abort a schedule reset over a rule the reset does not touch.
+
+    The schedule is loaded ONCE and threaded through every rule rather than
+    re-queried per rule.  Runs before the repopulation pass, so the
     regenerated rows use the corrected phase.
 
     Args:
         rule_ids: The recurrence-rule ids that carried an explicit start
-            period before the wipe, and so are re-pointed at *first_period*.
-            Every other rule the owner has is still re-authored.
+            period before the wipe.
         first_period: The new schedule's first
             :class:`~app.models.pay_period.PayPeriod` (index 0).
     """
-    repointed = set(rule_ids)
-    rules = db.session.query(RecurrenceRule).options(
-        selectinload(RecurrenceRule.month_anchor),
-    ).filter(
+    if not rule_ids:
+        return
+    rules = db.session.query(RecurrenceRule).filter(
+        RecurrenceRule.id.in_(rule_ids),
+        # Redundant against ``_rule_ids_with_start_period``'s own filter, and
+        # kept: an id list is the kind of argument that acquires a second
+        # caller, and the seam refuses a spec resolved against another user's
+        # calendar anyway.
         RecurrenceRule.user_id == first_period.user_id,
     ).all()
     if not rules:
         return
     calendar = calendar_for(first_period.user_id)
     for rule in rules:
-        spec = recurrence_spec(rule)
-        if rule.id in repointed:
-            spec = replace(spec, start_period_id=first_period.id)
-        reauthor_rule(rule, spec, calendar)
+        reauthor_rule(
+            rule,
+            replace(recurrence_spec(rule), start_period_id=first_period.id),
+            calendar,
+        )
     db.session.flush()
 
 

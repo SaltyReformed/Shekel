@@ -1,20 +1,34 @@
 """
-Shekel Budget App -- Resolving an authored recurrence into every column
+Shekel Budget App -- Resolving an authored recurrence into its two-axis view
 
 One pure function, :func:`resolve`, turns what a caller AUTHORS
-(:class:`RecurrenceSpec` -- a pattern and its parameters) into what the row
-HOLDS (:class:`ResolvedRecurrence` -- every column of
-``budget.recurrence_rules``, both vocabularies, plus the 0-or-1
-``recurrence_month_anchors`` value).
+(:class:`RecurrenceSpec` -- a pattern and its parameters) into what the
+recurrence MEANS (:class:`ResolvedRecurrence` -- an interval, a unit, a first
+occurrence, a placement, a shift, the bounds, and the 0-or-1 nominal day).
 
-**Why one function emits both vocabularies.**  Plan step R2b added the
-two-axis columns beside the closed ``pattern_id`` set they replace, and until
-step R4 the OLD ones are what the engine reads.  Two vocabularies describing
-one cadence is a persisted copy of a derivation -- the B-14 defect shape -- and
-the way a copy drifts is that some writer moves one side and not the other.
-Emitting both from a single call over a single input removes the opportunity:
-there is no intermediate state in which one has been written and the other has
-not, because the caller never holds the halves separately.
+**Nothing persists what this returns, and that is the design** (developer
+ruling, 2026-08-07; plan step R2d).  The two-axis values are a DERIVATION over
+the columns the row already holds -- the closed ``pattern_id`` set plus
+``day_of_month`` / ``month_of_year`` / ``start_period_id`` / ``start_date`` /
+``interval_n`` -- and the owner's pay-period schedule.  Storing a derivation
+beside its own inputs is a cache; a cache drifts the moment one writer moves
+one side alone, and no mechanism that polices it can be complete.  So it is
+not stored: the two-axis view is computed where it is needed, from one
+producer, and there is no second copy to disagree with the first.
+
+The four values become COLUMNS -- authored, NOT NULL, from one backfill, in
+the same transaction that drops the closed-set columns they were derived from
+-- at plan step R7c, which is where the recurrence form starts collecting
+them.  At that point they are authored rather than derived and storing them is
+correct.  See ``c8f2b6a41d93``'s module docstring for the full reasoning.
+
+``Once`` is not modelled here.  It means "does not recur", so no honest
+cadence exists for it; it resolves to the same inert value as ``Every
+Period``, and ``pattern_id = Once`` REMAINS what suppresses generation
+(``recurrence_engine.py:115,257``, ``recurring_view.py:236``,
+``savings_goal_service.py:427``) until plan step R7a retires it.  A consumer
+of this value must not infer that a resolved recurrence will actually
+generate.
 
 Pure: no Flask, no ORM, no clock, no database.  Its two inputs are the
 authored spec and the owner's :class:`~app.services.recurrence._calendar.PeriodCalendar`,
@@ -33,8 +47,8 @@ The four derivations
 
 2. **A pay-period-space rule** (Every Period / Once) anchors on the effective
    start ITSELF, not on a period boundary.  ``anchor_date`` is the occurrence
-   -- the date the rule targets -- and ``placement_id`` is what carries an
-   occurrence onto a period; storing a period start in the anchor would put
+   -- the date the rule targets -- and ``placement`` is what carries an
+   occurrence onto a period; putting a period start in the anchor would put
    the result of the placement axis into the anchor axis, the exact fusion
    this redesign exists to undo.  It is also what makes the value TOTAL: plan
    step R2b anchored on "the first period ending on or after the bound", which
@@ -50,12 +64,15 @@ The four derivations
 
    **``Every N Periods`` is the exception**, and a neutral review found it: its
    phase is ``(period_index - offset_periods) % interval_n == 0``, which a
-   bare date cannot express, so anchoring it on the bound made the two
-   vocabularies state DIFFERENT cadences (measured: stored phase 2 against an
-   anchor in period 0, i.e. periods 2/5/8 against 0/3/6).  Its anchor
-   therefore advances to the first period boundary that satisfies the phase --
-   and falls back to the bound past the horizon, where no period exists to
-   name and none would generate either.  See :func:`_phased_period_anchor`.
+   bare date cannot express, so anchoring it on the bound made the anchor and
+   the rule's own stored ``offset_periods`` state DIFFERENT cadences
+   (measured: stored phase 2 -- periods 2/5/8 -- against an anchor in period
+   0 -- periods 0/3/6).  ``offset_periods`` is the one derived value that is
+   still a COLUMN, so this is the one place the two can disagree, and it is
+   why the anchor advances to the first period boundary that satisfies the
+   phase.  Past the horizon it falls back to the bound, where no period exists
+   to name and none would generate either.  See :func:`_phased_period_anchor`
+   and :func:`_derive_offset_periods`.
 
 3. **A calendar rule** (Monthly / Quarterly / Semi-Annual / Annual) anchors on
    the first date matching its ``(month_of_year, day_of_month)`` cycle on or
@@ -80,10 +97,11 @@ The four derivations
    measured counterexample.
 
 Bounds are NOT validated here.  ``end_date >= anchor_date`` is a real
-invariant of the finished model and belongs to plan step R7, together with the
-Marshmallow validator that can refuse the pair at the door: 14 live rules
-carry a derived anchor in the future, and refusing them here would make
-"stop this recurring bill" raise.
+invariant of the finished model and belongs to plan step R7c -- where the
+anchor becomes a stored column -- together with the Marshmallow validator
+that can refuse the pair at the door: 14 live rules resolve to an anchor in
+the future, and refusing them here would make "stop this recurring bill"
+raise.
 """
 import calendar as calendar_module
 from dataclasses import dataclass
@@ -97,7 +115,6 @@ from app.enums import (
     RecurrenceUnitEnum,
 )
 from app.exceptions import ShekelError
-from app.models.recurrence_rule import ResolvedRecurrence
 from app.services.recurrence._calendar import PeriodCalendar, SchedulePeriod
 
 
@@ -108,10 +125,87 @@ class RecurrenceResolutionError(ShekelError):
     ``ValidationError`` a route flashes: every user has had at least one pay
     period since registration bootstraps one (``auth_service.register_user``),
     and ``pattern_id`` is written only from
-    :class:`~app.enums.RecurrencePatternEnum`.  Raised loudly so a rule can
-    never be persisted with a fabricated cadence -- which is what plan step
-    R2c's NOT NULL tightening then makes structural.
+    :class:`~app.enums.RecurrencePatternEnum`.  Raised loudly so a recurrence
+    can never be READ with a fabricated cadence, and -- because
+    ``app.services.recurrence.author_rule`` resolves before it writes -- so a
+    rule that cannot be resolved is never persisted in the first place.
     """
+
+
+@dataclass(frozen=True)
+class ResolvedRecurrence:  # pylint: disable=too-many-instance-attributes
+    """What a recurrence MEANS, on the two axes, against one schedule.
+
+    A computed value, never a row: see this module's docstring for why the
+    derivation is not stored beside its own inputs.  It is what plan step R3's
+    forward occurrence engine consumes, and what plan step R7c's migration
+    freezes into columns once the form authors it directly.
+
+    Pylint: ``too-many-instance-attributes`` (9/7) -- these nine ARE what one
+    recurrence means, read as a flat unit by a single consumer, and the plan's
+    END-state table (section 3) carries all but ``offset_periods``.  The two arguable
+    sub-groups were both weighed and rejected: pairing ``end_date`` with
+    ``max_occurrences`` behind a bound object would put their exclusivity in a
+    second place beside the ``ck_recurrence_rules_single_end_bound`` CHECK
+    that already owns it, and pairing ``anchor_date`` with ``nominal_day``
+    would make every consumer unwrap a two-field object to ask for a date.
+    Mirrors the :class:`RecurrenceSpec` and ``transfer_service.TransferSpec``
+    precedents.
+
+    Carries ENUM members rather than ``ref`` table ids because nothing
+    persists it.  The ids exist to put a value in a column; a consumer asking
+    "is this monthly" should compare
+    ``resolved.unit is RecurrenceUnitEnum.MONTH``, not two integers whose
+    meaning depends on a seed.  :func:`resolve` makes exactly one id-to-enum
+    conversion -- the stored ``pattern_id`` -- and it goes through
+    ``ref_cache``, the project's IDs-for-logic seam.
+
+    Attributes:
+        offset_periods: The phase within the period cycle -- an
+            ``Every N Periods`` rule fires where
+            ``(period_index - offset_periods) % interval_n == 0``.  The
+            LEGACY encoding of a fact ``anchor_date`` already carries, and the
+            one derived value that is still a COLUMN on
+            ``budget.recurrence_rules``; it is emitted here so the write door
+            derives it in the SAME call that derives the anchor, rather than
+            running the derivation twice and hoping the two agree.  Dies with
+            the column at plan step R7c.
+        interval_n: How many *unit*\\ s pass between occurrences.  Always the
+            two-axis reading: 3 for Quarterly, 6 for Semi-Annual, the
+            authored count for ``Every N Periods``, 1 elsewhere.
+        unit: The cadence unit *interval_n* counts.
+        anchor_date: The FIRST occurrence -- the rule's phase, day and opening
+            bound in one value.  Occurrences are this date plus multiples of
+            *interval_n* units, so nothing before it can be generated.
+        placement: How an occurrence DATE maps onto the pay period a row lives
+            in.  The axis today's Monthly and Monthly First patterns differ
+            on.
+        shift: Weekend / holiday adjustment for the occurrence date.  Always
+            ``NONE`` until plan step R8.
+        end_date: The closing bound, or ``None`` for indefinite.  Mutually
+            exclusive with *max_occurrences*
+            (``ck_recurrence_rules_single_end_bound``).
+        max_occurrences: The count-bounded end, or ``None``.  No writer sets
+            it until plan step R8.
+        nominal_day: The day the rule MEANS when *anchor_date*'s own month was
+            too short to hold it -- April has no 31st, so a day-31 rule
+            anchored there carries ``anchor_date = 2026-04-30`` and
+            ``nominal_day = 31``.  ``None`` when the anchor holds the day
+            itself, which is every rule whose day is 1-28 and every rule that
+            does not fire on a day of the month at all.  Presence is the
+            discriminator (ruling R-R3), and it is what stops a month-end rule
+            from decaying to the 30th forever.
+    """
+
+    offset_periods: int
+    interval_n: int
+    unit: RecurrenceUnitEnum
+    anchor_date: date
+    placement: PeriodPlacementEnum
+    shift: BusinessDayShiftEnum
+    end_date: date | None
+    max_occurrences: int | None
+    nominal_day: int | None
 
 
 #: Families of anchor derivation.  Three, because the anchor is measured in
@@ -420,8 +514,8 @@ def _first_of_month_anchor(calendar: PeriodCalendar, effective: date) -> date:
     The scan cannot run past the materialised horizon, so a bound beyond it
     falls back to the one-step form: the schedule WILL extend, and at any
     cadence short enough for the pattern to mean anything the next month has a
-    payday.  That keeps the derivation TOTAL, which plan step R2c-3's NOT NULL
-    tightening requires.  It also means the anchor of a ``Monthly First`` rule
+    payday.  That keeps the derivation TOTAL, which plan step R7c's NOT NULL
+    columns will require.  It also means the anchor of a ``Monthly First`` rule
     bounded past the horizon can move when the schedule extends -- inherent to
     a pattern defined in terms of paydays, not to this implementation, and
     equally true of the scan plan step R2b shipped.
@@ -478,8 +572,8 @@ def _phased_period_anchor(
         The qualifying period's ``start_date``, or *effective* itself when the
         schedule reaches no qualifying period -- a bound past the materialised
         horizon, where there is no period to name and no row to generate
-        either.  Keeping the value derivable is what plan step R2c-3's NOT
-        NULL tightening requires.
+        either.  Keeping the value derivable is what plan step R7c's NOT
+        NULL columns will require.
     """
     for period in calendar.periods:
         if period.end_date < effective:
@@ -565,27 +659,106 @@ def _month_anchor_day(
     return None
 
 
-def _resolve_phase(
+def _require_owner(spec: RecurrenceSpec, calendar: PeriodCalendar) -> None:
+    """Refuse a spec resolved against somebody else's schedule.
+
+    An anchor is measured against a pay-period schedule, so pairing a rule
+    with the wrong owner's calendar produces a first occurrence that is
+    silently WRONG rather than an error -- and two call sites derive the
+    calendar's owner from a different object than the rule's:
+    ``loan_recurrence_sync.sync_recurring_payment_bounds`` uses
+    ``account.user_id`` against a spec read from the rule, and
+    ``pay_period_admin._repoint_recurrence_rules`` uses
+    ``first_period.user_id``.  Both are consistent today; neither is
+    enforced.  Checking the pairing here makes the assumption a fact.
+
+    Args:
+        spec: The authored recurrence.
+        calendar: The schedule it is being resolved against.
+
+    Raises:
+        RecurrenceResolutionError: When the two name different users.
+    """
+    if calendar.user_id != spec.user_id:
+        raise RecurrenceResolutionError(
+            f"recurrence for user {spec.user_id} cannot be resolved against "
+            f"user {calendar.user_id}'s pay-period schedule.  A first "
+            f"occurrence is measured against the OWNER's schedule, so the "
+            f"mismatched pair would produce a plausible wrong date rather "
+            f"than an error."
+        )
+
+
+def _resolved_interval(
+    spec: RecurrenceSpec, derivation: _PatternDerivation,
+) -> int:
+    """Return the two-axis interval, refusing a non-positive authored one.
+
+    **The check is on the AUTHORED value, not the resolved one**, and the
+    difference is a live defect an adversarial review measured.  For every
+    calendar pattern the resolved interval is a hard-coded 1, 3, 6 or 1, which
+    can never be non-positive -- so checking it looked at nothing, while
+    ``app.services.recurrence._authoring._author`` wrote ``spec.interval_n``
+    verbatim into a ``NOT NULL`` column carrying
+    ``CHECK (interval_n > 0)``.  An authored 0 therefore reached the flush as
+    an unhandled ``IntegrityError``.  The authored value is the one that
+    becomes a column, so the authored value is the one the door must refuse;
+    the resolved value is positive by construction once it is.
+
+    Args:
+        spec: The authored recurrence.
+        derivation: The pattern's two-axis reading.
+
+    Returns:
+        The pattern's own interval, or the authored one for the single
+        pattern (``Every N Periods``) whose interval was already a column.
+
+    Raises:
+        RecurrenceResolutionError: When the AUTHORED interval is not positive.
+            Mirrors ``ck_recurrence_rules_positive_interval``, refused here so
+            the caller sees the offending value rather than an IntegrityError
+            at flush, and so the phase modulo cannot divide by zero.
+    """
+    if spec.interval_n < 1:
+        raise RecurrenceResolutionError(
+            f"recurrence interval_n must be positive, got {spec.interval_n} "
+            f"for pattern id {spec.pattern_id} (user {spec.user_id}).  It is "
+            f"written to a NOT NULL column with CHECK (interval_n > 0), so "
+            f"letting it through would raise an unhandled IntegrityError at "
+            f"the flush instead of here."
+        )
+    return (
+        spec.interval_n if derivation.interval_n is None
+        else derivation.interval_n
+    )
+
+
+def _derive_offset_periods(
     spec: RecurrenceSpec,
     pattern: RecurrencePatternEnum,
     interval_n: int,
     start_period: SchedulePeriod | None,
 ) -> int:
-    """Return the ``offset_periods`` phase this rule fires on.
+    """Return the ``offset_periods`` phase an authored recurrence fires on.
 
-    DERIVED from the start period whenever the rule names one, because that
-    is the fact the user actually chose: the form has no offset input at all
-    (no template under ``app/templates/`` renders one), so a submitted value
-    is always the schema default.  Applying the derivation on every write
-    rather than only on create is what closes defect **D1** -- the update path
-    wrote the default unconditionally, re-phasing every future occurrence of
-    an ``Every N Periods`` rule on an amount-only edit.
+    Takes the already-resolved pattern, interval and start period rather than
+    re-deriving them: :func:`resolve` is the only caller, it has all three in
+    hand, and computing them twice for one authoring request is the redundant
+    producer call the project rules out.
+
+    DERIVED from the start period whenever the rule names one, because that is
+    the fact the user actually chose: the form has no offset input at all (no
+    template under ``app/templates/`` renders one), so a submitted value is
+    always the schema default.  Applying the derivation on every write rather
+    than only on create is what closes defect **D1** -- the update path wrote
+    the default unconditionally, re-phasing every future occurrence of an
+    ``Every N Periods`` rule on an amount-only edit.
 
     Args:
         spec: The authored recurrence.
-        pattern: The resolved pattern member.
-        interval_n: The rule's resolved interval.
-        start_period: The spec's start period, already resolved, or ``None``.
+        pattern: Its resolved pattern member.
+        interval_n: Its resolved interval.
+        start_period: Its start period, already looked up, or ``None``.
 
     Returns:
         The phase, always in ``0 .. interval_n - 1`` when derived.
@@ -599,7 +772,12 @@ def _resolve_phase(
 
 
 def resolve(spec: RecurrenceSpec, calendar: PeriodCalendar) -> ResolvedRecurrence:
-    """Resolve an authored recurrence into every column of its row.
+    """Resolve an authored recurrence into its two-axis meaning.
+
+    The single producer of that value.  Nothing persists what it returns --
+    see this module's docstring -- so calling it twice for the same
+    ``(spec, calendar)`` is the only way two readers can ever disagree, and it
+    is a pure function, so they cannot.
 
     Args:
         spec: What the caller authored.
@@ -610,51 +788,40 @@ def resolve(spec: RecurrenceSpec, calendar: PeriodCalendar) -> ResolvedRecurrenc
         The complete, internally-consistent :class:`ResolvedRecurrence`.
 
     Raises:
-        RecurrenceResolutionError: When ``pattern_id`` names no modelled
-            pattern, when ``interval_n`` is not positive, or when the owner
-            has no pay periods.  All three are broken invariants: a rule with
-            a fabricated cadence is worse than a refused write.
+        RecurrenceResolutionError: When *spec* and *calendar* name different
+            users, when ``pattern_id`` names no modelled pattern, when
+            ``interval_n`` is not positive, or when the owner has no pay
+            periods.  All four are broken invariants: a recurrence read with a
+            fabricated cadence is worse than a refused read.
     """
+    _require_owner(spec, calendar)
     pattern = _pattern_member(spec.pattern_id)
     derivation = _PATTERN_DERIVATIONS[pattern]
-    interval_n = (
-        spec.interval_n if derivation.interval_n is None
-        else derivation.interval_n
-    )
-    if interval_n < 1:
-        # Mirrors ``ck_recurrence_rules_positive_interval``, refused here so
-        # the phase modulo below cannot divide by zero and so the caller sees
-        # the offending value rather than an IntegrityError at flush.
-        raise RecurrenceResolutionError(
-            f"recurrence interval_n must be positive, got {interval_n} for "
-            f"pattern id {spec.pattern_id} (user {spec.user_id})."
-        )
+    interval_n = _resolved_interval(spec, derivation)
 
     start_period = calendar.period_by_id(spec.start_period_id)
     effective = _effective_start(spec, calendar, start_period)
     # The phase is resolved BEFORE the anchor, because an ``Every N Periods``
-    # anchor has to carry it: the two vocabularies would otherwise state
-    # different cadences for the same rule.
-    offset_periods = _resolve_phase(spec, pattern, interval_n, start_period)
+    # anchor has to carry it: a bare date cannot express
+    # ``(period_index - offset) % interval_n == 0``, so anchoring such a rule
+    # on the raw bound would state a different cadence from the one the row
+    # holds (measured: stored phase 2 -- periods 2/5/8 -- against an anchor in
+    # period 0 -- periods 0/3/6).
+    offset_periods = _derive_offset_periods(
+        spec, pattern, interval_n, start_period,
+    )
     anchor, nominal_day = _resolve_anchor(
         spec, derivation, calendar, effective, (interval_n, offset_periods),
     )
 
     return ResolvedRecurrence(
-        user_id=spec.user_id,
-        pattern_id=spec.pattern_id,
-        interval_n=interval_n,
         offset_periods=offset_periods,
-        day_of_month=spec.day_of_month,
-        due_day_of_month=spec.due_day_of_month,
-        month_of_year=spec.month_of_year,
-        start_period_id=spec.start_period_id,
-        start_date=spec.start_date,
-        end_date=spec.end_date,
-        unit_id=ref_cache.recurrence_unit_id(derivation.unit),
+        interval_n=interval_n,
+        unit=derivation.unit,
         anchor_date=anchor,
-        placement_id=ref_cache.period_placement_id(derivation.placement),
-        shift_id=ref_cache.business_day_shift_id(BusinessDayShiftEnum.NONE),
+        placement=derivation.placement,
+        shift=BusinessDayShiftEnum.NONE,
+        end_date=spec.end_date,
         max_occurrences=spec.max_occurrences,
         nominal_day=_month_anchor_day(derivation.unit, anchor, nominal_day),
     )

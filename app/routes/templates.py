@@ -945,7 +945,8 @@ def preview_recurrence():
     # loaded, so this adds no query.
     start_period = owned_preview_start_period()
     rule = build_preview_rule(
-        pattern, start_period, PeriodCalendar.from_pay_periods(periods),
+        pattern, start_period,
+        PeriodCalendar.from_pay_periods(periods, current_user.id),
     )
 
     # ``effective_from`` is a DISPLAY choice -- "show me the next five from
