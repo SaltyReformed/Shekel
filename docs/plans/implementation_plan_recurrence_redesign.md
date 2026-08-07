@@ -31,7 +31,7 @@ Taken 2026-08-05 (developer):
 | Row columns | `due_date` -> `occurs_on` (rename, no value change) + new `due_on` |
 | The three defects | Folded into the redesign, not fixed as separate PRs |
 | Sequencing vs the balance arc | **Half A now; Half B folded into X-an.** See section 0 |
-| `PAY_PERIODS_PER_YEAR` | Folded into R7 (which already rewrites `amount_to_monthly`); derivation = `round(365.2425 / cadence_days)`, see section 4a |
+| `PAY_PERIODS_PER_YEAR` | Folded into R7a (which already rewrites `amount_to_monthly`); derivation = `round(365.2425 / cadence_days)`, see section 4a |
 | **Anchor day vs month-end clamp** | **`anchor_date` + a 0..1 `recurrence_month_anchors` subtype. See R-R3** |
 | **`Once` rules** | **Retired at R2e, BEFORE the new engine and the cutover. See R-R4** |
 | **R2 sequencing** | **R2a (vocabulary) -> R2b (subtypes) -> R2c-1 (the door) -> R2d (stop storing the derivation). All DONE** |
@@ -60,8 +60,8 @@ R5+R6 (dates)        vs X-an                 : 4 files -- ALL FOUR of X-an's sur
 R5+R6                vs X-f4 deletion set    : 1 file  (cash_ledger/_events.py)
 ```
 
-**Half A -- R1, R2, R3, R4, R7, R8. Runs NOW**, in the block-6/7 "interleaves anywhere" slot the
-balance README already defines. It does not touch a file the anchor half is editing. Delivers
+**Half A -- R1, R2, R3, R4, R7a-R7c, R8. Runs NOW**, in the block-6/7 "interleaves anywhere" slot
+the balance README already defines. It does not touch a file the anchor half is editing. Delivers
 every-other-month, every-two-years, weekly, nth-weekday, count-bounded end, business-day shift, and
 defects D1, D2, D3.
 
@@ -124,21 +124,6 @@ ORPHANED rules            : 5      (recurrence_rule_id is ON DELETE SET NULL
 
 `due_day_of_month` is used by ZERO rules. `interval_n` / `offset_periods` are at their defaults in
 ALL 50.
-
-### D1 -- an amount-only edit re-phases "every N paychecks"
-
-No `offset_periods` input exists in any template under `app/templates/`, but
-`update_recurrence_rule_from_form` writes `rule.offset_periods = data.pop("offset_periods", 0)`
-(`_recurrence_form_helpers.py:329`). Probe (route-level, real form payload):
-
-```text
-created with offset=1 (start period_index=7, interval=2)
-after an amount-only edit:
-E   AssertionError: assert 0 == 1
-```
-
-Every future occurrence shifts by one pay period. Latent in data only because no live rule uses the
-pattern.
 
 ### D2 -- an edit ignores the chosen "First paycheck"
 
@@ -262,19 +247,6 @@ naming two patterns is what would force R7c's downgrade to refuse rather than ro
 and the resolved value is unambiguous before anything consumes it. Until then `pattern_id = Once`
 REMAINS what suppresses generation, exactly as today -- the four guards run before the engine is
 consulted, so the ambiguity is contained to a value nothing reads yet.
-
-### R-R5 -- what NOT NULL would have cost, and why R2d avoided paying it
-
-Ruled 2026-08-05, and mostly SPENT. The original reasoning: the moment the four columns are NOT NULL
-every INSERT must supply them, and there are 5 production writers plus 83 direct
-`RecurrenceRule(...)` constructions across 39 test files -- so the migration and the writers had to
-land together, in one very large commit. R2 was split three ways to avoid that.
-
-R2d dissolved the problem instead of sequencing around it. With nothing derived stored there is no
-NOT NULL to tighten, so **the 83 test constructions were never touched**: a partial construction is
-still a complete rule. What survives from this ruling is its measurement of the blast radius, which
-R7c inherits in full -- that step is where NOT NULL finally lands, and where every one of those
-constructions must supply the authored two-axis values.
 
 ### R-R6 -- the bounds move from PERIODS to OCCURRENCES, and 4 frozen shapes move
 
@@ -543,8 +515,8 @@ rather than assume one.
 ## 4. Step sequence
 
 Each step is a leaf boundary: one commit, its own tests green, independently revertible.
-**Steps R1-R4 do not change any user-visible behaviour.** Half A = R1-R4, R7, R8 (+ the Half-A part
-of R9); Half B = R5, R6 (see section 0).
+**Steps R1-R4 do not change any user-visible behaviour.** Half A = R1-R4, R7a-R7c, R8 (+ the Half-A
+part of R9); Half B = R5, R6 (see section 0).
 
 **R1, R2a, R2b, R2c-1 and R2d are ARCHIVED** to
 `docs/plans/historical/recurrence_as_built_2026-08-05.md` (rule 5) -- one line per step with its
@@ -611,12 +583,15 @@ files and 5 templates to the one they actually mean. Highest-risk readers: `tran
 **R7 is THREE leaves**, ruled 2026-08-07: the cutover is the only irreversible-ish one, so the label
 and form work is not carried into it.
 
-- [ ] **R7a -- one label function.**
+- [ ] **R7a -- the derived-value surfaces become functions over `(interval, unit)`.**
 
-ONE function over `(interval, unit)`, fed by `resolve()`, replaces the 8-branch `recurrence_cell`
-macro (`_recurrence_macros.html:17`), the 8-entry `recurrence_pattern_labels` dict
-(`app/__init__.py:321`), and the 8 `REC_*` Jinja globals (`jinja_globals.py:91`). No schema change;
-kills the last `.name`-for-display coupling on this table.
+Two surfaces, one shape of change, both fed by `resolve()` and neither touching the schema. The
+LABEL: one function replaces the 8-branch `recurrence_cell` macro (`_recurrence_macros.html:17`),
+the 8-entry `recurrence_pattern_labels` dict (`app/__init__.py:321`) and the 8 `REC_*` Jinja globals
+(`jinja_globals.py:91`) -- killing the last `.name`-for-display coupling on this table. The MONTHLY
+EQUIVALENT: `savings_goal_service.amount_to_monthly` becomes four lines over the same pair, which is
+the same edit that replaces the `PAY_PERIODS_PER_YEAR` constant with a resolved per-user cadence
+(section 4a) and derives `calendar_service._INFREQUENT_PATTERNS` instead of enumerating it.
 
 - [ ] **R7b -- bounds and the form.**
 
@@ -674,12 +649,14 @@ Derived simplifications that fall out and must be taken, not left behind:
 - `calendar_service._INFREQUENT_PATTERNS` (`:74-79`): enumerated -> derived.
 - The four `Once` guards: deleted.
 
-### Carried steps -- found while building this arc, NOT part of it
+### Carried steps -- scheduled here so they are not merely remembered
 
-Section 5's ledger carries three findings this arc surfaced and does not own. They get steps here so
-they are scheduled rather than remembered. **None blocks R1-R9, and none is blocked by them**; each
-is a standalone commit that can run in any gap. Do not fold them into a recurrence migration -- an
-unrelated fix riding in a schema migration is unreviewable.
+Section 5's ledger carries findings that no numbered step closes: some this arc surfaced elsewhere
+and does not own, and some it left in its OWN code and chose not to fix inside a commit that
+promised something else. They get steps here so they are scheduled rather than remembered.
+**None blocks R1-R9, and none is blocked by them**; each is a standalone commit that can run in any
+gap. Do not fold them into a recurrence migration -- an unrelated fix riding in a schema migration
+is unreviewable.
 
 - [ ] **R-F1 -- Re-sync the five lagging `ref` identity sequences** (finding F-1).
 
@@ -748,12 +725,36 @@ downgrade drops them by name -- the table goes with them) and renaming 23 tables
 large migration that buys nothing. The alternative is a rename migration. Either way the outcome
 must land in `.claude/rules/database.md` so the next reader is not told two different things.
 
-## 4a. `PAY_PERIODS_PER_YEAR` (folded into R7)
+- [ ] **R-F7 -- Delete two unreachable branches in `_first_of_month_anchor`** (finding D11).
+
+Left by R2c-1 and found by a neutral review of R2d. Both guards in
+`app/services/recurrence/_resolution.py` are provably dead, and one carries a comment describing a
+case that cannot execute -- which is worse than the dead code, because it tells the next reader the
+function handles something it does not.
+
+*The in-loop `earliest is not None`.* `earliest_start_in_month(y, m)` is called with the year and
+month OF A PERIOD ALREADY IN `calendar.periods`, so that period is itself in the minimand and the
+result is never `None`.
+
+*The fallback's `if earliest is not None and earliest >= effective`.* The fallback runs only when
+the loop returned nothing. If that month's earliest payday were `>= effective`, the period whose
+start IS that payday would have passed the loop's own `start_date < effective` guard, and its
+month's earliest is the same value -- so the loop would have returned. The branch is therefore
+unreachable and the function always falls through to `_next_month_first(effective)`.
+
+Proven both ways before it was written down: the argument above, plus a brute-force sweep of 243,018
+`(schedule shape, effective date)` pairs across cadences 1-365, gapped and degenerate schedules, and
+bounds inside and past the horizon -- 32,006 of which reached the fallback.
+**Neither guard was ever taken.** Deleting them is provably behaviour-identical, so the R1 baseline
+must stay byte-identical and `tests/test_services/test_recurrence_resolution.py::TestTotality` must
+stay green unchanged.
+
+## 4a. `PAY_PERIODS_PER_YEAR` (folded into R7a)
 
 `PAY_PERIODS_PER_YEAR = Decimal("26")` (`app/utils/money.py:43`) is a magic number while
 `cadence_days` is user-selectable 1..365, so every monthly-equivalent figure on `/obligations`,
 `/savings`, and the Recurring surface is wrong for any non-biweekly schedule. It is NOT a separate
-task: R7 already rewrites `savings_goal_service.amount_to_monthly` from an 8-branch pattern switch
+task: R7a already rewrites `savings_goal_service.amount_to_monthly` from an 8-branch pattern switch
 to four lines over `(interval, unit)`, and changing its input from a module constant to a resolved
 per-user cadence is the same edit. Nine files reference the constant; overlap with the balance arc
 is one file (`savings_dashboard_service/_metrics.py`, vs the X-x held branch).
@@ -804,12 +805,13 @@ the rule this document is gated on (section 7 rule 1): it names a LIVE step, and
 re-points every row that named it.** The measurement lives where the work is -- D1-D4 in section 2,
 F-1 to F-3 in their R-F step entries -- so a row is a pointer, never a second copy of a fact.
 
-D2-D7 are defects in the code the redesign replaces; F-1 to F-3 and F-6 were found while building it
-and are NOT part of it, which is why their steps are the carried block at the end of section 4. F-4
-and F-5 are pay-period features section 4a surfaced -- they have no step because they need a ruling
-first, which is what `operator` means here. **D1 left this table at R2c-1**, whose entry cites it.
+D2-D7 are defects in the code the redesign replaces; D8-D12 are findings about the arc's OWN work;
+F-1 to F-3 and F-6 were found while building it and are NOT part of it, which is why their steps sit
+in the carried block at the end of section 4. F-4 and F-5 are pay-period features section 4a
+surfaced -- they have no step because they need a ruling first, which is what `operator` means here.
+**D1 left this table at R2c-1**; its measurement is in the historical archive with that step.
 
-**The ledger stands at 15 rows.**
+**The ledger stands at 17 rows.**
 
 | id | finding (one line) | worst measured | status | owned by |
 |---|---|---|---|---|
@@ -826,6 +828,8 @@ first, which is what `operator` means here. **D1 left this table at R2c-1**, who
 | D8 | `offset_periods` is a declared schema field (`templates.py:67`, `transfers.py:65`) that NO template renders, so only a crafted POST can author a phase | none -- it is the one derived value still stored, re-derived on EVERY write since R2c-1, and the anchor carries whatever phase it states; vestigial, not wrong | OPEN | R7b (the form rewrite that deletes it) |
 | D9 | the plan's stated `occurrences(rule, window)` signature cannot serve the PERIOD unit: those occurrences are pay periods, so they are not derivable from the rule alone | R3 would discover mid-build that the seam needs the schedule threaded through it | OPEN | R3 |
 | D10 | a `Monthly First` anchor is horizon-dependent: re-authoring an unchanged rule after the schedule extends can move it a month earlier | inherent to a pattern defined in terms of paydays, and equally true of the scan R2b shipped -- but no surface says so | OPEN | R4 (freeze the semantics with the baseline) |
+| D11 | two branches of `_first_of_month_anchor` are unreachable, and one comments a case that cannot execute | none -- both are dead; proven by argument and by a 243,018-case sweep in which neither was ever taken | OPEN | R-F7 |
+| D12 | `ref_cache.recurrence_unit_id` / `period_placement_id` / `business_day_shift_id` have ZERO callers in `app/` since R2d made `resolve()` return enum members | none -- they are correct and tested; the risk is a dead-code sweep DELETING them before their first consumer exists | OPEN | R7c (its backfill maps enums back to ids) |
 | F-4 | `pay_periods` stores NOMINAL paydays; a holiday/weekend shift for the pay SCHEDULE is unmodelled | Josh's 1 Jan 2026 payday was really paid 31 Dec 2025 | OPEN | operator (scope it as its own task, or rule it out?) |
 | F-5 | a 27-paycheck year is a real budgeting event and no surface names one | one extra $500 Groceries + one extra $2,473.38 paycheck | OPEN | operator (build the surfacing, or leave it?) |
 

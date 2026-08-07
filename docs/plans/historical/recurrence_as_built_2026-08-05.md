@@ -39,6 +39,31 @@ Carried forward because a later step would otherwise rediscover it the expensive
 - **The three `ref` vocabulary tables are NOT audited** and seed without literal ids -- the `ref`
   schema is excluded from `AUDITED_TABLES` with one multi-tenant exception, and a literal-id seed is
   what leaves an identity sequence behind its data (finding F-1).
+- **R7c inherits R2's whole blast radius** (ruling R-R5, now spent). The moment the two-axis columns
+  are NOT NULL every INSERT must supply them: 5 production writers plus **83 direct
+  `RecurrenceRule(...)` constructions across 39 test files**. R2 was split three ways to avoid one
+  enormous commit; R2d dissolved the problem instead, so none of those 83 was touched -- a partial
+  construction is still a complete rule. R7c is where that bill finally comes due.
 - **R1's baseline freezes some WRONG answers on purpose.** The `long_cadence.*` shapes and four
   `bounds.*` blocks record defects D3 and D5 as they behave today, so R4 -- not R3 -- re-freezes
   exactly those lines with `SHEKEL_UPDATE_RECURRENCE_BASELINE=1`.
+
+## Closed defects, with the measurement that found them
+
+Kept here rather than in the live plan: a defect whose step has shipped is history, and the live
+document's line cap is for work that has not happened yet (section 7 rules 4 and 5).
+
+**D1 -- an amount-only edit re-phased "every N paychecks"** (closed by `2fca91bc`). No
+`offset_periods` input exists in any template under `app/templates/`, but
+`update_recurrence_rule_from_form` wrote `rule.offset_periods = data.pop("offset_periods", 0)`, so
+the schema default landed on every edit. Probe, route-level with a real form payload:
+
+```text
+created with offset=1 (start period_index=7, interval=2)
+after an amount-only edit:
+E   AssertionError: assert 0 == 1
+```
+
+Every future occurrence shifted by one pay period. Latent in data only because no live rule uses the
+pattern. Closed by deriving the phase from the rule's own start period on EVERY write, not only on
+create.

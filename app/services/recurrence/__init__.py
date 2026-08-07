@@ -1,5 +1,5 @@
 """
-Shekel Budget App -- Recurrence authoring and resolution (plan step R2c/R2d)
+Shekel Budget App -- Recurrence authoring and resolution (plan steps R2c-1, R2d)
 
 The single door every recurrence rule in the application is written through,
 and the single producer of what a recurrence MEANS, and the public surface of

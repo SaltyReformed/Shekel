@@ -1,4 +1,4 @@
-"""The pure recurrence resolver (plan steps R2c and R2d).
+"""The pure recurrence resolver (plan steps R2c-1 and R2d).
 
 ``app.services.recurrence.resolve`` is the one place the closed ``pattern_id``
 vocabulary becomes the two-axis one, and it is pure: a spec and a

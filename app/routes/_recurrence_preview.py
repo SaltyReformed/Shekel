@@ -11,7 +11,7 @@ transaction-template CRUD module they used to live in.
 The preview reads request args and never writes: it resolves a TRANSIENT rule
 through the same authoring seam a save goes through
 (:func:`app.services.recurrence.build_transient_rule`), so what the user is
-shown is what saving would produce.  Before plan step R2c it built the rule by
+shown is what saving would produce.  Before plan step R2c-1 it built the rule by
 hand and derived the ``Every N Periods`` phase inline, which is exactly the
 kind of second copy of a derivation the seam exists to remove.
 
