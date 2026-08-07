@@ -376,7 +376,7 @@ def amount_to_monthly(
 
     Uses the biweekly pay period convention (26 periods per year) to
     translate recurrence frequencies into monthly values.  Returns
-    None for one-time or unknown patterns.
+    None for a pattern this application does not model.
 
     Conversion factors (biweekly-to-monthly: 26 pay periods / 12 months):
 
@@ -387,7 +387,13 @@ def amount_to_monthly(
       - quarterly:       amount / 3
       - semi_annual:     amount / 6
       - annual:          amount / 12
-      - once:            None (not a recurring commitment)
+
+    **"Does not recur" never reaches this function.**  It is
+    ``recurrence_rule_id IS NULL``, and the sole caller
+    (``obligations_aggregator.template_monthly_or_none``) returns ``None``
+    for a rule-less template before there is a ``pattern_id`` to pass.  A
+    ``Once`` branch used to sit here for the pattern that meant the same
+    thing; plan step R2e-3 retired it.
 
     The result is NOT quantized -- callers are responsible for rounding
     at their own aggregation boundary.
@@ -399,7 +405,9 @@ def amount_to_monthly(
             Defaults to 1 (every period).
 
     Returns:
-        Decimal monthly equivalent, or None for non-recurring patterns.
+        Decimal monthly equivalent, or ``None`` when *pattern_id* names no
+        modelled pattern -- the surviving ``Once`` ``ref`` row (plan step
+        R2e-3) or a hand-edited id.
     """
 
     every_period_id = ref_cache.recurrence_pattern_id(
@@ -423,13 +431,6 @@ def amount_to_monthly(
     annual_id = ref_cache.recurrence_pattern_id(
         RecurrencePatternEnum.ANNUAL
     )
-    once_id = ref_cache.recurrence_pattern_id(
-        RecurrencePatternEnum.ONCE
-    )
-
-    if pattern_id == once_id:
-        # One-time patterns are not a recurring monthly commitment.
-        return None
 
     # Single-return dispatch (one Decimal-or-None per pattern); the per-pattern
     # conversion factors are documented in the module docstring above.
@@ -447,7 +448,11 @@ def amount_to_monthly(
     elif pattern_id == annual_id:
         monthly = amount / MONTHS_PER_YEAR
     else:
-        # Unrecognized pattern id.
+        # A pattern this application does not model.  Unreachable through any
+        # write door -- ``RecurrencePatternField`` refuses one at the schema --
+        # so this covers the surviving ``Once`` ``ref`` row and hand-edited
+        # data, and it must stay: dropping the contribution is the safe answer
+        # where guessing a cadence would misstate a monthly commitment.
         monthly = None
     return monthly
 

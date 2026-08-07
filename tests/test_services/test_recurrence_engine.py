@@ -212,12 +212,35 @@ class TestRecurrenceGeneration:
                 )
                 assert (period.period_index - 1) % 2 == 0
 
-    def test_once_pattern_generates_nothing(self, app, db, seed_user, seed_periods):
-        """'once' pattern does not auto-generate -- user places it manually."""
+    def test_a_rule_less_template_generates_nothing(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A template that does not repeat auto-generates nothing.
+
+        Rule-less is the ONE way a definition says "does not recur" since
+        plan step R2e-3; this named the ``Once`` PATTERN before it, and that
+        spelling had its own guard in ``resolve_generation_plan``.  Asserting
+        the rule-less path is what still has a guard to protect -- the same
+        assertion against a ``Once``-by-name rule would now pass through
+        ``match_periods``' unmodelled-pattern default instead, proving nothing
+        about the branch it was written for.
+        """
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Once",
+                seed_user, "Every Period",
             )
+            # Both sides plus the row itself, exactly as
+            # ``_recurrence_form_helpers._clear_recurrence_rule`` does: the
+            # relationship is ``lazy="joined"`` and already loaded, so nulling
+            # only the FK leaves the engine reading the stale object.
+            rule = template.recurrence_rule
+            template.recurrence_rule = None
+            template.recurrence_rule_id = None
+            db.session.flush()
+            db.session.delete(rule)
+            db.session.flush()
+            assert template.recurrence_rule is None
+
             created = recurrence_engine.generate_for_template(
                 template, seed_periods, seed_user["scenario"].id,
             )

@@ -71,11 +71,16 @@ class CalendarAccountNotResolvableError(LookupError):
 
 
 # Recurrence patterns considered "infrequent" -- less frequent than monthly.
+#
+# ``Once`` was a member until plan step R2e-3 retired it.  A non-recurring
+# definition is now rule-less, and :func:`_is_infrequent` already answers
+# ``False`` for that -- which is what a transaction template modelled as
+# non-recurring has always returned, so the two kinds now agree instead of one
+# badging a one-time row "infrequent" and the other not.
 _INFREQUENT_PATTERNS = frozenset({
     RecurrencePatternEnum.QUARTERLY,
     RecurrencePatternEnum.SEMI_ANNUAL,
     RecurrencePatternEnum.ANNUAL,
-    RecurrencePatternEnum.ONCE,
 })
 
 
@@ -812,9 +817,10 @@ def _get_display_day(
 def _is_infrequent(txn: Transaction) -> bool:
     """Check if a transaction's recurrence is less frequent than monthly.
 
-    Returns True for Quarterly, Semi-Annual, Annual, and Once patterns.
-    Returns False for Every Period, Every N Periods, Monthly, Monthly
-    First, and for transactions with no template or no recurrence rule.
+    Returns True for Quarterly, Semi-Annual and Annual patterns.  Returns
+    False for Every Period, Every N Periods, Monthly, Monthly First, and for
+    transactions with no template or no recurrence rule -- the last of which
+    is how a non-recurring definition is modelled (plan step R2e-3).
     """
     if txn.template is None:
         return False

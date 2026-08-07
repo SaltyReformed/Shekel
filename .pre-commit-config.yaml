@@ -102,20 +102,28 @@ repos:
         pass_filenames: false
         args: [tools/pylint/tests, -c, /dev/null, -q]
 
-      # The balance plan's findings ledger: every finding names a LIVE owner
-      # (docs/audits/balance_architecture/README.md Section 9 rule 6).  It runs
-      # HERE, at commit time, because the rule it enforces rots between pull
-      # requests -- this repo opens them at the end of an arc, and three
+      # The planning documents' findings ledgers: every finding names a LIVE
+      # owner, the stated row count matches the table, the file is under its
+      # line cap, and the orientation section is still an orientation.  Two
+      # documents are graded, each by its own spec over the shared parser in
+      # tools/plan_gate/_plan_gate.py:
+      #   docs/audits/balance_architecture/README.md      (Section 9 rules)
+      #   docs/plans/implementation_plan_recurrence_redesign.md (section 7)
+      # It runs HERE, at commit time, because the rules it enforces rot between
+      # pull requests -- this repo opens them at the end of an arc, and three
       # hand-passes in two days each found rows naming a step that had already
-      # shipped.  Scoped to the plan document and the gate itself, so editing
-      # the ledger is what triggers it.  Database-free by construction (it
-      # lives outside tests/, so no autouse db fixture), which is what lets it
-      # be a commit-time hook at all: 14 tests in 0.04s.
+      # shipped.  Scoped to the two plan documents and the gate directory, so
+      # EDITING A LEDGER is what triggers it.  Database-free by construction
+      # (it lives outside tests/, so no autouse db fixture), which is what lets
+      # it be a commit-time hook at all: 46 tests in 0.06s.
       - id: shekel-plan-ledger-gate
-        name: balance plan ledger integrity (every finding has a live owner)
+        name: plan ledger integrity (every finding has a live owner)
         entry: pytest
         language: system
-        files: ^(docs/audits/balance_architecture/README\.md|tools/plan_gate/.*\.py)$
+        # One line on purpose: a YAML folded scalar joins its lines with a
+        # SPACE, which would put a space inside the alternation and stop the
+        # pattern matching either document.
+        files: ^(docs/audits/balance_architecture/README\.md|docs/plans/implementation_plan_recurrence_redesign\.md|tools/plan_gate/.*\.py)$
         pass_filenames: false
         args: [tools/plan_gate, -c, /dev/null, -q]
 

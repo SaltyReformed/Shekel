@@ -11,9 +11,12 @@
    Pattern matching uses the REC_* integer globals (app.jinja_globals),
    per the project's "IDs for logic, strings for display only" rule, and
    month names come from the ``month_name`` filter (app.jinja_filters), so
-   this macro needs no per-template month_names dict.  The else branch is a
-   defensive fallback for a future pattern row added without a matching
-   REC_* constant; it reads ``rr.pattern.name`` for display only. #}
+   this macro needs no per-template month_names dict.  The else branch is the
+   fallback for a pattern row with no matching REC_* constant -- the surviving
+   ``Once`` row (plan step R2e-3) or a future one -- and it reads
+   ``rr.pattern.name`` for display only.  A rule-less definition takes the
+   outer else and reads "One-time": that is what "does not repeat" IS on both
+   template kinds since R2e-3. #}
 {% macro recurrence_cell(t) %}
 {% if t.recurrence_rule %}
   {% set rr = t.recurrence_rule %}
@@ -31,8 +34,6 @@
     Every 6 months{% if rr.month_of_year %} (starting {{ rr.month_of_year|month_name(abbr=true) }}){% endif %}
   {% elif rr.pattern_id == REC_ANNUAL %}
     Yearly{% if rr.month_of_year %} ({{ rr.month_of_year|month_name(abbr=true) }}{% if rr.day_of_month %} {{ rr.day_of_month }}{% endif %}){% endif %}
-  {% elif rr.pattern_id == REC_ONCE %}
-    One-time
   {% else %}
     {{ recurrence_pattern_labels.get(rr.pattern.name, rr.pattern.name|replace('_', ' ')|title) }}
   {% endif %}

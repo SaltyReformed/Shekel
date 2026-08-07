@@ -239,7 +239,13 @@ class Status(db.Model):
 
 
 class RecurrencePattern(db.Model):
-    """Recurrence pattern reference: Every Period, Monthly, Annual, etc."""
+    """Recurrence pattern reference: Every Period, Monthly, Annual, etc.
+
+    The closed eight-name set the recurrence redesign replaces with the
+    two-axis ``(interval_n, unit)`` model (:class:`RecurrenceUnit` +
+    :class:`PeriodPlacement` below).  Still authoritative through plan step
+    R4; step R9 drops this table once every reader has moved.
+    """
 
     __tablename__ = "recurrence_patterns"
     __table_args__ = {"schema": "ref"}
@@ -249,6 +255,81 @@ class RecurrencePattern(db.Model):
 
     def __repr__(self):
         return f"<RecurrencePattern {self.name}>"
+
+
+class RecurrenceUnit(db.Model):
+    """Recurrence cadence-unit reference: period, week, month, year.
+
+    The first axis of the two-axis recurrence model (redesign step R2): a
+    rule recurs every ``budget.recurrence_rules.interval_n`` units of this
+    kind.  Four of :class:`RecurrencePattern`'s names were one idea with a
+    different integer baked into the name (every 1 / 3 / 6 / 12 months);
+    moving that integer into a column is what makes "every other month" and
+    "every two years" expressible.
+
+    Application code resolves these via ``ref_cache.recurrence_unit_id`` and
+    compares against the integer ID -- never the string ``name`` -- matching
+    the project-wide ``ref-table: IDs for logic, strings for display only``
+    invariant.  See :class:`~app.enums.RecurrenceUnitEnum` for the per-value
+    semantics.
+    """
+
+    __tablename__ = "recurrence_units"
+    __table_args__ = {"schema": "ref"}
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(10), unique=True, nullable=False)
+
+    def __repr__(self):
+        return f"<RecurrenceUnit {self.name}>"
+
+
+class PeriodPlacement(db.Model):
+    """Occurrence-date -> pay-period placement reference (redesign step R2).
+
+    An occurrence is a calendar date; a Shekel row lives in a pay period.
+    This table names the rule that carries one to the other -- the axis
+    today's ``Monthly`` and ``Monthly First`` patterns differ on (they differ
+    on the anchor day as well; see :class:`~app.enums.PeriodPlacementEnum`),
+    and therefore a real user choice rather than a derived detail.
+
+    Application code resolves these via ``ref_cache.period_placement_id``
+    and compares against the integer ID -- never the string ``name``.  See
+    :class:`~app.enums.PeriodPlacementEnum` for the per-value semantics.
+    """
+
+    __tablename__ = "period_placements"
+    __table_args__ = {"schema": "ref"}
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(30), unique=True, nullable=False)
+
+    def __repr__(self):
+        return f"<PeriodPlacement {self.name}>"
+
+
+class BusinessDayShift(db.Model):
+    """Weekend/holiday occurrence-shift reference (redesign step R2).
+
+    Whether an occurrence falling on a non-business day moves backward, moves
+    forward, or stays put.  Step R2 seeds the table and defaults every rule
+    to ``none``; step R8 is the first step that lets a user pick another
+    value, so that step turns behaviour on rather than adding a column.
+
+    Application code resolves these via ``ref_cache.business_day_shift_id``
+    and compares against the integer ID -- never the string ``name``.  See
+    :class:`~app.enums.BusinessDayShiftEnum` for the per-value semantics and
+    for why the shift applies to the cash date only.
+    """
+
+    __tablename__ = "business_day_shifts"
+    __table_args__ = {"schema": "ref"}
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(10), unique=True, nullable=False)
+
+    def __repr__(self):
+        return f"<BusinessDayShift {self.name}>"
 
 
 class FilingStatus(db.Model):

@@ -10,21 +10,18 @@ from datetime import date
 
 from flask import Blueprint, Response, abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
-from markupsafe import Markup
 
 from app.utils.auth_helpers import get_or_404, require_owner
 from app.extensions import db
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
-from app.models.recurrence_rule import RecurrenceRule
-from app.models.pay_period import PayPeriod
 from app.models.category import Category
 from app.models.account import Account
 from app.models.transaction import Transaction
-from app.models.ref import RecurrencePattern, Status, TransactionType
+from app.models.ref import Status, TransactionType
 from app.models.user import UserSettings
 from app import ref_cache
-from app.enums import RecurrencePatternEnum, TxnTypeEnum
+from app.enums import TxnTypeEnum
 from app.utils import archive_helpers
 from app.schemas.validation import TemplateCreateSchema, TemplateUpdateSchema
 from app.services import (
@@ -38,22 +35,34 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
+from app.services.recurrence import PeriodCalendar, modelled_pattern, pattern_choices
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.balance_predicates import is_projected_clause
 from app.routes._commit_helpers import (
     StaleConflictContext,
     commit_or_handle_stale,
 )
+from app.routes._recurrence_preview import (
+    PREVIEW_OCCURRENCE_LIMIT,
+    build_preview_rule,
+    owned_preview_start_period,
+    render_preview_html,
+)
+from app.routes._recurrence_conflict_chooser import (
+    PreEditTemplateState,
+    RecurrenceConflictKind,
+    regenerate_or_conflict_chooser,
+)
 from app.routes._recurrence_form_helpers import (
     STALE_ACTION_MESSAGE,
     STALE_EDITING_MESSAGE,
-    RecurrenceConflictKind,
     RecurrenceFormContext,
     build_recurrence_rule_from_form,
+    edit_form_pattern_choices,
     handle_stale_form_conflict,
-    regenerate_or_conflict_chooser,
     resolve_recurrence_rule_for_update,
 )
+from app.routes._form_errors import validate_form_or_redirect
 from app.routes._redirect_target import RedirectTarget
 
 logger = logging.getLogger(__name__)
@@ -78,40 +87,6 @@ templates_bp = Blueprint("templates", __name__)
 
 _create_schema = TemplateCreateSchema()
 _update_schema = TemplateUpdateSchema()
-
-
-_GENERIC_VALIDATION_FLASH = "Please correct the highlighted errors and try again."
-
-# Marshmallow error keys whose messages should be flashed verbatim instead
-# of falling through to the generic prompt.  Listed keys correspond to
-# cross-field validators whose messages are user-facing and actionable;
-# field-level errors on the same keys (e.g. "Not a valid boolean.") are
-# rare in practice -- HTML forms only submit the canonical "on" string --
-# and remain acceptable feedback when they do appear.
-_ACTIONABLE_FLASH_FIELDS = ("is_envelope",)
-
-
-def _flash_message_for_errors(errors):
-    """Pick a user-facing flash message from a Marshmallow errors dict.
-
-    Cross-field validators (e.g. ``validate_envelope_only_on_expense``
-    in ``app/schemas/validation.py``) attach actionable messages to
-    specific fields so the form can highlight them.  When such a
-    message is present, surface it verbatim so the user sees the actual
-    rule that fired.  Other field-level errors fall back to a generic
-    prompt because the individual form widgets convey the issue inline.
-
-    Args:
-        errors: The dict returned by ``schema.validate(request.form)``.
-
-    Returns:
-        str: The message to flash.  Always non-empty.
-    """
-    for field in _ACTIONABLE_FLASH_FIELDS:
-        msgs = errors.get(field)
-        if isinstance(msgs, list) and msgs:
-            return str(msgs[0])
-    return _GENERIC_VALIDATION_FLASH
 
 
 def _is_tracking_on_non_expense(data, template=None):
@@ -427,7 +402,6 @@ def new_template():
     """
     categories = category_service.list_active_categories(current_user.id)
     accounts = account_service.list_active_accounts(current_user.id)
-    patterns = db.session.query(RecurrencePattern).all()
     txn_types = db.session.query(TransactionType).all()
     periods = pay_period_service.get_all_periods(current_user.id)
     current_period = pay_period_service.get_current_period(current_user.id)
@@ -442,7 +416,7 @@ def new_template():
         template=None,
         categories=categories,
         accounts=accounts,
-        patterns=patterns,
+        pattern_choices=pattern_choices(),
         txn_types=txn_types,
         periods=periods,
         current_period=current_period,
@@ -455,10 +429,11 @@ def new_template():
 @require_owner
 def create_template():
     """Create a new transaction template with optional recurrence rule."""
-    errors = _create_schema.validate(request.form)
-    if errors:
-        flash(_flash_message_for_errors(errors), "danger")
-        return redirect(url_for("templates.new_template"))
+    invalid_payload = validate_form_or_redirect(
+        _create_schema, RedirectTarget("templates.new_template"),
+    )
+    if invalid_payload is not None:
+        return invalid_payload
 
     data = _create_schema.load(request.form)
 
@@ -545,7 +520,6 @@ def edit_template(template_id):
 
     categories = category_service.list_active_categories(current_user.id)
     accounts = account_service.list_active_accounts(current_user.id)
-    patterns = db.session.query(RecurrencePattern).all()
     txn_types = db.session.query(TransactionType).all()
 
     return render_template(
@@ -553,7 +527,11 @@ def edit_template(template_id):
         template=template,
         categories=categories,
         accounts=accounts,
-        patterns=patterns,
+        # The EDIT picker, not the create one: a rule whose stored pattern the
+        # application no longer models must stay selected, or the browser picks
+        # the first option for the user -- the empty "Does not repeat" entry,
+        # whose save DELETES the rule (R2e-1).
+        pattern_choices=edit_form_pattern_choices(template),
         txn_types=txn_types,
         periods=[],
         current_period=None,
@@ -594,10 +572,12 @@ def update_template(template_id):
     if template is None:
         abort(404)
 
-    errors = _update_schema.validate(request.form)
-    if errors:
-        flash(_flash_message_for_errors(errors), "danger")
-        return redirect(url_for("templates.edit_template", template_id=template_id))
+    invalid_payload = validate_form_or_redirect(
+        _update_schema,
+        RedirectTarget("templates.edit_template", {"template_id": template_id}),
+    )
+    if invalid_payload is not None:
+        return invalid_payload
 
     # The load / version-guard / pop / resolve preamble below is the
     # standard parallel-CRUD update shape it shares with
@@ -646,7 +626,17 @@ def update_template(template_id):
     data.pop("start_period_id", None)
     end_date = data.pop("end_date", None)
 
-    # Re-point or rebuild the recurrence rule from the update payload
+    # The template's before-image, captured BEFORE anything overwrites it
+    # (plan step R2e-1).  ``had_recurrence_rule`` is what lets the
+    # regeneration below tell "the user just cleared the recurrence" -- which
+    # must sweep the instances the deleted rule generated -- from "this
+    # template never recurred", which must not.
+    before = PreEditTemplateState(
+        amount=template.default_amount,
+        had_recurrence_rule=template.recurrence_rule_id is not None,
+    )
+
+    # Re-point, rebuild, or clear the recurrence rule from the update payload
     # (F-24).  The helper dispatches the existing-rule (mutate in place)
     # vs no-existing-rule (build + link) branches and pops every
     # recurrence key from ``data`` so the field-update loop below sees
@@ -681,14 +671,13 @@ def update_template(template_id):
 
     # Apply allowlisted field updates, propagating any rename to existing
     # instances (see _apply_fields_and_propagate_rename for the rationale).
-    old_amount = template.default_amount
     _apply_fields_and_propagate_rename(template, data)
 
     # Regenerate future transactions, diverting to the conflict chooser when
     # an amount change would overwrite hand-edited upcoming instances (the
     # chooser rolls the pending edit back; its Apply re-runs this same edit).
     diverted = regenerate_or_conflict_chooser(
-        template, old_amount, effective_from, _TXN_TEMPLATE_KIND,
+        template, before, effective_from, _TXN_TEMPLATE_KIND,
         amount_drives_instances=not recurrence_engine.is_salary_linked_template(
             template.id,
         ),
@@ -710,7 +699,18 @@ def update_template(template_id):
     ))
     if response is not None:
         return response
-    flash(f"Recurring transaction '{template.name}' updated.", "success")
+    # An edit that ended the recurrence deleted this template's upcoming
+    # projected rows; "updated." alone would report a destructive change as a
+    # routine one.  Mirrors the archive route, which already names what it
+    # removed.
+    if before.had_recurrence_rule and template.recurrence_rule_id is None:
+        flash(
+            f"'{template.name}' no longer repeats. Its upcoming projected "
+            "entries were removed; settled and hand-edited ones were kept.",
+            "success",
+        )
+    else:
+        flash(f"Recurring transaction '{template.name}' updated.", "success")
     return redirect(url_for("templates.list_templates"))
 
 
@@ -918,82 +918,58 @@ def hard_delete_template(template_id):
     return redirect(url_for("templates.list_templates"))
 
 
-def _build_preview_rule(pattern):
-    """Build an unsaved RecurrenceRule from the preview request args.
-
-    Reads the recurrence parameters the preview form submits and returns a
-    transient RecurrenceRule (never added to the session) with *pattern*
-    attached for the matcher.  ``offset_periods`` is intentionally left
-    unset here; the route derives it from the owned start period.
-    """
-    end_date_str = request.args.get("end_date")
-    rule = RecurrenceRule(
-        pattern_id=pattern.id,
-        interval_n=request.args.get("interval_n", type=int, default=1),
-        day_of_month=request.args.get("day_of_month", type=int),
-        month_of_year=request.args.get("month_of_year", type=int),
-        start_period_id=request.args.get("start_period_id", type=int),
-        end_date=date.fromisoformat(end_date_str) if end_date_str else None,
-    )
-    # Attach the pattern relationship manually for the matcher.
-    rule.pattern = pattern
-    return rule
-
-
-def _render_preview_html(preview_periods):
-    """Render the occurrence-preview HTML fragment for *preview_periods*."""
-    items = "".join(
-        f"<li>{p.start_date.strftime('%b %d, %Y')} - {p.end_date.strftime('%b %d, %Y')}</li>"
-        for p in preview_periods
-    )
-    html = (
-        f"<small class='text-muted'>Next {len(preview_periods)} occurrences:</small>"
-        f"<ul class='list-unstyled mb-0 ms-2'><small>{items}</small></ul>"
-    )
-    return Markup(html)
-
-
 @templates_bp.route("/templates/preview-recurrence", methods=["GET"])
 @login_required
 @require_owner
 def preview_recurrence():
-    """HTMX partial: show next 5 occurrences for a recurrence pattern."""
+    """HTMX partial: show next 5 occurrences for a recurrence pattern.
+
+    The submitted pattern is checked against what the application MODELS
+    (plan step R2e-2).  It used to be checked against the ``ref`` table, and
+    the two are not the same set: a row ``RecurrencePatternEnum`` does not name
+    passes a table lookup and then raises inside the authoring seam
+    ``build_preview_rule`` goes through, which nothing here catches -- so the
+    preview would 500 on the same input the picker refuses to offer.
+
+    An ABSENT pattern is the form's "does not repeat" option, which has no
+    occurrences to preview.  A second guard used to sit beside it for the
+    ``Once`` pattern that meant the same thing; plan step R2e-3 retired it, so
+    the empty submission is the only non-recurring input left.
+    """
     pattern_id = request.args.get("recurrence_pattern", type=int)
-    if not pattern_id or pattern_id == ref_cache.recurrence_pattern_id(RecurrencePatternEnum.ONCE):
+    if not pattern_id:
         return "<small class='text-muted'>No preview for this pattern</small>"
 
-    pattern = db.session.get(RecurrencePattern, pattern_id)
-    if not pattern:
+    if modelled_pattern(pattern_id) is None:
         return "<small class='text-muted'>Unknown pattern</small>"
-
-    rule = _build_preview_rule(pattern)
 
     periods = pay_period_service.get_all_periods(current_user.id)
     if not periods:
         return "<small class='text-muted'>No pay periods generated yet</small>"
 
-    # Determine effective_from from an owned start period, else the
-    # current period (falling back to the first period).
-    effective_from = None
-    if rule.start_period_id:
-        start_period = db.session.get(PayPeriod, rule.start_period_id)
-        # Ownership check: reject other users' periods to prevent
-        # pay period structure disclosure -- see audit finding H3.
-        # Falls through to the current user's own periods below.
-        if start_period and start_period.user_id == current_user.id:
-            effective_from = start_period.start_date
-            # Auto-derive offset for every_n_periods.
-            if (pattern_id == ref_cache.recurrence_pattern_id(
-                    RecurrencePatternEnum.EVERY_N_PERIODS) and rule.interval_n):
-                rule.offset_periods = start_period.period_index % rule.interval_n
-    if effective_from is None:
+    # The schedule is resolved BEFORE the rule: the authoring seam measures a
+    # rule's first occurrence against it, so an empty schedule is refused
+    # rather than anchored against nothing.  Built from the periods already
+    # loaded, so this adds no query.
+    start_period = owned_preview_start_period()
+    rule = build_preview_rule(
+        pattern_id, start_period,
+        PeriodCalendar.from_pay_periods(periods, current_user.id),
+    )
+
+    # ``effective_from`` is a DISPLAY choice -- "show me the next five from
+    # here" -- and so still the route's, not the rule's: the rule's own
+    # opening bound is its anchor.
+    if start_period is not None:
+        effective_from = start_period.start_date
+    else:
         current_period = pay_period_service.get_current_period(current_user.id)
         effective_from = current_period.start_date if current_period else periods[0].start_date
 
     matching = recurrence_engine.match_periods(rule, pattern_id, periods, effective_from)
-    preview_periods = matching[:5]
+    preview_periods = matching[:PREVIEW_OCCURRENCE_LIMIT]
 
     if not preview_periods:
         return "<small class='text-muted'>No matching periods found</small>"
 
-    return _render_preview_html(preview_periods)
+    return render_preview_html(preview_periods)

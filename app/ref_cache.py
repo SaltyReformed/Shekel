@@ -34,6 +34,7 @@ import sqlalchemy.exc
 from app.enums import (
     AcctCategoryEnum,
     AcctTypeEnum,
+    BusinessDayShiftEnum,
     CalcMethodEnum,
     CompoundingFrequencyEnum,
     DeductionTimingEnum,
@@ -43,10 +44,12 @@ from app.enums import (
     LedgerAccountClassEnum,
     LedgerAccountKindEnum,
     LoanAnchorSourceEnum,
+    PeriodPlacementEnum,
     PostingKindEnum,
     PostingSourceEnum,
     RaiseTypeEnum,
     RecurrencePatternEnum,
+    RecurrenceUnitEnum,
     RoleEnum,
     StatusEnum,
     TaxTypeEnum,
@@ -211,6 +214,9 @@ def _build_ref_specs(ref_models) -> list[_RefSpec]:
         _RefSpec(PostingKindEnum, ref_models.PostingKind),
         _RefSpec(PostingSourceEnum, ref_models.PostingSource),
         _RefSpec(LedgerAccountKindEnum, ref_models.LedgerAccountKind),
+        _RefSpec(RecurrenceUnitEnum, ref_models.RecurrenceUnit),
+        _RefSpec(PeriodPlacementEnum, ref_models.PeriodPlacement),
+        _RefSpec(BusinessDayShiftEnum, ref_models.BusinessDayShift),
     ]
 
 
@@ -484,6 +490,77 @@ def recurrence_pattern_id(member):
     """
     _require_init()
     return _cache.enum_ids[RecurrencePatternEnum][member]
+
+
+def recurrence_unit_id(member):
+    """Return the integer primary key for a RecurrenceUnitEnum member.
+
+    The first axis of the two-axis recurrence model (redesign step R2): a
+    rule recurs every ``budget.recurrence_rules.interval_n`` units of this
+    kind.  Read by the occurrence engine to branch on the cadence unit via
+    the integer ID, never the string ``name`` -- the project-wide
+    IDs-for-logic invariant.
+
+    Args:
+        member: A ``RecurrenceUnitEnum`` member
+                (e.g. ``RecurrenceUnitEnum.MONTH``).
+
+    Returns:
+        int -- the ``ref.recurrence_units.id`` value.
+
+    Raises:
+        RuntimeError: If the cache has not been initialized.
+        KeyError: If *member* is not a valid RecurrenceUnitEnum member.
+    """
+    _require_init()
+    return _cache.enum_ids[RecurrenceUnitEnum][member]
+
+
+def period_placement_id(member):
+    """Return the integer primary key for a PeriodPlacementEnum member.
+
+    The rule that carries an occurrence DATE onto the pay PERIOD a Shekel
+    row lives in (redesign step R2) -- the axis today's ``Monthly`` and
+    ``Monthly First`` patterns differ on (they differ on the anchor day as
+    well; see :class:`~app.enums.PeriodPlacementEnum`).  Compared by integer
+    ID, never by the string ``name``.
+
+    Args:
+        member: A ``PeriodPlacementEnum`` member
+                (e.g. ``PeriodPlacementEnum.CONTAINING_DATE``).
+
+    Returns:
+        int -- the ``ref.period_placements.id`` value.
+
+    Raises:
+        RuntimeError: If the cache has not been initialized.
+        KeyError: If *member* is not a valid PeriodPlacementEnum member.
+    """
+    _require_init()
+    return _cache.enum_ids[PeriodPlacementEnum][member]
+
+
+def business_day_shift_id(member):
+    """Return the integer primary key for a BusinessDayShiftEnum member.
+
+    Whether an occurrence landing on a non-business day moves backward,
+    forward, or stays put (redesign step R2 creates the vocabulary; step R8
+    is the first step a user can choose a value other than ``none``).
+    Compared by integer ID, never by the string ``name``.
+
+    Args:
+        member: A ``BusinessDayShiftEnum`` member
+                (e.g. ``BusinessDayShiftEnum.PRIOR``).
+
+    Returns:
+        int -- the ``ref.business_day_shifts.id`` value.
+
+    Raises:
+        RuntimeError: If the cache has not been initialized.
+        KeyError: If *member* is not a valid BusinessDayShiftEnum member.
+    """
+    _require_init()
+    return _cache.enum_ids[BusinessDayShiftEnum][member]
 
 
 def acct_type_icon(type_id):

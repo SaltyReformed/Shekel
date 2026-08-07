@@ -24,7 +24,6 @@ from app.enums import EmployerContributionTypeEnum, RecurrencePatternEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
-from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import EmployerContributionType
 from app.routes._redirect_target import RedirectTarget
 from app.routes._transfer_creation_helpers import (
@@ -39,6 +38,7 @@ from app.schemas.validation import (
     InvestmentParamsUpdateSchema,
 )
 from app.services import investment_dashboard_service
+from app.services.recurrence import RecurrenceSpec, author_rule, calendar_for
 from app.utils.auth_helpers import get_or_404, require_owner
 from app.utils.money import PAY_PERIODS_PER_YEAR, round_money
 
@@ -249,12 +249,10 @@ def create_contribution_transfer(account_id):
     every_period_id = ref_cache.recurrence_pattern_id(
         RecurrencePatternEnum.EVERY_PERIOD,
     )
-    rule = RecurrenceRule(
-        user_id=current_user.id,
-        pattern_id=every_period_id,
+    rule = author_rule(
+        RecurrenceSpec(user_id=current_user.id, pattern_id=every_period_id),
+        calendar_for(current_user.id),
     )
-    db.session.add(rule)
-    db.session.flush()
 
     # Create transfer template via the shared builder (a contribution gets
     # no loan_payment_settings row, so every reader defaults it to non-derive;

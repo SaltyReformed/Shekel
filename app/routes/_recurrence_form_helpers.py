@@ -1,9 +1,14 @@
 """
 Shekel Budget App -- Recurrence-Form Route Helpers (F-24, F-26)
 
-Recurrence-form and conflict-chooser helpers shared between the
+What a template's recurrence rule IS after a form submit, for the
 transaction-template (:mod:`app.routes.templates`) and transfer-template
-(:mod:`app.routes.transfers`) CRUD routes:
+(:mod:`app.routes.transfers`) CRUD routes.  What happens to the ROWS that rule
+already generated is the sibling module
+:mod:`app.routes._recurrence_conflict_chooser`, split out at plan step R2e-1
+when this one reached the 1,000-line cap.
+
+The helpers:
 
 * :func:`build_recurrence_rule_from_form` -- consumes a Marshmallow-
   validated payload, pops the recurrence-related keys, and returns a
@@ -17,28 +22,15 @@ transaction-template (:mod:`app.routes.templates`) and transfer-template
   id and the owning FK), pops the recurrence keys, and returns
   ``None`` on success or a redirect :class:`Response` for an invalid
   pattern id.  [F-24]
-* :func:`resolve_recurrence_rule_for_update` -- dispatches the two
-  update-form branches (re-point existing rule vs build + link a new
-  one) so each ``update_*`` route resolves its recurrence rule with a
-  single call.  [F-24]
+* :func:`resolve_recurrence_rule_for_update` -- dispatches the three
+  update-form branches (re-point an existing rule, build + link a new
+  one, or CLEAR the recurrence the user set to "Does not repeat") so
+  each ``update_*`` route resolves its recurrence rule with a single
+  call.  [F-24; the clear branch is plan step R2e-1]
 * :func:`handle_stale_form_conflict` -- pre-flush optimistic-locking
   guard for the ``submitted_version != template.version_id``
   branch; logs both counters so post-mortem analysis can reconstruct
   the race; redirects.  [F-26 pair 1]
-* The recurrence-conflict chooser (Loop B, P3) --
-  :func:`parse_conflict_decisions`, :func:`render_recurrence_conflict_chooser`,
-  and :func:`apply_conflict_decisions` (plus the :class:`ConflictChoice`,
-  :class:`RecurrenceConflictKind`, and :class:`ConflictChooserContext`
-  data holders).  When a template edit's regeneration collides with
-  hand-edited upcoming instances, the update route renders a full-page
-  chooser instead of committing: the pending edit is rolled back, and
-  Apply re-runs the identical edit before resolving each instance
-  (keep the override, or move it to the template's new value) through
-  the kind's ``resolve_conflicts``.  Shared by the transaction-template
-  and transfer-template routes; each supplies its own
-  :class:`RecurrenceConflictKind`.  [Loop B P3, replacing the F-26 pair-2
-  auto-keep advisory]
-
 The first three helpers share a verbatim trio of inputs -- the form's
 recurrence end date, the validation-error redirect target, and the
 transaction-vs-transfer ``due_day_of_month`` flag -- bundled into the
@@ -64,26 +56,38 @@ single wording (some routes name "while you were editing" -- the
 update-template / update-transfer-template forms; others omit it --
 archive / unarchive / hard-delete).
 """
-from dataclasses import dataclass
+import logging
+from dataclasses import dataclass, replace
 from datetime import date
-from decimal import Decimal
 from typing import Any
 
-from flask import Response, flash, render_template, request, url_for
-from flask_login import current_user
+from flask import Response, flash
 
-from app import ref_cache
-from app.enums import RecurrencePatternEnum
-from app.exceptions import RecurrenceConflict
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.recurrence_rule import RecurrenceRule
-from app.models.ref import RecurrencePattern
+from app.models.transaction_template import TransactionTemplate
+from app.models.transfer_template import TransferTemplate
 from app.routes._commit_helpers import StaleConflictContext
 from app.routes._redirect_target import RedirectTarget
-from app.services import pay_period_service
-from app.services.scenario_resolver import get_baseline_scenario
-from app.utils.digit_strings import parse_row_id
+from app.services.recurrence import (
+    UNAVAILABLE_PATTERN_MESSAGE,
+    PatternChoice,
+    RecurrenceSpec,
+    author_rule,
+    calendar_for,
+    modelled_pattern,
+    pattern_choices_for,
+    reauthor_rule,
+    recurrence_spec,
+)
+from app.utils.log_events import (
+    BUSINESS,
+    EVT_RECURRENCE_RULE_NOT_EXCLUSIVE,
+    log_event,
+)
+
+logger = logging.getLogger(__name__)
 
 
 # Stale-conflict flash templates.  The ``{noun}`` placeholder is
@@ -161,6 +165,31 @@ class RecurrenceFormContext:
     include_due_day_of_month: bool = False
 
 
+def edit_form_pattern_choices(template: Any) -> tuple[PatternChoice, ...]:
+    """Return an EDIT form's pattern options, warning when the stored one is gone.
+
+    The render-side counterpart of the write door below, and the reason both
+    edit routes call one function rather than each assembling the picker: the
+    stored pattern and the offered set can disagree, and a ``<select>`` answers
+    that disagreement by SILENTLY picking its first option (see
+    :func:`app.services.recurrence.pattern_choices_for`, which measured what
+    that costs on each form).
+
+    Args:
+        template: The ``TransactionTemplate`` or ``TransferTemplate`` being
+            edited.  Read for ``recurrence_rule`` only; not mutated.
+
+    Returns:
+        The modelled choices, plus the stored pattern when the application no
+        longer models it.
+    """
+    rule = template.recurrence_rule
+    pattern_id = rule.pattern_id if rule is not None else None
+    if pattern_id is not None and modelled_pattern(pattern_id) is None:
+        flash(UNAVAILABLE_PATTERN_MESSAGE, "warning")
+    return pattern_choices_for(pattern_id)
+
+
 def build_recurrence_rule_from_form(
     data: dict[str, Any],
     *,
@@ -172,7 +201,21 @@ def build_recurrence_rule_from_form(
 
     Pops every recurrence-related key from ``data`` so the caller's
     downstream ``TransactionTemplate`` / ``TransferTemplate``
-    constructor does not receive stray kwargs.
+    constructor does not receive stray kwargs, then authors the rule
+    through :func:`app.services.recurrence.author_rule` -- the one door
+    that resolves both of the table's cadence vocabularies together.
+    This helper's own job is what only a ROUTE can do: read the form and
+    owner-check the submitted start period.
+
+    **It does NOT validate the pattern id.**  That the id names a cadence the
+    application MODELS -- narrower than "names a ``ref`` row", and the
+    difference is a 500 -- is a property of the SUBMISSION, so it belongs to
+    the submission's validator:
+    :class:`~app.schemas.validation._helpers.RecurrencePatternField` refuses it
+    before any route code runs (plan step R2e-2, developer ruling 2026-08-07).
+    The check used to live here AND in
+    :func:`update_recurrence_rule_from_form` -- one rule written twice, which
+    a third caller would have had neither copy of.
 
     Args:
         data: Marshmallow-validated payload; mutated in place.  The
@@ -180,30 +223,60 @@ def build_recurrence_rule_from_form(
             ``offset_periods``, ``day_of_month``, ``month_of_year``,
             ``end_date``, and -- when ``ctx.include_due_day_of_month``
             is ``True`` -- ``due_day_of_month``.
-        user_id: Owner of the resulting :class:`RecurrenceRule` row.
-        start_period_id: From the form; needed for the every-N-periods
-            auto-offset derivation.  Caller pops it before calling the
-            helper because the same value is later persisted on the
-            :class:`RecurrenceRule`.
+        user_id: Owner of the resulting :class:`RecurrenceRule` row, and the
+            owner the submitted start period is checked against.
+        start_period_id: From the form; the rule's "First paycheck", or the
+            period a non-repeating transfer lands in.  Caller pops it before
+            calling the helper because the same value is later persisted on
+            the :class:`RecurrenceRule` (or read by the transfer route's
+            materialization).  Owner-checked whether or not a rule results.
         ctx: The :class:`RecurrenceFormContext` carrying the form's
             ``end_date_value`` (copied verbatim onto the rule), the
-            validation-error ``redirect`` target (invalid pattern id or
-            invalid every-N-periods start period), and the
-            ``include_due_day_of_month`` transaction-vs-transfer flag.
+            validation-error ``redirect`` target (an invalid start
+            period), and the ``include_due_day_of_month``
+            transaction-vs-transfer flag.
 
     Returns:
         * :class:`RecurrenceRule` -- newly added, flushed, ready to
           link.  The caller is responsible for setting any owning-row
           FK (e.g. ``template.recurrence_rule_id = rule.id``).
-        * ``None`` -- no recurrence pattern was selected; the helper
-          still popped every recurrence key from ``data``.
-        * :class:`Response` -- a Flask redirect to ``ctx.redirect``; the
-          caller returns it directly so the route's control flow matches
-          the pre-extraction shape.
+        * ``None`` -- no recurrence pattern was selected, so the template does
+          not repeat; the helper still popped every recurrence key from
+          ``data`` and still owner-checked the start period.
+        * :class:`Response` -- a Flask redirect to ``ctx.redirect`` when the
+          submitted start period is not this user's; the caller returns it
+          directly so the route's control flow matches the pre-extraction
+          shape.
     """
-    pattern_id_str = data.pop("recurrence_pattern", None)
+    pattern_id = data.pop("recurrence_pattern", None)
 
-    if not pattern_id_str:
+    # Verify ownership of any submitted start period BEFORE anything is
+    # persisted -- for every pattern, and for NO pattern.  ``start_period_id``
+    # is written onto the rule unconditionally below
+    # (``rule_kwargs["start_period_id"]``), and ``recurrence_engine`` later
+    # dereferences ``rule.start_period.start_date`` as the generation boundary
+    # -- and ``resolve`` reads it as the rule's opening bound -- so a
+    # cross-user period would both be stored as a foreign FK and shift this
+    # owner's generation timing.  This matches the read-only preview path
+    # (``templates.preview_recurrence``), which already owner-gates the start
+    # period for all patterns; without this probe the persist path was an IDOR
+    # the preview path was not (deep-quality-hunt #21).
+    #
+    # **Ahead of the no-pattern early return, not after it** (plan step
+    # R2e-3).  It used to sit below, so a submission naming no pattern skipped
+    # it entirely.  That was harmless while "does not repeat" meant no rule
+    # AND no instances -- nothing downstream read the period.  R2e-3 makes it
+    # the transfer form's DEFAULT and materialises a Transfer into exactly
+    # that period, so the check has to be unconditional on the SUBMISSION
+    # rather than conditional on a rule coming out of it.
+    # ``_materialize_one_time_transfer`` re-checks as defence in depth.
+    if start_period_id is not None:
+        start_period = db.session.get(PayPeriod, start_period_id)
+        if start_period is None or start_period.user_id != user_id:
+            flash("Invalid start period.", "danger")
+            return ctx.redirect.to_response()
+
+    if not pattern_id:
         # No pattern: drop every recurrence-related key so the caller's
         # model constructor does not receive stray kwargs.
         for key in _BASE_RECURRENCE_KEYS:
@@ -211,11 +284,6 @@ def build_recurrence_rule_from_form(
         if ctx.include_due_day_of_month:
             data.pop(_DUE_DAY_KEY, None)
         return None
-
-    pattern = db.session.get(RecurrencePattern, int(pattern_id_str))
-    if pattern is None:
-        flash("Invalid recurrence pattern.", "danger")
-        return ctx.redirect.to_response()
 
     interval_n = data.pop("interval_n", 1)
     offset_periods = data.pop("offset_periods", 0)
@@ -225,52 +293,32 @@ def build_recurrence_rule_from_form(
     # no-pattern branches, so the caller's downstream model
     # constructor never receives ``end_date`` as a stray kwarg.
     data.pop("end_date", None)
-
-    # Verify ownership of any submitted start period BEFORE it is
-    # persisted onto the rule -- for every pattern, not just
-    # EVERY_N_PERIODS.  ``start_period_id`` is written onto the rule
-    # unconditionally below (``rule_kwargs["start_period_id"]``), and
-    # ``recurrence_engine`` later dereferences ``rule.start_period.start_date``
-    # as the generation boundary, so a cross-user period would both be
-    # stored as a foreign FK and shift this owner's generation timing.
-    # This matches the read-only preview path
-    # (``templates.preview_recurrence``), which already owner-gates the
-    # start period for all patterns; without this probe the persist path
-    # was an IDOR the preview path was not (deep-quality-hunt #21).
-    start_period = None
-    if start_period_id is not None:
-        start_period = db.session.get(PayPeriod, start_period_id)
-        if start_period is None or start_period.user_id != user_id:
-            flash("Invalid start period.", "danger")
-            return ctx.redirect.to_response()
-
-    # Auto-derive offset from the start period for EVERY_N_PERIODS so
-    # the rule generates against the user's chosen rhythm rather than
-    # the default zero-offset cadence.
-    every_n_id = ref_cache.recurrence_pattern_id(
-        RecurrencePatternEnum.EVERY_N_PERIODS,
+    day_of_month = data.pop("day_of_month", None)
+    month_of_year = data.pop("month_of_year", None)
+    due_day_of_month = (
+        data.pop(_DUE_DAY_KEY, None) if ctx.include_due_day_of_month else None
     )
-    if (int(pattern_id_str) == every_n_id
-            and start_period is not None and interval_n):
-        offset_periods = start_period.period_index % interval_n
 
-    rule_kwargs: dict[str, Any] = {
-        "user_id": user_id,
-        "pattern_id": pattern.id,
-        "interval_n": interval_n,
-        "offset_periods": offset_periods,
-        "day_of_month": data.pop("day_of_month", None),
-        "month_of_year": data.pop("month_of_year", None),
-        "start_period_id": start_period_id,
-        "end_date": ctx.end_date_value,
-    }
-    if ctx.include_due_day_of_month:
-        rule_kwargs["due_day_of_month"] = data.pop(_DUE_DAY_KEY, None)
-
-    rule = RecurrenceRule(**rule_kwargs)
-    db.session.add(rule)
-    db.session.flush()
-    return rule
+    # The offset auto-derivation this branch used to run inline -- "for
+    # EVERY_N_PERIODS, phase the rule on the chosen start period" -- moved
+    # into ``resolve``, which applies it on EVERY write rather than only on
+    # create.  That is what closes defect D1: the update path had no such
+    # derivation and wrote the schema default instead, re-phasing every
+    # future occurrence on an amount-only edit.
+    return author_rule(
+        RecurrenceSpec(
+            user_id=user_id,
+            pattern_id=pattern_id,
+            interval_n=interval_n,
+            offset_periods=offset_periods,
+            day_of_month=day_of_month,
+            due_day_of_month=due_day_of_month,
+            month_of_year=month_of_year,
+            start_period_id=start_period_id,
+            end_date=ctx.end_date_value,
+        ),
+        calendar_for(user_id),
+    )
 
 
 def update_recurrence_rule_from_form(
@@ -278,7 +326,7 @@ def update_recurrence_rule_from_form(
     data: dict[str, Any],
     *,
     ctx: RecurrenceFormContext,
-) -> Response | None:
+) -> None:
     """Re-point an existing :class:`RecurrenceRule` from a form payload.
 
     Sibling of :func:`build_recurrence_rule_from_form` for the
@@ -289,12 +337,18 @@ def update_recurrence_rule_from_form(
     new rule, then pops every recurrence key from ``data`` so the
     caller's downstream ``setattr`` loop never sees a stray kwarg.
 
-    Unlike :func:`build_recurrence_rule_from_form`, this helper does
-    NOT auto-derive ``offset_periods`` from a start period for the
-    ``EVERY_N_PERIODS`` pattern: the update form does not re-collect
-    ``start_period_id`` (it is fixed at creation), so ``offset_periods``
-    is taken verbatim from the payload.  This preserves the
-    pre-extraction inline behaviour exactly.
+    **It re-authors rather than assigns, and the difference is two
+    closed defects.**  The pre-seam version wrote the payload onto the
+    rule field by field, so what the form did not collect was written
+    with the schema's DEFAULT rather than left alone -- that is defect
+    **D1**: ``offset_periods`` went to 0 on an amount-only edit,
+    re-phasing every future occurrence of an ``Every N Periods`` rule by
+    one pay period.  Reading the rule's authored state back
+    (:func:`app.services.recurrence.recurrence_spec`), replacing only the
+    fields this form owns, and writing the whole value means the rule's
+    start period still phases it and nothing the form does not collect is
+    reset to a schema default.  ``interval_n`` needs no pattern-scoping
+    for a related reason -- see the inline comment on the call.
 
     Args:
         rule: The existing :class:`RecurrenceRule` to mutate in place.
@@ -306,33 +360,183 @@ def update_recurrence_rule_from_form(
             ``ctx.include_due_day_of_month`` is ``True`` --
             ``due_day_of_month``.
         ctx: The :class:`RecurrenceFormContext` carrying the form's
-            ``end_date_value`` (copied verbatim onto ``rule.end_date``),
-            the invalid-pattern ``redirect`` target, and the
-            ``include_due_day_of_month`` transaction-vs-transfer flag.
+            ``end_date_value`` (copied verbatim onto ``rule.end_date``) and
+            the ``include_due_day_of_month`` transaction-vs-transfer flag.
+            Its ``redirect`` is unused here and kept only because the three
+            helpers share one context object.
 
     Returns:
-        * ``None`` -- the rule was re-pointed successfully; the caller
-          continues to the field-update loop.
-        * :class:`Response` -- a Flask redirect emitted when the
-          submitted ``recurrence_pattern`` id does not resolve to a
-          :class:`RecurrencePattern`; the caller returns it directly
-          so the route's control flow matches the pre-extraction shape.
+        ``None``.  **It cannot fail**, which is what plan step R2e-2 changed:
+        the one failure it used to have -- an unmodelled ``recurrence_pattern``
+        -- is refused by
+        :class:`~app.schemas.validation._helpers.RecurrencePatternField` before
+        the route reads the payload, so there is no redirect left to return and
+        the signature says so.
     """
-    pattern_id_str = data.pop("recurrence_pattern")
-    pattern = db.session.get(RecurrencePattern, int(pattern_id_str))
-    if pattern is None:
-        flash("Invalid recurrence pattern.", "danger")
-        return ctx.redirect.to_response()
+    pattern_id = data.pop("recurrence_pattern")
 
-    rule.pattern_id = pattern.id
-    rule.interval_n = data.pop("interval_n", 1)
-    rule.offset_periods = data.pop("offset_periods", 0)
-    rule.day_of_month = data.pop("day_of_month", None)
-    if ctx.include_due_day_of_month:
-        rule.due_day_of_month = data.pop("due_day_of_month", None)
-    rule.month_of_year = data.pop("month_of_year", None)
-    rule.end_date = ctx.end_date_value
-    return None
+    # The form's every-recurrence-key pops happen unconditionally, so the
+    # caller's downstream ``setattr`` loop never sees a stray kwarg whichever
+    # pattern was chosen.
+    submitted_interval = data.pop("interval_n", 1)
+    day_of_month = data.pop("day_of_month", None)
+    month_of_year = data.pop("month_of_year", None)
+    # The submitted phase is passed through, and resolution IGNORES it for any
+    # rule that names a start period -- deriving the phase from that period
+    # instead.  That is defect D1's fix, and it is scoped exactly where D1
+    # bites: no template renders an offset input, so this value is always the
+    # schema's default 0, which the pre-seam path wrote unconditionally and
+    # thereby re-phased every future occurrence of an ``Every N Periods`` rule
+    # on an amount-only edit.  A rule with NO start period has nothing to
+    # derive from, so the payload remains its only statement of phase -- and
+    # it cannot carry a stale non-zero one, because a period that is a rule's
+    # anchor is HARD-LOCKED against deletion
+    # (``pay_period_admin.PeriodLockReason.RECURRENCE_ANCHOR``).
+    submitted_offset = data.pop("offset_periods", 0)
+
+    # The rule's CURRENT authored state, with the form's fields replaced.
+    # Everything the form does not collect -- ``start_period_id`` (fixed at
+    # creation), ``start_date`` (the loan's origination bound),
+    # ``max_occurrences`` -- rides through untouched, so this edit cannot
+    # reset a field it never showed the user.
+    #
+    # ``interval_n`` needs no pattern-scoping here, and that is structural
+    # rather than a tidier spelling of the old guard.  This form's interval
+    # input is hidden for every pattern but EVERY_N_PERIODS and a hidden input
+    # still SUBMITS, so the submitted value lands on a Quarterly rule's column
+    # -- where it means nothing and nobody reads it.  ``interval_n`` carries
+    # one meaning only, "repeat every N pay PERIODS", consulted by
+    # ``match_periods`` in its EVERY_N_PERIODS branch, by
+    # ``savings_goal_service.amount_to_monthly`` under the same condition, and
+    # by ``_recurrence_macros.html`` inside the same branch.  The interval of
+    # a MONTH- or YEAR-unit recurrence is a different fact, derived from the
+    # pattern by ``resolve`` and stored nowhere (plan step R2d), so no value
+    # this form can submit is able to say a Quarterly bill recurs monthly.
+    # That is what makes the pattern-scoped guard unnecessary rather than
+    # merely relocated, and it closes the reverse case the guard left open:
+    # switching an every-4-paychecks rule to Quarterly used to make it read as
+    # "every 4 months".
+    current = recurrence_spec(rule)
+    reauthor_rule(
+        rule,
+        replace(
+            current,
+            pattern_id=pattern_id,
+            interval_n=submitted_interval,
+            offset_periods=submitted_offset,
+            day_of_month=day_of_month,
+            due_day_of_month=(
+                data.pop("due_day_of_month", None)
+                if ctx.include_due_day_of_month
+                else current.due_day_of_month
+            ),
+            month_of_year=month_of_year,
+            end_date=ctx.end_date_value,
+        ),
+        calendar_for(rule.user_id),
+    )
+
+
+LOAN_PAYMENT_CANNOT_BE_ONE_TIME: str = (
+    "A loan payment repeats for the life of the loan, so it cannot be made "
+    "one-time. Choose a different pattern to change how often it repeats, or "
+    "archive it to stop paying."
+)
+"""Refusal shown when an edit tries to clear a loan payment's recurrence."""
+
+
+def _is_loan_payment(template: Any) -> bool:
+    """Return whether *template* is a recurring loan payment.
+
+    A :class:`~app.models.loan_payment_settings.LoanPaymentSettings` row is
+    present "only for recurring loan payments" (decision B), and it carries the
+    standing ``extra_principal`` that
+    ``recurring_transfer_query.loan_standing_extra`` threads into the balance
+    seam's :class:`~app.services.balance_at._resolution.ResolvedLoan`.
+
+    ``getattr`` because only ``TransferTemplate`` declares the relationship;
+    these helpers are deliberately kind-agnostic, and a transaction template is
+    never a loan payment.
+
+    Args:
+        template: The ``TransactionTemplate`` or ``TransferTemplate``.
+
+    Returns:
+        ``True`` when the template carries loan-payment settings.
+    """
+    return getattr(template, "settings", None) is not None
+
+
+def _rule_is_exclusively_owned(rule: RecurrenceRule, template: Any) -> bool:
+    """Return whether *rule* belongs to *template* and to nothing else.
+
+    A recurrence rule is written only through
+    :func:`app.services.recurrence.author_rule`, one fresh row per template,
+    so 1:1 is the invariant -- 45 references over 45 distinct rules on the
+    live clone.  It is not enforced by the schema, and which side should
+    enforce it is finding **F-6**'s ruling to take.  Until then a DELETE must
+    not act on the assumption: both template FKs are ``ON DELETE SET NULL``,
+    so destroying a shared rule would strip a SECOND template's cadence with
+    no error and no trace.
+
+    Args:
+        rule: The rule about to be deleted.
+        template: The template clearing it.
+
+    Returns:
+        ``True`` when the rule is this owner's and no other template
+        references it.
+    """
+    if rule.user_id != template.user_id:
+        return False
+    referencing = sum(
+        db.session.query(model).filter(
+            model.recurrence_rule_id == rule.id, model.id != template.id,
+        ).count()
+        for model in (TransactionTemplate, TransferTemplate)
+    )
+    return referencing == 0
+
+
+def _clear_recurrence_rule(template: Any) -> None:
+    """Detach and DELETE the template's recurrence rule.
+
+    What "this no longer recurs" means on the write side: the template stops
+    naming a rule AND the row it named ceases to exist.  Merely detaching
+    would produce exactly the orphan finding **F-6** measures on the
+    hard-delete path (5 such rows on production), from a second door.
+
+    A rule that is NOT exclusively this template's is detached but kept, and
+    the anomaly is logged rather than swallowed -- see
+    :func:`_rule_is_exclusively_owned`.
+
+    The FK is nulled and FLUSHED before the delete so the statement order of a
+    destructive operation is legible here rather than being a property of the
+    unit of work's dependency sort.
+
+    Args:
+        template: The ``TransactionTemplate`` or ``TransferTemplate`` whose
+            recurrence is being cleared.  Mutated in place; a no-op when it
+            names no rule.
+    """
+    rule = template.recurrence_rule
+    if rule is None:
+        return
+    deletable = _rule_is_exclusively_owned(rule, template)
+    template.recurrence_rule = None
+    template.recurrence_rule_id = None
+    db.session.flush()
+    if deletable:
+        db.session.delete(rule)
+        return
+    log_event(
+        logger, logging.WARNING,
+        EVT_RECURRENCE_RULE_NOT_EXCLUSIVE, BUSINESS,
+        "Recurrence rule detached but not deleted -- not exclusively owned",
+        user_id=template.user_id,
+        template_id=template.id,
+        recurrence_rule_id=rule.id,
+    )
 
 
 def resolve_recurrence_rule_for_update(
@@ -341,9 +545,9 @@ def resolve_recurrence_rule_for_update(
     *,
     ctx: RecurrenceFormContext,
 ) -> Response | None:
-    """Re-point or rebuild a template's recurrence rule for an update.
+    """Re-point, rebuild, or CLEAR a template's recurrence rule for an update.
 
-    Dispatches the two update-form branches shared by
+    Dispatches the three update-form branches shared by
     :func:`app.routes.templates.update_template` and
     :func:`app.routes.transfers.templates.update_transfer_template`:
 
@@ -351,10 +555,55 @@ def resolve_recurrence_rule_for_update(
       that row in place via :func:`update_recurrence_rule_from_form`
       (its primary key and the template's ``recurrence_rule_id`` FK
       stay stable);
-    * otherwise -> build a fresh rule via
-      :func:`build_recurrence_rule_from_form` (or ``None`` when no
-      pattern was selected) and link it onto
-      ``template.recurrence_rule_id``.
+    * pattern present, no existing rule -> build a fresh rule via
+      :func:`build_recurrence_rule_from_form` and link it onto
+      ``template.recurrence_rule_id``;
+    * pattern SUBMITTED AS EMPTY -> the user chose "Does not repeat", so any
+      existing rule is cleared through :func:`_clear_recurrence_rule` --
+      unless the template is a LOAN PAYMENT, which is refused (see
+      :data:`LOAN_PAYMENT_CANNOT_BE_ONE_TIME`).
+
+    **A submitted-empty pattern and an absent one are different requests**, and
+    keeping them apart is what stops the third branch from breaking the
+    partial-update contract.  Both schemas declare ``recurrence_pattern`` as
+    ``allow_none``, so the form's "Does not repeat" option survives
+    ``_normalize_empty_inputs`` as a present ``None`` while a field the caller
+    never submitted stays absent -- and only the first clears.  Without that
+    distinction an amount-only PATCH, which submits no recurrence keys at all,
+    would silently delete the template's cadence.
+
+    **The third branch is new, and its absence was a live defect.**  The
+    transaction form has offered a "does not repeat" option since the recurring
+    cluster shipped, and selecting it did nothing at all: the builder returned
+    ``None``, this function assigned nothing, and the template kept both its
+    rule and its cadence.  Worse than inert -- the caller then regenerated
+    from the rule the user had just asked it to stop using.  Measured on a
+    real edit of an every-paycheck template::
+
+        rule_id before: 1   rows: 10
+        rule_id after:  1   rows: 10
+        (log) deleted_count=6  created_count=6
+
+    **A LOAN PAYMENT is refused rather than cleared**, because clearing it
+    produces a state the domain does not have: an amortizing loan still
+    amortizes, so a payment that does not repeat leaves the loan with no
+    cadence to project against.  It is not a cosmetic refusal -- measured, the
+    clear silently re-dated a loan's payoff, because
+    ``recurring_transfer_query.active_recurring_transfer_template`` finds a
+    loan's payment by ``recurrence_rule_id IS NOT NULL`` and nulling that
+    column drops the standing overpayment the balance seam threads::
+
+        loan standing extra before: 250.00
+        loan standing extra after:    0.00
+        loan_payment_settings row still asserts: 250.00
+
+    The template's own ``LoanPaymentSettings`` row would go on claiming an
+    extra principal nothing reads.  The two real intents each have a door:
+    change the cadence (pick another pattern) or stop paying (archive it).
+
+    Whether the instances that rule already generated are swept is the
+    CALLER's half of the same edit; see
+    :func:`~app.routes._recurrence_conflict_chooser.regenerate_or_conflict_chooser`.
 
     The owning row's user scope comes from ``template.user_id`` -- the
     caller fetched the template through an owner-scoped ``get_or_404``,
@@ -366,10 +615,12 @@ def resolve_recurrence_rule_for_update(
     Args:
         template: The ``TransactionTemplate`` or ``TransferTemplate``
             being updated.  Accessed for ``recurrence_rule``,
-            ``recurrence_rule_id`` (assigned when a new rule is built),
-            and ``user_id``.  Mutated in place.
+            ``recurrence_rule_id`` (assigned when a new rule is built,
+            cleared when none was selected), and ``user_id``.  Mutated in
+            place.
         data: Marshmallow-validated payload; the recurrence keys are
-            popped by the delegated helper.
+            popped by the delegated helper.  Read for whether
+            ``recurrence_pattern`` is PRESENT before that pop consumes it.
         ctx: The :class:`RecurrenceFormContext` forwarded unchanged to
             the delegated builder / updater (its ``end_date_value``,
             ``redirect`` target, and ``include_due_day_of_month`` flag).
@@ -380,12 +631,27 @@ def resolve_recurrence_rule_for_update(
         * :class:`Response` -- a Flask redirect for an invalid
           recurrence pattern id; the caller returns it directly.
     """
+    # Read BEFORE the delegated helper pops the key.
+    recurrence_submitted = "recurrence_pattern" in data
+    clearing = (
+        recurrence_submitted
+        and not data.get("recurrence_pattern")
+        and template.recurrence_rule is not None
+    )
+    if clearing and _is_loan_payment(template):
+        flash(LOAN_PAYMENT_CANNOT_BE_ONE_TIME, "danger")
+        return ctx.redirect.to_response()
+
     if data.get("recurrence_pattern") and template.recurrence_rule:
-        return update_recurrence_rule_from_form(
+        # Re-points the rule in place and cannot fail, so this branch has no
+        # redirect to propagate -- it returns the same ``None`` the other two
+        # branches do on success.
+        update_recurrence_rule_from_form(
             template.recurrence_rule,
             data,
             ctx=ctx,
         )
+        return None
 
     rule_or_redirect = build_recurrence_rule_from_form(
         data,
@@ -397,6 +663,8 @@ def resolve_recurrence_rule_for_update(
         return rule_or_redirect
     if rule_or_redirect is not None:
         template.recurrence_rule_id = rule_or_redirect.id
+    elif recurrence_submitted:
+        _clear_recurrence_rule(template)
     return None
 
 
@@ -445,350 +713,14 @@ def handle_stale_form_conflict(
     return ctx.redirect.to_response()
 
 
-# --- Recurrence-conflict chooser (Loop B, P3) --------------------------
-#
-# When a template edit's regeneration collides with hand-edited upcoming
-# instances, the update route shows a full-page chooser: keep each override
-# or move it to the template's new value.  These helpers are shared by the
-# transaction-template and transfer-template update routes; each passes its
-# own model, amount attribute, and ``resolve_conflicts`` callable, so the
-# flow stays DRY across the two kinds.
-
-_CONFLICT_APPLY_MARKER = "conflict_apply"
-_CONFLICT_DECISION_PREFIX = "conflict_decision_"
-_DECISION_KEEP = "keep"
-_DECISION_USE = "use"
-
-
-@dataclass(frozen=True)
-class ConflictChoice:
-    """One conflicted upcoming instance, shaped for a chooser row.
-
-    Attributes:
-        row_id: The Transaction / Transfer id the decision applies to.
-        due_date: The instance's due date (``None`` if unset), used to
-            order and label the row chronologically.
-        period_label: The owning pay period's ``label`` (e.g.
-            ``"02/21 - 03/06"``).
-        your_amount: The instance's current (hand-edited) amount -- the
-            "Keep" side of the toggle.
-        is_deleted_conflict: ``True`` when the conflict is a soft-deleted
-            instance (Keep leaves it deleted; Use restores it), ``False``
-            for an overridden one.
-    """
-
-    row_id: int
-    due_date: date | None
-    period_label: str
-    your_amount: Decimal
-    is_deleted_conflict: bool
-
-
-def parse_conflict_decisions(form) -> dict[int, str] | None:
-    """Parse the chooser's per-instance keep/use decisions from a POST form.
-
-    Returns ``None`` for a first-time edit submit (no chooser marker), so
-    the route knows to render the chooser; returns a ``{row_id: "keep" |
-    "use"}`` map for the chooser's Apply submit.  Malformed ids or values
-    are dropped -- every surviving id is re-checked against the real
-    conflict set in :func:`apply_conflict_decisions` before any mutation,
-    so a hand-crafted id cannot reach a row.
-
-    Args:
-        form: The request form (a ``MultiDict``).
-
-    Returns:
-        ``None`` when the form carries no chooser marker; otherwise the
-        decision map (possibly empty).
-    """
-    if form.get(_CONFLICT_APPLY_MARKER) is None:
-        return None
-    decisions: dict[int, str] = {}
-    for key in form:
-        if not key.startswith(_CONFLICT_DECISION_PREFIX):
-            continue
-        value = form.get(key)
-        if value not in (_DECISION_KEEP, _DECISION_USE):
-            continue
-        # The shared rule rather than a fourth local ``int()`` (plan step
-        # X-ae): this one never crashed, but it read ``decision_١٠٦`` as row
-        # 106 -- a spelling the chooser's own template cannot emit.
-        row_id = parse_row_id(key[len(_CONFLICT_DECISION_PREFIX):])
-        if row_id is None:
-            continue
-        decisions[row_id] = value
-    return decisions
-
-
-def _build_conflict_choices(conflict, model, amount_attr) -> list[ConflictChoice]:
-    """Load the conflicted rows and shape them for the chooser.
-
-    ``conflict.overridden`` / ``conflict.deleted`` are ids of ``model`` (a
-    Transaction or Transfer); ``amount_attr`` names the row's amount column
-    (``"estimated_amount"`` for transactions, ``"amount"`` for transfers).
-    Rows are returned chronologically (undated last) so the chooser reads
-    top-to-bottom in time order.  A vanished id (deleted between the raise
-    and this load) is skipped.
-    """
-    choices = []
-    for ids, is_deleted_conflict in (
-        (conflict.overridden, False),
-        (conflict.deleted, True),
-    ):
-        for row_id in ids:
-            row = db.session.get(model, row_id)
-            if row is None:
-                continue
-            period = row.pay_period
-            choices.append(ConflictChoice(
-                row_id=row_id,
-                due_date=row.due_date,
-                period_label=period.label if period else "",
-                your_amount=getattr(row, amount_attr),
-                is_deleted_conflict=is_deleted_conflict,
-            ))
-    choices.sort(key=lambda choice: (choice.due_date is None, choice.due_date or date.min))
-    return choices
-
-
-@dataclass(frozen=True)
-class RecurrenceConflictKind:
-    """Per-kind config for the recurring-definition edit + conflict flow.
-
-    The transaction-template and transfer-template update routes differ
-    only in the row model, its amount column, and the engine functions /
-    endpoint that regenerate, resolve, and re-edit it; bundling those five
-    lets :func:`regenerate_or_conflict_chooser` and the chooser helpers stay
-    one shared, kind-agnostic implementation.
-
-    Attributes:
-        model: The instance row model (Transaction / Transfer) whose ids the
-            conflict carries.
-        amount_attr: The row's amount column name (``"estimated_amount"`` /
-            ``"amount"``).
-        regenerate_fn: The kind's ``regenerate_for_template(template,
-            periods, scenario_id, effective_from=...)`` callable.
-        resolve_fn: The kind's ``resolve_conflicts(ids, action, user_id,
-            new_amount=...)`` callable.
-        update_endpoint: The kind's update-route endpoint, resolved with the
-            template id for the chooser's Apply action.
-    """
-
-    model: Any
-    amount_attr: str
-    regenerate_fn: Any
-    resolve_fn: Any
-    update_endpoint: str
-
-
-@dataclass(frozen=True)
-class ConflictChooserContext:
-    """Everything the recurrence-conflict chooser page renders from.
-
-    Bundled because :func:`render_recurrence_conflict_chooser` is a public
-    route helper whose inputs are one cohesive concept: the pending edit,
-    its kind, and where Apply / Cancel go.
-
-    Attributes:
-        conflict: The caught :class:`RecurrenceConflict` (the conflicted
-            row ids).
-        kind: The row model / amount / resolver bundle
-            (:class:`RecurrenceConflictKind`).
-        template_name: The edited template's new name (framing sentence).
-        new_amount: The template's new amount (the "Use" figure).
-        effective_from: The edit's effective date (framing sentence).
-        action_url: Where Apply posts (the same update endpoint).
-        cancel_url: Where Cancel returns (the list), abandoning the edit.
-    """
-
-    conflict: RecurrenceConflict
-    kind: RecurrenceConflictKind
-    template_name: str
-    new_amount: Decimal
-    effective_from: date
-    action_url: str
-    cancel_url: str
-
-
-def render_recurrence_conflict_chooser(ctx: ConflictChooserContext, form) -> str:
-    """Render the full-page conflict chooser for a pending template edit.
-
-    Loads the conflicted instances into chooser rows and echoes the
-    submitted edit ``form`` as hidden inputs (minus the CSRF token, which
-    the chooser re-issues) so Apply re-runs the identical edit before
-    resolving.  Renders and returns HTML only -- no mutation and no commit
-    happen here; the caller rolls back the pending edit after this returns.
-
-    Args:
-        ctx: The pending-edit conflict context (see
-            :class:`ConflictChooserContext`).
-        form: The submitted edit form, echoed so Apply reproduces it.
-
-    Returns:
-        The rendered chooser page HTML.
-    """
-    echo = form.to_dict(flat=True)
-    echo.pop("csrf_token", None)
-    return render_template(
-        "recurrence_conflict_chooser.html",
-        choices=_build_conflict_choices(ctx.conflict, ctx.kind.model, ctx.kind.amount_attr),
-        template_name=ctx.template_name,
-        new_amount=ctx.new_amount,
-        effective_from=ctx.effective_from,
-        echo=echo,
-        action_url=ctx.action_url,
-        cancel_url=ctx.cancel_url,
-        apply_marker=_CONFLICT_APPLY_MARKER,
-        decision_prefix=_CONFLICT_DECISION_PREFIX,
-        decision_keep=_DECISION_KEEP,
-        decision_use=_DECISION_USE,
-    )
-
-
-def apply_conflict_decisions(
-    *,
-    kind: RecurrenceConflictKind,
-    conflict: RecurrenceConflict,
-    decisions: dict[int, str],
-    new_amount: Decimal,
-    user_id: int,
-) -> None:
-    """Apply the chooser's per-instance keep/use decisions.
-
-    Only ids genuinely in the raised conflict set (``conflict.overridden``
-    + ``conflict.deleted``) are acted on; a submitted id outside that set
-    is ignored, so the chooser can never mutate an arbitrary owned row.
-    "use" ids are realigned to ``new_amount`` (clearing the override /
-    soft-delete) through ``kind.resolve_fn(..., "update", ...)``; "keep"
-    ids are recorded through ``kind.resolve_fn(..., "keep", ...)`` for the
-    audit trail (the regeneration already left them untouched).
-    ``kind.resolve_fn`` ownership-checks every id and, on the transaction
-    side, refuses transfer shadows.
-
-    Args:
-        kind: The row model / amount / resolver bundle; only
-            ``kind.resolve_fn`` is used here.
-        conflict: The caught :class:`RecurrenceConflict` (the id allow-list).
-        decisions: The ``{row_id: "keep" | "use"}`` map from
-            :func:`parse_conflict_decisions`.
-        new_amount: The template's new amount applied to "use" ids.
-        user_id: The requesting user's id (passed through for the ownership
-            checks inside ``kind.resolve_fn``).
-    """
-    allowed = set(conflict.overridden) | set(conflict.deleted)
-    use_ids = [
-        rid for rid, choice in decisions.items()
-        if choice == _DECISION_USE and rid in allowed
-    ]
-    keep_ids = [
-        rid for rid, choice in decisions.items()
-        if choice == _DECISION_KEEP and rid in allowed
-    ]
-    kind.resolve_fn(use_ids, "update", user_id, new_amount=new_amount)
-    kind.resolve_fn(keep_ids, "keep", user_id)
-
-
-# The Recurring surface is the single list both kinds cancel back to.
-_RECURRING_LIST_ENDPOINT = "templates.list_templates"
-
-
-def regenerate_or_conflict_chooser(
-    template, old_amount, effective_from, kind, amount_drives_instances,
-):
-    """Regenerate a template's future rows, diverting to the conflict chooser.
-
-    Shared by the transaction-template and transfer-template update routes
-    (each passes its own :class:`RecurrenceConflictKind`).  Loads the
-    baseline scenario and pay periods, then regenerates the non-overridden
-    future instances via ``kind.regenerate_fn``.  When the edit collides with
-    hand-edited (override / soft-deleted) upcoming instances the regeneration
-    raises; the branch then depends on the submit and on whether this edit is
-    a real per-instance AMOUNT change (the chooser only offers a keep-vs-use
-    AMOUNT decision):
-
-      * Apply (chooser decisions present): resolve each conflicted instance
-        per the user's keep/use choice, then return ``None`` so the caller
-        commits the edit together with the resolutions.
-      * First submit of an amount-changing edit (``amount_drives_instances``
-        and ``default_amount`` differs from ``old_amount``): render the
-        chooser, ROLL BACK the pending edit (nothing is persisted), and
-        return the chooser :class:`~flask.Response` for the caller to return.
-      * Any other conflicting edit -- a rename / rule / flag change, or a
-        salary-linked template whose ``default_amount`` does not drive its
-        instance amounts -- leaves the overrides as the regeneration
-        preserved them and returns ``None`` so the caller commits.  This
-        keep-silently branch is deliberate: nothing the user can see changed
-        for those instances, so no prompt and no flash (the service still
-        logs the override / delete counts for forensics).
-
-    Args:
-        template: The edited template (its field updates already applied).
-        old_amount: The template's amount BEFORE this edit; the chooser is
-            offered only when ``template.default_amount`` now differs.
-        effective_from: The edit's effective date.
-        kind: The per-kind config (:class:`RecurrenceConflictKind`).
-        amount_drives_instances: Whether ``default_amount`` actually drives
-            this template's generated instance amounts.  ``False`` for a
-            salary-linked template (paycheck-calculated per period), which
-            suppresses the chooser so a vestigial ``default_amount`` edit
-            never mis-states a paycheck.  Transfers always pass ``True``.
-
-    Returns:
-        The chooser response to short-circuit to, or ``None`` to proceed to
-        commit (no recurrence rule / scenario, no conflict, a non-amount edit,
-        or a conflict already resolved from Apply).
-    """
-    scenario = get_baseline_scenario(current_user.id)
-    if scenario is None or template.recurrence_rule is None:
-        return None
-    periods = pay_period_service.get_all_periods(current_user.id)
-    decisions = parse_conflict_decisions(request.form)
-    try:
-        kind.regenerate_fn(
-            template, periods, scenario.id, effective_from=effective_from,
-        )
-    except RecurrenceConflict as conflict:
-        if decisions is not None:
-            apply_conflict_decisions(
-                kind=kind,
-                conflict=conflict,
-                decisions=decisions,
-                new_amount=template.default_amount,
-                user_id=current_user.id,
-            )
-        elif amount_drives_instances and template.default_amount != old_amount:
-            chooser = render_recurrence_conflict_chooser(
-                ConflictChooserContext(
-                    conflict=conflict,
-                    kind=kind,
-                    template_name=template.name,
-                    new_amount=template.default_amount,
-                    effective_from=effective_from,
-                    action_url=url_for(
-                        kind.update_endpoint, template_id=template.id,
-                    ),
-                    cancel_url=url_for(_RECURRING_LIST_ENDPOINT),
-                ),
-                request.form,
-            )
-            db.session.rollback()
-            return chooser
-    return None
-
-
 __all__ = [
+    "LOAN_PAYMENT_CANNOT_BE_ONE_TIME",
     "STALE_EDITING_MESSAGE",
     "STALE_ACTION_MESSAGE",
     "RecurrenceFormContext",
     "build_recurrence_rule_from_form",
+    "edit_form_pattern_choices",
     "update_recurrence_rule_from_form",
     "resolve_recurrence_rule_for_update",
     "handle_stale_form_conflict",
-    "ConflictChoice",
-    "RecurrenceConflictKind",
-    "ConflictChooserContext",
-    "parse_conflict_decisions",
-    "render_recurrence_conflict_chooser",
-    "apply_conflict_decisions",
-    "regenerate_or_conflict_chooser",
 ]

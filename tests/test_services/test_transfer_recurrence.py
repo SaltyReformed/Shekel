@@ -203,12 +203,34 @@ class TestTransferGeneration:
 
             assert len(created) == 0
 
-    def test_once_pattern_returns_empty(self, app, db, seed_user, seed_periods):
-        """'once' pattern does not auto-generate."""
+    def test_a_rule_less_template_returns_empty(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A transfer template that does not repeat auto-generates nothing.
+
+        The transfer-side twin of
+        ``test_recurrence_engine.test_a_rule_less_template_generates_nothing``;
+        both engines share ``resolve_generation_plan``'s gate.  Named the
+        ``Once`` PATTERN until plan step R2e-3 retired it -- and the single
+        Transfer such a template stands for is created by the transfer ROUTE,
+        not by this engine, which is exactly why the engine must return empty.
+        """
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Once"
+                seed_user, "Every Period"
             )
+            # Both sides plus the row itself, exactly as
+            # ``_recurrence_form_helpers._clear_recurrence_rule`` does: the
+            # relationship is ``lazy="joined"`` and already loaded, so nulling
+            # only the FK leaves the engine reading the stale object.
+            rule = template.recurrence_rule
+            template.recurrence_rule = None
+            template.recurrence_rule_id = None
+            db.session.flush()
+            db.session.delete(rule)
+            db.session.flush()
+            assert template.recurrence_rule is None
+
             created = transfer_recurrence.generate_for_template(
                 template, seed_periods, seed_user["scenario"].id,
             )

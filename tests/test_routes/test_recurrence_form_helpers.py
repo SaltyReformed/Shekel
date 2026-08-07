@@ -17,15 +17,12 @@ run (Flask refuses ``app.add_url_rule`` once a request has been
 handled).
 """
 import logging
-from decimal import Decimal
 from types import SimpleNamespace
 
 from flask import Response
-from werkzeug.datastructures import MultiDict
 
 from app import ref_cache
-from app.enums import RecurrencePatternEnum
-from app.exceptions import RecurrenceConflict
+from app.enums import RecurrencePatternEnum, RecurrenceUnitEnum
 from app.extensions import db
 from app.models.recurrence_rule import RecurrenceRule
 from app.routes._commit_helpers import (
@@ -35,16 +32,14 @@ from app.routes._commit_helpers import (
 from app.routes._recurrence_form_helpers import (
     STALE_ACTION_MESSAGE,
     STALE_EDITING_MESSAGE,
-    RecurrenceConflictKind,
     RecurrenceFormContext,
-    apply_conflict_decisions,
     build_recurrence_rule_from_form,
     handle_stale_form_conflict,
-    parse_conflict_decisions,
     resolve_recurrence_rule_for_update,
     update_recurrence_rule_from_form,
 )
 from app.routes._redirect_target import RedirectTarget
+from app.services.recurrence import calendar_for, recurrence_spec, resolve
 
 
 class TestBuildRecurrenceRuleFromForm:
@@ -118,26 +113,6 @@ class TestBuildRecurrenceRuleFromForm:
             # because the schema strips it via EXCLUDE.
             assert data == {"due_day_of_month": 5}
 
-    def test_invalid_pattern_returns_redirect_response(
-        self, app, auth_client, seed_user,  # pylint: disable=unused-argument
-    ):
-        """C2-2: invalid pattern id -> Response 302 + flash."""
-        with app.test_request_context():
-            data = {"recurrence_pattern": "99999999"}  # nonexistent
-            result = build_recurrence_rule_from_form(
-                data,
-                user_id=seed_user["user"].id,
-                start_period_id=None,
-                ctx=RecurrenceFormContext(
-                    end_date_value=None,
-                    redirect=RedirectTarget("templates.new_template"),
-                    include_due_day_of_month=True,
-                ),
-            )
-            assert isinstance(result, Response)
-            assert result.status_code == 302
-            assert "/templates/new" in result.headers["Location"]
-
     def test_every_n_periods_auto_offset(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
@@ -161,7 +136,7 @@ class TestBuildRecurrenceRuleFromForm:
             assert chosen is not None, "fixture missing period_index=1"
 
             data = {
-                "recurrence_pattern": str(every_n_id),
+                "recurrence_pattern": every_n_id,
                 "interval_n": 4,
                 "offset_periods": 0,
                 "day_of_month": None,
@@ -203,7 +178,7 @@ class TestBuildRecurrenceRuleFromForm:
                 RecurrencePatternEnum.EVERY_N_PERIODS,
             )
             data = {
-                "recurrence_pattern": str(every_n_id),
+                "recurrence_pattern": every_n_id,
                 "interval_n": 4,
                 "offset_periods": 0,
             }
@@ -246,7 +221,7 @@ class TestBuildRecurrenceRuleFromForm:
             )
             foreign_period = seed_second_periods[0]
             data = {
-                "recurrence_pattern": str(monthly_id),
+                "recurrence_pattern": monthly_id,
                 "interval_n": 1,
                 "offset_periods": 0,
                 "day_of_month": 15,
@@ -296,7 +271,7 @@ class TestBuildRecurrenceRuleFromForm:
             )
             assert own_period is not None, "fixture missing period_index=1"
             data = {
-                "recurrence_pattern": str(monthly_id),
+                "recurrence_pattern": monthly_id,
                 "interval_n": 1,
                 "offset_periods": 0,
                 "day_of_month": 15,
@@ -326,16 +301,17 @@ class TestBuildRecurrenceRuleFromForm:
     ):
         """C2-5 (positive): include=True puts due_day_of_month on the rule.
 
-        Uses the ONCE pattern so the every-N auto-offset branch is
-        skipped and the helper exercises the straight RecurrenceRule
-        construction path.
+        Uses EVERY_PERIOD so the every-N phase derivation is skipped and the
+        helper exercises the straight RecurrenceRule construction path.  Named
+        the ``Once`` pattern for the same reason until plan step R2e-3 retired
+        it; EVERY_PERIOD is the surviving member of the same anchor family.
         """
         with app.test_request_context():
-            once_id = ref_cache.recurrence_pattern_id(
-                RecurrencePatternEnum.ONCE,
+            every_period_id = ref_cache.recurrence_pattern_id(
+                RecurrencePatternEnum.EVERY_PERIOD,
             )
             data = {
-                "recurrence_pattern": str(once_id),
+                "recurrence_pattern": every_period_id,
                 "interval_n": 1,
                 "offset_periods": 0,
                 "day_of_month": None,
@@ -390,24 +366,24 @@ class TestUpdateRecurrenceNoAutoOffset:
             every_n_id = ref_cache.recurrence_pattern_id(
                 RecurrencePatternEnum.EVERY_N_PERIODS,
             )
-            once_id = ref_cache.recurrence_pattern_id(
-                RecurrencePatternEnum.ONCE,
+            every_period_id = ref_cache.recurrence_pattern_id(
+                RecurrencePatternEnum.EVERY_PERIOD,
             )
             rule = RecurrenceRule(
                 user_id=seed_user["user"].id,
-                pattern_id=once_id,
+                pattern_id=every_period_id,
                 interval_n=1,
                 offset_periods=99,
             )
             data = {
-                "recurrence_pattern": str(every_n_id),
+                "recurrence_pattern": every_n_id,
                 "interval_n": 4,
                 "offset_periods": 3,
                 "day_of_month": None,
                 "month_of_year": None,
                 "due_day_of_month": None,
             }
-            result = update_recurrence_rule_from_form(
+            update_recurrence_rule_from_form(
                 rule,
                 data,
                 ctx=RecurrenceFormContext(
@@ -418,7 +394,6 @@ class TestUpdateRecurrenceNoAutoOffset:
                     include_due_day_of_month=True,
                 ),
             )
-            assert result is None
             # Verbatim from the payload -- NOT auto-derived (3, not 3 % 4
             # or any period-index computation).
             assert rule.offset_periods == 3
@@ -443,12 +418,12 @@ class TestUpdateRecurrenceNoAutoOffset:
             every_n_id = ref_cache.recurrence_pattern_id(
                 RecurrencePatternEnum.EVERY_N_PERIODS,
             )
-            once_id = ref_cache.recurrence_pattern_id(
-                RecurrencePatternEnum.ONCE,
+            every_period_id = ref_cache.recurrence_pattern_id(
+                RecurrencePatternEnum.EVERY_PERIOD,
             )
             rule = RecurrenceRule(
                 user_id=seed_user["user"].id,
-                pattern_id=once_id,
+                pattern_id=every_period_id,
                 interval_n=1,
                 offset_periods=0,
             )
@@ -458,7 +433,7 @@ class TestUpdateRecurrenceNoAutoOffset:
                 recurrence_rule_id=None,
             )
             data = {
-                "recurrence_pattern": str(every_n_id),
+                "recurrence_pattern": every_n_id,
                 "interval_n": 7,
                 "offset_periods": 5,
                 "day_of_month": None,
@@ -476,10 +451,79 @@ class TestUpdateRecurrenceNoAutoOffset:
                     include_due_day_of_month=True,
                 ),
             )
-            assert result is None
             assert rule.offset_periods == 5
             assert rule.interval_n == 7
             assert rule.pattern_id == every_n_id
+
+
+class TestUpdateKeepsTheStartPeriodsPhase:
+    """Defect **D1**, closed at plan step R2c-1, at its own surface.
+
+    The sibling class above pins the update path's treatment of a rule that
+    names NO start period: the submitted offset is all the phase information
+    there is, so it arrives verbatim.  This class covers the case D1 was
+    MEASURED on and that 45 of the 50 live rules are in -- a rule that DOES
+    name a start period.  There the phase is a derived fact, and the pre-seam
+    update path overwrote it with the payload's default, shifting every future
+    occurrence by one pay period on an edit that changed only the amount.
+    """
+
+    def test_an_edit_does_not_re_phase_a_rule_with_a_start_period(
+        self, app, auth_client, seed_user, db, seed_periods,  # pylint: disable=unused-argument
+    ):
+        """The phase stays ``period_index % interval_n`` across an edit.
+
+        Start period index 2 with an interval of 3 phases the rule at
+        ``2 % 3 == 2``.  The edit form submits no offset input at all, so the
+        payload carries the schema default 0; before R2c-1 that 0 landed on
+        the rule and every future occurrence moved a pay period earlier.
+        """
+        every_n_id = ref_cache.recurrence_pattern_id(
+            RecurrencePatternEnum.EVERY_N_PERIODS,
+        )
+        with app.test_request_context():
+            rule = build_recurrence_rule_from_form(
+                {
+                    "recurrence_pattern": every_n_id,
+                    "interval_n": 3,
+                    "offset_periods": 0,
+                    "day_of_month": None,
+                    "month_of_year": None,
+                    "due_day_of_month": None,
+                },
+                user_id=seed_user["user"].id,
+                start_period_id=seed_periods[2].id,
+                ctx=RecurrenceFormContext(
+                    end_date_value=None,
+                    redirect=RedirectTarget(
+                        "templates.edit_template", {"template_id": 1},
+                    ),
+                    include_due_day_of_month=True,
+                ),
+            )
+            assert rule.offset_periods == 2
+
+            update_recurrence_rule_from_form(
+                rule,
+                {
+                    "recurrence_pattern": every_n_id,
+                    "interval_n": 3,
+                    "offset_periods": 0,
+                    "day_of_month": None,
+                    "month_of_year": None,
+                    "due_day_of_month": None,
+                },
+                ctx=RecurrenceFormContext(
+                    end_date_value=None,
+                    redirect=RedirectTarget(
+                        "templates.edit_template", {"template_id": 1},
+                    ),
+                    include_due_day_of_month=True,
+                ),
+            )
+
+            assert rule.offset_periods == 2
+            assert rule.start_period_id == seed_periods[2].id
 
 
 class TestHandleStaleConflict:
@@ -590,67 +634,134 @@ class TestHandleStaleFormConflict:
             assert "current=9" in log_msg
 
 
-class TestParseConflictDecisions:
-    """The chooser's per-instance keep/use parser (Loop B, P3)."""
+class TestTheFormsIntervalCannotChangeACalendarCadence:
+    """A hidden input cannot make a Quarterly bill recur monthly.
 
-    def test_no_marker_returns_none(self):
-        """A first-time edit submit (no chooser marker) parses to None, so the
-        route knows to render the chooser rather than resolve."""
-        form = MultiDict({"default_amount": "10.00"})
-        assert parse_conflict_decisions(form) is None
+    **This is a regression guard for a defect an adversarial review caught
+    before it shipped** (plan step R2b).  The edit form's ``interval_n`` input
+    is hidden with ``d-none`` for every pattern but ``Every N Periods`` -- and
+    a hidden input still SUBMITS, rendering the default of 1.
 
-    def test_marker_parses_valid_decisions_and_drops_malformed(self):
-        """With the marker, valid ``conflict_decision_<id>`` pairs parse; a
-        non-integer id or an unrecognized value is dropped (the surviving ids
-        are re-checked against the real conflict set at apply time)."""
-        form = MultiDict({
-            "conflict_apply": "1",
-            "conflict_decision_5": "keep",
-            "conflict_decision_9": "use",
-            "conflict_decision_x": "use",     # non-integer id -> dropped
-            "conflict_decision_7": "bogus",   # invalid value -> dropped
-            "default_amount": "10.00",
-        })
-        assert parse_conflict_decisions(form) == {5: "keep", 9: "use"}
+    While plan step R2b gave ``interval_n`` a SECOND meaning (3 on a Quarterly
+    rule, 6 on a Semi-Annual one), that submitted 1 reset the cadence on any
+    edit at all, including a rename: ``(interval_n=1, unit=month)`` IS a
+    monthly rule, so a quarterly bill would project three times its real cost
+    and a semi-annual one six times, with nothing left in the row to detect
+    the loss by.
 
-    def test_marker_without_decisions_is_empty_map(self):
-        """The marker with no decision fields parses to an empty map (an Apply
-        that resolves nothing), distinct from None (render the chooser)."""
-        assert parse_conflict_decisions(MultiDict({"conflict_apply": "1"})) == {}
+    Plan step R2d removed the second meaning rather than guarding it.  The
+    column carries only "repeat every N pay PERIODS" again, read by
+    ``match_periods`` in its ``EVERY_N_PERIODS`` branch; the interval of a
+    MONTH- or YEAR-unit recurrence is derived from the PATTERN and stored
+    nowhere.  So the assertions below are about the resolved cadence, not the
+    column: whatever the form submits, a Quarterly rule recurs every 3 months.
+    """
 
+    def _edit(self, app, seed_user, pattern, stored_interval, submitted):
+        """Run one update through the helper and return the resulting rule.
 
-class TestApplyConflictDecisions:
-    """The chooser's resolution dispatch (Loop B, P3)."""
+        Args:
+            app: The Flask app, for a request context.
+            seed_user: The seeded user fixture.
+            pattern: The pattern the rule carries and the form submits.
+            stored_interval: The rule's ``interval_n`` before the edit.
+            submitted: The ``interval_n`` the form posts.
 
-    def test_ignores_ids_outside_conflict_set(self):
-        """An id absent from the raised conflict set never reaches
-        ``resolve_fn``, so the chooser cannot be used to mutate an arbitrary
-        owned row.  ``resolve_fn`` is a spy here; the partition into use/keep
-        must exclude the out-of-set id (999)."""
-        calls = []
+        Returns:
+            The edited :class:`RecurrenceRule`.
+        """
+        with app.test_request_context():
+            rule = RecurrenceRule(
+                user_id=seed_user["user"].id,
+                pattern_id=ref_cache.recurrence_pattern_id(pattern),
+                interval_n=stored_interval,
+                offset_periods=0,
+                day_of_month=21,
+            )
+            data = {
+                "recurrence_pattern": ref_cache.recurrence_pattern_id(
+                    pattern,
+                ),
+                "interval_n": submitted,
+                "offset_periods": 0,
+                "day_of_month": 21,
+                "month_of_year": 4,
+                "due_day_of_month": None,
+            }
+            update_recurrence_rule_from_form(
+                rule, data,
+                ctx=RecurrenceFormContext(
+                    end_date_value=None,
+                    redirect=RedirectTarget(
+                        "templates.edit_template", {"template_id": 1},
+                    ),
+                    include_due_day_of_month=True,
+                ),
+            )
+            assert "interval_n" not in data, (
+                "interval_n must be popped whether or not it is written, so "
+                "the caller's setattr loop never sees a stray kwarg"
+            )
+            return rule
 
-        def fake_resolve(ids, action, user_id, new_amount=None):
-            calls.append({
-                "ids": list(ids), "action": action,
-                "user_id": user_id, "new_amount": new_amount,
-            })
+    def test_a_quarterly_edit_still_recurs_every_three_months(
+        self, app, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
+    ):
+        """Neither a stored 4 nor a submitted 99 can reach the cadence.
 
-        kind = RecurrenceConflictKind(
-            model=None, amount_attr="amount", regenerate_fn=None,
-            resolve_fn=fake_resolve, update_endpoint="x",
+        Deliberately hostile values on BOTH sides rather than the form's
+        actual default of 1: a 1 -> 1 edit exercises no mismatch at all, so
+        the assertion would hold even if the column WERE the cadence.  A
+        stored 4 (left by a rule that used to be every-4-paychecks) and a
+        submitted 99 are each wrong in a way that would be visible.
+        """
+        rule = self._edit(
+            app, seed_user, RecurrencePatternEnum.QUARTERLY,
+            stored_interval=4, submitted=99,
         )
-        conflict = RecurrenceConflict(overridden=[10], deleted=[20])
-        decisions = {10: "keep", 20: "use", 999: "use"}  # 999 not in the set
 
-        apply_conflict_decisions(
-            kind=kind, conflict=conflict, decisions=decisions,
-            new_amount=Decimal("5.00"), user_id=1,
+        assert rule.interval_n == 99, (
+            "the submitted value should reach the COLUMN -- it is the "
+            "authored pay-period interval, meaningless for this pattern"
+        )
+        resolved = resolve(
+            recurrence_spec(rule), calendar_for(seed_user["user"].id),
+        )
+        assert resolved.interval_n == 3, (
+            "a form input reached a Quarterly rule's cadence; that bill would "
+            "generate every 99 months or MONTHLY -- 3x the spend or none"
+        )
+        assert resolved.unit is RecurrenceUnitEnum.MONTH
+
+    def test_a_semi_annual_edit_still_recurs_every_six_months(
+        self, app, auth_client, seed_user, seed_periods,  # pylint: disable=unused-argument
+    ):
+        """The same hostile pair against the six-month cadence."""
+        rule = self._edit(
+            app, seed_user, RecurrencePatternEnum.SEMI_ANNUAL,
+            stored_interval=4, submitted=99,
         )
 
-        update = next(c for c in calls if c["action"] == "update")
-        keep = next(c for c in calls if c["action"] == "keep")
-        assert update["ids"] == [20]            # only the in-set "use"
-        assert update["new_amount"] == Decimal("5.00")
-        assert keep["ids"] == [10]              # only the in-set "keep"
-        assert 999 not in update["ids"]
-        assert 999 not in keep["ids"]
+        resolved = resolve(
+            recurrence_spec(rule), calendar_for(seed_user["user"].id),
+        )
+        assert resolved.interval_n == 6, "6x the spend if this regresses"
+        assert resolved.unit is RecurrenceUnitEnum.MONTH
+
+    def test_every_n_periods_still_takes_the_submitted_value(
+        self, app, auth_client, seed_user,  # pylint: disable=unused-argument
+    ):
+        """The pattern that OWNS the field is unaffected by the guard.
+
+        The neighbouring case, and the one a too-broad fix would break: for
+        EVERY_N_PERIODS the input is visible, labelled, and the user's choice,
+        so the submitted 5 must land on the rule.
+        """
+        rule = self._edit(
+            app, seed_user, RecurrencePatternEnum.EVERY_N_PERIODS,
+            stored_interval=2, submitted=5,
+        )
+        assert rule.interval_n == 5, (
+            "the guard swallowed the user's own choice for the one pattern "
+            "whose form field is visible"
+        )

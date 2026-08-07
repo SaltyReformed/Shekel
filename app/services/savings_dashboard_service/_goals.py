@@ -136,7 +136,7 @@ def _load_goal_templates(user_id, goals):
     Avoids an N+1 query in the per-goal loop.  The aggregator that
     consumes the result (``obligations_aggregator.committed_monthly``)
     handles per-pattern normalization to monthly equivalents and the
-    shared skip-ONCE / skip-expired filter.
+    shared skip-non-repeating / skip-expired filter.
 
     Args:
         user_id: Integer ID of the current user.
@@ -310,7 +310,7 @@ def _compute_goal_progress(
 
         # Monthly contribution from recurring transfers into this account.
         # Routed through the one canonical aggregator (E-24 / HIGH-05) so
-        # the same skip-ONCE / skip-expired filter applies that the
+        # the same skip-non-repeating / skip-expired filter applies that the
         # /obligations page applies; pre-Commit-23 this loop omitted the
         # expired-rule guard and inflated per-goal floors indefinitely.
         acct_templates = templates_by_account.get(goal.account_id, [])

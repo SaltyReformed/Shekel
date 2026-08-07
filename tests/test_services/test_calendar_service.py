@@ -110,24 +110,27 @@ def _make_template_with_pattern(db_session, seed_user, pattern_enum):
     Args:
         db_session: Active database session.
         seed_user: The seed_user fixture dict.
-        pattern_enum: A RecurrencePatternEnum member.
+        pattern_enum: A RecurrencePatternEnum member, or ``None`` for a
+            template that does not repeat -- which since plan step R2e-3
+            means it names NO rule at all.
 
     Returns:
         The created TransactionTemplate.
     """
-    pattern_id = ref_cache.recurrence_pattern_id(pattern_enum)
-    rule = RecurrenceRule(
-        user_id=seed_user["user"].id,
-        pattern_id=pattern_id,
-    )
-    db_session.add(rule)
-    db_session.flush()
+    rule = None
+    if pattern_enum is not None:
+        rule = RecurrenceRule(
+            user_id=seed_user["user"].id,
+            pattern_id=ref_cache.recurrence_pattern_id(pattern_enum),
+        )
+        db_session.add(rule)
+        db_session.flush()
 
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
         category_id=list(seed_user["categories"].values())[0].id,
-        recurrence_rule_id=rule.id,
+        recurrence_rule_id=rule.id if rule is not None else None,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
         name="Template",
         default_amount=Decimal("100.00"),
@@ -759,18 +762,28 @@ class TestIsInfrequent:
             db.session.commit()
             assert _is_infrequent(txn) is True
 
-    def test_infrequent_once(self, app, seed_user, seed_periods, db):
-        """Template with Once pattern is infrequent."""
+    def test_non_repeating_not_infrequent(self, app, seed_user, seed_periods, db):
+        """A template that does not repeat is NOT infrequent.
+
+        "Infrequent" means "less frequent than monthly", which is a statement
+        about a CADENCE; a definition that does not repeat has none, so the
+        badge does not apply.  Until plan step R2e-3 the two template kinds
+        disagreed about this: a one-time TRANSACTION was already rule-less and
+        answered False here, while a one-time TRANSFER carried a ``Once``
+        rule, which was a member of ``_INFREQUENT_PATTERNS`` and answered
+        True.  Retiring the pattern is what made them agree.
+        """
         with app.app_context():
             template = _make_template_with_pattern(
-                db.session, seed_user, RecurrencePatternEnum.ONCE,
+                db.session, seed_user, None,
             )
+            assert template.recurrence_rule_id is None
             txn = _add_transaction(
                 db.session, seed_user, seed_periods[0], "One-time",
                 "200.00", template=template, due_date=date(2026, 1, 5),
             )
             db.session.commit()
-            assert _is_infrequent(txn) is True
+            assert _is_infrequent(txn) is False
 
     def test_monthly_not_infrequent(self, app, seed_user, seed_periods, db):
         """Template with Monthly pattern is NOT infrequent."""

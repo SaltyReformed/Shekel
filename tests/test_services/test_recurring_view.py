@@ -257,17 +257,22 @@ class TestSubtotals:
 
 
 class TestNonRecurringRows:
-    """One-time / no-rule / expired definitions show as manageable rows
+    """Non-repeating / expired definitions show as manageable rows
     but contribute nothing to any total (the management surface shows all
-    active definitions; the totals are the /obligations kernel)."""
+    active definitions; the totals are the /obligations kernel).
 
-    def test_once_row_present_but_blank(self, seed_user, seed_periods_today):
-        """A ONCE-pattern expense appears as a row with a blank equivalent
+    "Does not repeat" is ``recurrence_rule_id IS NULL`` on both template
+    kinds since plan step R2e-3.  These cases named a ``Once``-PATTERN rule
+    before it, which is the second spelling that step removed."""
+
+    def test_non_repeating_row_present_but_blank(
+        self, seed_user, seed_periods_today,
+    ):
+        """A rule-less expense appears as a row with a blank equivalent
         and no next date, and adds $0 to the subtotal.
         """
-        rule = _create_rule(seed_user, RecurrencePatternEnum.ONCE)
         recurring = _create_rule(seed_user, RecurrencePatternEnum.EVERY_PERIOD)
-        once = _create_expense(seed_user, rule, Decimal("999.00"), name="OneTime")
+        once = _create_expense(seed_user, None, Decimal("999.00"), name="OneTime")
         real = _create_expense(seed_user, recurring, Decimal("100.00"), name="Real")
 
         view = recurring_view.build_view(
@@ -281,17 +286,21 @@ class TestNonRecurringRows:
         assert once_row.next_date is None
         assert once_row.share_pct is None
         # Only the real recurring expense counts toward the subtotal.
+        # 100.00 * 26 / 12 = 216.666... -> 216.67
         assert view.expenses.subtotal.monthly == Decimal("216.67")
 
-    def test_once_row_logs_no_unknown_pattern_warning(
+    def test_non_repeating_row_logs_no_unknown_pattern_warning(
         self, seed_user, seed_periods_today, caplog,
     ):
-        """Building a view with a ONCE definition emits no 'unknown pattern'
-        warning: ``_next_occurrence`` guards ONCE before ``match_periods``
-        (which has no ONCE branch and would otherwise log it every render).
+        """A rule-less definition emits no 'unknown pattern' warning.
+
+        ``_next_occurrence`` returns on the rule-less branch before reaching
+        ``match_periods``, which logs that warning for any pattern it has no
+        branch for.  Until plan step R2e-3 a second guard was needed beside it
+        for the ``Once`` pattern, which ``match_periods`` also had no branch
+        for -- so a one-time definition logged it on EVERY render without one.
         """
-        rule = _create_rule(seed_user, RecurrencePatternEnum.ONCE)
-        once = _create_expense(seed_user, rule, Decimal("999.00"), name="OneTime")
+        once = _create_expense(seed_user, None, Decimal("999.00"), name="OneTime")
 
         with caplog.at_level(logging.WARNING):
             recurring_view.build_view(
@@ -429,13 +438,17 @@ class TestSharesAndOrdering:
     def test_rows_sorted_by_monthly_desc_then_nonrecurring_last(
         self, seed_user, seed_periods_today,
     ):
-        """Rows land in monthly-cost-descending order, one-time rows last."""
+        """Rows land in monthly-cost-descending order, non-repeating last.
+
+        The last row's amount (999.00) is the LARGEST, so ordering by amount
+        would put it first; it sorts last because a rule-less definition has
+        no monthly equivalent at all.
+        """
         rule = _create_rule(seed_user, RecurrencePatternEnum.MONTHLY, day_of_month=1)
-        rule_once = _create_rule(seed_user, RecurrencePatternEnum.ONCE)
         _create_expense(seed_user, rule, Decimal("300.00"), name="Mid")
         _create_expense(seed_user, rule, Decimal("900.00"), name="High")
         _create_expense(seed_user, rule, Decimal("100.00"), name="Low")
-        _create_expense(seed_user, rule_once, Decimal("999.00"), name="Once")
+        _create_expense(seed_user, None, Decimal("999.00"), name="Once")
 
         view = recurring_view.build_view(
             [], _load_expenses(seed_user), [], seed_periods_today, date.today(),

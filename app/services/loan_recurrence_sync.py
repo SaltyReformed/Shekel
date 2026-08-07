@@ -42,12 +42,18 @@ transaction and never commits (the caller owns the transaction boundary).
 """
 
 import logging
+from dataclasses import replace
 from datetime import date
 from typing import TYPE_CHECKING
 
 from app.extensions import db
 from app.models.account import Account
 from app.services import balance_at, loan_loaders, rate_period_engine
+from app.services.recurrence import (
+    calendar_for,
+    reauthor_rule,
+    recurrence_spec,
+)
 from app.services.recurring_transfer_query import (
     active_recurring_transfer_template,
 )
@@ -167,8 +173,22 @@ def _sync_loan_cadence(rule: "RecurrenceRule", params: "LoanParams") -> None:
     if rule.start_date == new_start and rule.day_of_month == new_day:
         return
     old_start, old_day = rule.start_date, rule.day_of_month
-    rule.start_date = new_start
-    rule.day_of_month = new_day
+    # RE-AUTHORED, not assigned: a rule is written whole through one door, so
+    # ``offset_periods`` is re-derived from the rule's own start period rather
+    # than left holding the phase a previous cadence implied.  Both values
+    # here also feed the rule's first occurrence, which is DERIVED on read
+    # (plan step R2d) and so cannot lag the contract this edit states.  The
+    # schedule is loaded only on this side of the no-change guard above, so
+    # the ordinary settle / revert path (which reaches this function on every
+    # loan-payment mutation) still costs no extra query.
+    reauthor_rule(
+        rule,
+        replace(
+            recurrence_spec(rule),
+            start_date=new_start, day_of_month=new_day,
+        ),
+        calendar_for(rule.user_id),
+    )
     log_event(
         logger, logging.INFO,
         EVT_LOAN_RECURRENCE_START_DATE_UPDATED, BUSINESS,
@@ -281,7 +301,18 @@ def sync_recurring_payment_bounds(account_id: int) -> None:
         return
 
     old_end_date = rule.end_date
-    rule.end_date = new_end_date
+    # Re-authored like the cadence above, and for the same reason: a rule is
+    # written whole through one door, so there is no field-at-a-time write to
+    # leave some other column holding a value this edit invalidated.
+    # ``end_date`` is not an input to any derived value, so on this path the
+    # re-author is ordinarily a no-op on every column but the one named --
+    # which is the point of a uniform rule rather than one applied only where
+    # it happens to matter.
+    reauthor_rule(
+        rule,
+        replace(recurrence_spec(rule), end_date=new_end_date),
+        calendar_for(account.user_id),
+    )
     log_event(
         logger, logging.INFO,
         EVT_LOAN_RECURRENCE_END_DATE_UPDATED, BUSINESS,

@@ -298,7 +298,8 @@ def _create_expense_template(seed_user, rule, amount, name="Test Expense",
 
     Args:
         seed_user: The seed user fixture dict.
-        rule: RecurrenceRule object.
+        rule: RecurrenceRule object, or ``None`` for a template that does not
+            repeat (plan step R2e-3's shape).
         amount: Decimal default amount.
         name: Template display name.
         is_active: Whether the template is active (default True).
@@ -310,7 +311,7 @@ def _create_expense_template(seed_user, rule, amount, name="Test Expense",
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
         category_id=seed_user["categories"]["Rent"].id,
-        recurrence_rule_id=rule.id,
+        recurrence_rule_id=rule.id if rule is not None else None,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
         name=name,
         default_amount=amount,
@@ -1524,18 +1525,18 @@ class TestEmergencyFundCommittedBaseline:
                 f"Monthly template should contribute exactly $500, got {result}"
             )
 
-    def test_emergency_fund_excludes_once_templates(
+    def test_emergency_fund_excludes_non_repeating_templates(
         self, app, seed_user,
     ):
-        """One-time templates do not contribute to committed monthly.
-        Only the recurring every-period template should be counted.
+        """Non-repeating templates do not contribute to committed monthly.
+
+        Only the recurring every-period template should be counted.  The
+        non-repeating one carried a ``Once`` PATTERN until plan step R2e-3;
+        it is now rule-less, which is the shape the aggregator filters on.
         """
         with app.app_context():
-            once_rule = _create_recurrence_rule(
-                seed_user, RecurrencePatternEnum.ONCE,
-            )
             once_tmpl = _create_expense_template(
-                seed_user, once_rule, Decimal("5000.00"),
+                seed_user, None, Decimal("5000.00"),
                 name="One-Time Purchase",
             )
 

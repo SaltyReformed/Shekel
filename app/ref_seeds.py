@@ -104,6 +104,22 @@ _REF_TABLE_SEEDS = (
         {"name": "Cancelled", "is_settled": False, "is_immutable": True,  "excludes_from_balance": True},
         {"name": "Settled",   "is_settled": True,  "is_immutable": True,  "excludes_from_balance": False},
     ]),
+    # ``Once`` is a DELIBERATE SURPLUS and must not be removed until plan step
+    # R9 drops the table (recurrence redesign, step R2e-3 / ruling R-R11).
+    # ``RecurrencePatternEnum`` no longer names it -- "does not recur" is
+    # ``recurrence_rule_id IS NULL`` -- so THIS image does not need the row:
+    # ``ref_cache.init`` iterates the running image's enum and never looks at a
+    # surplus row.  The image that needs it is the PREVIOUS one, the target of
+    # ``shekel-deploy``'s auto-rollback, whose enum still has ``ONCE``.  Its own
+    # copy of this list still carries "Once" and would upsert the row back --
+    # except ``scripts/seed_ref_tables.py`` boots the full app with plain
+    # ``create_app()``, so ``ref_cache.init`` raises before the upsert runs.
+    # Deleting this entry is therefore what makes that image unbootable, and
+    # the seed cannot repair what the seed's own startup refuses to reach.
+    # Full reasoning and its measured caveat: migration ``d4a71f6e30bb``.
+    # Pinned by ``TestDeliberateRefSeedSurplus``
+    # (``tests/test_models/test_posting_ref_seed_parity.py``), which also
+    # refuses a SECOND unmodelled value here.
     ("RecurrencePattern", [
         "Every Period", "Every N Periods", "Monthly", "Monthly First",
         "Quarterly", "Semi-Annual", "Annual", "Once",
@@ -181,6 +197,19 @@ _REF_TABLE_SEEDS = (
         "loan_interest", "loan_escrow", "loan_refund",
         "equity_opening", "anchor_equity",
     ]),
+    # Two-axis recurrence vocabulary (recurrence redesign, step R2; plan
+    # ``docs/plans/implementation_plan_recurrence_redesign.md``).  A rule
+    # recurs every ``interval_n`` ``RecurrenceUnit``s; ``PeriodPlacement``
+    # carries the resulting occurrence DATE onto the pay PERIOD a row lives
+    # in; ``BusinessDayShift`` is the weekend/holiday adjustment step R8
+    # turns on (every rule is seeded at ``none``).  The migration
+    # ``e7a4d95c2b18`` inline-seeds the identical rows so a freshly upgraded
+    # DB resolves those enums before this idempotent reseed runs -- the same
+    # dual-seed pattern the posting refs use.  Names match the enum
+    # ``.value`` strings in ``app/enums.py`` exactly.
+    ("RecurrenceUnit", ["period", "week", "month", "year"]),
+    ("PeriodPlacement", ["containing_date", "period_starting_on_or_after"]),
+    ("BusinessDayShift", ["none", "prior", "next"]),
 )
 # pylint: enable=line-too-long
 # fmt: on

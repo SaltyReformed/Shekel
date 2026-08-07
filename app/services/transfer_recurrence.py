@@ -57,7 +57,7 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
         List of newly created Transfer objects.
     """
     # Resolve the shared gating + period-matching preamble (cross-user
-    # defense, rule/ONCE gating, effective_from defaulting, pattern
+    # defense, rule-present gating, effective_from defaulting, pattern
     # match) via the transaction engine's helper -- the transfer engine
     # is a deliberate parallel and must apply the rule identically.  A
     # None result means generate nothing.  See

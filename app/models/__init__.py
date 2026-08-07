@@ -9,6 +9,7 @@ then budget (to satisfy foreign key dependencies).
 # Reference / lookup tables
 from app.models.ref import (
     AccountType,
+    BusinessDayShift,
     CalcMethod,
     DeductionTiming,
     FilingStatus,
@@ -17,10 +18,12 @@ from app.models.ref import (
     LedgerAccountClass,
     LedgerAccountKind,
     LoanAnchorSource,
+    PeriodPlacement,
     PostingKind,
     PostingSource,
     RaiseType,
     RecurrencePattern,
+    RecurrenceUnit,
     Status,
     TaxType,
     TransactionType,
@@ -36,6 +39,10 @@ from app.models.pay_schedule import PaySchedule
 from app.models.account import Account, AccountAnchorHistory
 from app.models.category import Category
 from app.models.recurrence_rule import RecurrenceRule
+from app.models.recurrence_anchors import (
+    RecurrenceMonthAnchor,
+    RecurrenceWeekdayAnchor,
+)
 from app.models.scenario import Scenario
 from app.models.transaction_template import TransactionTemplate
 from app.models.transaction import Transaction
@@ -77,6 +84,7 @@ from app.models.tax_config import (
 __all__ = [
     # Reference / lookup tables
     "AccountType",
+    "BusinessDayShift",
     "CalcMethod",
     "DeductionTiming",
     "FilingStatus",
@@ -85,10 +93,12 @@ __all__ = [
     "LedgerAccountClass",
     "LedgerAccountKind",
     "LoanAnchorSource",
+    "PeriodPlacement",
     "PostingKind",
     "PostingSource",
     "RaiseType",
     "RecurrencePattern",
+    "RecurrenceUnit",
     "Status",
     "TaxType",
     "TransactionType",
@@ -104,6 +114,8 @@ __all__ = [
     "AccountAnchorHistory",
     "Category",
     "RecurrenceRule",
+    "RecurrenceMonthAnchor",
+    "RecurrenceWeekdayAnchor",
     "Scenario",
     "TransactionTemplate",
     "Transaction",

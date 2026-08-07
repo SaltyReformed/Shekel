@@ -3,12 +3,9 @@
    Single source for the recurrence picker that templates/form.html
    (recurring income / expense) and transfers/form.html (recurring
    transfer) previously each defined verbatim.  The two forms differ only
-   in three parameters, so the markup itself is shared here and the
+   in two parameters, so the markup itself is shared here and the
    differences are passed in:
 
-     * include_none_option -- expense / income offer "None (one-time /
-       manual)"; a transfer's one-time case is the ONCE pattern, so it has
-       no null option.
      * include_due_day -- only transaction templates carry a separate bill
        due-day; the transfer schemas do not expose the field.
      * the pay-period selector's placement -- a transaction's start period
@@ -18,20 +15,42 @@
        the container).  So start_period_field is a separate macro each form
        places itself; it is not baked into recurrence_detail_fields.
 
-   Import WITH CONTEXT -- the pattern select renders recurrence_pattern_labels,
-   which is an @app.context_processor variable (app/__init__.py) and so is only
-   visible to a macro imported with context.  (The REC_* pattern ids in the
-   data-* attributes are Jinja globals, registered by register_ref_id_globals
-   in app/jinja_globals.py, so they resolve regardless -- but without context
-   the label lookup would silently fall back to the raw pattern name.)
-   recurrence_form.js drives the show / hide + live preview off the element ids
-   emitted here. #}
+   An include_none_option flag used to be a third: the transfer form had no
+   "does not repeat" option, because a one-time transfer carried a ONCE
+   RULE.  Plan step R2e-3 retired that pattern -- a definition that does not
+   repeat has no rule on either kind -- so both forms now offer the empty
+   option and the flag went with the divergence it described.
+
+   The REC_* pattern ids in the data-* attributes are Jinja globals, registered
+   by register_ref_id_globals in app/jinja_globals.py, so they resolve whether
+   or not the importing form uses `with context`.  The pattern select itself
+   needs nothing from the context: since plan step R2e-2 its options arrive as
+   (pattern_id, label) pairs from app.services.recurrence.pattern_choices, so
+   the label lookup that used to read the recurrence_pattern_labels context
+   variable is gone.  recurrence_form.js drives the show / hide + live preview
+   off the element ids emitted here. #}
 
 
-{# The pattern <select>.  ``selected_pattern_id`` is the id to pre-select
-   (an int, an IntEnum, or None); the caller resolves it from the template's
-   rule or the create-time default, so this macro only renders. #}
-{% macro recurrence_pattern_select(patterns, selected_pattern_id, include_none_option) %}
+{# The pattern <select>.  ``choices`` is the ordered PatternChoice tuple the
+   route resolved from app.services.recurrence.pattern_choices -- the picker
+   offers exactly the patterns the application MODELS, never whatever rows the
+   ref table happens to hold, because a pattern RecurrencePatternEnum does not
+   name cannot be resolved and so cannot be authored (plan step R2e-2).
+
+   ``template`` is the TransactionTemplate / TransferTemplate being edited, or
+   None on a create form.  The macro reads only its rule's pattern_id, to mark
+   one option ``selected``.  That derivation lives HERE rather than in each
+   form because both forms need the identical expression, and a <select> whose
+   stored value matches no option does not fail -- it silently submits a
+   DIFFERENT one (see app.services.recurrence.pattern_choices_for, which
+   measured what that costs).  One copy of the rule is one thing to get right.
+
+   Every option in ``choices`` recurs.  The leading empty option is what "does
+   not repeat" is on both kinds since plan step R2e-3: it posts an empty
+   value, which the create routes read as "author no rule" and the update
+   routes read as "delete the rule this template had" (plan step R2e-1). #}
+{% macro recurrence_pattern_select(choices, template) %}
+{% set selected_pattern_id = template.recurrence_rule.pattern_id if template and template.recurrence_rule else none %}
 <div class="mb-3">
   <label for="recurrence_pattern" class="form-label">Pattern</label>
   <select id="recurrence_pattern" name="recurrence_pattern" class="form-select"
@@ -39,14 +58,11 @@
           data-monthly="{{ REC_MONTHLY }}"
           data-quarterly="{{ REC_QUARTERLY }}"
           data-semi-annual="{{ REC_SEMI_ANNUAL }}"
-          data-annual="{{ REC_ANNUAL }}"
-          data-once="{{ REC_ONCE }}">
-    {% if include_none_option %}
-    <option value="" {{ 'selected' if selected_pattern_id is none else '' }}>None (one-time / manual)</option>
-    {% endif %}
-    {% for p in patterns %}
-    <option value="{{ p.id }}" {{ 'selected' if selected_pattern_id == p.id else '' }}>
-      {{ recurrence_pattern_labels.get(p.name, p.name|replace('_', ' ')|title) }}
+          data-annual="{{ REC_ANNUAL }}">
+    <option value="" {{ 'selected' if selected_pattern_id is none else '' }}>Does not repeat</option>
+    {% for choice in choices %}
+    <option value="{{ choice.pattern_id }}" {{ 'selected' if selected_pattern_id == choice.pattern_id else '' }}>
+      {{ choice.label }}
     </option>
     {% endfor %}
   </select>
@@ -61,8 +77,23 @@
 {% macro recurrence_detail_fields(template, include_due_day) %}
 <div class="mb-3 d-none" id="field-interval">
   <label for="interval_n" class="form-label">Repeat every N paychecks</label>
+  {# Prefilled from the rule ONLY for the pattern this input belongs to.
+     The div is d-none by default and recurrence_form.js toggles it on for
+     EVERY_N_PERIODS, but the input submits either way.  ``interval_n`` means
+     "repeat every N pay PERIODS" and is meaningful for no other pattern, so
+     an unconditional prefill would put a Quarterly rule's leftover value into
+     a field labelled "every N paychecks" the moment its pattern is switched.
+     Reading a column whose validity depends on the pattern is the exact
+     defect the redesign exists to remove.  (An earlier note here said the
+     column carried 3 on a Quarterly rule and 6 on a Semi-Annual one, which
+     plan step R2b did and plan step R2d withdrew -- the interval of a
+     MONTH-unit recurrence is now derived from the pattern and stored
+     nowhere.  The pattern-scoped prefill is still correct either way.) #}
   <input type="number" id="interval_n" name="interval_n" class="form-control" min="1"
-         value="{{ template.recurrence_rule.interval_n if template and template.recurrence_rule else 1 }}">
+         value="{{ template.recurrence_rule.interval_n
+                   if template and template.recurrence_rule
+                      and template.recurrence_rule.pattern_id == REC_EVERY_N_PERIODS
+                   else 1 }}">
 </div>
 <div class="row mb-3">
   <div class="col d-none" id="field-dom">

@@ -12,6 +12,8 @@ to the Status model.  Verifies that:
   - The grid shows "Paid" instead of "Done" for the mark-done button.
   - GoalMode and IncomeUnit ref_cache accessors return valid IDs.
   - GoalModeEnum and IncomeUnitEnum match their database rows exactly.
+  - The two-axis recurrence vocabulary (RecurrenceUnit / PeriodPlacement /
+    BusinessDayShift) resolves and matches its rows exactly (step R2a).
 """
 
 from decimal import Decimal
@@ -23,23 +25,29 @@ from app.extensions import db
 from app import create_app, ref_cache
 from app.enums import (
     AcctCategoryEnum,
+    BusinessDayShiftEnum,
     GoalModeEnum,
     IncomeUnitEnum,
     LedgerAccountClassEnum,
     LedgerAccountKindEnum,
     LoanAnchorSourceEnum,
+    PeriodPlacementEnum,
     PostingKindEnum,
     PostingSourceEnum,
+    RecurrenceUnitEnum,
     StatusEnum,
     TxnTypeEnum,
 )
 from app.models.ref import (
+    BusinessDayShift,
     GoalMode,
     IncomeUnit,
     LedgerAccountClass,
     LedgerAccountKind,
+    PeriodPlacement,
     PostingKind,
     PostingSource,
+    RecurrenceUnit,
     Status,
     TransactionType,
 )
@@ -868,6 +876,142 @@ class TestLedgerAccountKindRefCache:
             db.session.flush()
 
             with pytest.raises(RuntimeError, match="linked"):
+                ref_cache.init(db.session)
+
+            # Roll back so other tests aren't affected, then re-init clean.
+            db.session.rollback()
+            ref_cache.init(db.session)
+
+
+class TestTwoAxisRecurrenceRefCache:
+    """The two-axis recurrence vocabulary resolves (redesign step R2a).
+
+    ``ref.recurrence_units`` / ``ref.period_placements`` /
+    ``ref.business_day_shifts`` are the tables the redesign expresses a rule
+    in: ``every <interval_n> <unit>``, placed onto a pay period by
+    ``<placement>``, with a weekend/holiday ``<shift>``.  Nothing reads them
+    until step R2b adds the FKs, so what these tests protect is the dual-seed
+    contract: the migration seeded rows whose ``name`` matches every enum
+    ``.value``, and ``ref_cache`` resolves each to a distinct positive ID.
+
+    The parity is asserted per-table and in BOTH directions (no missing row,
+    no extra row) because a value present in the enum but absent from the
+    table is a fatal ``RuntimeError`` at app start, and a row present in the
+    table but absent from the enum is a value no reader can ever resolve.
+    """
+
+    def test_recurrence_unit_ids_are_distinct_and_positive(self, app, db):
+        """Every RecurrenceUnitEnum member resolves to its own positive ID.
+
+        A collision here would silently collapse two cadences onto one row --
+        e.g. ``month`` and ``year`` resolving to the same ID would make an
+        annual rule generate monthly, which is 12x the money.
+        """
+        with app.app_context():
+            ids = {
+                member: ref_cache.recurrence_unit_id(member)
+                for member in RecurrenceUnitEnum
+            }
+            for member, unit_id in ids.items():
+                assert isinstance(unit_id, int) and unit_id > 0, (
+                    f"recurrence_unit_id({member.name}) must be a positive "
+                    f"int, got {unit_id!r}"
+                )
+            assert len(set(ids.values())) == len(RecurrenceUnitEnum), (
+                f"RecurrenceUnitEnum members must have distinct IDs; got {ids}"
+            )
+
+    def test_period_placement_ids_are_distinct_and_positive(self, app, db):
+        """Every PeriodPlacementEnum member resolves to its own positive ID.
+
+        The two placements are the ONLY difference between today's Monthly and
+        Monthly First patterns, so a collision would merge two user-visible
+        behaviours into one.
+        """
+        with app.app_context():
+            ids = {
+                member: ref_cache.period_placement_id(member)
+                for member in PeriodPlacementEnum
+            }
+            for member, placement_id in ids.items():
+                assert isinstance(placement_id, int) and placement_id > 0, (
+                    f"period_placement_id({member.name}) must be a positive "
+                    f"int, got {placement_id!r}"
+                )
+            assert len(set(ids.values())) == len(PeriodPlacementEnum), (
+                f"PeriodPlacementEnum members must have distinct IDs; got {ids}"
+            )
+
+    def test_business_day_shift_ids_are_distinct_and_positive(self, app, db):
+        """Every BusinessDayShiftEnum member resolves to its own positive ID.
+
+        ``none`` colliding with ``prior`` or ``next`` would move a bill's cash
+        date off the day the user chose.
+        """
+        with app.app_context():
+            ids = {
+                member: ref_cache.business_day_shift_id(member)
+                for member in BusinessDayShiftEnum
+            }
+            for member, shift_id in ids.items():
+                assert isinstance(shift_id, int) and shift_id > 0, (
+                    f"business_day_shift_id({member.name}) must be a positive "
+                    f"int, got {shift_id!r}"
+                )
+            assert len(set(ids.values())) == len(BusinessDayShiftEnum), (
+                f"BusinessDayShiftEnum members must have distinct IDs; "
+                f"got {ids}"
+            )
+
+    def test_recurrence_unit_enum_matches_db(self, app, db):
+        """``ref.recurrence_units`` holds exactly the enum's values."""
+        with app.app_context():
+            db_names = {row.name for row in db.session.query(RecurrenceUnit).all()}
+            enum_values = {member.value for member in RecurrenceUnitEnum}
+            assert db_names == enum_values, (
+                f"RecurrenceUnit DB rows {sorted(db_names)} do not match "
+                f"RecurrenceUnitEnum values {sorted(enum_values)}"
+            )
+
+    def test_period_placement_enum_matches_db(self, app, db):
+        """``ref.period_placements`` holds exactly the enum's values."""
+        with app.app_context():
+            db_names = {row.name for row in db.session.query(PeriodPlacement).all()}
+            enum_values = {member.value for member in PeriodPlacementEnum}
+            assert db_names == enum_values, (
+                f"PeriodPlacement DB rows {sorted(db_names)} do not match "
+                f"PeriodPlacementEnum values {sorted(enum_values)}"
+            )
+
+    def test_business_day_shift_enum_matches_db(self, app, db):
+        """``ref.business_day_shifts`` holds exactly the enum's values."""
+        with app.app_context():
+            db_names = {
+                row.name for row in db.session.query(BusinessDayShift).all()
+            }
+            enum_values = {member.value for member in BusinessDayShiftEnum}
+            assert db_names == enum_values, (
+                f"BusinessDayShift DB rows {sorted(db_names)} do not match "
+                f"BusinessDayShiftEnum values {sorted(enum_values)}"
+            )
+
+    def test_ref_cache_fails_on_missing_recurrence_unit(self, app, db):
+        """``ref_cache.init()`` raises when a recurrence-unit row is missing.
+
+        Proves the enum<->seed parity gate fires for the new vocabulary
+        exactly as it does for the long-standing Status table: deleting the
+        ``month`` row leaves ``RecurrenceUnitEnum.MONTH`` unresolvable, which
+        must be a fatal startup error rather than a silent skip that would
+        later surface as an unresolvable cadence mid-generation.
+        """
+        with app.app_context():
+            month = (
+                db.session.query(RecurrenceUnit).filter_by(name="month").one()
+            )
+            db.session.delete(month)
+            db.session.flush()
+
+            with pytest.raises(RuntimeError, match="MONTH"):
                 ref_cache.init(db.session)
 
             # Roll back so other tests aren't affected, then re-init clean.

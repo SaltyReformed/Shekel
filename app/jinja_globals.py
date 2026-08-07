@@ -96,7 +96,6 @@ _REF_ID_GLOBALS: tuple[tuple[Callable[[Enum], int], dict[str, Enum]], ...] = (
         "REC_QUARTERLY": RecurrencePatternEnum.QUARTERLY,
         "REC_SEMI_ANNUAL": RecurrencePatternEnum.SEMI_ANNUAL,
         "REC_ANNUAL": RecurrencePatternEnum.ANNUAL,
-        "REC_ONCE": RecurrencePatternEnum.ONCE,
     }),
     (ref_cache.acct_category_id, {
         "ACCT_CAT_ASSET": AcctCategoryEnum.ASSET,
