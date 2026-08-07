@@ -514,11 +514,11 @@ already model "does not recur" correctly as `recurrence_rule_id IS NULL`; transf
       overpayment the balance seam threads (**D15**). The clear branch now deletes the rule rather
       than orphaning it; a loan payment is refused at the door.
 
-- [x] **R2e-2 -- the pattern picker offers what the app MODELS.** `a465e9fa` -- picker, both write
-      doors and the preview read `RecurrencePatternEnum` through one producer, so the `ref` row
-      R2e-3 leaves behind is unreachable, not merely unused. Binds R2e-3: it needs no further guard,
-      and `pattern_choices_for` already keeps an unmodelled STORED pattern selected -- without which
-      an edit form silently defaults to the destructive clear (measured, review-found).
+- [x] **R2e-2 -- the pattern picker offers what the app MODELS.** `a465e9fa` + `fcea8b3c` -- every
+      recurrence surface reads `RecurrencePatternEnum`, and the submission check is the SCHEMA's
+      (`RecurrencePatternField`), so the `ref` row R2e-3 leaves behind is unreachable. Binds R2e-3:
+      no further guard needed, and `pattern_choices_for` keeps an unmodelled STORED pattern selected
+      -- without which an edit form silently defaults to the destructive clear (measured).
 
 - [ ] **R2e-3 -- retire `Once`.**
 
@@ -799,7 +799,7 @@ surfaced -- they have no step because they need a ruling first, which is what `o
 **D1 left this table at R2c-1, and D14/D15 at R2e-1**; each measurement lives with the step that
 closed it -- the historical archive for D1, commit `4d99c9d4` for D14/D15, which R-R11 still names.
 
-**The ledger stands at 21 rows.**
+**The ledger stands at 20 rows.**
 
 | id | finding (one line) | worst measured | status | owned by |
 |---|---|---|---|---|
@@ -819,7 +819,6 @@ closed it -- the historical archive for D1, commit `4d99c9d4` for D14/D15, which
 | D11 | two branches of `_first_of_month_anchor` are unreachable, and one comments a case that cannot execute | none -- both are dead; proven by argument and by a 243,018-case sweep in which neither was ever taken | OPEN | R-F7 |
 | D12 | `ref_cache.recurrence_unit_id` / `period_placement_id` / `business_day_shift_id` have ZERO callers in `app/` since R2d made `resolve()` return enum members | none -- they are correct and tested; the risk is a dead-code sweep DELETING them before their first consumer exists | OPEN | R7c (its backfill maps enums back to ids) |
 | D13 | `create_transfer_template` dereferences `rule.id` with no null branch, and its own comment claims the schema prevents it -- `recurrence_pattern` is NOT `required` on `TransferTemplateCreateSchema` | 500 (`AttributeError`) on any POST omitting the pattern; becomes the DEFAULT path once the form offers the null option | OPEN | R2e-3 |
-| F-7 | `ref_seeds`' pattern list restates `[m.value for m in RecurrencePatternEnum]` verbatim, so the set the app models is stated twice | none -- probed byte-identical, and `ref_cache.init` already refuses a mismatch | OPEN | operator (derive every `ref` seed from its enum, or keep the literals? it is the shape of all ~23 seed lists, not just this one) |
 | D17 | `RecurrenceRule.pattern` is `lazy="joined"`, so every rule load eager-joins `ref.recurrence_patterns` for a relationship whose only reader is the `recurrence_cell` macro's else-branch | none -- one join per rule load | OPEN | R7a (deletes that branch, the labels dict and `pattern_labels_by_name` together, so the join goes with them) |
 | D16 | renaming a `Once` transfer template DESTROYS its Transfer: regeneration sweeps the row, then the `Once` guard generates nothing back | the transfer and both shadows deleted on a rename; the 2 live `Once` transfer templates are exposed the moment their row is projected rather than Paid | OPEN | R2e-3 (a rule-less template is skipped by the sweep gate) |
 | F-4 | `pay_periods` stores NOMINAL paydays; a holiday/weekend shift for the pay SCHEDULE is unmodelled | Josh's 1 Jan 2026 payday was really paid 31 Dec 2025 | OPEN | operator (scope it as its own task, or rule it out?) |
