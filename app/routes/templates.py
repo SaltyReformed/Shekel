@@ -48,14 +48,17 @@ from app.routes._recurrence_preview import (
     owned_preview_start_period,
     render_preview_html,
 )
+from app.routes._recurrence_conflict_chooser import (
+    PreEditTemplateState,
+    RecurrenceConflictKind,
+    regenerate_or_conflict_chooser,
+)
 from app.routes._recurrence_form_helpers import (
     STALE_ACTION_MESSAGE,
     STALE_EDITING_MESSAGE,
-    RecurrenceConflictKind,
     RecurrenceFormContext,
     build_recurrence_rule_from_form,
     handle_stale_form_conflict,
-    regenerate_or_conflict_chooser,
     resolve_recurrence_rule_for_update,
 )
 from app.routes._redirect_target import RedirectTarget
@@ -650,7 +653,17 @@ def update_template(template_id):
     data.pop("start_period_id", None)
     end_date = data.pop("end_date", None)
 
-    # Re-point or rebuild the recurrence rule from the update payload
+    # The template's before-image, captured BEFORE anything overwrites it
+    # (plan step R2e-1).  ``had_recurrence_rule`` is what lets the
+    # regeneration below tell "the user just cleared the recurrence" -- which
+    # must sweep the instances the deleted rule generated -- from "this
+    # template never recurred", which must not.
+    before = PreEditTemplateState(
+        amount=template.default_amount,
+        had_recurrence_rule=template.recurrence_rule_id is not None,
+    )
+
+    # Re-point, rebuild, or clear the recurrence rule from the update payload
     # (F-24).  The helper dispatches the existing-rule (mutate in place)
     # vs no-existing-rule (build + link) branches and pops every
     # recurrence key from ``data`` so the field-update loop below sees
@@ -685,14 +698,13 @@ def update_template(template_id):
 
     # Apply allowlisted field updates, propagating any rename to existing
     # instances (see _apply_fields_and_propagate_rename for the rationale).
-    old_amount = template.default_amount
     _apply_fields_and_propagate_rename(template, data)
 
     # Regenerate future transactions, diverting to the conflict chooser when
     # an amount change would overwrite hand-edited upcoming instances (the
     # chooser rolls the pending edit back; its Apply re-runs this same edit).
     diverted = regenerate_or_conflict_chooser(
-        template, old_amount, effective_from, _TXN_TEMPLATE_KIND,
+        template, before, effective_from, _TXN_TEMPLATE_KIND,
         amount_drives_instances=not recurrence_engine.is_salary_linked_template(
             template.id,
         ),
@@ -714,7 +726,18 @@ def update_template(template_id):
     ))
     if response is not None:
         return response
-    flash(f"Recurring transaction '{template.name}' updated.", "success")
+    # An edit that ended the recurrence deleted this template's upcoming
+    # projected rows; "updated." alone would report a destructive change as a
+    # routine one.  Mirrors the archive route, which already names what it
+    # removed.
+    if before.had_recurrence_rule and template.recurrence_rule_id is None:
+        flash(
+            f"'{template.name}' no longer repeats. Its upcoming projected "
+            "entries were removed; settled and hand-edited ones were kept.",
+            "success",
+        )
+    else:
+        flash(f"Recurring transaction '{template.name}' updated.", "success")
     return redirect(url_for("templates.list_templates"))
 
 

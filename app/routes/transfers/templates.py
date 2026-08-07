@@ -46,14 +46,17 @@ from app.routes._commit_helpers import (
     commit_or_handle_stale,
     handle_stale_conflict,
 )
+from app.routes._recurrence_conflict_chooser import (
+    PreEditTemplateState,
+    RecurrenceConflictKind,
+    regenerate_or_conflict_chooser,
+)
 from app.routes._recurrence_form_helpers import (
     STALE_ACTION_MESSAGE,
     STALE_EDITING_MESSAGE,
-    RecurrenceConflictKind,
     RecurrenceFormContext,
     build_recurrence_rule_from_form,
     handle_stale_form_conflict,
-    regenerate_or_conflict_chooser,
     resolve_recurrence_rule_for_update,
 )
 from app.routes._redirect_target import RedirectTarget
@@ -307,7 +310,20 @@ def update_transfer_template(template_id):
     data.pop("start_period_id", None)
     end_date = data.pop("end_date", None)
 
-    # Re-point or rebuild the recurrence rule from the update payload
+    # The template's before-image, captured BEFORE anything overwrites it
+    # (plan step R2e-1).  ``had_recurrence_rule`` is what lets the
+    # regeneration below tell "the user just cleared the recurrence" -- which
+    # must sweep the instances the deleted rule generated -- from "this
+    # template never recurred", which must not: a RULE-LESS transfer
+    # template's single Transfer is an ordinary auto-generated row, so a
+    # rename would otherwise delete it.  (A one-time transfer carries a
+    # ``Once`` RULE until plan step R2e-3, so it is not yet that shape.)
+    before = PreEditTemplateState(
+        amount=template.default_amount,
+        had_recurrence_rule=template.recurrence_rule_id is not None,
+    )
+
+    # Re-point, rebuild, or clear the recurrence rule from the update payload
     # (F-24).  The helper dispatches the existing-rule (mutate in place)
     # vs no-existing-rule (build + link) branches and pops every
     # recurrence key from ``data``.  ``include_due_day_of_month=False``
@@ -335,7 +351,6 @@ def update_transfer_template(template_id):
             "transfers.edit_transfer_template", template_id=template_id,
         ))
 
-    old_amount = template.default_amount
     for field, value in data.items():
         if field in _TEMPLATE_UPDATE_FIELDS:
             setattr(template, field, value)
@@ -352,7 +367,7 @@ def update_transfer_template(template_id):
         return namedup_redirect
 
     return _regenerate_and_commit_template(
-        template, old_amount, effective_from, template_id,
+        template, before, effective_from, template_id,
     )
 
 
@@ -730,7 +745,7 @@ def _first_unowned_template_fk(data):
 
 
 def _regenerate_and_commit_template(
-    template, old_amount, effective_from, template_id,
+    template, before, effective_from, template_id,
 ):
     """Regenerate a transfer template's future transfers, then commit.
 
@@ -744,8 +759,10 @@ def _regenerate_and_commit_template(
     Args:
         template: The TransferTemplate whose field changes are already staged
             in the session.
-        old_amount: The template's amount before this edit (gates the chooser
-            -- see :func:`regenerate_or_conflict_chooser`).
+        before: The template's pre-edit state
+            (:class:`~app.routes._recurrence_form_helpers.PreEditTemplateState`)
+            -- its amount gates the chooser and its ``had_recurrence_rule``
+            gates the sweep; see :func:`regenerate_or_conflict_chooser`.
         effective_from: Date from which regeneration applies.
         template_id: The template's id, used for redirect kwargs and logging.
 
@@ -757,7 +774,7 @@ def _regenerate_and_commit_template(
     # Regenerate future transfers, diverting to the conflict chooser when an
     # amount change would overwrite hand-edited upcoming instances.
     diverted = regenerate_or_conflict_chooser(
-        template, old_amount, effective_from, _TRANSFER_TEMPLATE_KIND,
+        template, before, effective_from, _TRANSFER_TEMPLATE_KIND,
         amount_drives_instances=True,
     )
     # The chooser short-circuits (its pending edit is already rolled back).
@@ -783,5 +800,15 @@ def _regenerate_and_commit_template(
         db.session.rollback()
         flash("A recurring transfer with that name already exists.", "warning")
         return redirect(url_for("transfers.edit_transfer_template", template_id=template_id))
-    flash(f"Recurring transfer '{template.name}' updated.", "success")
+    # An edit that ended the recurrence deleted this template's upcoming
+    # projected transfers (and their shadow pairs); "updated." alone would
+    # report a destructive change as a routine one.
+    if before.had_recurrence_rule and template.recurrence_rule_id is None:
+        flash(
+            f"'{template.name}' no longer repeats. Its upcoming projected "
+            "transfers were removed; settled and hand-edited ones were kept.",
+            "success",
+        )
+    else:
+        flash(f"Recurring transfer '{template.name}' updated.", "success")
     return redirect(url_for("transfers.list_transfer_templates"))

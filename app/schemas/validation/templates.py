@@ -54,7 +54,7 @@ class TemplateCreateSchema(BaseSchema):
     is_envelope = fields.Boolean(load_default=False)
     companion_visible = fields.Boolean(load_default=False)
 
-    # Recurrence rule fields (optional -- omit for one-time / manual).
+    # Recurrence rule fields.
     # The value is the integer primary key of a ref.recurrence_patterns row,
     # submitted as a string via HTML form data.  Route-level code validates
     # existence via db.session.get().  ``RowId`` rather than ``Integer``
@@ -62,7 +62,15 @@ class TemplateCreateSchema(BaseSchema):
     # adversarial review found it reading '١', ' 2 ', '+3', '007' and
     # '1_0' as pattern ids, and the completeness gate could not see it
     # while that gate matched on a ``_id`` SUFFIX.
-    recurrence_pattern = RowId(validate=validate.Range(min=1))
+    #
+    # ``allow_none`` so the form's "None (one-time / manual)" option survives
+    # the pre_load hook as an explicit ``None`` rather than a dropped key
+    # (plan step R2e-1).  The two are different requests and the update route
+    # acts on them differently -- a present ``None`` CLEARS the recurrence, an
+    # absent key leaves it alone -- so collapsing them would make an amount-only
+    # PATCH silently delete a template's cadence.  This is the same reason
+    # ``due_day_of_month`` and ``end_date`` below are nullable.
+    recurrence_pattern = RowId(validate=validate.Range(min=1), allow_none=True)
     interval_n = fields.Integer(validate=validate.Range(min=1))
     offset_periods = fields.Integer(validate=validate.Range(min=0))
     day_of_month = fields.Integer(validate=validate.Range(min=1, max=31))

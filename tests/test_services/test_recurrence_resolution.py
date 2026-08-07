@@ -621,6 +621,23 @@ class TestTotality:
             assert resolved.interval_n >= 1, pattern
 
 
+#: The R1 oracle's own space of ``Every N Periods`` phases: every interval
+#: 1..8 crossed with every phase that interval can actually hold.  A phase is
+#: only meaningful modulo the interval, so ``(interval=2, offset=5)`` names no
+#: rule that can exist -- enumerating the 36 legal pairs is what keeps those
+#: 28 impossible ones from being generated and then skipped.
+_LEGAL_PHASES = [
+    (interval_n, offset_periods)
+    for interval_n in range(1, 9)
+    for offset_periods in range(interval_n)
+]
+
+
+def _phase_id(value: int) -> str:
+    """Name a parametrized phase component so test ids read as numbers."""
+    return str(value)
+
+
 @pytest.mark.usefixtures("app")
 class TestTheTwoVocabulariesAgree:
     """The invariant a self-consistency check cannot see.
@@ -699,8 +716,9 @@ class TestTheTwoVocabulariesAgree:
         assert resolve(spec, calendar).anchor_date == date(2026, 10, 22)
         self.assert_anchor_is_in_phase(spec, calendar)
 
-    @pytest.mark.parametrize("interval_n", [1, 2, 3, 4, 5, 6, 7, 8])
-    @pytest.mark.parametrize("offset_periods", [0, 1, 2, 3, 4, 5, 6, 7])
+    @pytest.mark.parametrize(
+        ("interval_n", "offset_periods"), _LEGAL_PHASES, ids=_phase_id,
+    )
     def test_the_anchor_is_in_phase_for_every_interval_and_offset(
         self, interval_n, offset_periods,
     ):
@@ -709,13 +727,13 @@ class TestTheTwoVocabulariesAgree:
         The R1 oracle sweeps every interval 1..8 crossed with every legal
         phase, so every one of those shapes must resolve to an anchor the old
         matcher agrees with -- that agreement is what makes plan step R4's
-        cutover a no-op rather than a silent re-phasing.  Phases at or above
-        the interval are skipped: ``offset_periods`` is only meaningful modulo
-        ``interval_n``.
-        """
-        if offset_periods >= interval_n:
-            pytest.skip("a phase is only meaningful modulo the interval")
+        cutover a no-op rather than a silent re-phasing.
 
+        The parametrization enumerates only the 36 LEGAL pairs (see
+        :data:`_LEGAL_PHASES`); it used to cross 8 x 8 and ``pytest.skip`` the
+        28 impossible ones at runtime, which reported as 28 skips a reader
+        could not tell apart from tests someone had disabled.
+        """
         self.assert_anchor_is_in_phase(
             spec_for(
                 RecurrencePatternEnum.EVERY_N_PERIODS,

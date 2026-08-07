@@ -196,7 +196,24 @@ class TestTemplateCreateSchema:
         assert "day_of_month" in exc.value.messages
 
     def test_empty_strings_stripped(self):
-        """@pre_load strips empty recurrence fields from HTML forms."""
+        """@pre_load drops empty non-nullable fields and nulls the nullable ones.
+
+        Both arms of the ``_normalize_empty_inputs`` contract, on the two
+        recurrence fields that take different sides of it.
+
+        ``interval_n`` is not ``allow_none``, so an untouched HTML input --
+        which always submits, as ``""`` -- means "not provided" and the key is
+        dropped, leaving partial-update semantics intact.
+
+        ``recurrence_pattern`` IS ``allow_none`` (plan step R2e-1), so its
+        empty value is the null STATE rather than a missing one: it is what the
+        form's "None (one-time / manual)" option posts, and the update route
+        reads a present ``None`` as "clear this template's recurrence".  If it
+        were dropped like ``interval_n``, choosing that option would be
+        indistinguishable from an amount-only PATCH that submits no recurrence
+        keys at all -- which is exactly how the option came to be a silent
+        no-op before R2e-1.
+        """
         data = TemplateCreateSchema().load({
             "name": "Test",
             "default_amount": "100.00",
@@ -207,9 +224,12 @@ class TestTemplateCreateSchema:
             "interval_n": "",
             "day_of_month": "",
         })
-        # Empty strings stripped -- optional fields absent.
-        assert "recurrence_pattern" not in data
+        # Not nullable -- "" means "not provided", so the key goes.
         assert "interval_n" not in data
+        assert "day_of_month" not in data
+        # Nullable -- "" IS the value, so the key stays and carries None.
+        assert "recurrence_pattern" in data
+        assert data["recurrence_pattern"] is None
 
 
 # ── TemplateUpdateSchema ─────────────────────────────────────────────

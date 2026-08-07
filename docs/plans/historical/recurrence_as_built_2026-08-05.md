@@ -67,3 +67,38 @@ E   AssertionError: assert 0 == 1
 Every future occurrence shifted by one pay period. Latent in data only because no live rule uses the
 pattern. Closed by deriving the phase from the rule's own start period on EVERY write, not only on
 create.
+
+## Rulings archived with their steps (2026-08-07)
+
+Moved out of the live plan under rule 5 when the 900-line cap bound: both were taken FOR a step that
+has now shipped, and both are restated in the code they produced. Read
+`app/services/recurrence/_resolution.py`'s module docstring first -- derivations 2 and 3 there are
+R-R8, and the "Nothing persists what this returns" opening is R-R10.
+
+**R-R8 -- a period-unit anchor is the BOUND, not a period boundary** (ruled 2026-08-05, built into
+`2fca91bc`). R2b had anchored a pay-period-space rule on "the START of the first period ending on or
+after the bound", which is not always derivable: `loan_recurrence_sync._sync_loan_cadence` stamps
+`start_date` onto ANY rule, so a loan originating past the materialised horizon left no qualifying
+period at all. The anchor holds the effective start ITSELF -- an occurrence is a DATE and
+`placement` is what carries it onto a period, so a period start in the anchor puts the result of the
+placement axis into the anchor axis. Under `CONTAINING_DATE` both readings select the same period
+whenever the schedule covers the bound, which is why all 11 live period-unit rules resolve
+identically either way. `Every N Periods` is the exception and keeps a phased boundary
+(`_phased_period_anchor`); `Monthly First` answers in one step rather than scanning a horizon.
+
+**R-R10 -- a derivation is not stored beside its own inputs** (ruled 2026-08-07, built into
+`1e5e3430`). Superseded R-R9's read-only-column write door: measured on SQLAlchemy 2.0.49 that
+mechanism blocks 2 of 6 write paths, and in Python no mechanism blocks all six. So the state is
+deleted rather than guarded -- `unit_id` / `anchor_date` / `placement_id` / `shift_id` are computed
+by `resolve()` and stored nowhere, which is also why R2c-2 and R2c-3 were deleted rather than
+deferred. The argument is stronger than "a derivation beside its inputs": `anchor_date` depends on a
+FOREIGN, independently mutable table, and it had already gone stale -- a schedule reset stranded 3
+of the 50 live rules.
+
+### What R-R10 binds on R7c
+
+Carried forward rather than archived with the rest, because R7c has not run: **one backfill still
+needs the derivation IN a migration.** The copy is not eliminated, it is made single-use and
+destroyed with its inputs in the same transaction. Measured against the 50 live rules, 49 anchors
+need only `GREATEST(schedule opening, start_date, start_period.start)` -- Postgres `GREATEST` skips
+NULLs, so that is the `_effective_start` maximum exactly -- and one (`Monthly First`) needs a scan.
