@@ -6,11 +6,11 @@
 for untangling the cash-date / installment-date collision the design review surfaced. Design LOCKED
 2026-08-05.
 
-**Just landed:** R2c-1 -- `app/services/recurrence/`, the one write door, with all five construction
-sites and all four in-place writers routed through it; defect **D1** dies here rather than at R7.
-**Next:** R2c-2, which makes the door the ONLY door by mapping every defining column read-only, then
-R2c-3 (the re-derive migration + NOT NULL), then R3. **Also live:** R-F1, the only carried finding
-whose failure mode is a broken deploy, and R-F6, the recurrence-rule leak.
+**Just landed:** R2d (`1e5e3430`) -- the four two-axis columns are GONE and computed on demand by
+`app.services.recurrence.resolve`. **R2c-2 and R2c-3 are deleted, not deferred** (R-R10); the
+columns return AUTHORED at R7c, which is why R7 is now three leaves. **Next:** R2e (retire `Once`),
+then R3. **Also live:** R-F1, the only carried finding whose failure mode is a broken deploy, and
+R-F6, the recurrence-rule leak.
 
 **Where detail lives:** section 4 is the step list, each step carrying its own specification;
 section 5 is the findings ledger, one line per finding, each naming the step that closes it; section
@@ -33,14 +33,14 @@ Taken 2026-08-05 (developer):
 | Sequencing vs the balance arc | **Half A now; Half B folded into X-an.** See section 0 |
 | `PAY_PERIODS_PER_YEAR` | Folded into R7 (which already rewrites `amount_to_monthly`); derivation = `round(365.2425 / cadence_days)`, see section 4a |
 | **Anchor day vs month-end clamp** | **`anchor_date` + a 0..1 `recurrence_month_anchors` subtype. See R-R3** |
-| **`Once` rules under NOT NULL** | **Backfilled with inert values; `pattern_id = Once` stays the gate until R9. See R-R4** |
-| **R2 sequencing** | **R2a (vocabulary, DONE) -> R2b (columns nullable + backfill) -> R2c (writers + NOT NULL). See R-R5** |
+| **`Once` rules** | **Retired at R2e, BEFORE the new engine and the cutover. See R-R4** |
+| **R2 sequencing** | **R2a (vocabulary) -> R2b (subtypes) -> R2c-1 (the door) -> R2d (stop storing the derivation). All DONE** |
 | **Bound semantics** | **Occurrence-bounded, not period-bounded. Four frozen shapes move at R4. See R-R6** |
 | **Orphaned rules** | **NOT deleted in R2b; they ship with the fix for the leak that makes them. See R-R7** |
 | **Monthly First anchor** | **The 1st of the first month whose OWN first paycheck clears the bound. See R-R6** |
 | **Period-unit anchor** | **The bound DATE itself, not a period boundary. See R-R8** |
-| **Write-door enforcement** | **STRUCTURAL, not a checker: read-only columns + whole-value writes. See R-R9** |
-| **R2c sequencing** | **R2c-1 (the door, DONE) -> R2c-2 (the door is the only door) -> R2c-3 (migration + NOT NULL)** |
+| **Write-door enforcement** | **Nothing to enforce: the derived half is not stored. Ruled 2026-08-07, see R-R10** |
+| **Where the two-axis columns live** | **Computed until R7c, stored from R7c. A value's storage follows its nature. See R-R10** |
 
 ---
 
@@ -249,44 +249,32 @@ exclusive (a rule fires on a day-of-month OR an nth-weekday, never both) and DDL
 most one of two subtype rows". R8 enforces it in the authoring seam and pins it with a test;
 recorded here so R8 does not discover it.
 
-### R-R4 -- a `Once` rule gets inert two-axis values, not a deletion
+### R-R4 -- a `Once` rule is retired at R2e, before anything must model it
 
-Ruled 2026-08-05. `Once` means "does not recur", so no honest cadence exists for it -- but R2c makes
-`unit_id` / `anchor_date` / `placement_id` / `shift_id` NOT NULL, and 2 of the 4 live `Once` rules
-are attached to transfer templates (the other 2 are orphans R2b deletes anyway).
+Ruled 2026-08-05 and AMENDED 2026-08-07. The original ruling deferred the deletion to R9 and gave
+`Once` inert two-axis values in the meantime, because NOT NULL was coming and the transfer form has
+no null option. R2d removed the NOT NULL pressure, and two neutral reviews then showed the deferral
+costs more than it saves: `Once` resolves to EXACTLY the `Every Period` value, so a consumer holding
+only a `ResolvedRecurrence` would generate a `Once` rule forever, and `(1, period, containing_date)`
+naming two patterns is what would force R7c's downgrade to refuse rather than round-trip.
 
-Deleting them now was rejected: transaction templates already model "no recurrence" as
-`recurrence_rule_id IS NULL`, but the transfer form has NO null option
-(`app/templates/transfers/form.html:87` passes `include_none_option=false`; the transaction form at
-`templates/form.html:101` passes `true`), so deleting the rules requires the transfer form and every
-transfer reader to handle a NULL rule -- R7's work, pulled into a step that promises no behaviour
-change.
+**Amended ruling: retire it at R2e, before R3.** The new engine then never models "does not recur",
+and the resolved value is unambiguous before anything consumes it. Until then `pattern_id = Once`
+REMAINS what suppresses generation, exactly as today -- the four guards run before the engine is
+consulted, so the ambiguity is contained to a value nothing reads yet.
 
-So R2b backfills each surviving `Once` rule with
-`(interval_n=1, unit=period, anchor_date = start_period.start_date, placement=containing_date, shift=none)`
-and `pattern_id = Once` REMAINS the thing that suppresses generation, exactly as today. R9 deletes
-the rows.
+### R-R5 -- what NOT NULL would have cost, and why R2d avoided paying it
 
-### R-R5 -- R2 is three steps, because NOT NULL forces every writer to move
+Ruled 2026-08-05, and mostly SPENT. The original reasoning: the moment the four columns are NOT NULL
+every INSERT must supply them, and there are 5 production writers plus 83 direct
+`RecurrenceRule(...)` constructions across 39 test files -- so the migration and the writers had to
+land together, in one very large commit. R2 was split three ways to avoid that.
 
-Ruled 2026-08-05. R2 said "nothing reads the new ones yet", which is true of READS and silent about
-WRITES: the moment the four columns are NOT NULL, every INSERT must supply them. There are 5
-production writers (`_recurrence_form_helpers.py:270`, `routes/salary/profiles.py:145`,
-`routes/investment.py:252`, `routes/loan/payment_transfer.py:171`, plus
-`loan_recurrence_sync.py:167-171` mutating existing rules) and ~80 direct `RecurrenceRule(...)`
-constructions across 37 test files. The migration and the writers must therefore land together --
-which is one very large commit.
-
-Split instead, the standard expand/contract shape:
-
-| step | contents | state |
-|---|---|---|
-| **R2a** | the three `ref` vocabulary tables + enums + `ref_cache` accessors + `ref_seeds` + migration `e7a4d95c2b18` | **DONE** |
-| **R2b** | the new `recurrence_rules` columns added NULLABLE, `recurrence_weekday_anchors` + `recurrence_month_anchors`, the backfill, the orphan deletion, `AUDITED_TABLES`. No writer changes. | next |
-| **R2c** | one authoring seam; all 5 writers and the test constructions routed through it; a second migration re-backfills anything created in between and tightens the four columns to NOT NULL. | after R2b |
-
-The intermediate state is safe: nothing READS the columns until R4, so a rule created between R2b
-and R2c carrying NULLs is inert, and R2c's re-backfill catches it.
+R2d dissolved the problem instead of sequencing around it. With nothing derived stored there is no
+NOT NULL to tighten, so **the 83 test constructions were never touched**: a partial construction is
+still a complete rule. What survives from this ruling is its measurement of the blast radius, which
+R7c inherits in full -- that step is where NOT NULL finally lands, and where every one of those
+constructions must supply the authored two-axis values.
 
 ### R-R6 -- the bounds move from PERIODS to OCCURRENCES, and 4 frozen shapes move
 
@@ -345,15 +333,16 @@ Ruled 2026-08-05, while building R2c-1. R2b anchored a pay-period-space rule on 
 first period ending on or after the bound". That value is not always derivable, and the case is
 reachable: `loan_recurrence_sync._sync_loan_cadence` stamps `start_date` onto ANY rule, day-less
 every-paycheck ones included, so a loan originating past the materialised horizon (dev's ends
-2028-07-26) leaves NO qualifying period and R2c-3's NOT NULL would abort the deploy.
+2028-07-26) leaves NO qualifying period at all, so the derivation returned nothing -- which R7c's
+NOT NULL column could not hold.
 
-**Ruling: `anchor_date` holds the effective start itself.** An occurrence is a DATE and
-`placement_id` is what carries it onto a period, so a period start in the anchor puts the result of
-the placement axis into the anchor axis -- the exact fusion the redesign undoes. Under
-`CONTAINING_DATE` the two readings select the SAME period whenever the schedule covers the bound
-(periods run forward, so the first period ending on or after a date is the one containing it), which
-is why **all 11 live period-unit rules resolve identically either way** -- measured, then
-re-measured against every one of the 50 live rules after the seam was built.
+**Ruling: the anchor holds the effective start itself.** An occurrence is a DATE and `placement` is
+what carries it onto a period, so a period start in the anchor puts the result of the placement axis
+into the anchor axis -- the exact fusion the redesign undoes. Under `CONTAINING_DATE` the two
+readings select the SAME period whenever the schedule covers the bound (periods run forward, so the
+first period ending on or after a date is the one containing it), which is why
+**all 11 live period-unit rules resolve identically either way** -- measured, then re-measured
+against every one of the 50 live rules after the seam was built.
 
 Same ruling, second half: **`Monthly First` answers in one step rather than scanning.** Every month
 AFTER the effective start's month has its first paycheck on or after that month's 1st, hence after
@@ -361,27 +350,37 @@ every day of the effective month -- so it qualifies unconditionally, and the onl
 whether the effective month does. A scan over MATERIALISED months answers with whatever month the
 horizon has reached, which is a fact about the horizon rather than about the rule.
 
-### R-R9 -- the write door is structural, so no checker guards it
+### R-R10 -- a derivation is not stored beside its own inputs
 
-Ruled 2026-08-05 (developer): *"I want to make fences and checkers structurally unnecessary."* A
-fence exists because a bypass is possible; the two-axis columns are a persisted copy of a derivation
-over the other nine, and nine writers could move one side alone.
+Ruled 2026-08-07, superseding R-R9 (*"fences and checkers feel like lazy coding ... I'd rather
+reevaluate the plan to design the best system possible"*). R-R9 had ruled the write door STRUCTURAL:
+read-only columns making the illegal state unrepresentable. Measured on SQLAlchemy 2.0.49 that
+mechanism blocks **2 of 6 write paths** -- keyword construction and attribute assignment -- and does
+not block ORM bulk `update()` (the public string key still writes, with the unchanged spelling),
+Core `update()` on `__table__`, or assignment to the private name. In Python no mechanism blocks all
+six. A fence that cannot be completed is a fence that has to be remembered.
 
-**Ruling: make the illegal state unrepresentable.** R2c-2 maps every defining column under a private
-attribute behind a getter-only `hybrid_property`, so `RecurrenceRule(day_of_month=3)` and
-`rule.day_of_month = 3` both raise `AttributeError` (verified on SQLAlchemy 2.0.49; the column NAME
-is unchanged, so **zero DDL**, and class-level query expressions still compile). The only writes are
-`create(resolved)` / `reauthor(resolved)`, each taking a COMPLETE `ResolvedRecurrence` that one pure
-function emits -- so a partial write is not expressible -- and R2c-3's NOT NULL makes an unauthored
-row unpersistable. Construction, mutation and incomplete persistence are all refused at runtime; no
-checker, nothing to keep complete.
+**Ruling: delete the state instead of guarding it.** `unit_id` / `anchor_date` / `placement_id` /
+`shift_id` are a derivation over the columns beside them plus the owner's schedule, so they are not
+stored at all; `resolve()` is a pure function and the only producer, and two readers of one pure
+function cannot disagree. **No fence, no checker, no drift scan, nothing to maintain.**
 
-**The residue is wider than one site**, and an adversarial review measured it before R2c-2 was built
-rather than after: five further write paths survive the mapping, and the subtype tables are outside
-it entirely. They are enumerated in R2c-2's entry, which is where the ruling has to be made good or
-narrowed. What R2c-1 verified is the narrower claim: no `merge`, `bulk_*`,
-`session.execute(update(...))`, raw-SQL or event-listener writer to `budget.recurrence_rules` exists
-anywhere in `app/` or `scripts/`, and the one bulk update that did exist is converted.
+The argument is stronger than "a derivation beside its inputs". `anchor_date` depends on a FOREIGN,
+independently mutable table, which makes it more cache-like rather than less -- and it had already
+gone stale: a schedule reset stranded 3 of the 50 live rules, caught by hand because NOT NULL cannot
+see a value that is wrong rather than absent. Nothing can strand a value that is recomputed.
+
+**They become columns at R7c**, authored and NOT NULL, in the same transaction that drops the
+closed-set columns they were derived from. A value's storage follows its nature: derived until the
+form collects it, authored after. That is also what deletes R2c-3's migration, which was to
+re-derive every rule by reaching into a frozen sibling migration's module -- a fragility that no
+longer exists, because there is nothing to re-derive.
+
+**What the cutover costs, stated so R7c is not a surprise.** One backfill still needs the derivation
+IN a migration; the copy is not eliminated, it is made single-use and destroyed with its inputs in
+the same transaction. Measured against the 50 live rules, 49 anchors need only
+`GREATEST(schedule opening, start_date, start_period.start)` -- Postgres `GREATEST` skips NULLs, so
+that is the `_effective_start` maximum exactly -- and one (`Monthly First`) needs a scan.
 
 ### R-R2 -- a signed day offset was proposed and disproved
 
@@ -404,20 +403,24 @@ due_offset_days = +10
 **This is the END state. Which step creates each piece is marked; see R2.**
 
 ```sql
-ref.recurrence_units        -- PERIOD, WEEK, MONTH, YEAR                    [R2]
-ref.period_placements       -- CONTAINING_DATE, PERIOD_STARTING_ON_OR_AFTER [R2]
-ref.business_day_shifts     -- NONE, PRIOR, NEXT                            [R2]
+ref.recurrence_units        -- PERIOD, WEEK, MONTH, YEAR                    [R2a, DONE]
+ref.period_placements       -- CONTAINING_DATE, PERIOD_STARTING_ON_OR_AFTER [R2a, DONE]
+ref.business_day_shifts     -- NONE, PRIOR, NEXT                            [R2a, DONE]
 
-budget.recurrence_rules                                                     [R2]
+budget.recurrence_rules
   id               PK
   user_id          FK auth.users CASCADE          NOT NULL
   interval_n       INT   NOT NULL  CHECK (interval_n > 0)
-  unit_id          FK ref.recurrence_units RESTRICT   NOT NULL
-  anchor_date      DATE  NOT NULL      -- the first occurrence: phase AND day AND month
-  placement_id     FK ref.period_placements RESTRICT  NOT NULL
-  shift_id         FK ref.business_day_shifts RESTRICT NOT NULL
-  end_date         DATE  NULL   CHECK (end_date IS NULL OR end_date >= anchor_date)  [R7, not R2b]
-  max_occurrences  INT   NULL   CHECK (max_occurrences IS NULL OR max_occurrences > 0)
+  -- The four below are COMPUTED, not stored, until R7c (ruling R-R10):
+  -- app.services.recurrence.resolve emits them from the closed-set columns
+  -- plus the owner's schedule.  They become columns at R7c, authored by the
+  -- form, in the transaction that drops the closed set they came from.
+  unit_id          FK ref.recurrence_units RESTRICT   NOT NULL             [R7c]
+  anchor_date      DATE  NOT NULL      -- the first occurrence: phase AND day AND month  [R7c]
+  placement_id     FK ref.period_placements RESTRICT  NOT NULL             [R7c]
+  shift_id         FK ref.business_day_shifts RESTRICT NOT NULL            [R7c]
+  end_date         DATE  NULL   CHECK (end_date IS NULL OR end_date >= anchor_date)  [CHECK at R7c]
+  max_occurrences  INT   NULL   CHECK (max_occurrences IS NULL OR max_occurrences > 0)  [R2b, DONE]
   created_at
   CHECK (end_date IS NULL OR max_occurrences IS NULL)   -- at most one end bound
 
@@ -438,7 +441,7 @@ budget.recurrence_due_dates    [HALF B -- created in R5/R6, NOT in R2]
   due_month_offset    INT NOT NULL DEFAULT 0
                       CHECK (due_month_offset BETWEEN -12 AND 12)
 
-budget.recurrence_weekday_anchors    [R2b created it; R8 is the first writer]
+budget.recurrence_weekday_anchors    [R2b created it, EMPTY; R8 is the first writer]
                                      -- 0..1 per rule; nth-weekday-of-month rules
   id                  PK
   recurrence_rule_id  FK -> budget.recurrence_rules ON DELETE CASCADE, UNIQUE
@@ -446,7 +449,9 @@ budget.recurrence_weekday_anchors    [R2b created it; R8 is the first writer]
                       CHECK (nth_week BETWEEN -1 AND 5 AND nth_week <> 0)  -- -1 = last
   weekday             INT NOT NULL CHECK (weekday BETWEEN 0 AND 6)  -- date.weekday(), 0=Mon
 
-budget.recurrence_month_anchors      [R2b created it and is its first writer]
+budget.recurrence_month_anchors      [R2b created it, EMPTY; R7c is the first
+                                     --  writer -- there is no stored anchor
+                                     --  to clamp before then (R-R10)]
                                      -- 0..1 per rule; present iff the anchor
                                      --   month clamped the nominal day (R-R3)
   id                  PK
@@ -454,12 +459,12 @@ budget.recurrence_month_anchors      [R2b created it and is its first writer]
   nominal_day         INT NOT NULL CHECK (nominal_day BETWEEN 29 AND 31)
 ```
 
-**`end_date >= anchor_date` belongs to R7, not to the step that creates the column.** `anchor_date`
-is DERIVED and inert until R4; `end_date` is user-authored and live. 14 live rules carry a derived
-anchor in the future, so setting an earlier end date -- exactly what the field invites -- becomes a
-`CheckViolation` out of `update_template`'s autoflush, which nothing catches: the user cannot stop
-an annual bill and the projection keeps charging it. R7 adds it together with the Marshmallow
-validator that refuses the pair at the door.
+**`end_date >= anchor_date` lands at R7c, with the column it names.** `end_date` is user-authored
+and live; 14 live rules RESOLVE to an anchor in the future, so setting an earlier end date --
+exactly what the field invites -- would become a `CheckViolation` out of `update_template`'s
+autoflush, which nothing catches: the user could not stop an annual bill and the projection would
+keep charging it. R7c adds it together with the Marshmallow validator that refuses the pair at the
+door.
 
 **Zero conditionally-meaningless columns.** Every column on `recurrence_rules` is meaningful for
 every unit; the two facts that apply to only some rules are 0-or-1 subtype rows, where presence is
@@ -541,77 +546,36 @@ Each step is a leaf boundary: one commit, its own tests green, independently rev
 **Steps R1-R4 do not change any user-visible behaviour.** Half A = R1-R4, R7, R8 (+ the Half-A part
 of R9); Half B = R5, R6 (see section 0).
 
-**R1, R2a and R2b are ARCHIVED** to `docs/plans/historical/recurrence_as_built_2026-08-05.md` (rule
-5) -- one line per step with its commit, plus the five constraints they bind on later steps. Read
-that file before R2c-3 or R4.
+**R1, R2a, R2b, R2c-1 and R2d are ARCHIVED** to
+`docs/plans/historical/recurrence_as_built_2026-08-05.md` (rule 5) -- one line per step with its
+commit, plus the constraints they bind on later steps. Read that file before R7c or R4.
 
-### R2 -- New schema, additive (R2a, R2b, R2c)
+### R2 -- New schema, additive (R2a, R2b, R2c-1, R2d). COMPLETE
 
-Old columns retained and still authoritative; nothing reads the new ones yet. Section 3 is the END
-state, this is how it gets there. **Three steps, not one** -- see R-R5 for why NOT NULL drags every
-writer along with it.
+Old columns retained and still authoritative. **R2c-2 and R2c-3 were DELETED, not deferred**: they
+existed to fence and then tighten a stored derivation, and R-R10 removed the derivation instead.
+Their work now lands at R7c, where the same values arrive AUTHORED.
 
-*Exit criteria, all three steps.* Migration tested in BOTH directions.
-`python scripts/build_test_template.py` re-run (each adds a migration, so every suite fails against
-a stale template until it is). And the R1 baseline **byte-identical** -- R2 changes no behaviour, so
-a moved line means the migration touched something it should not have.
+- [x] **R2d -- the derived half stops being stored.** `1e5e3430` -- the four two-axis columns
+      removed and computed on demand by `resolve()`; migration `c8f2b6a41d93` amended in place (it
+      was the chain head and had never left `dev`). Ruling **R-R10**. Also closed: `resolve()`
+      refuses another user's schedule, and an authored `interval_n = 0` (which 7 of 8 patterns took
+      through to an unhandled `IntegrityError`).
 
-- [x] **R2c-1 -- the write door, and every writer through it.** `2fca91bc` --
-      `app/services/recurrence/` resolves a `RecurrenceSpec` into every column at once;
-      `RecurrenceRule.create` / `.reauthor` take the whole value. Five construction sites and four
-      in-place writers routed through it. **Closes D1.** **Binding on R2c-3:** three of R2b's four
-      anchor helpers changed (R-R8, and two defects a neutral review found), so its migration cannot
-      reuse `_derive_rule` -- see that step.
+- [ ] **R2e -- retire `Once`, before anything has to model it.**
 
-- [ ] **R2c-2 -- the door becomes the ONLY door.**
+`Once` means "does not recur", so it resolves to EXACTLY the `Every Period` value and suppression
+lives only on the row's `pattern_id`. Ruled 2026-08-07 to run BEFORE R3 rather than at R9: the new
+engine then never models "does not recur", and `(1, period, containing_date)` stops naming two
+patterns -- which is what makes R7c's downgrade round-trip instead of refuse.
 
-Every defining column maps under a private attribute behind a getter-only `hybrid_property`, so
-construction and mutation outside the door raise `AttributeError` (ruling R-R9; zero DDL and
-class-level query expressions preserved, both measured). Routes the ~81 `RecurrenceRule(...)`
-constructions across 37 test files and `tests/oracles/recurrence_baseline.py`'s `build_shape_rule`
-through the door; the frozen blob must stay byte-identical.
-
-**Five gaps a neutral review measured, none of which the ruling's mechanism closes on its own.** (1)
-Relationship FK sync writes the mapped attribute directly, so `rule.pattern = p` still sets
-`pattern_id` -- and `_recurrence_preview.build_preview_rule` does exactly that. (2) `Query.update()`
-accepts STRING keys, not only the attribute form the ruling's residue paragraph names. (3) Core
-`insert()` / `update()` on `__table__` is untouched. (4) The private name is ordinary Python:
-`rule._day_of_month = 3` works, so the fence is a convention one underscore deep. (5)
-**The subtype tables are entirely outside it** --
-`RecurrenceMonthAnchor(recurrence_rule_id=X, nominal_day=31)` builds an illegal state directly,
-which also means R8's weekday/month exclusivity invariant has no structural home yet. Three
-constructions outside `app/` and `tests/` must be swept too
-(`docs/audits/security-2026-04-15/tooling/`). And `user_id` comes from `UserScopedMixin`, so locking
-it means redefining the column inline and re-opening the `duplicate-code` clique that mixin exists
-to dissolve -- **that fork is unresolved and R2c-2 opens with it.**
-
-- [ ] **R2c-3 -- re-derive every rule, then NOT NULL.**
-
-A migration that re-derives EVERY rule (not only the NULL ones -- an edit through the old form left
-a stale non-NULL tuple no query could distinguish), clears a `recurrence_month_anchors` row a day
-change made obsolete, then tightens `anchor_date` / `unit_id` / `placement_id` / `shift_id` to NOT
-NULL by the documented three-step (`.claude/rules/database.md`), raising `RuntimeError` with the
-diagnostic SELECT if any NULL survives.
-
-**Where its derivation comes from** (developer ruling, 2026-08-05): it REUSES R2b's frozen module
-via `op.get_context().script.get_revision("c8f2b6a41d93").module` rather than carrying a third copy.
-`down_revision` already declares the dependency and both files are frozen migration artifacts, so
-neither can drift under the other; a test pins that the lookup still resolves. Importing the app
-seam instead was measured and REJECTED: `scripts/build_test_template.py` replays the whole chain
-from empty on every rebuild, and R9 drops the very columns the derivation reads.
-
-**The reusable surface is SMALLER than that ruling assumed, and a neutral review measured it.**
-`EnvironmentContext.configure` sets `opts["script"]` unconditionally, so the lookup resolves in
-every path this project runs migrations through (`flask db upgrade`, `alembic.command.upgrade` from
-the test-template builder, the container entrypoint, offline `--sql`) -- that half holds. But
-`_derive_rule` is the family DISPATCHER: it calls `_period_anchor` and `_first_of_month_anchor` as
-module globals, so it cannot be called with two of them replaced without monkeypatching a frozen
-artifact. Three of the four helpers changed at R2c-1 (R-R8's phase-carrying period anchor, the
-scanning first-of-month anchor, and the `or 1` coercion). **So R2c-3 reuses `_calendar_anchor` and
-`_effective_start` -- the two that did not change -- and writes its own dispatcher.** It also needs
-its own row query (`_derive_rule` expects `_backfill`'s private joined shape) and its own
-month-anchor DELETE (`_backfill` only upserts). Budget the step accordingly: this is not a
-three-line override.
+Transaction templates already model this correctly as `recurrence_rule_id IS NULL`; transfers were
+forced onto `Once` because their form has no null option (`app/templates/transfers/form.html:87`
+passes `include_none_option=false`, the transaction form at `templates/form.html:101` passes
+`true`). So: the transfer form gains the null option, every transfer reader handles a NULL rule, the
+four guards go (`recurrence_engine.py:115,257`, `recurring_view.py:236`,
+`savings_goal_service.py:427`, plus `templates.py:962`), and the 4 live `Once` rows are deleted.
+Drains part of R9 and closes R-R4.
 
 - [ ] **R3 -- New engine, parallel and unread.**
 
@@ -644,13 +608,43 @@ files and 5 templates to the one they actually mean. Highest-risk readers: `tran
 `_loan_interest.py`, `_resolution.py`) and the loan ledger. Kills D4.
 **This step needs its own review pass** -- it is the deepest cut into the ledger.
 
-- [ ] **R7 -- Bounds, form, and labels.**
+**R7 is THREE leaves**, ruled 2026-08-07: the cutover is the only irreversible-ish one, so the label
+and form work is not carried into it.
 
-`anchor_date` replaces `start_period_id` + `offset_periods` (D1 and D2 die), `max_occurrences`
-lands, the form becomes interval + unit + anchor + optional due row, and ONE label function over
-`(interval, unit)` replaces the 8-branch `recurrence_cell` macro (`_recurrence_macros.html:17`), the
-8-entry `recurrence_pattern_labels` dict (`app/__init__.py:321`), and the 8 `REC_*` Jinja globals
-(`jinja_globals.py:91`).
+- [ ] **R7a -- one label function.**
+
+ONE function over `(interval, unit)`, fed by `resolve()`, replaces the 8-branch `recurrence_cell`
+macro (`_recurrence_macros.html:17`), the 8-entry `recurrence_pattern_labels` dict
+(`app/__init__.py:321`), and the 8 `REC_*` Jinja globals (`jinja_globals.py:91`). No schema change;
+kills the last `.name`-for-display coupling on this table.
+
+- [ ] **R7b -- bounds and the form.**
+
+The form becomes interval + unit + anchor + optional due row, and `max_occurrences` gains its first
+writer. Deletes the vestigial `offset_periods` schema field (D8) and `start_period_id`'s "First
+paycheck" affordance, so **D1 and D2 die here**. Still authors through the closed-set columns: it
+collects the two-axis vocabulary and the seam maps it, so the schema does not move yet.
+
+- [ ] **R7c -- the cutover.**
+
+ONE migration: add `unit_id` / `anchor_date` / `placement_id` / `shift_id`, backfill, tighten to NOT
+NULL by the documented three-step (`.claude/rules/database.md`), add
+`CHECK (end_date IS NULL OR end_date >= anchor_date)` with its Marshmallow mirror, then DROP
+`pattern_id` / `day_of_month` / `month_of_year` / `start_period_id` / `offset_periods` in the same
+transaction. `due_day_of_month` and `start_date` survive -- Half B and R9 own those.
+
+**Its downgrade round-trips and must REFUSE rather than guess.** With `Once` retired at R2e,
+`(interval, unit, placement)` names exactly one closed-set pattern for every shape the app can
+author today; a row carrying a cadence the closed set cannot name (every-other-month, a WEEK unit, a
+weekday anchor, `max_occurrences`) is unrepresentable, so `downgrade` re-derives what it can and
+raises `RuntimeError` naming the offending rule ids otherwise.
+
+**Budget the derivation copy.** Measured against the 50 live rules: `unit_id` / `placement_id` /
+`shift_id` are a per-pattern CASE, 49 of 50 anchors need only the `_effective_start` maximum
+(Postgres `GREATEST` skips NULLs, so it is that maximum exactly), and one `Monthly First` rule needs
+a lateral scan. Prove it before it ships the way this arc has twice: drive the migration's own
+function against `resolve()` over all 423 oracle shapes, not the 50 live rows.
+**This step needs its own review pass.**
 
 - [ ] **R8 -- Add-ons.**
 
@@ -660,17 +654,18 @@ satisfies the Aug 1 installment, so `recurrence_due_dates` is never shifted.
 
 - [ ] **R9 -- Drop the old columns.**
 
-Drops the `ref.recurrence_patterns` table, the `Once` row, and
-`pay_period_admin._repoint_recurrence_rules` (`:756-795`). The orphan cleanup and the FK claim that
-used to live here were both wrong and now belong to R-F6 (see R-R7).
+Drops the `ref.recurrence_patterns` table and `pay_period_admin._repoint_recurrence_rules`
+(`:756-795`). The `Once` row leaves at R2e; the orphan cleanup and the FK claim that used to live
+here were both wrong and belong to R-F6 (see R-R7).
 
-**Two premises to re-check before dropping anything, both refuted while building R2b.**
-`_repoint_recurrence_rules` is retired on the premise that "a date survives a schedule rebuild"; it
-does not survive `reset_pay_schedule`, which takes an arbitrary new start and cadence, so a
-PERIOD-unit anchor is no longer a period start and may fall outside the new schedule entirely. And
-`start_date` is retired on the premise that `anchor_date >= start_date` holds by construction; it
-holds for the calendar family only, because a PERIOD-unit anchor is the START of a period that
-qualifies on its END. Ledger row D6.
+**Two premises to re-check before dropping anything.** `_repoint_recurrence_rules` was to be retired
+on the premise that "a date survives a schedule rebuild" -- and it does not survive
+`reset_pay_schedule`, which takes an arbitrary new start and cadence. R2d narrows what that costs:
+with the anchor computed there is nothing to strand, so what actually needs re-pointing is
+`start_period_id` and the `offset_periods` derived from it, which is exactly what the function now
+does. And `start_date` is retired on the premise that `anchor_date >= start_date` holds by
+construction; it holds for the calendar family only, because a PERIOD-unit anchor is the effective
+bound and a period qualifies on its END. Ledger row D6.
 
 Derived simplifications that fall out and must be taken, not left behind:
 
@@ -818,17 +813,17 @@ first, which is what `operator` means here. **D1 left this table at R2c-1**, who
 
 | id | finding (one line) | worst measured | status | owned by |
 |---|---|---|---|---|
-| D2 | an edit ignores the chosen "First paycheck": `effective_from` overrides `start_period_id` | 4 rows materialised in excluded periods | OPEN | R7 |
+| D2 | an edit ignores the chosen "First paycheck": `effective_from` overrides `start_period_id` | 4 rows materialised in excluded periods | OPEN | R7b (the form rewrite that retires `start_period_id`) |
 | D3 | `_match_monthly` reads only a period's two ENDPOINT months, so it is neither total nor injective | 6 of 12 occurrences dropped; a duplicate period would 500 | OPEN | R4 |
 | D4 | a loan's cash date and contractual installment date cannot differ | $0 -- labels only (payoff date, schedule rows, history) | OPEN | R6 |
 | D5 | `match_periods` bounds PERIODS, not occurrences, so a row is generated dated OUTSIDE its own rule's window | a bill dated 10 days past the end date the user set | OPEN | R4 |
-| D6 | folding `start_date` into `anchor_date` is lossy for PERIOD-unit rules, and a schedule rebuild strands the anchor | the loan origination bound stops being an exact date | OPEN, NARROWED by R-R8 -- an anchor is a date, and R2c-1 made a rebuild re-author every rule the owner has, not only the ones whose start period the wipe nulled | R9 (re-check before dropping `start_date`) |
+| D6 | folding `start_date` into `anchor_date` is lossy for PERIOD-unit rules | the loan origination bound stops being an exact date | OPEN, NARROWED TWICE -- R-R8 made an anchor a date, and R2d made it COMPUTED, so the "a rebuild strands the anchor" half is dead: there is no stored anchor to strand, and `_repoint_recurrence_rules` narrowed back to the rules the wipe actually nulled | R9 (re-check before dropping `start_date`) |
 | D7 | pay periods are NOT contiguous by construction, so `place()` is not total -- section 3's totality argument rests on a false premise | a date in a schedule GAP belongs to no period; reachable because `_reject_overlapping_batch` rejects overlaps, not gaps, and registration bootstraps a period the user's real schedule then starts after | OPEN | R3 |
 | F-1 | five `ref` identity sequences sit behind their data, on production | the next value added to those enums aborts a DEPLOY | OPEN | R-F1 |
 | F-2 | the ref-seed parity scan's last `INSERT` body runs to end-of-file | none today; a literal quoted below the seed would pass | OPEN | R-F2 |
 | F-3 | `ref` tables use auto-named constraints while the database rule says name them | none -- the names are never referenced | OPEN | R-F3 (developer ruling first) |
 | F-6 | a hard-deleted template leaves its recurrence rule behind forever | 5 orphaned rules on production today | OPEN | R-F6 |
-| D8 | `offset_periods` is a declared schema field (`templates.py:67`, `transfers.py:65`) that NO template renders, so only a crafted POST can author a phase | none -- R2c-1 makes the anchor carry any phase submitted, so both halves agree; the field is vestigial, not wrong | OPEN | R7 (the form rewrite that deletes it) |
+| D8 | `offset_periods` is a declared schema field (`templates.py:67`, `transfers.py:65`) that NO template renders, so only a crafted POST can author a phase | none -- it is the one derived value still stored, re-derived on EVERY write since R2c-1, and the anchor carries whatever phase it states; vestigial, not wrong | OPEN | R7b (the form rewrite that deletes it) |
 | D9 | the plan's stated `occurrences(rule, window)` signature cannot serve the PERIOD unit: those occurrences are pay periods, so they are not derivable from the rule alone | R3 would discover mid-build that the seam needs the schedule threaded through it | OPEN | R3 |
 | D10 | a `Monthly First` anchor is horizon-dependent: re-authoring an unchanged rule after the schedule extends can move it a month earlier | inherent to a pattern defined in terms of paydays, and equally true of the scan R2b shipped -- but no surface says so | OPEN | R4 (freeze the semantics with the baseline) |
 | F-4 | `pay_periods` stores NOMINAL paydays; a holiday/weekend shift for the pay SCHEDULE is unmodelled | Josh's 1 Jan 2026 payday was really paid 31 Dec 2025 | OPEN | operator (scope it as its own task, or rule it out?) |
@@ -878,7 +873,7 @@ and labelling a discipline as one is the failure being guarded against.
    opened three updated the rows and not the prose about them.
 4. **The whole file is capped at 900 lines**, and the cap is a FORCING FUNCTION, not a ceiling sized
    to fit the work. The arithmetic says so plainly: the document stands at 747, eight steps remain
-   unspecified (R2c, R3-R9), and specifying each at the ~45 lines R2b's took would add ~293 --
+   unspecified (R2e, R3-R9), and specifying each at the ~45 lines R2b's took would add ~293 --
    landing at ~1,021, well over. **That gap is deliberate and rule 7 is what closes it.** A step
    that ships surrenders its specification: R1 and R2a occupied 45 lines between them before rule 7
    condensed them to 11. At roughly 35 lines returned per ship against ~45 spent per specification,
