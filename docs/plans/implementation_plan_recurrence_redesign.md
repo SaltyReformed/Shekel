@@ -6,12 +6,12 @@
 for untangling the cash-date / installment-date collision the design review surfaced. Design LOCKED
 2026-08-05. R1 through R2d are ARCHIVED (section 4).
 
-**In flight: R2e, now THREE leaves** (ruled 2026-08-07, R-R11). Retiring `Once` rested on two things
-that had to be true first, each a measured defect: clearing a recurrence had to actually clear it
-(R2e-1, defects D14/D15), and the pattern picker had to offer what the app MODELS rather than what
-the ref table holds (R2e-2), which is also what makes R2e-3 rollback-safe. **Next:** R2e-1 -> R2e-2
--> R2e-3 -> R3. **Also live:** R-F1, the only carried finding whose failure mode is a broken deploy,
-and R-F6, the recurrence-rule leak.
+**R2e-1 and R2e-2 are SHIPPED; R2e-3 is next.** Retiring `Once` rested on two things that had to be
+true first, each a measured defect: clearing a recurrence had to actually clear it (R2e-1), and
+every recurrence surface had to speak the vocabulary the app MODELS rather than the rows the `ref`
+table holds (R2e-2) -- which is what makes R2e-3's deliberately-surviving `Once` row unreachable
+rather than merely unoffered. **Next:** R2e-3 -> R3. **Also live:** R-F1, the only carried finding
+whose failure mode is a broken deploy, and R-F6, the recurrence-rule leak.
 
 **Where detail lives:** section 4 is the step list, each step carrying its own specification;
 section 5 is the findings ledger, one line per finding, each naming the step that closes it; section
@@ -100,7 +100,7 @@ Second-order consequences of the same fusion:
   to suppress: `recurrence_engine.py:115`, `:257`, `recurring_view.py:236`,
   `savings_goal_service.py:427`, plus `templates.py:931`. Transaction templates already model this
   correctly (`recurrence_rule_id IS NULL`); transfers were forced onto `Once` because their form has
-  no null option (`_recurrence_fields.html:44`).
+  no null option (`_recurrence_fields.html:49`).
 - Generation is a **reverse** mapping ("scan every period, ask if it contains the target day"),
   which needs five near-identical `_match_*` helpers (`recurrence_engine.py:527-628`) and is neither
   total nor injective (see D3).
@@ -508,28 +508,17 @@ already model "does not recur" correctly as `recurrence_rule_id IS NULL`; transf
 `Once` because their form has no null option (`transfers/form.html:87` passes
 `include_none_option=false`, `templates/form.html:101` passes `true`). Drains part of R9.
 
-- [ ] **R2e-1 -- clearing a recurrence clears it.**
+- [x] **R2e-1 -- clearing a recurrence clears it.** `4d99c9d4` -- the null option both edit forms
+      already offered was a silent no-op that then REGENERATED from the rule it was asked to stop
+      (**D14**), and through it a loan payment could be made one-time and silently lose the standing
+      overpayment the balance seam threads (**D15**). The clear branch now deletes the rule rather
+      than orphaning it; a loan payment is refused at the door.
 
-The null option R2e-3 gives the transfer form is already on the transaction form, and it did
-nothing: `resolve_recurrence_rule_for_update` assigned nothing for an unselected pattern, so the
-template kept its rule and the caller then REGENERATED from it (defect **D14**). Retiring `Once`
-without this would be a regression, because switching to `Once` on the transfer edit form does stop
-generation and sweep the future rows today.
-
-The three parts: `recurrence_pattern` becomes `allow_none` on both schemas, so an empty submission
-survives `_normalize_empty_inputs` as a present `None` and stays distinguishable from a key the
-caller never sent (without which an amount-only PATCH would delete a cadence); the resolver gains a
-CLEAR branch that detaches and deletes the rule; and the regeneration gate widens from "has a rule"
-to "is or was recurring". Developer ruling 2026-08-07: the sweep drops future non-overridden
-auto-generated rows from `effective_from`, and settled / soft-deleted / overridden rows survive.
-
-- [ ] **R2e-2 -- the pattern picker offers what the app MODELS.**
-
-Four routes build it from `db.session.query(RecurrencePattern).all()`; it becomes
-`RecurrencePatternEnum` resolved through `ref_cache`. The enum is what `_pattern_member`
-(`_resolution.py:381`) requires -- a pattern id it does not name raises -- so a table-driven picker
-can author an unresolvable rule. One source of truth, deterministic order, and it is what lets R2e-3
-leave the `ref` row in place.
+- [x] **R2e-2 -- the pattern picker offers what the app MODELS.** `a465e9fa` -- picker, both write
+      doors and the preview read `RecurrencePatternEnum` through one producer, so the `ref` row
+      R2e-3 leaves behind is unreachable, not merely unused. Binds R2e-3: it needs no further guard,
+      and `pattern_choices_for` already keeps an unmodelled STORED pattern selected -- without which
+      an edit form silently defaults to the destructive clear (measured, review-found).
 
 - [ ] **R2e-3 -- retire `Once`.**
 
@@ -807,7 +796,8 @@ D2-D7 are defects in the code the redesign replaces; D8-D12 are findings about t
 F-1 to F-3 and F-6 were found while building it and are NOT part of it, which is why their steps sit
 in the carried block at the end of section 4. F-4 and F-5 are pay-period features section 4a
 surfaced -- they have no step because they need a ruling first, which is what `operator` means here.
-**D1 left this table at R2c-1**; its measurement is in the historical archive with that step.
+**D1 left this table at R2c-1, and D14/D15 at R2e-1**; each measurement lives with the step that
+closed it -- the historical archive for D1, commit `4d99c9d4` for D14/D15, which R-R11 still names.
 
 **The ledger stands at 21 rows.**
 
@@ -829,8 +819,8 @@ surfaced -- they have no step because they need a ruling first, which is what `o
 | D11 | two branches of `_first_of_month_anchor` are unreachable, and one comments a case that cannot execute | none -- both are dead; proven by argument and by a 243,018-case sweep in which neither was ever taken | OPEN | R-F7 |
 | D12 | `ref_cache.recurrence_unit_id` / `period_placement_id` / `business_day_shift_id` have ZERO callers in `app/` since R2d made `resolve()` return enum members | none -- they are correct and tested; the risk is a dead-code sweep DELETING them before their first consumer exists | OPEN | R7c (its backfill maps enums back to ids) |
 | D13 | `create_transfer_template` dereferences `rule.id` with no null branch, and its own comment claims the schema prevents it -- `recurrence_pattern` is NOT `required` on `TransferTemplateCreateSchema` | 500 (`AttributeError`) on any POST omitting the pattern; becomes the DEFAULT path once the form offers the null option | OPEN | R2e-3 |
-| D14 | the edit form's "None (one-time / manual)" was a silent no-op that then REGENERATED from the rule the user asked it to stop | `rule_id` 1 -> 1 with `deleted_count=6 created_count=6`; the recurrence the user ended kept running | OPEN | R2e-1 |
-| D15 | a loan payment could be made "one-time", nulling the column `recurring_transfer_query` finds it by | standing overpayment 250.00 -> 0.00 while `loan_payment_settings` still asserts 250.00, moving the projected payoff | OPEN | R2e-1 (refuse it at the door) |
+| F-7 | `ref_seeds`' pattern list restates `[m.value for m in RecurrencePatternEnum]` verbatim, so the set the app models is stated twice | none -- probed byte-identical, and `ref_cache.init` already refuses a mismatch | OPEN | operator (derive every `ref` seed from its enum, or keep the literals? it is the shape of all ~23 seed lists, not just this one) |
+| D17 | `RecurrenceRule.pattern` is `lazy="joined"`, so every rule load eager-joins `ref.recurrence_patterns` for a relationship whose only reader is the `recurrence_cell` macro's else-branch | none -- one join per rule load | OPEN | R7a (deletes that branch, the labels dict and `pattern_labels_by_name` together, so the join goes with them) |
 | D16 | renaming a `Once` transfer template DESTROYS its Transfer: regeneration sweeps the row, then the `Once` guard generates nothing back | the transfer and both shadows deleted on a rename; the 2 live `Once` transfer templates are exposed the moment their row is projected rather than Paid | OPEN | R2e-3 (a rule-less template is skipped by the sweep gate) |
 | F-4 | `pay_periods` stores NOMINAL paydays; a holiday/weekend shift for the pay SCHEDULE is unmodelled | Josh's 1 Jan 2026 payday was really paid 31 Dec 2025 | OPEN | operator (scope it as its own task, or rule it out?) |
 | F-5 | a 27-paycheck year is a real budgeting event and no surface names one | one extra $500 Groceries + one extra $2,473.38 paycheck | OPEN | operator (build the surfacing, or leave it?) |
@@ -896,3 +886,13 @@ and labelling a discipline as one is the failure being guarded against.
    they were on. When it overflows, the remedy is relocation, not deletion: a constraint on a step
    belongs in that step, a defect belongs in a section 5 row with an owner, a standing rule belongs
    here.
+7. **A SHIPPED step's entry is a POINTER: it OPENS with its commit hash, and is at most 6 lines.**
+   Write it as `- [x] **<step> -- what it did.**` followed by the sha in backticks and one or two
+   sentences. The hash's POSITION is the predicate, not its presence: an Alembic revision id is hex
+   too, and this document cites one beside the commit that added it. Prose nobody re-verifies is
+   worse than a hash anyone can check -- the balance arc carried an invented provenance line, a
+   drifted count and a citation to a deleted producer into records of shipped work. A LIVE step is a
+   specification and is never trimmed; only the record of what is DONE shrinks.
+   **This rule was enforced by the gate the day it was installed and was missing from this list**,
+   while rules 3 and 4 both cited it by number -- found 2026-08-07, at the first tick after the gate
+   shipped.
