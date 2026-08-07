@@ -6,10 +6,11 @@
 for untangling the cash-date / installment-date collision the design review surfaced. Design LOCKED
 2026-08-05. R1 through R2d are ARCHIVED (section 4).
 
-**ALL OF R2e IS SHIPPED. `Once` is retired.** "Does not recur" now has exactly ONE spelling on both
-template kinds -- `recurrence_rule_id IS NULL` -- and the `ref.recurrence_patterns` row deliberately
-SURVIVES to R9, unreachable through every door (ruling R-R11). R2e-3 closed D13 and D16, and dropped
-R-F6's orphan set from 5 rows to 3. **Next:** R3, the new engine, parallel and unread.
+**R1-R2e IS IN PRODUCTION** (PR #84, 2026-08-07; prod runs `d4a71f6e30bb`). `Once` is retired: "does
+not recur" has exactly ONE spelling on both template kinds -- `recurrence_rule_id IS NULL` -- and
+the `ref.recurrence_patterns` row deliberately SURVIVES to R9, unreachable through every door
+(ruling R-R11). R2e-3 closed D13 and D16 and dropped R-F6's orphan set from 5 rows to 3. The deploy
+moved 0 of 549 production period-balances. **Next:** R3, the new engine, parallel and unread.
 **Also live:** R-F1, whose failure mode is a broken deploy, and R-F6, the rule leak.
 
 **Where detail lives:** section 4 is the step list, each step carrying its own specification;
@@ -531,7 +532,11 @@ onto `Once` because their form had no null option. Both forms now offer it and t
 
 - [ ] **R3 -- New engine, parallel and unread.**
 
-`app/services/recurrence/` with `occurrences()` and `place()`. Pure, no Flask. Nothing reads it yet.
+`occurrences()` and `place()` join the EXISTING `app/services/recurrence/` package (R2a/R2c-1 built
+it). Pure, no Flask. Nothing reads it yet. **Read D9 before writing the signature** -- the
+`occurrences(rule, window)` above is measured WRONG for the PERIOD unit, whose occurrences are pay
+periods and so are not derivable from the rule alone; the schedule has to be threaded in. D7 is the
+other half: `place()` must answer "no period" rather than assume one.
 
 Ships with a parallel-run test that drives the NEW engine through
 `tests/oracles/recurrence_baseline.py`'s own shape set and schedules and asserts it reproduces the
