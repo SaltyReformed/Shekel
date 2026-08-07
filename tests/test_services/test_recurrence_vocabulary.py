@@ -84,10 +84,13 @@ class TestPatternChoices:
                 assert choice.label.strip()
 
     def test_the_labels_are_the_copy_the_picker_has_always_shown(self, app):
-        """The eight labels are pinned verbatim (no silent copy change).
+        """The seven labels are pinned verbatim (no silent copy change).
 
         R2e-2 moved this table out of the ``inject_recurrence_labels`` context
-        processor; the move must not have edited a word of it.
+        processor; the move must not have edited a word of it.  R2e-3 removed
+        the eighth entry, "One-time", with the ``Once`` member -- "does not
+        repeat" is the form's own empty option, not a pattern -- and must not
+        have edited the remaining seven either.
         """
         with app.app_context():
             by_id = {c.pattern_id: c.label for c in pattern_choices()}
@@ -102,8 +105,8 @@ class TestPatternChoices:
                 RecurrencePatternEnum.QUARTERLY: "Quarterly",
                 RecurrencePatternEnum.SEMI_ANNUAL: "Every 6 months",
                 RecurrencePatternEnum.ANNUAL: "Yearly",
-                RecurrencePatternEnum.ONCE: "One-time",
             }
+            assert len(by_id) == len(expected)
             for member, label in expected.items():
                 assert by_id[ref_cache.recurrence_pattern_id(member)] == label
 

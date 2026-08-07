@@ -24,7 +24,7 @@ The helpers:
   pattern id.  [F-24]
 * :func:`resolve_recurrence_rule_for_update` -- dispatches the three
   update-form branches (re-point an existing rule, build + link a new
-  one, or CLEAR the recurrence the user set to "one-time / manual") so
+  one, or CLEAR the recurrence the user set to "Does not repeat") so
   each ``update_*`` route resolves its recurrence rule with a single
   call.  [F-24; the clear branch is plan step R2e-1]
 * :func:`handle_stale_form_conflict` -- pre-flush optimistic-locking
@@ -223,10 +223,13 @@ def build_recurrence_rule_from_form(
             ``offset_periods``, ``day_of_month``, ``month_of_year``,
             ``end_date``, and -- when ``ctx.include_due_day_of_month``
             is ``True`` -- ``due_day_of_month``.
-        user_id: Owner of the resulting :class:`RecurrenceRule` row.
-        start_period_id: From the form; the rule's "First paycheck".
-            Caller pops it before calling the helper because the same
-            value is later persisted on the :class:`RecurrenceRule`.
+        user_id: Owner of the resulting :class:`RecurrenceRule` row, and the
+            owner the submitted start period is checked against.
+        start_period_id: From the form; the rule's "First paycheck", or the
+            period a non-repeating transfer lands in.  Caller pops it before
+            calling the helper because the same value is later persisted on
+            the :class:`RecurrenceRule` (or read by the transfer route's
+            materialization).  Owner-checked whether or not a rule results.
         ctx: The :class:`RecurrenceFormContext` carrying the form's
             ``end_date_value`` (copied verbatim onto the rule), the
             validation-error ``redirect`` target (an invalid start
@@ -237,14 +240,41 @@ def build_recurrence_rule_from_form(
         * :class:`RecurrenceRule` -- newly added, flushed, ready to
           link.  The caller is responsible for setting any owning-row
           FK (e.g. ``template.recurrence_rule_id = rule.id``).
-        * ``None`` -- no recurrence pattern was selected; the helper
-          still popped every recurrence key from ``data``.
+        * ``None`` -- no recurrence pattern was selected, so the template does
+          not repeat; the helper still popped every recurrence key from
+          ``data`` and still owner-checked the start period.
         * :class:`Response` -- a Flask redirect to ``ctx.redirect`` when the
           submitted start period is not this user's; the caller returns it
           directly so the route's control flow matches the pre-extraction
           shape.
     """
     pattern_id = data.pop("recurrence_pattern", None)
+
+    # Verify ownership of any submitted start period BEFORE anything is
+    # persisted -- for every pattern, and for NO pattern.  ``start_period_id``
+    # is written onto the rule unconditionally below
+    # (``rule_kwargs["start_period_id"]``), and ``recurrence_engine`` later
+    # dereferences ``rule.start_period.start_date`` as the generation boundary
+    # -- and ``resolve`` reads it as the rule's opening bound -- so a
+    # cross-user period would both be stored as a foreign FK and shift this
+    # owner's generation timing.  This matches the read-only preview path
+    # (``templates.preview_recurrence``), which already owner-gates the start
+    # period for all patterns; without this probe the persist path was an IDOR
+    # the preview path was not (deep-quality-hunt #21).
+    #
+    # **Ahead of the no-pattern early return, not after it** (plan step
+    # R2e-3).  It used to sit below, so a submission naming no pattern skipped
+    # it entirely.  That was harmless while "does not repeat" meant no rule
+    # AND no instances -- nothing downstream read the period.  R2e-3 makes it
+    # the transfer form's DEFAULT and materialises a Transfer into exactly
+    # that period, so the check has to be unconditional on the SUBMISSION
+    # rather than conditional on a rule coming out of it.
+    # ``_materialize_one_time_transfer`` re-checks as defence in depth.
+    if start_period_id is not None:
+        start_period = db.session.get(PayPeriod, start_period_id)
+        if start_period is None or start_period.user_id != user_id:
+            flash("Invalid start period.", "danger")
+            return ctx.redirect.to_response()
 
     if not pattern_id:
         # No pattern: drop every recurrence-related key so the caller's
@@ -268,25 +298,6 @@ def build_recurrence_rule_from_form(
     due_day_of_month = (
         data.pop(_DUE_DAY_KEY, None) if ctx.include_due_day_of_month else None
     )
-
-    # Verify ownership of any submitted start period BEFORE it is
-    # persisted onto the rule -- for every pattern, not just
-    # EVERY_N_PERIODS.  ``start_period_id`` is written onto the rule
-    # unconditionally below (``rule_kwargs["start_period_id"]``), and
-    # ``recurrence_engine`` later dereferences ``rule.start_period.start_date``
-    # as the generation boundary -- and ``resolve`` reads it as the rule's
-    # opening bound -- so a cross-user period would both be stored as a
-    # foreign FK and shift this owner's generation timing.
-    # This matches the read-only preview path
-    # (``templates.preview_recurrence``), which already owner-gates the
-    # start period for all patterns; without this probe the persist path
-    # was an IDOR the preview path was not (deep-quality-hunt #21).
-    start_period = None
-    if start_period_id is not None:
-        start_period = db.session.get(PayPeriod, start_period_id)
-        if start_period is None or start_period.user_id != user_id:
-            flash("Invalid start period.", "danger")
-            return ctx.redirect.to_response()
 
     # The offset auto-derivation this branch used to run inline -- "for
     # EVERY_N_PERIODS, phase the rule on the chosen start period" -- moved
@@ -547,7 +558,7 @@ def resolve_recurrence_rule_for_update(
     * pattern present, no existing rule -> build a fresh rule via
       :func:`build_recurrence_rule_from_form` and link it onto
       ``template.recurrence_rule_id``;
-    * pattern SUBMITTED AS EMPTY -> the user chose "one-time / manual", so any
+    * pattern SUBMITTED AS EMPTY -> the user chose "Does not repeat", so any
       existing rule is cleared through :func:`_clear_recurrence_rule` --
       unless the template is a LOAN PAYMENT, which is refused (see
       :data:`LOAN_PAYMENT_CANNOT_BE_ONE_TIME`).
@@ -555,15 +566,15 @@ def resolve_recurrence_rule_for_update(
     **A submitted-empty pattern and an absent one are different requests**, and
     keeping them apart is what stops the third branch from breaking the
     partial-update contract.  Both schemas declare ``recurrence_pattern`` as
-    ``allow_none``, so the form's "None (one-time / manual)" option survives
+    ``allow_none``, so the form's "Does not repeat" option survives
     ``_normalize_empty_inputs`` as a present ``None`` while a field the caller
     never submitted stays absent -- and only the first clears.  Without that
     distinction an amount-only PATCH, which submits no recurrence keys at all,
     would silently delete the template's cadence.
 
-    **The third branch is new, and its absence was a live defect.**  The form
-    has offered "None (one-time / manual)" since the recurring cluster
-    shipped, and selecting it did nothing at all: the builder returned
+    **The third branch is new, and its absence was a live defect.**  The
+    transaction form has offered a "does not repeat" option since the recurring
+    cluster shipped, and selecting it did nothing at all: the builder returned
     ``None``, this function assigned nothing, and the template kept both its
     rule and its cadence.  Worse than inert -- the caller then regenerated
     from the rule the user had just asked it to stop using.  Measured on a

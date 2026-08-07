@@ -17,13 +17,15 @@ What the application can READ is the narrower set:
 :func:`app.services.recurrence.resolve` raises
 :class:`~app.services.recurrence.RecurrenceResolutionError` for a pattern id no
 enum member names, and no route catches it -- so the gap between the two sets
-is a 500 waiting for them to diverge.  Plan step R2e-3 is exactly where they
-diverge: the ``Once`` enum member is deleted while its ``ref`` row SURVIVES to
+is a 500 waiting for them to diverge.  **They now HAVE diverged** (plan step
+R2e-3): the ``Once`` enum member is deleted while its ``ref`` row SURVIVES to
 R9, because deleting the row in the same release would leave the auto-rollback
 image unable to boot (``ref_cache.init`` raises for an enum member with no row;
 ruling R-R11).  With every surface asking this module instead, that surviving
 row is UNREACHABLE rather than merely unoffered: it is not offered, not
-accepted, and not previewed.
+accepted, and not previewed.  "Does not recur" is
+``recurrence_rule_id IS NULL`` on either template kind, so no pattern has to
+mean it.
 
 **The display label sits beside the membership answer because the two CONVERGE**
 -- not because separating them would let them drift.  Both are keyed by
@@ -32,11 +34,12 @@ that keying rather than this file that makes a member without a label a
 ``KeyError`` instead of a blank option.  What co-location buys is plan step
 R7a, which replaces :data:`_PATTERN_LABELS` with one function over
 ``(interval, unit)``: from there the label is a function OF the resolution
-vocabulary, so a split today would only have to be re-merged.  That function
-cannot be written yet -- ``_resolution._PATTERN_DERIVATIONS`` gives ``Once`` and
-``Every Period`` byte-identical two-axis values, so no derivation can tell
-"One-time" from "Every paycheck" until plan step R2e-3 deletes the member.  An
-enum-keyed table is the only honest shape available today.
+vocabulary, so a split today would only have to be re-merged.  Writing that
+function became POSSIBLE at R2e-3 -- while ``Once`` existed,
+``_resolution._PATTERN_DERIVATIONS`` gave it and ``Every Period``
+byte-identical two-axis values, so no derivation could tell "One-time" from
+"Every paycheck".  It is R7a's work, not this module's, and until then an
+enum-keyed table is the honest shape.
 
 Pure: no Flask, no ORM, no clock.  The ``ref`` ids come from
 :mod:`app.ref_cache`, the project's IDs-for-logic seam.
@@ -71,7 +74,6 @@ _PATTERN_LABELS: dict[RecurrencePatternEnum, str] = {
     RecurrencePatternEnum.QUARTERLY: "Quarterly",
     RecurrencePatternEnum.SEMI_ANNUAL: "Every 6 months",
     RecurrencePatternEnum.ANNUAL: "Yearly",
-    RecurrencePatternEnum.ONCE: "One-time",
 }
 
 
@@ -142,10 +144,10 @@ def pattern_choices() -> tuple[PatternChoice, ...]:
     resolve, which is this step's root cause.
 
     The order is the enum's own declaration order, which is also the order
-    ``app.ref_seeds`` inserts the rows in.  **On PRODUCTION that leaves the
+    ``app.ref_seeds`` inserts the rows in.  **On PRODUCTION that left the
     rendered list unchanged** (verified against the 2026-08-05 dump: ids 1-8 in
-    enum order).  It is not an invariant of the schema, and saying so matters
-    twice over:
+    enum order; the 8th, ``Once``, is the row plan step R2e-3 stopped naming).
+    It is not an invariant of the schema, and saying so matters twice over:
 
     * a database built through the MIGRATION chain is in a different order --
       ``a3b1c2d4e5f6`` appends ``quarterly`` and ``semi_annual`` after the
@@ -156,15 +158,16 @@ def pattern_choices() -> tuple[PatternChoice, ...]:
       transaction: two updates of one row's ``name`` moved ``Monthly`` from
       ctid ``(0,3)`` to ``(0,10)``, and the same unordered ``SELECT`` then
       returned it LAST -- the picker would have offered "Monthly (specific
-      day)" below "One-time", with no test to catch it.
+      day)" at the BOTTOM of the list, with no test to catch it.
 
     So the order this returns is not merely tidier than the query's; it is the
     first order the picker has ever actually been able to rely on.
 
     Returns:
         One :class:`PatternChoice` per modelled pattern, most frequent cadence
-        first (every paycheck through yearly), with the non-recurring ``Once``
-        last -- the order the picker has always rendered.
+        first (every paycheck through yearly) -- the order the picker has
+        always rendered.  Every entry RECURS: "does not repeat" is the form's
+        own empty option, not a pattern (plan step R2e-3).
 
     Raises:
         RuntimeError: If ``ref_cache`` has not been initialized.
@@ -210,14 +213,13 @@ def pattern_choices_for(pattern_id: int | None) -> tuple[PatternChoice, ...]:
     fail -- it silently becomes a different value**, and that is the whole
     reason this function exists.  Measured on the transaction edit form with a
     rule naming a surplus ``ref`` row: no option carried ``selected``, so the
-    browser falls back to the first in document order, which on that form is
-    the empty "None (one-time / manual)" entry -- and submitting THAT is the
-    clear path plan step R2e-1 made destructive, deleting the rule and sweeping
-    its future rows.  On the transfer form the first option is "Every paycheck"
-    instead, which silently re-authors the cadence.  Before R2e-2 the picker was
-    the table, so the row was rendered and pre-selected correctly and a save
-    raised loudly; without this function the step would trade a 500 for a silent
-    wrong write on the one screen where it is least likely to be noticed.
+    browser falls back to the first in document order, which on both forms is
+    the empty "Does not repeat" entry -- and submitting THAT is the clear path
+    plan step R2e-1 made destructive, deleting the rule and sweeping its future
+    rows.  Before R2e-2 the picker was the table, so the row was rendered and
+    pre-selected correctly and a save raised loudly; without this function the
+    step would trade a 500 for a silent wrong write on the one screen where it
+    is least likely to be noticed.
 
     Keeping the stored id as a selectable option is what makes the failure loud
     again: the form reads honestly, and saving it unchanged reaches the write
@@ -225,7 +227,7 @@ def pattern_choices_for(pattern_id: int | None) -> tuple[PatternChoice, ...]:
     Nothing is OFFERED that was not already stored -- the entry is a read-out of
     this rule's own value, never a cadence the picker proposes.
 
-    Reachable from plan step R2e-3, which deletes the ``Once`` enum member while
+    **Live since plan step R2e-3**, which deleted the ``Once`` enum member while
     its ``ref`` row survives (ruling R-R11).  That step's migration re-points
     every live ``Once`` rule, so this guards the rows a migration misses, the
     auto-rollback image, and hand-edited data -- a silent cadence deletion is

@@ -374,8 +374,8 @@ def _committed_expense_floor(user_id, checking_ids):
     Sums the monthly-normalized commitment of active expense templates
     and active outgoing transfer templates on the user's checking
     accounts, via the canonical obligations aggregator (E-24 / HIGH-05)
-    -- so the same skip-ONCE / skip-expired filter the /obligations
-    page applies governs the emergency-fund baseline.
+    -- so the same skip-non-repeating / skip-expired filter the
+    /obligations page applies governs the emergency-fund baseline.
 
     Args:
         user_id: Integer ID of the current user.

@@ -71,7 +71,7 @@ class TemplateCreateSchema(BaseSchema):
     # and the completeness gate could not see it while that gate matched on a
     # ``_id`` SUFFIX.
     #
-    # ``allow_none`` so the form's "None (one-time / manual)" option survives
+    # ``allow_none`` so the form's "Does not repeat" option survives
     # the pre_load hook as an explicit ``None`` rather than a dropped key
     # (plan step R2e-1).  The two are different requests and the update route
     # acts on them differently -- a present ``None`` CLEARS the recurrence, an

@@ -11,6 +11,7 @@ from decimal import Decimal
 from app import ref_cache
 from app.enums import StatusEnum
 from app.extensions import db
+from app.models.account import Account
 from app.models.journal_entry import JournalEntry
 from app.models.category import Category
 from app.models.transaction import Transaction
@@ -2673,36 +2674,39 @@ class TestUnarchiveUsesService:
 
 
 class TestOneTimeTransfer:
-    """Tests for one-time transfer creation via the template form.
+    """Creating a transfer that does NOT repeat, via the template form.
 
-    One-time transfers can be created two ways:
-      1. Pattern dropdown set to "None (one-time / manual)" (no rule).
-      2. Pattern dropdown set to "Once" (ONCE rule).
+    Its shape is ``recurrence_rule_id IS NULL`` -- the same one a
+    non-repeating transaction template has always used -- since plan step
+    R2e-3 retired the ``Once`` PATTERN that was the second spelling.  It is
+    also the create form's DEFAULT selection, so this is the ordinary path,
+    not an edge.  Unlike a rule-less TRANSACTION template, which generates
+    nothing, this materialises exactly one Transfer with its two shadow
+    transactions in the chosen pay period.
 
-    Both paths must create a Transfer with two shadow transactions when
-    a start_period_id is provided.  This was a known bug (design doc
-    section 1.4) where the recurrence engine returned [] for ONCE and
-    the route skipped transfer creation entirely for no-pattern.
+    **Every case here 500'd before R2e-3** (defect **D13**): the route
+    dereferenced ``rule.id`` with no null branch, on a comment claiming the
+    schema made ``recurrence_pattern`` required.  It does not -- the field is
+    ``allow_none`` -- so both the empty and the absent spelling raised
+    ``AttributeError``.  ``test_absent_pattern_is_the_same_path`` covers the
+    second spelling, which no form emits but a client may.
     """
 
-    def test_once_pattern_creates_shadows(
+    def test_non_repeating_creates_one_transfer_and_two_shadows(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """POST /transfers with the ONCE recurrence pattern creates a
-        template AND a single Transfer with exactly two shadow transactions.
+        """POST /transfers with an EMPTY pattern creates a rule-less template
+        AND a single Transfer with exactly two shadow transactions.
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
-            once = db.session.query(RecurrencePattern).filter_by(
-                name="Once"
-            ).one()
 
             response = auth_client.post("/transfers", data={
                 "name": "Once Payment",
                 "default_amount": "500.00",
                 "from_account_id": seed_user["account"].id,
                 "to_account_id": savings.id,
-                "recurrence_pattern": str(once.id),
+                "recurrence_pattern": "",
                 "start_period_id": str(seed_periods_today[1].id),
                 "category_id": str(seed_user["categories"]["Rent"].id),
             }, follow_redirects=True)
@@ -2710,7 +2714,7 @@ class TestOneTimeTransfer:
             assert response.status_code == 200
             assert b"created" in response.data.lower()
 
-            # Template was created with a ONCE recurrence rule.
+            # Template was created with NO recurrence rule.
             tmpl = (
                 db.session.query(TransferTemplate)
                 .filter_by(
@@ -2719,8 +2723,8 @@ class TestOneTimeTransfer:
                 )
                 .one()
             )
-            assert tmpl.recurrence_rule is not None
-            assert tmpl.recurrence_rule.pattern_id == once.id
+            assert tmpl.recurrence_rule_id is None
+            assert tmpl.recurrence_rule is None
 
             # Transfer was created via the service.
             xfer = (
@@ -2730,6 +2734,11 @@ class TestOneTimeTransfer:
             )
             assert xfer.amount == Decimal("500.00")
             assert xfer.pay_period_id == seed_periods_today[1].id
+            # The due date is the period's own start.  A ``Once`` rule used to
+            # supply it through ``compute_due_date``, which returned exactly
+            # this for a day-less rule -- verified against both live ``Once``
+            # transfers on production.
+            assert xfer.due_date == seed_periods_today[1].start_date
 
             # Exactly two shadow transactions exist.
             shadows = (
@@ -2742,25 +2751,22 @@ class TestOneTimeTransfer:
             types = {s.transaction_type.name for s in shadows}
             assert types == {"Expense", "Income"}
 
-    def test_once_pattern_shadow_accounts(
+    def test_non_repeating_shadow_accounts(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """ONCE transfer shadows are linked to the correct accounts:
+        """Non-repeating transfer shadows are linked to the correct accounts:
         expense shadow on from_account, income shadow on to_account.
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
             checking_id = seed_user["account"].id
-            once = db.session.query(RecurrencePattern).filter_by(
-                name="Once"
-            ).one()
 
             auth_client.post("/transfers", data={
                 "name": "Account Check",
                 "default_amount": "300.00",
                 "from_account_id": str(checking_id),
                 "to_account_id": str(savings.id),
-                "recurrence_pattern": str(once.id),
+                "recurrence_pattern": "",
                 "start_period_id": str(seed_periods_today[0].id),
                 "category_id": str(seed_user["categories"]["Rent"].id),
             }, follow_redirects=True)
@@ -2793,10 +2799,10 @@ class TestOneTimeTransfer:
             # Income fills the to_account (savings).
             assert income_shadow.account_id == savings.id
 
-    def test_once_pattern_balance_impact(
+    def test_non_repeating_balance_impact(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """ONCE transfer shadow transactions affect balance calculations.
+        """Non-repeating transfer shadows affect balance calculations.
 
         The checking balance should decrease and savings balance should
         increase by the transfer amount.
@@ -2809,16 +2815,12 @@ class TestOneTimeTransfer:
             )
             db.session.commit()
 
-            once = db.session.query(RecurrencePattern).filter_by(
-                name="Once"
-            ).one()
-
             auth_client.post("/transfers", data={
                 "name": "Balance Test",
                 "default_amount": "250.00",
                 "from_account_id": str(seed_user["account"].id),
                 "to_account_id": str(savings.id),
-                "recurrence_pattern": str(once.id),
+                "recurrence_pattern": "",
                 "start_period_id": str(seed_periods_today[1].id),
                 "category_id": str(seed_user["categories"]["Rent"].id),
             }, follow_redirects=True)
@@ -2871,20 +2873,18 @@ class TestOneTimeTransfer:
     ):
         """POST /transfers with another user's period is rejected.
 
-        The cross-user start_period is now caught by the F-24 builder's
-        universal ownership probe (deep-quality-hunt #21), which runs
-        for EVERY pattern -- so it rejects the ONCE case here ("Invalid
-        start period.") before the template is created and before the
-        one-time-transfer re-check in ``_materialize_initial_transfers``
-        ("Invalid pay period for one-time transfer.") would fire.  That
-        re-check is now a redundant second guard; either way the IDOR is
-        blocked and no transfer is persisted.
+        The cross-user start_period is caught by the F-24 builder's universal
+        ownership probe (deep-quality-hunt #21), which plan step R2e-3 moved
+        AHEAD of that helper's no-pattern early return.  It had sat below it,
+        so a submission naming no pattern skipped the probe entirely -- which
+        was harmless while no-pattern meant "generate nothing", and is not
+        once no-pattern is what materialises a Transfer into exactly the
+        submitted period.  ``_materialize_one_time_transfer`` re-checks as
+        defence in depth ("Invalid pay period for one-time transfer."); this
+        asserts the FIRST guard fires, before any row is written.
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
-            once = db.session.query(RecurrencePattern).filter_by(
-                name="Once"
-            ).one()
 
             response = auth_client.post("/transfers", data={
                 "name": "IDOR Attempt",
@@ -2892,7 +2892,7 @@ class TestOneTimeTransfer:
                 "from_account_id": str(seed_user["account"].id),
                 "to_account_id": str(savings.id),
                 "category_id": str(seed_user["categories"]["Rent"].id),
-                "recurrence_pattern": str(once.id),
+                "recurrence_pattern": "",
                 # Use second user's period.
                 "start_period_id": str(seed_second_periods[0].id),
             }, follow_redirects=True)
@@ -2900,13 +2900,371 @@ class TestOneTimeTransfer:
             assert response.status_code == 200
             assert b"Invalid start period" in response.data
 
-            # No transfer was created.
-            xfer_count = (
+            # Neither a template nor a transfer was persisted.
+            assert (
+                db.session.query(TransferTemplate)
+                .filter_by(user_id=seed_user["user"].id)
+                .count()
+            ) == 0
+            assert (
                 db.session.query(Transfer)
                 .filter_by(user_id=seed_user["user"].id)
                 .count()
+            ) == 0
+
+    def test_absent_pattern_is_the_same_path(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A POST that OMITS ``recurrence_pattern`` behaves identically.
+
+        The form always submits the key (empty for "Does not repeat"), but a
+        client need not.  Both spellings reached the same unguarded
+        ``rule.id`` before plan step R2e-3 and both 500'd; both must now
+        produce the same rule-less template and its single Transfer.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+
+            response = auth_client.post("/transfers", data={
+                "name": "No Pattern Key",
+                "default_amount": "425.00",
+                "from_account_id": str(seed_user["account"].id),
+                "to_account_id": str(savings.id),
+                "start_period_id": str(seed_periods_today[1].id),
+                "category_id": str(seed_user["categories"]["Rent"].id),
+            }, follow_redirects=True)
+
+            assert response.status_code == 200
+            tmpl = (
+                db.session.query(TransferTemplate)
+                .filter_by(user_id=seed_user["user"].id, name="No Pattern Key")
+                .one()
             )
-            assert xfer_count == 0
+            assert tmpl.recurrence_rule_id is None
+            xfer = (
+                db.session.query(Transfer)
+                .filter_by(transfer_template_id=tmpl.id)
+                .one()
+            )
+            assert xfer.amount == Decimal("425.00")
+            assert xfer.pay_period_id == seed_periods_today[1].id
+
+    def test_non_repeating_without_a_period_is_refused(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A non-repeating transfer naming no pay period writes nothing.
+
+        It has nowhere to land, and reporting success would state that money
+        moved when no Transfer and no shadow pair exist.  Before plan step
+        R2e-3 the ``Once`` path took exactly that branch silently: the
+        materialization required BOTH the pattern and a period, so without one
+        it created the template, no transfer, and flashed "created."
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+
+            response = auth_client.post("/transfers", data={
+                "name": "Nowhere To Land",
+                "default_amount": "75.00",
+                "from_account_id": str(seed_user["account"].id),
+                "to_account_id": str(savings.id),
+                "category_id": str(seed_user["categories"]["Rent"].id),
+                "recurrence_pattern": "",
+            }, follow_redirects=True)
+
+            assert response.status_code == 200
+            assert b"has to land in one pay period" in response.data
+            assert (
+                db.session.query(TransferTemplate)
+                .filter_by(user_id=seed_user["user"].id)
+                .count()
+            ) == 0
+            assert (
+                db.session.query(Transfer)
+                .filter_by(user_id=seed_user["user"].id)
+                .count()
+            ) == 0
+
+    def _create_non_repeating(
+        self, auth_client, seed_user, savings, period, *, name, amount="500.00",
+    ):
+        """POST the create form's default (non-repeating) selection."""
+        auth_client.post("/transfers", data={
+            "name": name,
+            "default_amount": amount,
+            "from_account_id": str(seed_user["account"].id),
+            "to_account_id": str(savings.id),
+            "recurrence_pattern": "",
+            "start_period_id": str(period.id),
+            "category_id": str(seed_user["categories"]["Rent"].id),
+        }, follow_redirects=True)
+        return (
+            db.session.query(TransferTemplate)
+            .filter_by(user_id=seed_user["user"].id, name=name)
+            .one()
+        )
+
+    def test_changing_accounts_on_a_non_repeating_transfer_is_refused(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """An account change its existing Transfer could not follow is refused.
+
+        The edit propagates amount, name and category through
+        ``transfer_service.update_transfer``, which does NOT accept the two
+        account columns -- a shadow's ``account_id`` is derived from them when
+        the pair is created.  Letting the template claim accounts its own
+        Transfer does not use is the divergence the propagation exists to
+        prevent, so the change is refused rather than half-applied.
+
+        Asserts the TEMPLATE is unchanged too: refusing after the field loop
+        had already written would leave exactly the state being refused.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            other = Account(
+                user_id=seed_user["user"].id, name="Other Savings",
+                account_type_id=savings.account_type_id, is_active=True,
+            )
+            db.session.add(other)
+            db.session.commit()
+            future = [
+                p for p in seed_periods_today if p.start_date > display_today()
+            ]
+            tmpl = self._create_non_repeating(
+                auth_client, seed_user, savings, future[0], name="Fixed Accounts",
+            )
+
+            resp = auth_client.post(f"/transfers/{tmpl.id}", data={
+                "name": "Fixed Accounts",
+                "default_amount": "500.00",
+                "from_account_id": str(seed_user["account"].id),
+                "to_account_id": str(other.id),
+                "recurrence_pattern": "",
+                "category_id": str(seed_user["categories"]["Rent"].id),
+                "version_id": str(tmpl.version_id),
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"cannot be moved between accounts" in resp.data
+            db.session.expire_all()
+            tmpl = db.session.get(TransferTemplate, tmpl.id)
+            assert tmpl.to_account_id == savings.id
+            xfer = db.session.query(Transfer).filter_by(
+                transfer_template_id=tmpl.id).one()
+            assert xfer.to_account_id == savings.id
+
+    def test_changing_accounts_is_allowed_with_no_live_transfer(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The refusal is about the Transfer, so with none it does not fire.
+
+        A template whose recurrence was CLEARED is rule-less with no upcoming
+        Transfer (the clear swept them).  Nothing can diverge, so re-pointing
+        it must not be blocked -- otherwise the guard would be a rule about
+        templates rather than about the row it protects.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            other = Account(
+                user_id=seed_user["user"].id, name="Other Savings",
+                account_type_id=savings.account_type_id, is_active=True,
+            )
+            db.session.add(other)
+            db.session.commit()
+            future = [
+                p for p in seed_periods_today if p.start_date > display_today()
+            ]
+            tmpl = self._create_non_repeating(
+                auth_client, seed_user, savings, future[0], name="Repointable",
+            )
+            # Remove the Transfer, leaving the rule-less template with none.
+            for xfer in db.session.query(Transfer).filter_by(
+                transfer_template_id=tmpl.id,
+            ).all():
+                transfer_service.delete_transfer(
+                    xfer.id, seed_user["user"].id, soft=False,
+                )
+            db.session.commit()
+
+            resp = auth_client.post(f"/transfers/{tmpl.id}", data={
+                "name": "Repointable",
+                "default_amount": "500.00",
+                "from_account_id": str(seed_user["account"].id),
+                "to_account_id": str(other.id),
+                "recurrence_pattern": "",
+                "category_id": str(seed_user["categories"]["Rent"].id),
+                "version_id": str(tmpl.version_id),
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"cannot be moved between accounts" not in resp.data
+            db.session.expire_all()
+            assert db.session.get(
+                TransferTemplate, tmpl.id,
+            ).to_account_id == other.id
+
+    def test_a_settled_transfer_does_not_follow_the_definition(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Propagation never rewrites immutable history.
+
+        A Paid transfer carries posting-ledger entries and real money that
+        already moved; the same rule
+        ``_recurrence_common.partition_regeneration_rows`` applies to every
+        recurring template's regeneration applies here.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            future = [
+                p for p in seed_periods_today if p.start_date > display_today()
+            ]
+            tmpl = self._create_non_repeating(
+                auth_client, seed_user, savings, future[0], name="Already Paid",
+            )
+            xfer = db.session.query(Transfer).filter_by(
+                transfer_template_id=tmpl.id).one()
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id,
+                status_id=ref_cache.status_id(StatusEnum.DONE),
+            )
+            db.session.commit()
+            xfer_id = xfer.id
+
+            auth_client.post(f"/transfers/{tmpl.id}", data={
+                "name": "Already Paid",
+                "default_amount": "900.00",
+                "from_account_id": str(seed_user["account"].id),
+                "to_account_id": str(savings.id),
+                "recurrence_pattern": "",
+                "category_id": str(seed_user["categories"]["Rent"].id),
+                "version_id": str(tmpl.version_id),
+            }, follow_redirects=True)
+
+            db.session.expire_all()
+            assert db.session.get(
+                TransferTemplate, tmpl.id,
+            ).default_amount == Decimal("900.00")
+            assert db.session.get(Transfer, xfer_id).amount == Decimal("500.00")
+
+    def test_a_hand_edited_transfer_does_not_follow_the_definition(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """An override is a deliberate per-instance choice and is preserved.
+
+        The same partition the regeneration sweep uses: an overridden row is
+        the user's, not the template's.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            future = [
+                p for p in seed_periods_today if p.start_date > display_today()
+            ]
+            tmpl = self._create_non_repeating(
+                auth_client, seed_user, savings, future[0], name="Hand Edited",
+            )
+            xfer = db.session.query(Transfer).filter_by(
+                transfer_template_id=tmpl.id).one()
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id,
+                amount=Decimal("123.45"), is_override=True,
+            )
+            db.session.commit()
+            xfer_id = xfer.id
+
+            auth_client.post(f"/transfers/{tmpl.id}", data={
+                "name": "Hand Edited",
+                "default_amount": "900.00",
+                "from_account_id": str(seed_user["account"].id),
+                "to_account_id": str(savings.id),
+                "recurrence_pattern": "",
+                "category_id": str(seed_user["categories"]["Rent"].id),
+                "version_id": str(tmpl.version_id),
+            }, follow_redirects=True)
+
+            db.session.expire_all()
+            assert db.session.get(Transfer, xfer_id).amount == Decimal("123.45")
+
+    def test_renaming_a_non_repeating_transfer_keeps_its_transfer(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Defect **D16**: a rename must not destroy the single Transfer.
+
+        A ``Once``-ruled transfer template DID reach the regeneration sweep on
+        any edit, because it named a rule: the sweep hard-deleted the
+        projected row and the pattern's own suppression guard then generated
+        nothing back.  Measured at HEAD before plan step R2e-3, with the
+        transfer in a FUTURE period so it fell inside the sweep window:
+        1 transfer + 2 shadows -> 0 + 0.  A rule-less template is skipped by
+        ``regenerate_or_conflict_chooser``'s "neither has nor had a rule"
+        gate, which is what closes it.
+
+        The period must be in the future: ``query_rows_from_effective_date``
+        bounds the sweep at ``PayPeriod.end_date >= effective_from``, so a
+        past-period transfer survives a rename for an unrelated reason and
+        would pass this test against the broken code.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            future = [
+                p for p in seed_periods_today
+                if p.start_date > display_today()
+            ]
+            assert future, "fixture must materialise a future pay period"
+
+            auth_client.post("/transfers", data={
+                "name": "Rename Me",
+                "default_amount": "500.00",
+                "from_account_id": str(seed_user["account"].id),
+                "to_account_id": str(savings.id),
+                "recurrence_pattern": "",
+                "start_period_id": str(future[0].id),
+                "category_id": str(seed_user["categories"]["Rent"].id),
+            }, follow_redirects=True)
+
+            tmpl = (
+                db.session.query(TransferTemplate)
+                .filter_by(user_id=seed_user["user"].id, name="Rename Me")
+                .one()
+            )
+            before = (
+                db.session.query(Transfer)
+                .filter_by(transfer_template_id=tmpl.id).one()
+            )
+            assert db.session.query(Transaction).filter_by(
+                transfer_id=before.id, is_deleted=False,
+            ).count() == 2
+
+            auth_client.post(f"/transfers/{tmpl.id}", data={
+                "name": "Renamed",
+                "default_amount": "650.00",
+                "from_account_id": str(seed_user["account"].id),
+                "to_account_id": str(savings.id),
+                "recurrence_pattern": "",
+                "category_id": str(seed_user["categories"]["Rent"].id),
+                "version_id": str(tmpl.version_id),
+            }, follow_redirects=True)
+
+            db.session.expire_all()
+            after = (
+                db.session.query(Transfer)
+                .filter_by(transfer_template_id=tmpl.id).all()
+            )
+            assert len(after) == 1, "the rename destroyed the transfer (D16)"
+            assert after[0].id == before.id
+            shadows = db.session.query(Transaction).filter_by(
+                transfer_id=after[0].id, is_deleted=False,
+            ).all()
+            assert len(shadows) == 2
+
+            # SURVIVING is only half of it: the edit must also REACH the row.
+            # Asserting only that the id still exists passes against a route
+            # that silently ignores the edit -- measured before
+            # ``propagate_to_non_repeating_transfers``, this same edit left the
+            # template at $650.00 while the Transfer and both shadows stayed at
+            # $500.00, under a plain "updated." flash.
+            assert after[0].name == "Renamed"
+            assert after[0].amount == Decimal("650.00")
+            assert {s.estimated_amount for s in shadows} == {Decimal("650.00")}
 
     def test_recurring_transfer_idor_period(
         self, app, auth_client, seed_user, seed_periods_today,

@@ -21,7 +21,7 @@ from app.models.transaction import Transaction
 from app.models.ref import Status, TransactionType
 from app.models.user import UserSettings
 from app import ref_cache
-from app.enums import RecurrencePatternEnum, TxnTypeEnum
+from app.enums import TxnTypeEnum
 from app.utils import archive_helpers
 from app.schemas.validation import TemplateCreateSchema, TemplateUpdateSchema
 from app.services import (
@@ -529,8 +529,8 @@ def edit_template(template_id):
         accounts=accounts,
         # The EDIT picker, not the create one: a rule whose stored pattern the
         # application no longer models must stay selected, or the browser picks
-        # the first option for the user -- on this form the empty "None
-        # (one-time / manual)" entry, whose save DELETES the rule (R2e-1).
+        # the first option for the user -- the empty "Does not repeat" entry,
+        # whose save DELETES the rule (R2e-1).
         pattern_choices=edit_form_pattern_choices(template),
         txn_types=txn_types,
         periods=[],
@@ -930,9 +930,14 @@ def preview_recurrence():
     passes a table lookup and then raises inside the authoring seam
     ``build_preview_rule`` goes through, which nothing here catches -- so the
     preview would 500 on the same input the picker refuses to offer.
+
+    An ABSENT pattern is the form's "does not repeat" option, which has no
+    occurrences to preview.  A second guard used to sit beside it for the
+    ``Once`` pattern that meant the same thing; plan step R2e-3 retired it, so
+    the empty submission is the only non-recurring input left.
     """
     pattern_id = request.args.get("recurrence_pattern", type=int)
-    if not pattern_id or pattern_id == ref_cache.recurrence_pattern_id(RecurrencePatternEnum.ONCE):
+    if not pattern_id:
         return "<small class='text-muted'>No preview for this pattern</small>"
 
     if modelled_pattern(pattern_id) is None:

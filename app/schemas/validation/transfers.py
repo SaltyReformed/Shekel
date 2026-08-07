@@ -69,7 +69,7 @@ class TransferTemplateCreateSchema(BaseSchema):
     # and the completeness gate could not see it while that gate matched on a
     # ``_id`` SUFFIX.
     #
-    # ``allow_none`` so the form's "None (one-time / manual)" option survives
+    # ``allow_none`` so the form's "Does not repeat" option survives
     # the pre_load hook as an explicit ``None`` rather than a dropped key
     # (plan step R2e-1) -- see the identical field on
     # :class:`~app.schemas.validation.templates.TemplateCreateSchema` for why

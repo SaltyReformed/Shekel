@@ -50,12 +50,16 @@ def _create_rule(seed_user, pattern_enum, *, interval_n=1, end_date=None):
 
 
 def _create_expense(seed_user, rule, amount, *, name="Expense"):
-    """Create and flush an expense TransactionTemplate."""
+    """Create and flush an expense TransactionTemplate.
+
+    ``rule`` may be ``None`` -- that is how a definition says "does not
+    repeat" since plan step R2e-3.
+    """
     tmpl = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
         category_id=seed_user["categories"]["Rent"].id,
-        recurrence_rule_id=rule.id,
+        recurrence_rule_id=rule.id if rule is not None else None,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
         name=name,
         default_amount=amount,
@@ -132,23 +136,23 @@ class TestObligationsAggregator:
                 f"Active biweekly $100 -> $100 * 26/12 = {expected}; got {result}"
             )
 
-    def test_once_pattern_counted_once_meaning_excluded(self, app, seed_user):
-        """C23-3: a ONCE-pattern template contributes zero (a one-time
-        commitment is not a recurring monthly obligation).
+    def test_non_repeating_template_contributes_zero(self, app, seed_user):
+        """C23-3: a template that does not repeat contributes zero.
 
-        Setup: one ONCE template for $5,000 plus one EVERY_PERIOD
-        template for $100. Expected total = $100 * 26 / 12 = $216.67
-        (the ONCE entry is filtered out by amount_to_monthly returning
-        None). If ONCE were counted, the total would be $5,000 +
+        A one-time commitment is not a recurring monthly obligation.  Setup:
+        one rule-less template for $5,000 plus one EVERY_PERIOD template for
+        $100.  Expected total = $100 * 26 / 12 = $216.67 (the rule-less entry
+        returns ``None`` from ``template_monthly_or_none`` before there is a
+        pattern to convert).  If it were counted the total would be $5,000 +
         $216.67 = $5,216.67 -- this assertion proves it is not.
+
+        Named for the ``Once`` PATTERN until plan step R2e-3 retired it;
+        rule-less is now the only spelling of "does not repeat".
         """
         as_of = date(2026, 5, 20)
         with app.app_context():
-            once_rule = _create_rule(
-                seed_user, RecurrencePatternEnum.ONCE,
-            )
             once_tmpl = _create_expense(
-                seed_user, once_rule, Decimal("5000.00"),
+                seed_user, None, Decimal("5000.00"),
                 name="One-Time",
             )
             recurring_rule = _create_rule(

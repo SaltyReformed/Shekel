@@ -239,10 +239,11 @@ class RecurrencePatternField(RowId):
     cadence we can resolve".  ``ref.recurrence_patterns`` is a TABLE and
     :class:`~app.enums.RecurrencePatternEnum` is the set
     :func:`app.services.recurrence.resolve` can read back, and the two are
-    deliberately allowed to diverge: plan step R2e-3 deletes the ``Once`` enum
-    member while its row SURVIVES to R9, because ``ref_cache.init`` raises for
-    an enum member with no row and the deploy auto-rolls back to the previous
-    image (ruling R-R11).
+    deliberately allowed to diverge, and DO: plan step R2e-3 deleted the
+    ``Once`` enum member while its row SURVIVES to R9, because
+    ``ref_cache.init`` raises for an enum member with no row and the deploy
+    auto-rolls back to the previous image (ruling R-R11).  This field is what
+    refuses that surviving row at the door.
 
     **Declared as a FIELD TYPE rather than a ``validate=`` argument on purpose.**
     The rule then travels with the value: a future schema that declares a

@@ -13,8 +13,9 @@ at request time.
 from app import ref_cache
 from app.enums import (
     CalcMethodEnum, DeductionTimingEnum, GoalModeEnum, IncomeUnitEnum,
+    RecurrencePatternEnum,
 )
-from app.jinja_globals import register_ref_id_globals
+from app.jinja_globals import _REF_ID_GLOBALS, register_ref_id_globals
 
 
 def test_register_ref_id_globals_populates_previously_missing_entries(app):
@@ -67,34 +68,56 @@ def test_register_ref_id_globals_is_idempotent(app):
         register_ref_id_globals(app)
         second = dict(app.jinja_env.globals)
 
-        # Same keys, same values.
+        # Every key the registration table declares, DERIVED from the table
+        # rather than mirrored by hand.  The hand-written copy this replaced
+        # had drifted from the module it was checking: it listed 45 names and
+        # asserted that count, while ``_REF_ID_GLOBALS`` registered 49 at the
+        # time -- ``REC_EVERY_PERIOD`` and all three ``EMPLOYER_TYPE_*`` were
+        # absent, and nothing could notice, because the loop below only
+        # asserts that each LISTED key is present.  A second copy of a
+        # single-source-of-truth list is the exact defect the F-7 extraction
+        # removed from ``create_app`` and the conftest; re-introducing it here
+        # as a test fixture made it a place a constant could hide unverified.
         registered_keys = {
-            "STATUS_PROJECTED", "STATUS_DONE", "STATUS_RECEIVED",
-            "STATUS_CREDIT", "STATUS_CANCELLED", "STATUS_SETTLED",
-            "TXN_TYPE_INCOME", "TXN_TYPE_EXPENSE",
-            "ACCT_TYPE_CHECKING", "ACCT_TYPE_SAVINGS", "ACCT_TYPE_HYSA",
-            "ACCT_TYPE_MONEY_MARKET", "ACCT_TYPE_CD", "ACCT_TYPE_HSA",
-            "ACCT_TYPE_CREDIT_CARD", "ACCT_TYPE_MORTGAGE",
-            "ACCT_TYPE_AUTO_LOAN", "ACCT_TYPE_STUDENT_LOAN",
-            "ACCT_TYPE_PERSONAL_LOAN", "ACCT_TYPE_HELOC",
-            "ACCT_TYPE_401K", "ACCT_TYPE_ROTH_401K",
-            "ACCT_TYPE_TRADITIONAL_IRA", "ACCT_TYPE_ROTH_IRA",
-            "ACCT_TYPE_BROKERAGE", "ACCT_TYPE_529",
-            "REC_EVERY_N_PERIODS", "REC_MONTHLY", "REC_MONTHLY_FIRST",
-            "REC_QUARTERLY", "REC_SEMI_ANNUAL", "REC_ANNUAL", "REC_ONCE",
-            "ACCT_CAT_ASSET", "ACCT_CAT_LIABILITY",
-            "ACCT_CAT_RETIREMENT", "ACCT_CAT_INVESTMENT",
-            "TIMING_PRE_TAX", "TIMING_POST_TAX",
-            "CALC_PERCENTAGE", "CALC_FLAT",
-            "GOAL_MODE_FIXED", "GOAL_MODE_INCOME_RELATIVE",
-            "INCOME_UNIT_PAYCHECKS", "INCOME_UNIT_MONTHS",
+            name
+            for _accessor, members in _REF_ID_GLOBALS
+            for name in members
         }
-        # Exactly 45 ID-derived globals.
-        assert len(registered_keys) == 45
+        assert len(registered_keys) == sum(
+            len(members) for _accessor, members in _REF_ID_GLOBALS
+        ), "a global name is declared twice under different accessors"
+
+        # Deriving the names makes them self-maintaining but costs the one
+        # thing the hand-written list DID have: a derived set shrinks along
+        # with the module, so on its own it cannot notice a global that was
+        # DELETED.  Two pins restore that, and neither is hand-maintained:
+        #
+        #   * the total, which changes only on a deliberate edit here;
+        #   * per-enum coverage for the recurrence patterns, the one group a
+        #     step has actually narrowed (plan step R2e-3 removed ``ONCE``
+        #     from both the enum and the table).  Jinja is not configured
+        #     with ``StrictUndefined``, so a dropped ``REC_*`` would make
+        #     ``rr.pattern_id == REC_ANNUAL`` in ``_recurrence_macros.html``
+        #     evaluate silently False and a yearly bill fall through to the
+        #     name-string fallback.
+        assert len(registered_keys) == 48, (
+            "the ID-derived globals changed count -- update this number "
+            "deliberately, and check the template that reads the new or "
+            "removed constant"
+        )
+        assert {
+            f"REC_{member.name}" for member in RecurrencePatternEnum
+        } <= registered_keys, "a recurrence pattern has no REC_* global"
+
         for key in registered_keys:
             assert key in first, f"first pass missing {key}"
             assert first[key] == second[key], (
                 f"value drifted across idempotent calls for {key}"
+            )
+        # Each is a resolved ``ref`` row id, not an Undefined or a name string.
+        for key in registered_keys:
+            assert isinstance(first[key], int), (
+                f"{key} is {first[key]!r}, not a ref-row id"
             )
 
 

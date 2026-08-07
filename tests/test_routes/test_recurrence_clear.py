@@ -1,7 +1,7 @@
 """
 Shekel Budget App -- Clearing a recurring definition (plan step R2e-1)
 
-Both edit forms offer "None (one-time / manual)" as a recurrence pattern.
+Both edit forms offer "Does not repeat" as a recurrence pattern.
 Choosing it must mean what it says: the template stops naming a rule, the rule
 row ceases to exist, and the instances that rule already generated stop
 occupying future pay periods.
@@ -362,7 +362,7 @@ class TestClearingATransactionTemplatesRecurrence:
 
         The update schemas are partial: a caller that submits only an amount
         is asking for an amount change.  Only the form's explicit
-        "None (one-time / manual)" -- which posts an EMPTY value, surviving as
+        "Does not repeat" -- which posts an EMPTY value, surviving as
         a present ``None`` -- means "stop recurring".  Collapsing the two would
         make every partial update silently delete the template's cadence.
         """
@@ -552,11 +552,13 @@ class TestClearingATransferTemplatesRecurrence:
     def test_a_rule_less_transfer_templates_single_transfer_survives_a_rename(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """The one-time transfer shape plan step R2e-3 introduces is safe.
+        """The one-time transfer shape plan step R2e-3 SHIPPED is safe.
 
         A transfer template with no rule and exactly one materialised Transfer
-        is what "one-time transfer" becomes once ``Once`` is retired.  An
-        unrelated edit must leave that Transfer alone.
+        is what "one-time transfer" became when ``Once`` was retired.  An
+        unrelated edit must leave that Transfer alone.  Built here through the
+        service; ``test_transfers.py`` covers the same property end-to-end
+        through the create form, which is what now produces this shape.
         """
         savings = _savings_account(seed_user)
         template = _recurring_transfer_template(seed_user, savings, rule=None)

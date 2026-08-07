@@ -301,16 +301,17 @@ class TestBuildRecurrenceRuleFromForm:
     ):
         """C2-5 (positive): include=True puts due_day_of_month on the rule.
 
-        Uses the ONCE pattern so the every-N auto-offset branch is
-        skipped and the helper exercises the straight RecurrenceRule
-        construction path.
+        Uses EVERY_PERIOD so the every-N phase derivation is skipped and the
+        helper exercises the straight RecurrenceRule construction path.  Named
+        the ``Once`` pattern for the same reason until plan step R2e-3 retired
+        it; EVERY_PERIOD is the surviving member of the same anchor family.
         """
         with app.test_request_context():
-            once_id = ref_cache.recurrence_pattern_id(
-                RecurrencePatternEnum.ONCE,
+            every_period_id = ref_cache.recurrence_pattern_id(
+                RecurrencePatternEnum.EVERY_PERIOD,
             )
             data = {
-                "recurrence_pattern": once_id,
+                "recurrence_pattern": every_period_id,
                 "interval_n": 1,
                 "offset_periods": 0,
                 "day_of_month": None,
@@ -365,12 +366,12 @@ class TestUpdateRecurrenceNoAutoOffset:
             every_n_id = ref_cache.recurrence_pattern_id(
                 RecurrencePatternEnum.EVERY_N_PERIODS,
             )
-            once_id = ref_cache.recurrence_pattern_id(
-                RecurrencePatternEnum.ONCE,
+            every_period_id = ref_cache.recurrence_pattern_id(
+                RecurrencePatternEnum.EVERY_PERIOD,
             )
             rule = RecurrenceRule(
                 user_id=seed_user["user"].id,
-                pattern_id=once_id,
+                pattern_id=every_period_id,
                 interval_n=1,
                 offset_periods=99,
             )
@@ -417,12 +418,12 @@ class TestUpdateRecurrenceNoAutoOffset:
             every_n_id = ref_cache.recurrence_pattern_id(
                 RecurrencePatternEnum.EVERY_N_PERIODS,
             )
-            once_id = ref_cache.recurrence_pattern_id(
-                RecurrencePatternEnum.ONCE,
+            every_period_id = ref_cache.recurrence_pattern_id(
+                RecurrencePatternEnum.EVERY_PERIOD,
             )
             rule = RecurrenceRule(
                 user_id=seed_user["user"].id,
-                pattern_id=once_id,
+                pattern_id=every_period_id,
                 interval_n=1,
                 offset_periods=0,
             )

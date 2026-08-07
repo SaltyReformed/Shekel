@@ -16,7 +16,6 @@
   var QUARTERLY = patternSelect.getAttribute('data-quarterly');
   var SEMI_ANNUAL = patternSelect.getAttribute('data-semi-annual');
   var ANNUAL   = patternSelect.getAttribute('data-annual');
-  var ONCE     = patternSelect.getAttribute('data-once');
 
   var container = document.getElementById('recurrence-fields');
   var interval = document.getElementById('field-interval');
@@ -36,10 +35,11 @@
   var previewAbortController = null;
 
   function toggleFields(pattern) {
-    var isOneTime = !pattern || pattern === ONCE;
-
-    if (isOneTime) {
-      // One-time transfer: hide recurrence-specific fields, show
+    // An EMPTY value is "Does not repeat", the only non-recurring option on
+    // either form since plan step R2e-3 retired the ONCE pattern (which this
+    // read as a second one, via a data-once attribute).
+    if (!pattern) {
+      // Does not repeat: hide recurrence-specific fields, show the
       // period selector so the user picks where it lands.
       container.classList.add('d-none');
       if (startPeriod) {
@@ -50,7 +50,7 @@
       return;
     }
 
-    // Recurring transfer: show recurrence fields.
+    // Repeats: show recurrence fields.
     container.classList.remove('d-none');
 
     interval.classList.toggle('d-none', pattern !== EVERY_N);
@@ -76,7 +76,7 @@
     if (!preview) return;
 
     var pattern = patternSelect.value;
-    if (!pattern || pattern === ONCE) {
+    if (!pattern) {
       preview.innerHTML = '<small class="text-muted">Select a pattern to see upcoming dates</small>';
       return;
     }

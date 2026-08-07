@@ -22,13 +22,12 @@ the same transaction that drops the closed-set columns they were derived from
 them.  At that point they are authored rather than derived and storing them is
 correct.  See ``c8f2b6a41d93``'s module docstring for the full reasoning.
 
-``Once`` is not modelled here.  It means "does not recur", so no honest
-cadence exists for it; it resolves to the same inert value as ``Every
-Period``, and ``pattern_id = Once`` REMAINS what suppresses generation
-(``recurrence_engine.py:115,257``, ``recurring_view.py:236``,
-``savings_goal_service.py:427``) until plan step R7a retires it.  A consumer
-of this value must not infer that a resolved recurrence will actually
-generate.
+**Every pattern this resolves NAMES A CADENCE, and a consumer may rely on
+that.**  ``Once`` used to be the exception -- it meant "does not recur", so no
+honest cadence existed for it, and it resolved to the same inert value as
+``Every Period`` while four separate guards elsewhere did the real suppressing.
+Plan step R2e-3 deleted it: "does not recur" is ``recurrence_rule_id IS NULL``
+on either template kind, which never reaches this module at all.
 
 Pure: no Flask, no ORM, no clock, no database.  Its two inputs are the
 authored spec and the owner's :class:`~app.services.recurrence._calendar.PeriodCalendar`,
@@ -45,7 +44,7 @@ The four derivations
    ``resolve_generation_plan`` always supplies -- the start period's start when
    the rule has one, else the earliest pay period's (``:121-124``).
 
-2. **A pay-period-space rule** (Every Period / Once) anchors on the effective
+2. **A pay-period-space rule** (Every Period / Every N Periods) anchors on the effective
    start ITSELF, not on a period boundary.  ``anchor_date`` is the occurrence
    -- the date the rule targets -- and ``placement`` is what carries an
    occurrence onto a period; putting a period start in the anchor would put
@@ -242,10 +241,16 @@ class _PatternDerivation:
     month_step: int | None
 
 
-#: How each closed-set pattern reads on the two axes.  ``Once`` does not
-#: recur, so no honest cadence exists for it; it takes INERT values (ruling
-#: R-R4) and ``pattern_id = Once`` REMAINS what suppresses generation until
-#: plan step R9 deletes the rows.
+#: How each closed-set pattern reads on the two axes.
+#:
+#: Total over :class:`~app.enums.RecurrencePatternEnum`, and every entry names
+#: a real cadence.  ``Once`` used to sit here holding INERT values copied from
+#: ``Every Period`` -- byte-identical, so a consumer holding only a
+#: :class:`ResolvedRecurrence` could not tell "does not recur" from "every
+#: paycheck", and plan step R7c's downgrade could not have round-tripped
+#: ``(1, period, containing_date)`` back to one pattern.  Plan step R2e-3
+#: deleted the member instead (ruling R-R4 as amended by R-R11): "does not
+#: recur" is ``recurrence_rule_id IS NULL``, which never reaches a resolver.
 _PATTERN_DERIVATIONS: dict[RecurrencePatternEnum, _PatternDerivation] = {
     RecurrencePatternEnum.EVERY_PERIOD: _PatternDerivation(
         interval_n=1, unit=RecurrenceUnitEnum.PERIOD,
@@ -254,11 +259,6 @@ _PATTERN_DERIVATIONS: dict[RecurrencePatternEnum, _PatternDerivation] = {
     ),
     RecurrencePatternEnum.EVERY_N_PERIODS: _PatternDerivation(
         interval_n=None, unit=RecurrenceUnitEnum.PERIOD,
-        placement=PeriodPlacementEnum.CONTAINING_DATE,
-        family=_FAMILY_PERIOD, month_step=None,
-    ),
-    RecurrencePatternEnum.ONCE: _PatternDerivation(
-        interval_n=1, unit=RecurrenceUnitEnum.PERIOD,
         placement=PeriodPlacementEnum.CONTAINING_DATE,
         family=_FAMILY_PERIOD, month_step=None,
     ),

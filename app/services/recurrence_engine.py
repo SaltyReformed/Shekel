@@ -61,7 +61,7 @@ class GenerationPlan(NamedTuple):
     """Resolved inputs a recurrence generate pass needs after gating.
 
     Returned by :func:`resolve_generation_plan` once the cross-user
-    ownership check and the rule/ONCE gating have passed, so the caller
+    ownership check and the rule-present gating have passed, so the caller
     can proceed straight to model-specific row creation.  Public (no
     leading underscore) because it is the return contract of the public
     :func:`resolve_generation_plan`, which the transfer engine consumes.
@@ -80,7 +80,7 @@ def resolve_generation_plan(
     Both this module's ``generate_for_template`` and the transfer
     engine's identical preamble (``app/services/transfer_recurrence.py``)
     perform the same steps before their model-specific row creation: the
-    cross-user ownership check, the rule-present / not-ONCE gating, the
+    cross-user ownership check, the rule-present gating, the
     ``effective_from`` defaulting, and the pattern match.  Centralising
     them guarantees the two engines cannot drift on which periods a rule
     applies to.  Public (no leading underscore) because the transfer
@@ -98,7 +98,7 @@ def resolve_generation_plan(
 
     Returns:
         A :class:`GenerationPlan` when generation should proceed, or
-        ``None`` when ownership fails or the rule is absent / ONCE (every
+        ``None`` when ownership fails or the rule is absent (every
         caller returns an empty list in the None case).
     """
     if not check_scenario_ownership(
@@ -108,13 +108,13 @@ def resolve_generation_plan(
 
     rule = template.recurrence_rule
     if rule is None:
-        # No recurrence rule -- nothing to generate (one-time / manual).
+        # No recurrence rule -- nothing to generate.  This is the ONE way a
+        # definition says "does not recur" (plan step R2e-3 retired the
+        # ``Once`` pattern that was the second way, and the guard that read
+        # it).
         return None
 
     pattern_id = rule.pattern_id
-    if pattern_id == ref_cache.recurrence_pattern_id(RecurrencePatternEnum.ONCE):
-        # 'once' items are manually placed; no auto-generation.
-        return None
 
     # If the rule has a start_period_id and no explicit effective_from
     # was passed, use the start period's start_date as the boundary.
@@ -147,9 +147,9 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
         List of newly created Transaction objects.
     """
     # Resolve the shared gating + period-matching preamble: cross-user
-    # defense, rule/ONCE gating, effective_from defaulting, and the
+    # defense, rule-present gating, effective_from defaulting, and the
     # pattern match.  A None result means generate nothing (ownership
-    # failed, or no rule / ONCE).  See resolve_generation_plan.
+    # failed, or no rule).  See resolve_generation_plan.
     plan = resolve_generation_plan(
         template, periods, scenario_id, effective_from,
         block_message="Blocked cross-user recurrence generation",
@@ -224,11 +224,10 @@ def can_generate_in_period(template, period, scenario_id):
       1. Cross-user defense: scenario must belong to the template's
          user.
       2. Template must have a recurrence rule.
-      3. Rule pattern must not be ``Once`` (manual placement only).
-      4. The period must match the rule's pattern via
+      3. The period must match the rule's pattern via
          ``match_periods`` (effective_from / end_date / pattern
          filters all apply).
-      5. The (template, period, scenario) tuple must have NO existing
+      4. The (template, period, scenario) tuple must have NO existing
          rows -- not even soft-deleted ones.  The engine's per-row
          skip logic treats any existing row as a "do not generate"
          signal, so a soft-deleted carry-over also blocks generation.
@@ -254,8 +253,6 @@ def can_generate_in_period(template, period, scenario_id):
         return False
 
     pattern_id = rule.pattern_id
-    if pattern_id == ref_cache.recurrence_pattern_id(RecurrencePatternEnum.ONCE):
-        return False
 
     # Mirror generate_for_template's effective_from default.  Without
     # an explicit value, fall back to the rule's start_period.start_date,
@@ -492,8 +489,10 @@ def match_periods(rule, pattern_id, periods, effective_from):
         candidates = [p for p in candidates if p.start_date <= rule.end_date]
 
     # Dispatch on pattern through a single exit.  Each branch resolves the
-    # matching subset from the pre-filtered candidates; ``Once`` is absent by
-    # design (manual placement only) and falls through to the empty default.
+    # matching subset from the pre-filtered candidates.  The empty default is
+    # for a pattern this application does not model -- the surviving ``Once``
+    # ``ref`` row (plan step R2e-3) or a hand-edited id -- which the write
+    # doors refuse and which no live rule carries.
     if pattern_id == _rp_id(RecurrencePatternEnum.EVERY_PERIOD):
         matches = candidates
     elif pattern_id == _rp_id(RecurrencePatternEnum.EVERY_N_PERIODS):

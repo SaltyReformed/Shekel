@@ -24,9 +24,11 @@ The shared filter applied here, in one place, by every consumer:
      ``compute_committed_monthly``.
   3. Skip if ``default_amount is None`` or ``default_amount == 0``
      -- nothing to contribute.
-  4. Skip if the pattern is ONCE (``amount_to_monthly`` returns
-     ``None`` -- a one-time obligation is not a recurring
-     commitment).
+  4. Skip if ``amount_to_monthly`` returns ``None`` -- a pattern this
+     application does not model has no cadence to normalize.  (Step 1's
+     no-rule skip is what excludes a NON-REPEATING definition; the two
+     were separate cases until plan step R2e-3 retired the ``Once``
+     pattern that was the second spelling of it.)
 
 The pay-period and month constants come from ``app.utils.money``
 (``PAY_PERIODS_PER_YEAR``, ``MONTHS_PER_YEAR``); per E-24 / HIGH-05
@@ -63,8 +65,9 @@ def template_monthly_or_none(
 ) -> Decimal | None:
     """Return the monthly equivalent of one recurring template, or None.
 
-    Applies the shared filter (no rule, expired, missing/zero amount,
-    ONCE pattern). The returned Decimal is NOT quantized -- callers
+    Applies the shared filter (no rule -- which is how a definition says
+    it does not repeat -- expired, missing/zero amount, unmodelled
+    pattern). The returned Decimal is NOT quantized -- callers
     that aggregate first then round (``committed_monthly``) need full
     precision; callers that display a per-row value
     (``/obligations`` route loop) round at the display boundary with
@@ -114,7 +117,7 @@ def committed_monthly(
 
     Routes every template through ``template_monthly_or_none``, which
     applies the shared filter (no rule, expired, missing/zero amount,
-    ONCE pattern). Templates returning ``None`` contribute zero to
+    unmodelled pattern). Templates returning ``None`` contribute zero to
     the total; only non-None Decimals are summed. The final result is
     rounded once at the boundary with ``round_money`` (ROUND_HALF_UP
     via ``app.utils.money``) -- intermediate sums stay at full

@@ -207,7 +207,7 @@ class TestTemplateCreateSchema:
 
         ``recurrence_pattern`` IS ``allow_none`` (plan step R2e-1), so its
         empty value is the null STATE rather than a missing one: it is what the
-        form's "None (one-time / manual)" option posts, and the update route
+        form's "Does not repeat" option posts, and the update route
         reads a present ``None`` as "clear this template's recurrence".  If it
         were dropped like ``interval_n``, choosing that option would be
         indistinguishable from an amount-only PATCH that submits no recurrence

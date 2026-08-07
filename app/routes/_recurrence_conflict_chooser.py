@@ -362,7 +362,7 @@ def regenerate_or_conflict_chooser(
     was the second half of a live defect (see
     :func:`resolve_recurrence_rule_for_update` for the first).  The gate used
     to be "the template has a rule NOW"; a user who set the pattern to
-    "one-time / manual" therefore left every future instance the deleted rule
+    "Does not repeat" therefore left every future instance the deleted rule
     had already generated sitting on the grid.  The gate is now "the template
     IS or WAS recurring", and on a cleared recurrence the regeneration deletes
     the untouched projected rows from ``effective_from`` forward and generates
@@ -375,10 +375,13 @@ def regenerate_or_conflict_chooser(
     A template that neither has nor had a rule is still skipped, and the
     distinction is load-bearing: a RULE-LESS transfer template's single
     Transfer is an ordinary auto-generated row, so a rename would otherwise
-    sweep it away.  (That is the shape plan step R2e-3 creates when it retires
-    ``Once``.  Until then a one-time transfer carries a ``Once`` RULE, so this
-    gate does not cover it -- and a rename does destroy its Transfer, which is
-    a pre-existing defect R2e-3 closes by removing the rule.)
+    sweep it away.  **That gate is what closes defect D16.**  A transfer that
+    does not repeat used to carry a ``Once`` RULE, so it reached the
+    regeneration below: the sweep hard-deleted the row and the pattern's own
+    suppression guard generated nothing back.  Measured on a rename, with the
+    transfer in a future period: 1 transfer + 2 shadows -> 0 + 0.  Plan step
+    R2e-3 retired the pattern, so such a template is rule-less and this gate
+    covers it.
 
     **The chooser additionally requires that the template STILL recurs.**  It
     asks one question -- "should your hand-edited instances move to the new

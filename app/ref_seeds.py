@@ -104,6 +104,22 @@ _REF_TABLE_SEEDS = (
         {"name": "Cancelled", "is_settled": False, "is_immutable": True,  "excludes_from_balance": True},
         {"name": "Settled",   "is_settled": True,  "is_immutable": True,  "excludes_from_balance": False},
     ]),
+    # ``Once`` is a DELIBERATE SURPLUS and must not be removed until plan step
+    # R9 drops the table (recurrence redesign, step R2e-3 / ruling R-R11).
+    # ``RecurrencePatternEnum`` no longer names it -- "does not recur" is
+    # ``recurrence_rule_id IS NULL`` -- so THIS image does not need the row:
+    # ``ref_cache.init`` iterates the running image's enum and never looks at a
+    # surplus row.  The image that needs it is the PREVIOUS one, the target of
+    # ``shekel-deploy``'s auto-rollback, whose enum still has ``ONCE``.  Its own
+    # copy of this list still carries "Once" and would upsert the row back --
+    # except ``scripts/seed_ref_tables.py`` boots the full app with plain
+    # ``create_app()``, so ``ref_cache.init`` raises before the upsert runs.
+    # Deleting this entry is therefore what makes that image unbootable, and
+    # the seed cannot repair what the seed's own startup refuses to reach.
+    # Full reasoning and its measured caveat: migration ``d4a71f6e30bb``.
+    # Pinned by ``TestDeliberateRefSeedSurplus``
+    # (``tests/test_models/test_posting_ref_seed_parity.py``), which also
+    # refuses a SECOND unmodelled value here.
     ("RecurrencePattern", [
         "Every Period", "Every N Periods", "Monthly", "Monthly First",
         "Quarterly", "Semi-Annual", "Annual", "Once",

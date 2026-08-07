@@ -141,19 +141,30 @@ class TestUnifiedRender:
     def test_one_time_definition_is_shown(
         self, auth_client, seed_user, db, seed_periods_today,
     ):
-        """A one-time (ONCE) expense IS listed -- the management surface shows
+        """A non-repeating expense IS listed -- the management surface shows
         every active definition, unlike the retired /obligations lens.
+
+        Non-repeating is ``recurrence_rule_id IS NULL`` since plan step R2e-3;
+        this named the ``Once`` PATTERN before it.  The row must render its
+        "One-time" cell too, which is the macro's rule-less branch -- the
+        ``REC_ONCE`` branch that used to answer for it went with the pattern.
         """
         user = seed_user["user"]
         checking = seed_user["account"]
         category = seed_user["categories"]["Rent"]
-        rule_once = _rule(user, RecurrencePatternEnum.ONCE)
-        _txn(user, checking, category, rule_once, "999.00",
+        _txn(user, checking, category, None, "999.00",
              type_enum=TxnTypeEnum.EXPENSE, name="One Time Buy")
         db.session.commit()
 
         html = auth_client.get("/templates").data.decode()
         assert "One Time Buy" in html
+        # Scoped to THIS row's markup, not the whole document: a page-wide
+        # substring would pass on any other cell that happened to say it.
+        row = html[html.index("One Time Buy"):][:1200]
+        assert "One-time" in row, (
+            "the rule-less branch of the recurrence_cell macro must label "
+            "a non-repeating definition"
+        )
 
     def test_empty_state(self, auth_client, seed_user, db, seed_periods_today):
         """With no definitions the empty-state message renders."""

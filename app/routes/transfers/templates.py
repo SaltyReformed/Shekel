@@ -2,9 +2,15 @@
 Shekel Budget App -- Transfer route package: template management.
 
 CRUD for recurring transfer templates: list, create, edit, update, archive,
-unarchive, and hard-delete, plus the one-time/recurring instance
-materialization and regenerate-and-commit helpers.  Every URL and endpoint
-name is preserved verbatim from the pre-split ``app/routes/transfers.py``.
+unarchive, and hard-delete, plus the update-acceptance gate and the
+regenerate-and-commit step.  Every URL and endpoint name is preserved verbatim
+from the pre-split ``app/routes/transfers.py``.
+
+What happens to the ``budget.transfers`` ROWS a template stands for --
+materializing them on create, and carrying an edit onto a non-repeating
+template's single Transfer -- is the sibling module
+:mod:`app.routes.transfers._instances`, split out at plan step R2e-3 when this
+one reached the 1,000-line module cap.
 """
 
 import logging
@@ -20,27 +26,17 @@ from app.extensions import db
 from app.models.category import Category
 from app.models.transfer_template import TransferTemplate
 from app.models.transfer import Transfer
-from app.models.pay_period import PayPeriod
 from app.models.account import Account
 from app.models.ref import Status
-from app import ref_cache
-from app.enums import RecurrencePatternEnum, StatusEnum
 from app.utils import archive_helpers
 from app.services import (
     account_service,
     category_service,
-    loan_recurrence_sync,
     pay_period_service,
     transfer_recurrence,
     transfer_service,
 )
 from app.services.recurrence import pattern_choices
-from app.services.recurrence_engine import compute_due_date
-from app.services.scenario_resolver import get_baseline_scenario
-from app.exceptions import (
-    NotFoundError,
-    ValidationError as ShekelValidationError,
-)
 from app.utils.balance_predicates import is_projected_clause
 from app.routes._commit_helpers import (
     StaleConflictContext,
@@ -68,6 +64,12 @@ from app.routes._transfer_creation_helpers import (
     generate_transfers_for_all_periods,
 )
 from app.routes.transfers._bp import transfers_bp
+from app.routes.transfers._instances import (
+    NON_REPEATING_ACCOUNTS_ARE_FIXED,
+    materialize_initial_transfers,
+    non_repeating_live_transfers,
+    propagate_to_non_repeating_transfers,
+)
 from app.routes.transfers._helpers import (
     _create_schema,
     _update_schema,
@@ -82,6 +84,8 @@ _TEMPLATE_UPDATE_FIELDS = {
     "name", "default_amount", "from_account_id", "to_account_id",
     "category_id", "is_active", "sort_order",
 }
+
+
 
 
 @transfers_bp.route("/transfers")
@@ -141,8 +145,8 @@ def create_transfer_template():
     any submitted start period for EVERY recurrence pattern -- not just
     ``EVERY_N_PERIODS`` -- before it is persisted on the rule and before
     ``recurrence_engine`` dereferences its ``start_date`` as the
-    generation boundary; the follow-up one-time-transfer branch
-    (``is_one_time and start_period_id``) re-fetches the period and
+    generation boundary; the follow-up non-repeating-transfer branch
+    (:func:`_materialize_one_time_transfer`) re-fetches the period and
     verifies ownership a second time, so a malicious ``start_period_id``
     cannot leak into the transfer service.  The flash + redirect UX matches the
     existing template-form pattern; the security response rule
@@ -174,14 +178,17 @@ def create_transfer_template():
     start_period_id = data.pop("start_period_id", None)
     end_date = data.pop("end_date", None)
 
-    # Create the recurrence rule via the F-24 helper.  Transfer
-    # templates require a non-NULL ``recurrence_rule_id`` (the column
-    # has no nullable contract for create -- single-shot transfers
-    # use the ONCE pattern), so the upstream
-    # ``_create_schema.validate`` rejects payloads without a
-    # ``recurrence_pattern``; the helper's "no pattern -> None"
-    # branch is therefore unreachable here, and the downstream
-    # ``rule.id`` access matches the pre-extraction contract.
+    # Create the recurrence rule via the F-24 helper, or NO rule when the form
+    # says "Does not repeat".  ``rule is None`` is the one-time transfer since
+    # plan step R2e-3 -- the same shape a one-time transaction template has
+    # always had -- and it is the create form's DEFAULT selection.
+    #
+    # This dereferenced ``rule.id`` unguarded until R2e-3, on a comment
+    # claiming ``recurrence_pattern`` was ``required`` on
+    # ``TransferTemplateCreateSchema``.  It is not: the field is
+    # ``allow_none``, so any POST omitting or emptying it reached
+    # ``AttributeError: 'NoneType' object has no attribute 'id'`` -- a 500
+    # (defect **D13**), measured on both the absent and the empty spelling.
     rule_or_redirect = build_recurrence_rule_from_form(
         data,
         user_id=current_user.id,
@@ -198,7 +205,7 @@ def create_transfer_template():
 
     template = TransferTemplate(
         user_id=current_user.id,
-        recurrence_rule_id=rule.id,
+        recurrence_rule_id=rule.id if rule is not None else None,
         **data,
     )
     db.session.add(template)
@@ -210,11 +217,11 @@ def create_transfer_template():
     if namedup_redirect is not None:
         return namedup_redirect
 
-    # Create the initial transfer instance(s) for the new template: a
-    # single Transfer for the ONCE pattern, or a recurrence-engine fan-out
-    # otherwise.  Returns a redirect Response on an invalid period or a
+    # Create the initial transfer instance(s) for the new template: a single
+    # Transfer when it does not repeat, or a recurrence-engine fan-out when it
+    # does.  Returns a redirect Response on a missing / invalid period or a
     # service rejection, which is propagated verbatim.
-    materialize_redirect = _materialize_initial_transfers(
+    materialize_redirect = materialize_initial_transfers(
         template, rule, start_period_id,
     )
     if materialize_redirect is not None:
@@ -242,9 +249,11 @@ def edit_transfer_template(template_id):
         template=template,
         accounts=accounts,
         categories=categories,
-        # The EDIT picker: see ``templates.edit_template``.  This form offers no
-        # null option, so an unmodelled stored pattern would default to the
-        # FIRST real one and silently re-author the cadence as every-paycheck.
+        # The EDIT picker: see ``templates.edit_template``.  Since plan step
+        # R2e-3 this form offers the same empty "Does not repeat" option the
+        # transaction form does, and it is FIRST -- so an unmodelled stored
+        # pattern left unselected would default to the DESTRUCTIVE clear, not
+        # to a wrong cadence.  ``edit_form_pattern_choices`` keeps it selected.
         pattern_choices=edit_form_pattern_choices(template),
         periods=[],
         current_period=None,
@@ -325,8 +334,9 @@ def update_transfer_template(template_id):
     # must sweep the instances the deleted rule generated -- from "this
     # template never recurred", which must not: a RULE-LESS transfer
     # template's single Transfer is an ordinary auto-generated row, so a
-    # rename would otherwise delete it.  (A one-time transfer carries a
-    # ``Once`` RULE until plan step R2e-3, so it is not yet that shape.)
+    # rename would otherwise delete it -- which is exactly what a
+    # ``Once``-ruled transfer suffered until plan step R2e-3 made it
+    # rule-less (defect D16).
     before = PreEditTemplateState(
         amount=template.default_amount,
         had_recurrence_rule=template.recurrence_rule_id is not None,
@@ -352,10 +362,13 @@ def update_transfer_template(template_id):
     if redirect_response is not None:
         return redirect_response
 
-    # --- Route-boundary FK ownership (commit C-27 / F-043) ---
-    ownership_failure = _first_unowned_template_fk(data)
-    if ownership_failure is not None:
-        flash(f"Invalid {ownership_failure}.", "danger")
+    # Every reason this update may be refused, asked once and BEFORE the
+    # field loop below writes anything: route-boundary FK ownership (commit
+    # C-27 / F-043) and, for a template that does not repeat, an account
+    # change its already-created Transfer could not follow (plan step R2e-3).
+    refusal = _reject_transfer_template_update(template, data, before)
+    if refusal is not None:
+        flash(refusal, "danger")
         return redirect(url_for(
             "transfers.edit_transfer_template", template_id=template_id,
         ))
@@ -627,97 +640,67 @@ def hard_delete_transfer_template(template_id):
     return redirect(url_for("transfers.list_transfer_templates"))
 
 
-def _materialize_initial_transfers(template, rule, start_period_id):
-    """Create the initial transfer instance(s) for a freshly built template.
 
-    A ONCE-pattern template with a selected start period produces a single
-    Transfer in that period (created through ``transfer_service`` so its two
-    shadow transactions are generated atomically); any other recurring rule
-    is handed to the recurrence engine to fan out across every period.
 
-    The ONCE branch re-fetches ``start_period_id`` and re-verifies ownership
-    so a tampered period id cannot leak into the transfer service, mirroring
-    the route-boundary FK checks in :func:`create_transfer_template`.
+
+
+
+
+
+
+def _reject_transfer_template_update(template, data, before):
+    """Return why this update must be refused, or ``None`` to proceed.
+
+    Two rules, asked together so the route has ONE refusal branch rather than
+    one per rule (which would push it past pylint's ``too-many-returns``):
+
+    * every user-scoped FK in the payload is owned by this user
+      (:func:`_first_unowned_template_fk`);
+    * a template that neither has nor had a recurrence rule may not change
+      its source or destination ACCOUNT while the Transfer it already created
+      is still live.
+
+    **Why the second rule exists.**  A non-repeating template does not
+    regenerate -- that is what stops a rename from destroying its single
+    Transfer (defect D16) -- so an edit reaches that Transfer only through
+    :func:`propagate_to_non_repeating_transfers`, and the shadow-safe door
+    it uses (``transfer_service.update_transfer``) accepts amount, name and
+    category but NOT the two account columns: a shadow's ``account_id`` is
+    derived from them when the pair is created, and moving it is a different
+    operation from updating it.  Rather than let the template claim accounts
+    its own Transfer does not use, the change is refused and the user is told
+    what to do instead.  Scoped to a LIVE Transfer, because the rule is about
+    that row: a template with none (one whose recurrence was cleared, say)
+    has nothing to disagree with and is re-pointed freely.
 
     Args:
-        template: The persisted (flushed) TransferTemplate.
-        rule: The template's RecurrenceRule.
-        start_period_id: The submitted start-period id, or ``None``.
+        template: The ``TransferTemplate`` being updated, still holding its
+            PRE-edit field values -- the caller's ``setattr`` loop runs after
+            this returns, which is what makes the comparison below meaningful.
+        data: The loaded update payload.
+        before: The template's pre-edit state
+            (:class:`~app.routes._recurrence_conflict_chooser.PreEditTemplateState`).
 
     Returns:
-        A redirect ``Response`` when either path hits an invalid period or the
-        service rejects the transfer (e.g. a loan as the source account) -- the
-        caller returns it verbatim; ``None`` on success so the caller proceeds
-        to commit.
+        The refusal message to flash, or ``None`` when the update may proceed.
     """
-    once_id = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.ONCE)
-    is_one_time = rule.pattern_id == once_id
+    unowned = _first_unowned_template_fk(data)
+    if unowned is not None:
+        return f"Invalid {unowned}."
 
-    # Bound the rule to the destination loan's life BEFORE anything generates
-    # (plan step C9a).  The transfer form offers every active account as a
-    # destination, so a loan payment can be set up here as readily as on the
-    # loan page -- but this path builds its rule from the FORM, so nothing has
-    # ever given it the loan's ``start_date``.  Unbounded, it generated an
-    # installment into every materialized pay period, including those preceding
-    # origination: measured 3 pre-origination payments on a mortgage closing
-    # 2026-04-15, each a phantom cash debit and an erased payment once settled.
-    # A no-op for every non-loan destination, so no kind check is needed here.
-    loan_recurrence_sync.bind_rule_to_loan(rule, template.to_account_id)
-
-    if is_one_time and start_period_id:
-        # One-time transfer: create a single Transfer in the selected
-        # period via the transfer service so shadow transactions are
-        # generated atomically.
-        period = db.session.get(PayPeriod, start_period_id)
-        if not period or period.user_id != current_user.id:
-            db.session.rollback()
-            flash("Invalid pay period for one-time transfer.", "danger")
-            return redirect(url_for("transfers.new_transfer_template"))
-
-        scenario = get_baseline_scenario(current_user.id)
-        if scenario:
-            projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
-            try:
-                transfer_service.create_transfer(
-                    transfer_service.TransferSpec(
-                        user_id=current_user.id,
-                        from_account_id=template.from_account_id,
-                        to_account_id=template.to_account_id,
-                        pay_period_id=period.id,
-                        scenario_id=scenario.id,
-                        amount=template.default_amount,
-                        status_id=projected_id,
-                        category_id=template.category_id,
-                        name=template.name,
-                        transfer_template_id=template.id,
-                        # Compute the due date from the rule via the same
-                        # shared helper the recurrence engine uses.  A ONCE
-                        # rule carries no day_of_month, so this resolves to
-                        # period.start_date -- an improvement on the prior
-                        # NULL and consistent with every other transfer path.
-                        due_date=compute_due_date(rule, period),
-                    ),
-                )
-            except (NotFoundError, ShekelValidationError) as exc:
-                db.session.rollback()
-                flash(f"Could not create transfer: {exc}", "danger")
-                return redirect(url_for("transfers.new_transfer_template"))
-    elif rule:
-        # Recurring transfer: delegate to the recurrence engine.  Wrap in the
-        # SAME guard the one-time branch uses: the recurrence engine fans out
-        # through ``create_transfer``, which now rejects a loan as the source
-        # account (a transfer OUT of an amortizing loan), so an unhandled
-        # rejection here would 500 on a clean, user-reachable action (the
-        # transfer form offers every active account as a source).  Roll back
-        # the flushed template / rule and flash, exactly as the ONCE path does.
-        try:
-            generate_transfers_for_all_periods(template)
-        except (NotFoundError, ShekelValidationError) as exc:
-            db.session.rollback()
-            flash(f"Could not create transfer: {exc}", "danger")
-            return redirect(url_for("transfers.new_transfer_template"))
-
+    if before.had_recurrence_rule or template.recurrence_rule is not None:
+        return None
+    moved = any(
+        field in data
+        and data[field] is not None
+        and data[field] != getattr(template, field)
+        for field in ("from_account_id", "to_account_id")
+    )
+    if moved and non_repeating_live_transfers(template):
+        return NON_REPEATING_ACCOUNTS_ARE_FIXED
     return None
+
+
 
 
 def _first_unowned_template_fk(data):
@@ -780,6 +763,14 @@ def _regenerate_and_commit_template(
         name-duplicate conflict, or a redirect to the template list on
         success.
     """
+    # A template that neither has nor had a rule does not regenerate at all
+    # (the gate below returns before touching a row -- that is what closes
+    # defect D16), so its already-created Transfer is reached HERE or nowhere.
+    if not before.had_recurrence_rule and template.recurrence_rule is None:
+        refused = propagate_to_non_repeating_transfers(template)
+        if refused is not None:
+            return refused
+
     # Regenerate future transfers, diverting to the conflict chooser when an
     # amount change would overwrite hand-edited upcoming instances.
     diverted = regenerate_or_conflict_chooser(

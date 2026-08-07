@@ -13,6 +13,7 @@ Tests for transaction template CRUD and recurrence preview:
 from datetime import date
 from decimal import Decimal
 
+from app.enums import RecurrencePatternEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.category import Category
@@ -1024,8 +1025,19 @@ class TestPreviewRecurrence:
             assert resp.status_code == 200
             assert b"occurrences" in resp.data or b"No matching" in resp.data
 
-    def test_preview_once_pattern(self, app, auth_client, seed_user, seed_periods_today):
-        """Preview for 'once' pattern returns no-preview message."""
+    def test_preview_the_retired_once_row(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The surviving ``Once`` ``ref`` row previews as UNKNOWN, not blank.
+
+        It used to have its own "No preview for this pattern" branch beside
+        the empty-submission one, because it was a modelled pattern that did
+        not recur.  Plan step R2e-3 retired the enum member and kept the row
+        (ruling R-R11), so the row is now simply a pattern the application
+        does not model -- the same answer as any other unmodelled id, and the
+        honest one: it reached the preview at all only through hand-crafted
+        input, and saying "no preview" would read as "this is fine".
+        """
         with app.app_context():
             once = db.session.query(RecurrencePattern).filter_by(
                 name="Once"
@@ -1034,7 +1046,7 @@ class TestPreviewRecurrence:
                 f"/templates/preview-recurrence?recurrence_pattern={once.id}"
             )
             assert resp.status_code == 200
-            assert b"No preview" in resp.data
+            assert b"Unknown pattern" in resp.data
 
     def test_preview_unknown_pattern(self, app, auth_client, seed_user, seed_periods_today):
         """Preview for unknown pattern ID returns unknown message."""
@@ -2177,15 +2189,11 @@ class TestRecurrenceCellLock:
         ("templates/list.html", ("app", "templates", "templates", "list.html")),
     )
 
-    _EXPECTED_REC_CONSTANTS = (
-        "REC_EVERY_PERIOD",
-        "REC_EVERY_N_PERIODS",
-        "REC_MONTHLY",
-        "REC_MONTHLY_FIRST",
-        "REC_QUARTERLY",
-        "REC_SEMI_ANNUAL",
-        "REC_ANNUAL",
-        "REC_ONCE",
+    # Derived from the enum rather than mirrored: plan step R2e-3 deleted
+    # ``ONCE`` from both, and a hand-written copy would have had to be edited
+    # in step -- which is what this class exists to make unnecessary.
+    _EXPECTED_REC_CONSTANTS = tuple(
+        f"REC_{member.name}" for member in RecurrencePatternEnum
     )
 
     def _read_macro_source(self, parts):
@@ -2221,7 +2229,7 @@ class TestRecurrenceCellLock:
 
         Positive complement of the no-strings lock: confirms the
         rewrite did NOT collapse branches by removing comparisons
-        outright.  Each of the eight enum members must appear as a
+        outright.  Each enum member must appear as a
         ``rr.pattern_id == REC_<MEMBER>`` comparison in each macro;
         a future refactor that drops one branch fails this test.
         """

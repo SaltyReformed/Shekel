@@ -33,10 +33,10 @@ grid cell it points at.  This retires the ``/obligations`` approximation
 What appears vs what totals
 ---------------------------
 The list is a management surface, so it shows EVERY active definition,
-including one-time (ONCE) and no-rule definitions you still need to edit,
+including the non-repeating (rule-less) definitions you still need to edit,
 archive, or delete.  The summary band and the section subtotals, however,
 sum only genuine recurring commitments -- ``template_monthly_or_none``
-returns ``None`` for ONCE / expired / missing-or-zero-amount templates, so
+returns ``None`` for rule-less / expired / missing-or-zero-amount templates, so
 those rows render with a blank equivalent and contribute nothing to any
 total (matching the retired /obligations kernel exactly).
 
@@ -51,8 +51,6 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 
-from app import ref_cache
-from app.enums import RecurrencePatternEnum
 from app.services.obligations_aggregator import (
     RecurringTemplate,
     template_monthly_or_none,
@@ -82,8 +80,8 @@ class UnitPair:
 
     ``monthly`` and ``per_paycheck`` are the same underlying commitment
     expressed two ways, each rounded to cents.  Both are ``None`` together
-    for a definition that is not a recurring commitment (ONCE, expired, or
-    missing/zero amount) -- the page renders a blank equivalent for such a
+    for a definition that is not a recurring commitment (rule-less, expired,
+    or missing/zero amount) -- the page renders a blank equivalent for such a
     row rather than a misleading zero.
     """
 
@@ -106,7 +104,7 @@ class RecurringRow:
             both ``None`` for a non-recurring definition.
         next_date: The engine-assigned due date of the next occurrence on
             or after ``as_of``, or ``None`` when the definition has no
-            future recurring occurrence (ONCE, no rule, or expired).
+            future recurring occurrence (no rule, or expired).
         share_pct: This row's monthly equivalent as a percentage (0-100) of
             its section's committed monthly total, for the share bar; ``None``
             when the row does not contribute (non-recurring) or the section
@@ -216,25 +214,21 @@ def _next_occurrence(
     carry.  Returns the first such due date on or after ``as_of`` (the
     current period can match with a due date already past, so the search
     advances to the next matching period), or ``None`` when no matching
-    period has a due date on or after ``as_of`` -- no rule, a ONCE rule
-    (guarded here, since ``match_periods`` has no ONCE branch), or an
-    expired rule whose remaining candidate periods are all in the past.
+    period has a due date on or after ``as_of`` -- no rule, or an expired
+    rule whose remaining candidate periods are all in the past.
     Otherwise this tracks the engine exactly: if the engine would still
     generate a future instance (e.g. an expired rule whose final period
     straddles ``as_of``), that instance's date is reported, matching the
     grid cell it points at.
 
-    The ONCE guard mirrors the ``templates.preview_recurrence`` route: a
-    ONCE pattern has no recurring cadence, and ``match_periods`` treats an
-    unrecognized pattern (which ONCE is, having no branch there) as
-    "unknown" and logs a warning -- so a one-time definition would emit a
-    spurious "unknown pattern" log line on every render without this guard.
+    **The rule-less branch is the whole "does not recur" case** since plan
+    step R2e-3.  A second guard used to sit beside it for the ``Once``
+    pattern, which ``match_periods`` has no branch for: without it a
+    one-time definition emitted a spurious "unknown pattern" warning on
+    every render.  With the pattern retired, no such rule exists to guard.
     """
     rule = getattr(template, "recurrence_rule", None)
     if rule is None:
-        return None
-    once_id = ref_cache.recurrence_pattern_id(RecurrencePatternEnum.ONCE)
-    if rule.pattern_id == once_id:
         return None
     for period in match_periods(rule, rule.pattern_id, periods, as_of):
         due = compute_due_date(rule, period)

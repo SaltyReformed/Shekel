@@ -22,9 +22,10 @@ can be checked against a real answer.
 
 What the classes cover, in the order the plan reasons about them:
 
-* one class per anchor FAMILY (pay-period space, calendar, first-of-month,
-  and the inert ``Once``), because the three families are three different
-  derivations rather than eight pattern branches;
+* one class per anchor FAMILY (pay-period space, calendar, first-of-month),
+  because the families are different derivations rather than seven pattern
+  branches, plus :class:`TestTheRetiredOncePattern` for the eighth ``ref``
+  row that no longer HAS a family;
 * :class:`TestMonthEndClamping`, the ``recurrence_month_anchors``
   discriminator (ruling R-R3): present exactly when the anchor month was too
   short to hold the day the user meant;
@@ -46,6 +47,8 @@ from app.enums import (
     RecurrencePatternEnum,
     RecurrenceUnitEnum,
 )
+from app.extensions import db
+from app.models.ref import RecurrencePattern
 from app.services.recurrence import (
     PeriodCalendar,
     RecurrenceResolutionError,
@@ -66,6 +69,11 @@ _PERIOD_COUNT = 61
 #: with another user's schedule -- so a mismatch here would read as a
 #: derivation failure rather than as the typo it is.
 _USER_ID = 1
+
+#: The ``ref.recurrence_patterns`` row plan step R2e-3 stopped naming.  Its
+#: enum member is gone; the row survives to R9 (ruling R-R11), so the name is
+#: spelled here rather than read off a member that no longer exists.
+_RETIRED_PATTERN_NAME = "Once"
 
 
 def build_calendar(
@@ -441,31 +449,63 @@ class TestFirstOfMonthFamily:
 
 
 @pytest.mark.usefixtures("app")
-class TestOnce:
-    """``Once`` does not recur, so it gets inert values (ruling R-R4)."""
+class TestTheRetiredOncePattern:
+    """The surviving ``Once`` ``ref`` row resolves to nothing (plan step R2e-3).
 
-    def test_once_resolves_to_the_inert_pay_period_tuple(self):
-        """Every value is inert; ``pattern_id`` still suppresses generation.
+    ``Once`` used to be a member here, resolving to EXACTLY the every-period
+    value -- so a consumer holding only a
+    :class:`~app.services.recurrence.ResolvedRecurrence` could not tell "does
+    not recur" from "every paycheck", and plan step R7c's downgrade could not
+    have mapped ``(1, period, containing_date)`` back to one pattern.  Ruling
+    R-R4 retired it rather than keep the ambiguity.
 
-        A ``Once`` rule means "does not recur", so no honest cadence exists
-        for it.  It therefore resolves to EXACTLY the every-period value and
-        is indistinguishable from one here -- suppression lives on the row's
-        ``pattern_id``, which is what the four guards read
-        (``recurrence_engine.py:115,257``, ``recurring_view.py:236``,
-        ``savings_goal_service.py:427``) until plan step R7a retires the
-        pattern.  Asserting the indistinguishability is the point: a consumer
-        of this value must not infer that a resolved recurrence will generate.
+    The ``ref`` ROW deliberately survives to plan step R9 (ruling R-R11):
+    ``ref_cache.init`` raises for an enum member with no row, so deleting it in
+    the release that deleted the member would leave the deploy's auto-rollback
+    image unable to boot.  What must be true is that the survivor is
+    UNREACHABLE, and this is the last line of that: a rule that names it --
+    from hand-edited data, or a row the migration missed -- fails loudly at the
+    resolver rather than being read as an every-paycheck cadence.
+    """
+
+    def test_the_surviving_once_row_is_refused_by_the_resolver(self, app):
+        """A rule naming the retired row raises rather than resolving.
+
+        The id is looked up from the live ``ref`` table rather than
+        hard-coded: on a migration-built database ``a3b1c2d4e5f6`` appends two
+        rows after the initial seed, so the ids are not in enum order and a
+        literal 8 would test the wrong row.
         """
-        calendar = build_calendar()
+        with app.app_context():
+            once_row = (
+                db.session.query(RecurrencePattern)
+                .filter_by(name=_RETIRED_PATTERN_NAME)
+                .one()
+            )
+            spec = RecurrenceSpec(user_id=_USER_ID, pattern_id=once_row.id)
 
-        resolved = resolve(spec_for(RecurrencePatternEnum.ONCE), calendar)
+            with pytest.raises(
+                RecurrenceResolutionError, match=str(once_row.id),
+            ):
+                resolve(spec, build_calendar())
 
-        assert resolved.anchor_date == date(2026, 3, 26)
-        assert resolved.interval_n == 1
-        assert resolved.unit is RecurrenceUnitEnum.PERIOD
-        assert resolved == resolve(
-            spec_for(RecurrencePatternEnum.EVERY_PERIOD), calendar,
-        )
+    def test_no_enum_member_names_the_retired_row(self, app):
+        """The row exists AND no member names it -- both halves, together.
+
+        Either half alone passes for the wrong reason: without the first, a
+        deleted row would satisfy "no member names it" while breaking the
+        rollback image; without the second, re-adding the member would satisfy
+        "the row exists" while re-introducing the ambiguity.
+        """
+        with app.app_context():
+            assert (
+                db.session.query(RecurrencePattern)
+                .filter_by(name=_RETIRED_PATTERN_NAME)
+                .count()
+            ) == 1
+            assert _RETIRED_PATTERN_NAME not in {
+                member.value for member in RecurrencePatternEnum
+            }
 
 
 @pytest.mark.usefixtures("app")

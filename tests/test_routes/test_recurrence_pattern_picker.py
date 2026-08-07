@@ -175,8 +175,8 @@ class TestThePickerRendersTheModelledSet:
 
         The order is asserted as a sequence: the unordered ``SELECT`` this
         replaced could reorder the dropdown between deploys with no code
-        change.  The leading ``""`` is "None (one-time / manual)", which this
-        form has always offered.
+        change.  The leading ``""`` is "Does not repeat", which this form has
+        always offered in some wording.
         """
         expected = _expected_option_values(app)
 
@@ -190,10 +190,12 @@ class TestThePickerRendersTheModelledSet:
     def test_the_transfer_form_offers_the_modelled_patterns_in_order(
         self, app, auth_client,
     ):
-        """GET /transfers/new renders the same ids and no null option.
+        """GET /transfers/new renders the same ids, and the null option first.
 
-        The transfer form's one-time case is still the ``Once`` pattern until
-        plan step R2e-3 gives it the null option instead.
+        Identical to the transaction form since plan step R2e-3.  Before it,
+        this form offered NO null option because its one-time case was the
+        ``Once`` PATTERN; retiring that made "does not repeat" the empty value
+        on both kinds, so the two pickers are now the same list.
         """
         expected = _expected_option_values(app)
 
@@ -202,7 +204,7 @@ class TestThePickerRendersTheModelledSet:
         assert resp.status_code == 200
         assert select_option_values(
             resp.data.decode(), "recurrence_pattern",
-        ) == expected
+        ) == [""] + expected
 
     def test_a_ref_row_the_enum_does_not_name_is_never_offered(
         self, app, auth_client,
@@ -238,7 +240,7 @@ class TestThePickerRendersTheModelledSet:
         resp = auth_client.get("/templates/new")
 
         assert _option_labels(resp.data.decode()) == [
-            "None (one-time / manual)",
+            "Does not repeat",
             "Every paycheck",
             "Every N paychecks",
             "Monthly (specific day)",
@@ -246,8 +248,22 @@ class TestThePickerRendersTheModelledSet:
             "Quarterly",
             "Every 6 months",
             "Yearly",
-            "One-time",
         ]
+
+    def test_both_forms_offer_the_identical_option_labels(self, auth_client):
+        """The transfer picker renders the same labels as the transaction one.
+
+        The two diverged only because a one-time transfer carried a ``Once``
+        RULE while a one-time transaction carried none; plan step R2e-3
+        removed the divergence and the ``include_none_option`` macro flag that
+        expressed it.  Asserting EQUALITY rather than re-listing the copy is
+        what keeps a future edit from moving one form's wording alone.
+        """
+        transaction = _option_labels(auth_client.get("/templates/new").data.decode())
+        transfer = _option_labels(auth_client.get("/transfers/new").data.decode())
+
+        assert transfer == transaction
+        assert transfer[0] == "Does not repeat"
 
 
 # ── The edit form's pre-selected value ───────────────────────────────
@@ -259,10 +275,10 @@ class TestAnEditFormNeverSilentlyChangesTheStoredCadence:
     An HTML ``<select>`` whose selected value is absent from its options does
     not fail -- the browser silently selects the first option, and that option
     submits.  Measured on the transaction edit form before the fix: no option
-    carried ``selected``, and the first is the empty "None (one-time / manual)"
-    entry, whose save DELETES the rule and sweeps its future rows (plan step
-    R2e-1).  On the transfer form the first is "Every paycheck", which
-    re-authors the cadence instead.
+    carried ``selected``, and the first is the empty "Does not repeat" entry,
+    whose save DELETES the rule and sweeps its future rows (plan step R2e-1).
+    On the transfer form, which had no null option before plan step R2e-3, the
+    first was "Every paycheck", which re-authors the cadence instead.
 
     Before R2e-2 the picker was the table, so the row WAS rendered and
     pre-selected and a save raised loudly.  Without this class the step would

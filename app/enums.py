@@ -134,10 +134,26 @@ class RaiseTypeEnum(enum.Enum):
 
 
 class RecurrencePatternEnum(enum.Enum):
-    """Recurrence pattern values.
+    """Recurrence pattern values -- the cadences this application MODELS.
 
     Values match ``ref.recurrence_patterns.name`` after the Commit #2
     migration capitalizes the display names.
+
+    **This is deliberately NARROWER than the ``ref`` table** (plan step R2e-3,
+    ruling R-R11).  ``Once`` was a member and a row meaning "does not recur";
+    the member is gone and the ROW SURVIVES.  Not for this image's sake --
+    ``ref_cache.init`` iterates THIS enum and a surplus row is invisible to it
+    -- but for the PREVIOUS image's, which still names ``ONCE`` and which
+    ``shekel-deploy`` rolls back to on an unhealthy deploy.  Plan step R9 drops
+    the row with the table; migration ``d4a71f6e30bb`` carries the full
+    reasoning.
+
+    Every recurrence surface reads this enum rather than the table
+    (:mod:`app.services.recurrence._vocabulary`), so the surplus row is
+    unreachable: not offered by the picker, not accepted by
+    :class:`~app.schemas.validation._helpers.RecurrencePatternField`, and not
+    previewed.  "Does not recur" is now ``recurrence_rule_id IS NULL``, the
+    shape transaction templates always used.
     """
 
     EVERY_PERIOD = "Every Period"
@@ -147,7 +163,6 @@ class RecurrencePatternEnum(enum.Enum):
     QUARTERLY = "Quarterly"
     SEMI_ANNUAL = "Semi-Annual"
     ANNUAL = "Annual"
-    ONCE = "Once"
 
 
 class RecurrenceUnitEnum(enum.Enum):
