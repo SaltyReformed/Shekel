@@ -107,7 +107,6 @@ import calendar as calendar_module
 from dataclasses import dataclass
 from datetime import date
 
-from app import ref_cache
 from app.enums import (
     BusinessDayShiftEnum,
     PeriodPlacementEnum,
@@ -116,6 +115,7 @@ from app.enums import (
 )
 from app.exceptions import ShekelError
 from app.services.recurrence._calendar import PeriodCalendar, SchedulePeriod
+from app.services.recurrence._vocabulary import modelled_pattern
 
 
 class RecurrenceResolutionError(ShekelError):
@@ -158,7 +158,9 @@ class ResolvedRecurrence:  # pylint: disable=too-many-instance-attributes
     ``resolved.unit is RecurrenceUnitEnum.MONTH``, not two integers whose
     meaning depends on a seed.  :func:`resolve` makes exactly one id-to-enum
     conversion -- the stored ``pattern_id`` -- and it goes through
-    ``ref_cache``, the project's IDs-for-logic seam.
+    :func:`~app.services.recurrence.modelled_pattern`, which reads
+    ``ref_cache``, the project's IDs-for-logic seam.  This module holds no
+    other ``ref`` id at all.
 
     Attributes:
         offset_periods: The phase within the period cycle -- an
@@ -360,14 +362,17 @@ class RecurrenceSpec:  # pylint: disable=too-many-instance-attributes
 
 
 def _pattern_member(pattern_id: int) -> RecurrencePatternEnum:
-    """Return the enum member *pattern_id* names.
+    """Return the enum member *pattern_id* names, or RAISE.
 
-    Resolved by comparing INTEGER ids through ``ref_cache``, never by reading
-    a ``name`` column -- the project-wide IDs-for-logic invariant.  Scanning
-    the eight cached members rather than adding an inverse map to
-    ``ref_cache`` is deliberate: rule authoring happens on a template edit,
-    not per row of a grid, so the inverse the account-category classifier
-    needed (ruling R-CV) would buy nothing here.
+    The read-side half of
+    :func:`~app.services.recurrence.modelled_pattern`, which owns the lookup
+    itself (including why it scans rather than inverting a map).  The two
+    differ only in what an unmodelled id MEANS at each layer, and that
+    difference is the whole reason both exist: at a form door an unmodelled id
+    is user input to refuse with a flash, while here it names a rule already in
+    the table whose cadence cannot be derived -- a broken invariant, raised
+    loudly.  Built on the same function so the door and the reader can never
+    disagree about which patterns the application models.
 
     Args:
         pattern_id: A ``ref.recurrence_patterns`` id.
@@ -378,9 +383,9 @@ def _pattern_member(pattern_id: int) -> RecurrencePatternEnum:
     Raises:
         RecurrenceResolutionError: When no member names *pattern_id*.
     """
-    for member in RecurrencePatternEnum:
-        if ref_cache.recurrence_pattern_id(member) == pattern_id:
-            return member
+    member = modelled_pattern(pattern_id)
+    if member is not None:
+        return member
     raise RecurrenceResolutionError(
         f"recurrence pattern id {pattern_id} matches no RecurrencePatternEnum "
         f"member.  A rule may only name a pattern this application models; "

@@ -52,6 +52,10 @@ What lives where
   :func:`resolve`, the pure derivation.
 * ``_authoring`` -- the ORM-facing door: load the schedule, refuse the
   unresolvable, write the authored spec.
+* ``_vocabulary`` -- which patterns the application MODELS, and what they are
+  called: the set every form surface offers and every door validates against,
+  so a ``ref`` row the enum does not name can be neither offered nor accepted
+  (plan step R2e-2).
 
 Plan step R3 adds the forward occurrence engine (``occurrences`` / ``place``)
 here, consuming :class:`ResolvedRecurrence`; step R4 points the readers at it.
@@ -73,8 +77,20 @@ from app.services.recurrence._resolution import (
     ResolvedRecurrence,
     resolve,
 )
+from app.services.recurrence._vocabulary import (
+    UNAVAILABLE_PATTERN_LABEL,
+    UNAVAILABLE_PATTERN_MESSAGE,
+    PatternChoice,
+    modelled_pattern,
+    pattern_choices,
+    pattern_choices_for,
+    pattern_labels_by_name,
+)
 
 __all__ = [
+    "UNAVAILABLE_PATTERN_LABEL",
+    "UNAVAILABLE_PATTERN_MESSAGE",
+    "PatternChoice",
     "PeriodCalendar",
     "RecurrenceResolutionError",
     "RecurrenceSpec",
@@ -83,6 +99,10 @@ __all__ = [
     "author_rule",
     "build_transient_rule",
     "calendar_for",
+    "modelled_pattern",
+    "pattern_choices",
+    "pattern_choices_for",
+    "pattern_labels_by_name",
     "reauthor_rule",
     "recurrence_spec",
     "resolve",

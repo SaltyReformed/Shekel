@@ -22,7 +22,7 @@ from app.models.transfer_template import TransferTemplate
 from app.models.transfer import Transfer
 from app.models.pay_period import PayPeriod
 from app.models.account import Account
-from app.models.ref import RecurrencePattern, Status
+from app.models.ref import Status
 from app import ref_cache
 from app.enums import RecurrencePatternEnum, StatusEnum
 from app.utils import archive_helpers
@@ -34,6 +34,7 @@ from app.services import (
     transfer_recurrence,
     transfer_service,
 )
+from app.services.recurrence import pattern_choices
 from app.services.recurrence_engine import compute_due_date
 from app.services.scenario_resolver import get_baseline_scenario
 from app.exceptions import (
@@ -56,6 +57,7 @@ from app.routes._recurrence_form_helpers import (
     STALE_EDITING_MESSAGE,
     RecurrenceFormContext,
     build_recurrence_rule_from_form,
+    edit_form_pattern_choices,
     handle_stale_form_conflict,
     resolve_recurrence_rule_for_update,
 )
@@ -103,7 +105,6 @@ def new_transfer_template():
     """Display the transfer template creation form."""
     accounts = account_service.list_active_accounts(current_user.id)
     categories = category_service.list_active_categories(current_user.id)
-    patterns = db.session.query(RecurrencePattern).all()
     periods = pay_period_service.get_all_periods(current_user.id)
     current_period = pay_period_service.get_current_period(current_user.id)
 
@@ -116,7 +117,7 @@ def new_transfer_template():
         template=None,
         accounts=accounts,
         categories=categories,
-        patterns=patterns,
+        pattern_choices=pattern_choices(),
         periods=periods,
         current_period=current_period,
         prefill_from=prefill_from,
@@ -233,14 +234,16 @@ def edit_transfer_template(template_id):
 
     accounts = account_service.list_active_accounts(current_user.id)
     categories = category_service.list_active_categories(current_user.id)
-    patterns = db.session.query(RecurrencePattern).all()
 
     return render_template(
         "transfers/form.html",
         template=template,
         accounts=accounts,
         categories=categories,
-        patterns=patterns,
+        # The EDIT picker: see ``templates.edit_template``.  This form offers no
+        # null option, so an unmodelled stored pattern would default to the
+        # FIRST real one and silently re-author the cadence as every-paycheck.
+        pattern_choices=edit_form_pattern_choices(template),
         periods=[],
         current_period=None,
     )

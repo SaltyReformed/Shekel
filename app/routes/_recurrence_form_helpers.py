@@ -66,15 +66,18 @@ from flask import Response, flash
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.recurrence_rule import RecurrenceRule
-from app.models.ref import RecurrencePattern
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
 from app.routes._commit_helpers import StaleConflictContext
 from app.routes._redirect_target import RedirectTarget
 from app.services.recurrence import (
+    UNAVAILABLE_PATTERN_MESSAGE,
+    PatternChoice,
     RecurrenceSpec,
     author_rule,
     calendar_for,
+    modelled_pattern,
+    pattern_choices_for,
     reauthor_rule,
     recurrence_spec,
 )
@@ -162,6 +165,31 @@ class RecurrenceFormContext:
     include_due_day_of_month: bool = False
 
 
+def edit_form_pattern_choices(template: Any) -> tuple[PatternChoice, ...]:
+    """Return an EDIT form's pattern options, warning when the stored one is gone.
+
+    The render-side counterpart of the write door below, and the reason both
+    edit routes call one function rather than each assembling the picker: the
+    stored pattern and the offered set can disagree, and a ``<select>`` answers
+    that disagreement by SILENTLY picking its first option (see
+    :func:`app.services.recurrence.pattern_choices_for`, which measured what
+    that costs on each form).
+
+    Args:
+        template: The ``TransactionTemplate`` or ``TransferTemplate`` being
+            edited.  Read for ``recurrence_rule`` only; not mutated.
+
+    Returns:
+        The modelled choices, plus the stored pattern when the application no
+        longer models it.
+    """
+    rule = template.recurrence_rule
+    pattern_id = rule.pattern_id if rule is not None else None
+    if pattern_id is not None and modelled_pattern(pattern_id) is None:
+        flash(UNAVAILABLE_PATTERN_MESSAGE, "warning")
+    return pattern_choices_for(pattern_id)
+
+
 def build_recurrence_rule_from_form(
     data: dict[str, Any],
     *,
@@ -178,6 +206,15 @@ def build_recurrence_rule_from_form(
     that resolves both of the table's cadence vocabularies together.
     This helper's own job is what only a ROUTE can do: read the form and
     owner-check the submitted start period.
+
+    **The submitted pattern is checked against what the application MODELS,
+    not against the ``ref`` table** (plan step R2e-2).  A row
+    ``RecurrencePatternEnum`` does not name is a pattern
+    :func:`app.services.recurrence.resolve` cannot read, so accepting one here
+    -- which ``db.session.get(RecurrencePattern, ...)`` did -- would author a
+    rule that raises the moment anything resolves it, and no route catches
+    that.  Refusing it is the same flash as a nonexistent id, because from the
+    user's side it is the same thing: not a cadence this application offers.
 
     Args:
         data: Marshmallow-validated payload; mutated in place.  The
@@ -205,9 +242,9 @@ def build_recurrence_rule_from_form(
           caller returns it directly so the route's control flow matches
           the pre-extraction shape.
     """
-    pattern_id_str = data.pop("recurrence_pattern", None)
+    pattern_id = data.pop("recurrence_pattern", None)
 
-    if not pattern_id_str:
+    if not pattern_id:
         # No pattern: drop every recurrence-related key so the caller's
         # model constructor does not receive stray kwargs.
         for key in _BASE_RECURRENCE_KEYS:
@@ -216,8 +253,7 @@ def build_recurrence_rule_from_form(
             data.pop(_DUE_DAY_KEY, None)
         return None
 
-    pattern = db.session.get(RecurrencePattern, int(pattern_id_str))
-    if pattern is None:
+    if modelled_pattern(pattern_id) is None:
         flash("Invalid recurrence pattern.", "danger")
         return ctx.redirect.to_response()
 
@@ -263,7 +299,7 @@ def build_recurrence_rule_from_form(
     return author_rule(
         RecurrenceSpec(
             user_id=user_id,
-            pattern_id=pattern.id,
+            pattern_id=pattern_id,
             interval_n=interval_n,
             offset_periods=offset_periods,
             day_of_month=day_of_month,
@@ -323,13 +359,14 @@ def update_recurrence_rule_from_form(
         * ``None`` -- the rule was re-pointed successfully; the caller
           continues to the field-update loop.
         * :class:`Response` -- a Flask redirect emitted when the
-          submitted ``recurrence_pattern`` id does not resolve to a
-          :class:`RecurrencePattern`; the caller returns it directly
-          so the route's control flow matches the pre-extraction shape.
+          submitted ``recurrence_pattern`` id names no pattern this
+          application models (see
+          :func:`build_recurrence_rule_from_form`); the caller returns it
+          directly so the route's control flow matches the pre-extraction
+          shape.
     """
-    pattern_id_str = data.pop("recurrence_pattern")
-    pattern = db.session.get(RecurrencePattern, int(pattern_id_str))
-    if pattern is None:
+    pattern_id = data.pop("recurrence_pattern")
+    if modelled_pattern(pattern_id) is None:
         flash("Invalid recurrence pattern.", "danger")
         return ctx.redirect.to_response()
 
@@ -379,7 +416,7 @@ def update_recurrence_rule_from_form(
         rule,
         replace(
             current,
-            pattern_id=pattern.id,
+            pattern_id=pattern_id,
             interval_n=submitted_interval,
             offset_periods=submitted_offset,
             day_of_month=day_of_month,
@@ -674,6 +711,7 @@ __all__ = [
     "STALE_ACTION_MESSAGE",
     "RecurrenceFormContext",
     "build_recurrence_rule_from_form",
+    "edit_form_pattern_choices",
     "update_recurrence_rule_from_form",
     "resolve_recurrence_rule_for_update",
     "handle_stale_form_conflict",

@@ -98,7 +98,7 @@
       <div class="form-section--accent">
         <h6 class="form-section__title">Recurrence</h6>
         {% set sel_pattern = template.recurrence_rule.pattern_id if template and template.recurrence_rule else none %}
-        {{ recurrence_pattern_select(patterns, sel_pattern, include_none_option=true) }}
+        {{ recurrence_pattern_select(pattern_choices, sel_pattern, include_none_option=true) }}
         <div id="recurrence-fields" class="d-none">
           {% if not template %}{{ start_period_field(periods, current_period) }}{% endif %}
           {{ recurrence_detail_fields(template, include_due_day=true) }}

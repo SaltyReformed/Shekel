@@ -156,7 +156,7 @@ class TestBuildRecurrenceRuleFromForm:
             assert chosen is not None, "fixture missing period_index=1"
 
             data = {
-                "recurrence_pattern": str(every_n_id),
+                "recurrence_pattern": every_n_id,
                 "interval_n": 4,
                 "offset_periods": 0,
                 "day_of_month": None,
@@ -198,7 +198,7 @@ class TestBuildRecurrenceRuleFromForm:
                 RecurrencePatternEnum.EVERY_N_PERIODS,
             )
             data = {
-                "recurrence_pattern": str(every_n_id),
+                "recurrence_pattern": every_n_id,
                 "interval_n": 4,
                 "offset_periods": 0,
             }
@@ -241,7 +241,7 @@ class TestBuildRecurrenceRuleFromForm:
             )
             foreign_period = seed_second_periods[0]
             data = {
-                "recurrence_pattern": str(monthly_id),
+                "recurrence_pattern": monthly_id,
                 "interval_n": 1,
                 "offset_periods": 0,
                 "day_of_month": 15,
@@ -291,7 +291,7 @@ class TestBuildRecurrenceRuleFromForm:
             )
             assert own_period is not None, "fixture missing period_index=1"
             data = {
-                "recurrence_pattern": str(monthly_id),
+                "recurrence_pattern": monthly_id,
                 "interval_n": 1,
                 "offset_periods": 0,
                 "day_of_month": 15,
@@ -330,7 +330,7 @@ class TestBuildRecurrenceRuleFromForm:
                 RecurrencePatternEnum.ONCE,
             )
             data = {
-                "recurrence_pattern": str(once_id),
+                "recurrence_pattern": once_id,
                 "interval_n": 1,
                 "offset_periods": 0,
                 "day_of_month": None,
@@ -395,7 +395,7 @@ class TestUpdateRecurrenceNoAutoOffset:
                 offset_periods=99,
             )
             data = {
-                "recurrence_pattern": str(every_n_id),
+                "recurrence_pattern": every_n_id,
                 "interval_n": 4,
                 "offset_periods": 3,
                 "day_of_month": None,
@@ -453,7 +453,7 @@ class TestUpdateRecurrenceNoAutoOffset:
                 recurrence_rule_id=None,
             )
             data = {
-                "recurrence_pattern": str(every_n_id),
+                "recurrence_pattern": every_n_id,
                 "interval_n": 7,
                 "offset_periods": 5,
                 "day_of_month": None,
@@ -505,7 +505,7 @@ class TestUpdateKeepsTheStartPeriodsPhase:
         with app.test_request_context():
             rule = build_recurrence_rule_from_form(
                 {
-                    "recurrence_pattern": str(every_n_id),
+                    "recurrence_pattern": every_n_id,
                     "interval_n": 3,
                     "offset_periods": 0,
                     "day_of_month": None,
@@ -527,7 +527,7 @@ class TestUpdateKeepsTheStartPeriodsPhase:
             result = update_recurrence_rule_from_form(
                 rule,
                 {
-                    "recurrence_pattern": str(every_n_id),
+                    "recurrence_pattern": every_n_id,
                     "interval_n": 3,
                     "offset_periods": 0,
                     "day_of_month": None,
@@ -701,8 +701,8 @@ class TestTheFormsIntervalCannotChangeACalendarCadence:
                 day_of_month=21,
             )
             data = {
-                "recurrence_pattern": str(
-                    ref_cache.recurrence_pattern_id(pattern),
+                "recurrence_pattern": ref_cache.recurrence_pattern_id(
+                    pattern,
                 ),
                 "interval_n": submitted,
                 "offset_periods": 0,

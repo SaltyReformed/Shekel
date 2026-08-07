@@ -56,8 +56,10 @@ class TemplateCreateSchema(BaseSchema):
 
     # Recurrence rule fields.
     # The value is the integer primary key of a ref.recurrence_patterns row,
-    # submitted as a string via HTML form data.  Route-level code validates
-    # existence via db.session.get().  ``RowId`` rather than ``Integer``
+    # submitted as a string via HTML form data.  Route-level code validates it
+    # against ``RecurrencePatternEnum`` -- what the application MODELS, which
+    # is narrower than what the table HOLDS (plan step R2e-2).  ``RowId``
+    # rather than ``Integer``
     # because it IS a row id despite the name (plan step X-ae): an
     # adversarial review found it reading '١', ' 2 ', '+3', '007' and
     # '1_0' as pattern ids, and the completeness gate could not see it

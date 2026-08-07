@@ -18,7 +18,7 @@ from app.models.transfer_template import TransferTemplate
 from app.models.category import Category
 from app.models.account import Account
 from app.models.transaction import Transaction
-from app.models.ref import RecurrencePattern, Status, TransactionType
+from app.models.ref import Status, TransactionType
 from app.models.user import UserSettings
 from app import ref_cache
 from app.enums import RecurrencePatternEnum, TxnTypeEnum
@@ -35,7 +35,7 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
-from app.services.recurrence import PeriodCalendar
+from app.services.recurrence import PeriodCalendar, modelled_pattern, pattern_choices
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.balance_predicates import is_projected_clause
 from app.routes._commit_helpers import (
@@ -58,6 +58,7 @@ from app.routes._recurrence_form_helpers import (
     STALE_EDITING_MESSAGE,
     RecurrenceFormContext,
     build_recurrence_rule_from_form,
+    edit_form_pattern_choices,
     handle_stale_form_conflict,
     resolve_recurrence_rule_for_update,
 )
@@ -434,7 +435,6 @@ def new_template():
     """
     categories = category_service.list_active_categories(current_user.id)
     accounts = account_service.list_active_accounts(current_user.id)
-    patterns = db.session.query(RecurrencePattern).all()
     txn_types = db.session.query(TransactionType).all()
     periods = pay_period_service.get_all_periods(current_user.id)
     current_period = pay_period_service.get_current_period(current_user.id)
@@ -449,7 +449,7 @@ def new_template():
         template=None,
         categories=categories,
         accounts=accounts,
-        patterns=patterns,
+        pattern_choices=pattern_choices(),
         txn_types=txn_types,
         periods=periods,
         current_period=current_period,
@@ -552,7 +552,6 @@ def edit_template(template_id):
 
     categories = category_service.list_active_categories(current_user.id)
     accounts = account_service.list_active_accounts(current_user.id)
-    patterns = db.session.query(RecurrencePattern).all()
     txn_types = db.session.query(TransactionType).all()
 
     return render_template(
@@ -560,7 +559,11 @@ def edit_template(template_id):
         template=template,
         categories=categories,
         accounts=accounts,
-        patterns=patterns,
+        # The EDIT picker, not the create one: a rule whose stored pattern the
+        # application no longer models must stay selected, or the browser picks
+        # the first option for the user -- on this form the empty "None
+        # (one-time / manual)" entry, whose save DELETES the rule (R2e-1).
+        pattern_choices=edit_form_pattern_choices(template),
         txn_types=txn_types,
         periods=[],
         current_period=None,
@@ -949,13 +952,20 @@ def hard_delete_template(template_id):
 @login_required
 @require_owner
 def preview_recurrence():
-    """HTMX partial: show next 5 occurrences for a recurrence pattern."""
+    """HTMX partial: show next 5 occurrences for a recurrence pattern.
+
+    The submitted pattern is checked against what the application MODELS
+    (plan step R2e-2).  It used to be checked against the ``ref`` table, and
+    the two are not the same set: a row ``RecurrencePatternEnum`` does not name
+    passes a table lookup and then raises inside the authoring seam
+    ``build_preview_rule`` goes through, which nothing here catches -- so the
+    preview would 500 on the same input the picker refuses to offer.
+    """
     pattern_id = request.args.get("recurrence_pattern", type=int)
     if not pattern_id or pattern_id == ref_cache.recurrence_pattern_id(RecurrencePatternEnum.ONCE):
         return "<small class='text-muted'>No preview for this pattern</small>"
 
-    pattern = db.session.get(RecurrencePattern, pattern_id)
-    if not pattern:
+    if modelled_pattern(pattern_id) is None:
         return "<small class='text-muted'>Unknown pattern</small>"
 
     periods = pay_period_service.get_all_periods(current_user.id)
@@ -968,7 +978,7 @@ def preview_recurrence():
     # loaded, so this adds no query.
     start_period = owned_preview_start_period()
     rule = build_preview_rule(
-        pattern, start_period,
+        pattern_id, start_period,
         PeriodCalendar.from_pay_periods(periods, current_user.id),
     )
 

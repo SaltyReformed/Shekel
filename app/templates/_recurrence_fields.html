@@ -18,20 +18,25 @@
        the container).  So start_period_field is a separate macro each form
        places itself; it is not baked into recurrence_detail_fields.
 
-   Import WITH CONTEXT -- the pattern select renders recurrence_pattern_labels,
-   which is an @app.context_processor variable (app/__init__.py) and so is only
-   visible to a macro imported with context.  (The REC_* pattern ids in the
-   data-* attributes are Jinja globals, registered by register_ref_id_globals
-   in app/jinja_globals.py, so they resolve regardless -- but without context
-   the label lookup would silently fall back to the raw pattern name.)
-   recurrence_form.js drives the show / hide + live preview off the element ids
-   emitted here. #}
+   The REC_* pattern ids in the data-* attributes are Jinja globals, registered
+   by register_ref_id_globals in app/jinja_globals.py, so they resolve whether
+   or not the importing form uses `with context`.  The pattern select itself
+   needs nothing from the context: since plan step R2e-2 its options arrive as
+   (pattern_id, label) pairs from app.services.recurrence.pattern_choices, so
+   the label lookup that used to read the recurrence_pattern_labels context
+   variable is gone.  recurrence_form.js drives the show / hide + live preview
+   off the element ids emitted here. #}
 
 
-{# The pattern <select>.  ``selected_pattern_id`` is the id to pre-select
-   (an int, an IntEnum, or None); the caller resolves it from the template's
-   rule or the create-time default, so this macro only renders. #}
-{% macro recurrence_pattern_select(patterns, selected_pattern_id, include_none_option) %}
+{# The pattern <select>.  ``choices`` is the ordered PatternChoice tuple the
+   route resolved from app.services.recurrence.pattern_choices -- the picker
+   offers exactly the patterns the application MODELS, never whatever rows the
+   ref table happens to hold, because a pattern RecurrencePatternEnum does not
+   name cannot be resolved and so cannot be authored (plan step R2e-2).
+   ``selected_pattern_id`` is the id to pre-select (an int, an IntEnum, or
+   None); the caller resolves it from the template's rule or the create-time
+   default, so this macro only renders. #}
+{% macro recurrence_pattern_select(choices, selected_pattern_id, include_none_option) %}
 <div class="mb-3">
   <label for="recurrence_pattern" class="form-label">Pattern</label>
   <select id="recurrence_pattern" name="recurrence_pattern" class="form-select"
@@ -44,9 +49,9 @@
     {% if include_none_option %}
     <option value="" {{ 'selected' if selected_pattern_id is none else '' }}>None (one-time / manual)</option>
     {% endif %}
-    {% for p in patterns %}
-    <option value="{{ p.id }}" {{ 'selected' if selected_pattern_id == p.id else '' }}>
-      {{ recurrence_pattern_labels.get(p.name, p.name|replace('_', ' ')|title) }}
+    {% for choice in choices %}
+    <option value="{{ choice.pattern_id }}" {{ 'selected' if selected_pattern_id == choice.pattern_id else '' }}>
+      {{ choice.label }}
     </option>
     {% endfor %}
   </select>

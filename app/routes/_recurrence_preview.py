@@ -27,7 +27,6 @@ from markupsafe import Markup
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.recurrence_rule import RecurrenceRule
-from app.models.ref import RecurrencePattern
 from app.services.recurrence import (
     PeriodCalendar,
     RecurrenceSpec,
@@ -60,7 +59,7 @@ def owned_preview_start_period() -> PayPeriod | None:
 
 
 def build_preview_rule(
-    pattern: RecurrencePattern,
+    pattern_id: int,
     start_period: PayPeriod | None,
     calendar: PeriodCalendar,
 ) -> RecurrenceRule:
@@ -72,20 +71,28 @@ def build_preview_rule(
     the saved one would, including the ``Every N Periods`` phase this route
     used to derive for itself.
 
+    Takes the pattern's ID rather than its ``ref`` row (plan step R2e-2): the
+    caller now validates the submitted id against what the application MODELS,
+    which needs no row, and the row it used to fetch was written onto the
+    transient rule's ``pattern`` relationship for a reader that does not
+    exist -- ``recurrence_engine.match_periods`` dispatches on the
+    ``pattern_id`` argument it is passed separately, and the transient rule is
+    discarded immediately afterwards.
+
     Args:
-        pattern: The ``RecurrencePattern`` row being previewed.
+        pattern_id: The ``ref.recurrence_patterns`` id being previewed,
+            already checked as modelled by the caller.
         start_period: The owner-checked start period, or ``None``.
         calendar: The user's pay-period schedule.
 
     Returns:
-        The transient :class:`~app.models.recurrence_rule.RecurrenceRule`,
-        with ``pattern`` attached for the matcher.
+        The transient :class:`~app.models.recurrence_rule.RecurrenceRule`.
     """
     end_date_str = request.args.get("end_date")
-    rule = build_transient_rule(
+    return build_transient_rule(
         RecurrenceSpec(
             user_id=current_user.id,
-            pattern_id=pattern.id,
+            pattern_id=pattern_id,
             interval_n=request.args.get("interval_n", type=int, default=1),
             day_of_month=request.args.get("day_of_month", type=int),
             month_of_year=request.args.get("month_of_year", type=int),
@@ -94,10 +101,6 @@ def build_preview_rule(
         ),
         calendar,
     )
-    # Attach the pattern relationship manually: the rule is never added to
-    # the session, so the relationship would not load.
-    rule.pattern = pattern
-    return rule
 
 
 def render_preview_html(preview_periods: list[PayPeriod]) -> Markup:
