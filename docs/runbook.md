@@ -70,12 +70,14 @@ also `docs/runbook_secrets.md`.
 
 ### Container Inventory
 
+Measured against the running maintainer host 2026-08-08. The nginx row differs by mode: see 2.5.
+
 | Container | Image | Network(s) | Health Check |
 |-----------|-------|------------|--------------|
-| `shekel-prod-db` | `postgres:16-alpine` | backend | `pg_isready` every 10s |
+| `shekel-prod-db` | `postgres:18-alpine` (digest-pinned; server 18.4) | backend | `pg_isready` every 10s |
 | `shekel-prod-redis` | `redis:7.4-alpine` | backend | `redis-cli ping` every 10s |
-| `shekel-prod-app` | Built from Dockerfile | backend, monitoring | `GET /health` every 30s |
-| `shekel-prod-nginx` | `nginx:1.27-alpine` | frontend, backend | `wget /health` every 30s |
+| `shekel-prod-app` | `ghcr.io/saltyreformed/shekel@sha256:...`, the digest `shekel-deploy` pins in `.env` | backend, monitoring | `GET /health` every 30s |
+| `shekel-prod-nginx` | `nginx:1.27-alpine` -- **bundled mode only**. In shared mode (this host) there is no such container; the shared `nginx` reverse proxy fronts it | frontend, backend | `wget /health` every 30s |
 
 ### Script Inventory
 
@@ -246,15 +248,34 @@ so re-pinning turns one dead container into two.
 the pin at the new digest deliberately, prints the revisions the release added, and names the
 pre-deploy dump plus the exact restore sequence. Recovery is:
 
+**Restoring discards everything written since the dump was taken** -- minutes of real entries in a
+budgeting app. Capture the failed state first so that window stays recoverable.
+
 ```bash
 cd /opt/docker/shekel
+
+# 1. STOP THE APP FIRST.  It runs `restart: unless-stopped` and re-runs
+#    `alembic upgrade head` on every start, so restoring underneath a
+#    crash-looping container means restoring while it migrates.
 docker compose stop app
 
-# Restore the dump shekel-deploy named in its output.
-docker exec -i shekel-prod-db pg_restore -U shekel_user \
-    -d shekel --clean --if-exists <'/home/josh/shekel-backups/shekel_prod_predeploy_<digest>_<ts>.dump'
+# 2. Keep the failed state before overwriting it.
+docker exec shekel-prod-db pg_dump -U shekel_user -d shekel -Fc \
+    >'/home/josh/shekel-backups/failed-state.dump'
 
-# Only now put the pin back.
+# 3. Restore the dump shekel-deploy named in its output.
+#    --single-transaction --exit-on-error are NOT optional: without them a
+#    stream that ends early leaves the database EMPTY after --clean has
+#    already dropped everything, with no transaction to roll back (OPS/SH-01).
+docker exec -i shekel-prod-db pg_restore -U shekel_user \
+    -d shekel --clean --if-exists --single-transaction --exit-on-error \
+    <'/home/josh/shekel-backups/shekel_prod_predeploy_<digest>_<ts>.dump'
+
+# 4. --clean drops only what the archive knows about, so a table the failed
+#    migration created survives and will collide when it is retried.
+docker exec shekel-prod-db psql -U shekel_user -d shekel -c '\dt budget.*'
+
+# 5. Only now put the pin back.
 sed -i 's|^SHEKEL_IMAGE_DIGEST=.*|SHEKEL_IMAGE_DIGEST=<old-digest>|' /opt/docker/shekel/.env
 docker compose up -d app
 ```
@@ -270,7 +291,9 @@ automatic rollback is unchanged and still correct.
 if the health check fails after restart. No manual action is needed. For production, see the
 migration rule above.
 
-**Manual rollback** (if the deploy script was not used or rollback failed):
+**Manual rollback, SELF-HOSTED source-build stacks only** (`/opt/shekel`, `scripts/deploy.sh`). It
+does not apply to the maintainer's production stack, which has no `:previous` tag and no
+`/opt/shekel` -- for that, use the digest sequence above:
 
 ```bash
 cd /opt/shekel
@@ -979,7 +1002,7 @@ sudo ./scripts/generate_pg_cert.sh
 ```
 
 Sudo is required because `server.key` must be chowned to uid 70 (the `postgres` user inside
-`postgres:16-alpine`) for Postgres to accept it under the mandatory 0600 mode. The script:
+`postgres:18-alpine`) for Postgres to accept it under the mandatory 0600 mode. The script:
 
 1. Generates an RSA-2048 keypair via `openssl req -x509 -nodes`.
 2. Embeds a Subject Alternative Name list covering `shekel-prod-db`, `db`, and `localhost` so a
@@ -1114,7 +1137,7 @@ verify before recreating:
 sudo docker run --rm \
     -v shekel-prod-pgdata:/d \
     --entrypoint sh \
-    postgres:16-alpine \
+    postgres:18-alpine \
     -c 'stat -c "%u:%g %n" /d /d/PG_VERSION'
 # Expected: 70:70 /d
 #           70:70 /d/PG_VERSION
@@ -1127,7 +1150,7 @@ recreating:
 sudo docker run --rm \
     -v shekel-prod-pgdata:/d \
     --entrypoint sh \
-    postgres:16-alpine \
+    postgres:18-alpine \
     -c 'chown -R 70:70 /d'
 ```
 
