@@ -1,9 +1,8 @@
 """
 Shekel Budget App -- Recurrence Engine
 
-The most complex service in the app.  Given a transaction template and
-its recurrence rule, generates Transaction entries into the appropriate
-future pay periods.
+Given a transaction template and its recurrence rule, generates Transaction
+entries into the appropriate future pay periods.
 
 Implements the full state machine from §4.8:
   - Respects is_override and is_deleted flags.
@@ -11,15 +10,20 @@ Implements the full state machine from §4.8:
     to the user as prompts.
   - Never touches done/received/credit transactions.
 
-Supported patterns (§4.7):
-  - every_period:      Every pay period.
-  - every_n_periods:   Every Nth period with an offset.
-  - monthly:           Assigned to the period containing day_of_month.
-  - monthly_first:     First pay period whose start_date falls in each month.
-  - quarterly:         Every 3 months starting from month_of_year.
-  - semi_annual:       Every 6 months starting from month_of_year.
-  - annual:            Once per year on month/day.
-  - once:              Single occurrence (no auto-generation -- user assigns manually).
+**Which periods a rule fires in is no longer decided here.**  This module used
+to carry five ``_match_*`` helpers that scanned candidate periods and asked
+whether each contained the rule's target day; plan step R4a deleted them and
+made :func:`match_periods` a thin adapter over the forward occurrence engine
+(:mod:`app.services.recurrence`), which walks the rule's own cadence and then
+places each occurrence on a pay period.  What survives here is the GENERATION
+half: gating, the per-period skip predicate, amount resolution, row creation,
+and the regenerate / conflict state machine.
+
+What a definition can say it repeats by is
+:class:`~app.enums.RecurrencePatternEnum` and nothing else; "does not recur"
+is ``recurrence_rule_id IS NULL`` on either template kind, which never reaches
+a resolver (plan step R2e-3 retired the ``Once`` pattern that was the second
+way to say it).
 """
 
 import calendar as cal
@@ -35,14 +39,21 @@ from app.models.transaction import Transaction
 from app.models.pay_period import PayPeriod
 from app.models.recurrence_rule import RecurrenceRule
 from app import ref_cache
-from app.enums import RecurrencePatternEnum, StatusEnum
+from app.enums import StatusEnum
 from app.exceptions import RecurrenceConflict, ValidationError
 from app.models.salary_profile import SalaryProfile
+from app.services.recurrence import (
+    PeriodCalendar,
+    occurrence_placements,
+    recurrence_spec,
+    resolve,
+)
 from app.services._recurrence_common import (
     check_scenario_ownership,
     log_resource_access_denied,
     partition_regeneration_rows,
     query_rows_from_effective_date,
+    refuse_unstorable_repeats,
     should_skip_period,
 )
 from app.utils.log_events import (
@@ -114,8 +125,6 @@ def resolve_generation_plan(
         # it).
         return None
 
-    pattern_id = rule.pattern_id
-
     # If the rule has a start_period_id and no explicit effective_from
     # was passed, use the start period's start_date as the boundary.
     if effective_from is None and rule.start_period_id and rule.start_period:
@@ -123,7 +132,7 @@ def resolve_generation_plan(
     if effective_from is None and periods:
         effective_from = periods[0].start_date
 
-    matching_periods = match_periods(rule, pattern_id, periods, effective_from)
+    matching_periods = match_periods(rule, periods, effective_from)
     projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
     return GenerationPlan(rule, matching_periods, projected_id)
 
@@ -159,6 +168,12 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
 
     # Check for existing transactions to avoid duplicates and respect overrides.
     existing = _get_existing_map(template.id, scenario_id, plan.matching_periods)
+
+    # Refuse a paycheck this pass would write into TWICE before writing
+    # anything: the unique index holds one row per (template, period,
+    # scenario), and forward generation legitimately names a paycheck more
+    # than once at a cadence of 30 days or more.  See refuse_unstorable_repeats.
+    refuse_unstorable_repeats(template, plan.matching_periods, existing)
 
     # Check if this template has a linked salary profile for paycheck calculation.
     salary_profile = _get_salary_profile(template.id)
@@ -218,19 +233,28 @@ def can_generate_in_period(template, period, scenario_id):
     whether a missing target canonical would be auto-generated or
     whether the carry-forward will refuse.
 
-    The decision uses exactly the same predicates as
-    ``generate_for_template``:
+    The decision applies the same gates as ``generate_for_template``:
 
       1. Cross-user defense: scenario must belong to the template's
          user.
       2. Template must have a recurrence rule.
-      3. The period must match the rule's pattern via
-         ``match_periods`` (effective_from / end_date / pattern
-         filters all apply).
+      3. The period must be one ``match_periods`` selects.
       4. The (template, period, scenario) tuple must have NO existing
          rows -- not even soft-deleted ones.  The engine's per-row
          skip logic treats any existing row as a "do not generate"
          signal, so a soft-deleted carry-over also blocks generation.
+
+    **Step 3 is a MIRROR, not the same call, and plan step R4a widened the
+    gap.**  It passes ``[period]``, so the rule is resolved against a
+    one-period schedule: the anchor is measured from that period's own start
+    rather than the owner's schedule opening, and the ``Every N Periods`` phase
+    falls back to the stored ``offset_periods`` because the calendar cannot
+    contain the rule's start period (plan ledger row D24).  The
+    ``effective_from`` this function computes reproduces the start-period bound
+    that the one-period calendar loses, which is what keeps the answer equal to
+    ``generate_for_template``'s for every pattern the application authors.
+    Plan step R4b threads the owner's whole schedule and the mirror becomes the
+    same call.
 
     Args:
         template: The TransactionTemplate to check.  Must have its
@@ -252,8 +276,6 @@ def can_generate_in_period(template, period, scenario_id):
     if rule is None:
         return False
 
-    pattern_id = rule.pattern_id
-
     # Mirror generate_for_template's effective_from default.  Without
     # an explicit value, fall back to the rule's start_period.start_date,
     # then to the supplied period's start_date -- so a single-period
@@ -263,7 +285,7 @@ def can_generate_in_period(template, period, scenario_id):
     else:
         effective_from = period.start_date
 
-    matching = match_periods(rule, pattern_id, [period], effective_from)
+    matching = match_periods(rule, [period], effective_from)
     if not matching:
         return False
 
@@ -438,193 +460,112 @@ def resolve_conflicts(transaction_ids, action, user_id, new_amount=None):
         )
 
 
-# --- Pattern Matching Helpers -------------------------------------------
+# --- Pattern Matching ----------------------------------------------------
 
 
-def _rp_id(member):
-    """Shorthand for recurrence_pattern_id to keep dispatch lines readable."""
-    return ref_cache.recurrence_pattern_id(member)
+def match_periods(rule, periods, effective_from):
+    """Return the periods this recurrence fires in, in occurrence order.
 
-
-def match_periods(rule, pattern_id, periods, effective_from):
-    """Return the subset of periods that match the recurrence pattern.
-
-    Public, pure period-matcher: the recurrence engine generates against it
-    internally, and the templates preview route renders against it, so it is
+    Public: the recurrence engine generates against it, the transfer engine
+    reaches it through :func:`resolve_generation_plan`, and the templates
+    preview route and the Recurring surface render against it -- so it is
     deliberately part of this module's public surface rather than a
     leading-underscore helper.
 
-    The rule's own validity window (``start_date`` / ``end_date``) is applied
-    HERE rather than through ``effective_from``, and that placement is
-    load-bearing: ``effective_from`` is a per-CALL boundary any caller may
-    supply (``transfer_recurrence.regenerate_for_template`` and the unarchive
-    path both pass their own), so a bound expressed only through it is silently
-    discarded on those paths.  Applying both window ends to the candidate list
-    makes them unbypassable -- which is what lets a loan payment's
-    ``start_date`` guarantee no installment is ever generated before the loan
+    **Plan step R4a turned this into an ADAPTER.**  It used to be a REVERSE
+    mapping: five near-identical ``_match_*`` helpers scanned every candidate
+    period and asked whether that period contained the rule's target day, each
+    of them inspecting only the months of a period's two ENDPOINTS.  A period
+    spanning more than two months could therefore not match the interior ones,
+    and ``cadence_days`` is user-selectable 1..365
+    (``schemas/validation/pay_periods.py``), so half a rule's occurrences
+    vanished at a reachable configuration (plan defect **D3**).  Generation is
+    now stated FORWARD -- walk the rule's own cadence from its first
+    occurrence, then place each occurrence on a pay period -- which removes the
+    defect structurally rather than by widening the scan.  See
+    :mod:`app.services.recurrence._occurrence`.
+
+    **The rule's own window is no longer applied here, and the difference is
+    plan defect D5.**  ``start_date`` and ``end_date`` used to filter the
+    candidate PERIODS -- ``end_date`` against a period's START -- so a row was
+    generated whose OWN occurrence date lay outside the window the user set (a
+    monthly-15th rule ending 2025-06-05 generated a row due 2025-06-15).  Both
+    bounds now bind the OCCURRENCE instead: ``start_date`` through the anchor
+    :func:`app.services.recurrence.resolve` derives, ``end_date`` through the
+    engine's own stopping bound (ruling R-R6).  They stay unbypassable by a
+    caller's ``effective_from``, which is what lets a loan payment's
+    ``start_date`` guarantee no installment is generated before the loan
     originates (plan step C9a).
 
+    **A period can appear TWICE, and that is the honest answer.**  At a cadence
+    of 30 days or more a monthly bill legitimately occurs several times inside
+    one paycheck; the reverse matcher walked PAYCHECKS and so silently emitted
+    one row for three months of rent.  ``budget.transactions`` cannot yet HOLD
+    the separate rows -- ``idx_transactions_template_period_scenario`` is
+    unique over ``(template, period, scenario)`` -- so generation REFUSES,
+    naming the definition and the paycheck
+    (``_recurrence_common.refuse_unstorable_repeats``), and plan step R5
+    re-keys the index onto the occurrence and lifts the refusal.  This
+    function reports what the cadence names; it does not decide what is
+    storable, which is why the refusal lives on the write path and the
+    read-only surfaces (the preview, the Recurring page) still render the
+    repeats.
+
+    **An occurrence the schedule cannot host is dropped here**, which is
+    exactly what the old matcher did (it never looked), and is plan ledger row
+    **D7**: ``app.services.recurrence.occurrence_placements`` reports such an
+    occurrence rather than dropping it, and plan step R4b is where generation
+    starts reading the report.
+
     Args:
-        rule:           The RecurrenceRule object.
-        pattern_id:     The recurrence pattern integer ID.
-        periods:        All candidate PayPeriod objects.
-        effective_from: Only include periods starting on or after this date.
+        rule:           The RecurrenceRule object, which names the pattern.
+        periods:        The candidate PayPeriod objects.  Also the schedule the
+            rule is resolved against, so a caller passing a SUBSET resolves
+            against that subset -- which reproduces the old matcher exactly and
+            is plan ledger row **D22**; plan step R4b threads the owner's whole
+            schedule.
+        effective_from: Drop periods that END before this date.  The same
+            predicate the old matcher applied to its candidate list.
 
     Returns:
-        Filtered list of PayPeriod objects.
+        List of PayPeriod objects, ascending by occurrence date, with a period
+        repeated once per occurrence it hosts.
+
+    Raises:
+        RecurrenceResolutionError: When the rule cannot be resolved against
+            *periods* -- an unmodelled pattern, a non-positive interval, or a
+            day / month outside its column's domain.  The old matcher answered
+            ``[]`` for the first of those and ``ValueError`` for the last; both
+            now name the offending value.
+        RecurrenceScheduleError: When *periods* overlap or run backwards, which
+            the forward placement searches bisect over and cannot answer
+            correctly.
+        RecurrenceGenerationError: When the resolved value names something the
+            occurrence engine cannot walk -- a business-day shift (plan step
+            R8 is its first author) or a placement with no rule.  Unreachable
+            from any value ``resolve`` can produce today, and listed so a
+            later step that makes it reachable finds the contract stated.
     """
-    # Filter by effective date first.  Use end_date so that the current
-    # pay period is included when effective_from falls mid-period.
-    candidates = [p for p in periods if p.end_date >= effective_from]
+    # An empty candidate list has no period to match and no schedule to
+    # resolve against -- ``resolve`` refuses an empty calendar, because an
+    # anchor is measured against a schedule.  Answering [] is the total answer
+    # to "which of these none periods match", not a guard against a bad state.
+    if not periods:
+        return []
 
-    # Filter by rule start_date -- generate nothing that ends before the rule
-    # begins.  Mirrors the effective_from comparison above (period END vs the
-    # bound), so a period CONTAINING the bound still generates: a loan whose
-    # first installment falls mid-period bills in that period, not the next.
-    if rule.start_date is not None:
-        candidates = [p for p in candidates if p.end_date >= rule.start_date]
-
-    # Filter by rule end_date -- stop generating after this date.
-    if rule.end_date is not None:
-        candidates = [p for p in candidates if p.start_date <= rule.end_date]
-
-    # Dispatch on pattern through a single exit.  Each branch resolves the
-    # matching subset from the pre-filtered candidates.  The empty default is
-    # for a pattern this application does not model -- the surviving ``Once``
-    # ``ref`` row (plan step R2e-3) or a hand-edited id -- which the write
-    # doors refuse and which no live rule carries.
-    if pattern_id == _rp_id(RecurrencePatternEnum.EVERY_PERIOD):
-        matches = candidates
-    elif pattern_id == _rp_id(RecurrencePatternEnum.EVERY_N_PERIODS):
-        n = rule.interval_n
-        offset = rule.offset_periods
-        matches = [p for p in candidates if (p.period_index - offset) % n == 0]
-    elif pattern_id == _rp_id(RecurrencePatternEnum.MONTHLY):
-        matches = _match_monthly(candidates, rule.day_of_month or 1)
-    elif pattern_id == _rp_id(RecurrencePatternEnum.MONTHLY_FIRST):
-        matches = _match_monthly_first(candidates)
-    elif pattern_id == _rp_id(RecurrencePatternEnum.QUARTERLY):
-        matches = _match_quarterly(
-            candidates, rule.month_of_year or 1, rule.day_of_month or 1,
-        )
-    elif pattern_id == _rp_id(RecurrencePatternEnum.SEMI_ANNUAL):
-        matches = _match_semi_annual(
-            candidates, rule.month_of_year or 1, rule.day_of_month or 1,
-        )
-    elif pattern_id == _rp_id(RecurrencePatternEnum.ANNUAL):
-        matches = _match_annual(
-            candidates, rule.month_of_year or 1, rule.day_of_month or 1,
-        )
-    else:
-        # Unknown pattern -- match nothing.
-        logger.warning("Unknown recurrence pattern ID: %s", pattern_id)
-        matches = []
-
-    return matches
-
-
-def _match_monthly(periods, day_of_month):
-    """Find the pay period that contains a given day_of_month each month.
-
-    For each unique (year, month) in the periods, find the period whose
-    date range includes that month's target day.
-    """
-
-    matched = []
-    seen_months = set()
-
-    for period in periods:
-        # Check each month the period might span.
-        for dt in (period.start_date, period.end_date):
-            year_month = (dt.year, dt.month)
-            if year_month in seen_months:
-                continue
-
-            # Clamp day_of_month to the actual last day of the month.
-            last_day = cal.monthrange(dt.year, dt.month)[1]
-            target_day = min(day_of_month, last_day)
-            target_date = date(dt.year, dt.month, target_day)
-
-            if period.start_date <= target_date <= period.end_date:
-                matched.append(period)
-                seen_months.add(year_month)
-
-    return matched
-
-
-def _match_monthly_first(periods):
-    """Find the first pay period whose start_date falls in each calendar month."""
-    matched = []
-    seen_months = set()
-
-    for period in periods:
-        year_month = (period.start_date.year, period.start_date.month)
-        if year_month not in seen_months:
-            matched.append(period)
-            seen_months.add(year_month)
-
-    return matched
-
-
-def _match_quarterly(periods, start_month, day_of_month):
-    """Find pay periods containing specific day in quarterly months.
-
-    Matches months: start_month, start_month+3, start_month+6, start_month+9.
-    """
-    target_months = set(((start_month - 1 + i * 3) % 12) + 1 for i in range(4))
-    return _match_specific_months(periods, target_months, day_of_month)
-
-
-def _match_semi_annual(periods, start_month, day_of_month):
-    """Find pay periods containing specific day in semi-annual months.
-
-    Matches months: start_month and start_month+6.
-    """
-    target_months = set(((start_month - 1 + i * 6) % 12) + 1 for i in range(2))
-    return _match_specific_months(periods, target_months, day_of_month)
-
-
-def _match_specific_months(periods, target_months, day_of_month):
-    """Find pay periods that contain a target day in any of the specified months."""
-    matched = []
-    seen = set()
-
-    for period in periods:
-        for dt in (period.start_date, period.end_date):
-            key = (dt.year, dt.month)
-            if key in seen or dt.month not in target_months:
-                continue
-
-            last_day = cal.monthrange(dt.year, dt.month)[1]
-            target_day = min(day_of_month, last_day)
-            target_date = date(dt.year, dt.month, target_day)
-
-            if period.start_date <= target_date <= period.end_date:
-                matched.append(period)
-                seen.add(key)
-
-    return matched
-
-
-def _match_annual(periods, month, day):
-    """Find the pay period that contains a specific month/day each year."""
-    matched = []
-    seen_years = set()
-
-    for period in periods:
-        for dt in (period.start_date, period.end_date):
-            if dt.year in seen_years:
-                continue
-
-            last_day = cal.monthrange(dt.year, month)[1]
-            target_day = min(day, last_day)
-            target_date = date(dt.year, month, target_day)
-
-            if period.start_date <= target_date <= period.end_date:
-                matched.append(period)
-                seen_years.add(dt.year)
-
-    return matched
+    calendar = PeriodCalendar.from_pay_periods(periods, rule.user_id)
+    resolved = resolve(recurrence_spec(rule), calendar)
+    # Placement answers in SchedulePeriod values; the callers need the ORM
+    # rows they passed in.  Keyed on ``period_index`` rather than ``id``
+    # because an unsaved period has no id and the preview / oracle paths build
+    # exactly those.
+    by_index = {period.period_index: period for period in periods}
+    return [
+        by_index[placement.period.period_index]
+        for placement in occurrence_placements(resolved, calendar)
+        if placement.period is not None
+        and placement.period.end_date >= effective_from
+    ]
 
 
 def compute_due_date(rule, period):
@@ -666,8 +607,11 @@ def compute_due_date(rule, period):
         return period.start_date
 
     # Determine the base month by finding which month within the period
-    # contains the day_of_month target.  Mirrors the logic in
-    # _match_monthly() which checks both start_date and end_date months.
+    # contains the day_of_month target.  This is the LAST reader of the
+    # endpoint-month scan plan step R4a deleted from period selection, and it
+    # carries the same defect: at a cadence where the firing month is neither
+    # endpoint the row is dated in the wrong month entirely (plan ledger row
+    # D18).  Plan step R5 owns it, with the due-date model it rewrites.
     base_year = period.start_date.year
     base_month = period.start_date.month
 

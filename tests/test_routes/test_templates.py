@@ -13,6 +13,8 @@ Tests for transaction template CRUD and recurrence preview:
 from datetime import date
 from decimal import Decimal
 
+import pytest
+
 from app.enums import RecurrencePatternEnum
 from app.extensions import db
 from app.models.account import Account
@@ -1063,6 +1065,78 @@ class TestPreviewRecurrence:
             resp = auth_client.get("/templates/preview-recurrence")
             assert resp.status_code == 200
             assert b"No preview" in resp.data
+
+    @pytest.mark.parametrize(
+        ("pattern_name", "query"),
+        [
+            # Live 500s before plan step R4a: the first two raised
+            # ``ValueError`` out of the matcher it deleted, the third out of
+            # the authoring seam.
+            ("Annual", "month_of_year=13&day_of_month=15"),
+            ("Monthly", "day_of_month=-5"),
+            ("Every N Periods", "interval_n=0"),
+            # Worse than a crash: 200 with a silently clamped or modulo-wrapped
+            # date the user never named.
+            ("Quarterly", "month_of_year=99&day_of_month=15"),
+            ("Monthly", "day_of_month=32"),
+            ("Monthly", "day_of_month=0"),
+        ],
+    )
+    def test_preview_refuses_out_of_domain_arguments_without_a_500(
+        self, app, auth_client, seed_user, seed_periods_today,
+        pattern_name, query,
+    ):
+        """Unbounded query args answer a muted line, never a stack trace.
+
+        This endpoint reads ``interval_n`` / ``day_of_month`` /
+        ``month_of_year`` straight from ``request.args``.  The two form
+        schemas bound them (``Range(min=1, max=31)`` / ``(1, 12)``) and the
+        columns carry ``ck_recurrence_rules_dom`` /
+        ``ck_recurrence_rules_moy`` / ``ck_recurrence_rules_positive_interval``
+        -- but nothing bounded THIS path, and it is reachable by anyone signed
+        in.  Three were measured as live 500s and three answered 200 with a
+        date the rule never named; the comments above say which is which.
+        Plan step R4a's resolution door refuses all six by mirroring the
+        columns' own domains.
+        """
+        with app.app_context():
+            pattern = db.session.query(RecurrencePattern).filter_by(
+                name=pattern_name
+            ).one()
+            resp = auth_client.get(
+                f"/templates/preview-recurrence"
+                f"?recurrence_pattern={pattern.id}&{query}"
+            )
+
+            assert resp.status_code == 200, (
+                f"{pattern_name} with {query} answered {resp.status_code}"
+            )
+            assert b"No preview for this pattern" in resp.data
+
+    def test_preview_ignores_an_unparseable_end_date(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """``?end_date=garbage`` previews the unbounded rule, it does not 500.
+
+        The one unvalidated argument the resolution door cannot refuse:
+        ``date.fromisoformat`` runs BEFORE the seam, so its ``ValueError``
+        never reaches ``RecurrenceResolutionError``.  A neutral review of plan
+        step R4a found it after the route's docstring had already claimed the
+        whole class was closed.  An unparseable bound is dropped rather than
+        refused -- see ``_recurrence_preview._submitted_end_date``.
+        """
+        with app.app_context():
+            pattern = db.session.query(RecurrencePattern).filter_by(
+                name="Monthly"
+            ).one()
+            resp = auth_client.get(
+                f"/templates/preview-recurrence"
+                f"?recurrence_pattern={pattern.id}&day_of_month=15"
+                f"&end_date=garbage"
+            )
+
+            assert resp.status_code == 200
+            assert b"occurrences" in resp.data
 
     def test_preview_every_period(self, app, auth_client, seed_user, seed_periods_today):
         """Preview for every_period pattern returns occurrence list."""

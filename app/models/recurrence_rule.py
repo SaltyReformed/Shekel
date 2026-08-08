@@ -19,12 +19,16 @@ Those four values become columns -- authored, NOT NULL, from one backfill, in
 the same transaction that drops the closed-set columns they were derived from
 -- at plan step R7c, where the recurrence form starts collecting them.
 
-What READS this table today: ``recurrence_engine.match_periods`` dispatches on
-``pattern_id`` and consults ``day_of_month``, ``month_of_year``,
-``start_date``, ``end_date``, and -- in the ``EVERY_N_PERIODS`` branch alone --
-``interval_n`` and ``offset_periods``.  ``start_period_id`` is read separately,
-by ``resolve_generation_plan``, as the default for its ``effective_from``
-argument.  ``max_occurrences`` has no reader or writer until step R8.
+What READS this table today: ``recurrence_engine.match_periods``, which since
+plan step R4a reads the row WHOLE -- it builds a ``RecurrenceSpec`` from every
+authored column and hands it to ``app.services.recurrence.resolve``.  There is
+no per-pattern dispatch and no branch: ``interval_n`` is read (and refused when
+below 1) for every pattern, ``day_of_month`` / ``month_of_year`` are read for
+the calendar families and refused outside their CHECK domains for all of them,
+``start_period_id`` is read HERE now rather than only by
+``resolve_generation_plan``, and ``offset_periods`` is read only when the
+schedule handed in does not contain the start period (plan ledger row D24).
+``max_occurrences`` has no reader or writer until step R8.
 
 **Every write goes through one door** (:mod:`app.services.recurrence`).  A
 caller states what it AUTHORS -- a ``RecurrenceSpec``, never a column -- and
@@ -135,11 +139,15 @@ class RecurrenceRule(UserScopedMixin, CreatedAtMixin, db.Model):
     # before this date.  NULL means unbounded (no start), which is every rule
     # the user configures by hand.
     #
-    # The SYMMETRIC partner of ``end_date`` below, and enforced the same way:
-    # ``recurrence_engine.match_periods`` filters candidate periods on it
-    # UNCONDITIONALLY, so -- unlike ``start_period_id`` -- no caller can bypass
-    # it by supplying its own ``effective_from``.  Together the two columns are
-    # the rule's validity window.
+    # The SYMMETRIC partner of ``end_date`` below, and unbypassable the same
+    # way: since plan step R4a both bounds bind the OCCURRENCE rather than the
+    # candidate period -- this one through the anchor
+    # ``app.services.recurrence.resolve`` derives (the GREATEST of the
+    # schedule's opening, this date, and the start period's start), that one
+    # through the occurrence engine's stopping bound.  Neither is expressible
+    # through a caller's ``effective_from``, so -- unlike ``start_period_id``
+    # -- no caller can bypass them.  Together the two columns are the rule's
+    # validity window.
     #
     # Written only by ``loan_recurrence_sync.sync_recurring_payment_bounds``,
     # which derives it from the loan's FIRST CONTRACTUAL INSTALLMENT (plan step

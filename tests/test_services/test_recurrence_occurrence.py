@@ -1,51 +1,46 @@
-"""The forward occurrence engine (plan step R3).
+"""The forward occurrence engine (plan steps R3 and R4a).
 
 ``app.services.recurrence.occurrences`` walks a rule's cadence forward and
-``place`` carries each occurrence onto a pay period.  Nothing in the
-application reads either yet -- plan step R4 cuts ``match_periods``' readers
-over -- so this file is the whole of R3's proof.
+``place`` carries each occurrence onto a pay period.  Plan step R3 built both
+parallel and unread; plan step R4a made
+``recurrence_engine.match_periods`` a thin adapter over them, so every pay
+period the application generates a row into is now selected here.
 
-**The parallel run is the gate.**  :class:`TestTheParallelRun` drives the NEW
-engine through ``tests/oracles/recurrence_baseline.py``'s own 428 shapes and
-both of its schedules, and asserts it reproduces
-``tests/oracles/recurrence_baseline.txt`` -- the snapshot plan step R1 froze
-from the CURRENT engine.  416 shapes agree exactly.  Twelve move, in two
-classes, and both were ruled BEFORE this step was built:
+**What :class:`TestTheParallelRun` asserts changed at R4a, and the change is
+the step.**  It used to drive the NEW engine through
+``tests/oracles/recurrence_baseline.py``'s 428 shapes and compare against a
+snapshot frozen from the OLD one, with 12 shapes declared to diverge.  The
+cutover made the forward engine the engine, the snapshot was re-frozen from it
+(+122 / -4 lines over exactly those 12 shapes), and the old-versus-new
+comparison now lives in that commit's diff.  What the class asserts now:
 
-* **Four ``bounds.*`` shapes drop exactly one row each** (ruling R-R6, plan
-  defect D5).  ``match_periods`` bounds PERIODS -- ``end_date`` is tested
-  against a period's START and ``start_date`` against its END -- so it
-  generates a row whose own occurrence date lies outside the window the user
-  set.  Every dropped row is such a row, named in :data:`_BOUND_DIVERGENCES`
-  and cross-checked against the snapshot's own ``due=`` column, so the test
-  diffs against a prediction rather than against whatever the engine answers.
-* **Eight ``long_cadence.*`` shapes gain rows** (plan defect D3).  The old
-  matcher reads only the months of a period's two ENDPOINTS, so at a 90-day
-  cadence a monthly rule found 13 of its 36 occurrences (returning one period
-  TWICE), a quarterly rule 1 of its 12, and a semi-annual rule 1 of its 6.
-  These are checked against an INDEPENDENT day-by-day sweep
-  (:func:`_day_sweep_occurrences`) plus a linear-scan placer, rather than
-  against the engine's own answer, because "the new number is bigger" is not
-  a proof that it is right.
+* **the snapshot is what the engine answers, for all 428 shapes.**  Not a
+  tautology -- the snapshot goes through the adapter (ORM-row mapping, the
+  ``effective_from`` floor, occurrence ordering including repeats) and this
+  side drives ``resolve`` / ``occurrence_placements`` directly, so equal lists
+  prove the adapter reports the engine rather than reshaping it;
+* **no ``bounds.*`` shape fires outside its own window** (ruling R-R6, plan
+  defect D5), asserted over all 8 rather than the 4 that moved, plus the four
+  rows R-R6 named checked from three directions so a stale declaration fails;
+* **the ``long_cadence.*`` answers match an INDEPENDENT day-by-day sweep**
+  (:func:`_day_sweep_occurrences`) placed by linear scan, because "the new
+  number is bigger" is not a proof that it is right.  This is the one oracle
+  in the file that is not the engine, the snapshot, or a re-frozen version of
+  either, and it is what the R4a re-freeze rests on;
+* **every emitted occurrence either places or is named in advance**
+  (:data:`_EXPECTED_UNPLACED`).  The snapshot records PERIODS, so an
+  occurrence with nowhere to live has no line in it: a neutral review built a
+  mutant emitting one unplaceable occurrence per rule and left every other
+  test green.
 
-**Five of those eight shapes did not exist before this step.**  The R1 long-
-cadence builder covered ``MONTHLY`` and ``QUARTERLY`` only, so ``MONTHLY_FIRST``,
-``SEMI_ANNUAL`` and ``ANNUAL`` were unmeasured at any cadence but the
-developer's -- and ``MONTHLY_FIRST`` turned out to be the one that mattered
+**Five of the eight long-cadence shapes did not exist before plan step R3.**
+The R1 builder covered ``MONTHLY`` and ``QUARTERLY`` only, so
+``MONTHLY_FIRST``, ``SEMI_ANNUAL`` and ``ANNUAL`` were unmeasured at any
+cadence but the developer's -- and ``MONTHLY_FIRST`` turned out to be the one
+that mattered
 (:meth:`TestTheParallelRun.test_monthly_first_defers_several_months_onto_one_paycheck`).
-Adding them appended lines to the snapshot and moved none: what the OLD engine
-answers for a shape nobody had asked about is new coverage, not a behaviour
-change.  ``ANNUAL`` and ``long_cadence.every_period`` are the controls -- both
-agree at 90 days.
-
-**The plan's R3 entry said to expect "exactly one class" of divergence.  It is
-two**, and ruling R-R6 already said so; the entry was written before R-R6 and
-was not re-pointed.  The four ``bounds.*`` blocks move exactly as R-R6's table
-predicts, figure for figure.
-
-**No existing line is re-frozen here.**  R3 changes no reader, so nothing it
-does may MOVE a committed line; ``SHEKEL_UPDATE_RECURRENCE_BASELINE=1``
-belongs to R4's commit, where the cutover makes the divergence real.
+``ANNUAL`` and ``long_cadence.every_period`` are the controls; both agreed at
+90 days and neither moved.
 
 The rest of the file exercises the engine directly, at exact dates against
 hand-built schedules -- no database, no clock -- including the three things
@@ -138,11 +133,6 @@ _LONG_CADENCE_DIVERGENCES: dict[
         1, 1, 1, PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
     ),
 }
-
-#: Every shape the new engine is expected to answer differently on.
-_EXPECTED_DIVERGENCES = frozenset(_BOUND_DIVERGENCES) | frozenset(
-    _LONG_CADENCE_DIVERGENCES,
-)
 
 #: The occurrences the schedule cannot host, per shape, and the ONLY ones.
 #:
@@ -423,13 +413,28 @@ def _committed_indices() -> dict[str, list[int]]:
 
 @pytest.mark.usefixtures("app")
 class TestTheParallelRun:
-    """The new engine against the frozen behaviour of the old one."""
+    """The shipped engine against the snapshot and an independent oracle."""
 
-    def test_every_shape_outside_the_declared_set_reproduces_the_snapshot(self):
-        """414 of 423 shapes answer exactly what the committed blob records.
+    def test_the_snapshot_records_exactly_what_the_engine_answers(self):
+        """All 428 shapes: the committed blob IS the forward engine's answer.
 
-        The gate.  A failure here means the forward engine disagrees with the
-        engine in production on a shape nobody ruled it should.
+        **This assertion changed meaning at plan step R4a, and the change is
+        the step.**  It used to compare the new engine against a snapshot
+        frozen from the OLD one, with 12 shapes declared to differ; the cutover
+        made the forward engine the engine, so the snapshot was re-frozen from
+        it and the old-versus-new comparison now lives in that commit's diff
+        (+122 / -4 lines over exactly those 12 shapes) rather than in a running
+        assertion.  A snapshot is a record of what shipped, not of what was
+        replaced.
+
+        What it asserts now is not tautological, and the difference is the
+        adapter: the snapshot is captured through
+        ``recurrence_engine.match_periods``, which maps ``SchedulePeriod``
+        values back to the caller's own period rows, applies the per-call
+        ``effective_from`` floor, and preserves occurrence order including
+        repeats.  This side drives ``resolve`` and ``occurrence_placements``
+        directly.  Equal lists prove the adapter REPORTS the engine rather
+        than reshaping it -- which is the whole of what R4a claims.
         """
         new = _new_engine_indices()
         committed = _committed_indices()
@@ -437,10 +442,8 @@ class TestTheParallelRun:
         assert set(new) == set(committed), (
             "the shape set moved between the snapshot and this run"
         )
-        agreeing = sorted(set(committed) - _EXPECTED_DIVERGENCES)
-        # 428 captured shapes less the 12 declared divergences.
-        assert len(agreeing) == 416, f"{len(agreeing)} shapes outside the set"
-        for label in agreeing:
+        assert len(committed) == 428, f"{len(committed)} shapes captured"
+        for label in sorted(committed):
             assert new[label] == committed[label], (
                 f"{label}: forward engine answers {new[label]}, the committed "
                 f"snapshot records {committed[label]}"
@@ -459,89 +462,99 @@ class TestTheParallelRun:
         """
         assert _new_engine_unplaced() == _EXPECTED_UNPLACED
 
-    def test_the_declared_set_is_exactly_the_set_that_moves(self):
-        """No shape moves unpredicted, and no prediction is stale.
+    def test_every_bounds_shape_fires_only_inside_its_own_window(self):
+        """No ``bounds.*`` shape emits an occurrence outside its own window.
 
-        Both halves matter.  An unpredicted move is an unruled behaviour
-        change; a stale prediction is a divergence that was fixed while the
-        list still claims it, which would let a future regression hide inside
-        an entry nobody re-checks.
-        """
-        new = _new_engine_indices()
-        committed = _committed_indices()
-
-        moved = {
-            label for label in committed if new[label] != committed[label]
-        }
-
-        assert moved == set(_EXPECTED_DIVERGENCES), (
-            f"unpredicted moves: {sorted(moved - _EXPECTED_DIVERGENCES)}; "
-            f"stale predictions: {sorted(_EXPECTED_DIVERGENCES - moved)}"
-        )
-
-    def test_each_bound_divergence_drops_the_row_dated_outside_its_window(self):
-        """The four ``bounds.*`` shapes lose exactly the row R-R6 named.
-
-        Ruling R-R6, re-measured: ``match_periods`` admits a PERIOD that
-        straddles the bound and then generates a row whose own occurrence date
-        is outside it.  Each shape drops one such row and keeps every other,
-        so the assertion is the committed list minus one named index -- not a
-        count, and not the engine's own answer.
-        """
-        new = _new_engine_indices()
-        committed = _committed_indices()
-
-        for label, (dropped_index, _dropped_date) in _BOUND_DIVERGENCES.items():
-            expected = list(committed[label])
-            assert dropped_index in expected, (
-                f"{label}: the snapshot does not contain idx={dropped_index}"
-            )
-            expected.remove(dropped_index)
-            assert new[label] == expected, (
-                f"{label}: expected the committed list minus idx="
-                f"{dropped_index}, got {new[label]}"
-            )
-
-    def test_each_bound_divergence_dropped_a_row_outside_the_rules_window(self):
-        """The dropped row's occurrence date really is outside the window.
-
-        The other half of the ruling: the rows above are not merely different,
-        they are rows the rule's own ``start_date`` / ``end_date`` excludes.
-
-        **The date is read out of the committed snapshot, not trusted from
-        :data:`_BOUND_DIVERGENCES`.**  An earlier version of this test checked
-        only that the DECLARED date fell outside the window, which any
-        fabricated out-of-window date satisfies.  Here the snapshot's own
-        ``due=`` column at the dropped index supplies it -- and for these
-        day-15 ``MONTHLY`` shapes the due date IS the occurrence date, because
-        ``compute_due_date`` returns ``day_of_month`` in the matched period's
-        month when no separate due day is set.
+        Ruling R-R6's property, stated over the whole family rather than over
+        the four members that happened to move.  ``match_periods`` used to
+        bound PERIODS -- ``end_date`` against a period's START and
+        ``start_date`` against its END -- so a period straddling the bound was
+        admitted and generated a row whose own occurrence date lay outside the
+        window the user set (plan defect D5).  Bounds now bind the occurrence,
+        and this asserts it for every occurrence of every bounded shape, so a
+        future change cannot re-open the defect on a shape this file does not
+        name individually.
         """
         shapes = {
             shape.label: shape for shape in recurrence_baseline.build_shapes()
         }
+        placements = _new_engine_placements()
+        bounded = sorted(
+            label for label in shapes if label.startswith("bounds.")
+        )
+
+        assert len(bounded) == 8, f"{len(bounded)} bounds shapes"
+        for label in bounded:
+            shape = shapes[label]
+            for occurrence, _index in placements[label]:
+                assert (
+                    shape.start_date is None or occurrence >= shape.start_date
+                ), (
+                    f"{label}: fired {occurrence}, before its start_date "
+                    f"{shape.start_date}"
+                )
+                assert (
+                    shape.end_date is None or occurrence <= shape.end_date
+                ), (
+                    f"{label}: fired {occurrence}, after its end_date "
+                    f"{shape.end_date}"
+                )
+        # An inverted window names no day at all, so it must fire nowhere --
+        # stated because "every occurrence is inside the window" is vacuously
+        # true of a shape that stopped emitting for an unrelated reason.
+        assert placements["bounds.window.inverted"] == []
+
+    def test_each_declared_bound_row_is_gone_and_was_period_bounded(self):
+        """The four rows ruling R-R6 named are absent, and each was real.
+
+        The history half, kept because the +122 / -4 snapshot diff is the only
+        other record of it and a diff is not re-checked on every run.  Each
+        entry is asserted from three independent directions, so a stale
+        declaration fails rather than passing silently:
+
+        * the occurrence date is one the shape's own day-15 monthly cadence
+          names, computed here rather than trusted;
+        * the pay period at the declared index CONTAINS it, which is exactly
+          why a period-bounded matcher generated the row;
+        * and it is outside the rule's stated window, which is why an
+          occurrence-bounded one does not.
+
+        Asserting only "the index is absent from the snapshot" would pass for
+        an index that was never there.
+        """
+        shapes = {
+            shape.label: shape for shape in recurrence_baseline.build_shapes()
+        }
+        biweekly, _long = _baseline_schedules()
+        by_index = {period.period_index: period for period in biweekly}
         committed = _committed_rows()
 
-        for label, (dropped_index, declared_date) in _BOUND_DIVERGENCES.items():
+        for label, (index, occurrence) in _BOUND_DIVERGENCES.items():
             shape = shapes[label]
-            snapshot_dates = [
-                due for index, due in committed[label] if index == dropped_index
-            ]
-            assert snapshot_dates == [declared_date], (
-                f"{label}: the snapshot dates idx={dropped_index} as "
-                f"{snapshot_dates}, but _BOUND_DIVERGENCES declares "
-                f"{declared_date}"
+            assert shape.day_of_month == occurrence.day, (
+                f"{label}: {occurrence} is not a day-{shape.day_of_month} "
+                f"occurrence of its own cadence"
+            )
+            period = by_index[index]
+            assert period.start_date <= occurrence <= period.end_date, (
+                f"{label}: period {index} ({period.start_date}.."
+                f"{period.end_date}) does not contain {occurrence}, so it is "
+                f"not the row a period-bounded matcher would have generated"
             )
             outside_start = (
-                shape.start_date is not None and declared_date < shape.start_date
+                shape.start_date is not None and occurrence < shape.start_date
             )
             outside_end = (
-                shape.end_date is not None and declared_date > shape.end_date
+                shape.end_date is not None and occurrence > shape.end_date
             )
             assert outside_start or outside_end, (
-                f"{label}: dropped occurrence {declared_date} lies INSIDE the "
-                f"rule's window ({shape.start_date}..{shape.end_date}), so "
-                f"dropping it is a regression, not defect D5's fix"
+                f"{label}: {occurrence} lies INSIDE the rule's window "
+                f"({shape.start_date}..{shape.end_date}), so dropping it "
+                f"would be a regression, not defect D5's fix"
+            )
+            assert (index, occurrence) not in committed[label], (
+                f"{label}: the snapshot still records idx={index} dated "
+                f"{occurrence}, which the rule's own window excludes"
             )
 
     def test_each_long_cadence_divergence_matches_an_independent_day_sweep(self):
@@ -572,36 +585,38 @@ class TestTheParallelRun:
                 f"independent day sweep finds {expected}"
             )
 
-    def test_the_long_cadence_monthly_shapes_stop_dropping_months(self):
-        """D3 named the loss in months; this asserts the months came back.
+    def test_the_long_cadence_shapes_no_longer_drop_months(self):
+        """D3 named the loss in months; this asserts every month is owed.
 
-        The 90-day schedule spans 2024-01-01..2026-12-15.  A monthly day-1
-        rule occurs in all 36 of its months; the committed snapshot records 13
-        matched periods, one of them TWICE -- 12 distinct paychecks, which is
-        what a period-scanning matcher can find at that cadence.
+        The 90-day schedule spans 2024-01-01..2026-12-15, thirty-six calendar
+        months.  The counts the reverse matcher used to answer, from the
+        snapshot plan step R1 froze and plan step R4a replaced, are named in
+        the comments: they are what a PERIOD-scanning matcher can find when a
+        period spans four months and it inspects two.
         """
-        new = _new_engine_indices()
-        committed = _committed_indices()
+        counts = {
+            label: len(rows)
+            for label, rows in _new_engine_indices().items()
+        }
 
-        # 2024-01 through 2026-12 inclusive is 3 * 12 = 36 months.
-        assert len(new["long_cadence.monthly.dom01"]) == 36
-        assert len(committed["long_cadence.monthly.dom01"]) == 13
-        # The old answer's duplicate is the IntegrityError D3 predicts: a
-        # period named twice is two rows in one (template, period, scenario).
-        assert committed["long_cadence.monthly.dom01"][:2] == [0, 0]
-        # Quarterly starting January: 2024/2025/2026 x Jan/Apr/Jul/Oct = 12.
-        assert len(new["long_cadence.quarterly.moy01.dom01"]) == 12
-        assert len(committed["long_cadence.quarterly.moy01.dom01"]) == 1
-        # Semi-annual starting January: 2024/2025/2026 x Jan/Jul = 6.  The old
-        # matcher finds ONE of the six -- a worse loss than quarterly's, and
-        # invisible until this shape was added to the oracle.
-        assert len(new["long_cadence.semi_annual.moy01.dom01"]) == 6
-        assert len(committed["long_cadence.semi_annual.moy01.dom01"]) == 1
-        # The control: a pay-period-space matcher reads no months at all, so
-        # it must not move at any cadence.
+        # A monthly bill is owed in all 36 months.  Was 13 -- and 13 rows over
+        # 12 distinct paychecks, so one period was named TWICE: the
+        # IntegrityError D3 predicts, since a repeated period is two rows in
+        # one (template, period, scenario).
+        assert counts["long_cadence.monthly.dom01"] == 36
+        # Quarterly starting January: 2024/2025/2026 x Jan/Apr/Jul/Oct.  Was 1.
+        assert counts["long_cadence.quarterly.moy01.dom01"] == 12
+        # Semi-annual starting January: 2024/2025/2026 x Jan/Jul.  Was 1 -- a
+        # worse loss than quarterly's, and invisible until plan step R3 added
+        # this shape to the oracle.
+        assert counts["long_cadence.semi_annual.moy01.dom01"] == 6
+        # The control: pay-period-space generation reads no months at all, so
+        # it must not have moved at any cadence.  Asserted against the
+        # snapshot as well, which is where a move would show.
         assert (
-            new["long_cadence.every_period"]
-            == committed["long_cadence.every_period"] == list(range(12))
+            _new_engine_indices()["long_cadence.every_period"]
+            == _committed_indices()["long_cadence.every_period"]
+            == list(range(12))
         )
 
     def test_monthly_first_defers_several_months_onto_one_paycheck(self):
@@ -633,9 +648,14 @@ class TestTheParallelRun:
         # left to defer onto (the final payday is 2026-09-17).
         assert len(placements) == 36
         assert sum(1 for _o, index in placements if index is None) == 3
-        # The old matcher answered once per paycheck: 12 rows for 36 months.
-        assert committed == list(range(12))
-        # February's and March's bills both fund from the 2026-03-31 paycheck,
+        # The 33 that DO place are the snapshot's rows.  The reverse matcher
+        # answered once per paycheck -- list(range(12)), 12 rows for 36 months
+        # -- which plan step R4a's re-freeze replaced.
+        assert committed == [
+            index for _occurrence, index in placements if index is not None
+        ]
+        assert len(committed) == 33
+        # February's and March's bills both fund from the 2024-03-31 paycheck,
         # which opens period 1 -- neither month contains a payday of its own.
         assert placements[1] == (date(2024, 2, 1), 1)
         assert placements[2] == (date(2024, 3, 1), 1)
@@ -759,7 +779,7 @@ class TestTheParallelRunFiringControls:
 
         with pytest.raises(AssertionError):
             TestTheParallelRun().\
-                test_every_shape_outside_the_declared_set_reproduces_the_snapshot()
+                test_the_snapshot_records_exactly_what_the_engine_answers()
 
     def test_a_dropped_occurrence_turns_the_gate_red(self, monkeypatch):
         """Dropping the first occurrence of every rule FAILS the snapshot test."""
@@ -773,7 +793,7 @@ class TestTheParallelRunFiringControls:
 
         with pytest.raises(AssertionError):
             TestTheParallelRun().\
-                test_every_shape_outside_the_declared_set_reproduces_the_snapshot()
+                test_the_snapshot_records_exactly_what_the_engine_answers()
 
     def test_an_extra_unplaceable_occurrence_turns_the_gate_red(
         self, monkeypatch,

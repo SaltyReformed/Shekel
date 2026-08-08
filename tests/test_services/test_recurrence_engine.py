@@ -15,17 +15,15 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import RecurrencePattern, TransactionType, Status
 from app import ref_cache
-from app.enums import RecurrencePatternEnum
-from app.services import recurrence_engine
-from app.services.recurrence_engine import (
-    match_periods,
-    _match_monthly,
-    _match_monthly_first,
-    _match_quarterly,
-    _match_semi_annual,
-    _match_annual,
+from app.enums import RecurrencePatternEnum, StatusEnum
+from app.services import pay_period_service, recurrence_engine
+from app.services.recurrence import RecurrenceResolutionError
+from app.services.recurrence_engine import match_periods
+from app.exceptions import (
+    RecurrenceCadenceUnsupported,
+    RecurrenceConflict,
+    ValidationError,
 )
-from app.exceptions import RecurrenceConflict, ValidationError
 from app.services import account_service
 
 # Map human-readable pattern names to RecurrencePatternEnum members for
@@ -329,14 +327,40 @@ class TestRecurrenceGeneration:
 
 
 # --- Pure Pattern Matching Tests ---------------------------------------------
+#
+# These exercise the PUBLIC ``match_periods`` rather than the five ``_match_*``
+# helpers plan step R4a deleted with the reverse matcher.  The behaviour each
+# class asserts is unchanged and is what production reads; what changed is that
+# the assertion now runs against the function every caller actually calls,
+# instead of against a private helper that no longer exists.
+
+
+def _matches(rule, periods):
+    """Return the periods *rule* fires in, from the schedule's opening.
+
+    The engine's own fallback when no caller supplies an ``effective_from``
+    (``resolve_generation_plan``: the first candidate period's ``start_date``),
+    named once here so each pattern test states the rule and nothing else.
+
+    Args:
+        rule: The unsaved rule from :func:`build_rule`.
+        periods: The schedule to match against, in ``period_index`` order.
+
+    Returns:
+        The matched period objects, ascending by occurrence date.
+    """
+    return match_periods(rule, periods, periods[0].start_date)
 
 
 class TestMatchMonthly:
-    """Tests for _match_monthly() -- pure function, no DB."""
+    """The Monthly pattern, through the public ``match_periods``."""
 
     def test_monthly_day_15(self, biweekly_periods):
         """Finds the period containing the 15th of each month."""
-        matched = _match_monthly(biweekly_periods, day_of_month=15)
+        matched = _matches(
+            build_rule(pattern_name="Monthly", day_of_month=15),
+            biweekly_periods,
+        )
 
         # 26 biweekly periods span Jan-Dec 2026 → one match per month = 12.
         assert len(matched) == 12
@@ -357,7 +381,10 @@ class TestMatchMonthly:
 
     def test_monthly_day_31_clamped_in_february(self, biweekly_periods):
         """day_of_month=31 clamps to 28 in Feb 2026 (non-leap year)."""
-        matched = _match_monthly(biweekly_periods, day_of_month=31)
+        matched = _matches(
+            build_rule(pattern_name="Monthly", day_of_month=31),
+            biweekly_periods,
+        )
 
         # Find the period matched for February.
         feb_periods = [
@@ -375,7 +402,10 @@ class TestMatchMonthly:
 
     def test_monthly_day_30_clamped_in_february(self, biweekly_periods):
         """day_of_month=30 also clamps to 28 in Feb 2026."""
-        matched = _match_monthly(biweekly_periods, day_of_month=30)
+        matched = _matches(
+            build_rule(pattern_name="Monthly", day_of_month=30),
+            biweekly_periods,
+        )
 
         feb_periods = [
             p for p in matched
@@ -390,11 +420,13 @@ class TestMatchMonthly:
 
 
 class TestMatchMonthlyFirst:
-    """Tests for _match_monthly_first() -- pure function, no DB."""
+    """The Monthly First pattern, through the public ``match_periods``."""
 
     def test_picks_first_period_starting_in_each_month(self, biweekly_periods):
         """One period per calendar month, the earliest starting in that month."""
-        matched = _match_monthly_first(biweekly_periods)
+        matched = _matches(
+            build_rule(pattern_name="Monthly First"), biweekly_periods,
+        )
 
         # 26 biweekly periods starting Jan 2 cover all 12 months of 2026.
         assert len(matched) == 12
@@ -419,12 +451,16 @@ class TestMatchMonthlyFirst:
 
 
 class TestMatchQuarterly:
-    """Tests for _match_quarterly() -- pure function, no DB."""
+    """The Quarterly pattern, through the public ``match_periods``."""
 
     def test_quarterly_jan_start(self, biweekly_periods):
         """start_month=1 targets Jan, Apr, Jul, Oct."""
-        matched = _match_quarterly(biweekly_periods, start_month=1,
-                                   day_of_month=15)
+        matched = _matches(
+            build_rule(
+                pattern_name="Quarterly", month_of_year=1, day_of_month=15,
+            ),
+            biweekly_periods,
+        )
 
         # 26 biweekly periods cover Jan-Dec 2026 → 4 quarterly months.
         assert len(matched) == 4
@@ -439,8 +475,12 @@ class TestMatchQuarterly:
 
     def test_quarterly_nov_start_wraps(self, biweekly_periods):
         """start_month=11 wraps: targets Nov, Feb, May, Aug."""
-        matched = _match_quarterly(biweekly_periods, start_month=11,
-                                   day_of_month=15)
+        matched = _matches(
+            build_rule(
+                pattern_name="Quarterly", month_of_year=11, day_of_month=15,
+            ),
+            biweekly_periods,
+        )
 
         assert len(matched) == 4
 
@@ -454,12 +494,16 @@ class TestMatchQuarterly:
 
 
 class TestMatchSemiAnnual:
-    """Tests for _match_semi_annual() -- pure function, no DB."""
+    """The Semi-Annual pattern, through the public ``match_periods``."""
 
     def test_semi_annual_jan_start(self, biweekly_periods):
         """start_month=1 targets Jan and Jul."""
-        matched = _match_semi_annual(biweekly_periods, start_month=1,
-                                     day_of_month=15)
+        matched = _matches(
+            build_rule(
+                pattern_name="Semi-Annual", month_of_year=1, day_of_month=15,
+            ),
+            biweekly_periods,
+        )
 
         assert len(matched) == 2
 
@@ -473,8 +517,12 @@ class TestMatchSemiAnnual:
 
     def test_semi_annual_aug_start_wraps(self, biweekly_periods):
         """start_month=8 wraps: targets Aug and Feb."""
-        matched = _match_semi_annual(biweekly_periods, start_month=8,
-                                     day_of_month=15)
+        matched = _matches(
+            build_rule(
+                pattern_name="Semi-Annual", month_of_year=8, day_of_month=15,
+            ),
+            biweekly_periods,
+        )
 
         assert len(matched) == 2
 
@@ -488,11 +536,16 @@ class TestMatchSemiAnnual:
 
 
 class TestMatchAnnual:
-    """Tests for _match_annual() -- pure function, no DB."""
+    """The Annual pattern, through the public ``match_periods``."""
 
     def test_annual_one_per_year(self, biweekly_periods):
         """One match per calendar year on a specific month/day."""
-        matched = _match_annual(biweekly_periods, month=3, day=15)
+        matched = _matches(
+            build_rule(
+                pattern_name="Annual", month_of_year=3, day_of_month=15,
+            ),
+            biweekly_periods,
+        )
 
         # All periods are in 2026, so exactly one match.
         assert len(matched) == 1
@@ -502,7 +555,12 @@ class TestMatchAnnual:
 
     def test_annual_feb29_non_leap_year(self, biweekly_periods):
         """Feb 29 target in 2026 (non-leap) clamps to Feb 28."""
-        matched = _match_annual(biweekly_periods, month=2, day=29)
+        matched = _matches(
+            build_rule(
+                pattern_name="Annual", month_of_year=2, day_of_month=29,
+            ),
+            biweekly_periods,
+        )
 
         assert len(matched) == 1
 
@@ -520,23 +578,108 @@ class TestMatchPeriodsEdgeCases:
         # Use the 4th period's start_date as effective_from.
         effective_from = biweekly_periods[3].start_date
 
-        matched = match_periods(rule, rule.pattern_id, biweekly_periods,
+        matched = match_periods(rule, biweekly_periods,
                                  effective_from)
 
         assert len(matched) == 26 - 3  # Periods 3-25.
         for period in matched:
             assert period.start_date >= effective_from
 
-    def test_unknown_pattern_returns_empty(self, biweekly_periods):
-        """Unrecognized pattern ID returns an empty list."""
+    def test_unknown_pattern_is_refused(self, biweekly_periods):
+        """An unmodelled pattern id is REFUSED, naming the id.
+
+        It used to log a warning and answer ``[]``, which reads as "this rule
+        fires nowhere" -- a rule that generates nothing forever, silently.  A
+        pattern id the application does not MODEL is a broken invariant, not a
+        rule with no occurrences: ``RecurrencePatternEnum`` is the vocabulary
+        (plan step R2e-2), the write doors refuse anything outside it, and
+        plan step R2e-3's migration deleted the last rows that carried one.
+        Plan step R4a's adapter resolves through
+        ``app.services.recurrence.resolve``, which raises rather than
+        fabricating a cadence.
+        """
         rule = build_rule(pattern_name="bogus_pattern")
+        # ``build_rule`` leaves ``pattern_id`` NULL for a name the enum does
+        # not carry; an id the ``ref`` table does not carry is the other half
+        # of the same state, and both must refuse.
+        rule.pattern_id = 99999
         effective_from = biweekly_periods[0].start_date
 
-        # Pass a bogus integer pattern_id that doesn't match any known pattern.
-        matched = match_periods(rule, 99999, biweekly_periods,
-                                 effective_from)
+        with pytest.raises(RecurrenceResolutionError, match="99999"):
+            match_periods(rule, biweekly_periods, effective_from)
 
-        assert matched == []
+
+class TestTheEveryNPeriodsPhase:
+    """Which paychecks an ``Every N Periods`` rule fires on, and from what.
+
+    **The one field plan step R4a changed the READ semantics of, and the one
+    field both the R1 baseline and every other test in this file exclude by
+    construction** -- ``tests/oracles/recurrence_baseline.build_shape_spec``
+    leaves ``start_period_id`` unset on purpose, and ``build_rule`` defaults it
+    to ``None``.  A neutral review of R4a found the gap; these tests are what
+    closes it.
+
+    The reverse matcher read the STORED ``offset_periods`` column
+    unconditionally.  The adapter resolves instead, and
+    ``_resolution._derive_offset_periods`` takes the phase from the rule's
+    start period whenever the calendar contains it -- because that is the fact
+    the user chose, and deriving it on every write is what closed defect D1.
+    So R4a makes the READ agree with the WRITE.
+
+    The two can only disagree on a row written before plan step R2c-1 shipped
+    the derivation and never re-authored since.  Measured 2026-08-08 against
+    ``shekel-prod-db``: zero such rows, and all 46 live rules carry
+    ``interval_n = 1``, where the phase is inert.
+    """
+
+    def test_the_phase_comes_from_the_start_period_when_the_calendar_has_it(
+        self, biweekly_periods,
+    ):
+        """A rule naming a start period fires from it, every N-th after.
+
+        The user chose a paycheck; the rule fires on that one and every third
+        one after it, not on whatever the stored column happens to say.
+        """
+        rule = build_rule(
+            pattern_name="Every N Periods",
+            interval_n=3,
+            offset_periods=0,
+            start_period_id=biweekly_periods[4].id,
+        )
+
+        matched = match_periods(
+            rule, biweekly_periods, biweekly_periods[0].start_date,
+        )
+
+        assert [p.period_index for p in matched] == [4, 7, 10, 13, 16, 19, 22, 25]
+
+    def test_the_stored_column_is_used_when_the_calendar_lacks_the_period(
+        self, biweekly_periods,
+    ):
+        """A window that excludes the start period falls back to the column.
+
+        ``PeriodCalendar.period_by_id`` answers ``None`` for a period outside
+        the list it was built from, so the derivation has nothing to derive
+        from and the authored ``offset_periods`` stands.  Reachable on the
+        extend path, which hands the engine only the NEW periods -- and
+        harmless while the two agree, which every rule written through the
+        door since plan step R2c-1 does by construction.  Plan ledger row D24
+        carries what happens when they do not.
+        """
+        # The window starts at index 6, so the start period (index 4) is not
+        # in it and the derivation cannot see it.
+        window = biweekly_periods[6:]
+        rule = build_rule(
+            pattern_name="Every N Periods",
+            interval_n=3,
+            offset_periods=1,
+            start_period_id=biweekly_periods[4].id,
+        )
+
+        matched = match_periods(rule, window, window[0].start_date)
+
+        # Phase 1 of 3: indices 7, 10, 13, ... -- the STORED column's cadence.
+        assert [p.period_index for p in matched] == [7, 10, 13, 16, 19, 22, 25]
 
 
 class TestMatchPeriodsFull:
@@ -547,7 +690,7 @@ class TestMatchPeriodsFull:
         rule = build_rule(pattern_name="Every Period")
         effective_from = biweekly_periods[0].start_date
 
-        matched = match_periods(rule, rule.pattern_id, biweekly_periods,
+        matched = match_periods(rule, biweekly_periods,
                                  effective_from)
 
         assert len(matched) == 26
@@ -556,7 +699,7 @@ class TestMatchPeriodsFull:
         """Empty periods list produces an empty result."""
         rule = build_rule(pattern_name="Every Period")
 
-        matched = match_periods(rule, rule.pattern_id, [],
+        matched = match_periods(rule, [],
                                  date(2026, 1, 1))
 
         assert matched == []
@@ -567,17 +710,27 @@ class TestMatchPeriodsEdgeCaseSafety:
 
     These values are prevented at the storage tier but could reach the
     service via FakeRule objects, direct calls, or an unflushed in-memory
-    rule.  The engine's contract differs by field:
+    rule.  The contract differs by field:
 
-      * ``interval_n`` / ``offset_periods`` are NOT NULL with CHECK
-        ``> 0`` / ``>= 0`` (deep-hunt #65), so an invalid 0 / None is a
-        programming error -- match_periods reads them directly as the
-        modulus divisor / offset and FAILS LOUD (ZeroDivisionError /
-        TypeError) rather than silently coercing to 1, which would
-        mis-generate on every period instead of every N.
-      * ``day_of_month`` is genuinely nullable (NULL for non-monthly
-        patterns), so its ``or 1`` coercion is a legitimate guard and is
-        retained (see the day_of_month tests below).
+      * ``interval_n`` is NOT NULL with CHECK ``> 0``
+        (``ck_recurrence_rules_positive_interval``), so an invalid 0 / None
+        is a programming error and is REFUSED, naming the value -- never
+        coerced to 1, which would mis-generate on every period instead of
+        every N.
+      * ``day_of_month`` / ``month_of_year`` are genuinely nullable (NULL for
+        the patterns that do not fire on a calendar day), so FALSY values keep
+        their ``or 1`` coercion, while a value outside the column's own domain
+        is refused (plan step R4a).
+
+    **Plan step R4a moved every one of these refusals to one door.**  The five
+    reverse-matching helpers each failed in their own way and in their own
+    place -- ``% 0`` raised ``ZeroDivisionError``, ``date(y, m, 0)`` raised
+    ``ValueError``, ``monthrange(y, 13)`` raised ``ValueError``, and a day of
+    32 was silently clamped -- so the same malformed rule had four different
+    dispositions depending on its pattern.  It is now one:
+    ``app.services.recurrence.resolve`` raises
+    :class:`~app.services.recurrence.RecurrenceResolutionError` naming the
+    field and the value, before any walking.
     """
 
     # -- interval_n edge cases (every_n_periods) --
@@ -585,23 +738,23 @@ class TestMatchPeriodsEdgeCaseSafety:
     def test_every_n_periods_interval_zero_raises(
         self, biweekly_periods
     ):
-        """interval_n=0 raises ZeroDivisionError (fail-loud, no coercion).
+        """interval_n=0 is refused, naming the value (fail-loud, no coercion).
 
-        Post-#65 ``ck_recurrence_rules_positive_interval`` + NOT NULL make
-        a persisted interval_n=0 impossible, so reaching match_periods
-        with 0 means an invalid in-memory rule (a programming error).  The
-        modulus ``% 0`` now surfaces that bug loudly instead of the old
-        ``or 1`` silently treating it as every-period -- which, in a
-        budget app, would over-generate real projected transactions.
+        ``ck_recurrence_rules_positive_interval`` + NOT NULL make a persisted
+        interval_n=0 impossible, so reaching the matcher with 0 means an
+        invalid in-memory rule (a programming error).  It used to surface as a
+        bare ``ZeroDivisionError`` from the phase modulo; the resolution door
+        refuses it first and says which value and which rule, which is what an
+        operator reading the traceback needs.
         """
         rule = build_rule(
             pattern_name="Every N Periods",
             interval_n=0,
             offset_periods=0,
         )
-        with pytest.raises(ZeroDivisionError):
+        with pytest.raises(RecurrenceResolutionError, match="interval_n"):
             match_periods(
-                rule, rule.pattern_id, biweekly_periods,
+                rule, biweekly_periods,
                 biweekly_periods[0].start_date,
             )
 
@@ -622,101 +775,45 @@ class TestMatchPeriodsEdgeCaseSafety:
         )
         with pytest.raises(TypeError):
             match_periods(
-                rule, rule.pattern_id, biweekly_periods,
+                rule, biweekly_periods,
                 biweekly_periods[0].start_date,
             )
 
     # -- day_of_month edge cases (monthly) --
 
-    def test_day_of_month_zero_via_match_periods(
-        self, biweekly_periods
+    @pytest.mark.parametrize("day", [0, 32, 99, -5])
+    def test_day_of_month_outside_its_column_domain_is_refused(
+        self, biweekly_periods, day,
     ):
-        """day_of_month=0 via match_periods: '0 or 1' = 1.
+        """A STATED day outside 1-31 is refused, not coerced or clamped.
 
-        Expected: behaves identically to day_of_month=1.
-        DB constraint ck_recurrence_rules_dom prevents
-        day_of_month < 1 from being stored.
+        Three dispositions became one at plan step R4a.  ``_match_monthly``
+        clamped with ``min(day, last_day)``, so 32 was silently identical to
+        31; a NEGATIVE day reached ``date(y, m, -5)`` as a bare
+        ``ValueError``; and ``match_periods`` mapped 0 onto 1 through
+        ``rule.day_of_month or 1``, which read an impossible day as an absent
+        one.  ``ck_recurrence_rules_dom`` bounds the column to ``NULL OR
+        1..31`` and ``_author`` writes the authored value verbatim, so a 0
+        reached the flush as an unhandled ``IntegrityError``.  The resolution
+        door now mirrors the column exactly: NULL states no day and defaults,
+        anything else must be in domain.
         """
-        rule_zero = build_rule(
-            pattern_name="Monthly", day_of_month=0,
-        )
-        rule_one = build_rule(
-            pattern_name="Monthly", day_of_month=1,
-        )
-        effective = biweekly_periods[0].start_date
+        rule = build_rule(pattern_name="Monthly", day_of_month=day)
 
-        matched_zero = match_periods(
-            rule_zero, rule_zero.pattern_id, biweekly_periods, effective,
-        )
-        matched_one = match_periods(
-            rule_one, rule_one.pattern_id, biweekly_periods, effective,
-        )
-        # 0 or 1 = 1 in Python (0 is falsy).
-        # Prevented in production by ck_recurrence_rules_dom.
-        assert len(matched_zero) == len(matched_one), (
-            f"day_of_month=0 matched {len(matched_zero)} "
-            f"periods, day_of_month=1 matched "
-            f"{len(matched_one)}"
-        )
-        assert (
-            [p.id for p in matched_zero]
-            == [p.id for p in matched_one]
-        ), (
-            "day_of_month=0 should produce identical matches "
-            "to day_of_month=1 via 'or 1' fallback"
-        )
-
-    def test_day_of_month_zero_direct_raises(
-        self, biweekly_periods
-    ):
-        """_match_monthly(periods, 0) bypasses 'or 1' fallback.
-
-        Expected: raises ValueError from date(year, month, 0).
-        Two layers of defense: DB constraint
-        ck_recurrence_rules_dom prevents storage, match_periods
-        'or 1' prevents the crash. Direct call bypasses both.
-        """
-        # Prevented in production by ck_recurrence_rules_dom.
-        # match_periods applies 'or 1' for falsy values.
-        # Direct call bypasses both -- date(y, m, 0) raises.
-        with pytest.raises(ValueError):
-            _match_monthly(biweekly_periods, day_of_month=0)
-
-    def test_day_of_month_32_clamped_to_last_day(
-        self, biweekly_periods
-    ):
-        """day_of_month=32 clamped by min(32, last_day).
-
-        Expected: identical to day_of_month=31 since both clamp
-        to the last day of each month.
-        DB constraint ck_recurrence_rules_dom prevents
-        day_of_month > 31 from being stored.
-        """
-        matched_32 = _match_monthly(
-            biweekly_periods, day_of_month=32,
-        )
-        matched_31 = _match_monthly(
-            biweekly_periods, day_of_month=31,
-        )
-        # min(32, last_day) == min(31, last_day) for all months
-        # since max(last_day) is 31.
-        # Prevented in production by ck_recurrence_rules_dom.
-        assert (
-            [p.id for p in matched_32]
-            == [p.id for p in matched_31]
-        ), (
-            "day_of_month=32 should clamp identically to 31 "
-            "via min(day_of_month, last_day)"
-        )
+        with pytest.raises(RecurrenceResolutionError, match="day_of_month"):
+            match_periods(
+                rule, biweekly_periods,
+                biweekly_periods[0].start_date,
+            )
 
     def test_day_of_month_none_in_monthly_defaults_to_one(
         self, biweekly_periods
     ):
-        """day_of_month=None (DB NULL): 'None or 1' = 1.
+        """day_of_month=NULL states no day, which reads as the 1st.
 
-        Expected: matches identically to day_of_month=1.
-        DB column allows NULL (optional for non-monthly
-        patterns), so None is a valid state the fallback handles.
+        The column is nullable -- the pay-period-space patterns fire on no day
+        of the month at all -- so NULL is a legal state with a default, unlike
+        a stated 0 (refused above, plan step R4a).
         """
         rule_none = build_rule(
             pattern_name="Monthly", day_of_month=None,
@@ -727,12 +824,11 @@ class TestMatchPeriodsEdgeCaseSafety:
         effective = biweekly_periods[0].start_date
 
         matched_none = match_periods(
-            rule_none, rule_none.pattern_id, biweekly_periods, effective,
+            rule_none, biweekly_periods, effective,
         )
         matched_one = match_periods(
-            rule_one, rule_one.pattern_id, biweekly_periods, effective,
+            rule_one, biweekly_periods, effective,
         )
-        # None or 1 = 1 in Python.
         assert (
             [p.id for p in matched_none]
             == [p.id for p in matched_one]
@@ -743,25 +839,27 @@ class TestMatchPeriodsEdgeCaseSafety:
 
     # -- month_of_year edge cases (quarterly, annual) --
 
-    def test_month_of_year_zero_defaults_to_one(
+    def test_a_null_month_of_year_reads_as_january(
         self, biweekly_periods
     ):
-        """month_of_year=0 via match_periods: '0 or 1' = 1.
+        """month_of_year=NULL states no cycle month: targets Jan/Apr/Jul/Oct.
 
-        Expected via match_periods: targets Jan/Apr/Jul/Oct.
-        Expected via direct _match_quarterly: targets
-        Dec/Mar/Jun/Sep (different due to modular arithmetic).
-        DB constraint ck_recurrence_rules_moy prevents
-        month_of_year < 1 from being stored.
+        NULL is the only value that means "this rule states no cycle month",
+        and the matcher has always read it as January.  ``0`` used to mean the
+        same thing through ``rule.month_of_year or 1``; plan step R4a refuses
+        it instead, because ``ck_recurrence_rules_moy`` bounds the column to
+        ``NULL OR 1..12`` and 0 is not absence.
+
+        **There used to be a second answer to a 0, and R4a deleted it too.**
+        Calling ``_match_quarterly(start_month=0)`` directly bypassed the
+        coercion, and its own modular arithmetic -- ``((0 - 1 + 3i) % 12) + 1``
+        -- targeted Dec/Mar/Jun/Sep, so one malformed rule fired in a
+        different quarter depending on which entry point read it.
         """
         effective = biweekly_periods[0].start_date
-
-        # Path (a): via match_periods -- 0 or 1 = 1.
-        # Targets {1, 4, 7, 10} (Jan/Apr/Jul/Oct).
-        # Prevented in production by ck_recurrence_rules_moy.
-        rule_zero = build_rule(
+        rule_null = build_rule(
             pattern_name="Quarterly",
-            month_of_year=0,
+            month_of_year=None,
             day_of_month=15,
         )
         rule_one = build_rule(
@@ -769,81 +867,57 @@ class TestMatchPeriodsEdgeCaseSafety:
             month_of_year=1,
             day_of_month=15,
         )
-        matched_zero = match_periods(
-            rule_zero, rule_zero.pattern_id,
+
+        matched_null = match_periods(
+            rule_null,
             biweekly_periods, effective,
         )
         matched_one = match_periods(
-            rule_one, rule_one.pattern_id,
+            rule_one,
             biweekly_periods, effective,
         )
-        # 0 or 1 = 1 in Python (0 is falsy).
+
         assert (
-            [p.id for p in matched_zero]
+            [p.id for p in matched_null]
             == [p.id for p in matched_one]
-        ), (
-            "month_of_year=0 via match_periods should behave "
-            "identically to month_of_year=1"
-        )
-
-        # Path (b): direct _match_quarterly(start_month=0).
-        # No 'or 1' fallback applies.
-        # Formula: ((0-1 + i*3) % 12) + 1 for i=0..3
-        #   i=0: ((-1)%12)+1=12  i=1: (2%12)+1=3
-        #   i=2: (5%12)+1=6     i=3: (8%12)+1=9
-        # Target months = {12, 3, 6, 9} != {1, 4, 7, 10}.
-        direct_zero = _match_quarterly(
-            biweekly_periods, start_month=0,
-            day_of_month=15,
-        )
-        assert len(direct_zero) == 4, (
-            f"Expected 4 quarterly matches for "
-            f"start_month=0, got {len(direct_zero)}"
-        )
-        # Verify which months the direct call targets.
-        direct_months = set()
-        for period in direct_zero:
-            for dt in (period.start_date, period.end_date):
-                target = date(dt.year, dt.month, 15)
-                if period.start_date <= target <= period.end_date:
-                    direct_months.add(dt.month)
-        assert direct_months == {3, 6, 9, 12}, (
-            f"start_month=0 direct should target "
-            f"{{3, 6, 9, 12}}, got {direct_months}. "
-            f"Discrepancy: match_periods converts 0->1 "
-            f"but direct call uses modular arithmetic."
-        )
-
-    def test_month_of_year_13_annual_raises(
-        self, biweekly_periods
-    ):
-        """month_of_year=13 is truthy: 'or 1' does NOT apply.
-
-        Expected: ValueError from calendar.monthrange(year, 13).
-        The crash propagates through match_periods since there
-        is no try/except wrapper. Note: quarterly and semi_annual
-        safely wrap month=13 via modular arithmetic to
-        {1,4,7,10}.
-        DB constraint ck_recurrence_rules_moy prevents
-        month_of_year > 12 from being stored.
-        """
-        # Direct call -- crashes on monthrange(year, 13).
-        # Prevented in production by ck_recurrence_rules_moy.
-        with pytest.raises(ValueError):
-            _match_annual(
-                biweekly_periods, month=13, day=15,
+        ), "a NULL month_of_year should behave identically to January"
+        # Stated absolutely, not only relatively: two equal-but-wrong answers
+        # would satisfy the comparison above.  Every period is in 2026, so the
+        # months that fired are the ones whose 15th one of them contains.
+        fired_months = {
+            month for month in range(1, 13)
+            if any(
+                period.start_date <= date(2026, month, 15) <= period.end_date
+                for period in matched_null
             )
+        }
+        assert fired_months == {1, 4, 7, 10}
 
-        # Via match_periods -- 13 or 1 = 13 (truthy).
-        # No fallback; passes 13 to _match_annual.
+    @pytest.mark.parametrize("month", [0, 13, 99, -1])
+    def test_month_of_year_outside_its_column_domain_is_refused(
+        self, biweekly_periods, month,
+    ):
+        """A month outside 1-12 is refused, naming the value (plan step R4a).
+
+        It used to depend on the pattern: ``_match_annual`` passed the value
+        to ``calendar.monthrange(year, 13)`` and raised a bare ``ValueError``,
+        while ``_match_quarterly`` and ``_match_semi_annual`` wrapped it
+        modularly and answered {1, 4, 7, 10} as though the user had said
+        January.  The forward engine walks month ORDINALS, where 13 is simply
+        January again -- so without this refusal, deleting the old matcher
+        would have traded the one loud failure for a silently plausible date.
+        ``ck_recurrence_rules_moy`` bounds the column; the door now bounds the
+        same thing.
+        """
         rule = build_rule(
             pattern_name="Annual",
-            month_of_year=13,
+            month_of_year=month,
             day_of_month=15,
         )
-        with pytest.raises(ValueError):
+
+        with pytest.raises(RecurrenceResolutionError, match="month_of_year"):
             match_periods(
-                rule, rule.pattern_id, biweekly_periods,
+                rule, biweekly_periods,
                 biweekly_periods[0].start_date,
             )
 
@@ -893,6 +967,118 @@ class TestGenerateForTemplate:
 
         db.session.refresh(template)
         return template
+
+    def test_a_bill_repeating_inside_one_paycheck_is_refused(
+        self, app, db, seed_user, seed_periods
+    ):
+        """A monthly bill at a 90-day cadence REFUSES, it does not 500.
+
+        **Plan step R4a made this reachable and this is its regression test.**
+        The reverse matcher walked PAYCHECKS, so a monthly rule emitted one row
+        per paycheck and silently dropped the rest -- defect D3.  Forward
+        generation emits all three occurrences that fall inside one 90-day pay
+        period, and ``idx_transactions_template_period_scenario`` is UNIQUE
+        over ``(template, pay_period, scenario)``, so writing them raises an
+        ``IntegrityError`` naming nothing and rolling back whatever transaction
+        it was inside -- ``pay_period_admin.extend_pay_periods`` among them,
+        which would leave the owner unable to extend their schedule at all.
+
+        The refusal names the definition, the paycheck and how many times it
+        falls inside it, and writes NOTHING (developer ruling 2026-08-08).
+        Plan step R5 re-keys the index onto the occurrence and the refusal goes
+        with the fix.
+
+        Measured against the deleted matcher: ``Monthly First`` returned no
+        repeated period at ANY cadence, so this failure mode is new to R4a --
+        which is why the guard ships in the same commit as the cutover.
+        """
+        with app.app_context():
+            # A 90-day schedule for this owner alone; ``cadence_days`` is
+            # user-selectable 1..365, so this is configuration, not a
+            # hypothetical.  Built after the seed periods so the batch opens
+            # strictly after the latest existing end_date.
+            long_periods = pay_period_service.generate_pay_periods(
+                user_id=seed_user["user"].id,
+                start_date=seed_periods[-1].end_date + timedelta(days=1),
+                num_periods=4,
+                cadence_days=90,
+            )
+            db.session.flush()
+            template = self._make_template_with_rule(
+                seed_user, "Monthly", day_of_month=15,
+            )
+
+            # The premise, asserted rather than assumed: without this the test
+            # would pass vacuously if the engine ever stopped duplicating, and
+            # the guard would be a gate over nothing.
+            matched = match_periods(
+                template.recurrence_rule, long_periods,
+                long_periods[0].start_date,
+            )
+            assert len(matched) > len({period.id for period in matched}), (
+                "the engine no longer repeats a period, so this test proves "
+                "nothing about the guard"
+            )
+
+            with pytest.raises(RecurrenceCadenceUnsupported) as excinfo:
+                recurrence_engine.generate_for_template(
+                    template, long_periods, seed_user["scenario"].id,
+                )
+
+            # Named, not generic: the definition, the paycheck, the count.
+            assert excinfo.value.template_name == "Test Recurring"
+            assert excinfo.value.occurrence_count == 3
+            assert excinfo.value.period_start == long_periods[0].start_date
+            # And nothing was written -- the refusal runs before the first add.
+            assert db.session.query(Transaction).filter_by(
+                template_id=template.id,
+            ).count() == 0
+
+    def test_a_paycheck_that_already_holds_a_row_is_skipped_not_refused(
+        self, app, db, seed_user, seed_periods
+    ):
+        """The refusal runs AFTER the per-period skip, and that is deliberate.
+
+        A paycheck already holding a row for this template is skipped by
+        ``should_skip_period``, so no second row is attempted and there is
+        nothing to refuse.  Testing before the skip would make an
+        already-populated long-cadence schedule permanently unextendable: every
+        later extend would refuse over periods it was never going to write.
+        """
+        with app.app_context():
+            long_periods = pay_period_service.generate_pay_periods(
+                user_id=seed_user["user"].id,
+                start_date=seed_periods[-1].end_date + timedelta(days=1),
+                num_periods=4,
+                cadence_days=90,
+            )
+            db.session.flush()
+            template = self._make_template_with_rule(
+                seed_user, "Monthly", day_of_month=15,
+            )
+            # Occupy every period the rule fires in, exactly as a previous
+            # (pre-R4a) generation pass would have left them.
+            projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
+            for period in long_periods:
+                db.session.add(Transaction(
+                    account_id=template.account_id,
+                    template_id=template.id,
+                    pay_period_id=period.id,
+                    scenario_id=seed_user["scenario"].id,
+                    status_id=projected_id,
+                    name=template.name,
+                    transaction_type_id=template.transaction_type_id,
+                    estimated_amount=Decimal("100.00"),
+                    is_override=False,
+                    is_deleted=False,
+                ))
+            db.session.flush()
+
+            created = recurrence_engine.generate_for_template(
+                template, long_periods, seed_user["scenario"].id,
+            )
+
+            assert created == []
 
     def test_effective_from_skips_earlier_periods(
         self, app, db, seed_user, seed_periods
@@ -2059,7 +2245,7 @@ class TestEndDate:
         rule = build_rule(pattern_name="Every Period", end_date=end)
         effective_from = biweekly_periods[0].start_date
 
-        matched = match_periods(rule, rule.pattern_id, biweekly_periods,
+        matched = match_periods(rule, biweekly_periods,
                                  effective_from)
 
         assert len(matched) == 5
@@ -2071,7 +2257,7 @@ class TestEndDate:
         rule = build_rule(pattern_name="Every Period", end_date=None)
         effective_from = biweekly_periods[0].start_date
 
-        matched = match_periods(rule, rule.pattern_id, biweekly_periods,
+        matched = match_periods(rule, biweekly_periods,
                                  effective_from)
 
         assert len(matched) == 26
@@ -2083,7 +2269,7 @@ class TestEndDate:
                         end_date=date(2026, 3, 31))
         effective_from = biweekly_periods[0].start_date
 
-        matched = match_periods(rule, rule.pattern_id, biweekly_periods,
+        matched = match_periods(rule, biweekly_periods,
                                  effective_from)
 
         # Should get Jan, Feb, Mar only.
@@ -2097,7 +2283,7 @@ class TestEndDate:
                         end_date=date(2025, 12, 31))
         effective_from = biweekly_periods[0].start_date
 
-        matched = match_periods(rule, rule.pattern_id, biweekly_periods,
+        matched = match_periods(rule, biweekly_periods,
                                  effective_from)
 
         assert matched == []
@@ -2109,7 +2295,7 @@ class TestEndDate:
         end = biweekly_periods[10].start_date
         rule = build_rule(pattern_name="Every Period", end_date=end)
 
-        matched = match_periods(rule, rule.pattern_id, biweekly_periods,
+        matched = match_periods(rule, biweekly_periods,
                                  effective_from)
 
         # Periods 5 through 10 inclusive.
@@ -2125,7 +2311,7 @@ class TestEndDate:
                         end_date=target_period.start_date)
         effective_from = biweekly_periods[0].start_date
 
-        matched = match_periods(rule, rule.pattern_id, biweekly_periods,
+        matched = match_periods(rule, biweekly_periods,
                                  effective_from)
 
         assert target_period in matched
@@ -2138,7 +2324,7 @@ class TestEndDate:
                         offset_periods=0, end_date=end)
         effective_from = biweekly_periods[0].start_date
 
-        matched = match_periods(rule, rule.pattern_id, biweekly_periods,
+        matched = match_periods(rule, biweekly_periods,
                                  effective_from)
 
         # Periods 0, 3, 6, 9 (index % 3 == 0 and start_date <= end).
@@ -2752,7 +2938,7 @@ class TestDueDateGeneration:
         """
         with app.app_context():
             from app import ref_cache
-            from app.enums import RecurrencePatternEnum
+            from app.enums import RecurrencePatternEnum, StatusEnum
 
             monthly_id = ref_cache.recurrence_pattern_id(
                 RecurrencePatternEnum.MONTHLY

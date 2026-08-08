@@ -107,6 +107,81 @@ class BaselineMissingError(ShekelError, ValueError):
         self.user_id = user_id
 
 
+class RecurrenceCadenceUnsupported(ShekelError):
+    """One paycheck must host a recurring row TWICE, and the table cannot.
+
+    A monthly bill is owed monthly whatever the pay cadence (developer ruling,
+    2026-08-07), so at a cadence of 30 days or more several of its occurrences
+    legitimately fall inside one paycheck -- three months of rent inside one
+    90-day pay period.  ``idx_transactions_template_period_scenario`` (and its
+    transfer twin) is UNIQUE over ``(template, pay_period, scenario)``, so
+    ``budget.transactions`` can hold only ONE of them.
+
+    **The index is keyed on the wrong column, and that is the real defect**
+    (plan ledger row D19): it is a generation-idempotency guard, and a
+    generated row's identity is its OCCURRENCE, not its paycheck.  Plan step
+    R5 re-keys it onto the occurrence and this exception goes with the fix.
+
+    Until then generation REFUSES, naming the template and the dates
+    (developer ruling, 2026-08-08).  The two alternatives were measured and
+    are worse: writing the rows raises an unhandled ``IntegrityError`` that
+    names nothing and rolls back the whole enclosing transaction -- a pay
+    schedule extend among them -- and writing only the first silently
+    under-budgets the paycheck by every occurrence after it ($3,000 on a
+    $1,500 rent at a 90-day cadence).
+
+    Unreachable below a 30-day cadence, because every calendar month then
+    holds at least one payday; ``cadence_days`` is user-selectable 1..365
+    (``schemas/validation/pay_periods.py``), so it is configuration rather
+    than a hypothetical.
+
+    ONE handler answers it for the whole application
+    (:func:`app.error_handlers.register_error_handlers`'s
+    ``recurrence_cadence_unsupported``), because the eleven call sites that
+    can reach generation would otherwise each decide for themselves -- the
+    failure mode plan step X-v's ruling R-BW catalogued for
+    :class:`BaselineMissingError`.
+
+    **It names the paycheck and the COUNT, not the individual dates**, and the
+    narrowing is deliberate rather than an omission.  The developer's ruling
+    said "naming the dates"; at plan step R4a the engines still answer in
+    PERIODS -- ``match_periods`` returns the pay period per occurrence and
+    discards the occurrence itself -- so the dates are not available to name
+    without calling the occurrence engine a second time, which would be a
+    second producer of one answer.  Plan step R4b threads the
+    ``(occurrence, period)`` pairs through generation; the dates join the
+    message there.  What is here is already actionable: which definition,
+    which paycheck, and how many times it falls inside it.
+
+    Args:
+        template_name: The recurring definition that cannot be generated.
+        occurrence_count: How many times it falls inside the one paycheck.
+        period_start: The paycheck's own payday.
+        period_end: The last day the paycheck covers.
+
+    Attributes:
+        template_name: As above.
+        occurrence_count: As above.
+        period_start: As above.
+        period_end: As above.
+    """
+
+    def __init__(self, template_name, occurrence_count, period_start, period_end):
+        """Build the message from the facts a user needs to act on."""
+        super().__init__(
+            f"'{template_name}' falls {occurrence_count} times inside the "
+            f"single pay period {period_start.isoformat()} to "
+            f"{period_end.isoformat()}. Shekel budgets one row per recurring "
+            f"definition per paycheck, so it cannot yet hold them separately. "
+            f"Shorten the pay cadence, or change how often this definition "
+            f"repeats."
+        )
+        self.template_name = template_name
+        self.occurrence_count = occurrence_count
+        self.period_start = period_start
+        self.period_end = period_end
+
+
 class RecurrenceConflict(ShekelError):
     """Recurrence regeneration found overridden or deleted transactions.
 

@@ -5,24 +5,26 @@ Generation, stated forward.  :func:`occurrences` walks a rule's own cadence
 from its first occurrence; :func:`place` carries one occurrence DATE onto the
 pay period the row lives in; :func:`occurrence_placements` composes the two.
 
-**Nothing reads this yet.**  Plan step R3 builds it parallel to
-``app.services.recurrence_engine.match_periods`` and step R4 cuts the readers
-over, gated by ``tests/oracles/recurrence_baseline.txt``.  Until then the old
-matcher is authoritative and this module changes no behaviour.
+**This is what generation is.**  Plan step R3 built it parallel and unread;
+plan step R4a made ``app.services.recurrence_engine.match_periods`` a thin
+adapter over it, so every pay period the application generates a row into is
+selected here.  Plan step R4b moves the readers off the adapter and onto the
+``(occurrence, period)`` pairs themselves.
 
-Why forward, and what that fixes
+Why forward, and what that fixed
 --------------------------------
 
-``match_periods`` is a REVERSE mapping: it scans every candidate pay period
-and asks whether that period contains the rule's target day, through five
-near-identical ``_match_*`` helpers.  Each of them inspects only the months of
-a period's two ENDPOINTS, so a period spanning more than two months cannot
-match the interior ones -- and ``cadence_days`` is user-selectable 1..365
-(``schemas/validation/pay_periods.py``), so that is reachable configuration.
-Measured on the R1 baseline's own 90-day schedule: a monthly day-1 rule over
-three years matched 13 periods instead of 36 (and returned one period TWICE,
-which would violate ``idx_transactions_template_period_scenario``), and a
-quarterly rule matched 1 of its 12 occurrences.  That is plan defect **D3**.
+``match_periods`` used to be a REVERSE mapping: it scanned every candidate pay
+period and asked whether that period contained the rule's target day, through
+five near-identical ``_match_*`` helpers.  Each of them inspected only the
+months of a period's two ENDPOINTS, so a period spanning more than two months
+could not match the interior ones -- and ``cadence_days`` is user-selectable
+1..365 (``schemas/validation/pay_periods.py``), so that is reachable
+configuration.  Measured on the R1 baseline's own 90-day schedule: a monthly
+day-1 rule over three years matched 13 periods instead of 36 (and returned one
+period TWICE, which would violate
+``idx_transactions_template_period_scenario``), and a quarterly rule matched 1
+of its 12 occurrences.  That was plan defect **D3**.
 
 Generating forward and then placing removes the defect structurally rather
 than by widening the scan: every occurrence the cadence names is emitted, at
@@ -61,7 +63,7 @@ What an occurrence IS, per unit
   on or after the bound" is not derivable when the bound falls past the
   materialised horizon.  The first occurrence is therefore the payday of the
   first paycheck that has not already ENDED before that bound -- which is what
-  ``match_periods`` selects today (``p.end_date >= effective_from``), and it
+  the reverse matcher selected (``p.end_date >= effective_from``), and it
   is deliberate: a loan whose first installment falls mid-period bills in that
   period, not the next (plan step C9a).  Ledger row **D6** records the same
   asymmetry from the schema's side.
@@ -74,20 +76,21 @@ under the ``PERIOD`` unit.**  Every occurrence it emits is a period's own
 plan's section 3 says the opposite ("a mid-period bound places differently
 under the two placements"); that claim reads the anchor as the emitted
 occurrence, which the paragraph above is exactly the decision not to do.
-Emitting the payday is what reproduces the current engine's date as well as
+Emitting the payday is what reproduced the reverse matcher's date as well as
 its period: ``compute_due_date`` returns ``period.start_date`` for a rule with
-no ``day_of_month``, so a mid-period bound emitted verbatim would move the
-first row's date.
+no ``day_of_month``, so a mid-period bound emitted verbatim would have moved
+the first row's date.
 
 Bounds are OCCURRENCE bounds (ruling R-R6)
 ------------------------------------------
 
 ``end_date`` and ``max_occurrences`` are applied to the occurrence, not to the
-period it lands in.  ``match_periods`` bounds PERIODS -- ``end_date`` is
-tested against a period's START -- so it generates rows dated outside the
+period it lands in.  The reverse matcher bounded PERIODS -- ``end_date`` was
+tested against a period's START -- so it generated rows dated outside the
 window the user stated: measured on the R1 baseline, a monthly-15th rule
-ending 2025-06-05 generates a row due 2025-06-15.  That is plan defect **D5**,
-and it dies here: an occurrence past ``end_date`` is simply never emitted.
+ending 2025-06-05 generated a row due 2025-06-15.  That was plan defect
+**D5**, and it died here: an occurrence past ``end_date`` is simply never
+emitted.
 
 ``max_occurrences`` counts OCCURRENCES the cadence names, including any that
 fall in a schedule gap and are never placed.  "Stop after twelve" is a
@@ -123,11 +126,11 @@ three.  It reaches both placements, differently:
   months' occurrences DEFER onto the one paycheck that follows them.
 
 Both are real obligations.  A monthly bill is owed monthly whatever the pay
-cadence, and the old matcher walked PAYCHECKS instead of months, so it emitted
-one row per paycheck and silently dropped the rest: 12 rows for 36 months of
-rent, measured on the R1 baseline's own 90-day schedule.  That is defect D3,
-and for ``Monthly First`` it went unmeasured until plan step R3 added the
-missing oracle shapes.
+cadence, and the reverse matcher walked PAYCHECKS instead of months, so it
+emitted one row per paycheck and silently dropped the rest: 12 rows for 36
+months of rent, measured on the R1 baseline's own 90-day schedule.  That was
+defect D3, and for ``Monthly First`` it went unmeasured until plan step R3
+added the missing oracle shapes.
 
 ``budget.transactions`` cannot hold them yet:
 ``idx_transactions_template_period_scenario`` is UNIQUE over
@@ -241,10 +244,10 @@ def _period_walk(
     :func:`occurrences` takes a calendar at all (finding D9).  A paycheck
     qualifies when it has not ENDED before the rule's bound -- the anchor --
     and when its index is in the rule's phase.  Both tests are verbatim what
-    ``recurrence_engine.match_periods`` applies today
+    the reverse matcher applied
     (``p.end_date >= effective_from`` and
-    ``(p.period_index - offset) % n == 0``), which is what makes the cutover
-    at plan step R4 a no-op for every pay-period-space rule.
+    ``(p.period_index - offset) % n == 0``), which is what made plan step
+    R4a's cutover a no-op for every pay-period-space rule.
 
     **The phase is read from ``offset_periods`` rather than re-derived from
     the anchor**, and the difference is measurable.  Deriving it -- "the
@@ -476,15 +479,17 @@ def occurrences(
     the opening side for the calendar units; ledger row D6 is the same
     asymmetry seen from the schema.
 
-    **There is no LOWER window argument, and plan step R4 needs one.**
-    ``match_periods`` takes an ``effective_from`` that four production paths
-    supply themselves (the unarchive path, both regenerate paths, and
-    ``recurring_view``'s ``as_of``), narrowing generation to a window the RULE
-    does not state.  That is a per-call display/regeneration boundary rather
+    **There is no LOWER window argument, and the adapter needs one.**
+    ``match_periods`` takes an ``effective_from``, and every production path
+    that reaches it supplies or defaults one: both unarchive paths, both
+    regenerate paths, ``period_population``'s batch boundary,
+    ``can_generate_in_period``, the preview's display choice, and
+    ``recurring_view``'s ``as_of``.  Each narrows generation to a window the
+    RULE does not state.  That is a per-call display/regeneration boundary rather
     than a property of the recurrence, and conflating the two is how defect D2
-    happened -- so it stays out of here, and R4's adapter filters the
-    placements it gets back on the placed period's ``end_date``, which is the
-    same predicate ``match_periods`` applies to its candidate list.
+    happened -- so it stays out of here, and plan step R4a's adapter filters
+    the placements it gets back on the placed period's ``end_date``, which is
+    the same predicate the reverse matcher applied to its candidate list.
 
     Refuses its impossible-to-honour inputs EAGERLY rather than on the first
     ``next()``: a caller that builds the iterator and passes it on would
@@ -551,7 +556,8 @@ def occurrence_placements(
 ) -> tuple[OccurrencePlacement, ...]:
     """Return every occurrence in the window, paired with its pay period.
 
-    The composition plan step R4 cuts ``match_periods``' readers over to: one
+    The composition ``recurrence_engine.match_periods`` answers from since
+    plan step R4a, and the one plan step R4b moves generation itself onto: one
     forward walk, one placement per occurrence, and the pairs reported as
     generated.  Materialised rather than lazy because every caller reads the
     result more than once.

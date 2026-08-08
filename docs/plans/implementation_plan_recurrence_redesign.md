@@ -3,18 +3,19 @@
 ## Where this stands
 
 **Plan of record** for replacing the closed 8-name recurrence pattern set with a two-axis model, and
-for untangling the cash-date / installment-date collision the design review surfaced. Design LOCKED
-2026-08-05. R1-R3 are ARCHIVED to `docs/plans/historical/recurrence_as_built_2026-08-05.md`.
+for untangling the cash-date / installment-date collision. Design LOCKED 2026-08-05; R1-R3 ARCHIVED.
 
 **R1-R2e IS IN PRODUCTION** (PR #84, 2026-08-07; prod runs `d4a71f6e30bb`).
-**R3 is BUILT on `dev`, not yet PR'd** -- the forward engine is parallel and unread.
-
-**Next: R4, the cutover**, which inherits three decisions R3 measured but could not make. It
-re-freezes the 12 moved blob lines with `SHEKEL_UPDATE_RECURRENCE_BASELINE=1` in its OWN commit;
-says what generation does with an occurrence that places nowhere (**D7**); and must not 500 when a
-cadence >= 30 days puts several occurrences in one paycheck (**D19**, root fix R5's index re-key).
-**A monthly bill is owed monthly at any pay cadence** -- rows stay separate, only the grid sums them
-(developer ruling 2026-08-07). **Also live:** R-F1, whose failure mode is a broken deploy, and R-F6.
+**R3 and R4a are BUILT on `dev`, not yet PR'd.** R4a made `match_periods` a thin adapter over the
+forward engine, deleted the five `_match_*` helpers and re-froze the baseline (+122 / -4 lines over
+12 predicted shapes): **D3 and D5 die there**, and three live 500s on
+`/templates/preview-recurrence` close with them.
+**Next: R4b, which moves generation itself onto the `(occurrence, period)` pairs** and resolves each
+rule against the OWNER's whole schedule rather than the caller's window. That closes **D22** --
+three duplicate `Phone Allowance` rows measured on production, $118.62 and growing by ~$39.54 on
+every other extend -- and **D2**, whose "First paycheck" bound becomes unbypassable by folding into
+the anchor. Rulings 2026-08-08: **D7** logs and skips, **D19** refuses naming the dates.
+**Also live:** R-F1, whose failure mode is a broken deploy, and R-F6.
 
 **Where detail lives:** section 4 is the step list, each step carrying its own specification;
 section 5 is the findings ledger, one line per finding naming the step that closes it; section 7 is
@@ -35,9 +36,9 @@ Taken 2026-08-05 (developer):
 | Sequencing vs the balance arc | **Half A now; Half B folded into X-an.** See section 0 |
 | `PAY_PERIODS_PER_YEAR` | Folded into R7a (which already rewrites `amount_to_monthly`); derivation = `round(365.2425 / cadence_days)`, see section 4a |
 | **Anchor day vs month-end clamp** | **`anchor_date` + a 0..1 `recurrence_month_anchors` subtype. See R-R3** |
-| **`Once` rules** | **Retired at R2e, BEFORE the new engine and the cutover. See R-R4** |
+| **`Once` rules** | **Retired at R2e, BEFORE the new engine and the cutover. R-R4 / R-R11, archived** |
 | **R2 sequencing** | **R2a (vocabulary) -> R2b (subtypes) -> R2c-1 (the door) -> R2d (stop storing the derivation). All DONE** |
-| **Bound semantics** | **Occurrence-bounded, not period-bounded. Four frozen shapes move at R4. See R-R6** |
+| **Bound semantics** | **Occurrence-bounded, not period-bounded. The four frozen shapes moved at R4a. See R-R6** |
 | **Orphaned rules** | **NOT deleted in R2b; they ship with the fix for the leak that makes them. See R-R7** |
 | **Monthly First anchor** | **The 1st of the first month whose OWN first paycheck clears the bound. See R-R6** |
 | **Period-unit anchor** | **The bound DATE itself, not a period boundary. R-R8, archived** |
@@ -236,20 +237,6 @@ exclusive (a rule fires on a day-of-month OR an nth-weekday, never both) and DDL
 most one of two subtype rows". R8 enforces it in the authoring seam and pins it with a test;
 recorded here so R8 does not discover it.
 
-### R-R4 -- a `Once` rule is retired at R2e, before anything must model it
-
-Ruled 2026-08-05 and AMENDED 2026-08-07. The original ruling deferred the deletion to R9 and gave
-`Once` inert two-axis values in the meantime, because NOT NULL was coming and the transfer form has
-no null option. R2d removed the NOT NULL pressure, and two neutral reviews then showed the deferral
-costs more than it saves: `Once` resolves to EXACTLY the `Every Period` value, so a consumer holding
-only a `ResolvedRecurrence` would generate a `Once` rule forever, and `(1, period, containing_date)`
-naming two patterns is what would force R7c's downgrade to refuse rather than round-trip.
-
-**Amended ruling: retire it at R2e, before R3.** The new engine then never models "does not recur",
-and the resolved value is unambiguous before anything consumes it. Until then `pattern_id = Once`
-REMAINS what suppresses generation, exactly as today -- the four guards run before the engine is
-consulted, so the ambiguity is contained to a value nothing reads yet.
-
 ### R-R6 -- the bounds move from PERIODS to OCCURRENCES, and 4 frozen shapes move
 
 Ruled 2026-08-05, measured while building R2b. `match_periods` bounds PERIODS: `start_date` is
@@ -300,29 +287,6 @@ deletes the template and leaves its rule -- so no `ondelete` on that FK can clos
 
 **Ruling: deleting the 5 rows moves out of R2b and into the commit that closes the hole** (step
 R-F6), so the cleanup and its cause are reviewed together and R2b stays purely additive.
-
-### R-R11 -- `Once` cannot be retired in one leaf, and the `ref` row outlives the enum
-
-Ruled 2026-08-07. Building R2e surfaced two conditions that had to hold before the retirement was
-even safe, each a measured defect rather than a refactor, so the step became three (see section 4).
-
-**The deploy half is the ruling that changed the design.** Deleting the `ref.recurrence_patterns`
-row was proposed first, because the picker is built from that table and a surviving row would still
-offer `Once`. Measured: `ref_cache.init` raises `RuntimeError` for an enum member with no row
-(`ref_cache.py:290`), the entrypoint runs migrations before the seed, and `shekel-deploy` rolls back
-to the PREVIOUS image on an unhealthy deploy -- so the row's deletion would leave both images unable
-to boot, on exactly the deploy where the safety net is needed. The developer refused that trade, and
-the refusal produced the better design: **drive the picker off the enum instead** (R2e-2). The app's
-model of the vocabulary is `RecurrencePatternEnum` -- `_pattern_member` raises for anything else --
-so a table-driven picker was always able to author an unresolvable rule. With the picker enum-driven
-the row is unreachable rather than merely unused, and expand/contract costs nothing: R9 already
-drops the table.
-
-**What R2e-1 had to fix first.** Two defects the retirement would otherwise have shipped onto a
-second surface: **D14** (the null option was a silent no-op that then regenerated) and, through it,
-**D15** -- a loan payment could be made "one-time", which nulls the column
-`recurring_transfer_query` finds it by and silently drops the standing overpayment the balance seam
-threads (measured 250.00 -> 0.00 with the `loan_payment_settings` row still asserting 250.00).
 
 ### R-R2 -- a signed day offset was proposed and disproved
 
@@ -497,34 +461,41 @@ Each step is a leaf boundary: one commit, its own tests green, independently rev
 **Budget a neutral review pass and a fix pass into every one.** R2e-3 shipped at roughly twice its
 specification because a review found that retiring a value is not done when nothing reads it -- it
 is done when the SHAPE replacing it behaves -- and three further findings were false claims in this
-arc's own new prose. **Steps R1-R4 do not change any user-visible behaviour.** Half A = R1-R4,
-R7a-R7c, R8 (+ the Half-A part of R9); Half B = R5, R6 (see section 0).
+arc's own new prose. **R1-R3 and R4a change no user-visible behaviour at the developer's 14-day
+cadence; R4b changes two things and both are fixes** (D22 and D2). Half A = R1-R4, R7a-R7c, R8 (+
+the Half-A part of R9); Half B = R5, R6 (see section 0).
 
-**R1 through R3 are ARCHIVED** to `docs/plans/historical/recurrence_as_built_2026-08-05.md` (rule 5)
--- one line per step with its commit, plus the constraints they bind on later steps. Read that file
-before R4 or R7c.
+- [x] **R1-R3 -- oracle, vocabulary, subtypes, write door, `Once` gone, forward engine.** `4b5c577b`
+      and the eight commits before it, archived under rule 5 to
+      `docs/plans/historical/recurrence_as_built_2026-08-05.md` with the rulings taken for them
+      (R-R4, R-R8, R-R10, R-R11). **Read it before R4b or R7c.**
 
-### R2 -- New schema, additive (R2a, R2b, R2c-1, R2d). COMPLETE
+- [ ] **R4a -- `match_periods` answers forward.**
 
-Old columns retained and still authoritative. **R2c-2 and R2c-3 were DELETED, not deferred**: they
-existed to fence and then tighten a stored derivation, and R-R10 removed the derivation instead.
-Their work now lands at R7c, where the same values arrive AUTHORED.
+**R4 is TWO leaves**, split 2026-08-08 after the first was measured: the answer changing and the
+callers changing are separate reviews, and only the first moves a committed baseline line. The five
+`_match_*` helpers go; `match_periods` resolves the rule against the periods it is handed and
+returns the placed occurrences in occurrence order. **D3 and D5 die**, and the baseline is re-frozen
+in the same commit (+122 / -4 lines, exactly 12 shapes: 4 `bounds.*` drop the row R-R6 named, 8
+`long_cadence.*` gain the months D3 dropped). Deleting `_match_annual` removes the only thing that
+refused `month_of_year = 13`, so `resolve` gains the domain refusal its own columns already carry
+and `/templates/preview-recurrence` catches it -- measured, three of that endpoint's five unbounded
+query args were live 500s and two previewed a silently clamped date. The parallel run stops being
+old-versus-new and becomes engine-versus-adapter plus the independent day sweep.
 
-- [x] **R2d -- the derived half stops being stored.** `1e5e3430` -- the four two-axis columns
-      removed and computed on demand by `resolve()`, with `c8f2b6a41d93` amended in place. Ruling
-      **R-R10**, archived with it; read the commit before R7c.
+- [ ] **R4b -- generation moves onto the occurrence pairs.**
 
-### R2e (retire `Once`, three leaves) and R3 (the forward engine). COMPLETE
-
-Archived under rule 5 to `docs/plans/historical/recurrence_as_built_2026-08-05.md` -- `4d99c9d4`,
-`a465e9fa` + `fcea8b3c`, `eef43eef` + `867c3854`, `4b5c577b`. Read that file before R4 or R7c: it
-carries what these steps BIND on later ones, including why R3's engine still reads `offset_periods`
-and the oracle-coverage rule R3 had to write down.
-
-- [ ] **R4 -- Cut generation over.**
-
-`match_periods` becomes a thin adapter, then callers move to the new engine. D3 dies here. The R1
-oracle is the gate.
+`resolve_generation_plan` returns `(occurrence, PayPeriod)` rows, both engines consume them, and
+`match_periods` is deleted with its last reader.
+**The rule resolves against the OWNER's whole schedule**, threaded once per request, not against the
+caller's `periods` window -- which is what closes **D22** and **D2**. Ruling 2026-08-08: an
+occurrence in a schedule GAP is logged and skipped (**D7**). R4a's D19 refusal upgrades here from
+"the paycheck and the count" to the occurrence DATES, which generation finally carries. It must also
+keep the window a WINDOW: `periods` is two things today (the resolution schedule AND what to write
+into), and only the first becomes the owner's whole schedule -- drop the intersection and an extend
+re-walks every historical period. The same commit carries the migration deleting the 3 duplicate
+rows -- destructive, so it takes the `Review:` line and a downgrade that refuses with the literal
+SQL. **This step needs its own review pass.**
 
 - [ ] **R5 -- Row columns.**
 
@@ -685,6 +656,17 @@ downgrade drops them by name -- the table goes with them) and renaming 23 tables
 large migration that buys nothing. The alternative is a rename migration. Either way the outcome
 must land in `.claude/rules/database.md` so the next reader is not told two different things.
 
+- [ ] **R-F10 -- Make pay-period contiguity an invariant, not an assumption** (finding F-10).
+
+`pay_period_service._reject_overlapping_batch` requires a new batch to start AFTER the latest
+existing `end_date`, so `latest_end + 5 days` is accepted and leaves a calendar hole; registration
+also bootstraps a 14-day period 0 a later real schedule can start after. A bill whose occurrence
+falls in such a hole is owed and has no paycheck to live in -- R4b logs it and skips it, which is
+the symptom's disposition, not its cause. **Starts with a ruling**: reject a gapped batch outright,
+or offer to bridge it. Production has no gap today (measured 2026-08-08, all 61 periods), so this is
+about what the writer PERMITS. `PeriodCalendar.__post_init__` already refuses overlaps and
+deliberately does not refuse gaps; that refusal moves here when the writer can no longer make one.
+
 - [ ] **R-F7 -- Delete two unreachable branches in `_first_of_month_anchor`** (finding D11).
 
 Left by R2c-1 and found by a neutral review of R2d. Both guards in
@@ -772,31 +754,36 @@ surfaced -- they have no step because they need a ruling first, which is what `o
 **D1 left this table at R2c-1, D14/D15 at R2e-1, D13/D16 at R2e-3, and D9 at R3**; each measurement
 lives with the step that closed it -- the historical archive for D1, `4d99c9d4` for D14/D15,
 `eef43eef` for D13/D16, and `4b5c577b` for D9. **F-8 and F-9** were found by R2e-3's review;
-**D18-D21 are new**, all four found while building R3 and none of them part of it.
+**D18-D21** were found while building R3; **D22, D23 and F-10** while building R4a, and none of the
+seven is part of the step that found it.
 
-**The ledger stands at 23 rows.**
+**The ledger stands at 27 rows.**
 
 | id | finding (one line) | worst measured | status | owned by |
 |---|---|---|---|---|
 | D2 | an edit ignores the chosen "First paycheck": `effective_from` overrides `start_period_id` | 4 rows materialised in excluded periods | OPEN | R7b (the form rewrite that retires `start_period_id`) |
-| D3 | `_match_monthly` reads only a period's two ENDPOINT months, so it is neither total nor injective | 6 of 12 occurrences dropped; a duplicate period would 500 | OPEN | R4 |
+| D3 | `_match_monthly` reads only a period's two ENDPOINT months, so it is neither total nor injective | 6 of 12 occurrences dropped; a duplicate period would 500 | OPEN | R4a |
 | D4 | a loan's cash date and contractual installment date cannot differ | $0 -- labels only (payoff date, schedule rows, history) | OPEN | R6 |
-| D5 | `match_periods` bounds PERIODS, not occurrences, so a row is generated dated OUTSIDE its own rule's window | a bill dated 10 days past the end date the user set | OPEN | R4 |
+| D5 | `match_periods` bounds PERIODS, not occurrences, so a row is generated dated OUTSIDE its own rule's window | a bill dated 10 days past the end date the user set | OPEN | R4a |
 | D6 | folding `start_date` into `anchor_date` is lossy for PERIOD-unit rules | the loan origination bound stops being an exact date | OPEN, NARROWED TWICE -- R-R8 made an anchor a date, and R2d made it COMPUTED, so the "a rebuild strands the anchor" half is dead: there is no stored anchor to strand, and `_repoint_recurrence_rules` narrowed back to the rules the wipe actually nulled | R9 (re-check before dropping `start_date`) |
-| D7 | pay periods are NOT contiguous by construction, so `place()` is not total -- section 3's totality argument rests on a false premise | a date in a schedule GAP belongs to no period; reachable because `_reject_overlapping_batch` rejects overlaps, not gaps, and registration bootstraps a period the user's real schedule then starts after | OPEN, NARROWED at R3 -- `place()` answers `None` and `occurrence_placements` REPORTS the unplaced occurrence instead of dropping it, so the hole is nameable; what generation DOES with one (log it? refuse? leave the bill unbudgeted?) is untouched | R4 |
+| D7 | pay periods are NOT contiguous by construction, so `place()` is not total -- section 3's totality argument rests on a false premise | a date in a schedule GAP belongs to no period; reachable because `_reject_overlapping_batch` rejects overlaps, not gaps, and registration bootstraps a period the user's real schedule then starts after | OPEN, NARROWED at R3 -- `place()` answers `None` and `occurrence_placements` REPORTS the unplaced occurrence instead of dropping it, so the hole is nameable; what generation DOES with one is RULED (2026-08-08: log the gap, skip it, and close the cause separately -- finding F-10) but unbuilt | R4b |
 | F-1 | five `ref` identity sequences sit behind their data, on production | the next value added to those enums aborts a DEPLOY | OPEN | R-F1 |
 | F-2 | the ref-seed parity scan's last `INSERT` body runs to end-of-file | none today; a literal quoted below the seed would pass | OPEN | R-F2 |
 | F-3 | `ref` tables use auto-named constraints while the database rule says name them | none -- the names are never referenced | OPEN | R-F3 (developer ruling first) |
 | F-6 | a hard-deleted template leaves its recurrence rule behind forever | 3 orphaned rules on production today (was 5; R2e-3 deleted 2 of them) | OPEN | R-F6 |
 | D8 | `offset_periods` is a declared schema field (`templates.py:67`, `transfers.py:65`) that NO template renders, so only a crafted POST can author a phase | none -- it is the one derived value still stored, re-derived on EVERY write since R2c-1, and the anchor carries whatever phase it states; vestigial, not wrong | OPEN | R7b (the form rewrite that deletes it) |
 | D18 | `compute_due_date` picks its base month from a period's two ENDPOINT months and never consults `month_of_year`, so a rule firing in a month that is neither endpoint is dated in the wrong month | measured on the R1 blob's new long-cadence shapes: a January annual rule (`moy=1`) is dated **1 March** at a 90-day cadence, twice over the captured span. Latent at 14 days, where the firing month always IS an endpoint | OPEN | R5 (the step that rewrites the due-date model) |
-| D19 | `idx_transactions_template_period_scenario` is UNIQUE over `(template, period, scenario)`, so one template can owe a paycheck only ONCE -- but a monthly bill legitimately occurs several times in one paycheck at a cadence >= 30 days | the index is a generation-idempotency guard keyed on the wrong column: a generated row's identity is its OCCURRENCE, not its paycheck. Measured: a monthly bill at a 90-day cadence occurs 3x per paycheck, and `Monthly First` defers 2-3 months onto one. Rows stay SEPARATE and only the grid sums them (developer ruling 2026-08-07), so the fix is to re-key onto `(template, scenario, occurs_on)` | OPEN | R5 (re-key it in the migration that creates `occurs_on`) / R4 (must not 500 before then) |
+| D19 | `idx_transactions_template_period_scenario` is UNIQUE over `(template, period, scenario)`, so one template can owe a paycheck only ONCE -- but a monthly bill legitimately occurs several times in one paycheck at a cadence >= 30 days | the index is a generation-idempotency guard keyed on the wrong column: a generated row's identity is its OCCURRENCE, not its paycheck. Measured: a monthly bill at a 90-day cadence occurs 3x per paycheck, and `Monthly First` defers 2-3 months onto one. Rows stay SEPARATE and only the grid sums them (developer ruling 2026-08-07), so the fix is to re-key onto `(template, scenario, occurs_on)` -- which **needs D18 first**: `compute_due_date` dates a row from its PERIOD, so two occurrences in one paycheck get the SAME date and the unique index cannot be built on the very data D19 describes (every repeated line in the re-frozen blob is byte-identical, `due=` included). R4a REFUSES meanwhile, naming the definition, the paycheck and the count (developer ruling 2026-08-08); the alternatives measured were an IntegrityError 500 that aborts the enclosing transaction, or a silently under-budgeted paycheck | OPEN | R5 (re-key it, after D18 gives the rows distinct dates) |
 | D20 | the placement axis has no "the LAST paycheck on or before the occurrence", so a bill funded IN ADVANCE is inexpressible | both members fund on or AFTER: at a 90-day cadence today's `Monthly First` funds February's rent on 31 March, 59 days late. Zero impact at a cadence <= 28 days, where every month holds a payday | OPEN | R8 (the add-ons step, which already owns the placement-adjacent business-day shift) |
 | D21 | the PERIOD unit's phase is read from the `offset_periods` COLUMN, which R7c drops | deriving it from the anchor instead diverges exactly where `_phased_period_anchor` falls back to the raw bound (fewer than `interval_n` periods remain past the bound): today's engine generates nothing there, an anchor-derived phase would generate from the first out-of-phase period | OPEN | R7c (the authored anchor must carry the phase by construction) |
-| D10 | a `Monthly First` anchor is horizon-dependent: re-authoring an unchanged rule after the schedule extends can move it a month earlier | inherent to a pattern defined in terms of paydays, and equally true of the scan R2b shipped -- but no surface says so | OPEN | R4 (freeze the semantics with the baseline) |
+| D10 | a `Monthly First` anchor is horizon-dependent: re-authoring an unchanged rule after the schedule extends can move it a month earlier | inherent to a pattern defined in terms of paydays, and equally true of the scan R2b shipped -- but no surface says so. **R4a's re-freeze does NOT pin it**: no baseline shape bounds a `Monthly First` rule past the horizon, so the blob never exercises the branch | OPEN | R4b (add the shape, then say it on a surface) |
 | D11 | two branches of `_first_of_month_anchor` are unreachable, and one comments a case that cannot execute | none -- both are dead; proven by argument and by a 243,018-case sweep in which neither was ever taken | OPEN | R-F7 |
 | D12 | `ref_cache.recurrence_unit_id` / `period_placement_id` / `business_day_shift_id` have ZERO callers in `app/` since R2d made `resolve()` return enum members | none -- they are correct and tested; the risk is a dead-code sweep DELETING them before their first consumer exists | OPEN | R7c (its backfill maps enums back to ids) |
 | D17 | `RecurrenceRule.pattern` is `lazy="joined"`, so every rule load eager-joins `ref.recurrence_patterns` for a relationship whose only reader is the `recurrence_cell` macro's else-branch | none -- one join per rule load | OPEN | R7a (deletes that branch, the labels dict and `pattern_labels_by_name` together, so the join goes with them) |
+| D22 | a `Monthly First` rule generates a DUPLICATE row for a month already covered, every time the schedule is extended into it | **live on production**: template 3 `Phone Allowance` carries 3 spurious projected rows (2 in 2028-03, 3 in 2028-06) at $39.54 each -- $118.62 over-budgeted and growing by ~$39.54 on roughly every other extend. `_match_monthly_first` picks "the first period whose start falls in each month" from the CANDIDATE list, and the extend path hands it only the new periods; it is the one matcher with no containment test, so it is the one that is window-dependent. Measured 2026-08-08 against `shekel-prod-db`, with each duplicate's `created_at` matching a separate extend | OPEN | R4b (resolve against the OWNER's whole schedule, and delete the 3 rows in the same commit) |
+| D23 | the recurrence write door refuses 3 of the table's 7 CHECK constraints; the other four reach the flush as an unhandled `IntegrityError` naming neither field nor value | none today -- every live writer is schema-validated. R4a added `ck_recurrence_rules_dom` and `ck_recurrence_rules_moy` to the door (they were forced: deleting `_match_annual` removed the only thing refusing month 13); `due_dom`, `valid_offset`, `positive_max_occurrences` and `single_end_bound` are not mirrored | OPEN | R7b (the form rewrite that gives `max_occurrences` its first writer, so it owns both bound CHECKs) |
+| D24 | an `Every N Periods` rule's phase is READ from the start period when the schedule handed in contains it, and from the stored `offset_periods` column when it does not | none -- the write door has DERIVED the column from the start period on every write since R2c-1 (defect D1's fix), so the two can disagree only on a row written before that and never re-authored: zero on production, and all 46 live rules carry `interval_n = 1` where the phase is inert (measured 2026-08-08). Found by adversarial review of R4a, which is where the READ started agreeing with the write; the path-dependence is real -- the extend path hands over only the new periods, so it takes the column while create / regenerate take the derivation | OPEN | R7c (drops the column, so the authored anchor must carry the phase by construction -- the same requirement D21 states from the anchor's side) |
+| F-10 | pay periods may be generated with a GAP: `_reject_overlapping_batch` requires a new batch to start AFTER the latest `end_date`, so `latest_end + 5 days` is accepted | none on production (all 61 periods contiguous, measured 2026-08-08), but a bill occurring in the hole is owed and has no paycheck to live in -- which is D7's cause rather than its symptom | OPEN | R-F10 (developer ruling first: refuse a gapped batch, or bridge it?) |
 | F-8 | a deploy's auto-rollback cannot survive a migration: the PREVIOUS image's Alembic tree cannot resolve a DB stamped by the new one, and `init_database.py` runs `command.upgrade(cfg, "head")` unguarded at entrypoint step 3 | probed on the R2e-3 revision: `CommandError: Can't locate revision identified by 'd4a71f6e30bb'` -- so every migration-bearing release rolls back into a dead container, and `docs/runbook.md` does not cover it | OPEN | operator (guard the upgrade and fall back, or accept it and document the restore-from-backup recovery?) |
 | F-9 | a transfer create with no baseline scenario reports success having materialised nothing -- the outcome the adjacent missing-period branch was just made to refuse | none: every owner gets a baseline at registration, so it is unreachable; both create paths (`_materialize_one_time_transfer` and `generate_transfers_for_all_periods`) share the shape | OPEN | operator (refuse both paths, or leave the broken-setup state to the baseline repair handler?) |
 | F-4 | `pay_periods` stores NOMINAL paydays; a holiday/weekend shift for the pay SCHEDULE is unmodelled | Josh's 1 Jan 2026 payday was really paid 31 Dec 2025 | OPEN | operator (scope it as its own task, or rule it out?) |

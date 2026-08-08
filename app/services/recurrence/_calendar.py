@@ -2,11 +2,12 @@
 Shekel Budget App -- The pay-period schedule, as the resolver reads it
 
 A recurrence rule's first occurrence is not a property of the rule alone: it
-is measured against the owner's pay-period schedule.  ``match_periods``
-reaches that schedule through ORM rows; the resolver
-(:mod:`app.services.recurrence._resolution`) reaches it through the frozen
-value objects here, so the derivation is a pure function of two values and can
-be exercised at exact dates without a database.
+is measured against the owner's pay-period schedule.
+``recurrence_engine.match_periods`` is handed that schedule as ORM rows and
+converts it here (:meth:`PeriodCalendar.from_pay_periods`); the resolver
+(:mod:`app.services.recurrence._resolution`) and the occurrence engine see
+only the frozen value objects, so both are pure functions of two values and
+can be exercised at exact dates without a database.
 
 :class:`PeriodCalendar` deliberately exposes only the questions the derivation
 and the occurrence engine ask -- the schedule's opening bound and horizon, one
@@ -112,6 +113,14 @@ class PeriodCalendar:
     ``pay_period_admin`` uses ``first_period.user_id``), so the pairing is an
     assumption rather than a fact until it is checked.  Recording the owner
     here is what lets :func:`~app.services.recurrence.resolve` check it.
+
+    **The check is vacuous on the generation path and that is worth stating.**
+    ``recurrence_engine.match_periods`` builds the calendar with
+    ``rule.user_id``, so it compares the rule's owner against itself.  The
+    guard still bites where it was written for -- the two call sites above,
+    which pass an owner they derived elsewhere -- and the generation path is
+    protected instead by every caller querying periods for the template's own
+    user.  A reader must not mistake this for a check on that path.
 
     Attributes:
         user_id: The user whose schedule this is.
@@ -219,7 +228,7 @@ class PeriodCalendar:
         This is the floor every rule's effective start is measured from,
         because ``recurrence_engine.resolve_generation_plan`` falls back to
         ``periods[0].start_date`` when a rule names no start period and no
-        caller supplies an ``effective_from`` (``:123-124``).
+        caller supplies an ``effective_from``.
 
         Returns:
             The earliest period's ``start_date``, or ``None`` for an empty

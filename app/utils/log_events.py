@@ -240,6 +240,13 @@ EVT_RATE_LIMIT_EXCEEDED = _register(
     "rate_limit_exceeded", ACCESS,
     "Flask-Limiter rejected a request that exceeded its per-IP quota.",
 )
+EVT_RECURRENCE_CADENCE_UNSUPPORTED = _register(
+    "recurrence_cadence_unsupported", ERROR,
+    "Generation refused: a recurring definition falls more than once inside one\n"
+    "pay period, and budget.transactions holds one row per (template, period,\n"
+    "scenario).  Reachable only at a pay cadence of 30 days or more; plan step R5\n"
+    "re-keys the index onto the occurrence and the refusal goes with it.",
+)
 EVT_BASELINE_MISSING = _register(
     "baseline_missing", ERROR,
     "A request asked the balance seam for a figure for a user with no "

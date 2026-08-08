@@ -223,14 +223,31 @@ def _next_occurrence(
 
     **The rule-less branch is the whole "does not recur" case** since plan
     step R2e-3.  A second guard used to sit beside it for the ``Once``
-    pattern, which ``match_periods`` has no branch for: without it a
+    pattern, which the reverse matcher had no branch for: without it a
     one-time definition emitted a spurious "unknown pattern" warning on
     every render.  With the pattern retired, no such rule exists to guard.
+
+    **This is now a fail-CLOSED read**, and plan step R4a is what changed it.
+    ``match_periods`` used to log a warning and answer ``[]`` for a rule it
+    could not read; it now raises
+    :class:`~app.services.recurrence.RecurrenceResolutionError` (an unmodelled
+    pattern, an interval below 1, a day or month outside its column's domain)
+    or ``RecurrenceScheduleError`` (a schedule whose periods overlap), so ONE
+    such rule takes the whole Recurring surface to a 500 rather than rendering
+    the other definitions beside a silently blank cell.  Every one of those is
+    a state the CHECK constraints and the write door already refuse, and the
+    project's disposition for a broken invariant is the loud one -- but the
+    contract is stated rather than discovered.
+
+    Raises:
+        RecurrenceResolutionError: When the rule names a cadence this
+            application cannot derive.
+        RecurrenceScheduleError: When *periods* overlap or run backwards.
     """
     rule = getattr(template, "recurrence_rule", None)
     if rule is None:
         return None
-    for period in match_periods(rule, rule.pattern_id, periods, as_of):
+    for period in match_periods(rule, periods, as_of):
         due = compute_due_date(rule, period)
         if due >= as_of:
             return due

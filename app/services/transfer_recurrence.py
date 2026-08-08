@@ -27,6 +27,7 @@ from app.services._recurrence_common import (
     log_resource_access_denied,
     partition_regeneration_rows,
     query_rows_from_effective_date,
+    refuse_unstorable_repeats,
     should_skip_period,
 )
 from app.services.recurrence_engine import compute_due_date, resolve_generation_plan
@@ -70,6 +71,14 @@ def generate_for_template(template, periods, scenario_id, effective_from=None):
         return []
 
     existing = _get_existing_map(template.id, scenario_id, plan.matching_periods)
+
+    # Refuse a paycheck this pass would write into TWICE before writing
+    # anything -- ``idx_transfers_template_period_scenario`` holds one row per
+    # (template, period, scenario), and forward generation legitimately names a
+    # paycheck more than once at a cadence of 30 days or more.  The
+    # transaction engine applies the identical guard; see
+    # ``_recurrence_common.refuse_unstorable_repeats``.
+    refuse_unstorable_repeats(template, plan.matching_periods, existing)
 
     created = []
     for period in plan.matching_periods:

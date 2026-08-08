@@ -45,6 +45,7 @@ event constant, category, and keyword shape, not to add behaviour.
 
 import logging
 
+from app.exceptions import RecurrenceCadenceUnsupported
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
@@ -215,6 +216,66 @@ def should_skip_period(existing_rows: list) -> bool:
         # Auto-generated and unmodified -- it already exists, skip.
         return True
     return False
+
+
+def refuse_unstorable_repeats(template, matching_periods, existing) -> None:
+    """Refuse when one paycheck must host this template's row more than once.
+
+    Shared by both engines' ``generate_for_template``, because the storage
+    limit is a property of the two UNIQUE indexes rather than of either model:
+    ``idx_transactions_template_period_scenario`` and
+    ``idx_transfers_template_period_scenario`` are both keyed on
+    ``(template, pay_period, scenario)``.
+
+    **Plan step R4a made this reachable, which is why it exists here rather
+    than at R4b with the rest of the generation cutover.**  The reverse matcher
+    it replaced deduplicated: ``_match_monthly_first`` kept one period per
+    calendar month and ``_match_monthly`` one per ``(year, month)``, so a
+    repeat could only come from the ONE shape whose two endpoint months
+    collided.  Forward generation emits every occurrence the cadence names, so
+    at a cadence of 30 days or more a monthly bill repeats a paycheck as a
+    matter of course.  Measured against the deleted matcher, 12 periods from
+    2026-01-01: ``Monthly First`` returned no repeat at ANY cadence and now
+    returns 11 repeated periods at 90 days.  Letting those reach the flush
+    turns a silent under-generation into an ``IntegrityError`` that rolls back
+    the whole enclosing transaction -- ``pay_period_admin.extend_pay_periods``
+    among them, which would leave the owner unable to extend their schedule at
+    all.
+
+    **Checked AFTER the per-period skip, and that is load-bearing.**  A
+    paycheck that already holds a row for this template is skipped by
+    :func:`should_skip_period`, so no second row is attempted and there is
+    nothing to refuse; testing before the skip would make an already-populated
+    schedule permanently unextendable.  Checked BEFORE any row is created, so
+    the refusal never leaves a half-written pass behind.
+
+    Args:
+        template: The (Transaction|Transfer)Template being generated.
+        matching_periods: The periods the rule fires in, one entry per
+            occurrence and therefore possibly repeating.
+        existing: ``{pay_period_id: [row, ...]}`` for this template and
+            scenario, as both engines' ``_get_existing_map`` returns it.
+
+    Raises:
+        RecurrenceCadenceUnsupported: When a period this pass would WRITE into
+            appears more than once.  Names the template, the paycheck and
+            every occurrence date that lands in it.
+    """
+    seen: dict[int, list] = {}
+    for period in matching_periods:
+        seen.setdefault(period.id, []).append(period)
+    for period_id, repeats in seen.items():
+        if len(repeats) < 2 or should_skip_period(existing.get(period_id, [])):
+            continue
+        # The engines answer in PERIODS, not yet in occurrences (plan step R4b
+        # threads the pairs through), so the COUNT is exact -- one entry per
+        # occurrence -- while the individual dates are not available to name.
+        raise RecurrenceCadenceUnsupported(
+            template_name=template.name,
+            occurrence_count=len(repeats),
+            period_start=repeats[0].start_date,
+            period_end=repeats[0].end_date,
+        )
 
 
 def partition_regeneration_rows(existing_rows: list) -> tuple[list, list, list]:

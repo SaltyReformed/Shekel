@@ -182,8 +182,8 @@ class TestBaselineFiringControls:
         before = recurrence_baseline.capture_baseline()
         real_match = recurrence_engine.match_periods
 
-        def one_fewer(rule, pattern_id, periods, effective_from):
-            return real_match(rule, pattern_id, periods, effective_from)[1:]
+        def one_fewer(rule, periods, effective_from):
+            return real_match(rule, periods, effective_from)[1:]
 
         monkeypatch.setattr(recurrence_engine, "match_periods", one_fewer)
         after = recurrence_baseline.capture_baseline()

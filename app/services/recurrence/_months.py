@@ -24,9 +24,10 @@ Adding a month to a date has to answer "what is 31 January plus one month",
 and every answer that returns a DATE loses the day: 28 February plus one month
 is 28 March, and the 31st never comes back.  Walking ordinals keeps the
 NOMINAL day and re-clamps it per month, so a day-31 rule is 31 Jan, 28 Feb,
-31 Mar -- the last day of every month, which is the only reading that matches
-what ``recurrence_engine._match_monthly`` does today and the only one that
-does not decay (ruling R-R3).
+31 Mar -- the last day of every month, which is the only reading that
+reproduces the reverse matcher plan step R4a replaced (it clamped with
+``min(day, monthrange(...))`` per period) and the only one that does not decay
+(ruling R-R3).
 
 Pure: no Flask, no ORM, no clock, no database.
 """

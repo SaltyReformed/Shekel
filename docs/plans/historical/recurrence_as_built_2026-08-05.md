@@ -107,6 +107,46 @@ destroyed with its inputs in the same transaction. Measured against the 50 live 
 need only `GREATEST(schedule opening, start_date, start_period.start)` -- Postgres `GREATEST` skips
 NULLs, so that is the `_effective_start` maximum exactly -- and one (`Monthly First`) needs a scan.
 
+**R-R4 -- a `Once` rule is retired at R2e, before anything must model it**
+(ruled 2026-08-05, AMENDED 2026-08-07, built into `eef43eef`).
+
+The original ruling deferred the deletion to R9 and gave `Once` inert two-axis values in the
+meantime, because NOT NULL was coming and the transfer form has no null option. R2d removed the NOT
+NULL pressure, and two neutral reviews then showed the deferral costs more than it saves: `Once`
+resolves to EXACTLY the `Every Period` value, so a consumer holding only a `ResolvedRecurrence`
+would generate a `Once` rule forever, and `(1, period, containing_date)` naming two patterns is what
+would force R7c's downgrade to refuse rather than round-trip.
+
+**Amended ruling: retire it at R2e, before R3.** The new engine then never models "does not recur",
+and the resolved value is unambiguous before anything consumes it. Until the retirement shipped,
+`pattern_id = Once` REMAINED what suppressed generation -- the four guards ran before the engine was
+consulted, so the ambiguity was contained to a value nothing read yet.
+
+**R-R11 -- `Once` cannot be retired in one leaf, and the `ref` row outlives the enum**
+(ruled 2026-08-07, built into `4d99c9d4` + `a465e9fa` + `fcea8b3c` + `eef43eef`).
+
+Building R2e surfaced two conditions that had to hold before the retirement was even safe, each a
+measured defect rather than a refactor, so the step became three leaves -- R2e-1, R2e-2, R2e-3, all
+listed with their commits in the table above.
+
+**The deploy half is the ruling that changed the design.** Deleting the `ref.recurrence_patterns`
+row was proposed first, because the picker is built from that table and a surviving row would still
+offer `Once`. Measured: `ref_cache.init` raises `RuntimeError` for an enum member with no row
+(`ref_cache.py:290`), the entrypoint runs migrations before the seed, and `shekel-deploy` rolls back
+to the PREVIOUS image on an unhealthy deploy -- so the row's deletion would leave both images unable
+to boot, on exactly the deploy where the safety net is needed. The developer refused that trade, and
+the refusal produced the better design: **drive the picker off the enum instead** (R2e-2). The app's
+model of the vocabulary is `RecurrencePatternEnum` -- `_pattern_member` raises for anything else --
+so a table-driven picker was always able to author an unresolvable rule. With the picker enum-driven
+the row is unreachable rather than merely unused, and expand/contract costs nothing: R9 already
+drops the table.
+
+**What R2e-1 had to fix first.** Two defects the retirement would otherwise have shipped onto a
+second surface: **D14** (the null option was a silent no-op that then regenerated) and, through it,
+**D15** -- a loan payment could be made "one-time", which nulls the column
+`recurring_transfer_query` finds it by and silently drops the standing overpayment the balance seam
+threads (measured 250.00 -> 0.00 with the `loan_payment_settings` row still asserting 250.00).
+
 ## What R2e and R3 bind on later steps
 
 - **`Once`'s `ref.recurrence_patterns` row SURVIVES to R9** (ruling R-R11). The NEW image does not

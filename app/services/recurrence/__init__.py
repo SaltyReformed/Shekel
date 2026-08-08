@@ -42,9 +42,9 @@ What this package offers
   existing rule reads the spec back, replaces that fact with
   ``dataclasses.replace``, and re-authors, rather than setting a column.
 * :func:`occurrences` / :func:`place` / :func:`occurrence_placements` -- the
-  forward occurrence engine (plan step R3).  **Parallel and unread**:
-  ``app.services.recurrence_engine.match_periods`` is still the authoritative
-  generator until plan step R4 cuts its readers over.
+  forward occurrence engine (plan step R3), AUTHORITATIVE since plan step R4a:
+  ``app.services.recurrence_engine.match_periods`` is a thin adapter over it,
+  so every pay period the application generates a row into is selected here.
 
 What lives where
 ----------------
@@ -67,8 +67,9 @@ What lives where
   so a ``ref`` row the enum does not name can be neither offered nor accepted
   (plan step R2e-2).
 
-Plan step R3 built the forward occurrence engine here; step R4 points the
-readers at it, gated by ``tests/oracles/recurrence_baseline.txt``.
+Plan step R3 built the forward occurrence engine here and step R4a pointed
+``match_periods`` at it, gated by ``tests/oracles/recurrence_baseline.txt``;
+step R4b moves generation itself onto the ``(occurrence, period)`` pairs.
 When step R7c moves the form onto the two-axis vocabulary,
 :class:`RecurrenceSpec`'s fields change and :func:`resolve` shrinks to almost
 nothing -- nothing above the door does.

@@ -819,42 +819,77 @@ class TestTheTwoVocabulariesAgree:
 
 
 @pytest.mark.usefixtures("app")
-class TestMalformedInputTakesTheEnginesOwnCoercion:
-    """``or 1``, mirrored exactly -- ``is not None`` is a different rule."""
+class TestAStatedDayOrMonthMustBeInItsColumnsDomain:
+    """NULL states nothing and defaults; 0 states something impossible.
 
-    def test_a_zero_day_is_coerced_to_the_first(self):
-        """``day_of_month=0`` must not reach ``date(y, m, 0)``.
+    **Plan step R4a changed this, and the change is a behaviour decision.**
+    Plan step R2c-1 mirrored the reverse matcher's ``rule.day_of_month or 1``
+    exactly, so 0 and NULL both resolved to 1 -- deliberately, because the
+    preview endpoint reads the value straight from ``request.args`` and a
+    ``<input type="number" min="1">`` does not stop a user typing 0, and
+    ``is not None`` would have let the 0 reach ``date(y, m, 0)`` as a 500.
 
-        The engine coerces with ``rule.day_of_month or 1``
-        (``recurrence_engine.py:504-518``), which maps 0 onto 1 as well as
-        NULL.  The preview endpoint reads this straight from ``request.args``
-        and a ``<input type="number" min="1">`` does not stop a user typing 0,
-        so the difference between ``or`` and ``is not None`` is a live 500 on
-        a page that answered 200.
-        """
+    Two things then changed under it.  ``ck_recurrence_rules_dom`` /
+    ``ck_recurrence_rules_moy`` bound the columns to ``NULL OR 1..31`` /
+    ``NULL OR 1..12``, and ``_author`` writes the AUTHORED value verbatim --
+    so a spec carrying 0 was an unhandled ``IntegrityError`` at the flush, the
+    exact failure the R4a door says it closes.  And the preview endpoint now
+    catches ``RecurrenceResolutionError``, so a refusal there is a muted line
+    rather than the 500 the coercion existed to avoid.
+
+    So the door refuses a STATED 0 and the reader still defaults a NULL.  The
+    two concerns live in one place each, instead of one ``or`` doing both and
+    disagreeing with the column at zero.
+    """
+
+    def test_a_null_day_still_defaults_to_the_first(self):
+        """NULL states no day, which the matcher has always read as the 1st."""
         resolved = resolve(
-            spec_for(RecurrencePatternEnum.MONTHLY, day_of_month=0),
+            spec_for(RecurrencePatternEnum.MONTHLY, day_of_month=None),
             build_calendar(),
         )
 
         assert resolved.anchor_date == date(2026, 4, 1)
 
-    def test_a_zero_month_is_coerced_to_january(self):
-        """``month_of_year=0`` must not land the anchor in December.
-
-        Worse than a crash because it is silent: residue ``(0 - 1) % 12`` is
-        11, so an annual rule anchored in DECEMBER where the engine's ``or 1``
-        anchors it in January -- eleven months of projected spend in the wrong
-        year.
-        """
+    def test_a_null_month_still_defaults_to_january(self):
+        """NULL states no cycle month, which reads as January."""
         resolved = resolve(
             spec_for(
-                RecurrencePatternEnum.ANNUAL, month_of_year=0, day_of_month=15,
+                RecurrencePatternEnum.ANNUAL,
+                month_of_year=None,
+                day_of_month=15,
             ),
             build_calendar(),
         )
 
         assert resolved.anchor_date == date(2027, 1, 15)
+
+    @pytest.mark.parametrize("day", [0, -1, 32, 99])
+    def test_a_stated_day_outside_1_31_is_refused(self, day):
+        """``ck_recurrence_rules_dom`` is the domain; the door mirrors it."""
+        with pytest.raises(RecurrenceResolutionError, match="day_of_month"):
+            resolve(
+                spec_for(RecurrencePatternEnum.MONTHLY, day_of_month=day),
+                build_calendar(),
+            )
+
+    @pytest.mark.parametrize("month", [0, -1, 13, 99])
+    def test_a_stated_month_outside_1_12_is_refused(self, month):
+        """``ck_recurrence_rules_moy`` is the domain; the door mirrors it.
+
+        A 0 month was the silent one: residue ``(0 - 1) % 12`` is 11, so the
+        anchor landed in DECEMBER -- eleven months of projected spend in the
+        wrong year, with no error anywhere.
+        """
+        with pytest.raises(RecurrenceResolutionError, match="month_of_year"):
+            resolve(
+                spec_for(
+                    RecurrencePatternEnum.ANNUAL,
+                    month_of_year=month,
+                    day_of_month=15,
+                ),
+                build_calendar(),
+            )
 
 
 @pytest.mark.usefixtures("app")

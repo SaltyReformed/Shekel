@@ -39,10 +39,10 @@ The four derivations
 1. **The effective start** -- the date the first occurrence is measured from.
    The GREATEST of the schedule's opening payday, the rule's ``start_date``,
    and its start period's ``start_date``.  That single maximum reproduces both
-   of the engine's branches: ``match_periods`` applies the ``start_date``
-   filter (``recurrence_engine.py:488``) AND an ``effective_from`` that
+   of the reverse matcher's branches: it applied the ``start_date`` filter
+   itself AND an ``effective_from`` that
    ``resolve_generation_plan`` always supplies -- the start period's start when
-   the rule has one, else the earliest pay period's (``:121-124``).
+   the rule has one, else the earliest pay period's.
 
 2. **A pay-period-space rule** (Every Period / Every N Periods) anchors on the effective
    start ITSELF, not on a period boundary.  ``anchor_date`` is the occurrence
@@ -75,11 +75,14 @@ The four derivations
 
 3. **A calendar rule** (Monthly / Quarterly / Semi-Annual / Annual) anchors on
    the first date matching its ``(month_of_year, day_of_month)`` cycle on or
-   after the effective start, month-end clamped exactly as ``_match_monthly``
-   clamps (``min(day, monthrange(...))``, ``recurrence_engine.py:546``).
-   ``or 1`` mirrors the engine's own coercion of a malformed rule
-   (``:504-518``) rather than inventing a different one -- ``or``, not
-   ``is not None``, so a 0 is coerced exactly as the engine coerces it.
+   after the effective start, month-end clamped as
+   :func:`app.services.recurrence._months.clamped_day` clamps
+   (``min(day, monthrange(...))``, which is what the reverse matcher plan step
+   R4a replaced did per period).  ``or 1`` mirrors that matcher's coercion of
+   a rule naming no day rather than inventing a different one -- ``or``, not
+   ``is not None``, so a 0 is coerced the same way.  A day or month outside
+   its own column's domain is REFUSED rather than coerced or clamped; see
+   :func:`_require_authored_calendar_fields`.
 
 4. **A Monthly First rule** anchors on the 1st of the first month whose OWN
    first paycheck falls on or after the effective start (developer ruling,
@@ -307,10 +310,19 @@ _PATTERN_DERIVATIONS: dict[RecurrencePatternEnum, _PatternDerivation] = {
 #: ones that can need a ``recurrence_month_anchors`` row.
 _CLAMPABLE_UNITS = (RecurrenceUnitEnum.MONTH, RecurrenceUnitEnum.YEAR)
 
-#: The engine's coercion of a rule that names no day / month
-#: (``recurrence_engine.py:504-518``), mirrored rather than re-invented.
+#: The reverse matcher's coercion of a rule that names no day / month
+#: (``rule.day_of_month or 1`` / ``rule.month_of_year or 1``), mirrored rather
+#: than re-invented.
 _DEFAULT_DAY_OF_MONTH = 1
 _DEFAULT_MONTH_OF_YEAR = 1
+
+#: The domains ``ck_recurrence_rules_dom`` and ``ck_recurrence_rules_moy``
+#: bound their columns to.  Named once, so the door and the table state one
+#: domain rather than two that happen to agree.
+_DAY_OF_MONTH_MIN = 1
+_DAY_OF_MONTH_MAX = 31
+_MONTH_OF_YEAR_MIN = 1
+_MONTH_OF_YEAR_MAX = 12
 
 #: Upper bound on the month-ordinal walk in :func:`_calendar_anchor`.  Two
 #: candidates always suffice (the effective month's own occurrence, then one
@@ -455,8 +467,9 @@ def _calendar_anchor(
     ``month_step`` divides 12 for every calendar pattern, a residue over month
     ordinals is the same set as the engine's residue over month NUMBERS -- so
     "every third month starting in April" names the identical months either
-    way.  The day is clamped per month exactly as ``_match_monthly`` clamps it,
-    which is what keeps a day-31 rule on the last day of every month.
+    way.  The day is clamped per month by
+    :func:`app.services.recurrence._months.clamped_day`, which is what keeps a
+    day-31 rule on the last day of every month.
 
     Args:
         effective: The rule's opening bound.
@@ -569,12 +582,13 @@ def _phased_period_anchor(
     **The one place a period BOUNDARY belongs in the anchor**, and the reason
     is that ``Every N Periods`` fires on a subset of paychecks: its phase is
     ``(period_index - offset_periods) % interval_n == 0``
-    (``recurrence_engine.py:500-502``), which the bound alone cannot express.
+    (``_occurrence._period_walk``), which the bound alone cannot express.
     Anchoring such a rule on the raw bound makes the two vocabularies state
     DIFFERENT cadences -- measured on the developer's schedule, an
     every-3-paychecks rule phased at 2 stored ``offset_periods = 2`` (the old
     engine fires periods 2, 5, 8) beside an anchor in period 0 (the two-axis
-    reading fires 0, 3, 6), and plan step R4 would pick the second silently.
+    reading fires 0, 3, 6), and plan step R4a would have picked the second
+    silently.
 
     Every other pay-period-space rule fires on EVERY paycheck, so its anchor
     is the bound itself and no boundary is stored (ruling R-R8).
@@ -631,18 +645,23 @@ def _resolve_anchor(
         return effective, None
     if derivation.family == _FAMILY_FIRST_OF_MONTH:
         return _first_of_month_anchor(calendar, effective), None
-    # ``or``, NOT ``is not None``, and the difference is a live 500.  The
-    # engine coerces with ``rule.day_of_month or 1`` / ``rule.month_of_year
-    # or 1`` (``recurrence_engine.py:504-518``), so it maps 0 onto 1 as well
-    # as NULL.  ``is not None`` let a 0 through to ``date(y, m, 0)``, which
-    # raises -- and the preview endpoint reads both straight from
-    # ``request.args``, where ``?day_of_month=0`` answered 200 before this
-    # step.  A 0 month was worse than a crash: residue ``(0 - 1) % 12`` put
-    # the anchor in DECEMBER where the engine puts it in January.  Mirroring
-    # the coercion exactly is the point -- a second, different default is a
-    # second answer to the same malformed rule.
-    nominal_day = spec.day_of_month or _DEFAULT_DAY_OF_MONTH
-    base_month = spec.month_of_year or _DEFAULT_MONTH_OF_YEAR
+    # ``is None``, not ``or``, and the change is plan step R4a's.  The reverse
+    # matcher coerced with ``rule.day_of_month or 1``, mapping 0 onto 1
+    # alongside NULL -- which was the only thing standing between
+    # ``?day_of_month=0`` on the unvalidated preview endpoint and
+    # ``date(y, m, 0)``.  ``_require_authored_calendar_fields`` now REFUSES a
+    # stated 0 at the door, so the only value reaching here is NULL, whose
+    # meaning is "this rule names no day" and whose default is the matcher's
+    # own.  Truthiness would still read a 0 as absent, which is the shape this
+    # project's coding rules rule out: absence is ``is None``.
+    nominal_day = (
+        _DEFAULT_DAY_OF_MONTH if spec.day_of_month is None
+        else spec.day_of_month
+    )
+    base_month = (
+        _DEFAULT_MONTH_OF_YEAR if spec.month_of_year is None
+        else spec.month_of_year
+    )
     return _calendar_anchor(
         effective, derivation.month_step, base_month, nominal_day,
     ), nominal_day
@@ -750,6 +769,85 @@ def _resolved_interval(
     )
 
 
+def _require_authored_calendar_fields(spec: RecurrenceSpec) -> None:
+    """Refuse a day or month outside the domain its own column allows.
+
+    **Plan step R4a moved this refusal here, and it was previously an
+    accident.**  ``recurrence_engine._match_annual`` called
+    ``calendar.monthrange(year, month_of_year)`` directly, so a rule naming
+    month 13 raised ``ValueError`` -- the only thing in the application that
+    refused it, and reachable live: ``templates.preview_recurrence`` reads
+    ``month_of_year`` straight from ``request.args``, so
+    ``?month_of_year=13`` on an Annual pattern was a 500.  The forward engine
+    walks month ORDINALS instead (``_months.walk_months``), where ``13`` is
+    simply ``(13 - 1) % 12 == 0`` -- January -- and a day of ``99`` clamps to
+    the month's last day.  Deleting the old matcher without this would trade a
+    loud crash for a plausible wrong date, which is the worse of the two.
+
+    The check is on the AUTHORED value for the same reason
+    :func:`_resolved_interval`'s is: ``app.services.recurrence._authoring._author``
+    writes ``spec.day_of_month`` / ``spec.month_of_year`` verbatim into columns
+    carrying ``ck_recurrence_rules_dom`` and ``ck_recurrence_rules_moy``, so an
+    out-of-domain value reaches the flush as an unhandled ``IntegrityError``
+    naming neither the field nor the value.  Refusing at the door names both.
+
+    **``NULL`` is the only value that means "this rule states no day", and
+    ``0`` is REFUSED.**  A neutral review measured the first draft of this
+    function checking the COERCED value (``spec.day_of_month or 1``), which let
+    a ``0`` past the door and straight into the flush as the very
+    ``IntegrityError`` the paragraph above says it exists to prevent.  The
+    column is nullable, and the reverse matcher's ``or 1`` conflated ``NULL``
+    with ``0`` only because Python truthiness does; the CHECK does not, and
+    neither does this.  A stated ``None`` still resolves to
+    :data:`_DEFAULT_DAY_OF_MONTH` in :func:`_resolve_anchor`, which is the
+    READER's job -- so the coercion and the domain live in one place each
+    instead of one place doing both and disagreeing at zero.
+
+    **Applied to every pattern, not only the calendar ones**, because it is
+    the COLUMN's domain rather than the walk's: ``_author`` writes the value
+    whatever the pattern, so an ``Every Period`` rule carrying
+    ``day_of_month = 32`` is refused here even though nothing would ever read
+    the field.  The reverse matcher ignored it for such a rule; that was the
+    field being unread, not the value being legal.
+
+    The four other CHECK constraints on ``budget.recurrence_rules`` --
+    ``due_dom``, ``valid_offset``, ``positive_max_occurrences``,
+    ``single_end_bound`` -- are NOT mirrored here; nothing this step deletes
+    was refusing them, and closing that gap is plan ledger row D23.
+
+    Args:
+        spec: The authored recurrence.
+
+    Raises:
+        RecurrenceResolutionError: When a STATED day is outside 1-31 or a
+            stated month is outside 1-12.  ``None`` states nothing and passes.
+    """
+    day = spec.day_of_month
+    if day is not None and not _DAY_OF_MONTH_MIN <= day <= _DAY_OF_MONTH_MAX:
+        raise RecurrenceResolutionError(
+            f"recurrence day_of_month must be NULL or between "
+            f"{_DAY_OF_MONTH_MIN} and {_DAY_OF_MONTH_MAX}, got {day} for "
+            f"pattern id {spec.pattern_id} (user {spec.user_id}).  It is "
+            f"written to a column carrying ck_recurrence_rules_dom, so "
+            f"letting it through would raise an unhandled IntegrityError at "
+            f"the flush; and an over-large day would be CLAMPED to a month's "
+            f"last day, answering a plausible date the rule never named."
+        )
+    month = spec.month_of_year
+    if (
+        month is not None
+        and not _MONTH_OF_YEAR_MIN <= month <= _MONTH_OF_YEAR_MAX
+    ):
+        raise RecurrenceResolutionError(
+            f"recurrence month_of_year must be NULL or between "
+            f"{_MONTH_OF_YEAR_MIN} and {_MONTH_OF_YEAR_MAX}, got {month} for "
+            f"pattern id {spec.pattern_id} (user {spec.user_id}).  It is "
+            f"written to a column carrying ck_recurrence_rules_moy, and the "
+            f"month-ordinal walk would otherwise read it MODULO 12 -- month "
+            f"13 silently becoming January."
+        )
+
+
 def _derive_offset_periods(
     spec: RecurrenceSpec,
     pattern: RecurrencePatternEnum,
@@ -807,14 +905,16 @@ def resolve(spec: RecurrenceSpec, calendar: PeriodCalendar) -> ResolvedRecurrenc
     Raises:
         RecurrenceResolutionError: When *spec* and *calendar* name different
             users, when ``pattern_id`` names no modelled pattern, when
-            ``interval_n`` is not positive, or when the owner has no pay
-            periods.  All four are broken invariants: a recurrence read with a
-            fabricated cadence is worse than a refused read.
+            ``interval_n`` is not positive, when ``day_of_month`` or
+            ``month_of_year`` is outside its column's domain, or when the owner
+            has no pay periods.  All five are broken invariants: a recurrence
+            read with a fabricated cadence is worse than a refused read.
     """
     _require_owner(spec, calendar)
     pattern = _pattern_member(spec.pattern_id)
     derivation = _PATTERN_DERIVATIONS[pattern]
     interval_n = _resolved_interval(spec, derivation)
+    _require_authored_calendar_fields(spec)
 
     start_period = calendar.period_by_id(spec.start_period_id)
     effective = _effective_start(spec, calendar, start_period)

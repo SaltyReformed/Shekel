@@ -481,7 +481,7 @@ class TestNextDates:
         )
         next_date = view.expenses.rows[0].next_date
         # Independent engine recomputation of the contract.
-        matched = match_periods(rule, rule.pattern_id, seed_periods_today, today)
+        matched = match_periods(rule, seed_periods_today, today)
         expected = next(
             compute_due_date(rule, p)
             for p in matched

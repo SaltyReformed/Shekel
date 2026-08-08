@@ -1,12 +1,18 @@
 """The recurrence engine's frozen behaviour baseline (plan step R1).
 
 The gate every later step of ``docs/plans/implementation_plan_recurrence_redesign.md``
-is measured against.  R3 builds a new occurrence engine and R4 cuts generation
-over to it; this module is what proves the cutover moved nothing it did not
-mean to move.
+is measured against.  R3 built a new occurrence engine and R4a cut
+``match_periods`` over to it; this module is what proved the cutover moved
+nothing it did not mean to move, and what holds R4b onward to the same
+standard.
 
-**What it captures.**  For each rule SHAPE, the exact answer the CURRENT engine
-gives to the only two questions it is asked in production:
+**The snapshot was re-frozen at plan step R4a** (+122 / -4 lines over exactly
+the 12 shapes ruling R-R6 and plan defect D3 predicted), so it now records the
+FORWARD engine.  What it recorded before is in that commit's diff; a snapshot
+is a record of what shipped, not of what was replaced.
+
+**What it captures.**  For each rule SHAPE, the exact answer the engine gives
+to the only two questions it is asked in production:
 
 * :func:`app.services.recurrence_engine.match_periods` -- which pay periods
   does this rule fire in?
@@ -53,9 +59,8 @@ the three calendar patterns that take BOTH a month and a day
 (``QUARTERLY`` / ``SEMI_ANNUAL`` / ``ANNUAL``) sweep all twelve months against
 the six days that matter -- ``1`` and ``15`` for the ordinary cases and
 ``28``-``31`` for every month-length clamp -- rather than all 372 combinations.
-Days 2-14 and 16-27 differ from 15 in no branch of ``_match_specific_months``
-or ``_match_annual``: both clamp with ``min(day, monthrange(...))``, which is
-the identity for every day below 28.  ``MONTHLY`` sweeps all 31 days anyway,
+Days 2-14 and 16-27 differ from 15 in no branch of the walk: it clamps with
+``min(day, monthrange(...))``, which is the identity for every day below 28.  ``MONTHLY`` sweeps all 31 days anyway,
 because there the day IS the whole rule.
 """
 
@@ -93,13 +98,13 @@ SCHEDULE_CADENCE_DAYS: int = 14
 #: and one February 29 inside the window.
 SCHEDULE_PERIOD_COUNT: int = 79
 
-#: A second, deliberately LONG cadence.  ``_match_monthly`` inspects only the
-#: months of a period's two endpoints, so a period spanning more than two
-#: months silently drops the interior ones (plan defect D3).  ``cadence_days``
-#: is user-selectable 1..365, so this is reachable configuration, not a
-#: hypothetical -- and freezing the WRONG answer here is deliberate: R4 is
-#: expected to change these lines and no others, which is what makes the fix
-#: visible in a diff instead of asserted in a message.
+#: A second, deliberately LONG cadence.  The reverse matcher inspected only
+#: the months of a period's two endpoints, so a period spanning more than two
+#: months silently dropped the interior ones (plan defect D3).  ``cadence_days``
+#: is user-selectable 1..365, so this was reachable configuration, not a
+#: hypothetical -- and freezing the WRONG answer here was deliberate: plan step
+#: R4a changed these lines and no others, which is what made the fix visible in
+#: a diff instead of asserted in a message.
 LONG_CADENCE_DAYS: int = 90
 
 #: Periods in the long-cadence schedule -- twelve quarters, three years, so the
@@ -452,12 +457,14 @@ def _add_due_day_shapes(acc: _ShapeAccumulator) -> None:
 def _add_bound_shapes(acc: _ShapeAccumulator) -> None:
     """The validity-window shapes.
 
-    ``start_date`` and ``end_date`` are applied in ``match_periods`` itself and
-    are therefore UNBYPASSABLE by a caller's ``effective_from`` -- the property
-    that lets a loan payment refuse to generate before origination.  Each bound
-    is placed mid-period and on a period boundary, in both directions, because
-    the comparisons are asymmetric: ``start_date`` is tested against a period's
-    END and ``end_date`` against its START.
+Both bounds are UNBYPASSABLE by a caller's ``effective_from`` -- the property
+    that lets a loan payment refuse to generate before origination.  Each is
+    placed mid-period and on a period boundary, in both directions, because the
+    reverse matcher's comparisons were ASYMMETRIC: ``start_date`` was tested
+    against a period's END and ``end_date`` against its START, which is what
+    let it generate a row dated outside the window (defect D5).  Plan step R4a
+    moved both onto the occurrence and four of these eight shapes dropped a row
+    each -- exactly the rows ruling R-R6 predicted.
     """
     bounds = (
         ("start.midperiod", date(2024, 6, 5), None),
@@ -482,11 +489,12 @@ def _add_bound_shapes(acc: _ShapeAccumulator) -> None:
 def _add_long_cadence_shapes(acc: _ShapeAccumulator) -> None:
     """The shapes that expose defect D3, captured against a 90-day schedule.
 
-    ``_match_monthly``, ``_match_specific_months`` and ``_match_annual`` read
-    only a period's ``start_date`` and ``end_date`` months, so a period
-    spanning four months can match at most two of them.  These shapes freeze
-    that behaviour -- WRONG but current -- so R4's forward-placement rewrite
-    changes exactly these lines and no others.
+    The reverse matcher read only a period's ``start_date`` and ``end_date``
+    months, so a period spanning four months could match at most two of them.
+    These shapes froze that behaviour -- WRONG but current -- so plan step
+    R4a's forward-placement cutover changed exactly these lines and no others.
+    They now freeze the answer that replaced it: every month a monthly bill is
+    owed in, whatever the pay cadence.
 
     **Every pattern whose matcher reads endpoints is covered here, and that is
     a rule rather than a selection.**  The first cut of this builder covered
@@ -500,11 +508,11 @@ def _add_long_cadence_shapes(acc: _ShapeAccumulator) -> None:
     baseline; it is a green gate over an unmeasured behaviour.
 
     ``EVERY_PERIOD`` is captured too, as the control: pay-period-space
-    matchers read no months at all, so it must NOT move at any cadence.
+    generation reads no months at all, so it must NOT move at any cadence.
 
     **The added shapes paid for themselves immediately.**  ``ANNUAL``'s period
-    selection agrees at 90 days -- ``_match_annual`` dedupes by YEAR, which is
-    total at this cadence -- but its captured ``due=`` column does not:
+    selection agreed at 90 days -- the reverse matcher deduped by YEAR, which
+    is total at this cadence -- but its captured ``due=`` column did not:
 
     ```text
     long_cadence.annual.moy01.dom01 idx=004 ... due=2025-03-01
@@ -584,6 +592,16 @@ def capture_shape(shape: RuleShape, periods: list[PayPeriod]) -> list[str]:
     the diff from a shape that was never captured, which is how a regression
     hides.
 
+    **A period repeated in ``matched`` emits a repeated LINE**, and since plan
+    step R4a that is reachable: at a cadence of 30 days or more several
+    occurrences of one monthly bill land in one paycheck.  The repeats are
+    byte-identical, because ``compute_due_date`` dates a row from its PERIOD
+    rather than from its occurrence and so cannot tell them apart -- which is
+    plan ledger row D18 made visible rather than a defect in this capture.
+    The occurrence DATES those lines stand for are pinned independently, by
+    ``tests/test_services/test_recurrence_occurrence.py``'s day-by-day sweep;
+    a blob keyed on periods cannot carry them.
+
     Args:
         shape: The configuration to capture.
         periods: The schedule to capture it against.
@@ -593,7 +611,7 @@ def capture_shape(shape: RuleShape, periods: list[PayPeriod]) -> list[str]:
     """
     rule = build_shape_rule(shape)
     matched = recurrence_engine.match_periods(
-        rule, rule.pattern_id, periods, periods[0].start_date,
+        rule, periods, periods[0].start_date,
     )
     if not matched:
         return [f"{shape.label} (none)"]
