@@ -17,10 +17,6 @@ These tests assert, without re-executing DDL in the worker:
     ``upgrade`` ran and matches the model.  The complementary "the models and
     the migration do not drift" check is the empty ``flask db migrate``
     autogenerate diff, run against the prod-clone dev DB during development;
-  * the identity sequence for each table is AHEAD of its max id, so the next
-    id-less INSERT cannot collide.  This is the defect the migration's
-    docstring names in ``1dc0e7a1b9e4``: seeding with literal ids leaves the
-    sequence behind the data, and five older ``ref`` tables carry it today;
   * ``upgrade`` actually EXECUTES each seed constant it defines -- the one
     dual-seed leg no runtime assertion can reach, because every test database
     is reseeded by ``seed_reference_data`` after being migration-built (see
@@ -49,6 +45,12 @@ Enum <-> row parity and the ``ref_cache`` accessors are covered in
 ``tests/test_ref_cache.py``; the "every enum value is inline-seeded by SOME
 migration AND listed in ``app/ref_seeds.py``" three-legged scan lives in
 ``test_posting_ref_seed_parity.py``, which these enums are registered in.
+
+"the identity sequence is ahead of its max id, so the next id-less INSERT
+cannot collide" USED to be asserted here for these three tables.  Plan step
+R-F1 generalised it to every ``ref`` table, discovered by query, in
+``test_ref_identity_sequences.py``; these three are covered there and the
+narrower copy was removed rather than left to duplicate it.
 """
 from __future__ import annotations
 
@@ -171,44 +173,6 @@ class TestMigratedTableShape:
                 assert unique_cols == ["name"], (
                     f"ref.{table} unique columns are {unique_cols}, expected "
                     f"['name']"
-                )
-
-
-class TestIdentitySequenceInStep:
-    """The next id-less INSERT cannot collide with a seeded row.
-
-    Seeding with literal ids (``INSERT ... (id, name) VALUES (1, ...)``) does
-    not advance the table's identity sequence, so the next id-less INSERT --
-    which is what ``ref_seeds.seed_reference_data`` emits when it adds a
-    missing row -- asks for an id that already exists and fails on the primary
-    key.  Five older ``ref`` tables are in that state on production today
-    (``goal_modes``, ``income_units``, ``user_roles``,
-    ``compounding_frequencies``, ``employer_contribution_types``); this
-    migration seeds without ids so these three are not.
-    """
-
-    def test_sequence_is_ahead_of_max_id(self, app, db):
-        """For each table, the next sequence value exceeds the largest id.
-
-        The table name is interpolated rather than bound because it names a
-        RELATION, which no parameter placeholder can carry; the values come
-        from the module-level ``_TABLES`` literal, never from a request.
-        """
-        with app.app_context():
-            for table, _ in _TABLES:
-                max_id = db.session.execute(text(
-                    f"SELECT COALESCE(max(id), 0) FROM ref.{table}"
-                )).scalar()
-                next_id = db.session.execute(text(
-                    "SELECT last_value + "
-                    "       (CASE WHEN is_called THEN 1 ELSE 0 END) "
-                    f"FROM ref.{table}_id_seq"
-                )).scalar()
-                assert next_id > max_id, (
-                    f"ref.{table}_id_seq would hand out id {next_id} but "
-                    f"ref.{table} already holds id {max_id} -- the next "
-                    f"id-less INSERT (ref_seeds adding a missing row) would "
-                    f"fail on the primary key."
                 )
 
 
