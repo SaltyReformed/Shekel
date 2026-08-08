@@ -2,22 +2,21 @@
 
 ## Where this stands
 
-**Plan of record** for replacing the closed 8-name recurrence pattern set with a two-axis model, and
-for untangling the cash-date / installment-date collision. R1-R4 ARCHIVED.
+**Plan of record** for the two-axis recurrence model and the cash-date / installment-date split.
+R1-R4 ARCHIVED. **R1-R4b-2 IS IN PRODUCTION** (PR #85, merge `5c33b462`, head `a3f8b1c40d92`).
 
-**R1-R2e IS IN PRODUCTION** (PR #84, 2026-08-07; prod runs `d4a71f6e30bb`).
-**R3, R4a, R4b-1 and R4b-2 are BUILT on `dev`, not yet PR'd.** R4 is COMPLETE.
+**Two carried findings sit on `dev`, unpushed, and ship together in ONE PR** (ruled 2026-08-08).
+**R-F1** (`44b25ad3`, migration `c7f3a9d1e864`) puts the five lagging `ref` identity sequences back
+in step, which makes the release MIGRATION-BEARING -- so **R-F8** (`8aeae48e`) goes with it: such a
+deploy now dumps first and REFUSES the rollback that cannot work. Its symlink install is last.
 
 **Two rulings taken 2026-08-08 RESPECIFY R5, R6 and R7c**, both in the Rulings table. **R-R12**: a
 generated row carries three dates in three places (`occurs_on`, `pay_period_id`, `due_on`) and
 `compute_due_date` is DELETED -- R5's "the column holds the cash date" premise is measured FALSE
 (see D4). **R-R13**: `anchor_date` SPLITS into `starts_on` + `nominal_day` before R7c freezes it.
 
-**Do these in order.** (1) **Open the PR for R3-R4b-2** -- four unshipped leaves carrying the arc's
-largest behaviour change; `dev` green at 322 recurrence tests, `pylint app/` 10.00. (2) **R-F1**,
-the only carried finding with a live failure mode, and it lands during a DEPLOY. (3) **R-F10**,
-which deletes a fence and closes the balance arc's N-128 with it. Then R7a. **Also live:** R-F6,
-R-F7, R-F12, R-F13.
+**Then R-F10** (deletes a fence, closes N-128)**, then R7a.** R5 and R6 wait on the balance arc
+(section 0). **Also live:** R-F6, R-F7, R-F12, R-F13.
 
 **Section 4 is the steps, 5 the ledger, 7 the gate rules. REPLACE this section; never append.**
 
@@ -29,24 +28,16 @@ Taken 2026-08-05 (developer):
 |---|---|
 | Scope | Full two-axis redesign (not additive patterns, not staged dual-write) |
 | Add-ons | ALL FOUR: weekly-by-date, nth-weekday, count-bounded end, business-day shift |
-| Due date model | Subtype table with `due_day` + explicit `due_month_offset` (a signed day offset was proposed and DISPROVED, see R-R2) |
 | `loan_params.payment_day` | DELETE; every reader goes through one accessor |
-| Row columns | `due_date` -> `occurs_on` (rename, no value change) + new `due_on` |
 | The three defects | Folded into the redesign, not fixed as separate PRs |
 | Sequencing vs the balance arc | **Half A now; Half B folded into X-an.** See section 0 |
 | `PAY_PERIODS_PER_YEAR` | Folded into R7a (which already rewrites `amount_to_monthly`); derivation = `round(365.2425 / cadence_days)`, see section 4a |
 | **Anchor day vs month-end clamp** | **R-R3's subtype is SUPERSEDED by R-R13: the anchor SPLITS into `starts_on` + `nominal_day`** |
 | **A generated row's dates** | **THREE facts, three homes: `occurs_on` (the occurrence), `pay_period_id` (the funding), `due_on` (the installment). `compute_due_date` is DELETED. R-R12, ruled 2026-08-08** |
 | **`anchor_date` itself** | **SPLITS before R7c freezes it: `starts_on` (one meaning, every unit) + `nominal_day`. R-R13, ruled 2026-08-08** |
-| **`Once` rules** | **Retired at R2e, BEFORE the new engine and the cutover. R-R4 / R-R11, archived** |
-| **R2 sequencing** | **R2a (vocabulary) -> R2b (subtypes) -> R2c-1 (the door) -> R2d (stop storing the derivation). All DONE** |
-| **R4 sequencing** | **THREE leaves: R4a (answer forward) -> R4b-1 (answer against the owner) -> R4b-2 (the pairs). Split 2026-08-08 so every money change lands in one reviewable leaf** |
-| **The wrong stored paycheck** | **Corrected by the R4b-1 migration to the value a whole-schedule calculation gives, targeted by the defect's signature. Ruled 2026-08-08; see D25's measurement** |
-| **Bound semantics** | **Occurrence-bounded, not period-bounded. The four frozen shapes moved at R4a. See R-R6** |
 | **Orphaned rules** | **NOT deleted in R2b; they ship with the fix for the leak that makes them. See R-R7** |
-| **Monthly First anchor** | **The 1st of the first month whose OWN first paycheck clears the bound. See R-R6** |
-| **Period-unit anchor** | **The bound DATE itself, not a period boundary. R-R8, archived** |
-| **Write-door enforcement** | **Nothing to enforce: the derived half is not stored. R-R10, archived** |
+| **A failed migration-bearing deploy** | **Back up unconditionally, PRE-FLIGHT whether rollback can work, and REFUSE the rollback that cannot. The app keeps failing loud rather than booting against a schema it cannot describe. R-R14, ruled 2026-08-08** |
+| Shipped / superseded decisions | Ten rows archived 2026-08-08 to `historical/recurrence_as_built_2026-08-08.md`: the `Once` retirement, R2 and R4 sequencing, the wrong stored paycheck, bound semantics, the `Monthly First` and period-unit anchors, write-door enforcement, and the two R-R12 superseded |
 | **Where the two-axis columns live** | **Computed until R7c, stored from R7c. R-R10, archived -- it binds R7c's backfill** |
 
 ---
@@ -611,35 +602,12 @@ promised something else. They get steps here so they are scheduled rather than r
 gap. Do not fold them into a recurrence migration -- an unrelated fix riding in a schema migration
 is unreviewable.
 
-- [ ] **R-F1 -- Re-sync the five lagging `ref` identity sequences** (finding F-1).
-
-**Do this one first**: it is the only carried finding with a live failure mode, and the failure
-lands during a DEPLOY. Measured 2026-08-05 against `shekel-prod-db` (and identically on the dev
-clone): `goal_modes` (max id 2, next value 1), `income_units` (2/1), `user_roles` (2/1),
-`compounding_frequencies` (3/1), `employer_contribution_types` (3/1). Their migrations seeded
-literal ids (`INSERT INTO ref.goal_modes (id, name) VALUES (1, 'Fixed'), ...`, e.g. `1dc0e7a1b9e4`),
-which does not advance the sequence. Latent today because `ref_seeds.seed_reference_data` only
-INSERTs a MISSING row and none is missing; it bites the first time anyone adds a value to one of
-those five enums, when the id-less INSERT asks for id 1, collides on the primary key, and
-`scripts/seed_ref_tables.py` aborts mid-deploy.
-
-One migration, one statement per table, over `goal_modes`, `income_units`, `user_roles`,
-`compounding_frequencies`, `employer_contribution_types`:
-
-```sql
-SELECT setval(pg_get_serial_sequence('ref.goal_modes', 'id'),
-              GREATEST((SELECT max(id) FROM ref.goal_modes), 1));
-```
-
-`GREATEST` so the statement can never move a sequence BACKWARDS -- it must be safe on a database
-where the sequence is already correct (every environment is at a different point). `downgrade`
-raises `NotImplementedError`: reverting means re-introducing the defect, and the rules require the
-refusal to carry both the reason and the literal SQL to do it by hand anyway.
-
-The test is the generalisation, not a copy: widen `TestIdentitySequenceInStep`
-(`tests/test_models/test_recurrence_ref_tables_migration.py`) from the three R2a tables to **every**
-table in the `ref` schema, discovered by query. That covers the five, and covers ref tables not yet
-written. It belongs in its own file once it stops being about recurrence.
+- [x] **R-F1 -- the lagging `ref` identity sequences are in step (F-1).** `44b25ad3`, migration
+      `c7f3a9d1e864`, on `dev`. A census of every serial sequence in all five application schemas
+      found exactly the five. **Two corrections to the spec it replaced**: the drafted
+      `GREATEST(max(id), 1)` takes the greatest against a literal floor rather than the sequence's
+      own position, so it would LOWER a sequence sitting ahead of its data; and the repair cannot
+      live in `ref_seeds` -- `setval` needs UPDATE, which the app role measurably lacks.
 
 - [ ] **R-F6 -- Close the recurrence-rule leak, then delete what leaked** (finding F-6).
 
@@ -651,6 +619,13 @@ template, or ownership inverts so the rule carries the template id and CASCADEs.
 used to propose cannot fix it -- see R-R7. Deleting the 3 existing rows rides in the SAME commit, so
 the cleanup and its cause are reviewed together; that makes the migration destructive, so it carries
 the `Review:` line and a downgrade that refuses with the literal SQL.
+
+- [x] **R-F8 -- the deploy's safety net stops lying (F-8, F-14, R-R14).** `2e63e4f9`, `8aeae48e`,
+      `398c332c`. The pre-flight asks whether an image can resolve the revision the database is
+      STAMPED at; "does the release add migrations" was directional and read a DOWNGRADE as safe,
+      reproducing F-8. Dump-first, full-decode readback, behavioural gate.
+      **Still to do: the SYMLINK install** -- last by design, and until it happens the host runs a
+      stale hand-copy, which the script now reports at startup rather than asserting otherwise.
 
 - [ ] **R-F2 -- Tighten the ref-seed parity scan's statement boundary** (finding F-2).
 
@@ -714,27 +689,13 @@ its other controls to -- a control that is not shown to fire is the thing being 
 
 - [ ] **R-F7 -- Delete two unreachable branches in `_first_of_month_anchor`** (finding D11).
 
-Left by R2c-1 and found by a neutral review of R2d. Both guards in
-`app/services/recurrence/_resolution.py` are provably dead, and one carries a comment describing a
-case that cannot execute -- which is worse than the dead code, because it tells the next reader the
-function handles something it does not.
-
-*The in-loop `earliest is not None`.* `earliest_start_in_month(y, m)` is called with the year and
-month OF A PERIOD ALREADY IN `calendar.periods`, so that period is itself in the minimand and the
-result is never `None`.
-
-*The fallback's `if earliest is not None and earliest >= effective`.* The fallback runs only when
-the loop returned nothing. If that month's earliest payday were `>= effective`, the period whose
-start IS that payday would have passed the loop's own `start_date < effective` guard, and its
-month's earliest is the same value -- so the loop would have returned. The branch is therefore
-unreachable and the function always falls through to `_next_month_first(effective)`.
-
-Proven both ways before it was written down: the argument above, plus a brute-force sweep of 243,018
-`(schedule shape, effective date)` pairs across cadences 1-365, gapped and degenerate schedules, and
-bounds inside and past the horizon -- 32,006 of which reached the fallback.
-**Neither guard was ever taken.** Deleting them is provably behaviour-identical, so the R1 baseline
-must stay byte-identical and `tests/test_services/test_recurrence_resolution.py::TestTotality` must
-stay green unchanged.
+Left by R2c-1, found by a neutral review of R2d, and re-derived independently by a coverage audit
+2026-08-08. Both guards in `app/services/recurrence/_resolution.py` are provably dead and one
+comments a case that cannot execute. **The proof is archived** to
+`historical/recurrence_as_built_2026-08-08.md`: an argument plus a 243,018-pair sweep in which
+neither branch was ever taken, 32,006 of those reaching the fallback. Deleting them is
+behaviour-identical, so the R1 baseline must stay byte-identical and
+`test_recurrence_resolution.py::TestTotality` must stay green unchanged.
 
 ## 4a. `PAY_PERIODS_PER_YEAR` (folded into R7a)
 
@@ -803,14 +764,13 @@ D14/D15, `eef43eef` for D13/D16, `4b5c577b` for D9, `1836a928` for D3/D5, `b4538
 and `75346625` for D7. **F-8 and F-9** were found by R2e-3's review; **D18-D21** were found while
 building R3; **D23, D24 and F-10** while building R4a, and **D25** while building R4b-1.
 
-**The ledger stands at 28 rows.**
+**The ledger stands at 26 rows.**
 
 | id | finding (one line) | worst measured | status | owned by |
 |---|---|---|---|---|
 | D2 | an edit ignores the chosen "First paycheck": `effective_from` overrides `start_period_id` | 4 rows materialised in excluded periods | OPEN, NARROWED at R4b-1 -- the bound is no longer bypassable by a caller's window, because the start period is looked up in the OWNER's schedule; what survives is the FIELD, which R7b deletes | R7b (the form rewrite that retires `start_period_id`) |
 | D4 | a loan's cash date and contractual installment date cannot differ | $0 -- labels only (payoff date, schedule rows, history) | OPEN | R6 |
 | D6 | folding `start_date` into `anchor_date` is lossy for PERIOD-unit rules | the loan origination bound stops being an exact date | OPEN, NARROWED TWICE -- R-R8 made an anchor a date, and R2d made it COMPUTED, so the "a rebuild strands the anchor" half is dead: there is no stored anchor to strand, and `_repoint_recurrence_rules` narrowed back to the rules the wipe actually nulled | R9 (re-check before dropping `start_date`) |
-| F-1 | five `ref` identity sequences sit behind their data, on production | the next value added to those enums aborts a DEPLOY | OPEN | R-F1 |
 | F-2 | the ref-seed parity scan's last `INSERT` body runs to end-of-file | none today; a literal quoted below the seed would pass | OPEN | R-F2 |
 | F-3 | `ref` tables use auto-named constraints while the database rule says name them | none -- the names are never referenced | OPEN | R-F3 (developer ruling first) |
 | F-6 | a hard-deleted template leaves its recurrence rule behind forever | 3 orphaned rules on production today (was 5; R2e-3 deleted 2 of them) | OPEN | R-F6 |
@@ -830,7 +790,6 @@ building R3; **D23, D24 and F-10** while building R4a, and **D25** while buildin
 | F-12 | THREE implementations of "which pay period contains this date": `recurrence/_calendar.py:263` (bisect, `None` in a gap), `balance_at/_cash_periods.py:310` (bisect, `None`, returns an id), `loan_ledger/_visible.py:117` (linear scan, falls back to the latest period ENDING before the target). Two are byte-similar; the third's fallback is what the other two deliberately refuse | `$0.00` today -- every caller is correct for the question it asks. The cost is that "which paycheck is this in" has three answers, and the balance arc's X-l needs a fourth ("answer any date, past the horizon") | OPEN, found 2026-08-08 | R-F12 |
 | F-13 | three holes in the arc's OWN gate: `OccurrencePlacement(` is constructed in exactly ONE place in the repository and never in `tests/`, so R4b-2's `__post_init__` invariant has no negative control; `.outcome` is asserted ONCE in the whole suite (`test_recurrence_engine.py:1708`, a well-built control for the healthy-schedule false alarm, but `SCHEDULE_GAP` is never asserted as a member and `test_recurrence_occurrence.py` asserts only `period is None`); and `SHEKEL_UPDATE_RECURRENCE_BASELINE` turns the 430-shape gate into a `pytest.skip` (`test_recurrence_baseline.py:56`) with nothing asserting the variable is unset | `$0.00` today. R8 adds a second `OccurrencePlacement` producer, which is when the missing control starts mattering | OPEN, found 2026-08-08 | R-F13 |
 | F-10 | pay periods may be generated with a GAP: `_reject_overlapping_batch` requires a new batch to start AFTER the latest `end_date`, so `latest_end + 5 days` is accepted | none on production (all 61 periods contiguous, measured 2026-08-08), but a bill occurring in the hole is owed and has no paycheck to live in -- which is D7's cause rather than its symptom, and the SAME defect as the balance arc's **N-128** (`-$140.63` on the gapped clone), which neither plan recorded until 2026-08-08. Closing it makes `PlacementOutcome.SCHEDULE_GAP`, `GenerationPlan.gaps` and `report_schedule_gaps` unconstructible | OPEN | R-F10 (developer ruling first: refuse a gapped batch, or bridge it?) |
-| F-8 | a deploy's auto-rollback cannot survive a migration: the PREVIOUS image's Alembic tree cannot resolve a DB stamped by the new one, and `init_database.py` runs `command.upgrade(cfg, "head")` unguarded at entrypoint step 3 | probed on the R2e-3 revision: `CommandError: Can't locate revision identified by 'd4a71f6e30bb'` -- so every migration-bearing release rolls back into a dead container, and `docs/runbook.md` does not cover it | OPEN | operator (guard the upgrade and fall back, or accept it and document the restore-from-backup recovery?) |
 | F-9 | a transfer create with no baseline scenario reports success having materialised nothing -- the outcome the adjacent missing-period branch was just made to refuse | none: every owner gets a baseline at registration, so it is unreachable; both create paths (`_materialize_one_time_transfer` and `generate_transfers_for_all_periods`) share the shape | OPEN | operator (refuse both paths, or leave the broken-setup state to the baseline repair handler?) |
 | F-11 | the grid's inline amount editor pre-fills from the STORED `estimated_amount` while the cell renders the LIVE recomputed one, and saving sets `is_override` -- the flag that excludes the row from that recompute | none today (all 61 salary rows agree after R4b-1's migration), and re-arms whenever a profile / calibration / tax / code change invalidates the cache without firing a regeneration, which is the exact situation `income_service.live_projected_net` exists for. The user is then shown one number in the cell and a different one on clicking it, and accepting the editor's value freezes the stale figure into the projection permanently. Verified by reading `_transaction_cell.html:39`, `_transaction_quick_edit.html:25`, `transactions/forms.py:48` and `transactions/mutations.py:295`; NOT driven through the UI. Surfaced while measuring D25, and not part of it -- the mismatch predates this arc | OPEN | operator (pre-fill the editor with the live figure so what you see is what you edit, or stop setting `is_override` when the submitted amount is unchanged?) |
 | F-4 | `pay_periods` stores NOMINAL paydays; a holiday/weekend shift for the pay SCHEDULE is unmodelled | Josh's 1 Jan 2026 payday was really paid 31 Dec 2025 | OPEN | operator (scope it as its own task, or rule it out?) |

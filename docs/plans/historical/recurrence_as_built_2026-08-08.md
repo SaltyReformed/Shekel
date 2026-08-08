@@ -94,3 +94,48 @@ Half the occurrences vanished silently, and the duplicate would have violated
 cadence in use. **Its surviving half is plan ledger row D18**: `compute_due_date` still reads the
 same endpoint-month scan to date a row, so the defect moved out of period selection rather than
 dying, and ruling R-R12 is what finishes it.
+
+## The Rulings table's SHIPPED and SUPERSEDED rows
+
+Moved here from the live plan on 2026-08-08 under rule 5, to buy the room ruling R-R14 needed.
+Every row below governs work that has shipped or has been superseded by a later ruling; none
+governs a live step.
+
+| fork | ruling | disposition |
+|---|---|---|
+| Due date model | Subtype table with `due_day` + explicit `due_month_offset` | **SUPERSEDED by R-R12**: the installment is `due_on` on the generated ROW, and no subtype table is created |
+| Row columns | `due_date` -> `occurs_on` (rename, no value change) + new `due_on` | **SUPERSEDED by R-R12**: it is a value-SPLITTING migration, not a rename, because the column is polymorphic and for a loan payment is a POSTING INPUT |
+| `Once` rules | Retired at R2e, BEFORE the new engine and the cutover | SHIPPED (R-R4 / R-R11) |
+| R2 sequencing | R2a (vocabulary) -> R2b (subtypes) -> R2c-1 (the door) -> R2d (stop storing the derivation) | SHIPPED |
+| R4 sequencing | THREE leaves: R4a (answer forward) -> R4b-1 (answer against the owner) -> R4b-2 (the pairs), so every money change lands in one reviewable leaf | SHIPPED, in production at PR #85 |
+| The wrong stored paycheck | Corrected by the R4b-1 migration to the value a whole-schedule calculation gives, targeted by the defect's SIGNATURE rather than by row id | SHIPPED; the migration reported 3 / 0 / 1 on the clone and again on production |
+| Bound semantics | Occurrence-bounded, not period-bounded | SHIPPED at R4a (R-R6) |
+| Monthly First anchor | The 1st of the first month whose OWN first paycheck clears the bound | SHIPPED at R3 (R-R6); R7c's backfill must reproduce it |
+| Period-unit anchor | The bound DATE itself, not a period boundary | SHIPPED (R-R8) |
+| Write-door enforcement | Nothing to enforce: the derived half is not stored | SHIPPED (R-R10) |
+
+## R-F7's proof (two unreachable branches in `_first_of_month_anchor`)
+
+Moved here from the live plan on 2026-08-08 under rule 5. The step R-F7 survives; only its proof
+moved, because the argument is finished and the step is a deletion.
+
+Both guards in `app/services/recurrence/_resolution.py` are provably dead, and one carries a comment
+describing a case that cannot execute -- worse than the dead code, because it tells the next reader
+the function handles something it does not.
+
+*The in-loop `earliest is not None`.* `earliest_start_in_month(y, m)` is called with the year and
+month OF A PERIOD ALREADY IN `calendar.periods`, so that period is itself in the minimand and the
+result is never `None`.
+
+*The fallback's `if earliest is not None and earliest >= effective`.* The fallback runs only when the
+loop returned nothing. If that month's earliest payday were `>= effective`, the period whose start IS
+that payday would have passed the loop's own `start_date < effective` guard, and its month's earliest
+is the same value -- so the loop would have returned. The branch is therefore unreachable and the
+function always falls through to `_next_month_first(effective)`.
+
+Proven both ways: the argument above, plus a brute-force sweep of 243,018 `(schedule shape, effective
+date)` pairs across cadences 1-365, gapped and degenerate schedules, and bounds inside and past the
+horizon -- 32,006 of which reached the fallback. **Neither guard was ever taken.** An independent
+coverage audit re-derived the same conclusion 2026-08-08. Deleting them is provably
+behaviour-identical, so the R1 baseline must stay byte-identical and
+`tests/test_services/test_recurrence_resolution.py::TestTotality` must stay green unchanged.
