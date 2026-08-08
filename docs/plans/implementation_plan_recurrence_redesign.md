@@ -3,12 +3,12 @@
 ## Where this stands
 
 **Plan of record** for the two-axis recurrence model and the cash-date / installment-date split.
-R1-R4 ARCHIVED. **R1-R4b-2 IS IN PRODUCTION** (PR #85, merge `5c33b462`, head `a3f8b1c40d92`).
+R1-R4 ARCHIVED. **R1-R4b-2 IS IN PRODUCTION** (PR #85, merge `5c33b462`).
 
-**Two carried findings sit on `dev`, unpushed, and ship together in ONE PR** (ruled 2026-08-08).
-**R-F1** (`44b25ad3`, migration `c7f3a9d1e864`) puts the five lagging `ref` identity sequences back
-in step, which makes the release MIGRATION-BEARING -- so **R-F8** (`8aeae48e`) goes with it: such a
-deploy now dumps first and REFUSES the rollback that cannot work. Its symlink install is last.
+**R-F1 AND R-F8 ARE IN PRODUCTION** (PR #86, merge `25f495ef`, 2026-08-08; head `c7f3a9d1e864`,
+image `3438ac41aa78`, healthy in 15s). The deploy that carried them was the FIRST to run under R-F8:
+it dumped first, called the release migration-bearing, and production's post-state equals the
+rehearsal clone's exactly. The symlink install is DONE -- `shekel-deploy` is the repo's copy.
 
 **Two rulings taken 2026-08-08 RESPECIFY R5, R6 and R7c**, both in the Rulings table. **R-R12**: a
 generated row carries three dates in three places (`occurs_on`, `pay_period_id`, `due_on`) and
@@ -623,9 +623,9 @@ the `Review:` line and a downgrade that refuses with the literal SQL.
 - [x] **R-F8 -- the deploy's safety net stops lying (F-8, F-14, R-R14).** `2e63e4f9`, `8aeae48e`,
       `398c332c`. The pre-flight asks whether an image can resolve the revision the database is
       STAMPED at; "does the release add migrations" was directional and read a DOWNGRADE as safe,
-      reproducing F-8. Dump-first, full-decode readback, behavioural gate.
-      **Still to do: the SYMLINK install** -- last by design, and until it happens the host runs a
-      stale hand-copy, which the script now reports at startup rather than asserting otherwise.
+      reproducing F-8. Dump-first, full-decode readback, behavioural gate. The symlink is installed,
+      so the repo copy IS the live deploy path; the pre-fix hand-copy is kept at
+      `/opt/docker/scripts/shekel-deploy.sh.prefix-2026-08-08.bak`.
 
 - [ ] **R-F2 -- Tighten the ref-seed parity scan's statement boundary** (finding F-2).
 
